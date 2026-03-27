@@ -1,0 +1,46 @@
+# Dependencies
+node_modules/
+npm-debug.log
+package-lock.json
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Configuration and logs (runtime data)
+config/
+logs/
+
+# Git
+.git/
+.gitignore
+
+# Documentation
+*.md
+!README.md
+LICENSE
+
+# Tests
+tests/
+test-results/
+playwright-report/
+.playwright/
+playwright.config.js
+
+# Docker
+Dockerfile
+.dockerignore
+docker-compose.yml
+docker-compose.override.yml
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
