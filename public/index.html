@@ -768,8 +768,88 @@
                 <textarea readonly style="width: 100%; height: 80px; padding: 10px; font-family: 'Courier New', monospace; background: #f8f9fa; border: 1px solid #ddd; border-radius: 6px;">export ANTHROPIC_BASE_URL="https://www.voipguru.org/llmProxy"
 export ANTHROPIC_API_KEY="proxy-handled"</textarea>
             </div>
-            <div class="form-actions">
-                <button type="button" class="btn btn-primary" onclick="copyClaudeConfig()">📋 Copy CLI Config</button>
+
+            <h3 style="margin-top: 30px; margin-bottom: 15px; font-size: 18px; border-bottom: 2px solid var(--border); padding-bottom: 10px;">📧 Email Notifications</h3>
+
+            <div class="form-group">
+                <label style="display: flex; align-items: center; gap: 10px;">
+                    <input type="checkbox" id="smtp-enabled" onchange="toggleSmtpFields()">
+                    <span>Enable Email Notifications</span>
+                </label>
+                <small style="color: var(--text-muted);">Send email alerts for provider failures, billing issues, and system errors</small>
+            </div>
+
+            <div id="smtp-fields" style="display: none;">
+                <div class="form-group">
+                    <label>SMTP Host</label>
+                    <input type="text" id="smtp-host" placeholder="smtp.gmail.com">
+                    <small style="color: var(--text-muted);">SMTP server hostname</small>
+                </div>
+
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+                    <div class="form-group">
+                        <label>SMTP Port</label>
+                        <input type="number" id="smtp-port" value="587" placeholder="587">
+                    </div>
+                    <div class="form-group">
+                        <label style="display: flex; align-items: center; gap: 10px; margin-top: 32px;">
+                            <input type="checkbox" id="smtp-secure">
+                            <span>Use TLS/SSL (port 465)</span>
+                        </label>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label>SMTP Username</label>
+                    <input type="text" id="smtp-user" placeholder="your-email@example.com">
+                </div>
+
+                <div class="form-group">
+                    <label>SMTP Password</label>
+                    <input type="password" id="smtp-pass" placeholder="••••••••">
+                    <small style="color: var(--text-muted);">App-specific password recommended for Gmail/Outlook</small>
+                </div>
+
+                <div class="form-group">
+                    <label>From Email Address</label>
+                    <input type="email" id="smtp-from" placeholder="llm-proxy@example.com">
+                </div>
+
+                <div class="form-group">
+                    <label>To Email Address (Recipient)</label>
+                    <input type="email" id="smtp-to" placeholder="admin@example.com">
+                    <small style="color: var(--text-muted);">Where to send alert notifications</small>
+                </div>
+
+                <div class="form-group">
+                    <label>Email Subject Prefix</label>
+                    <input type="text" id="smtp-subject-prefix" value="[LLM Proxy Alert]" placeholder="[LLM Proxy Alert]">
+                </div>
+
+                <div class="form-group">
+                    <label>Minimum Alert Severity</label>
+                    <select id="smtp-min-severity">
+                        <option value="INFO">INFO - All notifications</option>
+                        <option value="WARNING" selected>WARNING - Warnings and above</option>
+                        <option value="ERROR">ERROR - Errors only</option>
+                        <option value="CRITICAL">CRITICAL - Critical alerts only</option>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label>Alert Throttle (minutes)</label>
+                    <input type="number" id="smtp-throttle" value="15" min="1" max="1440">
+                    <small style="color: var(--text-muted);">Minimum time between duplicate alerts (prevents email storms)</small>
+                </div>
+
+                <div class="form-actions" style="margin-top: 15px;">
+                    <button type="button" class="btn btn-secondary" onclick="sendTestEmail()">📧 Send Test Email</button>
+                </div>
+            </div>
+
+            <div class="form-actions" style="margin-top: 30px;">
+                <button type="button" class="btn btn-primary" onclick="saveSmtpSettings()">💾 Save Settings</button>
+                <button type="button" class="btn btn-secondary" onclick="copyClaudeConfig()">📋 Copy CLI Config</button>
                 <button type="button" class="btn btn-secondary" onclick="closeSettings()">Close</button>
             </div>
         </div>
@@ -1636,6 +1716,7 @@ export ANTHROPIC_API_KEY="proxy-handled"</textarea>
 
         function showSettings() {
             document.getElementById('settingsModal').classList.add('show');
+            loadSmtpSettings();
         }
 
         function closeSettings() {
@@ -1647,6 +1728,92 @@ export ANTHROPIC_API_KEY="proxy-handled"</textarea>
             navigator.clipboard.writeText(text).then(() => {
                 alert('Configuration copied to clipboard!');
             });
+        }
+
+        // SMTP Settings Functions
+        function toggleSmtpFields() {
+            const enabled = document.getElementById('smtp-enabled').checked;
+            document.getElementById('smtp-fields').style.display = enabled ? 'block' : 'none';
+        }
+
+        async function loadSmtpSettings() {
+            try {
+                const response = await fetch('/api/smtp/settings');
+                if (response.ok) {
+                    const settings = await response.json();
+                    document.getElementById('smtp-enabled').checked = settings.enabled || false;
+                    document.getElementById('smtp-host').value = settings.host || '';
+                    document.getElementById('smtp-port').value = settings.port || 587;
+                    document.getElementById('smtp-secure').checked = settings.secure || false;
+                    document.getElementById('smtp-user').value = settings.user || '';
+                    document.getElementById('smtp-pass').value = settings.pass || '';
+                    document.getElementById('smtp-from').value = settings.from || '';
+                    document.getElementById('smtp-to').value = settings.to || '';
+                    document.getElementById('smtp-subject-prefix').value = settings.subjectPrefix || '[LLM Proxy Alert]';
+                    document.getElementById('smtp-min-severity').value = settings.minSeverity || 'WARNING';
+                    document.getElementById('smtp-throttle').value = settings.throttle || 15;
+                    toggleSmtpFields();
+                }
+            } catch (error) {
+                console.error('Failed to load SMTP settings:', error);
+            }
+        }
+
+        async function saveSmtpSettings() {
+            const settings = {
+                enabled: document.getElementById('smtp-enabled').checked,
+                host: document.getElementById('smtp-host').value,
+                port: parseInt(document.getElementById('smtp-port').value),
+                secure: document.getElementById('smtp-secure').checked,
+                user: document.getElementById('smtp-user').value,
+                pass: document.getElementById('smtp-pass').value,
+                from: document.getElementById('smtp-from').value,
+                to: document.getElementById('smtp-to').value,
+                subjectPrefix: document.getElementById('smtp-subject-prefix').value,
+                minSeverity: document.getElementById('smtp-min-severity').value,
+                throttle: parseInt(document.getElementById('smtp-throttle').value)
+            };
+
+            try {
+                const response = await fetch('/api/smtp/settings', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(settings)
+                });
+
+                if (response.ok) {
+                    alert('SMTP settings saved successfully!');
+                } else {
+                    const error = await response.json();
+                    alert('Failed to save settings: ' + (error.error || 'Unknown error'));
+                }
+            } catch (error) {
+                console.error('Failed to save SMTP settings:', error);
+                alert('Failed to save settings: ' + error.message);
+            }
+        }
+
+        async function sendTestEmail() {
+            if (!confirm('Send a test email to verify SMTP configuration?')) {
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/smtp/test', {
+                    method: 'POST'
+                });
+
+                if (response.ok) {
+                    const result = await response.json();
+                    alert('Test email sent successfully! Check your inbox.');
+                } else {
+                    const error = await response.json();
+                    alert('Failed to send test email: ' + (error.error || 'Unknown error'));
+                }
+            } catch (error) {
+                console.error('Failed to send test email:', error);
+                alert('Failed to send test email: ' + error.message);
+            }
         }
 
         document.getElementById('editForm').addEventListener('submit', async (e) => {

@@ -968,6 +968,101 @@ app.get('/health', (req, res) => {
   });
 });
 
+// SMTP Settings API
+app.get('/api/smtp/settings', (req, res) => {
+  const smtpSettings = config.smtp || {};
+  // Mask password for security
+  const safeSettings = {
+    ...smtpSettings,
+    pass: smtpSettings.pass ? '••••••••' : ''
+  };
+  res.json(safeSettings);
+});
+
+app.post('/api/smtp/settings', (req, res) => {
+  try {
+    const {enabled, host, port, secure, user, pass, from, to, subjectPrefix, minSeverity, throttle} = req.body;
+
+    // Initialize smtp settings if not exists
+    if (!config.smtp) {
+      config.smtp = {};
+    }
+
+    // Update settings
+    config.smtp.enabled = enabled;
+    config.smtp.host = host;
+    config.smtp.port = port;
+    config.smtp.secure = secure;
+    config.smtp.user = user;
+    // Only update password if provided (not masked)
+    if (pass && pass !== '••••••••') {
+      config.smtp.pass = pass;
+    }
+    config.smtp.from = from;
+    config.smtp.to = to;
+    config.smtp.subjectPrefix = subjectPrefix || '[LLM Proxy Alert]';
+    config.smtp.minSeverity = minSeverity || 'WARNING';
+    config.smtp.throttle = throttle || 15;
+
+    // Save to config file
+    saveConfig();
+
+    // Reinitialize notification manager with new settings
+    process.env.SMTP_ENABLED = enabled ? 'true' : 'false';
+    process.env.SMTP_HOST = host;
+    process.env.SMTP_PORT = port.toString();
+    process.env.SMTP_SECURE = secure ? 'true' : 'false';
+    process.env.SMTP_USER = user;
+    if (pass && pass !== '••••••••') {
+      process.env.SMTP_PASS = pass;
+    }
+    process.env.SMTP_FROM = from;
+    process.env.SMTP_TO = to;
+    process.env.SMTP_SUBJECT_PREFIX = subjectPrefix;
+    process.env.SMTP_MIN_SEVERITY = minSeverity;
+    process.env.ALERT_THROTTLE_MINUTES = throttle.toString();
+
+    notificationManager.enabled = enabled;
+    notificationManager.smtpConfig = {
+      host: host,
+      port: port,
+      secure: secure,
+      auth: {
+        user: user,
+        pass: config.smtp.pass
+      }
+    };
+    notificationManager.emailConfig = {
+      from: from,
+      to: to,
+      alertSubjectPrefix: subjectPrefix
+    };
+    notificationManager.minSeverity = notificationManager.getSeverityLevel(minSeverity);
+    notificationManager.throttleWindow = throttle * 60 * 1000;
+
+    if (enabled) {
+      notificationManager.initialize();
+    }
+
+    logger.info('SMTP settings updated', {enabled, host, to});
+
+    res.json({success: true});
+  } catch (error) {
+    logger.error('Error updating SMTP settings:', error);
+    res.status(500).json({error: error.message});
+  }
+});
+
+app.post('/api/smtp/test', async (req, res) => {
+  try {
+    await notificationManager.sendTestEmail();
+    res.json({success: true, message: 'Test email sent successfully'});
+  } catch (error) {
+    logger.error('Error sending test email:', error);
+    res.status(500).json({error: error.message});
+  }
+});
+
 // Get config
 app.get('/api/config', (req, res) => {
   const safeConfig = {
