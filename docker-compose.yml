@@ -1,0 +1,31 @@
+version: '3.8'
+
+services:
+  llm-proxy:
+    build: .
+    container_name: llm-proxy
+    restart: unless-stopped
+    ports:
+      - "3100:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      # Optional: Pre-configure provider API keys via environment variables
+      # - ANTHROPIC_KEY_1=your-anthropic-api-key-here
+      # - GOOGLE_API_KEY_1=your-google-api-key-here
+      # - OPENAI_KEY_1=your-openai-api-key-here
+      # Or configure through the Web UI after startup
+    volumes:
+      - ./config:/app/config
+      - ./logs:/app/logs
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - llm-proxy-network
+
+networks:
+  llm-proxy-network:
+    driver: bridge

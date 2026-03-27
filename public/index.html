@@ -1,0 +1,1713 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LLM Proxy Manager</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        .header {
+            background: white;
+            border-radius: 12px;
+            padding: 30px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        h1 {
+            color: #667eea;
+            margin-bottom: 5px;
+        }
+
+        .subtitle {
+            color: #666;
+            font-size: 14px;
+        }
+
+        .header-actions {
+            display: flex;
+            gap: 10px;
+        }
+
+        .card {
+            background: white;
+            border-radius: 12px;
+            padding: 25px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+
+        h2 {
+            color: #333;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #667eea;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .provider {
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 15px;
+            transition: all 0.3s ease;
+            cursor: move;
+        }
+
+        .provider:hover {
+            box-shadow: 0 2px 8px rgba(102, 126, 234, 0.3);
+            border-color: #667eea;
+        }
+
+        .provider.disabled {
+            opacity: 0.6;
+            background: #f5f5f5;
+        }
+
+        .provider.dragging {
+            opacity: 0.5;
+        }
+
+        .provider-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+
+        .provider-info {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+
+        .drag-handle {
+            cursor: move;
+            font-size: 24px;
+            color: #999;
+            user-select: none;
+        }
+
+        .provider-name {
+            font-size: 18px;
+            font-weight: 600;
+            color: #333;
+        }
+
+        .provider-type {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        .provider-type.anthropic {
+            background: #ffeaa7;
+            color: #d63031;
+        }
+
+        .provider-type.google {
+            background: #74b9ff;
+            color: #0984e3;
+        }
+
+        .provider-controls {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        .priority-badge {
+            background: #667eea;
+            color: white;
+            padding: 6px 12px;
+            border-radius: 6px;
+            font-weight: 600;
+            font-size: 14px;
+        }
+
+        .toggle {
+            position: relative;
+            width: 60px;
+            height: 30px;
+        }
+
+        .toggle input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: #ccc;
+            transition: .4s;
+            border-radius: 30px;
+        }
+
+        .slider:before {
+            position: absolute;
+            content: "";
+            height: 22px;
+            width: 22px;
+            left: 4px;
+            bottom: 4px;
+            background-color: white;
+            transition: .4s;
+            border-radius: 50%;
+        }
+
+        input:checked + .slider {
+            background-color: #667eea;
+        }
+
+        input:checked + .slider:before {
+            transform: translateX(30px);
+        }
+
+        .btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .btn-primary {
+            background: #667eea;
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: #5568d3;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn-secondary {
+            background: #6c757d;
+            color: white;
+        }
+
+        .btn-secondary:hover {
+            background: #5a6268;
+        }
+
+        .btn-success {
+            background: #00b894;
+            color: white;
+        }
+
+        .btn-success:hover {
+            background: #00a383;
+        }
+
+        .btn-danger {
+            background: #d63031;
+            color: white;
+        }
+
+        .btn-danger:hover {
+            background: #c0202b;
+        }
+
+        .btn-small {
+            padding: 6px 12px;
+            font-size: 12px;
+        }
+
+        .provider-details {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+            margin-top: 15px;
+            padding-top: 15px;
+            border-top: 1px solid #e0e0e0;
+        }
+
+        .detail-item {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+
+        .detail-label {
+            font-size: 12px;
+            color: #666;
+            text-transform: uppercase;
+            font-weight: 600;
+        }
+
+        .detail-value {
+            font-size: 14px;
+            color: #333;
+            font-family: 'Courier New', monospace;
+        }
+
+        .api-key-display {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .api-key-text {
+            flex: 1;
+            padding: 8px;
+            background: #f8f9fa;
+            border-radius: 4px;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
+            margin-top: 15px;
+        }
+
+        .stat-box {
+            text-align: center;
+            padding: 15px;
+            background: #f8f9fa;
+            border-radius: 8px;
+        }
+
+        .stat-label {
+            font-size: 12px;
+            color: #666;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+        }
+
+        .stat-value {
+            font-size: 24px;
+            font-weight: 700;
+            color: #667eea;
+        }
+
+        .stat-value.success {
+            color: #00b894;
+        }
+
+        .stat-value.error {
+            color: #d63031;
+        }
+
+        .status-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 8px;
+        }
+
+        .status-indicator.active {
+            background: #00b894;
+            box-shadow: 0 0 8px #00b894;
+        }
+
+        .status-indicator.inactive {
+            background: #b2bec3;
+        }
+
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.5);
+            animation: fadeIn 0.3s;
+        }
+
+        .modal.show {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .modal-content {
+            background: white;
+            border-radius: 12px;
+            padding: 30px;
+            max-width: 600px;
+            width: 90%;
+            max-height: 90vh;
+            overflow-y: auto;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+            animation: slideUp 0.3s;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+
+        @keyframes slideUp {
+            from { transform: translateY(50px); opacity: 0; }
+            to { transform: translateY(0); opacity: 1; }
+        }
+
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            padding-bottom: 15px;
+            border-bottom: 2px solid #667eea;
+        }
+
+        .modal-header h3 {
+            color: #667eea;
+            margin: 0;
+        }
+
+        .close-btn {
+            font-size: 28px;
+            font-weight: bold;
+            color: #999;
+            cursor: pointer;
+            border: none;
+            background: none;
+        }
+
+        .close-btn:hover {
+            color: #333;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+            color: #333;
+        }
+
+        .form-group input,
+        .form-group select {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            font-size: 14px;
+        }
+
+        .form-group input:focus,
+        .form-group select:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+
+        .form-actions {
+            display: flex;
+            gap: 10px;
+            justify-content: flex-end;
+            margin-top: 25px;
+        }
+
+        .test-result {
+            margin-top: 10px;
+            padding: 10px;
+            border-radius: 6px;
+            font-size: 13px;
+        }
+
+        .test-result.success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+
+        .test-result.error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+
+        .test-result.testing {
+            background: #d1ecf1;
+            color: #0c5460;
+            border: 1px solid #bee5eb;
+        }
+
+        .loading {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 3px solid rgba(255, 255, 255, 0.3);
+            border-radius: 50%;
+            border-top-color: white;
+            animation: spin 1s ease-in-out infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .actions-bar {
+            display: flex;
+            gap: 10px;
+            margin-top: 20px;
+            flex-wrap: wrap;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div>
+                <h1>🤖 LLM Proxy Manager</h1>
+                <p class="subtitle">Multi-provider AI proxy with automatic failover • SSE Streaming Enabled</p>
+            </div>
+            <div class="header-actions">
+                <span id="userDisplay" style="color: #333; font-weight: 600; margin-right: 15px;"></span>
+                <button class="btn btn-secondary" onclick="showSettings()">⚙️ Settings</button>
+                <button class="btn btn-primary" onclick="addProvider()">➕ Add Provider</button>
+                <button class="btn btn-danger" onclick="logout()">🚪 Logout</button>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>
+                <span>Provider Configuration</span>
+                <span style="font-size: 14px; font-weight: normal; color: #666;">Drag to reorder • Lower priority = Higher preference</span>
+            </h2>
+            <div id="providers"></div>
+            <div class="actions-bar">
+                <button class="btn btn-primary" onclick="saveConfig()">💾 Save Configuration</button>
+                <button class="btn btn-secondary" onclick="testAllProviders()">🧪 Test All Providers</button>
+                <button class="btn btn-secondary" onclick="exportConfig()">📥 Export Config</button>
+                <button class="btn btn-danger" onclick="resetStats()">🗑️ Reset Statistics</button>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>Overall Statistics</h2>
+            <div id="overall-stats" class="stats-grid"></div>
+        </div>
+
+        <div class="card">
+            <h2>
+                <span>User Management</span>
+                <button class="btn btn-primary btn-small" onclick="showAddUserModal()">➕ Add User</button>
+            </h2>
+            <div id="users-list"></div>
+        </div>
+
+        <div class="card">
+            <h2>
+                <span>API Keys</span>
+                <button class="btn btn-primary btn-small" onclick="showCreateApiKeyModal()">➕ Generate New Key</button>
+            </h2>
+            <p style="color: #666; font-size: 14px; margin-bottom: 15px;">Generate API keys for external applications to use this proxy service</p>
+            <div id="api-keys-list"></div>
+        </div>
+
+        <div class="card">
+            <h2>Activity Log</h2>
+            <div id="activity-log" style="max-height: 400px; overflow-y: auto;"></div>
+        </div>
+    </div>
+
+    <!-- Edit Provider Modal -->
+    <div id="editModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="modalTitle">Edit Provider</h3>
+                <button class="close-btn" onclick="closeModal()">&times;</button>
+            </div>
+            <form id="editForm">
+                <div class="form-group">
+                    <label>Provider Name</label>
+                    <input type="text" id="edit-name" required>
+                </div>
+                <div class="form-group">
+                    <label>Provider Type</label>
+                    <select id="edit-type" required onchange="updateFormFields()">
+                        <option value="anthropic">Anthropic Claude</option>
+                        <option value="google">Google Generative AI (Gemini)</option>
+                        <option value="vertex">Google Vertex AI</option>
+                        <option value="grok">Grok (xAI)</option>
+                        <option value="openai">OpenAI</option>
+                        <option value="ollama">Ollama (Self-Hosted)</option>
+                        <option value="openai-compatible">OpenAI-Compatible API</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>API Key</label>
+                    <div class="api-key-display">
+                        <input type="password" id="edit-apiKey" required style="flex: 1;">
+                        <button type="button" class="btn btn-secondary btn-small" onclick="toggleProviderApiKeyVisibility()">👁️ Show</button>
+                    </div>
+                </div>
+                <div class="form-group" id="projectIdGroup" style="display: none;">
+                    <label>Project ID</label>
+                    <input type="text" id="edit-projectId" placeholder="my-project-id">
+                </div>
+                <div class="form-group" id="locationGroup" style="display: none;">
+                    <label>Location</label>
+                    <input type="text" id="edit-location" placeholder="us-central1">
+                </div>
+                <div id="vertexNote" style="display: none; padding: 12px; background: #fff3cd; border: 1px solid #ffc107; border-radius: 6px; margin-bottom: 15px; font-size: 13px;">
+                    <strong>⚠️ Note:</strong> Vertex AI requires OAuth 2.0 access tokens (not API keys). If you have an API key like "AIzaSy...", use <strong>"Google Generative AI (Gemini)"</strong> instead.
+                </div>
+                <div class="form-group" id="baseUrlGroup" style="display: none;">
+                    <label>Base URL</label>
+                    <input type="url" id="edit-baseUrl" placeholder="http://localhost:11434">
+                </div>
+                <div class="form-group" id="modelGroup" style="display: none;">
+                    <label>Model Name</label>
+                    <input type="text" id="edit-model" placeholder="llama2">
+                </div>
+                <div class="form-group">
+                    <label>Priority (1 = highest)</label>
+                    <input type="number" id="edit-priority" min="1" required>
+                </div>
+                <div class="form-group">
+                    <label style="display: flex; align-items: center; gap: 10px;">
+                        <input type="checkbox" id="edit-enabled" style="width: auto;">
+                        <span>Enabled</span>
+                    </label>
+                </div>
+                <button type="button" class="btn btn-success" onclick="testProvider()">🧪 Test This Provider</button>
+                <div id="testResult"></div>
+                <div class="form-actions">
+                    <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Save Changes</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Settings Modal -->
+    <div id="settingsModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>⚙️ Proxy Settings</h3>
+                <button class="close-btn" onclick="closeSettings()">&times;</button>
+            </div>
+            <div class="form-group">
+                <label>Public API Endpoint</label>
+                <input type="text" value="https://www.voipguru.org/llmProxy/v1/messages" readonly style="background: #f8f9fa;">
+            </div>
+            <div class="form-group">
+                <label>Claude Code CLI Configuration</label>
+                <textarea readonly style="width: 100%; height: 80px; padding: 10px; font-family: 'Courier New', monospace; background: #f8f9fa; border: 1px solid #ddd; border-radius: 6px;">export ANTHROPIC_BASE_URL="https://www.voipguru.org/llmProxy"
+export ANTHROPIC_API_KEY="proxy-handled"</textarea>
+            </div>
+            <div class="form-group">
+                <label>Configuration File Location (server)</label>
+                <input type="text" value="/app/config/providers.json" readonly style="background: #f8f9fa;">
+            </div>
+            <div class="form-actions">
+                <button type="button" class="btn btn-primary" onclick="copyClaudeConfig()">📋 Copy CLI Config</button>
+                <button type="button" class="btn btn-secondary" onclick="closeSettings()">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Add User Modal -->
+    <div id="addUserModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Add New User</h3>
+                <button class="close-btn" onclick="closeAddUserModal()">&times;</button>
+            </div>
+            <form id="addUserForm">
+                <div class="form-group">
+                    <label>Username</label>
+                    <input type="text" id="new-username" required>
+                </div>
+                <div class="form-group">
+                    <label>Password</label>
+                    <input type="password" id="new-password" required minlength="8">
+                </div>
+                <div class="form-group">
+                    <label>Role</label>
+                    <select id="new-role">
+                        <option value="user">User</option>
+                        <option value="admin">Admin</option>
+                    </select>
+                </div>
+                <div class="form-actions">
+                    <button type="button" class="btn btn-secondary" onclick="closeAddUserModal()">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Create User</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Create API Key Modal -->
+    <div id="createApiKeyModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Generate New API Key</h3>
+                <button class="close-btn" onclick="closeCreateApiKeyModal()">&times;</button>
+            </div>
+            <form id="createApiKeyForm">
+                <div class="form-group">
+                    <label>Key Name / Description</label>
+                    <input type="text" id="new-key-name" required placeholder="e.g., Production App, Dev Environment">
+                </div>
+                <div class="form-actions">
+                    <button type="button" class="btn btn-secondary" onclick="closeCreateApiKeyModal()">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Generate Key</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Show API Key Modal -->
+    <div id="showApiKeyModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>API Key Created Successfully</h3>
+                <button class="close-btn" onclick="closeShowApiKeyModal()">&times;</button>
+            </div>
+            <div style="padding: 20px;">
+                <p style="color: #d9534f; font-weight: 600; margin-bottom: 15px;">⚠️ Important: Copy this key now. You won't be able to see it again!</p>
+                <div class="form-group">
+                    <label>API Key</label>
+                    <div class="api-key-display">
+                        <input type="text" id="generated-key" readonly style="flex: 1; font-family: 'Courier New', monospace; background: #f8f9fa;">
+                        <button type="button" class="btn btn-secondary btn-small" onclick="copyApiKey()">📋 Copy</button>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>Usage in External Applications</label>
+                    <textarea readonly style="width: 100%; height: 100px; padding: 10px; font-family: 'Courier New', monospace; background: #f8f9fa; border: 1px solid #ddd; border-radius: 6px;" id="usage-example"></textarea>
+                </div>
+                <div class="form-actions">
+                    <button type="button" class="btn btn-primary" onclick="closeShowApiKeyModal()">Done</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Edit API Key Modal -->
+    <div id="editApiKeyModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Edit API Key</h3>
+                <button class="close-btn" onclick="closeEditApiKeyModal()">&times;</button>
+            </div>
+            <form id="editApiKeyForm">
+                <div class="form-group">
+                    <label>Key Name / Description</label>
+                    <input type="text" id="edit-key-name" required placeholder="e.g., Production App, Dev Environment">
+                </div>
+                <div class="form-group">
+                    <label>API Key (Read-Only)</label>
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                        <input type="password" id="edit-key-value" readonly style="flex: 1; font-family: 'Courier New', monospace; background: #f8f9fa; border: 1px solid #ddd; padding: 10px; border-radius: 6px;">
+                        <button type="button" class="btn btn-secondary btn-small" onclick="toggleEditApiKeyVisibility()">👁️ Show</button>
+                        <button type="button" class="btn btn-secondary btn-small" onclick="copyEditApiKeyValue()">📋 Copy</button>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label style="display: flex; align-items: center; gap: 10px;">
+                        <input type="checkbox" id="edit-key-enabled" style="width: auto;">
+                        <span>Key Enabled</span>
+                    </label>
+                </div>
+                <div style="color: #999; font-size: 12px; margin-bottom: 15px;">
+                    <div>Created: <span id="edit-key-created"></span></div>
+                    <div>Requests: <span id="edit-key-requests"></span></div>
+                    <div>Last used: <span id="edit-key-lastused"></span></div>
+                </div>
+                <div class="form-actions">
+                    <button type="button" class="btn btn-secondary" onclick="closeEditApiKeyModal()">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Save Changes</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        let config = {};
+        let editingIndex = -1;
+        let currentUser = null;
+        let editingApiKeyId = null;
+        let apiKeysData = [];
+
+        // Drag and drop
+        let draggedElement = null;
+
+        // Check authentication on page load
+        async function checkAuth() {
+            try {
+                const response = await fetch('./api/auth/check');
+                const data = await response.json();
+
+                if (!data.authenticated) {
+                    window.location.href = 'login.html';
+                    return false;
+                }
+
+                currentUser = data.user;
+                document.getElementById('userDisplay').textContent = `👤 ${data.user.username}`;
+                return true;
+            } catch (error) {
+                console.error('Auth check failed:', error);
+                window.location.href = 'login.html';
+                return false;
+            }
+        }
+
+        // Logout function
+        async function logout() {
+            try {
+                await fetch('./api/auth/logout', { method: 'POST' });
+                window.location.href = 'login.html';
+            } catch (error) {
+                console.error('Logout failed:', error);
+                window.location.href = 'login.html';
+            }
+        }
+
+        async function loadConfig() {
+            try {
+                const response = await fetch('./api/config');
+                config = await response.json();
+                renderProviders();
+                loadStats();
+            } catch (error) {
+                console.error('Error loading config:', error);
+            }
+        }
+
+        async function loadStats() {
+            try {
+                const response = await fetch('./api/stats');
+                const stats = await response.json();
+                renderOverallStats(stats);
+            } catch (error) {
+                console.error('Error loading stats:', error);
+            }
+        }
+
+        function renderProviders() {
+            const container = document.getElementById('providers');
+            // Sort by priority
+            const sortedProviders = config.providers
+                .map((p, idx) => ({ ...p, originalIndex: idx }))
+                .sort((a, b) => a.priority - b.priority);
+
+            container.innerHTML = sortedProviders.map((provider) => {
+                const stats = config.stats[provider.id] || {};
+                const successRate = stats.requests > 0
+                    ? ((stats.successes / stats.requests) * 100).toFixed(1)
+                    : 0;
+                const avgLatency = stats.successes > 0
+                    ? (stats.totalLatency / stats.successes).toFixed(0)
+                    : 0;
+
+                return `
+                    <div class="provider ${!provider.enabled ? 'disabled' : ''}"
+                         draggable="true"
+                         ondragstart="handleDragStart(event, ${provider.originalIndex})"
+                         ondragover="handleDragOver(event)"
+                         ondrop="handleDrop(event, ${provider.originalIndex})"
+                         ondragend="handleDragEnd(event)">
+                        <div class="provider-header">
+                            <div class="provider-info">
+                                <span class="drag-handle">⋮⋮</span>
+                                <span class="status-indicator ${provider.enabled ? 'active' : 'inactive'}"></span>
+                                <span class="provider-name">${provider.name}</span>
+                                <span class="provider-type ${provider.type}">${provider.type}</span>
+                                <span class="priority-badge">Priority ${provider.priority}</span>
+                            </div>
+                            <div class="provider-controls">
+                                <button class="btn btn-small btn-secondary" onclick="testSingleProvider(${provider.originalIndex})">🧪 Test</button>
+                                <button class="btn btn-small btn-primary" onclick="editProvider(${provider.originalIndex})">✏️ Edit</button>
+                                <button class="btn btn-small btn-danger" onclick="deleteProvider(${provider.originalIndex})">🗑️</button>
+                                <label class="toggle">
+                                    <input type="checkbox"
+                                           ${provider.enabled ? 'checked' : ''}
+                                           onchange="toggleProvider(${provider.originalIndex})">
+                                    <span class="slider"></span>
+                                </label>
+                            </div>
+                        </div>
+
+                        <div class="provider-details">
+                            <div class="detail-item">
+                                <div class="detail-label">API Key</div>
+                                <div class="detail-value">${provider.apiKey}</div>
+                            </div>
+                            ${provider.projectId ? `
+                            <div class="detail-item">
+                                <div class="detail-label">Project ID</div>
+                                <div class="detail-value">${provider.projectId}</div>
+                            </div>
+                            ` : ''}
+                        </div>
+
+                        <div class="stats-grid">
+                            <div class="stat-box">
+                                <div class="stat-label">Requests</div>
+                                <div class="stat-value">${stats.requests || 0}</div>
+                            </div>
+                            <div class="stat-box">
+                                <div class="stat-label">Success</div>
+                                <div class="stat-value success">${stats.successes || 0}</div>
+                            </div>
+                            <div class="stat-box">
+                                <div class="stat-label">Failures</div>
+                                <div class="stat-value error">${stats.failures || 0}</div>
+                            </div>
+                            <div class="stat-box">
+                                <div class="stat-label">Success Rate</div>
+                                <div class="stat-value">${successRate}%</div>
+                            </div>
+                            <div class="stat-box">
+                                <div class="stat-label">Avg Latency</div>
+                                <div class="stat-value">${avgLatency}ms</div>
+                            </div>
+                            ${stats.lastUsed ? `
+                            <div class="stat-box">
+                                <div class="stat-label">Last Used</div>
+                                <div class="stat-value" style="font-size: 12px;">${new Date(stats.lastUsed).toLocaleString()}</div>
+                            </div>
+                            ` : ''}
+                        </div>
+
+                        ${stats.lastError ? `
+                            <div class="test-result error" style="margin-top: 15px;">
+                                <strong>Last Error:</strong> ${stats.lastError.message}<br>
+                                <small>${new Date(stats.lastError.timestamp).toLocaleString()}</small>
+                            </div>
+                        ` : ''}
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function renderOverallStats(stats) {
+            const container = document.getElementById('overall-stats');
+            const totals = Object.values(stats).reduce((acc, s) => ({
+                requests: acc.requests + (s.requests || 0),
+                successes: acc.successes + (s.successes || 0),
+                failures: acc.failures + (s.failures || 0)
+            }), { requests: 0, successes: 0, failures: 0 });
+
+            const successRate = totals.requests > 0
+                ? ((totals.successes / totals.requests) * 100).toFixed(1)
+                : 0;
+
+            container.innerHTML = `
+                <div class="stat-box">
+                    <div class="stat-label">Total Requests</div>
+                    <div class="stat-value">${totals.requests}</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-label">Total Success</div>
+                    <div class="stat-value success">${totals.successes}</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-label">Total Failures</div>
+                    <div class="stat-value error">${totals.failures}</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-label">Overall Success Rate</div>
+                    <div class="stat-value">${successRate}%</div>
+                </div>
+            `;
+        }
+
+        // Drag and Drop
+        function handleDragStart(e, index) {
+            draggedElement = index;
+            e.target.classList.add('dragging');
+        }
+
+        function handleDragOver(e) {
+            e.preventDefault();
+        }
+
+        function handleDrop(e, targetIndex) {
+            e.preventDefault();
+            if (draggedElement === null || draggedElement === targetIndex) return;
+
+            const draggedProvider = config.providers[draggedElement];
+            const targetProvider = config.providers[targetIndex];
+
+            // Swap priorities
+            const tempPriority = draggedProvider.priority;
+            config.providers[draggedElement].priority = targetProvider.priority;
+            config.providers[targetIndex].priority = tempPriority;
+
+            renderProviders();
+        }
+
+        function handleDragEnd(e) {
+            e.target.classList.remove('dragging');
+            draggedElement = null;
+        }
+
+        function toggleProvider(idx) {
+            config.providers[idx].enabled = !config.providers[idx].enabled;
+            renderProviders();
+        }
+
+        function editProvider(idx) {
+            editingIndex = idx;
+            const provider = config.providers[idx];
+
+            document.getElementById('modalTitle').textContent = 'Edit Provider';
+            document.getElementById('edit-name').value = provider.name;
+            document.getElementById('edit-type').value = provider.type;
+            document.getElementById('edit-apiKey').value = provider.apiKey || '';
+            document.getElementById('edit-projectId').value = provider.projectId || '';
+            document.getElementById('edit-location').value = provider.location || '';
+            document.getElementById('edit-baseUrl').value = provider.baseUrl || '';
+            document.getElementById('edit-model').value = provider.model || '';
+            document.getElementById('edit-priority').value = provider.priority;
+            document.getElementById('edit-enabled').checked = provider.enabled;
+
+            updateFormFields();
+            document.getElementById('editModal').classList.add('show');
+        }
+
+        function addProvider() {
+            editingIndex = -1;
+
+            document.getElementById('modalTitle').textContent = 'Add New Provider';
+            document.getElementById('edit-name').value = '';
+            document.getElementById('edit-type').value = 'anthropic';
+            document.getElementById('edit-apiKey').value = '';
+            document.getElementById('edit-projectId').value = '';
+            document.getElementById('edit-location').value = '';
+            document.getElementById('edit-baseUrl').value = '';
+            document.getElementById('edit-model').value = '';
+            document.getElementById('edit-priority').value = config.providers.length + 1;
+            document.getElementById('edit-enabled').checked = true;
+            document.getElementById('testResult').innerHTML = '';
+
+            updateFormFields();
+            document.getElementById('editModal').classList.add('show');
+        }
+
+        function deleteProvider(idx) {
+            if (!confirm('Are you sure you want to delete this provider?')) return;
+            config.providers.splice(idx, 1);
+            renderProviders();
+        }
+
+        function updateFormFields() {
+            const type = document.getElementById('edit-type').value;
+            const projectIdGroup = document.getElementById('projectIdGroup');
+            const locationGroup = document.getElementById('locationGroup');
+            const baseUrlGroup = document.getElementById('baseUrlGroup');
+            const modelGroup = document.getElementById('modelGroup');
+            const vertexNote = document.getElementById('vertexNote');
+            const apiKeyInput = document.getElementById('edit-apiKey');
+
+            // Hide all optional fields first
+            projectIdGroup.style.display = 'none';
+            locationGroup.style.display = 'none';
+            baseUrlGroup.style.display = 'none';
+            modelGroup.style.display = 'none';
+            vertexNote.style.display = 'none';
+
+            // Show fields based on provider type
+            switch(type) {
+                case 'google':
+                    // Google Generative AI - just API key
+                    break;
+                case 'vertex':
+                    // Vertex AI needs project ID and location
+                    projectIdGroup.style.display = 'block';
+                    locationGroup.style.display = 'block';
+                    vertexNote.style.display = 'block';
+                    break;
+                case 'grok':
+                    // Grok just needs API key
+                    break;
+                case 'ollama':
+                    // Ollama needs base URL and model name, API key optional
+                    baseUrlGroup.style.display = 'block';
+                    modelGroup.style.display = 'block';
+                    apiKeyInput.required = false;
+                    break;
+                case 'openai':
+                    // Official OpenAI - just API key
+                    apiKeyInput.required = true;
+                    break;
+                case 'openai-compatible':
+                    // OpenAI-compatible needs base URL and optional model
+                    baseUrlGroup.style.display = 'block';
+                    modelGroup.style.display = 'block';
+                    apiKeyInput.required = true;
+                    break;
+                case 'anthropic':
+                default:
+                    // Anthropic just needs API key
+                    apiKeyInput.required = true;
+                    break;
+            }
+        }
+
+        function toggleProviderApiKeyVisibility() {
+            const input = document.getElementById('edit-apiKey');
+            const btn = event.target;
+            if (input.type === 'password') {
+                input.type = 'text';
+                btn.textContent = '🙈 Hide';
+            } else {
+                input.type = 'password';
+                btn.textContent = '👁️ Show';
+            }
+        }
+
+        function closeModal() {
+            document.getElementById('editModal').classList.remove('show');
+            document.getElementById('testResult').innerHTML = '';
+        }
+
+        function showSettings() {
+            document.getElementById('settingsModal').classList.add('show');
+        }
+
+        function closeSettings() {
+            document.getElementById('settingsModal').classList.remove('show');
+        }
+
+        function copyClaudeConfig() {
+            const text = `export ANTHROPIC_BASE_URL="https://www.voipguru.org/llmProxy"\nexport ANTHROPIC_API_KEY="proxy-handled"`;
+            navigator.clipboard.writeText(text).then(() => {
+                alert('Configuration copied to clipboard!');
+            });
+        }
+
+        document.getElementById('editForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            const providerData = {
+                id: editingIndex >= 0 ? config.providers[editingIndex].id :
+                    'provider-' + Date.now(),
+                name: document.getElementById('edit-name').value,
+                type: document.getElementById('edit-type').value,
+                apiKey: document.getElementById('edit-apiKey').value || undefined,
+                projectId: document.getElementById('edit-projectId').value || undefined,
+                location: document.getElementById('edit-location').value || undefined,
+                baseUrl: document.getElementById('edit-baseUrl').value || undefined,
+                model: document.getElementById('edit-model').value || undefined,
+                priority: parseInt(document.getElementById('edit-priority').value),
+                enabled: document.getElementById('edit-enabled').checked
+            };
+
+            if (editingIndex >= 0) {
+                config.providers[editingIndex] = providerData;
+            } else {
+                config.providers.push(providerData);
+            }
+
+            closeModal();
+            renderProviders();
+
+            // Auto-save configuration
+            await saveConfig();
+        });
+
+        async function testProvider() {
+            const testResult = document.getElementById('testResult');
+            testResult.innerHTML = '<div class="test-result testing">🧪 Testing provider...</div>';
+
+            const providerData = {
+                type: document.getElementById('edit-type').value,
+                apiKey: document.getElementById('edit-apiKey').value || undefined,
+                projectId: document.getElementById('edit-projectId').value || undefined,
+                location: document.getElementById('edit-location').value || undefined,
+                baseUrl: document.getElementById('edit-baseUrl').value || undefined,
+                model: document.getElementById('edit-model').value || undefined
+            };
+
+            try {
+                const response = await fetch('./api/test-provider', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(providerData)
+                });
+
+                const result = await response.json();
+
+                // Reload config to update stats and activity log
+                await loadConfig();
+                loadActivityLog();
+
+                if (result.success) {
+                    testResult.innerHTML = `<div class="test-result success">✅ Success! Latency: ${result.latency}ms<br>Response: ${result.response}</div>`;
+                } else {
+                    testResult.innerHTML = `<div class="test-result error">❌ Failed: ${result.error}</div>`;
+                }
+            } catch (error) {
+                testResult.innerHTML = `<div class="test-result error">❌ Error: ${error.message}</div>`;
+            }
+        }
+
+        async function testSingleProvider(idx) {
+            const provider = config.providers[idx];
+            const button = event.target;
+            button.disabled = true;
+            button.innerHTML = '<span class="loading"></span> Testing...';
+
+            try {
+                // Send providerId so backend can look up the real API key
+                const response = await fetch('./api/test-provider', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ providerId: provider.id })
+                });
+
+                const result = await response.json();
+
+                // Reload config to update stats and activity log
+                await loadConfig();
+                loadActivityLog();
+
+                if (result.success) {
+                    alert(`✅ ${provider.name}: Success!\nLatency: ${result.latency}ms`);
+                } else {
+                    alert(`❌ ${provider.name}: Failed\n${result.error}`);
+                }
+            } catch (error) {
+                alert(`❌ ${provider.name}: Error\n${error.message}`);
+            } finally {
+                button.disabled = false;
+                button.innerHTML = '🧪 Test';
+            }
+        }
+
+        async function testAllProviders() {
+            const enabledProviders = config.providers.filter(p => p.enabled);
+
+            if (enabledProviders.length === 0) {
+                alert('No enabled providers to test');
+                return;
+            }
+
+            let results = [];
+
+            for (const provider of enabledProviders) {
+                try {
+                    // Send providerId so backend can look up the real API key
+                    const response = await fetch('./api/test-provider', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ providerId: provider.id })
+                    });
+
+                    const result = await response.json();
+                    results.push({
+                        name: provider.name,
+                        success: result.success,
+                        error: result.error,
+                        latency: result.latency
+                    });
+                } catch (error) {
+                    results.push({
+                        name: provider.name,
+                        success: false,
+                        error: error.message
+                    });
+                }
+            }
+
+            // Reload config and stats to update activity log
+            await loadConfig();
+            loadActivityLog();
+
+            // Show results summary
+            const summary = results.map(r =>
+                `${r.success ? '✅' : '❌'} ${r.name}: ${r.success ? `${r.latency}ms` : r.error}`
+            ).join('\n');
+
+            alert(`Test Results:\n\n${summary}`);
+        }
+
+        async function saveConfig() {
+            try {
+                const response = await fetch('./api/config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(config)
+                });
+
+                if (response.ok) {
+                    alert('✅ Configuration saved successfully!');
+                    loadConfig();
+                } else {
+                    alert('❌ Error saving configuration');
+                }
+            } catch (error) {
+                console.error('Error saving config:', error);
+                alert('❌ Error saving configuration');
+            }
+        }
+
+        async function resetStats() {
+            if (!confirm('Are you sure you want to reset all statistics?')) return;
+
+            try {
+                const response = await fetch('./api/stats/reset', { method: 'POST' });
+                if (response.ok) {
+                    alert('✅ Statistics reset successfully!');
+                    loadConfig();
+                } else {
+                    alert('❌ Error resetting statistics');
+                }
+            } catch (error) {
+                console.error('Error resetting stats:', error);
+                alert('❌ Error resetting statistics');
+            }
+        }
+
+        function exportConfig() {
+            const dataStr = JSON.stringify(config, null, 2);
+            const dataBlob = new Blob([dataStr], { type: 'application/json' });
+            const url = URL.createObjectURL(dataBlob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = 'llm-proxy-config.json';
+            link.click();
+        }
+
+        // User Management Functions
+        async function loadUsers() {
+            try {
+                const response = await fetch('./api/users');
+                const users = await response.json();
+                renderUsers(users);
+            } catch (error) {
+                console.error('Error loading users:', error);
+            }
+        }
+
+        function renderUsers(users) {
+            const container = document.getElementById('users-list');
+            if (!users || users.length === 0) {
+                container.innerHTML = '<p style="color: #666;">No users found.</p>';
+                return;
+            }
+
+            container.innerHTML = users.map(user => `
+                <div style="display: flex; justify-content: space-between; align-items: center; padding: 15px; border: 1px solid #e0e0e0; border-radius: 6px; margin-bottom: 10px;">
+                    <div>
+                        <strong>${user.username}</strong>
+                        <span style="margin-left: 10px; padding: 4px 8px; background: ${user.role === 'admin' ? '#667eea' : '#6c757d'}; color: white; border-radius: 4px; font-size: 12px;">${user.role.toUpperCase()}</span>
+                        <br>
+                        <small style="color: #666;">Created: ${new Date(user.created).toLocaleString()}</small>
+                    </div>
+                    ${user.username !== currentUser.username ? `<button class="btn btn-danger btn-small" onclick="deleteUser('${user.id}')">Delete</button>` : '<span style="color: #999;">(You)</span>'}
+                </div>
+            `).join('');
+        }
+
+        function showAddUserModal() {
+            document.getElementById('addUserModal').classList.add('show');
+        }
+
+        function closeAddUserModal() {
+            document.getElementById('addUserModal').classList.remove('show');
+            document.getElementById('addUserForm').reset();
+        }
+
+        document.getElementById('addUserForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            const userData = {
+                username: document.getElementById('new-username').value,
+                password: document.getElementById('new-password').value,
+                role: document.getElementById('new-role').value
+            };
+
+            try {
+                const response = await fetch('./api/users', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(userData)
+                });
+
+                if (response.ok) {
+                    alert('User created successfully!');
+                    closeAddUserModal();
+                    loadUsers();
+                } else {
+                    const data = await response.json();
+                    alert('Error: ' + (data.error || 'Failed to create user'));
+                }
+            } catch (error) {
+                alert('Error creating user: ' + error.message);
+            }
+        });
+
+        async function deleteUser(userId) {
+            if (!confirm('Are you sure you want to delete this user?')) return;
+
+            try {
+                const response = await fetch(`./api/users/${userId}`, { method: 'DELETE' });
+                if (response.ok) {
+                    alert('User deleted successfully!');
+                    loadUsers();
+                } else {
+                    const data = await response.json();
+                    alert('Error: ' + (data.error || 'Failed to delete user'));
+                }
+            } catch (error) {
+                alert('Error deleting user: ' + error.message);
+            }
+        }
+
+        // API Key Management Functions
+        async function loadApiKeys() {
+            try {
+                const response = await fetch('./api/client-keys');
+                apiKeysData = await response.json();
+                renderApiKeys(apiKeysData);
+            } catch (error) {
+                console.error('Error loading API keys:', error);
+            }
+        }
+
+        function renderApiKeys(keys) {
+            const container = document.getElementById('api-keys-list');
+
+            if (!keys || keys.length === 0) {
+                container.innerHTML = '<p style="color: #999; text-align: center; padding: 20px;">No API keys created yet</p>';
+                return;
+            }
+
+            container.innerHTML = keys.map(key => `
+                <div style="border: 1px solid #ddd; border-radius: 8px; padding: 15px; margin-bottom: 10px; background: #f9f9f9;">
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <div style="flex: 1;">
+                            <div style="font-weight: 600; font-size: 16px; margin-bottom: 5px;">${key.name}</div>
+                            <div style="display: flex; align-items: center; gap: 8px;">
+                                <span id="key-value-${key.id}" data-full-key="${key.key}" style="color: #666; font-size: 13px; font-family: 'Courier New', monospace;">
+                                    ${key.key.slice(0, 20)}...${key.key.slice(-8)}
+                                </span>
+                                <button class="btn btn-secondary btn-small" onclick="toggleApiKeyVisibility('${key.id}')" id="key-toggle-${key.id}">👁️ Show</button>
+                                <button class="btn btn-secondary btn-small" onclick="copyApiKeyValue('${key.id}')" title="Copy to clipboard">📋 Copy</button>
+                            </div>
+                            <div style="color: #999; font-size: 12px; margin-top: 5px;">
+                                Created: ${new Date(key.created).toLocaleString()} •
+                                Requests: ${key.requests || 0} •
+                                ${key.lastUsed ? `Last used: ${new Date(key.lastUsed).toLocaleString()}` : 'Never used'}
+                            </div>
+                        </div>
+                        <div style="display: flex; gap: 8px; align-items: center;">
+                            <label style="display: flex; align-items: center; gap: 5px; margin: 0;">
+                                <input type="checkbox" ${key.enabled ? 'checked' : ''} onchange="toggleApiKey('${key.id}', this.checked)">
+                                <span style="font-size: 13px;">${key.enabled ? 'Enabled' : 'Disabled'}</span>
+                            </label>
+                            <button class="btn btn-secondary btn-small" onclick="editApiKey('${key.id}')">✏️ Edit</button>
+                            <button class="btn btn-danger btn-small" onclick="deleteApiKey('${key.id}')">🗑️ Delete</button>
+                        </div>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        function toggleApiKeyVisibility(keyId) {
+            const valueSpan = document.getElementById(`key-value-${keyId}`);
+            const toggleBtn = document.getElementById(`key-toggle-${keyId}`);
+            const fullKey = valueSpan.getAttribute('data-full-key');
+            const isHidden = valueSpan.textContent.includes('...');
+
+            if (isHidden) {
+                // Show full key
+                valueSpan.textContent = fullKey;
+                toggleBtn.textContent = '🙈 Hide';
+            } else {
+                // Hide key
+                valueSpan.textContent = `${fullKey.slice(0, 20)}...${fullKey.slice(-8)}`;
+                toggleBtn.textContent = '👁️ Show';
+            }
+        }
+
+        function copyApiKeyValue(keyId) {
+            const valueSpan = document.getElementById(`key-value-${keyId}`);
+            const fullKey = valueSpan.getAttribute('data-full-key');
+
+            // Create temporary input to copy from
+            const tempInput = document.createElement('input');
+            tempInput.value = fullKey;
+            document.body.appendChild(tempInput);
+            tempInput.select();
+            document.execCommand('copy');
+            document.body.removeChild(tempInput);
+
+            alert('✅ API key copied to clipboard!');
+        }
+
+        function showCreateApiKeyModal() {
+            document.getElementById('new-key-name').value = '';
+            document.getElementById('createApiKeyModal').classList.add('show');
+        }
+
+        function closeCreateApiKeyModal() {
+            document.getElementById('createApiKeyModal').classList.remove('show');
+        }
+
+        function closeShowApiKeyModal() {
+            document.getElementById('showApiKeyModal').classList.remove('show');
+            loadApiKeys(); // Refresh the list
+        }
+
+        document.getElementById('createApiKeyForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            const name = document.getElementById('new-key-name').value;
+
+            try {
+                const response = await fetch('./api/client-keys', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name })
+                });
+
+                if (response.ok) {
+                    const newKey = await response.json();
+                    closeCreateApiKeyModal();
+
+                    // Show the generated key
+                    document.getElementById('generated-key').value = newKey.key;
+                    document.getElementById('usage-example').value = `# Using with curl:\ncurl -X POST https://www.voipguru.org/llmProxy/v1/messages \\\n  -H "x-api-key: ${newKey.key}" \\\n  -H "Content-Type: application/json" \\\n  -d '{"model":"claude-sonnet-4-5-20250929","max_tokens":1024,"messages":[{"role":"user","content":"Hello!"}]}'`;
+                    document.getElementById('showApiKeyModal').classList.add('show');
+                } else {
+                    const data = await response.json();
+                    alert('Error: ' + (data.error || 'Failed to create API key'));
+                }
+            } catch (error) {
+                alert('Error creating API key: ' + error.message);
+            }
+        });
+
+        async function toggleApiKey(keyId, enabled) {
+            try {
+                const response = await fetch(`./api/client-keys/${keyId}`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ enabled })
+                });
+
+                if (response.ok) {
+                    loadApiKeys();
+                } else {
+                    const data = await response.json();
+                    alert('Error: ' + (data.error || 'Failed to update API key'));
+                }
+            } catch (error) {
+                alert('Error updating API key: ' + error.message);
+            }
+        }
+
+        async function deleteApiKey(keyId) {
+            if (!confirm('Are you sure you want to delete this API key? Applications using this key will no longer be able to access the proxy.')) return;
+
+            try {
+                const response = await fetch(`./api/client-keys/${keyId}`, { method: 'DELETE' });
+                if (response.ok) {
+                    alert('API key deleted successfully!');
+                    loadApiKeys();
+                } else {
+                    const data = await response.json();
+                    alert('Error: ' + (data.error || 'Failed to delete API key'));
+                }
+            } catch (error) {
+                alert('Error deleting API key: ' + error.message);
+            }
+        }
+
+        function copyApiKey() {
+            const keyInput = document.getElementById('generated-key');
+            keyInput.select();
+            document.execCommand('copy');
+            alert('✅ API key copied to clipboard!');
+        }
+
+        function editApiKey(keyId) {
+            const key = apiKeysData.find(k => k.id === keyId);
+            if (!key) {
+                alert('API key not found');
+                return;
+            }
+
+            editingApiKeyId = keyId;
+            document.getElementById('edit-key-name').value = key.name;
+            document.getElementById('edit-key-value').value = key.key;
+            document.getElementById('edit-key-enabled').checked = key.enabled;
+            document.getElementById('edit-key-created').textContent = new Date(key.created).toLocaleString();
+            document.getElementById('edit-key-requests').textContent = key.requests || 0;
+            document.getElementById('edit-key-lastused').textContent = key.lastUsed ? new Date(key.lastUsed).toLocaleString() : 'Never';
+
+            document.getElementById('editApiKeyModal').classList.add('show');
+        }
+
+        function closeEditApiKeyModal() {
+            document.getElementById('editApiKeyModal').classList.remove('show');
+            editingApiKeyId = null;
+        }
+
+        function toggleEditApiKeyVisibility() {
+            const input = document.getElementById('edit-key-value');
+            const btn = event.target;
+            if (input.type === 'password') {
+                input.type = 'text';
+                btn.textContent = '🙈 Hide';
+            } else {
+                input.type = 'password';
+                btn.textContent = '👁️ Show';
+            }
+        }
+
+        function copyEditApiKeyValue() {
+            const input = document.getElementById('edit-key-value');
+            const tempInput = document.createElement('input');
+            tempInput.value = input.value;
+            document.body.appendChild(tempInput);
+            tempInput.select();
+            document.execCommand('copy');
+            document.body.removeChild(tempInput);
+            alert('✅ API key copied to clipboard!');
+        }
+
+        document.getElementById('editApiKeyForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            const name = document.getElementById('edit-key-name').value;
+            const enabled = document.getElementById('edit-key-enabled').checked;
+
+            try {
+                const response = await fetch(`./api/client-keys/${editingApiKeyId}`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name, enabled })
+                });
+
+                if (response.ok) {
+                    alert('✅ API key updated successfully!');
+                    closeEditApiKeyModal();
+                    loadApiKeys();
+                } else {
+                    const data = await response.json();
+                    alert('Error: ' + (data.error || 'Failed to update API key'));
+                }
+            } catch (error) {
+                alert('Error updating API key: ' + error.message);
+            }
+        });
+
+        // Activity Log Functions
+        async function loadActivityLog() {
+            const container = document.getElementById('activity-log');
+
+            try {
+                const response = await fetch('./api/activity-log');
+                const activities = await response.json();
+
+                if (!activities || activities.length === 0) {
+                    container.innerHTML = '<p style="color: #666; padding: 20px;">No recent activity</p>';
+                    return;
+                }
+
+                const typeColors = {
+                    'success': '#00b894',
+                    'error': '#d63031',
+                    'warning': '#fdcb6e',
+                    'info': '#0984e3'
+                };
+
+                const typeIcons = {
+                    'success': '✓',
+                    'error': '✗',
+                    'warning': '⚠',
+                    'info': 'ℹ'
+                };
+
+                container.innerHTML = activities.slice(0, 20).map(activity => {
+                    const time = new Date(activity.timestamp);
+                    const color = typeColors[activity.type] || '#95a5a6';
+                    const icon = typeIcons[activity.type] || '•';
+
+                    return `
+                        <div style="padding: 12px; border-left: 3px solid ${color}; background: #f8f9fa; margin-bottom: 8px; border-radius: 4px;">
+                            <div style="display: flex; justify-content: space-between; margin-bottom: 5px; align-items: center;">
+                                <div style="display: flex; align-items: center; gap: 8px;">
+                                    <span style="background: ${color}; color: white; width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: bold;">${icon}</span>
+                                    <strong>${activity.message}</strong>
+                                </div>
+                                <small style="color: #666;">${time.toLocaleString()}</small>
+                            </div>
+                            ${activity.provider ? `<div style="font-size: 12px; color: #666; margin-left: 32px;">Provider: ${activity.provider}</div>` : ''}
+                            ${activity.latency ? `<div style="font-size: 12px; color: #666; margin-left: 32px;">Latency: ${activity.latency}</div>` : ''}
+                            ${activity.error ? `<div style="font-size: 12px; color: #d63031; margin-left: 32px;">Error: ${activity.error}</div>` : ''}
+                        </div>
+                    `;
+                }).join('');
+            } catch (error) {
+                console.error('Error loading activity log:', error);
+                container.innerHTML = '<p style="color: #d63031; padding: 20px;">Failed to load activity log</p>';
+            }
+        }
+
+        // Auto-refresh every 10 seconds
+        setInterval(() => {
+            loadStats();
+            loadActivityLog();
+        }, 10000);
+
+        // Initial load - check auth first, then load config
+        checkAuth().then(authenticated => {
+            if (authenticated) {
+                loadConfig();
+                loadUsers();
+                loadApiKeys();
+                loadActivityLog();
+            }
+        });
+    </script>
+</body>
+</html>
