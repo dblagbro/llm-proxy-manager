@@ -8,6 +8,7 @@ const winston = require('winston');
 const bcrypt = require('bcrypt');
 const session = require('express-session');
 const cookieParser = require('cookie-parser');
+const nodemailer = require('nodemailer');
 const ClusterManager = require('./cluster');
 const ProviderMonitor = require('./monitor');
 const NotificationManager = require('./notifications');
@@ -677,6 +678,9 @@ app.post('/v1/messages', validateApiKey, async (req, res) => {
       config.stats[provider.id].successes++;
       config.stats[provider.id].totalLatency += latency;
       config.stats[provider.id].lastUsed = new Date().toISOString();
+      config.stats[provider.id].lastSuccess = {
+        timestamp: new Date().toISOString()
+      };
 
       // Record success with circuit breaker
       providerMonitor.recordSuccess(provider);
@@ -1134,7 +1138,7 @@ app.post('/api/users', requireAuth, async (req, res) => {
     return res.status(403).json({ error: 'Admin access required' });
   }
 
-  const { username, password, role } = req.body;
+  const { username, password, role, email } = req.body;
 
   if (!username || !password) {
     return res.status(400).json({ error: 'Username and password required' });
@@ -1150,6 +1154,8 @@ app.post('/api/users', requireAuth, async (req, res) => {
     username,
     password: hashedPassword,
     role: role || 'user',
+    email: email || '',
+    theme: 'dark', // Default to dark mode
     created: new Date().toISOString()
   };
 
@@ -1157,7 +1163,7 @@ app.post('/api/users', requireAuth, async (req, res) => {
   saveConfig();
 
   logger.info('User created', { username, role: newUser.role });
-  res.json({ id: newUser.id, username: newUser.username, role: newUser.role });
+  res.json({ id: newUser.id, username: newUser.username, role: newUser.role, email: newUser.email });
 });
 
 app.delete('/api/users/:id', requireAuth, (req, res) => {
@@ -1181,6 +1187,186 @@ app.delete('/api/users/:id', requireAuth, (req, res) => {
 
   logger.info('User deleted', { username: deleted.username });
   res.json({ success: true });
+});
+
+// Email configuration for password resets
+const emailTransporter = nodemailer.createTransport({
+  host: process.env.SMTP_HOST || 'localhost',
+  port: process.env.SMTP_PORT || 587,
+  secure: process.env.SMTP_SECURE === 'true',
+  auth: process.env.SMTP_USER ? {
+    user: process.env.SMTP_USER,
+    pass: process.env.SMTP_PASSWORD
+  } : undefined
+});
+
+// Password reset tokens storage (in-memory for now, could be moved to config)
+const passwordResetTokens = new Map();
+
+// Profile management endpoints
+app.get('/api/profile', requireAuth, (req, res) => {
+  const user = config.users.find(u => u.id === req.session.user.id);
+
+  if (!user) {
+    return res.status(404).json({ error: 'User not found' });
+  }
+
+  res.json({
+    id: user.id,
+    username: user.username,
+    email: user.email || '',
+    theme: user.theme || 'dark',
+    role: user.role
+  });
+});
+
+app.post('/api/profile', requireAuth, async (req, res) => {
+  const { email, theme } = req.body;
+
+  const userIndex = config.users.findIndex(u => u.id === req.session.user.id);
+
+  if (userIndex === -1) {
+    return res.status(404).json({ error: 'User not found' });
+  }
+
+  if (email !== undefined) {
+    config.users[userIndex].email = email;
+  }
+
+  if (theme !== undefined && (theme === 'dark' || theme === 'light')) {
+    config.users[userIndex].theme = theme;
+  }
+
+  saveConfig();
+
+  logger.info('Profile updated', { username: config.users[userIndex].username });
+  res.json({
+    id: config.users[userIndex].id,
+    username: config.users[userIndex].username,
+    email: config.users[userIndex].email,
+    theme: config.users[userIndex].theme,
+    role: config.users[userIndex].role
+  });
+});
+
+app.post('/api/profile/password', requireAuth, async (req, res) => {
+  const { newPassword } = req.body;
+
+  if (!newPassword || newPassword.length < 6) {
+    return res.status(400).json({ error: 'Password must be at least 6 characters' });
+  }
+
+  const userIndex = config.users.findIndex(u => u.id === req.session.user.id);
+
+  if (userIndex === -1) {
+    return res.status(404).json({ error: 'User not found' });
+  }
+
+  const hashedPassword = await bcrypt.hash(newPassword, 10);
+  config.users[userIndex].password = hashedPassword;
+
+  saveConfig();
+
+  logger.info('Password changed', { username: config.users[userIndex].username });
+  addActivityLog('success', `Password changed for user: ${config.users[userIndex].username}`);
+
+  res.json({ success: true, message: 'Password updated successfully' });
+});
+
+app.post('/api/auth/request-reset', async (req, res) => {
+  const { email } = req.body;
+
+  if (!email) {
+    return res.status(400).json({ error: 'Email required' });
+  }
+
+  const user = config.users.find(u => u.email === email);
+
+  // Always return success to prevent email enumeration
+  if (!user) {
+    logger.warn('Password reset requested for non-existent email', { email });
+    return res.json({ success: true, message: 'If an account exists with that email, a reset link has been sent' });
+  }
+
+  // Generate reset token
+  const token = crypto.randomBytes(32).toString('hex');
+  const expires = Date.now() + 3600000; // 1 hour
+
+  passwordResetTokens.set(token, {
+    userId: user.id,
+    expires
+  });
+
+  // Clean up expired tokens
+  for (const [key, value] of passwordResetTokens.entries()) {
+    if (value.expires < Date.now()) {
+      passwordResetTokens.delete(key);
+    }
+  }
+
+  // Send email
+  const resetUrl = `${process.env.APP_URL || 'http://localhost:3000'}/reset-password.html?token=${token}`;
+
+  try {
+    await emailTransporter.sendMail({
+      from: process.env.SMTP_FROM || 'noreply@llmproxy.local',
+      to: user.email,
+      subject: 'Password Reset Request',
+      html: `
+        <h2>Password Reset Request</h2>
+        <p>You requested a password reset for your LLM Proxy Manager account.</p>
+        <p>Click the link below to reset your password:</p>
+        <p><a href="${resetUrl}">${resetUrl}</a></p>
+        <p>This link will expire in 1 hour.</p>
+        <p>If you did not request this reset, please ignore this email.</p>
+      `
+    });
+
+    logger.info('Password reset email sent', { email: user.email });
+  } catch (error) {
+    logger.error('Failed to send password reset email', { error: error.message });
+    // Still return success to prevent leaking information
+  }
+
+  res.json({ success: true, message: 'If an account exists with that email, a reset link has been sent' });
+});
+
+app.post('/api/auth/reset-password/:token', async (req, res) => {
+  const { token } = req.params;
+  const { newPassword } = req.body;
+
+  if (!newPassword || newPassword.length < 6) {
+    return res.status(400).json({ error: 'Password must be at least 6 characters' });
+  }
+
+  const resetData = passwordResetTokens.get(token);
+
+  if (!resetData) {
+    return res.status(400).json({ error: 'Invalid or expired reset token' });
+  }
+
+  if (resetData.expires < Date.now()) {
+    passwordResetTokens.delete(token);
+    return res.status(400).json({ error: 'Reset token has expired' });
+  }
+
+  const userIndex = config.users.findIndex(u => u.id === resetData.userId);
+
+  if (userIndex === -1) {
+    passwordResetTokens.delete(token);
+    return res.status(404).json({ error: 'User not found' });
+  }
+
+  const hashedPassword = await bcrypt.hash(newPassword, 10);
+  config.users[userIndex].password = hashedPassword;
+
+  saveConfig();
+  passwordResetTokens.delete(token);
+
+  logger.info('Password reset completed', { username: config.users[userIndex].username });
+  addActivityLog('success', `Password reset for user: ${config.users[userIndex].username}`);
+
+  res.json({ success: true, message: 'Password reset successfully' });
 });
 
 // Initialize
@@ -1347,7 +1533,7 @@ app.get('/cluster/config', (req, res) => {
 });
 
 // Cluster status endpoint (for client applications)
-app.get('/cluster/status', authenticateApiKey, (req, res) => {
+app.get('/cluster/status', validateApiKey, (req, res) => {
   if (!clusterManager.enabled) {
     return res.json({
       clusterEnabled: false,
