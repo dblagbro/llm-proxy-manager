@@ -611,7 +611,7 @@
     <div class="container">
         <div class="header">
             <div>
-                <h1>🤖 LLM Proxy Manager <span style="font-size: 14px; color: var(--text-muted); font-weight: normal;">v1.1.0</span></h1>
+                <h1>🤖 LLM Proxy Manager <span style="font-size: 14px; color: var(--text-muted); font-weight: normal;">v1.1.3</span></h1>
                 <p class="subtitle">Multi-provider AI proxy with automatic failover and cluster synchronization</p>
             </div>
             <div class="header-actions">
@@ -652,7 +652,10 @@
         </div>
 
         <div class="card">
-            <h2>Cluster Synchronization Status</h2>
+            <h2>
+                <span>Cluster Synchronization Status</span>
+                <button class="btn btn-primary btn-small" onclick="showAddNodeModal()">➕ Add Node</button>
+            </h2>
             <div id="cluster-status"></div>
         </div>
 
@@ -800,6 +803,58 @@ export ANTHROPIC_API_KEY="proxy-handled"</textarea>
                     <button type="submit" class="btn btn-primary">Create User</button>
                 </div>
             </form>
+        </div>
+    </div>
+
+    <!-- Add Node Modal -->
+    <div id="addNodeModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Add New Cluster Node</h3>
+                <button class="close-btn" onclick="closeAddNodeModal()">&times;</button>
+            </div>
+            <div style="padding: 15px; background: var(--bg3); border-radius: 6px; margin-bottom: 20px; border-left: 3px solid var(--warning);">
+                <p style="margin: 0; font-size: 14px; color: var(--text-muted);">
+                    This form helps you configure a new cluster node. After filling in the details, you'll need to:
+                    <br>1. Deploy the llm-proxy application on the target server
+                    <br>2. Update the CLUSTER_PEERS environment variable on both servers
+                    <br>3. Restart both servers to establish the connection
+                </p>
+            </div>
+            <form id="addNodeForm">
+                <div class="form-group">
+                    <label>Node ID</label>
+                    <input type="text" id="new-node-id" required placeholder="e.g., node3, avaya-01">
+                    <small style="color: var(--text-muted);">Unique identifier for this node</small>
+                </div>
+                <div class="form-group">
+                    <label>Node Name</label>
+                    <input type="text" id="new-node-name" required placeholder="e.g., LLM Proxy Node 3">
+                    <small style="color: var(--text-muted);">Human-readable name</small>
+                </div>
+                <div class="form-group">
+                    <label>Node URL</label>
+                    <input type="url" id="new-node-url" required placeholder="https://example.com/llmProxy">
+                    <small style="color: var(--text-muted);">Full URL including path (e.g., https://server.com/llmProxy)</small>
+                </div>
+                <div class="form-group">
+                    <label>GCP Server (Optional)</label>
+                    <input type="text" id="new-node-gcp-server" placeholder="e.g., c1conversations-avaya-01-s23">
+                    <small style="color: var(--text-muted);">If deploying to a GCP instance, enter the server name</small>
+                </div>
+                <div class="form-actions">
+                    <button type="button" class="btn btn-secondary" onclick="closeAddNodeModal()">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Generate Configuration</button>
+                </div>
+            </form>
+            <div id="node-config-output" style="display: none; margin-top: 20px;">
+                <h4 style="margin-bottom: 10px;">Configuration Generated:</h4>
+                <div style="background: var(--bg3); padding: 15px; border-radius: 6px; border: 1px solid var(--border);">
+                    <p style="margin-bottom: 10px; font-weight: 600;">Add this to your CLUSTER_PEERS environment variable:</p>
+                    <pre id="cluster-peers-value" style="background: var(--bg); padding: 10px; border-radius: 4px; overflow-x: auto; font-size: 12px; font-family: 'Courier New', monospace;"></pre>
+                    <button class="btn btn-secondary btn-small" onclick="copyToClipboard('cluster-peers-value')">📋 Copy to Clipboard</button>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -1201,7 +1256,7 @@ export ANTHROPIC_API_KEY="proxy-handled"</textarea>
                     const statusIcon = peer.status === 'healthy' ? '✓' : '✗';
 
                     html += `
-                        <div class="provider" style="border-left: 3px solid ${statusColor};">
+                        <div class="provider peer-node-clickable" style="border-left: 3px solid ${statusColor}; cursor: pointer;" onclick="window.open('${peer.url}', '_blank')">
                             <div class="provider-header">
                                 <div class="provider-info">
                                     <span style="font-size: 20px;">${statusIcon}</span>
@@ -1601,11 +1656,24 @@ export ANTHROPIC_API_KEY="proxy-handled"</textarea>
             }
 
             try {
+                // Add a timeout to prevent hanging
+                const controller = new AbortController();
+                const timeout = setTimeout(() => controller.abort(), 30000);
+
                 const response = await fetch('./api/test-provider', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(providerData)
+                    body: JSON.stringify(providerData),
+                    signal: controller.signal
                 });
+
+                clearTimeout(timeout);
+
+                if (!response.ok) {
+                    const error = await response.json();
+                    testResult.innerHTML = `<div class="test-result error">❌ HTTP ${response.status}: ${error.error || 'Unknown error'}</div>`;
+                    return;
+                }
 
                 const result = await response.json();
 
@@ -1614,12 +1682,16 @@ export ANTHROPIC_API_KEY="proxy-handled"</textarea>
                 loadActivityLog();
 
                 if (result.success) {
-                    testResult.innerHTML = `<div class="test-result success">✅ Success! Latency: ${result.latency}ms<br>Response: ${result.response}</div>`;
+                    testResult.innerHTML = `<div class="test-result success">✅ Success! Latency: ${result.latency}ms<br>Response: ${result.response}${result.usage ? '<br>Tokens: ' + (result.usage.input_tokens || 0) + ' in, ' + (result.usage.output_tokens || 0) + ' out' : ''}</div>`;
                 } else {
                     testResult.innerHTML = `<div class="test-result error">❌ Failed: ${result.error}</div>`;
                 }
             } catch (error) {
-                testResult.innerHTML = `<div class="test-result error">❌ Error: ${error.message}</div>`;
+                if (error.name === 'AbortError') {
+                    testResult.innerHTML = `<div class="test-result error">❌ Timeout: Test took longer than 30 seconds</div>`;
+                } else {
+                    testResult.innerHTML = `<div class="test-result error">❌ Error: ${error.message}</div>`;
+                }
             }
         }
 
@@ -1834,6 +1906,76 @@ export ANTHROPIC_API_KEY="proxy-handled"</textarea>
             } catch (error) {
                 alert('Error deleting user: ' + error.message);
             }
+        }
+
+        // Add Node Modal Functions
+        function showAddNodeModal() {
+            document.getElementById('addNodeModal').classList.add('show');
+            document.getElementById('node-config-output').style.display = 'none';
+        }
+
+        function closeAddNodeModal() {
+            document.getElementById('addNodeModal').classList.remove('show');
+            document.getElementById('addNodeForm').reset();
+            document.getElementById('node-config-output').style.display = 'none';
+        }
+
+        document.getElementById('addNodeForm').addEventListener('submit', (e) => {
+            e.preventDefault();
+
+            const nodeId = document.getElementById('new-node-id').value;
+            const nodeName = document.getElementById('new-node-name').value;
+            const nodeUrl = document.getElementById('new-node-url').value;
+            const gcpServer = document.getElementById('new-node-gcp-server').value;
+
+            // Generate the cluster peers configuration string
+            const peerConfig = `${nodeId}:${nodeUrl}`;
+
+            // Show the configuration output
+            document.getElementById('cluster-peers-value').textContent = peerConfig;
+            document.getElementById('node-config-output').style.display = 'block';
+
+            // If GCP server is provided, show deployment instructions
+            if (gcpServer) {
+                const outputDiv = document.getElementById('node-config-output');
+                const deployInstructions = document.createElement('div');
+                deployInstructions.style.marginTop = '20px';
+                deployInstructions.innerHTML = `
+                    <h4 style="margin-bottom: 10px;">Deployment Instructions for ${gcpServer}:</h4>
+                    <div style="background: var(--bg3); padding: 15px; border-radius: 6px; border: 1px solid var(--border);">
+                        <p style="margin-bottom: 10px;">Ready to deploy this node automatically?</p>
+                        <button class="btn btn-primary" onclick="deployNodeToGCP('${gcpServer}', '${nodeId}', '${nodeName}', '${nodeUrl}')">
+                            🚀 Deploy to ${gcpServer}
+                        </button>
+                    </div>
+                `;
+
+                // Remove existing deployment instructions if any
+                const existing = outputDiv.querySelector('.deploy-instructions');
+                if (existing) existing.remove();
+
+                deployInstructions.className = 'deploy-instructions';
+                outputDiv.appendChild(deployInstructions);
+            }
+        });
+
+        function copyToClipboard(elementId) {
+            const element = document.getElementById(elementId);
+            const text = element.textContent;
+            navigator.clipboard.writeText(text).then(() => {
+                alert('Copied to clipboard!');
+            }).catch(err => {
+                console.error('Failed to copy:', err);
+                alert('Failed to copy to clipboard');
+            });
+        }
+
+        async function deployNodeToGCP(gcpServer, nodeId, nodeName, nodeUrl) {
+            if (!confirm(`Deploy llm-proxy to ${gcpServer}?\n\nThis will:\n1. Install Docker if needed\n2. Pull the latest llm-proxy image\n3. Configure nginx\n4. Start the services`)) {
+                return;
+            }
+
+            alert(`Deployment to ${gcpServer} would start here.\n\nThis feature requires backend API implementation.\n\nFor now, please deploy manually using:\ngcloud compute ssh ${gcpServer} -- 'bash -s' < deploy-script.sh`);
         }
 
         // API Key Management Functions
