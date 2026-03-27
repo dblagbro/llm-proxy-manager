@@ -1,29 +1,57 @@
 # LLM Proxy Manager
 
-A production-ready LLM API proxy with **multi-provider failover**, **web-based management**, and **automatic provider selection**. Route your AI requests through multiple LLM providers (Anthropic Claude, Google Gemini, OpenAI, Grok, and more) with automatic failover when one provider fails.
+A production-ready LLM API proxy with **multi-provider failover**, **intelligent monitoring**, **cluster mode**, and **web-based management**. Route your AI requests through multiple LLM providers (Anthropic Claude, Google Gemini, OpenAI, Grok, and more) with automatic failover, circuit breakers, and external service monitoring.
 
-## Features
+![Version](https://img.shields.io/badge/version-1.0.0-blue)
+![License](https://img.shields.io/badge/license-MIT-green)
+![Node](https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen)
+
+## ✨ Features
 
 ### Core Capabilities
-- **Multi-Provider Support**: Anthropic Claude, Google Gemini, Google Vertex AI, OpenAI, Grok (xAI), Ollama, and OpenAI-compatible APIs
-- **Automatic Failover**: Priority-based provider selection with automatic failover to backup providers
-- **Server-Sent Events (SSE) Streaming**: Full support for streaming responses from Claude and Gemini
-- **Unified API**: Single endpoint that works with multiple providers using Anthropic's API format
+- 🔄 **Multi-Provider Support**: Anthropic Claude, Google Gemini, Google Vertex AI, OpenAI, Grok (xAI), Ollama, and OpenAI-compatible APIs
+- 🎯 **Intelligent Failover**: Priority-based provider selection with circuit breaker protection
+- ⚡ **SSE Streaming**: Full support for real-time streaming responses
+- 🔌 **Unified API**: Single endpoint compatible with Anthropic's SDK format
+- 📊 **Provider Statistics**: Track requests, successes, failures, and latency
 
-### Management & Security
-- **Web-Based Dashboard**: Beautiful UI for managing providers, testing configurations, and monitoring activity
-- **Authentication System**: Session-based authentication with bcrypt password hashing
-- **User Management**: Create and manage multiple users with role-based access (admin/user)
-- **API Key Management**: Generate API keys for external applications with usage tracking
-- **Activity Logging**: Real-time activity log showing provider tests, logins, configuration changes
+### Intelligent Monitoring
+- 🔴 **Circuit Breaker Pattern**: Automatic provider isolation after repeated failures (CLOSED → OPEN → HALF-OPEN states)
+- 🌐 **External Service Monitoring**: Checks status pages for Anthropic, OpenAI, and Google Cloud
+- 💰 **Billing Error Detection**: Identifies quota/credit issues and alerts immediately
+- ⏱️ **Configurable Timeouts**: Per-provider timeout settings to prevent hung requests
+- 📈 **Health Tracking**: Real-time provider health status and performance metrics
 
-### Monitoring & Analytics
-- **Provider Statistics**: Track requests, successes, failures, and latency per provider
-- **Usage Tracking**: Monitor API key usage with request counts and timestamps
-- **Health Checks**: Built-in health endpoint for monitoring and orchestration
-- **Activity Dashboard**: Visual timeline of all system events with color-coded status
+### Cluster Mode (NEW!)
+- 🌍 **Multi-Instance Deployment**: Deploy to 3+ servers for high availability
+- 🔄 **Configuration Sync**: Automatic synchronization of users and API keys across nodes
+- 💓 **Heartbeat Monitoring**: Continuous health checks between cluster members
+- 🎛️ **Independent Provider Config**: Each node can have unique provider priorities
+- 📡 **Cluster Status API**: Monitor entire cluster health from any node
+- 🔐 **HMAC Authentication**: Secure cluster communication with shared secrets
 
-## Quick Start
+### Email Notifications
+- 📧 **SMTP Alerts**: Email notifications for critical failures and events
+- 🚨 **Alert Types**: Circuit breaker opens, billing errors, service degradation, cluster issues
+- ⏰ **Throttling**: Prevents email storms with configurable throttle windows
+- 🎨 **HTML Emails**: Professional formatted alerts with severity indicators
+
+### Web Dashboard
+- 🌓 **Dark Mode**: Toggle-able dark theme with persistent user preference
+- 🎯 **Provider Management**: Add, edit, test, enable/disable providers with drag-and-drop priority ordering
+- 👥 **User Management**: Create and manage users with role-based access
+- 🔑 **API Key Generation**: Generate secure API keys for external applications
+- 📝 **Activity Log**: Real-time log of all system events with color-coded status
+- 📊 **Statistics Dashboard**: Monitor provider performance and usage
+
+### Security
+- 🔐 **Session Authentication**: Secure session management with HTTP-only cookies
+- 🔒 **Bcrypt Passwords**: Industry-standard password hashing
+- 🎫 **API Key Auth**: Token-based authentication for programmatic access
+- 🛡️ **Cluster HMAC**: Cryptographic signatures for inter-node communication
+- 🔍 **Key Masking**: Automatic masking of sensitive API keys in UI
+
+## 🚀 Quick Start
 
 ### Docker (Recommended)
 
@@ -39,7 +67,7 @@ docker-compose up -d
 open http://localhost:3100
 ```
 
-**Default login**: `admin` / `admin` (change immediately in production!)
+**Default login**: `admin` / `admin` (⚠️ change immediately in production!)
 
 ### Manual Installation
 
@@ -58,50 +86,103 @@ npm start
 npm run dev
 ```
 
-## Configuration
+### Deployment Scripts (Production)
+
+For production deployment to multiple servers:
+
+```bash
+# Primary node
+./deploy-tmrwww01.sh
+
+# Secondary nodes (requires cluster secret from primary)
+./deploy-tmrwww02.sh
+./deploy-c1conversations.sh
+```
+
+See [Deployment Guide](#deployment) for detailed instructions.
+
+## ⚙️ Configuration
 
 ### Environment Variables
 
-Create a `.env` file or set environment variables:
+Create a `.env` file:
 
 ```bash
-# Server
+# Server Configuration
 NODE_ENV=production
 PORT=3000
 SESSION_SECRET=your-random-secret-here
 
-# Optional: Pre-configure API keys
+# Circuit Breaker
+CIRCUIT_BREAKER_THRESHOLD=3           # Failures before opening circuit
+CIRCUIT_BREAKER_TIMEOUT=60000         # Milliseconds to stay open
+CIRCUIT_BREAKER_HALFOPEN=30000        # Test period duration
+CIRCUIT_BREAKER_SUCCESS=2             # Successes needed to close
+
+# Provider Timeouts (milliseconds)
+ANTHROPIC_TIMEOUT=30000
+GOOGLE_TIMEOUT=30000
+OPENAI_TIMEOUT=30000
+GROK_TIMEOUT=30000
+OLLAMA_TIMEOUT=60000
+
+# Cluster Mode (Optional)
+CLUSTER_ENABLED=false
+CLUSTER_NODE_ID=node1
+CLUSTER_NODE_NAME="LLM Proxy Node 1"
+CLUSTER_NODE_URL=http://localhost:3000
+CLUSTER_SYNC_SECRET=shared-cluster-secret
+CLUSTER_PEERS=node2:http://node2:3000,node3:http://node3:3000
+
+# Email Notifications (Optional)
+SMTP_ENABLED=false
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USER=your-email@example.com
+SMTP_PASS=your-app-password
+SMTP_FROM=llm-proxy@example.com
+SMTP_TO=admin@example.com
+SMTP_MIN_SEVERITY=WARNING
+ALERT_THROTTLE_MINUTES=15
+
+# Provider API Keys (Optional - can configure via Web UI)
 ANTHROPIC_KEY_1=sk-ant-api03-...
 GOOGLE_API_KEY_1=AIzaSy...
 OPENAI_KEY_1=sk-...
 ```
 
+See [.env.example](.env.example) for complete configuration options.
+
 ### Provider Configuration
 
-Providers can be configured in two ways:
+**Option 1: Web UI** (Recommended)
+1. Navigate to the dashboard
+2. Click "➕ Add Provider"
+3. Configure provider details and API key
+4. Set priority (lower number = higher priority)
+5. Click Test to verify configuration
 
-1. **Web UI** (recommended): Navigate to the dashboard and use the "Add Provider" button
-2. **Environment Variables**: Pre-configure providers using the `.env` file
+**Option 2: Environment Variables**
+Pre-configure providers in `.env` file (see above).
 
-## Supported Providers
+## 🔌 Supported Providers
 
-| Provider | Type Value | Required Fields | Notes |
-|----------|------------|----------------|-------|
-| Anthropic Claude | `anthropic` | API Key | Uses claude-sonnet-4-5 by default |
-| Google Gemini | `google` | API Key | Uses gemini-2.5-flash by default |
-| Google Vertex AI | `vertex` | API Key, Project ID, Location | Requires OAuth 2.0 token |
-| OpenAI | `openai` | API Key | Official OpenAI API |
-| Grok (xAI) | `grok` | API Key | X.AI's Grok models |
-| Ollama | `ollama` | Base URL, Model Name | For self-hosted models |
-| OpenAI-Compatible | `openai-compatible` | Base URL, API Key | For 3rd party services |
+| Provider | Type Value | Required Fields | Cost (per 1M tokens) | Notes |
+|----------|------------|----------------|---------------------|-------|
+| **Anthropic Claude** | `anthropic` | API Key | $3-15 (Sonnet) | Best quality, streaming support |
+| **Google Gemini** | `google` | API Key | $0.075-0.30 (Flash) | Most cost-effective |
+| **Google Vertex AI** | `vertex` | API Key, Project ID, Location | Varies | OAuth 2.0 required |
+| **OpenAI** | `openai` | API Key | $10-30 (GPT-4) | Widely compatible |
+| **Grok (xAI)** | `grok` | API Key | TBD | X.AI's models |
+| **Ollama** | `ollama` | Base URL, Model | Free | Self-hosted local models |
+| **OpenAI-Compatible** | `openai-compatible` | Base URL, API Key | Varies | LM Studio, LocalAI, etc. |
 
-## API Usage
+## 📡 API Usage
 
 ### With Generated API Keys
 
 ```bash
-# Generate an API key in the web UI first, then use it:
-curl -X POST http://localhost:3100/v1/messages \
+curl -X POST http://localhost:3000/v1/messages \
   -H "x-api-key: llm-proxy-your-generated-key" \
   -H "Content-Type: application/json" \
   -d '{
@@ -111,25 +192,10 @@ curl -X POST http://localhost:3100/v1/messages \
   }'
 ```
 
-### Direct Access (for testing)
-
-```bash
-# Set your ANTHROPIC_API_KEY environment variable to "proxy-handled"
-# and ANTHROPIC_BASE_URL to your proxy URL
-export ANTHROPIC_BASE_URL="http://localhost:3100"
-export ANTHROPIC_API_KEY="your-generated-proxy-key"
-
-# Now use the Anthropic SDK normally
-anthropic messages create \
-  --model claude-sonnet-4-5-20250929 \
-  --max-tokens 1024 \
-  --messages '[{"role":"user","content":"Hello!"}]'
-```
-
 ### Streaming
 
 ```bash
-curl -X POST http://localhost:3100/v1/messages \
+curl -X POST http://localhost:3000/v1/messages \
   -H "x-api-key: your-api-key" \
   -H "Content-Type: application/json" \
   -d '{
@@ -140,12 +206,43 @@ curl -X POST http://localhost:3100/v1/messages \
   }'
 ```
 
-## Architecture
+### With Anthropic SDK
+
+```python
+import os
+from anthropic import Anthropic
+
+client = Anthropic(
+    api_key="llm-proxy-your-generated-key",
+    base_url="http://localhost:3000"
+)
+
+message = client.messages.create(
+    model="claude-sonnet-4-5-20250929",
+    max_tokens=1024,
+    messages=[{"role": "user", "content": "Hello!"}]
+)
+print(message.content)
+```
+
+### Claude Code Integration
+
+Configure Claude Code to use the proxy:
+
+```bash
+export ANTHROPIC_BASE_URL="http://your-proxy:3000"
+export ANTHROPIC_API_KEY="llm-proxy-your-generated-key"
+```
+
+See [CLAUDE-CODE-SETUP.md](CLAUDE-CODE-SETUP.md) for complete integration guide.
+
+## 🏗️ Architecture
+
+### Standalone Mode
 
 ```
 ┌─────────────────┐
-│  Web Dashboard  │
-│   (Port 3100)   │
+│  Applications   │
 └────────┬────────┘
          │
     ┌────▼─────┐
@@ -153,28 +250,116 @@ curl -X POST http://localhost:3100/v1/messages \
     │  Server  │
     └────┬─────┘
          │
-    ┌────▼────────────────────────────┐
-    │   Priority-Based Router          │
-    │   (Automatic Failover)           │
-    └────┬────────────────────────────┘
+    ┌────▼────────────────────┐
+    │   Circuit Breaker       │
+    │ (Intelligent Failover)  │
+    └────┬────────────────────┘
          │
-    ┌────▼────────────────────────────┐
-    │        Provider Pool             │
-    ├──────────┬──────────┬───────────┤
-    │ Anthropic│  Google  │  OpenAI   │
-    │  Grok    │  Vertex  │  Ollama   │
-    └──────────┴──────────┴───────────┘
+    ┌────▼────────────────────┐
+    │    Provider Pool         │
+    ├──────────┬──────────────┤
+    │ Priority │ Priority 2   │
+    │    1     │ (Backup)     │
+    │Anthropic │   Google     │
+    └──────────┴──────────────┘
 ```
 
-## Deployment
+### Cluster Mode (3+ Nodes)
 
-### Production Considerations
+```
+┌──────────────────────────────────────────┐
+│          Client Applications              │
+│  (Failover between proxy instances)       │
+└────────┬──────────┬──────────┬───────────┘
+         │          │          │
+         ▼          ▼          ▼
+    ┌────────┐ ┌────────┐ ┌────────┐
+    │Proxy 1 │ │Proxy 2 │ │Proxy 3 │
+    │TMRwww01│ │TMRwww02│ │C1-Hub  │
+    └───┬────┘ └───┬────┘ └───┬────┘
+        │          │          │
+        └──────────┴──────────┘
+         Cluster Sync (Config)
+        │          │          │
+        ▼          ▼          ▼
+    Different provider priorities per node
+```
 
-1. **Change Default Credentials**: Update admin password immediately
-2. **Set SESSION_SECRET**: Use a cryptographically random secret
-3. **HTTPS**: Deploy behind a reverse proxy (nginx, Caddy, Traefik)
-4. **Persistent Storage**: Ensure `./config` and `./logs` directories are backed up
-5. **API Key Security**: Store provider API keys securely, rotate regularly
+**Redundancy-within-Redundancy**:
+- **Layer 1**: Applications fail over between proxy instances
+- **Layer 2**: Each proxy fails over between LLM providers
+
+## 🚢 Deployment
+
+### Single Node (Standalone)
+
+```bash
+npm install --production
+cp .env.example .env
+# Edit .env with your configuration
+npm start
+```
+
+Access at `http://localhost:3000`
+
+### Multi-Node Cluster
+
+#### Step 1: Deploy Primary Node
+
+```bash
+cd /path/to/llm-proxy-manager
+./deploy-tmrwww01.sh
+```
+
+**IMPORTANT**: Save the cluster secret that is displayed!
+
+#### Step 2: Deploy Secondary Nodes
+
+```bash
+# On each secondary node
+./deploy-tmrwww02.sh
+# Enter the cluster secret from Step 1
+```
+
+#### Step 3: Configure Providers
+
+On each node:
+1. Access Web UI: `http://node-hostname:3000`
+2. Login and change default password
+3. Add provider API keys
+4. Configure provider priorities (can differ per node)
+5. Test providers
+
+#### Step 4: Verify Cluster
+
+Check cluster status:
+```bash
+curl http://node1:3000/cluster/status \
+  -H "x-api-key: your-api-key" | jq
+```
+
+### Docker Deployment
+
+```bash
+# Build image
+docker build -t llm-proxy-manager:latest .
+
+# Run container
+docker run -d \
+  -p 3000:3000 \
+  -v $(pwd)/config:/app/config \
+  -v $(pwd)/logs:/app/logs \
+  -e SESSION_SECRET=your-secret \
+  -e CLUSTER_ENABLED=true \
+  -e CLUSTER_NODE_ID=node1 \
+  --name llm-proxy \
+  llm-proxy-manager:latest
+```
+
+Or use Docker Compose:
+```bash
+docker-compose up -d
+```
 
 ### Reverse Proxy (nginx)
 
@@ -187,102 +372,210 @@ server {
     ssl_certificate_key /path/to/key.pem;
 
     location / {
-        proxy_pass http://localhost:3100;
+        proxy_pass http://localhost:3000;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection 'upgrade';
         proxy_set_header Host $host;
         proxy_cache_bypass $http_upgrade;
+
+        # SSE streaming support
+        proxy_buffering off;
+        proxy_cache off;
+        chunked_transfer_encoding off;
     }
 }
 ```
 
-### Docker Compose (with nginx)
+## 📊 Monitoring
 
-See `docker-compose.yml` for a complete example including:
-- Persistent volumes for config and logs
-- Health checks
-- Network isolation
-- Automatic restart
-
-## Development
+### Health Check Endpoint
 
 ```bash
-# Install dependencies
-npm install
-
-# Run tests
-npm test
-
-# Run Playwright UI mode for test debugging
-npm run test:ui
-
-# Start development server with auto-reload
-npm run dev
+curl http://localhost:3000/health
 ```
 
-## API Endpoints
+Response:
+```json
+{
+  "status": "healthy",
+  "uptime": 3600,
+  "providers": {
+    "enabled": 3,
+    "healthy": 2
+  }
+}
+```
 
-### Public Endpoints
+### Cluster Status
 
-- `POST /v1/messages` - Main proxy endpoint (requires API key)
-- `GET /health` - Health check
+```bash
+curl http://localhost:3000/cluster/status \
+  -H "x-api-key: your-api-key"
+```
 
-### Web UI Endpoints (require session authentication)
+### Circuit Breaker Status
 
-- `GET /` - Dashboard
-- `POST /api/auth/login` - Login
-- `POST /api/auth/logout` - Logout
-- `GET /api/config` - Get configuration
-- `POST /api/config` - Update configuration
-- `POST /api/test-provider` - Test a provider
-- `GET /api/activity-log` - Get activity log
-- `GET /api/client-keys` - List API keys
-- `POST /api/client-keys` - Generate new API key
+```bash
+curl http://localhost:3000/monitoring/status \
+  -H "Cookie: session-cookie"
+```
 
-## Troubleshooting
+Shows circuit breaker states for all providers.
+
+### Activity Log
+
+View real-time activity in the Web UI or via logs:
+
+```bash
+# Systemd
+sudo journalctl -u llm-proxy -f
+
+# Docker
+docker logs -f llm-proxy
+
+# Docker Compose
+docker-compose logs -f
+```
+
+## 🔧 Troubleshooting
 
 ### Provider Tests Failing
 
 1. Check API key is valid in provider settings
 2. Verify API key has sufficient credits/quota
 3. Check activity log for specific error messages
-4. Test provider directly using test button in UI
+4. View circuit breaker state in monitoring dashboard
+5. Test provider directly (outside proxy) to confirm API is working
 
-### Activity Log Empty
+### Circuit Breaker Stuck Open
 
-- Activity log only shows events after the feature was added
-- Perform some actions (test providers, save config, login) to generate entries
+Manual reset via Web UI:
+1. Navigate to Settings → Monitoring
+2. Find the provider with open circuit
+3. Click "Reset Circuit Breaker"
 
-### Streaming Not Working
+Or via API:
+```bash
+curl -X POST http://localhost:3000/monitoring/circuit/reset \
+  -H "Cookie: session-cookie" \
+  -H "Content-Type: application/json" \
+  -d '{"providerId": "provider-id"}'
+```
 
-- Ensure you're setting `"stream": true` in the request
-- Verify your client supports Server-Sent Events (SSE)
-- Check nginx/reverse proxy is configured for SSE (see deployment section)
+### Cluster Sync Issues
 
-## Contributing
+1. Check network connectivity between nodes
+2. Verify cluster secret matches on all nodes
+3. Check firewall rules (port 3000)
+4. Review cluster peer configuration in `.env`
+5. Check activity log for sync errors
+
+### Email Alerts Not Sending
+
+1. Verify SMTP configuration in `.env`
+2. Test SMTP connection: `npm run test:email`
+3. Check SMTP credentials
+4. Verify firewall allows outbound SMTP
+5. Review logs for SMTP errors
+
+## 📚 Documentation
+
+- **[FEATURES.md](FEATURES.md)** - Complete feature documentation
+- **[CLUSTER-ARCHITECTURE.md](CLUSTER-ARCHITECTURE.md)** - Cluster design and implementation
+- **[CLAUDE-CODE-SETUP.md](CLAUDE-CODE-SETUP.md)** - Claude Code integration guide
+- **[PUBLISHING.md](PUBLISHING.md)** - GitHub and Docker Hub publishing guide
+- **[.env.example](.env.example)** - Complete configuration reference
+
+## 💰 Cost Optimization
+
+### Recommended Provider Priority Setup
+
+**For Maximum Cost Savings**:
+```
+Priority 1: Google Gemini Flash ($0.075/$0.30 per 1M tokens)
+Priority 2: Anthropic Claude Sonnet ($3/$15 per 1M tokens)
+Priority 3: Anthropic Claude Opus ($15/$75 per 1M tokens)
+```
+
+Most requests use Gemini (cheapest), failover to Claude only when:
+- Gemini is rate-limited
+- Gemini circuit breaker opens
+- Gemini external status shows issues
+
+**Estimated Savings**: 90-95% cost reduction vs. using Claude Opus exclusively
+
+### Multi-Provider Strategy
+
+Spread API keys across nodes to maximize rate limits:
+- **Node 1**: Gemini Key #1, Claude Key #1
+- **Node 2**: Gemini Key #2, Claude Key #2
+- **Node 3**: Gemini Key #3, Claude Key #3
+
+Load distribution across nodes prevents any single key from hitting rate limits.
+
+## 🛡️ Security Considerations
+
+### Production Deployment
+
+1. **Change Default Password**: Update admin password immediately
+2. **Set SESSION_SECRET**: Use cryptographically random secret
+3. **Enable HTTPS**: Deploy behind reverse proxy with TLS
+4. **Persistent Storage**: Ensure `./config` and `./logs` are backed up
+5. **Secure API Keys**: Store provider API keys securely, rotate regularly
+6. **Cluster Security**: Use strong cluster secrets (32+ character random string)
+7. **Email Security**: Use app-specific passwords, not primary email password
+
+### Firewall Rules
+
+```bash
+# Allow only trusted IPs to access proxy
+iptables -A INPUT -p tcp --dport 3000 -s 192.168.1.0/24 -j ACCEPT
+iptables -A INPUT -p tcp --dport 3000 -j DROP
+
+# Allow cluster communication between nodes
+iptables -A INPUT -p tcp --dport 3000 -s <node2-ip> -j ACCEPT
+iptables -A INPUT -p tcp --dport 3000 -s <node3-ip> -j ACCEPT
+```
+
+## 🤝 Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
 
-## License
+1. Fork the repository
+2. Create your feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
+
+## 📄 License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
-## Dependencies & Licenses
+## 📦 Dependencies
 
-All dependencies use permissive licenses (MIT, Apache-2.0, BSD-2-Clause):
-- express (MIT)
-- axios (MIT)
-- winston (MIT)
-- bcrypt (MIT)
-- @google/generative-ai (Apache-2.0)
-- And others (see package.json)
+All dependencies use permissive open-source licenses:
 
-## Support
+- **express** (MIT) - Web framework
+- **axios** (MIT) - HTTP client
+- **winston** (MIT) - Logging
+- **bcrypt** (MIT) - Password hashing
+- **nodemailer** (MIT) - Email notifications
+- **@google/generative-ai** (Apache-2.0) - Gemini SDK
+- And more (see [package.json](package.json))
 
+## 🆘 Support
+
+- **Documentation**: See `.md` files in repository root
 - **Issues**: [GitHub Issues](https://github.com/yourusername/llm-proxy-manager/issues)
 - **Discussions**: [GitHub Discussions](https://github.com/yourusername/llm-proxy-manager/discussions)
+
+## 🌟 Star History
+
+If you find this project useful, please consider giving it a star! ⭐
 
 ---
 
 **Built with ❤️ for the AI community**
+
+Made with Claude Code by Anthropic
