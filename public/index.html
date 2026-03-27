@@ -989,6 +989,7 @@ export ANTHROPIC_API_KEY="proxy-handled"</textarea>
         function toggleProvider(idx) {
             config.providers[idx].enabled = !config.providers[idx].enabled;
             renderProviders();
+            saveConfiguration();  // Save to server so it persists
         }
 
         function editProvider(idx) {
