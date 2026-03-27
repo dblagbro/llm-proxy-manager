@@ -1,0 +1,491 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LLM Proxy Manager</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .header {
+            background: white;
+            border-radius: 12px;
+            padding: 30px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+
+        h1 {
+            color: #667eea;
+            margin-bottom: 10px;
+        }
+
+        .subtitle {
+            color: #666;
+        }
+
+        .card {
+            background: white;
+            border-radius: 12px;
+            padding: 25px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+
+        h2 {
+            color: #333;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #667eea;
+        }
+
+        .provider {
+            border: 1px solid #e0e0e0;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 15px;
+            transition: all 0.3s ease;
+        }
+
+        .provider:hover {
+            box-shadow: 0 2px 8px rgba(102, 126, 234, 0.3);
+        }
+
+        .provider.disabled {
+            opacity: 0.6;
+            background: #f5f5f5;
+        }
+
+        .provider-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+
+        .provider-name {
+            font-size: 18px;
+            font-weight: 600;
+            color: #333;
+        }
+
+        .provider-type {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        .provider-type.anthropic {
+            background: #ffeaa7;
+            color: #d63031;
+        }
+
+        .provider-type.google {
+            background: #74b9ff;
+            color: #0984e3;
+        }
+
+        .provider-controls {
+            display: flex;
+            gap: 15px;
+            align-items: center;
+        }
+
+        .toggle {
+            position: relative;
+            width: 60px;
+            height: 30px;
+        }
+
+        .toggle input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: #ccc;
+            transition: .4s;
+            border-radius: 30px;
+        }
+
+        .slider:before {
+            position: absolute;
+            content: "";
+            height: 22px;
+            width: 22px;
+            left: 4px;
+            bottom: 4px;
+            background-color: white;
+            transition: .4s;
+            border-radius: 50%;
+        }
+
+        input:checked + .slider {
+            background-color: #667eea;
+        }
+
+        input:checked + .slider:before {
+            transform: translateX(30px);
+        }
+
+        .priority-input {
+            width: 60px;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
+            margin-top: 15px;
+        }
+
+        .stat-box {
+            text-align: center;
+            padding: 15px;
+            background: #f8f9fa;
+            border-radius: 8px;
+        }
+
+        .stat-label {
+            font-size: 12px;
+            color: #666;
+            text-transform: uppercase;
+            margin-bottom: 5px;
+        }
+
+        .stat-value {
+            font-size: 24px;
+            font-weight: 700;
+            color: #667eea;
+        }
+
+        .stat-value.success {
+            color: #00b894;
+        }
+
+        .stat-value.error {
+            color: #d63031;
+        }
+
+        .btn {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .btn-primary {
+            background: #667eea;
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: #5568d3;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn-danger {
+            background: #d63031;
+            color: white;
+        }
+
+        .btn-danger:hover {
+            background: #c0202b;
+        }
+
+        .actions {
+            display: flex;
+            gap: 10px;
+            margin-top: 20px;
+        }
+
+        .status-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 8px;
+        }
+
+        .status-indicator.active {
+            background: #00b894;
+            box-shadow: 0 0 8px #00b894;
+        }
+
+        .status-indicator.inactive {
+            background: #b2bec3;
+        }
+
+        .last-used {
+            font-size: 12px;
+            color: #666;
+            margin-top: 10px;
+        }
+
+        .error-message {
+            background: #fee;
+            border: 1px solid #fcc;
+            color: #c00;
+            padding: 10px;
+            border-radius: 4px;
+            margin-top: 10px;
+            font-size: 12px;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .loading {
+            animation: pulse 1.5s ease-in-out infinite;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>LLM Proxy Manager</h1>
+            <p class="subtitle">Multi-provider AI proxy with automatic failover</p>
+        </div>
+
+        <div class="card">
+            <h2>Provider Configuration</h2>
+            <div id="providers"></div>
+            <div class="actions">
+                <button class="btn btn-primary" onclick="saveConfig()">Save Configuration</button>
+                <button class="btn btn-danger" onclick="resetStats()">Reset Statistics</button>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>Overall Statistics</h2>
+            <div id="overall-stats" class="stats-grid"></div>
+        </div>
+    </div>
+
+    <script>
+        let config = {};
+
+        async function loadConfig() {
+            try {
+                const response = await fetch('/api/config');
+                config = await response.json();
+                renderProviders();
+                loadStats();
+            } catch (error) {
+                console.error('Error loading config:', error);
+            }
+        }
+
+        async function loadStats() {
+            try {
+                const response = await fetch('/api/stats');
+                const stats = await response.json();
+                renderOverallStats(stats);
+            } catch (error) {
+                console.error('Error loading stats:', error);
+            }
+        }
+
+        function renderProviders() {
+            const container = document.getElementById('providers');
+            container.innerHTML = config.providers.map((provider, idx) => {
+                const stats = config.stats[provider.id] || {};
+                const successRate = stats.requests > 0
+                    ? ((stats.successes / stats.requests) * 100).toFixed(1)
+                    : 0;
+                const avgLatency = stats.successes > 0
+                    ? (stats.totalLatency / stats.successes).toFixed(0)
+                    : 0;
+
+                return `
+                    <div class="provider ${!provider.enabled ? 'disabled' : ''}">
+                        <div class="provider-header">
+                            <div>
+                                <span class="status-indicator ${provider.enabled ? 'active' : 'inactive'}"></span>
+                                <span class="provider-name">${provider.name}</span>
+                                <span class="provider-type ${provider.type}">${provider.type}</span>
+                            </div>
+                            <div class="provider-controls">
+                                <label>Priority:</label>
+                                <input type="number"
+                                       class="priority-input"
+                                       value="${provider.priority}"
+                                       onchange="updatePriority(${idx}, this.value)"
+                                       min="1">
+                                <label class="toggle">
+                                    <input type="checkbox"
+                                           ${provider.enabled ? 'checked' : ''}
+                                           onchange="toggleProvider(${idx})">
+                                    <span class="slider"></span>
+                                </label>
+                            </div>
+                        </div>
+
+                        <div class="stats-grid">
+                            <div class="stat-box">
+                                <div class="stat-label">Requests</div>
+                                <div class="stat-value">${stats.requests || 0}</div>
+                            </div>
+                            <div class="stat-box">
+                                <div class="stat-label">Success</div>
+                                <div class="stat-value success">${stats.successes || 0}</div>
+                            </div>
+                            <div class="stat-box">
+                                <div class="stat-label">Failures</div>
+                                <div class="stat-value error">${stats.failures || 0}</div>
+                            </div>
+                            <div class="stat-box">
+                                <div class="stat-label">Success Rate</div>
+                                <div class="stat-value">${successRate}%</div>
+                            </div>
+                            <div class="stat-box">
+                                <div class="stat-label">Avg Latency</div>
+                                <div class="stat-value">${avgLatency}ms</div>
+                            </div>
+                        </div>
+
+                        ${stats.lastUsed ? `
+                            <div class="last-used">
+                                Last used: ${new Date(stats.lastUsed).toLocaleString()}
+                            </div>
+                        ` : ''}
+
+                        ${stats.lastError ? `
+                            <div class="error-message">
+                                Last error: ${stats.lastError.message}
+                                (${new Date(stats.lastError.timestamp).toLocaleString()})
+                            </div>
+                        ` : ''}
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function renderOverallStats(stats) {
+            const container = document.getElementById('overall-stats');
+            const totals = Object.values(stats).reduce((acc, s) => ({
+                requests: acc.requests + (s.requests || 0),
+                successes: acc.successes + (s.successes || 0),
+                failures: acc.failures + (s.failures || 0)
+            }), { requests: 0, successes: 0, failures: 0 });
+
+            const successRate = totals.requests > 0
+                ? ((totals.successes / totals.requests) * 100).toFixed(1)
+                : 0;
+
+            container.innerHTML = `
+                <div class="stat-box">
+                    <div class="stat-label">Total Requests</div>
+                    <div class="stat-value">${totals.requests}</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-label">Total Success</div>
+                    <div class="stat-value success">${totals.successes}</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-label">Total Failures</div>
+                    <div class="stat-value error">${totals.failures}</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-label">Overall Success Rate</div>
+                    <div class="stat-value">${successRate}%</div>
+                </div>
+            `;
+        }
+
+        function toggleProvider(idx) {
+            config.providers[idx].enabled = !config.providers[idx].enabled;
+            renderProviders();
+        }
+
+        function updatePriority(idx, value) {
+            config.providers[idx].priority = parseInt(value);
+            renderProviders();
+        }
+
+        async function saveConfig() {
+            try {
+                const response = await fetch('/api/config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(config)
+                });
+
+                if (response.ok) {
+                    alert('Configuration saved successfully!');
+                    loadConfig();
+                } else {
+                    alert('Error saving configuration');
+                }
+            } catch (error) {
+                console.error('Error saving config:', error);
+                alert('Error saving configuration');
+            }
+        }
+
+        async function resetStats() {
+            if (!confirm('Are you sure you want to reset all statistics?')) {
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/stats/reset', {
+                    method: 'POST'
+                });
+
+                if (response.ok) {
+                    alert('Statistics reset successfully!');
+                    loadConfig();
+                } else {
+                    alert('Error resetting statistics');
+                }
+            } catch (error) {
+                console.error('Error resetting stats:', error);
+                alert('Error resetting statistics');
+            }
+        }
+
+        // Auto-refresh every 10 seconds
+        setInterval(loadStats, 10000);
+
+        // Initial load
+        loadConfig();
+    </script>
+</body>
+</html>
