@@ -577,5 +577,3 @@ If you find this project useful, please consider giving it a star! ⭐
 ---
 
 **Built with ❤️ for the AI community**
-
-Made with Claude Code by Anthropic

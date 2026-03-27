@@ -379,7 +379,6 @@ The system is production-ready with:
 
 ---
 
-**Built with Claude Code by Anthropic**
 **Date**: March 27, 2026
 **Version**: 1.0.0
 **License**: MIT
