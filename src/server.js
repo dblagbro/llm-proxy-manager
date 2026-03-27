@@ -8,6 +8,8 @@ const winston = require('winston');
 const bcrypt = require('bcrypt');
 const session = require('express-session');
 const cookieParser = require('cookie-parser');
+const ClusterManager = require('./cluster');
+const ProviderMonitor = require('./monitor');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -267,7 +269,7 @@ async function streamAnthropic(provider, request, res) {
         'anthropic-version': '2023-06-01'
       },
       responseType: 'stream',
-      timeout: 120000
+      timeout: providerMonitor.getProviderTimeout(provider.type)
     }
   );
 
@@ -291,7 +293,7 @@ async function streamGemini(provider, request, res) {
     {
       headers: { 'Content-Type': 'application/json' },
       responseType: 'stream',
-      timeout: 120000
+      timeout: providerMonitor.getProviderTimeout(provider.type)
     }
   );
 
@@ -385,7 +387,7 @@ async function callAnthropic(provider, request) {
         'x-api-key': provider.apiKey,
         'anthropic-version': '2023-06-01'
       },
-      timeout: 120000
+      timeout: providerMonitor.getProviderTimeout(provider.type)
     }
   );
 
@@ -401,7 +403,7 @@ async function callGemini(provider, request) {
     geminiRequest,
     {
       headers: { 'Content-Type': 'application/json' },
-      timeout: 120000
+      timeout: providerMonitor.getProviderTimeout(provider.type)
     }
   );
 
@@ -435,7 +437,7 @@ async function callVertex(provider, request) {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${provider.apiKey}`
       },
-      timeout: 120000
+      timeout: providerMonitor.getProviderTimeout(provider.type)
     }
   );
 
@@ -459,7 +461,7 @@ async function callGrok(provider, request) {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${provider.apiKey}`
       },
-      timeout: 120000
+      timeout: providerMonitor.getProviderTimeout(provider.type)
     }
   );
 
@@ -493,7 +495,7 @@ async function callOllama(provider, request) {
     },
     {
       headers: { 'Content-Type': 'application/json' },
-      timeout: 120000
+      timeout: providerMonitor.getProviderTimeout(provider.type)
     }
   );
 
@@ -528,7 +530,7 @@ async function callOpenAI(provider, request) {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${provider.apiKey}`
       },
-      timeout: 120000
+      timeout: providerMonitor.getProviderTimeout(provider.type)
     }
   );
 
@@ -567,7 +569,7 @@ async function callOpenAICompatible(provider, request) {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${provider.apiKey}`
       },
-      timeout: 120000
+      timeout: providerMonitor.getProviderTimeout(provider.type)
     }
   );
 
@@ -599,12 +601,21 @@ app.post('/v1/messages', validateApiKey, async (req, res) => {
   });
 
   // Get enabled providers sorted by priority
-  const enabledProviders = config.providers
+  let enabledProviders = config.providers
     .filter(p => p.enabled && p.apiKey)
     .sort((a, b) => a.priority - b.priority);
 
+  // Apply circuit breaker filtering
+  enabledProviders = enabledProviders.filter(p => {
+    const check = providerMonitor.canAttemptProvider(p);
+    if (!check.allowed) {
+      logger.warn(`Provider ${p.name} blocked by circuit breaker: ${check.reason}`);
+    }
+    return check.allowed;
+  });
+
   if (enabledProviders.length === 0) {
-    logger.error('No enabled providers available');
+    logger.error('No available providers (all disabled or circuit breakers open)');
     return res.status(503).json({ error: 'No providers available' });
   }
 
@@ -666,6 +677,9 @@ app.post('/v1/messages', validateApiKey, async (req, res) => {
       config.stats[provider.id].totalLatency += latency;
       config.stats[provider.id].lastUsed = new Date().toISOString();
 
+      // Record success with circuit breaker
+      providerMonitor.recordSuccess(provider);
+
       logger.info(`Success with ${provider.name}`, { latency: `${latency}ms` });
 
       // Track client key usage
@@ -691,6 +705,9 @@ app.post('/v1/messages', validateApiKey, async (req, res) => {
         message: error.message,
         timestamp: new Date().toISOString()
       };
+
+      // Record failure with circuit breaker
+      providerMonitor.recordFailure(provider, error);
 
       logger.error(`Failed with ${provider.name}:`, {
         error: error.message,
@@ -1169,15 +1186,258 @@ app.delete('/api/users/:id', requireAuth, (req, res) => {
 loadConfig();
 initializeUsers();
 
+// Initialize Provider Monitor
+const providerMonitor = new ProviderMonitor(logger);
+
+// Initialize Cluster Manager
+const clusterManager = new ClusterManager(logger, config);
+
+// Monitor event handlers
+providerMonitor.on('circuit.open', ({ provider, reason }) => {
+  addActivityLog('warning', `Circuit breaker OPEN for ${provider.name}`, {
+    providerId: provider.id,
+    reason: reason
+  });
+  saveConfig();
+});
+
+providerMonitor.on('circuit.closed', ({ provider }) => {
+  addActivityLog('success', `Circuit breaker CLOSED for ${provider.name} - recovered`, {
+    providerId: provider.id
+  });
+  saveConfig();
+});
+
+providerMonitor.on('billing.error', ({ provider, error }) => {
+  addActivityLog('error', `Billing/quota error detected for ${provider.name}`, {
+    providerId: provider.id,
+    error: error
+  });
+  saveConfig();
+});
+
+providerMonitor.on('external.degraded', ({ providerType, status, incidents }) => {
+  addActivityLog('warning', `External service ${providerType} reporting ${status}`, {
+    incidents: incidents
+  });
+  saveConfig();
+});
+
+// Cluster event handlers
+clusterManager.on('peer.unhealthy', (peer) => {
+  addActivityLog('warning', `Cluster peer unhealthy: ${peer.name}`, {
+    peerId: peer.id
+  });
+  saveConfig();
+});
+
+clusterManager.on('peer.healthy', (peer) => {
+  addActivityLog('info', `Cluster peer healthy: ${peer.name}`, {
+    peerId: peer.id,
+    latency: peer.latency
+  });
+  saveConfig();
+});
+
+clusterManager.on('config.merged', ({ peer, changes }) => {
+  addActivityLog('info', `Configuration synchronized from ${peer}`, {
+    changes: changes
+  });
+  saveConfig();
+});
+
 // Add startup log entry
 addActivityLog('info', 'LLM Proxy server started', {
   enabledProviders: config.providers.filter(p => p.enabled).length,
-  totalProviders: config.providers.length
+  totalProviders: config.providers.length,
+  clusterEnabled: clusterManager.enabled
 });
 saveConfig();
 
+// ==================== CLUSTER ENDPOINTS ====================
+
+// Cluster info endpoint
+app.get('/cluster/info', (req, res) => {
+  if (!clusterManager.enabled) {
+    return res.status(503).json({ error: 'Cluster mode disabled' });
+  }
+
+  res.json({
+    nodeId: clusterManager.nodeId,
+    nodeName: clusterManager.nodeName,
+    clusterEnabled: true
+  });
+});
+
+// Cluster health endpoint (receives heartbeats)
+app.post('/cluster/heartbeat', (req, res) => {
+  if (!clusterManager.enabled) {
+    return res.status(503).json({ error: 'Cluster mode disabled' });
+  }
+
+  // Verify cluster auth
+  const signature = req.headers['x-cluster-auth'];
+  const payload = `POST:/cluster/heartbeat:${JSON.stringify(req.body)}`;
+
+  if (!clusterManager.verifySignature(payload, signature)) {
+    return res.status(403).json({ error: 'Invalid cluster signature' });
+  }
+
+  // Return our health status
+  res.json(clusterManager.getLocalHealth());
+});
+
+// Cluster configuration sync endpoint
+app.post('/cluster/sync', (req, res) => {
+  if (!clusterManager.enabled) {
+    return res.status(503).json({ error: 'Cluster mode disabled' });
+  }
+
+  // Verify cluster auth
+  const signature = req.headers['x-cluster-auth'];
+  const payload = `POST:/cluster/sync:${JSON.stringify(req.body)}`;
+
+  if (!clusterManager.verifySignature(payload, signature)) {
+    return res.status(403).json({ error: 'Invalid cluster signature' });
+  }
+
+  const { sourceNode, data } = req.body;
+
+  logger.info(`Received config sync from: ${sourceNode}`);
+
+  // Merge configuration
+  clusterManager.mergeConfiguration(data, sourceNode);
+  saveConfig();
+
+  res.json({ success: true, message: 'Configuration synchronized' });
+});
+
+// Get cluster configuration (for peers to pull)
+app.get('/cluster/config', (req, res) => {
+  if (!clusterManager.enabled) {
+    return res.status(503).json({ error: 'Cluster mode disabled' });
+  }
+
+  // Verify cluster auth
+  const signature = req.headers['x-cluster-auth'];
+  const payload = `GET:/cluster/config:${JSON.stringify(req.query)}`;
+
+  if (!clusterManager.verifySignature(payload, signature)) {
+    return res.status(403).json({ error: 'Invalid cluster signature' });
+  }
+
+  res.json({
+    success: true,
+    config: {
+      users: config.users,
+      clientApiKeys: config.clientApiKeys,
+      activityLog: process.env.CLUSTER_SYNC_ACTIVITY_LOG === 'true'
+        ? config.activityLog
+        : []
+    }
+  });
+});
+
+// Cluster status endpoint (for client applications)
+app.get('/cluster/status', authenticateApiKey, (req, res) => {
+  if (!clusterManager.enabled) {
+    return res.json({
+      clusterEnabled: false,
+      localNode: {
+        id: clusterManager.nodeId,
+        name: clusterManager.nodeName,
+        status: 'standalone'
+      },
+      peers: [],
+      totalNodes: 1,
+      healthyNodes: 1
+    });
+  }
+
+  res.json(clusterManager.getClusterStatus());
+});
+
+// Provider monitoring status endpoint
+app.get('/monitoring/status', requireAuth, (req, res) => {
+  res.json(providerMonitor.getMonitoringStatus());
+});
+
+// Manual circuit breaker control
+app.post('/monitoring/circuit/reset', requireAuth, (req, res) => {
+  const { providerId } = req.body;
+
+  if (!providerId) {
+    return res.status(400).json({ error: 'providerId required' });
+  }
+
+  providerMonitor.manualReset(providerId);
+
+  addActivityLog('info', `Circuit breaker manually reset for provider`, {
+    providerId: providerId,
+    username: req.session.username
+  });
+  saveConfig();
+
+  res.json({ success: true, message: 'Circuit breaker reset' });
+});
+
+app.post('/monitoring/circuit/open', requireAuth, (req, res) => {
+  const { providerId, reason } = req.body;
+
+  if (!providerId) {
+    return res.status(400).json({ error: 'providerId required' });
+  }
+
+  providerMonitor.manualOpen(providerId, reason || 'Manual override');
+
+  addActivityLog('warning', `Circuit breaker manually opened for provider`, {
+    providerId: providerId,
+    reason: reason,
+    username: req.session.username
+  });
+  saveConfig();
+
+  res.json({ success: true, message: 'Circuit breaker opened' });
+});
+
+// Trigger external status check
+app.post('/monitoring/check-external', requireAuth, (req, res) => {
+  providerMonitor.checkExternalStatus()
+    .then(() => {
+      res.json({
+        success: true,
+        message: 'External status check initiated',
+        status: providerMonitor.getMonitoringStatus().externalStatus
+      });
+    })
+    .catch(err => {
+      res.status(500).json({ error: err.message });
+    });
+});
+
+// ==================== END CLUSTER ENDPOINTS ====================
 app.listen(PORT, '0.0.0.0', () => {
   logger.info(`LLM Proxy server running on port ${PORT}`);
   logger.info(`SSE streaming support: ENABLED`);
   logger.info(`Enabled providers: ${config.providers.filter(p => p.enabled).length}`);
+  logger.info(`Cluster mode: ${clusterManager.enabled ? 'ENABLED' : 'DISABLED'}`);
+
+  // Start monitoring and cluster services
+  providerMonitor.start();
+  clusterManager.start();
+
+  // Graceful shutdown
+  process.on('SIGTERM', () => {
+    logger.info('SIGTERM received, shutting down gracefully...');
+    providerMonitor.stop();
+    clusterManager.stop();
+    process.exit(0);
+  });
+
+  process.on('SIGINT', () => {
+    logger.info('SIGINT received, shutting down gracefully...');
+    providerMonitor.stop();
+    clusterManager.stop();
+    process.exit(0);
+  });
 });
