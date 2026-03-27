@@ -10,6 +10,7 @@ const session = require('express-session');
 const cookieParser = require('cookie-parser');
 const ClusterManager = require('./cluster');
 const ProviderMonitor = require('./monitor');
+const NotificationManager = require('./notifications');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -1192,12 +1193,16 @@ const providerMonitor = new ProviderMonitor(logger);
 // Initialize Cluster Manager
 const clusterManager = new ClusterManager(logger, config);
 
+// Initialize Notification Manager
+const notificationManager = new NotificationManager(logger, config);
+
 // Monitor event handlers
 providerMonitor.on('circuit.open', ({ provider, reason }) => {
   addActivityLog('warning', `Circuit breaker OPEN for ${provider.name}`, {
     providerId: provider.id,
     reason: reason
   });
+  notificationManager.alertCircuitBreakerOpen(provider, reason);
   saveConfig();
 });
 
@@ -1213,6 +1218,7 @@ providerMonitor.on('billing.error', ({ provider, error }) => {
     providerId: provider.id,
     error: error
   });
+  notificationManager.alertBillingError(provider, error);
   saveConfig();
 });
 
@@ -1220,6 +1226,7 @@ providerMonitor.on('external.degraded', ({ providerType, status, incidents }) =>
   addActivityLog('warning', `External service ${providerType} reporting ${status}`, {
     incidents: incidents
   });
+  notificationManager.alertExternalServiceDown(providerType, status, incidents);
   saveConfig();
 });
 
@@ -1228,6 +1235,7 @@ clusterManager.on('peer.unhealthy', (peer) => {
   addActivityLog('warning', `Cluster peer unhealthy: ${peer.name}`, {
     peerId: peer.id
   });
+  notificationManager.alertClusterNodeDown(peer);
   saveConfig();
 });
 
