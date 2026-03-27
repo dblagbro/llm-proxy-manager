@@ -630,10 +630,12 @@ app.post('/v1/messages', validateApiKey, async (req, res) => {
   // Try providers in order
   for (const provider of enabledProviders) {
     initStats(provider.id);
-    config.stats[provider.id].requests++;
 
     try {
       logger.info(`Trying provider: ${provider.name} (streaming: ${isStreaming})`);
+
+      // Increment requests counter only when actually attempting this provider
+      config.stats[provider.id].requests++;
 
       if (isStreaming) {
         // Streaming mode
