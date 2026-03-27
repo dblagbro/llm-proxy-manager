@@ -1284,14 +1284,23 @@ export ANTHROPIC_API_KEY="proxy-handled"</textarea>
             const testResult = document.getElementById('testResult');
             testResult.innerHTML = '<div class="test-result testing">🧪 Testing provider...</div>';
 
-            const providerData = {
-                type: document.getElementById('edit-type').value,
-                apiKey: document.getElementById('edit-apiKey').value || undefined,
-                projectId: document.getElementById('edit-projectId').value || undefined,
-                location: document.getElementById('edit-location').value || undefined,
-                baseUrl: document.getElementById('edit-baseUrl').value || undefined,
-                model: document.getElementById('edit-model').value || undefined
-            };
+            let providerData;
+
+            // If editing existing provider, just send providerId (backend has the real API key)
+            if (editingIndex !== null) {
+                const provider = config.providers[editingIndex];
+                providerData = { providerId: provider.id };
+            } else {
+                // Adding new provider - send all form data
+                providerData = {
+                    type: document.getElementById('edit-type').value,
+                    apiKey: document.getElementById('edit-apiKey').value || undefined,
+                    projectId: document.getElementById('edit-projectId').value || undefined,
+                    location: document.getElementById('edit-location').value || undefined,
+                    baseUrl: document.getElementById('edit-baseUrl').value || undefined,
+                    model: document.getElementById('edit-model').value || undefined
+                };
+            }
 
             try {
                 const response = await fetch('./api/test-provider', {

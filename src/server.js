@@ -50,8 +50,6 @@ app.use(session({
 // Config file path
 const CONFIG_PATH = '/app/config/providers.json';
 
-// Default configuration
-let config = {
 // Default configuration - minimal example providers
 // Providers can be added/configured through the Web UI or environment variables
 let config = {
