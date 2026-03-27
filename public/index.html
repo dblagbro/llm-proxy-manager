@@ -5,6 +5,39 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>LLM Proxy Manager</title>
     <style>
+        /* Coordinator-style CSS Variables */
+        :root {
+            --bg: #0f1117;
+            --bg2: #161b22;
+            --bg3: #1c2128;
+            --border: #30363d;
+            --text: #e6edf3;
+            --text-muted: #8b949e;
+            --accent: #58a6ff;
+            --accent-dim: #1f6feb;
+            --success: #3fb950;
+            --warning: #d29922;
+            --danger: #f85149;
+            --radius: 6px;
+            --radius-lg: 10px;
+            --shadow: 0 2px 8px rgba(0,0,0,0.4);
+        }
+
+        [data-theme="light"] {
+            --bg: #f8fafc;
+            --bg2: #ffffff;
+            --bg3: #f1f5f9;
+            --border: #e2e8f0;
+            --text: #0f172a;
+            --text-muted: #64748b;
+            --accent: #1d4ed8;
+            --accent-dim: #1e40af;
+            --success: #10b981;
+            --warning: #d97706;
+            --danger: #dc2626;
+            --shadow: 0 2px 8px rgba(0,0,0,0.08);
+        }
+
         * {
             margin: 0;
             padding: 0;
@@ -13,7 +46,8 @@
 
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: var(--bg);
+            color: var(--text);
             min-height: 100vh;
             padding: 20px;
         }
@@ -24,23 +58,24 @@
         }
 
         .header {
-            background: white;
-            border-radius: 12px;
+            background: var(--bg2);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
             padding: 30px;
             margin-bottom: 20px;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            box-shadow: var(--shadow);
             display: flex;
             justify-content: space-between;
             align-items: center;
         }
 
         h1 {
-            color: #667eea;
+            color: var(--accent);
             margin-bottom: 5px;
         }
 
         .subtitle {
-            color: #666;
+            color: var(--text-muted);
             font-size: 14px;
         }
 
@@ -50,40 +85,42 @@
         }
 
         .card {
-            background: white;
-            border-radius: 12px;
+            background: var(--bg2);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
             padding: 25px;
             margin-bottom: 20px;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            box-shadow: var(--shadow);
         }
 
         h2 {
-            color: #333;
+            color: var(--text);
             margin-bottom: 20px;
             padding-bottom: 10px;
-            border-bottom: 2px solid #667eea;
+            border-bottom: 2px solid var(--accent);
             display: flex;
             justify-content: space-between;
             align-items: center;
         }
 
         .provider {
-            border: 2px solid #e0e0e0;
-            border-radius: 8px;
+            border: 2px solid var(--border);
+            border-radius: var(--radius);
             padding: 20px;
             margin-bottom: 15px;
             transition: all 0.3s ease;
             cursor: move;
+            background: var(--bg3);
         }
 
         .provider:hover {
-            box-shadow: 0 2px 8px rgba(102, 126, 234, 0.3);
-            border-color: #667eea;
+            box-shadow: 0 2px 8px rgba(88, 166, 255, 0.3);
+            border-color: var(--accent);
         }
 
         .provider.disabled {
             opacity: 0.6;
-            background: #f5f5f5;
+            background: var(--bg);
         }
 
         .provider.dragging {
@@ -106,14 +143,14 @@
         .drag-handle {
             cursor: move;
             font-size: 24px;
-            color: #999;
+            color: var(--text-muted);
             user-select: none;
         }
 
         .provider-name {
             font-size: 18px;
             font-weight: 600;
-            color: #333;
+            color: var(--text);
         }
 
         .provider-type {
@@ -142,10 +179,10 @@
         }
 
         .priority-badge {
-            background: #667eea;
+            background: var(--accent-dim);
             color: white;
             padding: 6px 12px;
-            border-radius: 6px;
+            border-radius: var(--radius);
             font-weight: 600;
             font-size: 14px;
         }
@@ -169,7 +206,7 @@
             left: 0;
             right: 0;
             bottom: 0;
-            background-color: #ccc;
+            background-color: var(--border);
             transition: .4s;
             border-radius: 30px;
         }
@@ -187,7 +224,7 @@
         }
 
         input:checked + .slider {
-            background-color: #667eea;
+            background-color: var(--accent);
         }
 
         input:checked + .slider:before {
@@ -208,41 +245,42 @@
         }
 
         .btn-primary {
-            background: #667eea;
+            background: var(--accent-dim);
             color: white;
         }
 
         .btn-primary:hover {
-            background: #5568d3;
+            background: var(--accent);
             transform: translateY(-2px);
-            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+            box-shadow: 0 4px 12px rgba(88, 166, 255, 0.4);
         }
 
         .btn-secondary {
-            background: #6c757d;
-            color: white;
+            background: var(--bg3);
+            color: var(--text);
+            border: 1px solid var(--border);
         }
 
         .btn-secondary:hover {
-            background: #5a6268;
+            background: var(--bg);
         }
 
         .btn-success {
-            background: #00b894;
+            background: var(--success);
             color: white;
         }
 
         .btn-success:hover {
-            background: #00a383;
+            opacity: 0.85;
         }
 
         .btn-danger {
-            background: #d63031;
+            background: var(--danger);
             color: white;
         }
 
         .btn-danger:hover {
-            background: #c0202b;
+            opacity: 0.85;
         }
 
         .btn-small {
@@ -267,14 +305,14 @@
 
         .detail-label {
             font-size: 12px;
-            color: #666;
+            color: var(--text-muted);
             text-transform: uppercase;
             font-weight: 600;
         }
 
         .detail-value {
             font-size: 14px;
-            color: #333;
+            color: var(--text);
             font-family: 'Courier New', monospace;
         }
 
@@ -287,8 +325,8 @@
         .api-key-text {
             flex: 1;
             padding: 8px;
-            background: #f8f9fa;
-            border-radius: 4px;
+            background: var(--bg3);
+            border-radius: var(--radius);
             font-family: 'Courier New', monospace;
             font-size: 12px;
         }
@@ -303,13 +341,14 @@
         .stat-box {
             text-align: center;
             padding: 15px;
-            background: #f8f9fa;
-            border-radius: 8px;
+            background: var(--bg3);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
         }
 
         .stat-label {
             font-size: 12px;
-            color: #666;
+            color: var(--text-muted);
             text-transform: uppercase;
             margin-bottom: 5px;
         }
@@ -317,15 +356,15 @@
         .stat-value {
             font-size: 24px;
             font-weight: 700;
-            color: #667eea;
+            color: var(--accent);
         }
 
         .stat-value.success {
-            color: #00b894;
+            color: var(--success);
         }
 
         .stat-value.error {
-            color: #d63031;
+            color: var(--danger);
         }
 
         .status-indicator {
@@ -337,12 +376,13 @@
         }
 
         .status-indicator.active {
-            background: #00b894;
-            box-shadow: 0 0 8px #00b894;
+            background: var(--success);
+            box-shadow: 0 0 8px var(--success);
         }
 
         .status-indicator.inactive {
-            background: #b2bec3;
+            background: var(--text-muted);
+            opacity: 0.5;
         }
 
         .modal {
@@ -364,14 +404,15 @@
         }
 
         .modal-content {
-            background: white;
-            border-radius: 12px;
+            background: var(--bg2);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
             padding: 30px;
             max-width: 600px;
             width: 90%;
             max-height: 90vh;
             overflow-y: auto;
-            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+            box-shadow: var(--shadow);
             animation: slideUp 0.3s;
         }
 
@@ -391,25 +432,25 @@
             align-items: center;
             margin-bottom: 20px;
             padding-bottom: 15px;
-            border-bottom: 2px solid #667eea;
+            border-bottom: 2px solid var(--accent);
         }
 
         .modal-header h3 {
-            color: #667eea;
+            color: var(--accent);
             margin: 0;
         }
 
         .close-btn {
             font-size: 28px;
             font-weight: bold;
-            color: #999;
+            color: var(--text-muted);
             cursor: pointer;
             border: none;
             background: none;
         }
 
         .close-btn:hover {
-            color: #333;
+            color: var(--text);
         }
 
         .form-group {
@@ -420,23 +461,27 @@
             display: block;
             margin-bottom: 8px;
             font-weight: 600;
-            color: #333;
+            color: var(--text);
         }
 
         .form-group input,
-        .form-group select {
+        .form-group select,
+        .form-group textarea {
             width: 100%;
             padding: 10px;
-            border: 1px solid #ddd;
-            border-radius: 6px;
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
             font-size: 14px;
+            background: var(--bg3);
+            color: var(--text);
         }
 
         .form-group input:focus,
-        .form-group select:focus {
+        .form-group select:focus,
+        .form-group textarea:focus {
             outline: none;
-            border-color: #667eea;
-            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px rgba(88, 166, 255, 0.1);
         }
 
         .form-actions {
@@ -454,21 +499,21 @@
         }
 
         .test-result.success {
-            background: #d4edda;
-            color: #155724;
-            border: 1px solid #c3e6cb;
+            background: rgba(63, 185, 80, 0.15);
+            color: var(--success);
+            border: 1px solid rgba(63, 185, 80, 0.3);
         }
 
         .test-result.error {
-            background: #f8d7da;
-            color: #721c24;
-            border: 1px solid #f5c6cb;
+            background: rgba(248, 81, 73, 0.15);
+            color: var(--danger);
+            border: 1px solid rgba(248, 81, 73, 0.3);
         }
 
         .test-result.testing {
-            background: #d1ecf1;
-            color: #0c5460;
-            border: 1px solid #bee5eb;
+            background: rgba(88, 166, 255, 0.15);
+            color: var(--accent);
+            border: 1px solid rgba(88, 166, 255, 0.3);
         }
 
         .loading {
@@ -492,111 +537,73 @@
             flex-wrap: wrap;
         }
 
-        /* Dark Mode Styles */
-        body.dark-mode {
-            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+        /* User Dropdown Styles */
+        .user-dropdown {
+            position: relative;
         }
 
-        body.dark-mode .header,
-        body.dark-mode .card {
-            background: #1e1e2e;
-            color: #e0e0e0;
-        }
-
-        body.dark-mode h1,
-        body.dark-mode h2 {
-            color: #8b9cee;
-        }
-
-        body.dark-mode .subtitle,
-        body.dark-mode #userDisplay {
-            color: #b0b0b0 !important;
-        }
-
-        body.dark-mode .provider {
-            background: #252538;
-            border-color: #3a3a4e;
-            color: #e0e0e0;
-        }
-
-        body.dark-mode .provider.disabled {
-            background: #1a1a2a;
-        }
-
-        body.dark-mode .provider:hover {
-            border-color: #8b9cee;
-            box-shadow: 0 2px 8px rgba(139, 156, 238, 0.3);
-        }
-
-        body.dark-mode .modal-content {
-            background: #1e1e2e;
-            color: #e0e0e0;
-        }
-
-        body.dark-mode input,
-        body.dark-mode select,
-        body.dark-mode textarea {
-            background: #252538;
-            color: #e0e0e0;
-            border-color: #3a3a4e;
-        }
-
-        body.dark-mode input:focus,
-        body.dark-mode select:focus,
-        body.dark-mode textarea:focus {
-            border-color: #8b9cee;
-        }
-
-        body.dark-mode .btn {
-            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
-        }
-
-        body.dark-mode .status-badge {
-            background: #252538;
-        }
-
-        body.dark-mode .activity-entry {
-            background: #252538;
-            border-left-color: #3a3a4e;
-        }
-
-        body.dark-mode .activity-entry.success {
-            border-left-color: #10b981;
-        }
-
-        body.dark-mode .activity-entry.error {
-            border-left-color: #ef4444;
-        }
-
-        body.dark-mode .activity-entry.warning {
-            border-left-color: #f59e0b;
-        }
-
-        .dark-mode-toggle {
-            background: transparent;
-            border: 2px solid #667eea;
-            color: #667eea;
+        .user-dropdown-toggle {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            background: var(--bg3);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 6px 12px;
             cursor: pointer;
-            padding: 8px 16px;
-            border-radius: 8px;
-            font-size: 18px;
-            transition: all 0.3s ease;
+            color: var(--text);
+            font-size: 14px;
+            transition: background 0.15s;
         }
 
-        .dark-mode-toggle:hover {
-            background: #667eea;
-            color: white;
-            transform: scale(1.05);
+        .user-dropdown-toggle:hover,
+        .user-dropdown-toggle.open {
+            background: var(--bg);
         }
 
-        body.dark-mode .dark-mode-toggle {
-            border-color: #8b9cee;
-            color: #8b9cee;
+        .user-dropdown-menu {
+            display: none;
+            position: absolute;
+            right: 0;
+            top: calc(100% + 6px);
+            background: var(--bg2);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
+            min-width: 220px;
+            box-shadow: 0 8px 30px rgba(0,0,0,0.4);
+            z-index: 1000;
+            overflow: hidden;
         }
 
-        body.dark-mode .dark-mode-toggle:hover {
-            background: #8b9cee;
-            color: #1e1e2e;
+        .user-dropdown-menu.open {
+            display: block;
+        }
+
+        .dropdown-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px 16px;
+            color: var(--text);
+            text-decoration: none;
+            font-size: 14px;
+            background: none;
+            border: none;
+            width: 100%;
+            text-align: left;
+            cursor: pointer;
+            transition: background 0.1s;
+        }
+
+        .dropdown-item:hover {
+            background: var(--bg3);
+            text-decoration: none;
+        }
+
+        .dropdown-divider {
+            height: 1px;
+            background: var(--border);
+            margin: 4px 0;
         }
     </style>
 </head>
@@ -608,11 +615,20 @@
                 <p class="subtitle">Multi-provider AI proxy with automatic failover • SSE Streaming Enabled</p>
             </div>
             <div class="header-actions">
-                <span id="userDisplay" style="color: #333; font-weight: 600; margin-right: 15px;"></span>
-                <button class="dark-mode-toggle" onclick="toggleDarkMode()" title="Toggle dark mode">🌙</button>
                 <button class="btn btn-secondary" onclick="showSettings()">⚙️ Settings</button>
                 <button class="btn btn-primary" onclick="addProvider()">➕ Add Provider</button>
-                <button class="btn btn-danger" onclick="logout()">🚪 Logout</button>
+                <div class="user-dropdown">
+                    <button class="user-dropdown-toggle" onclick="toggleUserDropdown()">
+                        <span>👤</span>
+                        <span id="userDisplay"></span>
+                        <span>▼</span>
+                    </button>
+                    <div class="user-dropdown-menu" id="userDropdownMenu">
+                        <a href="#" class="dropdown-item" onclick="showProfileSettings(); return false;">⚙️ Profile Settings</a>
+                        <div class="dropdown-divider"></div>
+                        <button class="dropdown-item" onclick="logout()">🚪 Logout</button>
+                    </div>
+                </div>
             </div>
         </div>
 
@@ -872,6 +888,54 @@ export ANTHROPIC_API_KEY="proxy-handled"</textarea>
         </div>
     </div>
 
+    <!-- Profile Settings Modal -->
+    <div id="profileModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Profile Settings</h3>
+                <button class="close-btn" onclick="closeProfileModal()">&times;</button>
+            </div>
+            <form id="profileForm">
+                <div class="form-group">
+                    <label>Email</label>
+                    <input type="email" id="profile-email" placeholder="your@email.com">
+                </div>
+                <div class="form-group">
+                    <label>Theme Preference</label>
+                    <div style="display: flex; gap: 15px; margin-top: 8px;">
+                        <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                            <input type="radio" name="theme" value="dark" id="theme-dark" checked>
+                            <span>🌙 Dark</span>
+                        </label>
+                        <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                            <input type="radio" name="theme" value="light" id="theme-light">
+                            <span>☀️ Light</span>
+                        </label>
+                    </div>
+                </div>
+                <div class="form-actions">
+                    <button type="button" class="btn btn-secondary" onclick="closeProfileModal()">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Save Profile</button>
+                </div>
+            </form>
+            <hr style="margin: 25px 0; border: none; border-top: 1px solid var(--border);">
+            <h3 style="margin-bottom: 15px; font-size: 16px;">Change Password</h3>
+            <form id="changePasswordForm">
+                <div class="form-group">
+                    <label>New Password</label>
+                    <input type="password" id="new-password-profile" minlength="8" required>
+                </div>
+                <div class="form-group">
+                    <label>Confirm Password</label>
+                    <input type="password" id="confirm-password-profile" minlength="8" required>
+                </div>
+                <div class="form-actions">
+                    <button type="submit" class="btn btn-danger">Change Password</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
     <script>
         let config = {};
         let editingIndex = -1;
@@ -881,26 +945,116 @@ export ANTHROPIC_API_KEY="proxy-handled"</textarea>
 
         // Drag and drop
         let draggedElement = null;
+        let userProfile = {};
 
-        // Dark mode
-        function toggleDarkMode() {
-            document.body.classList.toggle('dark-mode');
-            const isDark = document.body.classList.contains('dark-mode');
-            localStorage.setItem('darkMode', isDark ? 'enabled' : 'disabled');
-
-            // Update icon
-            const btn = document.querySelector('.dark-mode-toggle');
-            btn.textContent = isDark ? '☀️' : '🌙';
+        // User dropdown
+        function toggleUserDropdown() {
+            const menu = document.getElementById('userDropdownMenu');
+            const toggle = event.target.closest('.user-dropdown-toggle');
+            menu.classList.toggle('open');
+            toggle.classList.toggle('open');
         }
 
-        function initDarkMode() {
-            const darkMode = localStorage.getItem('darkMode');
-            if (darkMode === 'enabled') {
-                document.body.classList.add('dark-mode');
-                const btn = document.querySelector('.dark-mode-toggle');
-                if (btn) btn.textContent = '☀️';
+        // Close dropdown when clicking outside
+        document.addEventListener('click', function(event) {
+            const dropdown = document.querySelector('.user-dropdown');
+            if (dropdown && !dropdown.contains(event.target)) {
+                const menu = document.getElementById('userDropdownMenu');
+                const toggle = document.querySelector('.user-dropdown-toggle');
+                if (menu) menu.classList.remove('open');
+                if (toggle) toggle.classList.remove('open');
+            }
+        });
+
+        // Profile settings modal
+        function showProfileSettings() {
+            document.getElementById('profile-email').value = userProfile.email || '';
+            const theme = userProfile.theme || 'dark';
+            document.getElementById('theme-dark').checked = theme === 'dark';
+            document.getElementById('theme-light').checked = theme === 'light';
+            document.getElementById('profileModal').classList.add('show');
+        }
+
+        function closeProfileModal() {
+            document.getElementById('profileModal').classList.remove('show');
+        }
+
+        // Load user profile
+        async function loadUserProfile() {
+            try {
+                const response = await fetch('./api/profile');
+                if (response.ok) {
+                    userProfile = await response.json();
+                    applyTheme(userProfile.theme || 'dark');
+                }
+            } catch (error) {
+                console.error('Error loading profile:', error);
             }
         }
+
+        // Apply theme
+        function applyTheme(theme) {
+            document.documentElement.setAttribute('data-theme', theme);
+            localStorage.setItem('theme', theme);
+        }
+
+        // Save profile
+        document.getElementById('profileForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const email = document.getElementById('profile-email').value;
+            const theme = document.querySelector('input[name="theme"]:checked').value;
+
+            try {
+                const response = await fetch('./api/profile', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ email, theme })
+                });
+
+                if (response.ok) {
+                    userProfile = await response.json();
+                    applyTheme(theme);
+                    alert('Profile updated successfully!');
+                    closeProfileModal();
+                } else {
+                    const data = await response.json();
+                    alert('Error: ' + (data.error || 'Failed to update profile'));
+                }
+            } catch (error) {
+                alert('Error updating profile: ' + error.message);
+            }
+        });
+
+        // Change password
+        document.getElementById('changePasswordForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const newPassword = document.getElementById('new-password-profile').value;
+            const confirmPassword = document.getElementById('confirm-password-profile').value;
+
+            if (newPassword !== confirmPassword) {
+                alert('Passwords do not match!');
+                return;
+            }
+
+            try {
+                const response = await fetch('./api/profile/password', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ password: newPassword })
+                });
+
+                if (response.ok) {
+                    alert('Password changed successfully!');
+                    document.getElementById('changePasswordForm').reset();
+                    closeProfileModal();
+                } else {
+                    const data = await response.json();
+                    alert('Error: ' + (data.error || 'Failed to change password'));
+                }
+            } catch (error) {
+                alert('Error changing password: ' + error.message);
+            }
+        });
 
         // Check authentication on page load
         async function checkAuth() {
@@ -914,7 +1068,7 @@ export ANTHROPIC_API_KEY="proxy-handled"</textarea>
                 }
 
                 currentUser = data.user;
-                document.getElementById('userDisplay').textContent = `👤 ${data.user.username}`;
+                document.getElementById('userDisplay').textContent = data.user.username;
                 return true;
             } catch (error) {
                 console.error('Auth check failed:', error);
@@ -1041,10 +1195,14 @@ export ANTHROPIC_API_KEY="proxy-handled"</textarea>
                             ` : ''}
                         </div>
 
-                        ${stats.lastError ? `
-                            <div class="test-result error" style="margin-top: 15px;">
-                                <strong>Last Error:</strong> ${stats.lastError.message}<br>
-                                <small>${new Date(stats.lastError.timestamp).toLocaleString()}</small>
+                        ${stats.lastSuccess || stats.lastError ? `
+                            <div class="test-result ${stats.lastSuccess && (!stats.lastError || new Date(stats.lastSuccess.timestamp) > new Date(stats.lastError.timestamp)) ? 'success' : 'error'}" style="margin-top: 15px;">
+                                <strong>Last Status:</strong> ${
+                                    stats.lastSuccess && (!stats.lastError || new Date(stats.lastSuccess.timestamp) > new Date(stats.lastError.timestamp))
+                                        ? `✓ Success`
+                                        : `✗ ${stats.lastError.message}`
+                                }<br>
+                                <small>${new Date((stats.lastSuccess && (!stats.lastError || new Date(stats.lastSuccess.timestamp) > new Date(stats.lastError.timestamp)) ? stats.lastSuccess : stats.lastError).timestamp).toLocaleString()}</small>
                             </div>
                         ` : ''}
                     </div>
@@ -1837,11 +1995,10 @@ export ANTHROPIC_API_KEY="proxy-handled"</textarea>
             loadActivityLog();
         }, 10000);
 
-        // Initial load - initialize dark mode, check auth, then load config
-        initDarkMode();
-
+        // Initial load - check auth, load profile and theme, then load config
         checkAuth().then(authenticated => {
             if (authenticated) {
+                loadUserProfile();
                 loadConfig();
                 loadUsers();
                 loadApiKeys();
