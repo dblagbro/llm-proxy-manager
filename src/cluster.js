@@ -38,7 +38,13 @@ class ClusterManager extends EventEmitter {
 
     // Format: "id1:url1,id2:url2"
     return peerString.split(',').map(peer => {
-      const [id, url] = peer.trim().split(':');
+      const trimmed = peer.trim();
+      const colonIndex = trimmed.indexOf(':');
+      if (colonIndex === -1) return null;
+
+      const id = trimmed.substring(0, colonIndex);
+      const url = trimmed.substring(colonIndex + 1);
+
       return {
         id: id,
         name: `LLM Proxy ${id}`,
@@ -49,16 +55,21 @@ class ClusterManager extends EventEmitter {
         providers: 0,
         healthyProviders: 0
       };
-    }).filter(p => p.id && p.url);
+    }).filter(p => p && p.id && p.url);
   }
 
-  start() {
+  async start() {
     if (!this.enabled) return;
 
     this.logger.info('Starting cluster manager...');
 
     // Initial peer discovery
-    this.discoverPeers();
+    await this.discoverPeers();
+
+    // Run initial sync immediately after discovery
+    setTimeout(() => {
+      this.syncConfiguration();
+    }, 3000);
 
     // Start heartbeat (every 30 seconds)
     this.heartbeatInterval = setInterval(() => {
@@ -91,8 +102,11 @@ class ClusterManager extends EventEmitter {
         });
 
         peer.name = response.data.nodeName || peer.name;
+        peer.healthy = true; // Mark as healthy if discovery succeeds
+        peer.lastHeartbeat = new Date();
         this.logger.info(`Discovered peer: ${peer.name} (${peer.id})`);
       } catch (err) {
+        peer.healthy = false;
         this.logger.warn(`Failed to discover peer ${peer.id}: ${err.message}`);
       }
     }
