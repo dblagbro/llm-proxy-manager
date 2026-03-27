@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login - LLM Proxy</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .login-container {
+            background: white;
+            border-radius: 12px;
+            padding: 40px;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+            width: 90%;
+            max-width: 400px;
+        }
+
+        h1 {
+            color: #667eea;
+            margin-bottom: 10px;
+            text-align: center;
+        }
+
+        .subtitle {
+            color: #666;
+            text-align: center;
+            margin-bottom: 30px;
+            font-size: 14px;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+            color: #333;
+        }
+
+        input {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            font-size: 14px;
+        }
+
+        input:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+
+        .btn {
+            width: 100%;
+            padding: 14px;
+            border: none;
+            border-radius: 6px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            background: #667eea;
+            color: white;
+        }
+
+        .btn:hover {
+            background: #5568d3;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .error {
+            background: #fee;
+            border: 1px solid #fcc;
+            color: #c00;
+            padding: 12px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+            font-size: 14px;
+        }
+
+        .loading {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 3px solid rgba(255, 255, 255, 0.3);
+            border-radius: 50%;
+            border-top-color: white;
+            animation: spin 1s ease-in-out infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="login-container">
+        <h1>🤖 LLM Proxy</h1>
+        <p class="subtitle">Management Console</p>
+
+        <div id="error" class="error" style="display: none;"></div>
+
+        <form id="loginForm">
+            <div class="form-group">
+                <label for="username">Username</label>
+                <input type="text" id="username" name="username" required autofocus>
+            </div>
+
+            <div class="form-group">
+                <label for="password">Password</label>
+                <input type="password" id="password" name="password" required>
+            </div>
+
+            <button type="submit" class="btn" id="loginBtn">
+                Login
+            </button>
+        </form>
+    </div>
+
+    <script>
+        // Check if already logged in
+        fetch('./api/auth/check')
+            .then(r => r.json())
+            .then(data => {
+                if (data.authenticated) {
+                    window.location.href = './';
+                }
+            });
+
+        document.getElementById('loginForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+            const btn = document.getElementById('loginBtn');
+            const errorDiv = document.getElementById('error');
+
+            btn.disabled = true;
+            btn.innerHTML = '<span class="loading"></span> Logging in...';
+            errorDiv.style.display = 'none';
+
+            try {
+                const response = await fetch('./api/auth/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password })
+                });
+
+                const data = await response.json();
+
+                if (response.ok && data.success) {
+                    window.location.href = './';
+                } else {
+                    errorDiv.textContent = data.error || 'Login failed';
+                    errorDiv.style.display = 'block';
+                    btn.disabled = false;
+                    btn.textContent = 'Login';
+                }
+            } catch (error) {
+                errorDiv.textContent = 'Network error. Please try again.';
+                errorDiv.style.display = 'block';
+                btn.disabled = false;
+                btn.textContent = 'Login';
+            }
+        });
+    </script>
+</body>
+</html>
