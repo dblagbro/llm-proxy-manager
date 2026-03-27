@@ -858,6 +858,49 @@ export ANTHROPIC_API_KEY="proxy-handled"</textarea>
         </div>
     </div>
 
+    <!-- Edit Node Modal -->
+    <div id="editNodeModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Edit Cluster Node</h3>
+                <button class="close-btn" onclick="closeEditNodeModal()">&times;</button>
+            </div>
+            <div style="padding: 15px; background: var(--bg3); border-radius: 6px; margin-bottom: 20px; border-left: 3px solid var(--info);">
+                <p style="margin: 0; font-size: 14px; color: var(--text-muted);">
+                    Update the node's display name or URL. You'll need to update CLUSTER_PEERS on all nodes and restart services for changes to take effect.
+                </p>
+            </div>
+            <form id="editNodeForm">
+                <input type="hidden" id="edit-node-id">
+                <div class="form-group">
+                    <label>Node ID</label>
+                    <input type="text" id="edit-node-id-display" disabled style="background: var(--bg3); cursor: not-allowed;">
+                    <small style="color: var(--text-muted);">Node ID cannot be changed</small>
+                </div>
+                <div class="form-group">
+                    <label>Node Name</label>
+                    <input type="text" id="edit-node-name" required placeholder="e.g., LLM Proxy Node 3">
+                </div>
+                <div class="form-group">
+                    <label>Node URL</label>
+                    <input type="url" id="edit-node-url" required placeholder="https://example.com/llmProxy">
+                </div>
+                <div class="form-actions">
+                    <button type="button" class="btn btn-secondary" onclick="closeEditNodeModal()">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Generate Updated Configuration</button>
+                </div>
+            </form>
+            <div id="edit-config-output" style="display: none; margin-top: 20px;">
+                <h4 style="margin-bottom: 10px;">Updated Configuration:</h4>
+                <div style="background: var(--bg3); padding: 15px; border-radius: 6px; border: 1px solid var(--border);">
+                    <p style="margin-bottom: 10px; font-weight: 600;">Update your CLUSTER_PEERS environment variable with:</p>
+                    <pre id="edit-cluster-peers-value" style="background: var(--bg); padding: 10px; border-radius: 4px; overflow-x: auto; font-size: 12px; font-family: 'Courier New', monospace;"></pre>
+                    <button class="btn btn-secondary btn-small" onclick="copyToClipboard('edit-cluster-peers-value')">📋 Copy to Clipboard</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Create API Key Modal -->
     <div id="createApiKeyModal" class="modal">
         <div class="modal-content">
@@ -1256,14 +1299,16 @@ export ANTHROPIC_API_KEY="proxy-handled"</textarea>
                     const statusIcon = peer.status === 'healthy' ? '✓' : '✗';
 
                     html += `
-                        <div class="provider peer-node-clickable" style="border-left: 3px solid ${statusColor}; cursor: pointer;" onclick="window.open('${peer.url}', '_blank')">
-                            <div class="provider-header">
-                                <div class="provider-info">
-                                    <span style="font-size: 20px;">${statusIcon}</span>
-                                    <span class="provider-name">${peer.name}</span>
-                                    <span class="provider-type">${peer.id}</span>
+                        <div class="provider peer-node-clickable" style="border-left: 3px solid ${statusColor}; position: relative;">
+                            <button class="btn btn-secondary btn-small" style="position: absolute; top: 10px; right: 10px; padding: 4px 8px; font-size: 12px; z-index: 10;" onclick="event.stopPropagation(); openEditNodeModal('${peer.id}', '${peer.name}', '${peer.url}')">✏️ Edit</button>
+                            <div onclick="window.open('${peer.url}', '_blank')" style="cursor: pointer; padding-right: 80px;">
+                                <div class="provider-header">
+                                    <div class="provider-info">
+                                        <span style="font-size: 20px;">${statusIcon}</span>
+                                        <span class="provider-name">${peer.name}</span>
+                                        <span class="provider-type">${peer.id}</span>
+                                    </div>
                                 </div>
-                            </div>
                             <div class="stats-grid">
                                 <div class="stat-box">
                                     <div class="stat-label">Status</div>
@@ -1281,6 +1326,7 @@ export ANTHROPIC_API_KEY="proxy-handled"</textarea>
                                     <div class="stat-label">Last Heartbeat</div>
                                     <div class="stat-value" style="font-size: 12px;">${peer.lastHeartbeat ? new Date(peer.lastHeartbeat).toLocaleTimeString() : 'Never'}</div>
                                 </div>
+                            </div>
                             </div>
                         </div>
                     `;
@@ -1969,6 +2015,52 @@ export ANTHROPIC_API_KEY="proxy-handled"</textarea>
                 alert('Failed to copy to clipboard');
             });
         }
+
+        // Edit Node Modal Functions
+        function openEditNodeModal(nodeId, nodeName, nodeUrl) {
+            document.getElementById('edit-node-id').value = nodeId;
+            document.getElementById('edit-node-id-display').value = nodeId;
+            document.getElementById('edit-node-name').value = nodeName;
+            document.getElementById('edit-node-url').value = nodeUrl;
+            document.getElementById('edit-config-output').style.display = 'none';
+            document.getElementById('editNodeModal').classList.add('show');
+        }
+
+        function closeEditNodeModal() {
+            document.getElementById('editNodeModal').classList.remove('show');
+            document.getElementById('editNodeForm').reset();
+            document.getElementById('edit-config-output').style.display = 'none';
+        }
+
+        document.getElementById('editNodeForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            const nodeId = document.getElementById('edit-node-id').value;
+            const nodeName = document.getElementById('edit-node-name').value;
+            const nodeUrl = document.getElementById('edit-node-url').value;
+
+            // Fetch current cluster status to get all peers
+            try {
+                const response = await fetch('/api/cluster/status');
+                const clusterData = await response.json();
+
+                // Build updated CLUSTER_PEERS string
+                const peers = clusterData.peers || [];
+                const updatedPeers = peers.map(peer => {
+                    if (peer.id === nodeId) {
+                        return `${nodeId}:${nodeUrl}`;
+                    }
+                    return `${peer.id}:${peer.url}`;
+                }).join(',');
+
+                // Show the updated configuration
+                document.getElementById('edit-cluster-peers-value').textContent = updatedPeers;
+                document.getElementById('edit-config-output').style.display = 'block';
+            } catch (error) {
+                console.error('Failed to fetch cluster status:', error);
+                alert('Failed to generate updated configuration. Please try again.');
+            }
+        });
 
         async function deployNodeToGCP(gcpServer, nodeId, nodeName, nodeUrl) {
             if (!confirm(`Deploy llm-proxy to ${gcpServer}?\n\nThis will:\n1. Install Docker if needed\n2. Pull the latest llm-proxy image\n3. Configure nginx\n4. Start the services`)) {
