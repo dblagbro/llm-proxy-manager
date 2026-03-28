@@ -1,9 +1,9 @@
-# LLM Proxy
+# LLM Proxy Manager
 
-**Version**: 1.1.0
-**Last Updated**: March 27, 2026
+**Version**: 1.2.0
+**Last Updated**: March 28, 2026
 
-Multi-provider LLM API proxy with automatic failover, streaming support, cost tracking, and web-based management.
+Production-ready multi-provider LLM API proxy with automatic failover, streaming support, cost tracking, password reset, and comprehensive web-based management.
 
 ## Features
 
@@ -11,11 +11,15 @@ Multi-provider LLM API proxy with automatic failover, streaming support, cost tr
 - **Multi-Provider Support**: Anthropic Claude, Google Gemini/Vertex AI, OpenAI, Grok, Ollama, OpenAI-compatible
 - **Streaming Support**: Server-Sent Events (SSE) streaming for all providers
 - **Automatic Failover**: Tries providers in priority order with circuit breaker protection
-- **Cost Tracking**: Real-time token usage and cost calculation with visualization
+- **Cost Tracking**: Real-time token usage and cost calculation with detailed logging
+- **Password Reset**: Email-based forgot password with secure token generation
+- **User Management**: Multi-user support with profile management and email notifications
+- **SMTP Integration**: Configurable email notifications for system alerts and password resets
 - **Request Translation**: Converts Anthropic format to provider-specific formats
 - **Web UI**: Real-time monitoring, cost tracking, circuit breaker status, and configuration
 - **Statistics Tracking**: Per-provider request/success/failure stats with cost metrics
 - **Circuit Breaker**: Automatic provider isolation on failures with visual status
+- **Dark Mode Support**: Full light/dark theme support with proper contrast
 - **Docker Ready**: Complete containerized deployment with cluster support
 
 ## Providers
@@ -142,6 +146,45 @@ View circuit breaker status in the Web UI or via API:
 ```bash
 curl http://localhost:3100/api/circuit-status
 ```
+
+## Password Reset & User Management
+
+### Forgot Password Feature
+
+Users can reset their passwords via email:
+
+1. Click "Forgot Password?" on the login page
+2. Enter username
+3. Receive email with secure reset link (valid for 1 hour)
+4. Click link and enter new password
+5. Login with new credentials
+
+**Requirements**:
+- SMTP must be configured in Settings → Email Notifications
+- User must have email address in their profile
+
+**Security Features**:
+- Tokens expire after 1 hour
+- One-time use tokens (cannot be reused)
+- Secure random token generation (crypto.randomBytes)
+- Generic error messages prevent username enumeration
+
+### SMTP Configuration
+
+Configure email settings in the Settings modal:
+
+- **Host**: SMTP server hostname (e.g., smtp.gmail.com)
+- **Port**: SMTP port (usually 465 or 587)
+- **Secure**: Use TLS/SSL
+- **Username**: SMTP authentication username
+- **Password**: SMTP authentication password (app-specific recommended)
+- **From**: Sender email address
+- **To**: Recipient for system notifications
+- **Subject Prefix**: Prefix for notification emails
+- **Min Severity**: Minimum alert level (INFO, WARNING, ERROR)
+- **Throttle**: Minimum minutes between repeat alerts
+
+**Test Email**: Click "Send Test Email" button to verify SMTP configuration.
 
 ## API Endpoints
 
