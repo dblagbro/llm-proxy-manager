@@ -1538,7 +1538,7 @@ const emailTransporter = nodemailer.createTransport({
 });
 
 // Password reset tokens storage (in-memory for now, could be moved to config)
-const passwordResetTokens = new Map();
+const passwordResetTokens = {};
 
 // Profile management endpoints
 app.get('/api/profile', requireAuth, (req, res) => {
@@ -1610,98 +1610,164 @@ app.post('/api/profile/password', requireAuth, async (req, res) => {
   res.json({ success: true, message: 'Password updated successfully' });
 });
 
-app.post('/api/auth/request-reset', async (req, res) => {
-  const { email } = req.body;
+// Forgot password - request reset (uses username instead of email)
+app.post('/api/auth/forgot-password', async (req, res) => {
+  const { username } = req.body;
 
-  if (!email) {
-    return res.status(400).json({ error: 'Email required' });
+  if (!username) {
+    return res.status(400).json({ error: 'Username required' });
   }
 
-  const user = config.users.find(u => u.email === email);
+  const user = config.users.find(u => u.username === username);
 
-  // Always return success to prevent email enumeration
+  // Always return success to prevent username enumeration
   if (!user) {
-    logger.warn('Password reset requested for non-existent email', { email });
-    return res.json({ success: true, message: 'If an account exists with that email, a reset link has been sent' });
+    logger.warn('Password reset requested for non-existent username', { username });
+    return res.json({ success: true, message: 'If an account exists with that username and has an email on file, a reset link has been sent' });
+  }
+
+  // Check if user has email
+  if (!user.email || user.email.trim() === '') {
+    logger.warn('Password reset requested for user without email', { username });
+    // Still return success to prevent information leakage
+    return res.json({ success: true, message: 'If an account exists with that username and has an email on file, a reset link has been sent' });
+  }
+
+  // Check if SMTP is configured
+  if (!config.smtp || !config.smtp.enabled || !config.smtp.host) {
+    logger.error('Password reset attempted but SMTP not configured');
+    // Return generic success to prevent leaking SMTP configuration status
+    return res.json({ success: true, message: 'If an account exists with that username and has an email on file, a reset link has been sent' });
   }
 
   // Generate reset token
   const token = crypto.randomBytes(32).toString('hex');
   const expires = Date.now() + 3600000; // 1 hour
 
-  passwordResetTokens.set(token, {
-    userId: user.id,
-    expires
-  });
+  passwordResetTokens[token] = {
+    username: user.username,
+    expires: expires,
+    used: false
+  };
 
   // Clean up expired tokens
-  for (const [key, value] of passwordResetTokens.entries()) {
-    if (value.expires < Date.now()) {
-      passwordResetTokens.delete(key);
+  for (const key in passwordResetTokens) {
+    if (passwordResetTokens[key].expires < Date.now()) {
+      delete passwordResetTokens[key];
     }
   }
 
-  // Send email
+  // Send email using NotificationManager
   const resetUrl = `${process.env.APP_URL || 'http://localhost:3000'}/reset-password.html?token=${token}`;
 
   try {
-    await emailTransporter.sendMail({
-      from: process.env.SMTP_FROM || 'noreply@llmproxy.local',
-      to: user.email,
-      subject: 'Password Reset Request',
-      html: `
-        <h2>Password Reset Request</h2>
-        <p>You requested a password reset for your LLM Proxy Manager account.</p>
-        <p>Click the link below to reset your password:</p>
-        <p><a href="${resetUrl}">${resetUrl}</a></p>
-        <p>This link will expire in 1 hour.</p>
-        <p>If you did not request this reset, please ignore this email.</p>
-      `
-    });
+    if (notificationManager.transporter) {
+      await notificationManager.transporter.sendMail({
+        from: config.smtp.from || 'noreply@llmproxy.local',
+        to: user.email,
+        subject: 'Password Reset Request - LLM Proxy Manager',
+        html: `
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+            <h2 style="color: #667eea;">Password Reset Request</h2>
+            <p>Hello <strong>${user.username}</strong>,</p>
+            <p>You requested a password reset for your LLM Proxy Manager account.</p>
+            <p>Click the button below to reset your password:</p>
+            <div style="text-align: center; margin: 30px 0;">
+              <a href="${resetUrl}" style="background: #667eea; color: white; padding: 12px 30px; text-decoration: none; border-radius: 6px; display: inline-block;">Reset Password</a>
+            </div>
+            <p>Or copy and paste this link into your browser:</p>
+            <p style="background: #f5f5f5; padding: 10px; border-radius: 4px; word-break: break-all;">${resetUrl}</p>
+            <p><strong>This link will expire in 1 hour.</strong></p>
+            <p>If you did not request this reset, please ignore this email. Your password will remain unchanged.</p>
+            <hr style="margin: 30px 0; border: none; border-top: 1px solid #ddd;">
+            <p style="color: #666; font-size: 12px;">This is an automated message from LLM Proxy Manager. Please do not reply to this email.</p>
+          </div>
+        `
+      });
 
-    logger.info('Password reset email sent', { email: user.email });
+      logger.info('Password reset email sent', { username: user.username, email: user.email });
+      addActivityLog('info', `Password reset email sent to user: ${user.username}`);
+      saveConfig();
+    } else {
+      throw new Error('Email transporter not initialized');
+    }
   } catch (error) {
-    logger.error('Failed to send password reset email', { error: error.message });
+    logger.error('Failed to send password reset email', { error: error.message, username: user.username });
+    addActivityLog('error', `Failed to send password reset email for user: ${user.username}`, { error: error.message });
+    saveConfig();
     // Still return success to prevent leaking information
   }
 
-  res.json({ success: true, message: 'If an account exists with that email, a reset link has been sent' });
+  res.json({ success: true, message: 'If an account exists with that username and has an email on file, a reset link has been sent' });
 });
 
-app.post('/api/auth/reset-password/:token', async (req, res) => {
+// Verify reset token
+app.get('/api/auth/verify-reset-token/:token', (req, res) => {
   const { token } = req.params;
-  const { newPassword } = req.body;
 
-  if (!newPassword || newPassword.length < 6) {
+  const resetData = passwordResetTokens[token];
+
+  if (!resetData) {
+    return res.json({ valid: false, error: 'Invalid or expired reset token' });
+  }
+
+  if (resetData.expires < Date.now()) {
+    delete passwordResetTokens[token];
+    return res.json({ valid: false, error: 'Reset token has expired' });
+  }
+
+  if (resetData.used) {
+    return res.json({ valid: false, error: 'Reset token has already been used' });
+  }
+
+  res.json({ valid: true, username: resetData.username });
+});
+
+// Reset password
+app.post('/api/auth/reset-password', async (req, res) => {
+  const { token, newPassword } = req.body;
+
+  if (!token || !newPassword) {
+    return res.status(400).json({ error: 'Token and new password required' });
+  }
+
+  if (newPassword.length < 6) {
     return res.status(400).json({ error: 'Password must be at least 6 characters' });
   }
 
-  const resetData = passwordResetTokens.get(token);
+  const resetData = passwordResetTokens[token];
 
   if (!resetData) {
     return res.status(400).json({ error: 'Invalid or expired reset token' });
   }
 
   if (resetData.expires < Date.now()) {
-    passwordResetTokens.delete(token);
+    delete passwordResetTokens[token];
     return res.status(400).json({ error: 'Reset token has expired' });
   }
 
-  const userIndex = config.users.findIndex(u => u.id === resetData.userId);
+  if (resetData.used) {
+    return res.status(400).json({ error: 'Reset token has already been used' });
+  }
+
+  const userIndex = config.users.findIndex(u => u.username === resetData.username);
 
   if (userIndex === -1) {
-    passwordResetTokens.delete(token);
+    delete passwordResetTokens[token];
     return res.status(404).json({ error: 'User not found' });
   }
 
   const hashedPassword = await bcrypt.hash(newPassword, 10);
   config.users[userIndex].password = hashedPassword;
 
+  // Mark token as used
+  passwordResetTokens[token].used = true;
+
   saveConfig();
-  passwordResetTokens.delete(token);
 
   logger.info('Password reset completed', { username: config.users[userIndex].username });
-  addActivityLog('success', `Password reset for user: ${config.users[userIndex].username}`);
+  addActivityLog('success', `Password reset completed for user: ${config.users[userIndex].username}`);
+  saveConfig();
 
   res.json({ success: true, message: 'Password reset successfully' });
 });
