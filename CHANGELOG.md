@@ -5,6 +5,17 @@ All notable changes to the LLM Proxy Manager project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.1] - 2026-03-28
+
+### Fixed
+- **OpenAI Message Format Conversion**: Fixed HTTP 404 errors when using OpenAI providers
+  - Issue: Anthropic-format messages (with content as array of objects) were passed directly to OpenAI API
+  - OpenAI expects simple string content, causing 404 errors
+  - Solution: Added message format conversion in `callOpenAI` and `streamOpenAI` functions
+  - Converts `[{type: 'text', text: '...'}]` to simple string content
+  - Fixes both streaming and non-streaming OpenAI requests
+  - Test endpoint worked because it used simple string format, but real proxy requests failed
+
 ## [1.2.0] - 2026-03-28
 
 ### Added
