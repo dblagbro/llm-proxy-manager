@@ -393,11 +393,25 @@ async function streamGemini(provider, request, res) {
 
 // Stream OpenAI API responses
 async function streamOpenAI(provider, request, res) {
+  // Convert Anthropic message format to OpenAI format
+  const convertedMessages = request.messages.map(msg => {
+    // If content is an array (Anthropic format), extract text
+    if (Array.isArray(msg.content)) {
+      const textContent = msg.content
+        .filter(c => c.type === 'text')
+        .map(c => c.text)
+        .join('\n');
+      return { role: msg.role, content: textContent };
+    }
+    // If content is already a string, use as-is
+    return { role: msg.role, content: msg.content };
+  });
+
   const response = await axios.post(
     'https://api.openai.com/v1/chat/completions',
     {
       model: request.model || 'gpt-4o-mini',
-      messages: request.messages,
+      messages: convertedMessages,
       max_tokens: request.max_tokens || 4096,
       temperature: request.temperature,
       top_p: request.top_p,
@@ -653,12 +667,26 @@ async function callOllama(provider, request) {
 
 // OpenAI (official API)
 async function callOpenAI(provider, request) {
+  // Convert Anthropic message format to OpenAI format
+  const convertedMessages = request.messages.map(msg => {
+    // If content is an array (Anthropic format), extract text
+    if (Array.isArray(msg.content)) {
+      const textContent = msg.content
+        .filter(c => c.type === 'text')
+        .map(c => c.text)
+        .join('\n');
+      return { role: msg.role, content: textContent };
+    }
+    // If content is already a string, use as-is
+    return { role: msg.role, content: msg.content };
+  });
+
   const response = await axios.post(
     'https://api.openai.com/v1/chat/completions',
     {
       model: request.model || provider.model || 'gpt-4o-mini',
       max_tokens: request.max_tokens || 4096,
-      messages: request.messages,
+      messages: convertedMessages,
       temperature: request.temperature,
       top_p: request.top_p,
       stream: false
