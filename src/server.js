@@ -829,13 +829,15 @@ app.post('/v1/messages', validateApiKey, async (req, res) => {
       };
 
       // Track costs
-      const model = req.body.model || 'claude-sonnet-4-5-20250929';
+      const model = result.model || req.body.model || provider.model || 'claude-sonnet-4-5-20250929';
       const usage = result.usage || {};
       const cost = pricingManager.calculateCost(
         model,
         usage.input_tokens || 0,
         usage.output_tokens || 0
       );
+
+      logger.info(`Cost tracking: model=${model}, input=${usage.input_tokens}, output=${usage.output_tokens}, cost=$${cost.toFixed(6)}`);
 
       config.stats[provider.id].totalCost += cost;
       config.stats[provider.id].totalInputTokens += (usage.input_tokens || 0);
