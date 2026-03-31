@@ -8,9 +8,16 @@ class PricingManager {
     // Pricing database - cost per 1M tokens (USD)
     // Updated as of March 2026
     this.pricing = {
-      // Anthropic Claude
+      // Anthropic Claude 4 family (latest)
+      'claude-opus-4-6': { input: 15.00, output: 75.00, provider: 'anthropic' },
+      'claude-sonnet-4-6': { input: 3.00, output: 15.00, provider: 'anthropic' },
+      'claude-haiku-4-5': { input: 0.80, output: 4.00, provider: 'anthropic' },
+      'claude-haiku-4-5-20251001': { input: 0.80, output: 4.00, provider: 'anthropic' },
+
+      // Anthropic Claude 3.5/3 family
       'claude-sonnet-4-5-20250929': { input: 3.00, output: 15.00, provider: 'anthropic' },
       'claude-3-5-sonnet-20241022': { input: 3.00, output: 15.00, provider: 'anthropic' },
+      'claude-3-5-haiku-20241022': { input: 0.80, output: 4.00, provider: 'anthropic' },
       'claude-3-opus-20240229': { input: 15.00, output: 75.00, provider: 'anthropic' },
       'claude-3-sonnet-20240229': { input: 3.00, output: 15.00, provider: 'anthropic' },
       'claude-3-haiku-20240307': { input: 0.25, output: 1.25, provider: 'anthropic' },
@@ -21,25 +28,41 @@ class PricingManager {
       'gpt-4-turbo': { input: 10.00, output: 30.00, provider: 'openai' },
       'gpt-4': { input: 30.00, output: 60.00, provider: 'openai' },
       'gpt-3.5-turbo': { input: 0.50, output: 1.50, provider: 'openai' },
+      'o1': { input: 15.00, output: 60.00, provider: 'openai' },
+      'o1-mini': { input: 3.00, output: 12.00, provider: 'openai' },
+      'o3-mini': { input: 1.10, output: 4.40, provider: 'openai' },
 
       // Google Gemini
-      'gemini-2.5-flash': { input: 0.10, output: 0.40, provider: 'google' },
+      'gemini-2.5-flash': { input: 0.15, output: 0.60, provider: 'google' },
+      'gemini-2.5-pro': { input: 1.25, output: 10.00, provider: 'google' },
       'gemini-2.0-flash': { input: 0.10, output: 0.40, provider: 'google' },
+      'gemini-2.0-flash-exp': { input: 0.10, output: 0.40, provider: 'google' },
       'gemini-1.5-pro': { input: 1.25, output: 5.00, provider: 'google' },
       'gemini-1.5-flash': { input: 0.075, output: 0.30, provider: 'google' },
 
       // xAI Grok
       'grok-beta': { input: 5.00, output: 15.00, provider: 'grok' },
       'grok-2': { input: 5.00, output: 15.00, provider: 'grok' },
+      'grok-2-1212': { input: 2.00, output: 10.00, provider: 'grok' },
+      'grok-3': { input: 3.00, output: 15.00, provider: 'grok' },
+      'grok-3-mini': { input: 0.30, output: 0.50, provider: 'grok' },
 
       // Vertex AI (Google Cloud pricing)
       'gemini-pro': { input: 0.50, output: 1.50, provider: 'vertex' },
+      'gemini-1.5-pro-001': { input: 1.25, output: 5.00, provider: 'vertex' },
+      'gemini-1.5-flash-001': { input: 0.075, output: 0.30, provider: 'vertex' },
 
       // Ollama (local - free)
       'llama2': { input: 0, output: 0, provider: 'ollama' },
       'llama3': { input: 0, output: 0, provider: 'ollama' },
+      'llama3.1': { input: 0, output: 0, provider: 'ollama' },
+      'llama3.2': { input: 0, output: 0, provider: 'ollama' },
       'mistral': { input: 0, output: 0, provider: 'ollama' },
-      'codellama': { input: 0, output: 0, provider: 'ollama' }
+      'mistral-nemo': { input: 0, output: 0, provider: 'ollama' },
+      'codellama': { input: 0, output: 0, provider: 'ollama' },
+      'deepseek-r1': { input: 0, output: 0, provider: 'ollama' },
+      'phi3': { input: 0, output: 0, provider: 'ollama' },
+      'qwen2.5': { input: 0, output: 0, provider: 'ollama' }
     };
 
     // Provider capabilities
@@ -180,9 +203,9 @@ class PricingManager {
    */
   compareProviderCosts(tier) {
     const tiers = {
-      fast: ['gpt-4o-mini', 'claude-3-haiku-20240307', 'gemini-2.5-flash'],
-      balanced: ['gpt-4o', 'claude-3-5-sonnet-20241022', 'gemini-1.5-pro'],
-      powerful: ['gpt-4', 'claude-3-opus-20240229', 'grok-beta']
+      fast: ['gpt-4o-mini', 'claude-haiku-4-5', 'gemini-2.5-flash'],
+      balanced: ['gpt-4o', 'claude-sonnet-4-6', 'gemini-2.5-pro'],
+      powerful: ['o1', 'claude-opus-4-6', 'grok-3']
     };
 
     const models = tiers[tier] || [];

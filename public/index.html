@@ -631,7 +631,7 @@
     <div class="container">
         <div class="header">
             <div>
-                <h1>🤖 LLM Proxy Manager <span style="font-size: 14px; color: var(--text-muted); font-weight: normal;">v1.2.8</span></h1>
+                <h1>🤖 LLM Proxy Manager <span style="font-size: 14px; color: var(--text-muted); font-weight: normal;">v1.2.9</span></h1>
                 <p class="subtitle">Multi-provider AI proxy with automatic failover and cluster synchronization</p>
             </div>
             <div class="header-actions">
@@ -762,6 +762,32 @@
                         <span>Enabled</span>
                     </label>
                 </div>
+
+                <details style="margin-top: 10px; margin-bottom: 10px;">
+                    <summary style="cursor: pointer; font-weight: 500; color: var(--text-secondary); padding: 6px 0;">⚙️ Circuit Breaker / Hold-Down Timers</summary>
+                    <div style="padding: 10px 0 0 0;">
+                        <p style="font-size: 12px; color: var(--text-muted); margin-bottom: 10px;">Leave blank to use global defaults (Threshold: 3 failures, Cooldown: 60s, Half-open: 30s, Recover after: 2 successes)</p>
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+                            <div class="form-group" style="margin-bottom: 0;">
+                                <label style="font-size: 12px;">Failure Threshold</label>
+                                <input type="number" id="edit-cb-failureThreshold" min="1" placeholder="3 (global default)" style="font-size: 13px;">
+                            </div>
+                            <div class="form-group" style="margin-bottom: 0;">
+                                <label style="font-size: 12px;">Cooldown (seconds)</label>
+                                <input type="number" id="edit-cb-timeout" min="1" placeholder="60 (global default)" style="font-size: 13px;">
+                            </div>
+                            <div class="form-group" style="margin-bottom: 0;">
+                                <label style="font-size: 12px;">Half-Open Timeout (seconds)</label>
+                                <input type="number" id="edit-cb-halfOpenTimeout" min="1" placeholder="30 (global default)" style="font-size: 13px;">
+                            </div>
+                            <div class="form-group" style="margin-bottom: 0;">
+                                <label style="font-size: 12px;">Success Threshold (to recover)</label>
+                                <input type="number" id="edit-cb-successThreshold" min="1" placeholder="2 (global default)" style="font-size: 13px;">
+                            </div>
+                        </div>
+                    </div>
+                </details>
+
                 <button type="button" class="btn btn-success" onclick="testProvider()">🧪 Test This Provider</button>
                 <div id="testResult"></div>
                 <div class="form-actions">
@@ -1614,6 +1640,13 @@ export ANTHROPIC_API_KEY="proxy-handled"</textarea>
             document.getElementById('edit-priority').value = provider.priority;
             document.getElementById('edit-enabled').checked = provider.enabled;
 
+            // Circuit breaker per-provider overrides
+            const cb = provider.circuitBreaker || {};
+            document.getElementById('edit-cb-failureThreshold').value = cb.failureThreshold != null ? cb.failureThreshold : '';
+            document.getElementById('edit-cb-timeout').value = cb.timeout != null ? cb.timeout : '';
+            document.getElementById('edit-cb-halfOpenTimeout').value = cb.halfOpenTimeout != null ? cb.halfOpenTimeout : '';
+            document.getElementById('edit-cb-successThreshold').value = cb.successThreshold != null ? cb.successThreshold : '';
+
             updateFormFields();
             document.getElementById('editModal').classList.add('show');
         }
@@ -1632,6 +1665,10 @@ export ANTHROPIC_API_KEY="proxy-handled"</textarea>
             document.getElementById('edit-priority').value = config.providers.length + 1;
             document.getElementById('edit-enabled').checked = true;
             document.getElementById('testResult').innerHTML = '';
+            document.getElementById('edit-cb-failureThreshold').value = '';
+            document.getElementById('edit-cb-timeout').value = '';
+            document.getElementById('edit-cb-halfOpenTimeout').value = '';
+            document.getElementById('edit-cb-successThreshold').value = '';
 
             updateFormFields();
             document.getElementById('editModal').classList.add('show');
@@ -1819,6 +1856,12 @@ export ANTHROPIC_API_KEY="proxy-handled"</textarea>
         document.getElementById('editForm').addEventListener('submit', async (e) => {
             e.preventDefault();
 
+            const cbFailure = document.getElementById('edit-cb-failureThreshold').value;
+            const cbTimeout = document.getElementById('edit-cb-timeout').value;
+            const cbHalfOpen = document.getElementById('edit-cb-halfOpenTimeout').value;
+            const cbSuccess = document.getElementById('edit-cb-successThreshold').value;
+            const hasCircuitOverrides = cbFailure || cbTimeout || cbHalfOpen || cbSuccess;
+
             const providerData = {
                 id: editingIndex >= 0 ? config.providers[editingIndex].id :
                     'provider-' + Date.now(),
@@ -1830,7 +1873,13 @@ export ANTHROPIC_API_KEY="proxy-handled"</textarea>
                 baseUrl: document.getElementById('edit-baseUrl').value || undefined,
                 model: document.getElementById('edit-model').value || undefined,
                 priority: parseInt(document.getElementById('edit-priority').value),
-                enabled: document.getElementById('edit-enabled').checked
+                enabled: document.getElementById('edit-enabled').checked,
+                circuitBreaker: hasCircuitOverrides ? {
+                    failureThreshold: cbFailure ? parseInt(cbFailure) : undefined,
+                    timeout: cbTimeout ? parseInt(cbTimeout) : undefined,
+                    halfOpenTimeout: cbHalfOpen ? parseInt(cbHalfOpen) : undefined,
+                    successThreshold: cbSuccess ? parseInt(cbSuccess) : undefined
+                } : undefined
             };
 
             if (editingIndex >= 0) {
