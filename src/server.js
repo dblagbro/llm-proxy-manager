@@ -106,6 +106,15 @@ function loadConfig() {
         config.activityLog = [];
       }
 
+      // Clear per-session transient status fields so providers don't show
+      // stale red/green status from the previous session on login
+      if (config.stats) {
+        Object.values(config.stats).forEach(s => {
+          s.lastSuccess = null;
+          s.lastError = null;
+        });
+      }
+
       logger.info('Configuration loaded from file');
     } else {
       saveConfig();
@@ -900,7 +909,29 @@ app.post('/v1/messages', validateApiKey, async (req, res) => {
         timestamp: new Date().toISOString()
       };
 
-      // Track costs
+      // Record success with circuit breaker
+      providerMonitor.recordSuccess(provider);
+
+      logger.info(`Success with ${provider.name}`, { latency: `${latency}ms` });
+
+      // Track client key usage
+      if (req.clientKey) {
+        req.clientKey.requests = (req.clientKey.requests || 0) + 1;
+        req.clientKey.lastUsed = new Date().toISOString();
+      }
+
+      // Save stats periodically
+      if (config.stats[provider.id].requests % 10 === 0) {
+        saveConfig();
+      }
+
+      if (isStreaming) {
+        // Streaming: result is undefined (stream already sent), no cost tracking possible
+        res.end();
+        return;
+      }
+
+      // Non-streaming only: track costs from result object
       const model = result.model || req.body.model || provider.model || 'claude-sonnet-4-5-20250929';
       const usage = result.usage || {};
       const cost = pricingManager.calculateCost(
@@ -915,34 +946,13 @@ app.post('/v1/messages', validateApiKey, async (req, res) => {
       config.stats[provider.id].totalInputTokens += (usage.input_tokens || 0);
       config.stats[provider.id].totalOutputTokens += (usage.output_tokens || 0);
 
-      // Record success with circuit breaker
-      providerMonitor.recordSuccess(provider);
-
-      logger.info(`Success with ${provider.name}`, { latency: `${latency}ms` });
-
-      // Log success to provider-specific log
       providerLog.info('Request success', {
         latency: `${latency}ms`,
         model: model,
         usage: usage,
-        cost: cost,
-        response: result
+        cost: cost
       });
 
-      // Track client key usage
-      if (req.clientKey) {
-        req.clientKey.requests = (req.clientKey.requests || 0) + 1;
-        req.clientKey.lastUsed = new Date().toISOString();
-      }
-
-      // Save stats periodically
-      if (config.stats[provider.id].requests % 10 === 0) {
-        saveConfig();
-      }
-
-      if (isStreaming) {
-        res.end();
-      }
       return;
 
     } catch (error) {
