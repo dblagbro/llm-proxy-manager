@@ -397,6 +397,40 @@ function buildGeminiParts(contentArray, messages) {
   return parts.length > 0 ? parts : [{ text: '' }];
 }
 
+// Remove JSON Schema fields that Gemini does not accept
+function sanitizeSchema(schema) {
+  if (!schema || typeof schema !== 'object') return schema;
+  if (Array.isArray(schema)) return schema.map(sanitizeSchema);
+
+  const REMOVE = new Set([
+    '$schema', 'additionalProperties', 'propertyNames', '$defs', '$ref',
+    'allOf', 'anyOf', 'oneOf', 'if', 'then', 'else', 'const', 'examples',
+    'contentEncoding', 'contentMediaType', 'unevaluatedProperties',
+    'prefixItems', 'contains', 'patternProperties',
+    'exclusiveMinimum', 'exclusiveMaximum', 'default', 'format', 'pattern'
+  ]);
+
+  const out = {};
+  for (const [k, v] of Object.entries(schema)) {
+    if (REMOVE.has(k)) continue;
+    if (k === 'type' && Array.isArray(v)) {
+      // Flatten ["integer","null"] → "integer" (Gemini only accepts a single type string)
+      out[k] = v.find(t => t !== 'null') || v[0];
+    } else if (k === 'properties' && v && typeof v === 'object') {
+      const props = {};
+      for (const [pk, pv] of Object.entries(v)) {
+        props[pk] = sanitizeSchema(pv);
+      }
+      out[k] = props;
+    } else if (k === 'items') {
+      out[k] = sanitizeSchema(v);
+    } else {
+      out[k] = v;
+    }
+  }
+  return out;
+}
+
 // Translate Anthropic request to Google Gemini format (with tool support)
 function translateToGemini(anthropicRequest) {
   const messages = anthropicRequest.messages || [];
@@ -420,7 +454,11 @@ function translateToGemini(anthropicRequest) {
   // Translate Anthropic tools to Gemini functionDeclarations
   const tools = anthropicRequest.tools;
   const geminiTools = tools && tools.length > 0
-    ? [{ functionDeclarations: tools.map(t => ({ name: t.name, description: t.description, parameters: t.input_schema })) }]
+    ? [{ functionDeclarations: tools.map(t => ({
+        name: t.name,
+        description: t.description || '',
+        parameters: sanitizeSchema(t.input_schema) || { type: 'object', properties: {} }
+      })) }]
     : undefined;
 
   const result = {
@@ -432,10 +470,22 @@ function translateToGemini(anthropicRequest) {
     }
   };
 
-  if (geminiTools) result.tools = geminiTools;
+  if (geminiTools) {
+    result.tools = geminiTools;
+    result.toolConfig = { functionCallingConfig: { mode: 'AUTO' } };
+  }
 
   if (anthropicRequest.system) {
-    result.systemInstruction = { parts: [{ text: anthropicRequest.system }] };
+    const sysText = Array.isArray(anthropicRequest.system)
+      ? anthropicRequest.system.filter(s => s.type === 'text').map(s => s.text || '').join('\n')
+      : anthropicRequest.system;
+    result.systemInstruction = { parts: [{ text: sysText }] };
+  }
+
+  if (result.systemInstruction && geminiTools) {
+    result.systemInstruction.parts[0].text +=
+      '\n\nIMPORTANT: Use the provided function tools to complete the task. ' +
+      'Do not describe what you would do — call the tools directly.';
   }
 
   return result;
@@ -751,7 +801,7 @@ async function streamOpenAI(provider, request, res) {
   const { messages: convertedMessages, tools: oaiTools } = translateToOpenAI(request);
 
   const body = {
-    model: request.model || provider.model || 'gpt-4o-mini',
+    model: provider.model || 'gpt-4o-mini',
     messages: convertedMessages,
     max_tokens: request.max_tokens || 4096,
     temperature: request.temperature,
@@ -891,7 +941,7 @@ async function streamGrok(provider, request, res) {
   const response = await axios.post(
     'https://api.x.ai/v1/chat/completions',
     {
-      model: request.model || 'grok-beta',
+      model: provider.model || 'grok-beta',
       messages: request.messages,
       max_tokens: request.max_tokens || 4096,
       temperature: request.temperature,
@@ -946,7 +996,7 @@ async function streamOpenAICompatible(provider, request, res) {
   const response = await axios.post(
     `${baseUrl}/v1/chat/completions`,
     {
-      model: request.model || provider.model || 'gpt-3.5-turbo',
+      model: provider.model || 'gpt-3.5-turbo',
       messages: request.messages,
       max_tokens: request.max_tokens || 4096,
       temperature: request.temperature,
@@ -1052,7 +1102,7 @@ async function callGrok(provider, request) {
   const response = await axios.post(
     'https://api.x.ai/v1/chat/completions',
     {
-      model: request.model || 'grok-beta',
+      model: provider.model || 'grok-beta',
       max_tokens: request.max_tokens || 4096,
       messages: request.messages,
       temperature: request.temperature,
@@ -1121,7 +1171,7 @@ async function callOpenAI(provider, request) {
   const { messages: convertedMessages, tools: oaiTools } = translateToOpenAI(request);
 
   const body = {
-    model: request.model || provider.model || 'gpt-4o-mini',
+    model: provider.model || 'gpt-4o-mini',
     max_tokens: request.max_tokens || 4096,
     messages: convertedMessages,
     temperature: request.temperature,
@@ -1149,7 +1199,7 @@ async function callOpenAICompatible(provider, request) {
   const response = await axios.post(
     `${baseUrl}/chat/completions`,
     {
-      model: request.model || provider.model || 'gpt-3.5-turbo',
+      model: provider.model || 'gpt-3.5-turbo',
       max_tokens: request.max_tokens || 4096,
       messages: request.messages,
       temperature: request.temperature,
@@ -1356,8 +1406,13 @@ app.post('/v1/messages', validateApiKey, async (req, res) => {
       };
       saveStatsRecord(provider.id);
 
-      // Record failure with circuit breaker
-      providerMonitor.recordFailure(provider, error);
+      // Record failure with circuit breaker — skip for client-side errors (bad schema, etc.)
+      const isClientError = error.response?.status === 400 || error.response?.status === 422;
+      if (!isClientError) {
+        providerMonitor.recordFailure(provider, error);
+      } else {
+        logger.warn(`Client-side error with ${provider.name} (${error.response?.status}) — not counting against circuit breaker`);
+      }
 
       logger.error(`Failed with ${provider.name}:`, {
         error: error.message,
