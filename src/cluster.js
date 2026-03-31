@@ -45,7 +45,9 @@ class ClusterManager extends EventEmitter {
       .map(node => ({
         id: node.name || node.host,
         name: node.name || `LLM Proxy ${node.host}`,
-        url: `http://${node.host}:${node.port || 3000}`,
+        url: node.ssl
+          ? `https://${node.host}${node.path || ''}`
+          : `http://${node.host}:${node.port || 3000}`,
         healthy: false,
         lastHeartbeat: null,
         latency: 0,
