@@ -12,14 +12,17 @@ class ClusterManager extends EventEmitter {
     super();
     this.logger = logger;
     this.config = config;
-    this.enabled = process.env.CLUSTER_ENABLED === 'true';
+
+    // Read cluster config from file first, fallback to env vars
+    const clusterConfig = config.cluster || {};
+    this.enabled = clusterConfig.enabled || process.env.CLUSTER_ENABLED === 'true';
 
     this.nodeId = process.env.CLUSTER_NODE_ID || require('os').hostname();
-    this.nodeName = process.env.CLUSTER_NODE_NAME || `LLM Proxy ${this.nodeId}`;
+    this.nodeName = process.env.CLUSTER_NODE_NAME || clusterConfig.localName || `LLM Proxy ${this.nodeId}`;
     this.syncSecret = process.env.CLUSTER_SYNC_SECRET || '';
 
-    // Parse peer configuration
-    this.peers = this.parsePeers(process.env.CLUSTER_PEERS || '');
+    // Parse peer configuration from config file first, fallback to env var
+    this.peers = this.parsePeersFromConfig(clusterConfig.nodes) || this.parsePeers(process.env.CLUSTER_PEERS || '');
 
     // Cluster state
     this.peerHealth = new Map();
@@ -31,6 +34,24 @@ class ClusterManager extends EventEmitter {
     if (this.enabled) {
       this.logger.info(`Node ID: ${this.nodeId}, Peers: ${this.peers.length}`);
     }
+  }
+
+  parsePeersFromConfig(nodes) {
+    if (!nodes || !Array.isArray(nodes)) return null;
+
+    // Filter only active nodes and convert to peer format
+    return nodes
+      .filter(node => node.active)
+      .map(node => ({
+        id: node.name || node.host,
+        name: node.name || `LLM Proxy ${node.host}`,
+        url: `http://${node.host}:${node.port || 3000}`,
+        healthy: false,
+        lastHeartbeat: null,
+        latency: 0,
+        providers: 0,
+        healthyProviders: 0
+      }));
   }
 
   parsePeers(peerString) {
