@@ -82,7 +82,21 @@ app.use(session({
 }));
 
 // Config file path
-const CONFIG_PATH = '/app/config/providers.json';
+const CONFIG_PATH = process.env.CONFIG_PATH || '/app/config/providers.json';
+
+// SQLite feature flag — set USE_SQLITE=true in env to activate
+const USE_SQLITE = process.env.USE_SQLITE === 'true';
+let sqliteDb = null;
+
+if (USE_SQLITE) {
+  try {
+    sqliteDb = require('./database').open(logger);
+    logger.info('SQLite database layer initialized');
+  } catch (err) {
+    logger.error('Failed to initialize SQLite — falling back to JSON store:', err.message);
+    sqliteDb = null;
+  }
+}
 
 // Default configuration - minimal example providers
 // Providers can be added/configured through the Web UI or environment variables
@@ -91,11 +105,24 @@ let config = {
   stats: {},
   clientApiKeys: [],
   users: [],
-  activityLog: []
+  activityLog: [],
+  cluster: {},
+  smtp: {}
 };
 
 // Load/Save config functions
 function loadConfig() {
+  if (USE_SQLITE && sqliteDb) {
+    try {
+      sqliteDb.loadAll(config);
+      logger.info('Configuration loaded from SQLite');
+    } catch (err) {
+      logger.error('Error loading config from SQLite:', err);
+    }
+    return;
+  }
+
+  // JSON fallback (original behaviour)
   try {
     if (fs.existsSync(CONFIG_PATH)) {
       const data = fs.readFileSync(CONFIG_PATH, 'utf8');
@@ -117,7 +144,7 @@ function loadConfig() {
 
       logger.info('Configuration loaded from file');
     } else {
-      saveConfig();
+      if (!USE_SQLITE) saveConfig();
     }
   } catch (error) {
     logger.error('Error loading config:', error);
@@ -125,12 +152,62 @@ function loadConfig() {
 }
 
 function saveConfig() {
+  if (USE_SQLITE && sqliteDb) {
+    try {
+      sqliteDb.saveAll(config);
+      logger.debug('Configuration saved to SQLite');
+    } catch (err) {
+      logger.error('Error saving config to SQLite:', err);
+    }
+    return;
+  }
+
+  // JSON fallback (original behaviour)
   try {
     fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
     logger.info('Configuration saved');
   } catch (error) {
     logger.error('Error saving config:', error);
   }
+}
+
+// Targeted save helpers — used by hot-path code to avoid a full saveAll()
+// In JSON mode these just call saveConfig(). In SQLite mode they write only the changed row.
+function saveProviderRecord(provider) {
+  if (USE_SQLITE && sqliteDb) { sqliteDb.saveProvider(provider); return; }
+  saveConfig();
+}
+function deleteProviderRecord(providerId) {
+  if (USE_SQLITE && sqliteDb) { sqliteDb.deleteProvider(providerId); return; }
+  saveConfig();
+}
+function saveUserRecord(user) {
+  if (USE_SQLITE && sqliteDb) { sqliteDb.saveUser(user); return; }
+  saveConfig();
+}
+function deleteUserRecord(userId) {
+  if (USE_SQLITE && sqliteDb) { sqliteDb.deleteUser(userId); return; }
+  saveConfig();
+}
+function saveApiKeyRecord(key) {
+  if (USE_SQLITE && sqliteDb) { sqliteDb.saveApiKey(key); return; }
+  saveConfig();
+}
+function deleteApiKeyRecord(keyId) {
+  if (USE_SQLITE && sqliteDb) { sqliteDb.deleteApiKey(keyId); return; }
+  saveConfig();
+}
+function saveStatsRecord(providerId) {
+  if (USE_SQLITE && sqliteDb) { sqliteDb.saveStats(providerId, config.stats[providerId]); return; }
+  // JSON: periodic save done by caller
+}
+function saveClusterRecord() {
+  if (USE_SQLITE && sqliteDb) { sqliteDb.saveCluster(config.cluster); return; }
+  saveConfig();
+}
+function saveSmtpRecord() {
+  if (USE_SQLITE && sqliteDb) { sqliteDb.saveSmtp(config.smtp); return; }
+  saveConfig();
 }
 
 function addActivityLog(type, message, details = {}) {
@@ -146,15 +223,26 @@ function addActivityLog(type, message, details = {}) {
     ...details
   };
 
-  config.activityLog.unshift(entry);  // Add to beginning
+  config.activityLog.unshift(entry);  // Add to beginning (in-memory for UI)
 
+  if (USE_SQLITE && sqliteDb) {
+    // Write directly to DB — no periodic batching needed
+    try { sqliteDb.appendActivityLog(entry); } catch (err) { logger.error('SQLite activity log write failed:', err.message); }
+    // Keep in-memory list bounded for UI responses
+    if (config.activityLog.length > 100) {
+      config.activityLog = config.activityLog.slice(0, 100);
+    }
+    return;
+  }
+
+  // JSON fallback
   // Keep only last 100 entries
   if (config.activityLog.length > 100) {
     config.activityLog = config.activityLog.slice(0, 100);
   }
 
-  // Save config periodically (every 10 entries)
-  if (config.activityLog.length % 10 === 0) {
+  // Save config periodically (every 10 entries) — SQLite mode writes per-entry above
+  if (!USE_SQLITE && config.activityLog.length % 10 === 0) {
     saveConfig();
   }
 }
@@ -207,14 +295,15 @@ async function initializeUsers() {
   // Create default admin if no users exist
   if (config.users.length === 0) {
     const hashedPassword = await bcrypt.hash('admin', 10);
-    config.users.push({
+    const defaultAdmin = {
       id: 'user-admin',
       username: 'admin',
       password: hashedPassword,
       role: 'admin',
       created: new Date().toISOString()
-    });
-    saveConfig();
+    };
+    config.users.push(defaultAdmin);
+    saveUserRecord(defaultAdmin);
     logger.info('Default admin user created: admin (change password immediately!)');
   }
 }
@@ -1220,13 +1309,9 @@ app.post('/v1/messages', validateApiKey, async (req, res) => {
         req.clientKey.lastUsed = new Date().toISOString();
       }
 
-      // Save stats periodically
-      if (config.stats[provider.id].requests % 10 === 0) {
-        saveConfig();
-      }
-
       if (isStreaming) {
         // Streaming: result is undefined (stream already sent), no cost tracking possible
+        saveStatsRecord(provider.id);
         res.end();
         return;
       }
@@ -1246,6 +1331,13 @@ app.post('/v1/messages', validateApiKey, async (req, res) => {
       config.stats[provider.id].totalInputTokens += (usage.input_tokens || 0);
       config.stats[provider.id].totalOutputTokens += (usage.output_tokens || 0);
 
+      // Save stats (targeted write in SQLite mode; periodic in JSON mode)
+      if (USE_SQLITE && sqliteDb) {
+        saveStatsRecord(provider.id);
+      } else if (config.stats[provider.id].requests % 10 === 0) {
+        saveConfig();
+      }
+
       providerLog.info('Request success', {
         latency: `${latency}ms`,
         model: model,
@@ -1262,6 +1354,7 @@ app.post('/v1/messages', validateApiKey, async (req, res) => {
         message: error.message,
         timestamp: new Date().toISOString()
       };
+      saveStatsRecord(provider.id);
 
       // Record failure with circuit breaker
       providerMonitor.recordFailure(provider, error);
@@ -1407,8 +1500,8 @@ app.post('/api/smtp/settings', requireAuth, (req, res) => {
     config.smtp.minSeverity = minSeverity || 'WARNING';
     config.smtp.throttle = throttle || 15;
 
-    // Save to config file
-    saveConfig();
+    // Save to config
+    saveSmtpRecord();
 
     // Reinitialize notification manager with new settings
     process.env.SMTP_ENABLED = enabled ? 'true' : 'false';
@@ -1512,14 +1605,14 @@ app.post('/api/config', (req, res) => {
         };
       });
     }
+    // Save providers (full replace via saveConfig which calls saveAll in SQLite mode)
     saveConfig();
     logger.info('Configuration updated', { providerCount: config.providers.length });
 
-    // Log activity
+    // Log activity (addActivityLog handles its own DB write in SQLite mode)
     addActivityLog('info', 'Configuration saved', {
       providerCount: config.providers.length
     });
-    saveConfig();  // Save again to persist activity log
 
     res.json({ success: true });
   } catch (error) {
@@ -1551,7 +1644,11 @@ app.get('/api/stats', (req, res) => {
 // Reset stats
 app.post('/api/stats/reset', (req, res) => {
   config.stats = {};
-  saveConfig();
+  if (USE_SQLITE && sqliteDb) {
+    sqliteDb.clearStats();
+  } else {
+    saveConfig();
+  }
   res.json({ success: true });
 });
 
@@ -1593,7 +1690,7 @@ app.post('/api/client-keys', (req, res) => {
   }
 
   config.clientApiKeys.push(newKey);
-  saveConfig();
+  saveApiKeyRecord(newKey);
 
   logger.info('Client API key created', { name: newKey.name, id: newKey.id });
   res.json(newKey);
@@ -1613,7 +1710,7 @@ app.delete('/api/client-keys/:id', (req, res) => {
   }
 
   const deleted = config.clientApiKeys.splice(index, 1)[0];
-  saveConfig();
+  deleteApiKeyRecord(deleted.id);
 
   logger.info('Client API key deleted', { name: deleted.name, id: deleted.id });
   res.json({ success: true, deleted });
@@ -1641,7 +1738,7 @@ app.patch('/api/client-keys/:id', (req, res) => {
     key.name = name.trim();
   }
 
-  saveConfig();
+  saveApiKeyRecord(key);
 
   logger.info('Client API key updated', { name: key.name, id: key.id, enabled: key.enabled });
   res.json(key);
@@ -1755,6 +1852,7 @@ app.post('/api/test-provider', async (req, res) => {
       config.stats[providerId].lastSuccess = {
         timestamp: new Date().toISOString()
       };
+      saveStatsRecord(providerId);
     }
 
     // Log activity
@@ -1763,7 +1861,7 @@ app.post('/api/test-provider', async (req, res) => {
       latency: `${latency}ms`,
       model: model || defaultModel
     });
-    saveConfig();  // Save immediately for activity log
+    if (!USE_SQLITE) saveConfig();
 
     res.json({
       success: true,
@@ -1783,6 +1881,7 @@ app.post('/api/test-provider', async (req, res) => {
         message: error.response?.data?.error?.message || error.message,
         timestamp: new Date().toISOString()
       };
+      saveStatsRecord(providerId);
     }
 
     // Log activity
@@ -1791,7 +1890,7 @@ app.post('/api/test-provider', async (req, res) => {
       latency: `${latency}ms`,
       error: error.response?.data?.error?.message || error.message
     });
-    saveConfig();  // Save immediately for activity log
+    if (!USE_SQLITE) saveConfig();
 
     res.json({
       success: false,
@@ -1814,7 +1913,7 @@ app.post('/api/auth/login', async (req, res) => {
   if (!user) {
     logger.warn('Login attempt with invalid username', { username });
     addActivityLog('warning', `Failed login attempt for user: ${username}`, { reason: 'Invalid username' });
-    saveConfig();
+    if (!USE_SQLITE) saveConfig();
     return res.status(401).json({ error: 'Invalid credentials' });
   }
 
@@ -1823,7 +1922,7 @@ app.post('/api/auth/login', async (req, res) => {
   if (!passwordMatch) {
     logger.warn('Login attempt with invalid password', { username });
     addActivityLog('warning', `Failed login attempt for user: ${username}`, { reason: 'Invalid password' });
-    saveConfig();
+    if (!USE_SQLITE) saveConfig();
     return res.status(401).json({ error: 'Invalid credentials' });
   }
 
@@ -1835,7 +1934,7 @@ app.post('/api/auth/login', async (req, res) => {
 
   logger.info('User logged in', { username: user.username });
   addActivityLog('success', `User logged in: ${user.username}`, { role: user.role });
-  saveConfig();
+  if (!USE_SQLITE) saveConfig();
 
   res.json({ success: true, user: { username: user.username, role: user.role } });
 });
@@ -1898,7 +1997,7 @@ app.post('/api/users', requireAuth, async (req, res) => {
   };
 
   config.users.push(newUser);
-  saveConfig();
+  saveUserRecord(newUser);
 
   logger.info('User created', { username, role: newUser.role });
   res.json({ id: newUser.id, username: newUser.username, role: newUser.role, email: newUser.email });
@@ -1921,7 +2020,7 @@ app.delete('/api/users/:id', requireAuth, (req, res) => {
   }
 
   const deleted = config.users.splice(index, 1)[0];
-  saveConfig();
+  deleteUserRecord(deleted.id);
 
   logger.info('User deleted', { username: deleted.username });
   res.json({ success: true });
@@ -1975,7 +2074,7 @@ app.post('/api/profile', requireAuth, async (req, res) => {
     config.users[userIndex].theme = theme;
   }
 
-  saveConfig();
+  saveUserRecord(config.users[userIndex]);
 
   logger.info('Profile updated', { username: config.users[userIndex].username });
   res.json({
@@ -2003,7 +2102,7 @@ app.post('/api/profile/password', requireAuth, async (req, res) => {
   const hashedPassword = await bcrypt.hash(newPassword, 10);
   config.users[userIndex].password = hashedPassword;
 
-  saveConfig();
+  saveUserRecord(config.users[userIndex]);
 
   logger.info('Password changed', { username: config.users[userIndex].username });
   addActivityLog('success', `Password changed for user: ${config.users[userIndex].username}`);
@@ -2088,14 +2187,14 @@ app.post('/api/auth/forgot-password', async (req, res) => {
 
       logger.info('Password reset email sent', { username: user.username, email: user.email });
       addActivityLog('info', `Password reset email sent to user: ${user.username}`);
-      saveConfig();
+      if (!USE_SQLITE) saveConfig();
     } else {
       throw new Error('Email transporter not initialized');
     }
   } catch (error) {
     logger.error('Failed to send password reset email', { error: error.message, username: user.username });
     addActivityLog('error', `Failed to send password reset email for user: ${user.username}`, { error: error.message });
-    saveConfig();
+    if (!USE_SQLITE) saveConfig();
     // Still return success to prevent leaking information
   }
 
@@ -2164,11 +2263,10 @@ app.post('/api/auth/reset-password', async (req, res) => {
   // Mark token as used
   passwordResetTokens[token].used = true;
 
-  saveConfig();
+  saveUserRecord(config.users[userIndex]);
 
   logger.info('Password reset completed', { username: config.users[userIndex].username });
   addActivityLog('success', `Password reset completed for user: ${config.users[userIndex].username}`);
-  saveConfig();
 
   res.json({ success: true, message: 'Password reset successfully' });
 });
@@ -2193,14 +2291,14 @@ providerMonitor.on('circuit.open', ({ provider, reason }) => {
     reason: reason
   });
   notificationManager.alertCircuitBreakerOpen(provider, reason);
-  saveConfig();
+  if (!USE_SQLITE) saveConfig();
 });
 
 providerMonitor.on('circuit.closed', ({ provider }) => {
   addActivityLog('success', `Circuit breaker CLOSED for ${provider.name} - recovered`, {
     providerId: provider.id
   });
-  saveConfig();
+  if (!USE_SQLITE) saveConfig();
 });
 
 providerMonitor.on('billing.error', ({ provider, error }) => {
@@ -2209,7 +2307,7 @@ providerMonitor.on('billing.error', ({ provider, error }) => {
     error: error
   });
   notificationManager.alertBillingError(provider, error);
-  saveConfig();
+  if (!USE_SQLITE) saveConfig();
 });
 
 providerMonitor.on('external.degraded', ({ providerType, status, incidents }) => {
@@ -2217,7 +2315,7 @@ providerMonitor.on('external.degraded', ({ providerType, status, incidents }) =>
     incidents: incidents
   });
   notificationManager.alertExternalServiceDown(providerType, status, incidents);
-  saveConfig();
+  if (!USE_SQLITE) saveConfig();
 });
 
 // Cluster event handlers
@@ -2226,7 +2324,7 @@ clusterManager.on('peer.unhealthy', (peer) => {
     peerId: peer.id
   });
   notificationManager.alertClusterNodeDown(peer);
-  saveConfig();
+  if (!USE_SQLITE) saveConfig();
 });
 
 clusterManager.on('peer.healthy', (peer) => {
@@ -2234,14 +2332,14 @@ clusterManager.on('peer.healthy', (peer) => {
     peerId: peer.id,
     latency: peer.latency
   });
-  saveConfig();
+  if (!USE_SQLITE) saveConfig();
 });
 
 clusterManager.on('config.merged', ({ peer, changes }) => {
   addActivityLog('info', `Configuration synchronized from ${peer}`, {
     changes: changes
   });
-  saveConfig();
+  if (!USE_SQLITE) saveConfig();
 });
 
 // Add startup log entry
@@ -2250,7 +2348,7 @@ addActivityLog('info', 'LLM Proxy server started', {
   totalProviders: config.providers.length,
   clusterEnabled: clusterManager.enabled
 });
-saveConfig();
+if (!USE_SQLITE) saveConfig();
 
 // ==================== CLUSTER ENDPOINTS ====================
 
@@ -2305,7 +2403,7 @@ app.post('/cluster/sync', (req, res) => {
 
   // Merge configuration
   clusterManager.mergeConfiguration(data, sourceNode);
-  saveConfig();
+  if (!USE_SQLITE) saveConfig();
 
   res.json({ success: true, message: 'Configuration synchronized' });
 });
@@ -2378,7 +2476,7 @@ app.put('/cluster/node', requireAuth, (req, res) => {
   }
 
   config.cluster = clusterConfig;
-  saveConfig();
+  saveClusterRecord();
   res.json({ success: true });
 });
 
@@ -2401,7 +2499,7 @@ app.post('/monitoring/circuit/reset', requireAuth, (req, res) => {
     providerId: providerId,
     username: req.session.username
   });
-  saveConfig();
+  if (!USE_SQLITE) saveConfig();
 
   res.json({ success: true, message: 'Circuit breaker reset' });
 });
@@ -2420,7 +2518,7 @@ app.post('/monitoring/circuit/open', requireAuth, (req, res) => {
     reason: reason,
     username: req.session.username
   });
-  saveConfig();
+  if (!USE_SQLITE) saveConfig();
 
   res.json({ success: true, message: 'Circuit breaker opened' });
 });
