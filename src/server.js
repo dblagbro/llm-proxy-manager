@@ -31,6 +31,34 @@ const logger = winston.createLogger({
   ]
 });
 
+// Per-provider loggers with 50MB rotation
+const providerLoggers = {};
+
+function getProviderLogger(providerName) {
+  if (!providerLoggers[providerName]) {
+    providerLoggers[providerName] = winston.createLogger({
+      level: 'info',
+      format: winston.format.combine(
+        winston.format.timestamp(),
+        winston.format.json()
+      ),
+      transports: [
+        new winston.transports.File({
+          filename: `/app/logs/provider-${providerName}.log`,
+          maxsize: 50 * 1024 * 1024, // 50MB
+          maxFiles: 5,
+          tailable: true
+        }),
+        new winston.transports.Console({
+          format: winston.format.simple(),
+          level: 'error' // Only log errors to console for providers
+        })
+      ]
+    });
+  }
+  return providerLoggers[providerName];
+}
+
 // Initialize pricing manager
 const pricingManager = new PricingManager();
 logger.info('Pricing manager initialized');
@@ -785,24 +813,40 @@ app.post('/v1/messages', validateApiKey, async (req, res) => {
     return res.status(503).json({ error: 'No providers available' });
   }
 
-  // Set SSE headers if streaming
-  if (isStreaming) {
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection', 'keep-alive');
-  }
+  // Track if streaming headers have been sent
+  let headersSent = false;
 
   // Try providers in order
   for (const provider of enabledProviders) {
     initStats(provider.id);
 
+    // Get provider-specific logger (moved outside try block for catch access)
+    const providerLog = getProviderLogger(provider.name);
+
     try {
       logger.info(`Trying provider: ${provider.name} (streaming: ${isStreaming})`);
+      providerLog.info('Request attempt', {
+        model: req.body.model,
+        messageCount: req.body.messages?.length,
+        streaming: isStreaming,
+        messages: req.body.messages,
+        max_tokens: req.body.max_tokens,
+        temperature: req.body.temperature
+      });
 
       // Increment requests counter only when actually attempting this provider
       config.stats[provider.id].requests++;
 
       if (isStreaming) {
+        // Set SSE headers only before first successful provider attempt
+        if (!headersSent) {
+          res.setHeader('Content-Type', 'text/event-stream');
+          res.setHeader('Cache-Control', 'no-cache');
+          res.setHeader('Connection', 'keep-alive');
+          headersSent = true;
+          logger.info(`Streaming headers set for provider: ${provider.name}`);
+        }
+
         // Streaming mode
         if (provider.type === 'anthropic') {
           await streamAnthropic(provider, req.body, res);
@@ -817,7 +861,7 @@ app.post('/v1/messages', validateApiKey, async (req, res) => {
         } else if (provider.type === 'openai-compatible') {
           await streamOpenAICompatible(provider, req.body, res);
         }
-      } else {
+      } else{
         // Non-streaming mode
         let result;
         switch(provider.type) {
@@ -876,6 +920,15 @@ app.post('/v1/messages', validateApiKey, async (req, res) => {
 
       logger.info(`Success with ${provider.name}`, { latency: `${latency}ms` });
 
+      // Log success to provider-specific log
+      providerLog.info('Request success', {
+        latency: `${latency}ms`,
+        model: model,
+        usage: usage,
+        cost: cost,
+        response: result
+      });
+
       // Track client key usage
       if (req.clientKey) {
         req.clientKey.requests = (req.clientKey.requests || 0) + 1;
@@ -907,6 +960,16 @@ app.post('/v1/messages', validateApiKey, async (req, res) => {
         error: error.message,
         status: error.response?.status,
         latency: `${latency}ms`
+      });
+
+      // Log error to provider-specific log
+      providerLog.error('Request failed', {
+        error: error.message,
+        status: error.response?.status,
+        statusText: error.response?.statusText,
+        data: error.response?.data,
+        latency: `${latency}ms`,
+        stack: error.stack
       });
 
       // If this was the last provider, return error
@@ -999,7 +1062,7 @@ app.get('/health', (req, res) => {
 });
 
 // SMTP Settings API
-app.get('/api/smtp/settings', (req, res) => {
+app.get('/api/smtp/settings', requireAuth, (req, res) => {
   const smtpSettings = config.smtp || {};
   // Mask password for security
   const safeSettings = {
@@ -1009,7 +1072,7 @@ app.get('/api/smtp/settings', (req, res) => {
   res.json(safeSettings);
 });
 
-app.post('/api/smtp/settings', (req, res) => {
+app.post('/api/smtp/settings', requireAuth, (req, res) => {
   try {
     const {enabled, host, port, secure, user, pass, from, to, subjectPrefix, minSeverity, throttle} = req.body;
 
@@ -1083,7 +1146,7 @@ app.post('/api/smtp/settings', (req, res) => {
   }
 });
 
-app.post('/api/smtp/test', async (req, res) => {
+app.post('/api/smtp/test', requireAuth, async (req, res) => {
   try {
     await notificationManager.sendTestEmail();
     res.json({success: true, message: 'Test email sent successfully'});
@@ -1981,6 +2044,32 @@ app.get('/cluster/status', validateApiKey, (req, res) => {
   }
 
   res.json(clusterManager.getClusterStatus());
+});
+
+// Update cluster node name
+app.put('/cluster/node', requireAuth, (req, res) => {
+  const { nodeType, nodeId, name } = req.body;
+  if (!name) return res.status(400).json({ error: 'name required' });
+
+  const clusterConfig = config.cluster || {};
+
+  if (nodeType === 'local') {
+    clusterConfig.localName = name;
+    clusterManager.nodeName = name;
+  } else {
+    const nodes = clusterConfig.nodes || [];
+    const node = nodes.find(n => n.name === nodeId || n.host === nodeId);
+    if (node) {
+      // Update peer in-memory name too
+      const peer = clusterManager.peers.find(p => p.id === nodeId);
+      if (peer) peer.name = name;
+      node.name = name;
+    }
+  }
+
+  config.cluster = clusterConfig;
+  saveConfig();
+  res.json({ success: true });
 });
 
 // Provider monitoring status endpoint
