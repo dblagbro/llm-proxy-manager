@@ -2,17 +2,18 @@ version: '3.8'
 
 services:
   llm-proxy:
-    image: dblagbro/llm-proxy-manager:1.0.2
-    container_name: llm-proxy
+    image: dblagbro/llm-proxy-manager:latest
+    container_name: llm-proxy-manager
     restart: unless-stopped
     ports:
-      - "3100:3000"
+      - "3000:3000"
     environment:
       - NODE_ENV=production
       - PORT=3000
+      # API keys are stored in config/providers.json (volume-mounted, NEVER committed to git)
     volumes:
-      - ./config:/app/config
-      - ./logs:/app/logs
+      - /opt/llm-proxy-data/config:/app/config
+      - /opt/llm-proxy-data/logs:/app/logs
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/health"]
       interval: 30s
