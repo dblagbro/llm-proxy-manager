@@ -268,43 +268,251 @@ function validateApiKey(req, res, next) {
   next();
 }
 
-// Translate Anthropic request to Google Gemini format
+// Generate a unique tool-use ID
+function generateToolId() {
+  return 'toolu_' + crypto.randomBytes(6).toString('hex');
+}
+
+// Look up a tool name from message history by tool_use_id
+function lookupToolName(messages, toolUseId) {
+  for (const msg of messages) {
+    const content = Array.isArray(msg.content) ? msg.content : [];
+    for (const block of content) {
+      if (block.type === 'tool_use' && block.id === toolUseId) {
+        return block.name;
+      }
+    }
+  }
+  return 'unknown';
+}
+
+// Convert Anthropic content array to Gemini parts array
+function buildGeminiParts(contentArray, messages) {
+  if (typeof contentArray === 'string') return [{ text: contentArray }];
+  if (!Array.isArray(contentArray)) return [{ text: '' }];
+
+  const parts = [];
+  for (const block of contentArray) {
+    if (block.type === 'text') {
+      parts.push({ text: block.text });
+    } else if (block.type === 'tool_use') {
+      parts.push({ functionCall: { name: block.name, args: block.input || {} } });
+    } else if (block.type === 'tool_result') {
+      const toolName = lookupToolName(messages, block.tool_use_id);
+      const resultText = Array.isArray(block.content)
+        ? block.content.filter(c => c.type === 'text').map(c => c.text).join('\n')
+        : (block.content || '');
+      parts.push({ functionResponse: { name: toolName, response: { result: resultText } } });
+    }
+  }
+  return parts.length > 0 ? parts : [{ text: '' }];
+}
+
+// Translate Anthropic request to Google Gemini format (with tool support)
 function translateToGemini(anthropicRequest) {
   const messages = anthropicRequest.messages || [];
-  let parts = [];
 
-  for (const msg of messages) {
-    const role = msg.role === 'assistant' ? 'model' : 'user';
-    const text = typeof msg.content === 'string' ? msg.content :
-                 Array.isArray(msg.content) ? msg.content.map(c => c.text || '').join('') : '';
-    parts.push({ role, parts: [{ text }] });
+  // Build Gemini contents, merging consecutive same-role turns (Gemini requires strict alternation)
+  const rawContents = messages.map(msg => ({
+    role: msg.role === 'assistant' ? 'model' : 'user',
+    parts: buildGeminiParts(msg.content, messages)
+  }));
+
+  // Merge consecutive same-role turns
+  const contents = [];
+  for (const turn of rawContents) {
+    if (contents.length > 0 && contents[contents.length - 1].role === turn.role) {
+      contents[contents.length - 1].parts.push(...turn.parts);
+    } else {
+      contents.push({ role: turn.role, parts: [...turn.parts] });
+    }
   }
 
-  return {
-    contents: parts,
+  // Translate Anthropic tools to Gemini functionDeclarations
+  const tools = anthropicRequest.tools;
+  const geminiTools = tools && tools.length > 0
+    ? [{ functionDeclarations: tools.map(t => ({ name: t.name, description: t.description, parameters: t.input_schema })) }]
+    : undefined;
+
+  const result = {
+    contents,
     generationConfig: {
       temperature: anthropicRequest.temperature || 1.0,
       maxOutputTokens: anthropicRequest.max_tokens || 4096,
       topP: anthropicRequest.top_p || 1.0,
     }
   };
+
+  if (geminiTools) result.tools = geminiTools;
+
+  if (anthropicRequest.system) {
+    result.systemInstruction = { parts: [{ text: anthropicRequest.system }] };
+  }
+
+  return result;
 }
 
-// Translate Google Gemini response to Anthropic format (non-streaming)
+// Translate Google Gemini response to Anthropic format (non-streaming, with tool_use support)
 function translateFromGemini(geminiResponse, model) {
   const candidate = geminiResponse.candidates?.[0];
-  const content = candidate?.content?.parts?.[0]?.text || '';
+  const parts = candidate?.content?.parts || [];
+
+  const contentBlocks = [];
+  let hasToolUse = false;
+
+  for (const part of parts) {
+    if (part.text) {
+      contentBlocks.push({ type: 'text', text: part.text });
+    } else if (part.functionCall) {
+      hasToolUse = true;
+      contentBlocks.push({
+        type: 'tool_use',
+        id: generateToolId(),
+        name: part.functionCall.name,
+        input: part.functionCall.args || {}
+      });
+    }
+  }
+
+  if (contentBlocks.length === 0) {
+    contentBlocks.push({ type: 'text', text: '' });
+  }
+
+  const finishReason = candidate?.finishReason;
+  let stop_reason;
+  if (hasToolUse) {
+    stop_reason = 'tool_use';
+  } else if (finishReason === 'STOP') {
+    stop_reason = 'end_turn';
+  } else {
+    stop_reason = 'max_tokens';
+  }
 
   return {
     id: `msg_${Date.now()}`,
     type: 'message',
     role: 'assistant',
-    content: [{ type: 'text', text: content }],
-    model: model || 'gemini-1.5-pro',
-    stop_reason: candidate?.finishReason === 'STOP' ? 'end_turn' : 'max_tokens',
+    content: contentBlocks,
+    model: model || 'gemini-2.5-flash',
+    stop_reason,
     usage: {
       input_tokens: geminiResponse.usageMetadata?.promptTokenCount || 0,
       output_tokens: geminiResponse.usageMetadata?.candidatesTokenCount || 0
+    }
+  };
+}
+
+// Convert Anthropic messages to OpenAI chat format (with tool support)
+function translateToOpenAI(anthropicRequest) {
+  const messages = [];
+
+  // System prompt
+  if (anthropicRequest.system) {
+    messages.push({ role: 'system', content: anthropicRequest.system });
+  }
+
+  for (const msg of anthropicRequest.messages) {
+    if (typeof msg.content === 'string') {
+      messages.push({ role: msg.role, content: msg.content });
+      continue;
+    }
+    if (!Array.isArray(msg.content)) {
+      messages.push({ role: msg.role, content: '' });
+      continue;
+    }
+
+    // Check if this message contains tool_result blocks (becomes role: 'tool')
+    const toolResults = msg.content.filter(c => c.type === 'tool_result');
+    if (toolResults.length > 0) {
+      for (const tr of toolResults) {
+        const resultContent = Array.isArray(tr.content)
+          ? tr.content.filter(c => c.type === 'text').map(c => c.text).join('\n')
+          : (tr.content || '');
+        messages.push({ role: 'tool', tool_call_id: tr.tool_use_id, content: resultContent });
+      }
+      continue;
+    }
+
+    // Assistant message — may have text + tool_use blocks
+    if (msg.role === 'assistant') {
+      const textParts = msg.content.filter(c => c.type === 'text').map(c => c.text).join('\n');
+      const toolUses = msg.content.filter(c => c.type === 'tool_use');
+
+      const oaiMsg = { role: 'assistant', content: textParts || null };
+      if (toolUses.length > 0) {
+        oaiMsg.tool_calls = toolUses.map(tu => ({
+          id: tu.id,
+          type: 'function',
+          function: { name: tu.name, arguments: JSON.stringify(tu.input || {}) }
+        }));
+      }
+      messages.push(oaiMsg);
+      continue;
+    }
+
+    // User message — text only (tool_results handled above)
+    const textContent = msg.content.filter(c => c.type === 'text').map(c => c.text).join('\n');
+    messages.push({ role: msg.role, content: textContent });
+  }
+
+  // Translate Anthropic tools to OpenAI tools
+  const tools = anthropicRequest.tools;
+  const oaiTools = tools && tools.length > 0
+    ? tools.map(t => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.input_schema } }))
+    : undefined;
+
+  return { messages, tools: oaiTools };
+}
+
+// Convert OpenAI response to Anthropic format (with tool_calls support)
+function translateFromOpenAI(openAIResponse, model) {
+  const choice = openAIResponse.choices?.[0];
+  const msg = choice?.message;
+
+  const contentBlocks = [];
+  let hasToolUse = false;
+
+  if (msg?.content) {
+    contentBlocks.push({ type: 'text', text: msg.content });
+  }
+  if (msg?.tool_calls?.length > 0) {
+    hasToolUse = true;
+    for (const tc of msg.tool_calls) {
+      let inputArgs = {};
+      try { inputArgs = JSON.parse(tc.function.arguments || '{}'); } catch (_) {}
+      contentBlocks.push({
+        type: 'tool_use',
+        id: tc.id,
+        name: tc.function.name,
+        input: inputArgs
+      });
+    }
+  }
+
+  if (contentBlocks.length === 0) {
+    contentBlocks.push({ type: 'text', text: '' });
+  }
+
+  const finishReason = choice?.finish_reason;
+  let stop_reason;
+  if (hasToolUse || finishReason === 'tool_calls') {
+    stop_reason = 'tool_use';
+  } else if (finishReason === 'stop') {
+    stop_reason = 'end_turn';
+  } else {
+    stop_reason = 'max_tokens';
+  }
+
+  return {
+    id: openAIResponse.id || `msg_${Date.now()}`,
+    type: 'message',
+    role: 'assistant',
+    content: contentBlocks,
+    model: openAIResponse.model || model,
+    stop_reason,
+    usage: {
+      input_tokens: openAIResponse.usage?.prompt_tokens || 0,
+      output_tokens: openAIResponse.usage?.completion_tokens || 0
     }
   };
 }
@@ -318,6 +526,7 @@ async function streamAnthropic(provider, request, res) {
       max_tokens: request.max_tokens || 4096,
       messages: request.messages,
       system: request.system,
+      tools: request.tools,
       temperature: request.temperature,
       top_p: request.top_p,
       stream: true
@@ -342,7 +551,7 @@ async function streamAnthropic(provider, request, res) {
   });
 }
 
-// Stream Google Gemini API responses (translate to Anthropic SSE format)
+// Stream Google Gemini API responses (translate to Anthropic SSE format, with tool_use support)
 async function streamGemini(provider, request, res) {
   const geminiRequest = translateToGemini(request);
   const model = request.model?.includes('gemini') ? request.model : 'gemini-2.5-flash';
@@ -358,49 +567,70 @@ async function streamGemini(provider, request, res) {
   );
 
   const messageId = `msg_${Date.now()}`;
-  let textBuffer = '';
 
-  // Send Anthropic-format SSE events
-  res.write(`event: message_start\n`);
-  res.write(`data: ${JSON.stringify({
+  // SSE emit helper
+  const emit = (eventName, data) => {
+    res.write(`event: ${eventName}\n`);
+    res.write(`data: ${JSON.stringify(data)}\n\n`);
+  };
+
+  emit('message_start', {
     type: 'message_start',
-    message: {
-      id: messageId,
-      type: 'message',
-      role: 'assistant',
-      content: [],
-      model: model,
-      usage: { input_tokens: 0, output_tokens: 0 }
-    }
-  })}\n\n`);
+    message: { id: messageId, type: 'message', role: 'assistant', content: [], model, usage: { input_tokens: 0, output_tokens: 0 } }
+  });
 
-  res.write(`event: content_block_start\n`);
-  res.write(`data: ${JSON.stringify({
-    type: 'content_block_start',
-    index: 0,
-    content_block: { type: 'text', text: '' }
-  })}\n\n`);
+  let blockIndex = 0;
+  let textBlockOpen = false;
+  let hasToolUse = false;
+  let outputTokens = 0;
+
+  // Accumulate partial SSE lines across TCP chunks
+  let lineBuffer = '';
+
+  const processChunk = (data) => {
+    const parts = data.candidates?.[0]?.content?.parts || [];
+    for (const part of parts) {
+      if (part.text) {
+        if (!textBlockOpen) {
+          emit('content_block_start', { type: 'content_block_start', index: blockIndex, content_block: { type: 'text', text: '' } });
+          textBlockOpen = true;
+        }
+        outputTokens += part.text.length;
+        emit('content_block_delta', { type: 'content_block_delta', index: blockIndex, delta: { type: 'text_delta', text: part.text } });
+      } else if (part.functionCall) {
+        // Close text block if open
+        if (textBlockOpen) {
+          emit('content_block_stop', { type: 'content_block_stop', index: blockIndex });
+          blockIndex++;
+          textBlockOpen = false;
+        }
+        hasToolUse = true;
+        const toolId = generateToolId();
+        const argsJson = JSON.stringify(part.functionCall.args || {});
+        emit('content_block_start', { type: 'content_block_start', index: blockIndex, content_block: { type: 'tool_use', id: toolId, name: part.functionCall.name, input: {} } });
+        emit('content_block_delta', { type: 'content_block_delta', index: blockIndex, delta: { type: 'input_json_delta', partial_json: argsJson } });
+        emit('content_block_stop', { type: 'content_block_stop', index: blockIndex });
+        blockIndex++;
+      }
+    }
+    // Accumulate usage metadata if present
+    if (data.usageMetadata?.candidatesTokenCount) {
+      outputTokens = data.usageMetadata.candidatesTokenCount;
+    }
+  };
 
   response.data.on('data', (chunk) => {
-    const lines = chunk.toString().split('\n').filter(line => line.trim());
+    lineBuffer += chunk.toString();
+    const lines = lineBuffer.split('\n');
+    lineBuffer = lines.pop(); // Keep incomplete last line
 
     for (const line of lines) {
       if (line.startsWith('data: ')) {
         try {
           const data = JSON.parse(line.slice(6));
-          const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
-
-          if (text) {
-            textBuffer += text;
-            res.write(`event: content_block_delta\n`);
-            res.write(`data: ${JSON.stringify({
-              type: 'content_block_delta',
-              index: 0,
-              delta: { type: 'text_delta', text: text }
-            })}\n\n`);
-          }
+          processChunk(data);
         } catch (e) {
-          logger.error('Error parsing Gemini chunk:', e);
+          // Skip unparseable lines (e.g. "[DONE]" or empty)
         }
       }
     }
@@ -408,18 +638,17 @@ async function streamGemini(provider, request, res) {
 
   return new Promise((resolve, reject) => {
     response.data.on('end', () => {
-      res.write(`event: content_block_stop\n`);
-      res.write(`data: ${JSON.stringify({ type: 'content_block_stop', index: 0 })}\n\n`);
+      // Close any open text block
+      if (textBlockOpen) {
+        emit('content_block_stop', { type: 'content_block_stop', index: blockIndex });
+      }
 
-      res.write(`event: message_delta\n`);
-      res.write(`data: ${JSON.stringify({
+      emit('message_delta', {
         type: 'message_delta',
-        delta: { stop_reason: 'end_turn', stop_sequence: null },
-        usage: { output_tokens: textBuffer.length }
-      })}\n\n`);
-
-      res.write(`event: message_stop\n`);
-      res.write(`data: ${JSON.stringify({ type: 'message_stop' })}\n\n`);
+        delta: { stop_reason: hasToolUse ? 'tool_use' : 'end_turn', stop_sequence: null },
+        usage: { output_tokens: outputTokens }
+      });
+      emit('message_stop', { type: 'message_stop' });
 
       resolve();
     });
@@ -428,48 +657,139 @@ async function streamGemini(provider, request, res) {
   });
 }
 
-// Stream OpenAI API responses
+// Stream OpenAI API responses (translate to Anthropic SSE format, with tool_use support)
 async function streamOpenAI(provider, request, res) {
-  // Convert Anthropic message format to OpenAI format
-  const convertedMessages = request.messages.map(msg => {
-    // If content is an array (Anthropic format), extract text
-    if (Array.isArray(msg.content)) {
-      const textContent = msg.content
-        .filter(c => c.type === 'text')
-        .map(c => c.text)
-        .join('\n');
-      return { role: msg.role, content: textContent };
-    }
-    // If content is already a string, use as-is
-    return { role: msg.role, content: msg.content };
-  });
+  const { messages: convertedMessages, tools: oaiTools } = translateToOpenAI(request);
+
+  const body = {
+    model: request.model || provider.model || 'gpt-4o-mini',
+    messages: convertedMessages,
+    max_tokens: request.max_tokens || 4096,
+    temperature: request.temperature,
+    top_p: request.top_p,
+    stream: true
+  };
+  if (oaiTools) body.tools = oaiTools;
 
   const response = await axios.post(
     'https://api.openai.com/v1/chat/completions',
+    body,
     {
-      model: request.model || 'gpt-4o-mini',
-      messages: convertedMessages,
-      max_tokens: request.max_tokens || 4096,
-      temperature: request.temperature,
-      top_p: request.top_p,
-      stream: true
-    },
-    {
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${provider.apiKey}`
-      },
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${provider.apiKey}` },
       responseType: 'stream',
       timeout: providerMonitor.getProviderTimeout(provider.type)
     }
   );
 
-  // Pipe OpenAI SSE directly to client
-  response.data.pipe(res);
+  const messageId = `msg_${Date.now()}`;
+  const model = request.model || provider.model || 'gpt-4o-mini';
+
+  const emit = (eventName, data) => {
+    res.write(`event: ${eventName}\n`);
+    res.write(`data: ${JSON.stringify(data)}\n\n`);
+  };
+
+  emit('message_start', {
+    type: 'message_start',
+    message: { id: messageId, type: 'message', role: 'assistant', content: [], model, usage: { input_tokens: 0, output_tokens: 0 } }
+  });
+
+  // Track state for text and tool_call blocks
+  let blockIndex = 0;
+  let textBlockOpen = false;
+  let hasToolUse = false;
+  let outputTokens = 0;
+
+  // tool_calls accumulator: index → {id, name, argsBuffer}
+  const toolCallAccum = {};
+  let lineBuffer = '';
+
+  const processSSELine = (line) => {
+    if (!line.startsWith('data: ')) return;
+    const payload = line.slice(6).trim();
+    if (payload === '[DONE]') return;
+
+    let data;
+    try { data = JSON.parse(payload); } catch (_) { return; }
+
+    const delta = data.choices?.[0]?.delta;
+    const finishReason = data.choices?.[0]?.finish_reason;
+
+    if (data.usage?.completion_tokens) outputTokens = data.usage.completion_tokens;
+
+    if (!delta) return;
+
+    // Text content
+    if (delta.content) {
+      if (!textBlockOpen) {
+        emit('content_block_start', { type: 'content_block_start', index: blockIndex, content_block: { type: 'text', text: '' } });
+        textBlockOpen = true;
+      }
+      emit('content_block_delta', { type: 'content_block_delta', index: blockIndex, delta: { type: 'text_delta', text: delta.content } });
+    }
+
+    // Tool calls (streamed incrementally by OpenAI)
+    if (delta.tool_calls) {
+      // Close text block first if open
+      if (textBlockOpen) {
+        emit('content_block_stop', { type: 'content_block_stop', index: blockIndex });
+        blockIndex++;
+        textBlockOpen = false;
+      }
+      for (const tc of delta.tool_calls) {
+        const tcIdx = tc.index;
+        if (!toolCallAccum[tcIdx]) {
+          toolCallAccum[tcIdx] = { id: tc.id || generateToolId(), name: tc.function?.name || '', argsBuffer: '', emittedStart: false };
+        }
+        const accum = toolCallAccum[tcIdx];
+        if (tc.id) accum.id = tc.id;
+        if (tc.function?.name) accum.name += tc.function.name;
+        if (tc.function?.arguments) accum.argsBuffer += tc.function.arguments;
+
+        // Emit start block once we have the name
+        if (!accum.emittedStart && accum.name) {
+          hasToolUse = true;
+          emit('content_block_start', { type: 'content_block_start', index: blockIndex + tcIdx, content_block: { type: 'tool_use', id: accum.id, name: accum.name, input: {} } });
+          accum.emittedStart = true;
+        }
+        // Stream args delta
+        if (tc.function?.arguments && accum.emittedStart) {
+          emit('content_block_delta', { type: 'content_block_delta', index: blockIndex + tcIdx, delta: { type: 'input_json_delta', partial_json: tc.function.arguments } });
+        }
+      }
+    }
+  };
+
+  response.data.on('data', (chunk) => {
+    lineBuffer += chunk.toString();
+    const lines = lineBuffer.split('\n');
+    lineBuffer = lines.pop();
+    for (const line of lines) processSSELine(line.trim());
+  });
 
   return new Promise((resolve, reject) => {
-    response.data.on('end', () => resolve());
-    response.data.on('error', (err) => reject(err));
+    response.data.on('end', () => {
+      // Close text block if open
+      if (textBlockOpen) {
+        emit('content_block_stop', { type: 'content_block_stop', index: blockIndex });
+        blockIndex++;
+      }
+      // Close any open tool_call blocks
+      for (const tcIdx of Object.keys(toolCallAccum)) {
+        const accum = toolCallAccum[tcIdx];
+        if (accum.emittedStart) {
+          emit('content_block_stop', { type: 'content_block_stop', index: blockIndex + parseInt(tcIdx) });
+        }
+      }
+      emit('message_delta', {
+        type: 'message_delta',
+        delta: { stop_reason: hasToolUse ? 'tool_use' : 'end_turn', stop_sequence: null },
+        usage: { output_tokens: outputTokens }
+      });
+      emit('message_stop', { type: 'message_stop' });
+      resolve();
+    });
+    response.data.on('error', reject);
   });
 }
 
@@ -566,6 +886,7 @@ async function callAnthropic(provider, request) {
       max_tokens: request.max_tokens || 4096,
       messages: request.messages,
       system: request.system,
+      tools: request.tools,
       temperature: request.temperature,
       top_p: request.top_p,
       stream: false
@@ -704,53 +1025,28 @@ async function callOllama(provider, request) {
 
 // OpenAI (official API)
 async function callOpenAI(provider, request) {
-  // Convert Anthropic message format to OpenAI format
-  const convertedMessages = request.messages.map(msg => {
-    // If content is an array (Anthropic format), extract text
-    if (Array.isArray(msg.content)) {
-      const textContent = msg.content
-        .filter(c => c.type === 'text')
-        .map(c => c.text)
-        .join('\n');
-      return { role: msg.role, content: textContent };
-    }
-    // If content is already a string, use as-is
-    return { role: msg.role, content: msg.content };
-  });
+  const { messages: convertedMessages, tools: oaiTools } = translateToOpenAI(request);
+
+  const body = {
+    model: request.model || provider.model || 'gpt-4o-mini',
+    max_tokens: request.max_tokens || 4096,
+    messages: convertedMessages,
+    temperature: request.temperature,
+    top_p: request.top_p,
+    stream: false
+  };
+  if (oaiTools) body.tools = oaiTools;
 
   const response = await axios.post(
     'https://api.openai.com/v1/chat/completions',
+    body,
     {
-      model: request.model || provider.model || 'gpt-4o-mini',
-      max_tokens: request.max_tokens || 4096,
-      messages: convertedMessages,
-      temperature: request.temperature,
-      top_p: request.top_p,
-      stream: false
-    },
-    {
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${provider.apiKey}`
-      },
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${provider.apiKey}` },
       timeout: providerMonitor.getProviderTimeout(provider.type)
     }
   );
 
-  // Convert OpenAI format to Anthropic format
-  const choice = response.data.choices[0];
-  return {
-    id: response.data.id,
-    type: 'message',
-    role: 'assistant',
-    content: [{ type: 'text', text: choice.message.content }],
-    model: response.data.model,
-    stop_reason: choice.finish_reason === 'stop' ? 'end_turn' : choice.finish_reason,
-    usage: {
-      input_tokens: response.data.usage?.prompt_tokens || 0,
-      output_tokens: response.data.usage?.completion_tokens || 0
-    }
-  };
+  return translateFromOpenAI(response.data, request.model || provider.model || 'gpt-4o-mini');
 }
 
 // OpenAI-compatible API (for 3rd party services)
