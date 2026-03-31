@@ -188,8 +188,8 @@ class ClusterManager extends EventEmitter {
     // Calculate provider health
     const providerHealth = providers.map(p => {
       const providerStats = stats[p.id] || {};
-      const total = (providerStats.success || 0) + (providerStats.failure || 0);
-      const successRate = total > 0 ? (providerStats.success || 0) / total : 0;
+      const total = (providerStats.successes || 0) + (providerStats.failures || 0);
+      const successRate = total > 0 ? (providerStats.successes || 0) / total : 0;
 
       return {
         id: p.id,
@@ -204,8 +204,8 @@ class ClusterManager extends EventEmitter {
 
     // Calculate overall stats
     const totalRequests = Object.values(stats).reduce((sum, s) => sum + (s.requests || 0), 0);
-    const successfulRequests = Object.values(stats).reduce((sum, s) => sum + (s.success || 0), 0);
-    const failedRequests = Object.values(stats).reduce((sum, s) => sum + (s.failure || 0), 0);
+    const successfulRequests = Object.values(stats).reduce((sum, s) => sum + (s.successes || 0), 0);
+    const failedRequests = Object.values(stats).reduce((sum, s) => sum + (s.failures || 0), 0);
 
     const latencies = Object.values(stats)
       .map(s => s.latency || [])

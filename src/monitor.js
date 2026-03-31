@@ -83,6 +83,17 @@ class ProviderMonitor extends EventEmitter {
     return this.providerTimeouts[providerType] || 30000;
   }
 
+  // Get circuit breaker config for a provider, with per-provider overrides
+  getCircuitConfig(provider) {
+    const cb = provider.circuitBreaker || {};
+    return {
+      failureThreshold: cb.failureThreshold != null ? parseInt(cb.failureThreshold) : this.circuitBreakerConfig.failureThreshold,
+      timeout: cb.timeout != null ? parseInt(cb.timeout) * 1000 : this.circuitBreakerConfig.timeout,
+      halfOpenTimeout: cb.halfOpenTimeout != null ? parseInt(cb.halfOpenTimeout) * 1000 : this.circuitBreakerConfig.halfOpenTimeout,
+      successThreshold: cb.successThreshold != null ? parseInt(cb.successThreshold) : this.circuitBreakerConfig.successThreshold
+    };
+  }
+
   // Circuit Breaker State Machine
   getCircuitState(providerId) {
     if (!this.circuits.has(providerId)) {
@@ -122,9 +133,10 @@ class ProviderMonitor extends EventEmitter {
         // Normal operation
         return { allowed: true, reason: 'Circuit closed' };
 
-      case 'OPEN':
+      case 'OPEN': {
         // Check if timeout expired -> move to HALF_OPEN
-        if (circuit.lastFailure && (now - circuit.lastFailure > this.circuitBreakerConfig.timeout)) {
+        const cbCfg = this.getCircuitConfig(provider);
+        if (circuit.lastFailure && (now - circuit.lastFailure > cbCfg.timeout)) {
           circuit.state = 'HALF_OPEN';
           circuit.successes = 0;
           this.logger.info(`Circuit HALF_OPEN for provider: ${provider.name} (${provider.id})`);
@@ -133,8 +145,9 @@ class ProviderMonitor extends EventEmitter {
         }
         return {
           allowed: false,
-          reason: `Circuit open until ${new Date(circuit.lastFailure + this.circuitBreakerConfig.timeout).toISOString()}`
+          reason: `Circuit open until ${new Date(circuit.lastFailure + cbCfg.timeout).toISOString()}`
         };
+      }
 
       case 'HALF_OPEN':
         // Allow limited testing
@@ -151,7 +164,7 @@ class ProviderMonitor extends EventEmitter {
     if (circuit.state === 'HALF_OPEN') {
       circuit.successes++;
 
-      if (circuit.successes >= this.circuitBreakerConfig.successThreshold) {
+      if (circuit.successes >= this.getCircuitConfig(provider).successThreshold) {
         // Restore provider
         circuit.state = 'CLOSED';
         circuit.failures = 0;
@@ -185,7 +198,7 @@ class ProviderMonitor extends EventEmitter {
     }
 
     // Open circuit if threshold reached
-    if (circuit.state === 'CLOSED' && circuit.failures >= this.circuitBreakerConfig.failureThreshold) {
+    if (circuit.state === 'CLOSED' && circuit.failures >= this.getCircuitConfig(provider).failureThreshold) {
       circuit.state = 'OPEN';
       circuit.reason = isBillingError ? 'Billing/quota issue' : 'Too many failures';
       this.logger.error(`Circuit OPEN for provider: ${provider.name} (${provider.id}) - ${circuit.reason}`);
