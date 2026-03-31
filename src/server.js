@@ -739,22 +739,27 @@ async function streamOpenAI(provider, request, res) {
       for (const tc of delta.tool_calls) {
         const tcIdx = tc.index;
         if (!toolCallAccum[tcIdx]) {
-          toolCallAccum[tcIdx] = { id: tc.id || generateToolId(), name: tc.function?.name || '', argsBuffer: '', emittedStart: false };
+          // blockBaseForTools is fixed at the time the first tool_call appears,
+          // so all tool blocks get consistent indices regardless of later blockIndex changes
+          toolCallAccum[tcIdx] = { id: tc.id || generateToolId(), name: '', argsBuffer: '', emittedStart: false, blockOffset: blockIndex };
         }
         const accum = toolCallAccum[tcIdx];
-        if (tc.id) accum.id = tc.id;
-        if (tc.function?.name) accum.name += tc.function.name;
+        if (tc.id && !accum.id) accum.id = tc.id;
+        // Name only arrives in the first chunk — assign, don't append
+        if (tc.function?.name && !accum.name) accum.name = tc.function.name;
         if (tc.function?.arguments) accum.argsBuffer += tc.function.arguments;
 
         // Emit start block once we have the name
         if (!accum.emittedStart && accum.name) {
           hasToolUse = true;
-          emit('content_block_start', { type: 'content_block_start', index: blockIndex + tcIdx, content_block: { type: 'tool_use', id: accum.id, name: accum.name, input: {} } });
+          const absIdx = accum.blockOffset + tcIdx;
+          emit('content_block_start', { type: 'content_block_start', index: absIdx, content_block: { type: 'tool_use', id: accum.id, name: accum.name, input: {} } });
           accum.emittedStart = true;
+          accum.absIdx = absIdx;
         }
         // Stream args delta
         if (tc.function?.arguments && accum.emittedStart) {
-          emit('content_block_delta', { type: 'content_block_delta', index: blockIndex + tcIdx, delta: { type: 'input_json_delta', partial_json: tc.function.arguments } });
+          emit('content_block_delta', { type: 'content_block_delta', index: accum.absIdx, delta: { type: 'input_json_delta', partial_json: tc.function.arguments } });
         }
       }
     }
@@ -774,11 +779,10 @@ async function streamOpenAI(provider, request, res) {
         emit('content_block_stop', { type: 'content_block_stop', index: blockIndex });
         blockIndex++;
       }
-      // Close any open tool_call blocks
-      for (const tcIdx of Object.keys(toolCallAccum)) {
-        const accum = toolCallAccum[tcIdx];
+      // Close any open tool_call blocks (use the stored absolute index)
+      for (const accum of Object.values(toolCallAccum)) {
         if (accum.emittedStart) {
-          emit('content_block_stop', { type: 'content_block_stop', index: blockIndex + parseInt(tcIdx) });
+          emit('content_block_stop', { type: 'content_block_stop', index: accum.absIdx });
         }
       }
       emit('message_delta', {
