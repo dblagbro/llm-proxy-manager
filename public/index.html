@@ -631,7 +631,7 @@
     <div class="container">
         <div class="header">
             <div>
-                <h1>🤖 LLM Proxy Manager <span style="font-size: 14px; color: var(--text-muted); font-weight: normal;">v1.3.4</span></h1>
+                <h1>🤖 LLM Proxy Manager <span style="font-size: 14px; color: var(--text-muted); font-weight: normal;">v1.3.5</span></h1>
                 <p class="subtitle">Multi-provider AI proxy with automatic failover and cluster synchronization</p>
             </div>
             <div class="header-actions">
@@ -894,8 +894,8 @@ export ANTHROPIC_API_KEY="proxy-handled"</textarea>
 
             <div class="form-group" style="margin-top: 20px;">
                 <label>Session Timeout (minutes)</label>
-                <input type="number" id="session-timeout-minutes" value="15" min="1" max="1440" placeholder="15">
-                <small style="color: var(--text-muted);">How long before an inactive login session expires (default: 15 minutes)</small>
+                <input type="number" id="session-timeout-minutes" value="480" min="1" max="1440" placeholder="480">
+                <small style="color: var(--text-muted);">How long before an inactive login session expires (default: 480 minutes = 8 hours)</small>
             </div>
 
             <div class="form-actions" style="margin-top: 30px;">
@@ -1798,7 +1798,7 @@ export ANTHROPIC_API_KEY="proxy-handled"</textarea>
                     document.getElementById('smtp-subject-prefix').value = settings.subjectPrefix || '[LLM Proxy Alert]';
                     document.getElementById('smtp-min-severity').value = settings.minSeverity || 'WARNING';
                     document.getElementById('smtp-throttle').value = settings.throttle || 15;
-                    document.getElementById('session-timeout-minutes').value = settings.sessionTimeoutMinutes || 15;
+                    document.getElementById('session-timeout-minutes').value = settings.sessionTimeoutMinutes || 480;
                     toggleSmtpFields();
                 }
             } catch (error) {
@@ -1819,7 +1819,7 @@ export ANTHROPIC_API_KEY="proxy-handled"</textarea>
                 subjectPrefix: document.getElementById('smtp-subject-prefix').value,
                 minSeverity: document.getElementById('smtp-min-severity').value,
                 throttle: parseInt(document.getElementById('smtp-throttle').value),
-                sessionTimeoutMinutes: parseInt(document.getElementById('session-timeout-minutes').value) || 15
+                sessionTimeoutMinutes: parseInt(document.getElementById('session-timeout-minutes').value) || 480
             };
 
             try {
