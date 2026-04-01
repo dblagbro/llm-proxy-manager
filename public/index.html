@@ -1032,6 +1032,32 @@ export ANTHROPIC_API_KEY="proxy-handled"</textarea>
     </div>
 
     <!-- Show API Key Modal -->
+    <div id="providerLogModal" class="modal">
+        <div class="modal-content" style="max-width: 860px; width: 95vw;">
+            <div class="modal-header">
+                <h3 id="providerLogTitle">Chat Log</h3>
+                <button class="close-btn" onclick="closeProviderLogModal()">&times;</button>
+            </div>
+            <div style="padding: 16px 20px 8px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+                <label style="font-size: 13px; color: var(--text-muted);">Show last</label>
+                <select id="providerLogLines" onchange="refreshProviderLog()" style="width: auto; padding: 4px 8px; font-size: 13px;">
+                    <option value="100">100 lines</option>
+                    <option value="200" selected>200 lines</option>
+                    <option value="500">500 lines</option>
+                    <option value="1000">1000 lines</option>
+                    <option value="2000">All (2000)</option>
+                </select>
+                <button class="btn btn-small btn-secondary" onclick="refreshProviderLog()">↻ Refresh</button>
+                <label style="margin-left: auto; font-size: 13px; display: flex; align-items: center; gap: 6px; cursor: pointer;">
+                    <input type="checkbox" id="providerLogAutoRefresh" onchange="toggleProviderLogAutoRefresh()"> Auto-refresh
+                </label>
+            </div>
+            <div style="padding: 0 20px 20px;">
+                <pre id="providerLogContent" style="background: #0d1117; color: #c9d1d9; border-radius: 6px; padding: 14px; font-size: 12px; line-height: 1.6; overflow-y: auto; max-height: 60vh; white-space: pre-wrap; word-break: break-word; font-family: 'Consolas','Monaco','Courier New',monospace;">Loading…</pre>
+            </div>
+        </div>
+    </div>
+
     <div id="showApiKeyModal" class="modal">
         <div class="modal-content">
             <div class="modal-header">
@@ -1483,6 +1509,7 @@ export ANTHROPIC_API_KEY="proxy-handled"</textarea>
                             </div>
                             <div class="provider-controls">
                                 <button class="btn btn-small btn-secondary" onclick="testSingleProvider(${provider.originalIndex})">🧪 Test</button>
+                                <button class="btn btn-small btn-secondary" onclick="openProviderLog('${provider.name.replace(/'/g, "\\'")}')">📋 Log</button>
                                 <button class="btn btn-small btn-primary" onclick="editProvider(${provider.originalIndex})">✏️ Edit</button>
                                 <button class="btn btn-small btn-danger" onclick="deleteProvider(${provider.originalIndex})">🗑️</button>
                                 <label class="toggle">
@@ -1758,6 +1785,49 @@ export ANTHROPIC_API_KEY="proxy-handled"</textarea>
         function closeModal() {
             document.getElementById('editModal').classList.remove('show');
             document.getElementById('testResult').innerHTML = '';
+        }
+
+        // ── Provider Chat Log Modal ───────────────────────────────────────
+        let _providerLogName = null;
+        let _providerLogTimer = null;
+
+        async function openProviderLog(providerName) {
+            _providerLogName = providerName;
+            document.getElementById('providerLogTitle').textContent = `Chat Log — ${providerName}`;
+            document.getElementById('providerLogModal').classList.add('show');
+            document.getElementById('providerLogAutoRefresh').checked = false;
+            await refreshProviderLog();
+        }
+
+        async function refreshProviderLog() {
+            if (!_providerLogName) return;
+            const lines = document.getElementById('providerLogLines').value;
+            const el = document.getElementById('providerLogContent');
+            try {
+                const r = await fetch(`/api/provider-chat-log?name=${encodeURIComponent(_providerLogName)}&lines=${lines}`);
+                const data = await r.json();
+                if (!data.exists) {
+                    el.textContent = 'No chat log found for this provider yet. Make a request through it first.';
+                } else {
+                    el.textContent = data.log || '(empty)';
+                    el.scrollTop = el.scrollHeight;
+                }
+            } catch (e) {
+                el.textContent = 'Error loading log: ' + e.message;
+            }
+        }
+
+        function toggleProviderLogAutoRefresh() {
+            if (_providerLogTimer) { clearInterval(_providerLogTimer); _providerLogTimer = null; }
+            if (document.getElementById('providerLogAutoRefresh').checked) {
+                _providerLogTimer = setInterval(refreshProviderLog, 4000);
+            }
+        }
+
+        function closeProviderLogModal() {
+            document.getElementById('providerLogModal').classList.remove('show');
+            if (_providerLogTimer) { clearInterval(_providerLogTimer); _providerLogTimer = null; }
+            _providerLogName = null;
         }
 
         function showSettings() {
