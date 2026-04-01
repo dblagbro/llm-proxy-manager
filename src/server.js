@@ -95,8 +95,8 @@ function logChatRequest(providerName, pass, model, messages, req) {
   const sep = '─'.repeat(60);
   const lines = [`\n[${ts}] ── REQUEST → ${providerName} (pass ${pass}, model: ${model}) ──`, sep];
   if (req) {
-    const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.ip || req.connection?.remoteAddress || 'unknown';
-    const keyName = req.clientKey?.name || '(unknown key)';
+    const ip = req.headers['x-real-ip'] || req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.ip || 'unknown';
+    const keyName = req.clientKey.name;
     const reqId = req.requestId || '-';
     lines.push(`  source-ip: ${ip}  key: "${keyName}"  req-id: ${reqId}`);
   }
@@ -285,6 +285,7 @@ pricingManagerRef = pricingManager;
 logger.info('Pricing manager initialized');
 
 // Middleware
+app.set('trust proxy', true); // trust X-Forwarded-For from nginx
 app.use(cors());
 app.use(bodyParser.json({ limit: '10mb' }));
 app.use(express.static('public'));
