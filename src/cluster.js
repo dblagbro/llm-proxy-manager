@@ -39,9 +39,9 @@ class ClusterManager extends EventEmitter {
   parsePeersFromConfig(nodes) {
     if (!nodes || !Array.isArray(nodes)) return null;
 
-    // Filter only active nodes and convert to peer format
+    // Filter only active nodes, excluding self, and convert to peer format
     return nodes
-      .filter(node => node.active)
+      .filter(node => node.active && node.name !== this.nodeId && node.name !== this.nodeName && node.host !== this.nodeId)
       .map(node => ({
         id: node.name || node.host,
         name: node.name || `LLM Proxy ${node.host}`,

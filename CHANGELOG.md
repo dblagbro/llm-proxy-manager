@@ -5,6 +5,15 @@ All notable changes to the LLM Proxy Manager project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.4] - 2026-04-01
+
+### Fixed
+- **Analytics Dashboard — cost display**: Costs now use adaptive decimal precision (`$0.000022` instead of `$0.0000`). Streaming-only traffic was recording cost=0 in the ring buffer; `window=all` now uses authoritative all-time `config.stats` totals for all providers, showing real costs, failure counts, and accurate success rates across all history.
+- **Analytics Dashboard — sparkline clarity**: Bars now have gaps between them; chart header shows "Requests per hour" label; color legend (green=success, red=failure) shown above each chart; X-axis shows first/mid/last hour bucket times; top-left `max N` label shows scale; minimum 1 bucket needed to render (was 2); failure count shown next to success rate.
+- **Analytics Dashboard — tiles**: Success rate tile now shows failure count; tokens tile shows full adaptive format (K/M); window name shown in Requests tile label.
+- **Cluster — self shown as peer**: `parsePeersFromConfig` was including the local node in the peer list. Now filters out any node whose name matches `this.nodeId` or `this.nodeName`.
+- **Cluster — GCP node missing**: Added `avaya-01-s23` (c1conversations-avaya-01.avaya.c1cx.com) as a cluster peer on all 3 nodes.
+
 ## [1.4.3] - 2026-04-01
 
 ### Added

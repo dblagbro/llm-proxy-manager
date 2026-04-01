@@ -737,7 +737,7 @@
     <div class="container">
         <div class="header">
             <div>
-                <h1>🤖 LLM Proxy Manager <span style="font-size: 14px; color: var(--text-muted); font-weight: normal;">v1.4.3</span></h1>
+                <h1>🤖 LLM Proxy Manager <span style="font-size: 14px; color: var(--text-muted); font-weight: normal;">v1.4.4</span></h1>
                 <p class="subtitle">Multi-provider AI proxy with automatic failover and cluster synchronization</p>
             </div>
             <div class="header-actions">
@@ -1214,7 +1214,7 @@ export ANTHROPIC_API_KEY="proxy-handled"</textarea>
                     <div><strong>Source:</strong> <a href="https://github.com/dblagbro/llm-proxy-manager" target="_blank" style="color: var(--primary);">github.com/dblagbro/llm-proxy-manager</a></div>
                 </div>
                 <details style="font-size: 13px; color: var(--text-muted); line-height: 1.6;">
-                    <summary style="cursor: pointer; font-weight: 600; margin-bottom: 8px;">What's new in v1.4.3</summary>
+                    <summary style="cursor: pointer; font-weight: 600; margin-bottom: 8px;">What's new in v1.4.4</summary>
                     <ul style="margin: 8px 0 0 16px;">
                         <li>📋 Enhanced chat logs — each request now includes source IP, API key name, and request ID in the log header for full attribution</li>
                     </ul>
@@ -2586,6 +2586,20 @@ print(message.content[0].text)</pre>
         }
 
         // ── Analytics Dashboard ──────────────────────────────────────────────
+        function fmtCost(c) {
+            if (c === 0) return '$0.00';
+            if (c < 0.0001) return '$' + c.toFixed(8);
+            if (c < 0.01)   return '$' + c.toFixed(6);
+            if (c < 1)      return '$' + c.toFixed(4);
+            return '$' + c.toFixed(2);
+        }
+
+        function fmtTokens(n) {
+            if (n >= 1000000) return (n/1000000).toFixed(1) + 'M';
+            if (n >= 1000)    return (n/1000).toFixed(1) + 'K';
+            return String(n);
+        }
+
         async function loadAnalytics() {
             const window_ = document.getElementById('analyticsWindow').value;
             let data;
@@ -2597,13 +2611,16 @@ print(message.content[0].text)</pre>
 
             // Overall summary tiles
             const overall = data.overall;
-            const failRate = overall.requests > 0 ? Math.round((overall.failures / overall.requests) * 100) : 0;
+            const totalTokens = (overall.inputTokens || 0) + (overall.outputTokens || 0);
+            const successRate = overall.requests > 0 ? Math.round(((overall.requests - (overall.failures||0)) / overall.requests) * 100) : 0;
+            const srColor = successRate >= 90 ? 'var(--success)' : successRate >= 70 ? 'var(--warning)' : 'var(--danger)';
+            const windowLabel = window_ === '1h' ? 'Last Hour' : window_ === '24h' ? 'Last 24h' : window_ === '7d' ? 'Last 7 Days' : 'All Time';
             document.getElementById('analyticsOverall').innerHTML = `
-                <div class="analytics-tile"><div class="analytics-value">${overall.requests.toLocaleString()}</div><div class="analytics-label">Requests</div></div>
-                <div class="analytics-tile"><div class="analytics-value">$${overall.cost.toFixed(4)}</div><div class="analytics-label">Total Cost</div></div>
-                <div class="analytics-tile"><div class="analytics-value">${((overall.inputTokens + overall.outputTokens)/1000).toFixed(1)}K</div><div class="analytics-label">Tokens Used</div></div>
-                <div class="analytics-tile"><div class="analytics-value" style="color:${failRate > 10 ? 'var(--danger)' : 'var(--success)'}">${100 - failRate}%</div><div class="analytics-label">Success Rate</div></div>
-                <div class="analytics-tile"><div class="analytics-value">${Object.keys(data.byProvider).length}</div><div class="analytics-label">Active Providers</div></div>
+                <div class="analytics-tile"><div class="analytics-value">${(overall.requests||0).toLocaleString()}</div><div class="analytics-label">Requests (${windowLabel})</div></div>
+                <div class="analytics-tile"><div class="analytics-value">${fmtCost(overall.cost||0)}</div><div class="analytics-label">Total Cost</div></div>
+                <div class="analytics-tile"><div class="analytics-value">${fmtTokens(totalTokens)}</div><div class="analytics-label">Tokens (in+out)</div></div>
+                <div class="analytics-tile"><div class="analytics-value" style="color:${srColor}">${successRate}%</div><div class="analytics-label">Success Rate${overall.failures > 0 ? ' <span style="color:var(--danger);font-weight:400;">(' + overall.failures + ' failed)</span>' : ''}</div></div>
+                <div class="analytics-tile"><div class="analytics-value">${Object.keys(data.byProvider).length}</div><div class="analytics-label">Providers</div></div>
             `;
 
             // Per-provider charts
@@ -2614,26 +2631,52 @@ print(message.content[0].text)</pre>
                 return;
             }
 
-            // Bar chart using canvas
-            chartsEl.innerHTML = providers.map((p, i) => `
+            chartsEl.innerHTML = providers.map((p, i) => {
+                const t = p.totals;
+                const sr = t.requests > 0 ? Math.round(((t.requests - t.failures) / t.requests) * 100) : 0;
+                const srCol = sr >= 90 ? 'var(--success)' : sr >= 70 ? 'var(--warning)' : 'var(--danger)';
+                const hasBuckets = p.buckets && p.buckets.length > 0;
+                return `
                 <div style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:14px;">
                     <div style="font-weight:600;margin-bottom:10px;font-size:14px;">${escHtml(p.name)}</div>
-                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:12px;margin-bottom:12px;">
-                        <div><span style="color:var(--text-muted)">Requests:</span> <strong>${p.totals.requests}</strong></div>
-                        <div><span style="color:var(--text-muted)">Success:</span> <strong style="color:${p.totals.successRate >= 90 ? 'var(--success)' : p.totals.successRate >= 70 ? 'var(--warning)' : 'var(--danger)'}">${p.totals.successRate}%</strong></div>
-                        <div><span style="color:var(--text-muted)">Avg Latency:</span> <strong>${p.totals.avgLatency}ms</strong></div>
-                        <div><span style="color:var(--text-muted)">Cost:</span> <strong>$${p.totals.cost.toFixed(4)}</strong></div>
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:12px;margin-bottom:10px;">
+                        <div><span style="color:var(--text-muted)">Requests:</span> <strong>${t.requests.toLocaleString()}</strong></div>
+                        <div><span style="color:var(--text-muted)">Success:</span> <strong style="color:${srCol}">${sr}%</strong>${t.failures > 0 ? ' <span style="color:var(--danger);font-size:11px;">(' + t.failures + ' failed)</span>' : ''}</div>
+                        <div><span style="color:var(--text-muted)">Avg Latency:</span> <strong>${t.avgLatency}ms</strong></div>
+                        <div><span style="color:var(--text-muted)">Cost:</span> <strong>${fmtCost(t.cost||0)}</strong></div>
+                        <div><span style="color:var(--text-muted)">Input tokens:</span> <strong>${fmtTokens(t.inputTokens||0)}</strong></div>
+                        <div><span style="color:var(--text-muted)">Output tokens:</span> <strong>${fmtTokens(t.outputTokens||0)}</strong></div>
                     </div>
-                    <canvas id="chart-${i}" height="60" style="width:100%;display:block;"></canvas>
-                </div>
-            `).join('');
+                    ${hasBuckets ? `
+                    <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;display:flex;justify-content:space-between;align-items:center;">
+                        <span>Requests per hour</span>
+                        <span style="display:flex;gap:10px;align-items:center;">
+                            <span><span style="display:inline-block;width:10px;height:10px;background:#10b981;border-radius:2px;margin-right:3px;"></span>Success</span>
+                            <span><span style="display:inline-block;width:10px;height:10px;background:#dc2626;border-radius:2px;margin-right:3px;"></span>Failure</span>
+                        </span>
+                    </div>
+                    <div style="position:relative;">
+                        <canvas id="chart-${i}" height="70" style="width:100%;display:block;"></canvas>
+                        <div id="chart-labels-${i}" style="display:flex;justify-content:space-between;font-size:10px;color:var(--text-muted);margin-top:2px;"></div>
+                    </div>` : '<div style="font-size:11px;color:var(--text-muted);padding:8px 0;">No hourly data for this window.</div>'}
+                </div>`;
+            }).join('');
 
             // Draw sparkline charts
             providers.forEach((p, i) => {
                 const canvas = document.getElementById(`chart-${i}`);
-                if (!canvas || p.buckets.length < 2) return;
-                canvas.width = canvas.offsetWidth || 300;
+                if (!canvas || !p.buckets || p.buckets.length === 0) return;
+                canvas.width = canvas.offsetWidth || 400;
                 drawSparkline(canvas, p.buckets);
+
+                // Render X-axis hour labels
+                const labelsEl = document.getElementById(`chart-labels-${i}`);
+                if (labelsEl && p.buckets.length > 0) {
+                    const first = p.buckets[0].hour.slice(11, 13) + ':00';
+                    const last  = p.buckets[p.buckets.length-1].hour.slice(11, 13) + ':00';
+                    const mid   = p.buckets.length > 2 ? p.buckets[Math.floor(p.buckets.length/2)].hour.slice(11, 13) + ':00' : null;
+                    labelsEl.innerHTML = `<span>${first}</span>${mid ? `<span>${mid}</span>` : ''}<span>${last}</span>`;
+                }
             });
         }
 
@@ -2644,24 +2687,42 @@ print(message.content[0].text)</pre>
             ctx.clearRect(0, 0, W, H);
 
             const maxReq = Math.max(...buckets.map(b => b.requests), 1);
-            const barW = Math.max(2, Math.floor(W / buckets.length) - 1);
-            const gap = Math.floor(W / buckets.length);
+            const n = buckets.length;
+            // Compute bar width to leave a 1px gap between bars, min 4px wide
+            const slotW = Math.floor(W / n);
+            const barW  = Math.max(4, slotW - 2);
+            const chartH = H - 2; // leave 2px bottom padding
+
+            // Draw max-requests reference line (faint)
+            ctx.strokeStyle = isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.06)';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(0, 1);
+            ctx.lineTo(W, 1);
+            ctx.stroke();
 
             buckets.forEach((b, i) => {
-                const x = i * gap;
-                const reqH = Math.round((b.requests / maxReq) * (H - 4));
+                const x = i * slotW + Math.floor((slotW - barW) / 2);
+                const reqH = Math.max(b.requests > 0 ? 2 : 0, Math.round((b.requests / maxReq) * chartH));
                 const failH = b.requests > 0 ? Math.round((b.failures / b.requests) * reqH) : 0;
                 const succH = reqH - failH;
 
-                // Success portion
-                ctx.fillStyle = isDark ? '#238636' : '#10b981';
-                ctx.fillRect(x, H - reqH, barW, succH);
-                // Failure portion
+                // Success portion (bottom)
+                if (succH > 0) {
+                    ctx.fillStyle = isDark ? '#238636' : '#10b981';
+                    ctx.fillRect(x, H - reqH, barW, succH);
+                }
+                // Failure portion (top, stacked above success)
                 if (failH > 0) {
                     ctx.fillStyle = isDark ? '#da3633' : '#dc2626';
                     ctx.fillRect(x, H - reqH + succH, barW, failH);
                 }
             });
+
+            // Draw max value label top-left
+            ctx.fillStyle = isDark ? 'rgba(255,255,255,0.35)' : 'rgba(0,0,0,0.35)';
+            ctx.font = '9px sans-serif';
+            ctx.fillText(`max ${maxReq}`, 2, 10);
         }
 
         function escHtml(s) {
