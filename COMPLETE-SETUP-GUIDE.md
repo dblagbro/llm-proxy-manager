@@ -1,22 +1,29 @@
 # LLM Proxy - Complete Setup Guide
 
+**Version**: 1.3.7 | **Updated**: April 2026
+
 ## ✅ What's Deployed and Working
 
 ### System Status
-- **Deployed On**: TMRwww01 (192.168.18.11)
-- **Public URL**: https://www.voipguru.org/llmProxy/
-- **Container**: llm-proxy (Docker, auto-restart)
-- **Nginx**: Configured and working
+- **Node 1**: tmrwww01 (192.168.18.11) — https://www.voipguru.org/llmProxy/
+- **Node 2**: tmrwww02 — https://www2.voipguru.org/llmProxy
+- **Node 3**: GCP (34.170.189.19) — https://c1conversations-avaya-01.avaya.c1cx.com/llmProxy
+- **Container**: `llm-proxy-manager` (Docker, `--restart unless-stopped`)
+- **Image**: `dblagbro/llm-proxy-manager:1.3.7`
+- **Port**: 3000 (all nodes)
 - **Status**: ✅ OPERATIONAL
 
 ### Core Features
 ✅ **Client API Key Management** - Generate keys for apps
-✅ **Multi-Provider Failover** - Automatic fallback
+✅ **Multi-Provider Failover** - 3-pass routing with hold-down circuit breaker
 ✅ **SSE Streaming** - Full Claude Code CLI support
-✅ **Request Translation** - Anthropic ↔ Gemini
-✅ **Usage Tracking** - Per-key and per-provider stats
+✅ **Request Translation** - Anthropic ↔ Gemini / OpenAI / Grok / Ollama
+✅ **Capability Router** - Skips providers that can't handle tool calls, vision, or long context
+✅ **XML Sentinel** - Detects bad model output, fails over automatically
+✅ **Usage Tracking** - Per-key and per-provider stats with cost calculation
+✅ **Per-Provider Chat Logs** - Human-readable logs viewable in Web UI (📋 Log button)
 ✅ **Provider Testing** - Test endpoints before using
-✅ **Web Management UI** - Full control panel
+✅ **Web Management UI** - Full control panel with session timeout, log viewer
 
 ---
 

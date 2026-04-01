@@ -1,295 +1,194 @@
 # LLM Proxy Manager
 
-**Version**: 1.2.0
-**Last Updated**: March 28, 2026
+**Version**: 1.3.7
+**Last Updated**: April 2026
 
-Production-ready multi-provider LLM API proxy with automatic failover, streaming support, cost tracking, password reset, and comprehensive web-based management.
+Production-ready multi-provider LLM API proxy with automatic failover, streaming support, cost tracking, intelligent routing, and comprehensive web-based management.
 
 ## Features
 
-- **Anthropic API Compatible**: Works seamlessly with Claude Code CLI
-- **Multi-Provider Support**: Anthropic Claude, Google Gemini/Vertex AI, OpenAI, Grok, Ollama, OpenAI-compatible
-- **Streaming Support**: Server-Sent Events (SSE) streaming for all providers
-- **Automatic Failover**: Tries providers in priority order with circuit breaker protection
-- **Cost Tracking**: Real-time token usage and cost calculation with detailed logging
-- **Password Reset**: Email-based forgot password with secure token generation
-- **User Management**: Multi-user support with profile management and email notifications
-- **SMTP Integration**: Configurable email notifications for system alerts and password resets
-- **Request Translation**: Converts Anthropic format to provider-specific formats
-- **Web UI**: Real-time monitoring, cost tracking, circuit breaker status, and configuration
-- **Statistics Tracking**: Per-provider request/success/failure stats with cost metrics
-- **Circuit Breaker**: Automatic provider isolation on failures with visual status
-- **Dark Mode Support**: Full light/dark theme support with proper contrast
-- **Docker Ready**: Complete containerized deployment with cluster support
-
-## Providers
-
-The proxy supports these providers (in default priority order):
-
-1. **Anthropic Claude Code #3** (Priority 1)
-2. **C1 Anthropic Claude** (Priority 2)
-3. **Google Gemini API** (Priority 3)
-4. **C1 Vertex AI / Google AI** (Priority 4)
+- **Anthropic API Compatible** — Works seamlessly with Claude Code CLI and any Anthropic SDK client
+- **Multi-Provider Support** — Anthropic Claude, Google Gemini, Google Vertex AI, OpenAI, Grok (xAI), Ollama, OpenAI-compatible endpoints
+- **Streaming Support** — Server-Sent Events (SSE) streaming for all providers
+- **Automatic Failover** — 3-pass routing with hold-down circuit breaker; tries providers in priority order
+- **Capability Router** — Automatically skips providers that can't handle the request (tool calls, vision, context window)
+- **Turn Validator** — Detects and warns on malformed Gemini turn sequences before sending
+- **XML Sentinel** — Detects bad model output patterns (leaked internal XML/function tags) and fails over automatically
+- **Cost Tracking** — Real-time token usage and cost calculation per provider with fuzzy model name matching
+- **Per-Provider Chat Logs** — Human-readable conversation logs per provider, viewable in the Web UI
+- **Session Management** — Configurable login timeout (default 8 hours), stable SESSION_SECRET across restarts
+- **Password Reset** — Email-based forgot password with secure token generation
+- **User Management** — Multi-user support with profile management and email notifications
+- **SMTP Integration** — Configurable email for alerts and password resets
+- **Web UI** — Real-time monitoring, cost tracking, circuit breaker status, configuration, and chat log viewer
+- **Cluster Support** — Multi-node deployment with heartbeat sync
+- **Docker Ready** — Single-container or cluster deployment
 
 ## Quick Start
 
-### Using Docker Compose (Recommended)
+### Docker (Recommended)
 
 ```bash
-# Start the service
-docker-compose up -d
-
-# View logs
-docker-compose logs -f
-
-# Stop the service
-docker-compose down
+docker run -d \
+  --name llm-proxy-manager \
+  --restart unless-stopped \
+  -p 3000:3000 \
+  -v /opt/llm-proxy-data/config:/app/config \
+  -v /opt/llm-proxy-data/logs:/app/logs \
+  -e NODE_ENV=production \
+  -e PORT=3000 \
+  -e USE_SQLITE=true \
+  -e SESSION_SECRET=your-stable-secret-here \
+  dblagbro/llm-proxy-manager:latest
 ```
 
-The service will be available at:
-- API: http://localhost:3100/v1/messages
-- Web UI: http://localhost:3100/
+Access the Web UI at `http://localhost:3000/` — default login: `admin` / `admin123`
 
-### Manual Installation
+### Docker Compose
 
 ```bash
-# Install dependencies
+docker-compose up -d
+```
+
+### Manual / Development
+
+```bash
 npm install
-
-# Set environment variables (copy API keys)
-export ANTHROPIC_KEY_3="your-key"
-export ANTHROPIC_KEY_C1="your-key"
-export GOOGLE_API_KEY_1="your-key"
-export GOOGLE_API_KEY_VERTEX="your-key"
-export GOOGLE_PROJECT_ID="c1-ai-center-of-excellence"
-
-# Start server
-npm start
+npm start        # production
+npm run dev      # nodemon watch mode
 ```
 
 ## Using with Claude Code CLI
 
-Configure Claude Code CLI to use the proxy:
-
 ```bash
-# Set the API endpoint
-export ANTHROPIC_API_KEY="dummy-key"  # Any value works, proxy handles routing
-export ANTHROPIC_BASE_URL="http://localhost:3100"
-
-# Or for remote proxy:
+export ANTHROPIC_API_KEY="any-value"           # proxy ignores this
 export ANTHROPIC_BASE_URL="https://www.voipguru.org/llmProxy"
-
-# Then use Claude Code as normal
 cc "hello world"
+```
+
+Or for local use:
+```bash
+export ANTHROPIC_BASE_URL="http://localhost:3000"
 ```
 
 ## Web Management UI
 
-Access the web UI at `http://localhost:3100/` (or your nginx location) to:
+The Web UI provides:
 
-- View real-time provider status
-- Enable/disable providers
-- Adjust failover priority
-- Monitor request statistics
-- View success/failure rates
-- Check average latency per provider
-- Reset statistics
+- **Provider panels** — enable/disable, drag to reorder priority, edit settings, run tests
+- **📋 Log button** — per-provider chat log viewer showing every request and response in readable chat format
+- **Statistics** — per-provider request/success/failure counts, latency, token usage, costs
+- **Circuit breaker status** — CLOSED / HALF_OPEN / OPEN with hold-down timer
+- **Cluster view** — node status, last heartbeat, sync state
+- **Settings** — SMTP, session timeout, API keys
 
-## Streaming Support
+## Per-Provider Chat Logs
 
-All providers support Server-Sent Events (SSE) streaming for real-time token generation:
+Every request routed through a provider is logged to `/app/logs/chat-<provider-name>.log` in human-readable format:
 
-```bash
-# Example streaming request
-curl -X POST http://localhost:3100/v1/messages \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "claude-sonnet-4-5-20250929",
-    "messages": [{"role": "user", "content": "Count to 10"}],
-    "stream": true
-  }'
+```
+[2026-04-01 14:23:11 UTC] ── REQUEST → My-Anthropic (pass 1, model: claude-sonnet-4-6) ──
+────────────────────────────────────────────────────────────
+[USER]
+What is the capital of France?
+────────────────────────────────────────────────────────────
+
+[2026-04-01 14:23:12 UTC] ── RESPONSE ← My-Anthropic ──
+[ASSISTANT]
+The capital of France is Paris.
+────────────────────────────────────────────────────────────
+latency=312ms  model=claude-sonnet-4-6  tokens=in:14/out:8  cost=$0.000163
+────────────────────────────────────────────────────────────
 ```
 
-Streaming is automatically enabled when `stream: true` is set in the request body. The proxy handles streaming for:
-- Anthropic Claude (all models)
-- Google Gemini (all models)
-- OpenAI (GPT-4, GPT-3.5-turbo, etc.)
-- Grok (X.AI models)
-- Ollama (local models)
-- OpenAI-compatible APIs
-
-## Cost Tracking
-
-The proxy automatically tracks costs and token usage for all requests:
-
-- **Real-time calculation** using current provider pricing
-- **Per-provider metrics**: Total cost, average cost, input/output tokens
-- **Visual display** in Web UI with auto-refresh
-- **API access** via `/api/stats` endpoint
-
-View cost metrics in the Web UI under each provider card, or query programmatically:
-
-```bash
-curl http://localhost:3100/api/stats
+Failovers are logged inline:
+```
+[2026-04-01 14:23:12 UTC] ✗ FAILOVER from My-Anthropic (pass 1): Request failed (HTTP 529)
 ```
 
-## Circuit Breaker
+Click **📋 Log** on any provider panel in the Web UI to view and auto-refresh the log.
 
-Automatic circuit breaker protection prevents cascading failures:
+## Routing Logic
 
-- **CLOSED** (Green): Provider healthy, accepting all requests
-- **HALF_OPEN** (Yellow): Testing after failures, limited requests
-- **OPEN** (Red): Provider blocked, requests routed to next provider
+### 3-Pass Failover
 
-View circuit breaker status in the Web UI or via API:
+1. Request arrives in Anthropic format
+2. Providers sorted by priority, held-down providers excluded
+3. **Capability Router** filters providers that can't satisfy the request:
+   - Tool/function calls → requires `toolCalling` capability
+   - Image content → requires `vision` capability
+   - Long context → requires sufficient `contextWindow`
+4. For each remaining provider (pass 1–3):
+   - **Turn Validator** (Gemini) — checks for consecutive same-role turns, empty parts
+   - **XML Sentinel** — scans response for leaked internal tags; fails over if detected
+   - **Latency guard** — fails over if provider exceeds `maxLatencyMs` (default 1800ms)
+5. Returns 503 if all providers exhausted
 
-```bash
-curl http://localhost:3100/api/circuit-status
-```
+### Hold-Down Circuit Breaker
 
-## Password Reset & User Management
-
-### Forgot Password Feature
-
-Users can reset their passwords via email:
-
-1. Click "Forgot Password?" on the login page
-2. Enter username
-3. Receive email with secure reset link (valid for 1 hour)
-4. Click link and enter new password
-5. Login with new credentials
-
-**Requirements**:
-- SMTP must be configured in Settings → Email Notifications
-- User must have email address in their profile
-
-**Security Features**:
-- Tokens expire after 1 hour
-- One-time use tokens (cannot be reused)
-- Secure random token generation (crypto.randomBytes)
-- Generic error messages prevent username enumeration
-
-### SMTP Configuration
-
-Configure email settings in the Settings modal:
-
-- **Host**: SMTP server hostname (e.g., smtp.gmail.com)
-- **Port**: SMTP port (usually 465 or 587)
-- **Secure**: Use TLS/SSL
-- **Username**: SMTP authentication username
-- **Password**: SMTP authentication password (app-specific recommended)
-- **From**: Sender email address
-- **To**: Recipient for system notifications
-- **Subject Prefix**: Prefix for notification emails
-- **Min Severity**: Minimum alert level (INFO, WARNING, ERROR)
-- **Throttle**: Minimum minutes between repeat alerts
-
-**Test Email**: Click "Send Test Email" button to verify SMTP configuration.
+Providers that fail are held down for a cooldown period. At 90% of the timer they get a retest. The hold-down state is visible in the Web UI and can be manually released.
 
 ## API Endpoints
 
-### POST /v1/messages
-Main proxy endpoint (Anthropic Messages API compatible)
-
-**Request**:
-```json
-{
-  "model": "claude-sonnet-4-5-20250929",
-  "max_tokens": 1024,
-  "messages": [
-    {"role": "user", "content": "Hello!"}
-  ]
-}
-```
-
-**Response**: Anthropic Messages API format
-
-### GET /health
-Health check endpoint
-
-### GET /api/config
-Get current configuration (API keys are masked)
-
-### POST /api/config
-Update configuration (enable/disable providers, change priorities)
-
-### GET /api/stats
-Get detailed statistics for all providers including cost metrics
-
-### POST /api/stats/reset
-Reset all statistics
-
-### GET /api/capabilities/:providerType
-Get capabilities for a specific provider type (e.g., `anthropic`, `openai`, `google`)
-
-### GET /api/models/:providerType
-Get available models for a specific provider type
-
-### GET /api/pricing/:model
-Get pricing information for a specific model (input/output costs per 1M tokens)
-
-### GET /api/circuit-status
-Get circuit breaker status for all providers (requires authentication)
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/v1/messages` | Main proxy endpoint (Anthropic format) |
+| GET | `/health` | Health check |
+| GET | `/api/config` | Get config (API keys masked) |
+| POST | `/api/config` | Update config |
+| GET | `/api/stats` | Per-provider statistics |
+| POST | `/api/stats/reset` | Reset statistics |
+| GET | `/api/provider-chat-log?name=X&lines=N` | Get last N lines of chat log for provider X |
+| GET | `/api/holddown-status` | Circuit breaker / hold-down state |
+| POST | `/monitoring/holddown/release` | Release a provider from hold-down |
+| POST | `/api/test-provider` | Test a provider configuration |
+| POST | `/api/auth/login` | Login |
+| POST | `/api/auth/logout` | Logout |
+| GET | `/api/auth/check` | Check session |
+| POST | `/api/auth/forgot-password` | Request password reset email |
+| GET | `/cluster/status` | Cluster node status |
+| POST | `/cluster/heartbeat` | Node heartbeat |
 
 ## Configuration
 
-The proxy stores configuration in `/app/config/providers.json` (persisted via Docker volume).
+Config is stored in `/app/config/providers.json` (persisted via Docker volume).
 
-Default priority order:
-1. Anthropic Claude Code #3
-2. C1 Anthropic Claude
-3. Google Gemini API
-4. C1 Vertex AI
+### Environment Variables
 
-You can change priorities and enable/disable providers via the Web UI or by editing the config file.
-
-## Failover Logic
-
-1. Request comes in (Anthropic format)
-2. Proxy tries first enabled provider (lowest priority number)
-3. If successful, returns response immediately
-4. If failed, automatically tries next provider
-5. Continues until success or all providers exhausted
-6. Logs and statistics updated for each attempt
-
-For Google providers, the proxy automatically:
-- Translates Anthropic request format to Gemini format
-- Calls Google Gemini API
-- Translates response back to Anthropic format
-- Returns seamlessly to Claude Code CLI
-
-## Statistics
-
-Each provider tracks:
-- Total requests
-- Successes
-- Failures
-- Average latency
-- Last used timestamp
-- Last error message
-
-Statistics persist across restarts and can be viewed/reset via the Web UI.
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PORT` | `3000` | HTTP port |
+| `NODE_ENV` | `development` | Environment |
+| `USE_SQLITE` | `false` | Use SQLite for stats/logs (recommended for production) |
+| `SESSION_SECRET` | *(random)* | Stable session secret — set this to keep sessions across restarts |
+| `CLUSTER_ENABLED` | `false` | Enable cluster sync |
+| `CLUSTER_NODE_URL` | — | This node's public URL |
+| `CONFIG_PATH` | `/app/config/providers.json` | Config file path |
 
 ## Logs
 
-Logs are stored in `/app/logs/`:
-- `combined.log`: All requests and responses
-- `error.log`: Errors only
+All logs in `/app/logs/`:
 
-View logs:
+| File | Contents |
+|------|----------|
+| `combined.log` | All requests and events (JSON) |
+| `error.log` | Errors only (JSON) |
+| `provider-<name>.log` | Per-provider structured log (JSON) |
+| `chat-<name>.log` | Per-provider human-readable chat log |
+
 ```bash
-docker-compose logs -f
-# Or
-docker exec llm-proxy tail -f /app/logs/combined.log
+# Tail combined log
+docker exec llm-proxy-manager tail -f /app/logs/combined.log
+
+# View chat log for a specific provider
+docker exec llm-proxy-manager tail -100 /app/logs/chat-Google-Gemini-API.log
 ```
 
 ## Nginx Configuration
 
-Example nginx location block:
-
 ```nginx
 location /llmProxy/ {
-    proxy_pass http://localhost:3100/;
+    proxy_pass http://localhost:3000/;
     proxy_http_version 1.1;
     proxy_set_header Upgrade $http_upgrade;
     proxy_set_header Connection 'upgrade';
@@ -298,62 +197,69 @@ location /llmProxy/ {
     proxy_set_header X-Real-IP $remote_addr;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     proxy_set_header X-Forwarded-Proto $scheme;
-
-    # Increase timeouts for LLM responses
     proxy_connect_timeout 300s;
     proxy_send_timeout 300s;
     proxy_read_timeout 300s;
 }
 ```
 
-## Security Notes
+## Password Reset
 
-- API keys are stored in environment variables (not in code)
-- Web UI shows masked API keys (only first 10 and last 4 characters)
-- Configuration API doesn't accept API key changes (must be set via env vars)
-- Run behind nginx with SSL/TLS in production
-- Consider adding authentication to the Web UI for production use
+1. Click "Forgot Password?" on login page
+2. Enter username
+3. Receive email with reset link (valid 1 hour, one-time use)
+4. Click link, set new password
+
+Requires SMTP configured under Settings → Email Notifications.
 
 ## Troubleshooting
 
-**Proxy not responding**:
+**502 Bad Gateway on Node 2 (behind nginx container)**
+Ensure the container is on the correct Docker network with the right alias:
 ```bash
-docker-compose logs llm-proxy
-curl http://localhost:3100/health
+docker run ... --network llm-proxy_llm-proxy-network --network-alias llm-proxy ...
 ```
 
-**All providers failing**:
-- Check API keys in docker-compose.yml
-- View logs for specific error messages
-- Test provider APIs directly
+**All providers failing**
+- Check API keys in provider config
+- Check hold-down status in Web UI (Monitoring section)
+- View logs: `docker exec llm-proxy-manager tail -50 /app/logs/error.log`
 
-**High latency**:
-- Check provider stats in Web UI
-- Consider adjusting priority order
-- Disable slow/failing providers
+**Session logs out quickly**
+Set `sessionTimeoutMinutes` in Settings (default 480 = 8 hours). Also ensure `SESSION_SECRET` env var is set so sessions survive container restarts.
+
+**Cost tracking showing $0**
+Ensure `USE_SQLITE=true` — the result scoping fix requires v1.3.5+.
+
+**Chat log not appearing**
+The log file is created on first request through the provider. Make at least one request, then click 📋 Log.
 
 ## Architecture
 
 ```
-┌─────────────────┐
-│  Claude Code    │
-│      CLI        │
-└────────┬────────┘
-         │ Anthropic API format
-         ▼
-┌─────────────────┐
-│   LLM Proxy     │
-│  (This Service) │
-└────────┬────────┘
-         │
-    ┌────┴─────┬──────────┬─────────┐
-    ▼          ▼          ▼         ▼
-┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐
-│Anthro  │ │Anthro  │ │Google  │ │Google  │
-│Claude#3│ │C1      │ │Gemini  │ │Vertex  │
-└────────┘ └────────┘ └────────┘ └────────┘
- Priority    Priority   Priority   Priority
-     1           2          3          4
+Client (Claude Code CLI / any Anthropic SDK)
+           │  Anthropic API format
+           ▼
+   ┌───────────────┐
+   │  LLM Proxy    │
+   │   Manager     │
+   └───────┬───────┘
+           │
+   ┌───────▼────────────────────────────────┐
+   │  Routing Pipeline                       │
+   │  1. Hold-down filter                    │
+   │  2. Capability router                   │
+   │  3. 3-pass loop:                        │
+   │     a. Turn validator (Gemini)          │
+   │     b. Provider call + latency guard   │
+   │     c. XML sentinel check              │
+   └───────┬────────────────────────────────┘
+           │
+   ┌───────┴──────┬──────────┬────────┬─────────┐
+   ▼              ▼          ▼        ▼         ▼
+Anthropic     Google      OpenAI    Grok     Ollama /
+ Claude        Gemini /    GPT      xAI    Compatible
+               Vertex
 ```
 
 ## License
