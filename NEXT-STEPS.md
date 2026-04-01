@@ -1,278 +1,61 @@
-# LLM Proxy - Next Steps & Enhancements
+# LLM Proxy Manager — Status & Next Steps
 
-## ✅ Current Status (Completed)
+## ✅ Completed (as of v1.3.7)
 
-1. **Core Proxy Functionality**
-   - Multi-provider support (Anthropic + Google Gemini)
-   - Automatic failover with priority ordering
-   - SSE streaming for Claude Code CLI
-   - Request translation for Google Gemini
-   - Statistics tracking per provider
+### Core
+- Multi-provider failover with 3-pass routing
+- SSE streaming for all providers
+- Request/response translation (Anthropic ↔ Gemini, OpenAI, Grok, Ollama)
+- Cost tracking with fuzzy model name matching
+- SQLite persistence (`USE_SQLITE=true`)
 
-2. **Deployment**
-   - Deployed on TMRwww01 (192.168.18.11)
-   - Public access: https://www.voipguru.org/llmProxy/
-   - Docker containerized with auto-restart
-   - Nginx reverse proxy configured
+### Routing Intelligence
+- Hold-down circuit breaker with 90% retest
+- Layer 1c — Turn Validator (Gemini structural check)
+- Layer 1e — XML Sentinel (bad model output failover)
+- Layer 2 — Capability Router (tool calls, vision, context window)
+- maxLatencyMs per-provider timeout (default 1800ms)
 
-3. **Basic Web UI**
-   - Provider status display
-   - Enable/disable toggles
-   - Statistics dashboard
-   - Basic configuration
+### Web UI & Logging
+- Per-provider chat logs (`/app/logs/chat-<name>.log`)
+- 📋 Log viewer in Web UI (per-provider, with auto-refresh)
+- Session timeout configurable (default 8h)
+- Stable SESSION_SECRET support
 
-## 🚧 Enhancements Needed
+### Auth & Users
+- Multi-user auth with bcrypt passwords
+- Email-based password reset (SMTP)
+- User management, profile editing
 
-### 1. Client API Key Management (HIGH PRIORITY)
+### Deployment
+- Docker image: `dblagbro/llm-proxy-manager`
+- 3-node cluster: Node 1 (tmrwww01), Node 2 (tmrwww02), Node 3 (GCP)
+- Cluster heartbeat sync
 
-**Why**: Other apps need to authenticate with the proxy without exposing provider API keys.
+---
 
-**Implementation**:
-- Generate client API keys (format: `llm-proxy-<random>`)
-- Validate incoming requests against client keys
-- Track usage per client key
-- Web UI to create/view/revoke client keys
-- Per-key statistics and quotas
+## 🚧 Deferred / Future Work
 
-**Backend Changes**:
-```javascript
-// Add to config
-config.clientApiKeys = [
-  {
-    id: 'key-1',
-    key: 'llm-proxy-abc123...',
-    name: 'My Python App',
-    created: '2026-03-26T...',
-    lastUsed: '2026-03-26T...',
-    requests: 100,
-    enabled: true
-  }
-];
+### Layer 1d — Streaming Buffer for Tool Calls
+Full SSE header buffering — hold headers until first chunk type is determined.
+Gemini already delivers complete functionCall chunks; the complexity is in the SSE framing.
+Defer to Layer 3 work.
 
-// Add middleware
-function validateApiKey(req, res, next) {
-  const apiKey = req.headers['x-api-key'] ||
-                 req.headers.authorization?.replace('Bearer ', '');
+### Layer 3 — Conductor/Worker Dual-Session Pattern
+Complex dual-session architecture for parallel provider management.
+High effort, deferred.
 
-  const clientKey = config.clientApiKeys.find(k => k.key === apiKey && k.enabled);
-  if (!clientKey) {
-    return res.status(401).json({ error: 'Invalid API key' });
-  }
+### Layer 4 — Context Window Management & Error Recovery
+- 4a: Auto-truncate messages when context window exceeded
+- 4b–4d: Structured error recovery strategies
+Defer with Layer 3.
 
-  req.clientKey = clientKey;
-  next();
-}
+### Layer 5 — Advanced Session Management
+Extended session state across requests.
+Defer with Layer 3/4.
 
-// Apply to /v1/messages endpoint
-app.post('/v1/messages', validateApiKey, async (req, res) => {
-  // existing code...
-  // Track usage: req.clientKey.requests++
-});
-```
-
-**Web UI Changes**:
-- New "API Keys" tab
-- "Generate New Key" button
-- List of keys with usage stats
-- Revoke/Enable/Disable buttons
-- Copy key to clipboard
-
-### 2. Enhanced Web UI (CURRENT WORK)
-
-**Created**: `public/index-enhanced.html`
-
-**Features**:
-- Drag-and-drop reordering of providers
-- Edit provider settings (name, API key, priority)
-- Add new providers
-- Delete providers
-- Test individual providers
-- Settings modal with Claude CLI config
-- Export configuration
-
-**To Deploy**:
-```bash
-cd ~/llm-proxy
-mv public/index.html public/index-basic.html
-mv public/index-enhanced.html public/index.html
-./update-streaming.sh
-```
-
-### 3. Provider Testing Endpoint
-
-**Add to server**:
-```javascript
-app.post('/api/test-provider', async (req, res) => {
-  const { type, apiKey, projectId } = req.body;
-  const startTime = Date.now();
-
-  try {
-    if (type === 'anthropic') {
-      await axios.post('https://api.anthropic.com/v1/messages', {
-        model: 'claude-sonnet-4-5-20250929',
-        max_tokens: 10,
-        messages: [{ role: 'user', content: 'Hi' }]
-      }, {
-        headers: {
-          'x-api-key': apiKey,
-          'anthropic-version': '2023-06-01'
-        }
-      });
-    } else if (type === 'google') {
-      await axios.post(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key=${apiKey}`,
-        { contents: [{ parts: [{ text: 'Hi' }] }] }
-      );
-    }
-
-    res.json({
-      success: true,
-      latency: Date.now() - startTime,
-      response: 'Provider responded successfully'
-    });
-  } catch (error) {
-    res.json({
-      success: false,
-      error: error.response?.data?.error?.message || error.message
-    });
-  }
-});
-```
-
-### 4. API Key Validation Updates
-
-**Current**: Provider API keys stored in docker-compose.yml env vars
-**Needed**: Support updating API keys via Web UI
-
-**Options**:
-a) Keep in env vars (restart required) - ✅ Current, simple, secure
-b) Store in config file (no restart) - More flexible but less secure
-c) Hybrid: Env vars as defaults, allow overrides in config
-
-**Recommendation**: Keep current approach (env vars) for now. Add note in Web UI that API key changes require container restart.
-
-### 5. Usage Quotas & Rate Limiting
-
-**Future Enhancement**: Per-client-key rate limiting
-
-```javascript
-// In validateApiKey middleware
-if (clientKey.rateLimit) {
-  const now = Date.now();
-  const windowStart = now - 60000; // 1 minute
-  const recentRequests = clientKey.requestTimestamps.filter(t => t > windowStart);
-
-  if (recentRequests.length >= clientKey.rateLimit.requestsPerMinute) {
-    return res.status(429).json({ error: 'Rate limit exceeded' });
-  }
-}
-```
-
-### 6. Cost Tracking
-
-**Add to config**:
-```javascript
-config.providerCosts = {
-  'anthropic-claude-3': {
-    inputCostPer1MTok: 3.00,
-    outputCostPer1MTok: 15.00
-  },
-  'google-gemini-1': {
-    inputCostPer1MTok: 0.35,
-    outputCostPer1MTok: 1.05
-  }
-};
-```
-
-**Track in stats**:
-```javascript
-stats[providerId].totalInputTokens += usage.input_tokens;
-stats[providerId].totalOutputTokens += usage.output_tokens;
-stats[providerId].estimatedCost = calculateCost(stats[providerId]);
-```
-
-**Show in Web UI**: Cost per provider, cost per client key
-
-## 📋 Implementation Priority
-
-1. **IMMEDIATE** (This Session):
-   - [x] Create enhanced Web UI with full settings
-   - [ ] Add client API key management backend
-   - [ ] Deploy enhanced Web UI
-   - [ ] Test client API key generation/validation
-
-2. **NEXT** (Follow-up):
-   - [ ] Per-key usage tracking
-   - [ ] Provider test endpoint
-   - [ ] Cost tracking
-   - [ ] Rate limiting
-
-3. **FUTURE**:
-   - [ ] Usage analytics dashboard
-   - [ ] Email alerts for failures
-   - [ ] Webhook notifications
-   - [ ] Multi-user admin access
-
-## 🎯 Quick Wins
-
-**To get basic client API key support working now**:
-
-1. Add to server.js (before app.listen):
-```javascript
-// Simple API key validation
-const MASTER_API_KEY = process.env.MASTER_API_KEY || 'llm-proxy-master-key-change-me';
-
-function validateApiKey(req, res, next) {
-  const apiKey = req.headers['x-api-key'] ||
-                 req.headers.authorization?.replace('Bearer ', '');
-
-  if (!apiKey || apiKey !== MASTER_API_KEY) {
-    return res.status(401).json({ error: 'Invalid API key' });
-  }
-  next();
-}
-
-// Apply to main endpoint (exempt health, stats, UI)
-app.post('/v1/messages', validateApiKey, async (req, res) => {
-  // existing code
-});
-```
-
-2. Add to docker-compose.yml:
-```yaml
-environment:
-  - MASTER_API_KEY=llm-proxy-YOUR-SECURE-KEY-HERE
-```
-
-3. Document the key:
-```
-Client API Key: llm-proxy-YOUR-SECURE-KEY-HERE
-Use in x-api-key header or Authorization: Bearer header
-```
-
-This gives you immediate protection while we build the full key management system.
-
-## 📝 Notes
-
-- Enhanced Web UI is ready in `public/index-enhanced.html`
-- Backend needs client API key management added
-- Current setup works but is open (no auth required)
-- Adding simple master key is quickest solution
-- Full key management system is better long-term solution
-
-## 🚀 Deployment Commands
-
-```bash
-# Deploy enhanced Web UI
-cd ~/llm-proxy
-./update-streaming.sh
-
-# Add master key to docker-compose.yml
-ssh dblagbro@192.168.18.11
-nano /opt/llm-proxy/docker-compose.yml
-# Add MASTER_API_KEY line
-docker-compose -f /opt/llm-proxy/docker-compose.yml restart
-
-# Test
-curl -H "x-api-key: YOUR-KEY" https://www.voipguru.org/llmProxy/health
-```
+### Other Future Ideas
+- Per-client-key rate limiting and quotas
+- Usage analytics dashboard
+- Webhook/alerting notifications
+- Streaming chat log (WebSocket push to UI instead of polling)
