@@ -238,6 +238,52 @@ app.use(session({
   }
 }));
 
+// ── Layer 5: Request Correlation IDs ─────────────────────────────────────────
+// Attach a unique request ID to every request for end-to-end tracing in logs.
+app.use((req, res, next) => {
+  req.requestId = req.headers['x-request-id'] || crypto.randomBytes(8).toString('hex');
+  res.setHeader('x-request-id', req.requestId);
+  next();
+});
+
+// ── Layer 5: Active Session Registry ─────────────────────────────────────────
+// Tracks all authenticated sessions in memory: sessionId → metadata.
+// Sessions are registered at login and removed at logout or expiry.
+const activeSessions = new Map();
+
+function registerSession(sessionId, user, req) {
+  activeSessions.set(sessionId, {
+    sessionId,
+    userId: user.id,
+    username: user.username,
+    role: user.role,
+    ip: req.ip || req.connection?.remoteAddress || 'unknown',
+    userAgent: req.headers['user-agent'] || 'unknown',
+    loginTime: new Date().toISOString(),
+    lastActive: new Date().toISOString()
+  });
+}
+
+function touchSession(sessionId) {
+  const s = activeSessions.get(sessionId);
+  if (s) s.lastActive = new Date().toISOString();
+}
+
+function revokeSession(sessionId) {
+  activeSessions.delete(sessionId);
+}
+
+// Update last-active on every authenticated request and auto-extend cookie
+app.use((req, res, next) => {
+  if (req.session?.user && req.session.id) {
+    touchSession(req.session.id);
+    // Auto-extend session cookie to configured timeout on every request
+    const timeoutMs = (parseInt(config?.smtp?.sessionTimeoutMinutes) || 480) * 60 * 1000;
+    req.session.cookie.maxAge = timeoutMs;
+  }
+  next();
+});
+
 // Config file path
 const CONFIG_PATH = process.env.CONFIG_PATH || '/app/config/providers.json';
 
@@ -908,6 +954,68 @@ function translateFromOpenAI(openAIResponse, model) {
   };
 }
 
+// ── Layer 3: Conductor/Worker Parallel Provider Racing ───────────────────────
+// When CONDUCTOR_MODE is enabled, dispatch the top N providers simultaneously
+// (non-streaming only) and return whichever responds first. Failed workers are
+// ignored as long as at least one succeeds.
+//
+// CONDUCTOR_WORKERS env var controls how many providers race (default: 2).
+// Streaming requests always use sequential failover (can't race SSE streams).
+const CONDUCTOR_MODE    = process.env.CONDUCTOR_MODE === 'true';
+const CONDUCTOR_WORKERS = Math.max(1, parseInt(process.env.CONDUCTOR_WORKERS) || 2);
+
+async function raceProvidersParallel(providers, requestBody, maxLatencyMs) {
+  const workers = providers.slice(0, CONDUCTOR_WORKERS);
+  logger.info(`Conductor: racing ${workers.map(p => p.name).join(' vs ')}`);
+
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let remaining = workers.length;
+
+    workers.forEach(provider => {
+      const caps = PROVIDER_CAPS[provider.type];
+      const contextWindow = caps?.contextWindow || 8192;
+      const body = { ...requestBody, messages: truncateMessagesToFit(requestBody.messages, Math.floor(contextWindow * 0.85)) };
+
+      const call = (() => {
+        switch (provider.type) {
+          case 'anthropic':         return callAnthropic(provider, body);
+          case 'google':            return callGemini(provider, body);
+          case 'vertex':            return callVertex(provider, body);
+          case 'grok':              return callGrok(provider, body);
+          case 'ollama':            return callOllama(provider, body);
+          case 'openai':            return callOpenAI(provider, body);
+          case 'openai-compatible': return callOpenAICompatible(provider, body);
+          default: return Promise.reject(new Error(`Unsupported type: ${provider.type}`));
+        }
+      })();
+
+      const raceCall = maxLatencyMs > 0
+        ? Promise.race([call, new Promise((_, r) => setTimeout(() => r(new Error(`Latency exceeded ${maxLatencyMs}ms`)), maxLatencyMs))])
+        : call;
+
+      raceCall.then(result => {
+        if (settled) return;
+        // XML sentinel check
+        const text = result?.content?.map(b => b.text || '').join('') || '';
+        if (isBadModelOutput(text)) {
+          logger.warn(`Conductor: XML sentinel on ${provider.name} — ignoring this worker`);
+          remaining--;
+          if (remaining === 0 && !settled) reject(new Error('All conductor workers failed'));
+          return;
+        }
+        settled = true;
+        logger.info(`Conductor: winner is ${provider.name}`);
+        resolve({ result, provider });
+      }).catch(err => {
+        logger.warn(`Conductor worker ${provider.name} failed: ${err.message}`);
+        remaining--;
+        if (remaining === 0 && !settled) reject(new Error('All conductor workers failed'));
+      });
+    });
+  });
+}
+
 // ── Layer 1d: Streaming First-Chunk Buffer ────────────────────────────────────
 // Wraps a streaming call to buffer all SSE writes until the first data chunk
 // arrives from the provider. This keeps headers unsent long enough for the
@@ -1529,6 +1637,7 @@ app.post('/v1/messages', validateApiKey, async (req, res) => {
   const isStreaming = req.body.stream === true;
 
   logger.info('Received request', {
+    requestId: req.requestId,
     model: req.body.model,
     messageCount: req.body.messages?.length,
     streaming: isStreaming
@@ -1559,6 +1668,45 @@ app.post('/v1/messages', validateApiKey, async (req, res) => {
     return res.status(503).json({ error: 'No providers available' });
   }
 
+  // ── Layer 3: Conductor path — parallel racing for non-streaming requests ──
+  if (CONDUCTOR_MODE && !isStreaming && availableProviders.length >= 2) {
+    const maxLatencyMs = 1800; // use global default for conductor
+    logChatRequest('Conductor', 1, req.body.model, req.body.messages);
+    try {
+      const { result, provider } = await raceProvidersParallel(availableProviders, req.body, maxLatencyMs);
+      const latency = Date.now() - startTime;
+
+      // Update stats for winning provider
+      initStats(provider.id);
+      config.stats[provider.id].requests++;
+      config.stats[provider.id].successes++;
+      config.stats[provider.id].totalLatency += latency;
+      config.stats[provider.id].lastUsed = new Date().toISOString();
+      config.stats[provider.id].lastSuccess = { timestamp: new Date().toISOString() };
+      providerMonitor.recordSuccess(provider);
+
+      const model = result.model || req.body.model || provider.model || 'unknown';
+      const usage = result.usage || {};
+      const cost = pricingManager.calculateCost(model, usage.input_tokens || 0, usage.output_tokens || 0);
+      config.stats[provider.id].totalCost += cost;
+      config.stats[provider.id].totalInputTokens  += (usage.input_tokens  || 0);
+      config.stats[provider.id].totalOutputTokens += (usage.output_tokens || 0);
+      if (USE_SQLITE && sqliteDb) saveStatsRecord(provider.id);
+
+      if (req.clientKey) {
+        req.clientKey.requests = (req.clientKey.requests || 0) + 1;
+        req.clientKey.lastUsed = new Date().toISOString();
+      }
+
+      logger.info(`Conductor success via ${provider.name}`, { latency: `${latency}ms`, requestId: req.requestId });
+      logChatResponse(provider.name, model, result, latency, cost);
+      return res.json(result);
+    } catch (err) {
+      logger.error(`Conductor race failed: ${err.message} — falling through to sequential`, { requestId: req.requestId });
+      // Fall through to sequential 3-pass routing below
+    }
+  }
+
   let headersSent = false;
   let lastError = null;
 
@@ -1577,7 +1725,7 @@ app.post('/v1/messages', validateApiKey, async (req, res) => {
 
       try {
         let result;
-        logger.info(`Trying provider: ${provider.name} (pass ${pass}, streaming: ${isStreaming})`);
+        logger.info(`Trying provider: ${provider.name} (pass ${pass}, streaming: ${isStreaming})`, { requestId: req.requestId });
         providerLog.info('Request attempt', {
           pass,
           model: req.body.model,
@@ -2369,7 +2517,12 @@ app.post('/api/auth/login', async (req, res) => {
     role: user.role
   };
 
-  logger.info('User logged in', { username: user.username, sessionTimeoutMinutes });
+  // Layer 5: register session in active session registry
+  req.session.save(() => {
+    registerSession(req.session.id, user, req);
+  });
+
+  logger.info('User logged in', { username: user.username, sessionTimeoutMinutes, requestId: req.requestId });
   addActivityLog('success', `User logged in: ${user.username}`, { role: user.role });
   if (!USE_SQLITE) saveConfig();
 
@@ -2378,6 +2531,8 @@ app.post('/api/auth/login', async (req, res) => {
 
 app.post('/api/auth/logout', (req, res) => {
   const username = req.session?.user?.username;
+  const sessionId = req.session?.id;
+  revokeSession(sessionId);
   req.session.destroy();
   logger.info('User logged out', { username });
   res.json({ success: true });
@@ -2548,6 +2703,50 @@ app.post('/api/profile/password', requireAuth, async (req, res) => {
 });
 
 // Forgot password - request reset (uses username instead of email)
+// ── Layer 5: Session Management Endpoints ────────────────────────────────────
+
+// GET /api/sessions — list active sessions for the current user
+app.get('/api/sessions', requireAuth, (req, res) => {
+  const userId = req.session.user.id;
+  const currentSessionId = req.session.id;
+  const sessions = [];
+  for (const [id, s] of activeSessions) {
+    if (s.userId === userId) {
+      sessions.push({ ...s, current: id === currentSessionId });
+    }
+  }
+  sessions.sort((a, b) => new Date(b.loginTime) - new Date(a.loginTime));
+  res.json({ sessions });
+});
+
+// DELETE /api/sessions/:sessionId — revoke a specific session (must belong to current user)
+app.delete('/api/sessions/:sessionId', requireAuth, (req, res) => {
+  const { sessionId } = req.params;
+  const s = activeSessions.get(sessionId);
+  if (!s || s.userId !== req.session.user.id) {
+    return res.status(404).json({ error: 'Session not found' });
+  }
+  revokeSession(sessionId);
+  logger.info('Session revoked', { by: req.session.user.username, sessionId, requestId: req.requestId });
+  res.json({ success: true });
+});
+
+// DELETE /api/sessions — revoke all sessions for current user except the current one
+app.delete('/api/sessions', requireAuth, (req, res) => {
+  const userId = req.session.user.id;
+  const currentSessionId = req.session.id;
+  let count = 0;
+  for (const [id] of [...activeSessions]) {
+    const s = activeSessions.get(id);
+    if (s?.userId === userId && id !== currentSessionId) {
+      revokeSession(id);
+      count++;
+    }
+  }
+  logger.info('All other sessions revoked', { by: req.session.user.username, count, requestId: req.requestId });
+  res.json({ success: true, revoked: count });
+});
+
 app.post('/api/auth/forgot-password', async (req, res) => {
   const { username } = req.body;
 

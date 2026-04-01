@@ -5,6 +5,13 @@ All notable changes to the LLM Proxy Manager project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.9] - 2026-04-01
+
+### Added
+- **Layer 3 — Conductor/Worker Parallel Racing**: When `CONDUCTOR_MODE=true`, non-streaming requests race the top N providers simultaneously (configurable via `CONDUCTOR_WORKERS`, default 2). The first valid response wins. Falls through to sequential 3-pass routing if all workers fail. Streaming requests are unaffected (always sequential).
+- **Layer 5 — Advanced Session Management**: Active session registry tracks all logged-in sessions with IP, user agent, login time, and last-active timestamp. Request correlation IDs (`x-request-id`) are injected on every request and returned in response headers. Sessions auto-extend on every authenticated request. New API endpoints: `GET /api/sessions`, `DELETE /api/sessions/:id`, `DELETE /api/sessions`.
+- **Session Management UI**: Profile Settings modal now shows all active sessions with IP, browser, and timestamps. Current session is highlighted. Individual sessions can be revoked, or all other sessions revoked at once.
+
 ## [1.3.8] - 2026-04-01
 
 ### Added
