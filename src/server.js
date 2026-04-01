@@ -610,6 +610,43 @@ function validateApiKey(req, res, next) {
     });
   }
 
+  // ── Rate limiting / quota check (only when quotaEnabled === true) ────────────
+  if (clientKey.quotaEnabled) {
+    const now = Date.now();
+    const minKey = Math.floor(now / 60000); // current minute bucket
+    const dayKey = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+
+    // Per-minute window
+    if (clientKey.quotaRpm > 0) {
+      if (!clientKey._rpm || clientKey._rpm.bucket !== minKey) {
+        clientKey._rpm = { bucket: minKey, count: 0 };
+      }
+      if (clientKey._rpm.count >= clientKey.quotaRpm) {
+        logger.warn('Rate limit exceeded (RPM)', { keyName: clientKey.name, limit: clientKey.quotaRpm });
+        return res.status(429).json({
+          type: 'error',
+          error: { type: 'rate_limit_error', message: `Rate limit exceeded: max ${clientKey.quotaRpm} requests per minute for this key.` }
+        });
+      }
+      clientKey._rpm.count++;
+    }
+
+    // Per-day window
+    if (clientKey.quotaRpd > 0) {
+      if (!clientKey._rpd || clientKey._rpd.bucket !== dayKey) {
+        clientKey._rpd = { bucket: dayKey, count: 0 };
+      }
+      if (clientKey._rpd.count >= clientKey.quotaRpd) {
+        logger.warn('Rate limit exceeded (RPD)', { keyName: clientKey.name, limit: clientKey.quotaRpd });
+        return res.status(429).json({
+          type: 'error',
+          error: { type: 'rate_limit_error', message: `Quota exceeded: max ${clientKey.quotaRpd} requests per day for this key.` }
+        });
+      }
+      clientKey._rpd.count++;
+    }
+  }
+
   // Attach client key info to request
   req.clientKey = clientKey;
   clientKey.lastUsed = new Date().toISOString();
@@ -2380,7 +2417,7 @@ app.get('/api/client-keys', (req, res) => {
 });
 
 app.post('/api/client-keys', (req, res) => {
-  const { name } = req.body;
+  const { name, quotaEnabled, quotaRpm, quotaRpd } = req.body;
 
   if (!name || name.trim() === '') {
     return res.status(400).json({ error: 'Name is required' });
@@ -2393,7 +2430,10 @@ app.post('/api/client-keys', (req, res) => {
     created: new Date().toISOString(),
     lastUsed: null,
     requests: 0,
-    enabled: true
+    enabled: true,
+    quotaEnabled: Boolean(quotaEnabled),
+    quotaRpm: parseInt(quotaRpm) || 0,
+    quotaRpd: parseInt(quotaRpd) || 0,
   };
 
   if (!config.clientApiKeys) {
@@ -2429,7 +2469,7 @@ app.delete('/api/client-keys/:id', (req, res) => {
 
 app.patch('/api/client-keys/:id', (req, res) => {
   const { id } = req.params;
-  const { enabled, name } = req.body;
+  const { enabled, name, quotaEnabled, quotaRpm, quotaRpd } = req.body;
 
   if (!config.clientApiKeys) {
     return res.status(404).json({ error: 'Key not found' });
@@ -2441,13 +2481,11 @@ app.patch('/api/client-keys/:id', (req, res) => {
     return res.status(404).json({ error: 'Key not found' });
   }
 
-  if (enabled !== undefined) {
-    key.enabled = Boolean(enabled);
-  }
-
-  if (name && name.trim() !== '') {
-    key.name = name.trim();
-  }
+  if (enabled !== undefined) key.enabled = Boolean(enabled);
+  if (name && name.trim() !== '') key.name = name.trim();
+  if (quotaEnabled !== undefined) key.quotaEnabled = Boolean(quotaEnabled);
+  if (quotaRpm !== undefined) key.quotaRpm = parseInt(quotaRpm) || 0;
+  if (quotaRpd !== undefined) key.quotaRpd = parseInt(quotaRpd) || 0;
 
   saveApiKeyRecord(key);
 
@@ -2457,6 +2495,21 @@ app.patch('/api/client-keys/:id', (req, res) => {
 
 // Test provider endpoint
 // GET /api/provider-chat-log?name=<providerName>&lines=<n>
+// Quota status for a key (live in-memory counters)
+app.get('/api/client-keys/:id/quota-status', requireAuth, (req, res) => {
+  const key = config.clientApiKeys?.find(k => k.id === req.params.id);
+  if (!key) return res.status(404).json({ error: 'Key not found' });
+  const minKey = Math.floor(Date.now() / 60000);
+  const dayKey = new Date().toISOString().slice(0, 10);
+  res.json({
+    quotaEnabled: key.quotaEnabled || false,
+    quotaRpm: key.quotaRpm || 0,
+    quotaRpd: key.quotaRpd || 0,
+    rpmUsed: (key._rpm?.bucket === minKey) ? key._rpm.count : 0,
+    rpdUsed: (key._rpd?.bucket === dayKey) ? key._rpd.count : 0,
+  });
+});
+
 // Returns the last N lines of the chat log for a named provider
 app.get('/api/provider-chat-log', requireAuth, (req, res) => {
   const { name, lines } = req.query;

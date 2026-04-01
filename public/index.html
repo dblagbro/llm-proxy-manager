@@ -717,7 +717,7 @@
     <div class="container">
         <div class="header">
             <div>
-                <h1>🤖 LLM Proxy Manager <span style="font-size: 14px; color: var(--text-muted); font-weight: normal;">v1.4.0</span></h1>
+                <h1>🤖 LLM Proxy Manager <span style="font-size: 14px; color: var(--text-muted); font-weight: normal;">v1.4.1</span></h1>
                 <p class="subtitle">Multi-provider AI proxy with automatic failover and cluster synchronization</p>
             </div>
             <div class="header-actions">
@@ -1128,6 +1128,26 @@ export ANTHROPIC_API_KEY="proxy-handled"</textarea>
                     <label>Key Name / Description</label>
                     <input type="text" id="new-key-name" required placeholder="e.g., Production App, Dev Environment">
                 </div>
+                <div class="form-group">
+                    <label style="display:flex; align-items:center; gap:10px;">
+                        <input type="checkbox" id="new-key-quota-enabled" style="width:auto;" onchange="toggleNewKeyQuotaFields()">
+                        <span>Enable Rate Limiting / Quotas</span>
+                    </label>
+                </div>
+                <div id="new-key-quota-fields" style="display:none;">
+                    <div style="background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:12px;margin-bottom:12px;font-size:13px;">
+                        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+                            <div class="form-group" style="margin:0;">
+                                <label style="font-size:12px;">Max requests / minute <span style="color:var(--text-muted)">(0 = unlimited)</span></label>
+                                <input type="number" id="new-key-quota-rpm" min="0" value="0" style="margin-top:4px;">
+                            </div>
+                            <div class="form-group" style="margin:0;">
+                                <label style="font-size:12px;">Max requests / day <span style="color:var(--text-muted)">(0 = unlimited)</span></label>
+                                <input type="number" id="new-key-quota-rpd" min="0" value="0" style="margin-top:4px;">
+                            </div>
+                        </div>
+                    </div>
+                </div>
                 <div class="form-actions">
                     <button type="button" class="btn btn-secondary" onclick="closeCreateApiKeyModal()">Cancel</button>
                     <button type="submit" class="btn btn-primary">Generate Key</button>
@@ -1147,7 +1167,7 @@ export ANTHROPIC_API_KEY="proxy-handled"</textarea>
                 <div style="text-align: center; margin-bottom: 24px;">
                     <div style="font-size: 48px; margin-bottom: 8px;">🤖</div>
                     <div style="font-size: 22px; font-weight: 700; margin-bottom: 4px;">LLM Proxy Manager</div>
-                    <div style="color: var(--text-muted); font-size: 13px;">Version 1.4.0 — April 2026</div>
+                    <div style="color: var(--text-muted); font-size: 13px;">Version 1.4.1 — April 2026</div>
                 </div>
                 <p style="margin-bottom: 16px; line-height: 1.6;">Production-ready multi-provider LLM API proxy with automatic failover, intelligent routing, streaming support, cost tracking, and comprehensive web management.</p>
                 <div style="background: var(--bg3, var(--bg2)); border-radius: 8px; padding: 14px; margin-bottom: 20px; font-size: 13px; line-height: 1.8;">
@@ -1157,11 +1177,17 @@ export ANTHROPIC_API_KEY="proxy-handled"</textarea>
                     <div><strong>Source:</strong> <a href="https://github.com/dblagbro/llm-proxy-manager" target="_blank" style="color: var(--primary);">github.com/dblagbro/llm-proxy-manager</a></div>
                 </div>
                 <details style="font-size: 13px; color: var(--text-muted); line-height: 1.6;">
-                    <summary style="cursor: pointer; font-weight: 600; margin-bottom: 8px;">What's new in v1.4.0</summary>
+                    <summary style="cursor: pointer; font-weight: 600; margin-bottom: 8px;">What's new in v1.4.1</summary>
                     <ul style="margin: 8px 0 0 16px;">
-                        <li>Analytics Dashboard — per-provider request counts, cost, success rate, avg latency with bar chart sparklines; 1h/24h/7d/all-time windows</li>
-                        <li>Live Stream chat logs — SSE push replaces polling; toggle 🔴 Live Stream in the Log viewer for real-time updates</li>
+                        <li>Per-API-key rate limiting and quotas — configurable max requests/minute and/or max requests/day; disabled by default; returns 429 when exceeded</li>
                     </ul>
+                    <details style="margin-top: 8px;">
+                        <summary style="cursor: pointer;">v1.4.0</summary>
+                        <ul style="margin: 8px 0 0 16px;">
+                            <li>Analytics Dashboard — per-provider request counts, cost, success rate, avg latency with bar chart sparklines; 1h/24h/7d/all-time windows</li>
+                            <li>Live Stream chat logs — SSE push replaces polling; toggle 🔴 Live Stream in the Log viewer for real-time updates</li>
+                        </ul>
+                    </details>
                     <details style="margin-top: 8px;">
                         <summary style="cursor: pointer;">v1.3.9</summary>
                         <ul style="margin: 8px 0 0 16px;">
@@ -1558,6 +1584,27 @@ print(message.content[0].text)</pre>
                         <input type="checkbox" id="edit-key-enabled" style="width: auto;">
                         <span>Key Enabled</span>
                     </label>
+                </div>
+                <div class="form-group">
+                    <label style="display:flex; align-items:center; gap:10px;">
+                        <input type="checkbox" id="edit-key-quota-enabled" style="width:auto;" onchange="toggleEditKeyQuotaFields()">
+                        <span>Enable Rate Limiting / Quotas</span>
+                    </label>
+                </div>
+                <div id="edit-key-quota-fields" style="display:none;">
+                    <div style="background:var(--bg3);border:1px solid var(--border);border-radius:6px;padding:12px;margin-bottom:12px;font-size:13px;">
+                        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+                            <div class="form-group" style="margin:0;">
+                                <label style="font-size:12px;">Max requests / minute <span style="color:var(--text-muted)">(0 = unlimited)</span></label>
+                                <input type="number" id="edit-key-quota-rpm" min="0" value="0" style="margin-top:4px;">
+                            </div>
+                            <div class="form-group" style="margin:0;">
+                                <label style="font-size:12px;">Max requests / day <span style="color:var(--text-muted)">(0 = unlimited)</span></label>
+                                <input type="number" id="edit-key-quota-rpd" min="0" value="0" style="margin-top:4px;">
+                            </div>
+                        </div>
+                        <div id="edit-key-quota-usage" style="margin-top:10px;font-size:12px;color:var(--text-muted);"></div>
+                    </div>
                 </div>
                 <div style="color: #999; font-size: 12px; margin-bottom: 15px;">
                     <div>Created: <span id="edit-key-created"></span></div>
@@ -3009,6 +3056,7 @@ print(message.content[0].text)</pre>
                                 Created: ${new Date(key.created).toLocaleString()} •
                                 Requests: ${key.requests || 0} •
                                 ${key.lastUsed ? `Last used: ${new Date(key.lastUsed).toLocaleString()}` : 'Never used'}
+                                ${key.quotaEnabled ? ` • <span style="color:var(--warning)">⏱ ${key.quotaRpm > 0 ? key.quotaRpm+' rpm' : ''}${key.quotaRpm > 0 && key.quotaRpd > 0 ? ' / ' : ''}${key.quotaRpd > 0 ? key.quotaRpd+' rpd' : ''}</span>` : ''}
                             </div>
                         </div>
                         <div style="display: flex; gap: 8px; align-items: center;">
@@ -3058,7 +3106,21 @@ print(message.content[0].text)</pre>
 
         function showCreateApiKeyModal() {
             document.getElementById('new-key-name').value = '';
+            document.getElementById('new-key-quota-enabled').checked = false;
+            document.getElementById('new-key-quota-rpm').value = '0';
+            document.getElementById('new-key-quota-rpd').value = '0';
+            document.getElementById('new-key-quota-fields').style.display = 'none';
             document.getElementById('createApiKeyModal').classList.add('show');
+        }
+
+        function toggleNewKeyQuotaFields() {
+            document.getElementById('new-key-quota-fields').style.display =
+                document.getElementById('new-key-quota-enabled').checked ? 'block' : 'none';
+        }
+
+        function toggleEditKeyQuotaFields() {
+            document.getElementById('edit-key-quota-fields').style.display =
+                document.getElementById('edit-key-quota-enabled').checked ? 'block' : 'none';
         }
 
         function closeCreateApiKeyModal() {
@@ -3079,7 +3141,12 @@ print(message.content[0].text)</pre>
                 const response = await fetch('./api/client-keys', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ name })
+                    body: JSON.stringify({
+                        name,
+                        quotaEnabled: document.getElementById('new-key-quota-enabled').checked,
+                        quotaRpm: parseInt(document.getElementById('new-key-quota-rpm').value) || 0,
+                        quotaRpd: parseInt(document.getElementById('new-key-quota-rpd').value) || 0,
+                    })
                 });
 
                 if (response.ok) {
@@ -3157,6 +3224,23 @@ print(message.content[0].text)</pre>
             document.getElementById('edit-key-requests').textContent = key.requests || 0;
             document.getElementById('edit-key-lastused').textContent = key.lastUsed ? new Date(key.lastUsed).toLocaleString() : 'Never';
 
+            // Quota fields
+            const quotaEnabled = key.quotaEnabled || false;
+            document.getElementById('edit-key-quota-enabled').checked = quotaEnabled;
+            document.getElementById('edit-key-quota-rpm').value = key.quotaRpm || 0;
+            document.getElementById('edit-key-quota-rpd').value = key.quotaRpd || 0;
+            document.getElementById('edit-key-quota-fields').style.display = quotaEnabled ? 'block' : 'none';
+
+            // Load live usage if quota enabled
+            if (quotaEnabled) {
+                fetch(`./api/client-keys/${keyId}/quota-status`).then(r => r.json()).then(s => {
+                    document.getElementById('edit-key-quota-usage').innerHTML =
+                        `Current usage: ${s.rpmUsed}/${s.quotaRpm || '∞'} this minute &nbsp;·&nbsp; ${s.rpdUsed}/${s.quotaRpd || '∞'} today`;
+                }).catch(() => {});
+            } else {
+                document.getElementById('edit-key-quota-usage').textContent = '';
+            }
+
             document.getElementById('editApiKeyModal').classList.add('show');
         }
 
@@ -3198,7 +3282,12 @@ print(message.content[0].text)</pre>
                 const response = await fetch(`./api/client-keys/${editingApiKeyId}`, {
                     method: 'PATCH',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ name, enabled })
+                    body: JSON.stringify({
+                        name, enabled,
+                        quotaEnabled: document.getElementById('edit-key-quota-enabled').checked,
+                        quotaRpm: parseInt(document.getElementById('edit-key-quota-rpm').value) || 0,
+                        quotaRpd: parseInt(document.getElementById('edit-key-quota-rpd').value) || 0,
+                    })
                 });
 
                 if (response.ok) {
