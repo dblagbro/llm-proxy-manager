@@ -89,11 +89,17 @@ function emitChatLogLines(providerName, text) {
   }
 }
 
-function logChatRequest(providerName, pass, model, messages) {
+function logChatRequest(providerName, pass, model, messages, req) {
   const chatLog = getProviderChatLogger(providerName);
   const ts = new Date().toISOString().replace('T', ' ').replace(/\.\d{3}Z$/, ' UTC');
   const sep = '─'.repeat(60);
   const lines = [`\n[${ts}] ── REQUEST → ${providerName} (pass ${pass}, model: ${model}) ──`, sep];
+  if (req) {
+    const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.ip || req.connection?.remoteAddress || 'unknown';
+    const keyName = req.clientKey?.name || '(unknown key)';
+    const reqId = req.requestId || '-';
+    lines.push(`  source-ip: ${ip}  key: "${keyName}"  req-id: ${reqId}`);
+  }
   for (const msg of (messages || [])) {
     const role = (msg.role || 'unknown').toUpperCase();
     let text = '';
@@ -1775,7 +1781,7 @@ app.post('/v1/messages', validateApiKey, async (req, res) => {
   // ── Layer 3: Conductor path — parallel racing for non-streaming requests ──
   if (CONDUCTOR_MODE && !isStreaming && availableProviders.length >= 2) {
     const maxLatencyMs = 1800; // use global default for conductor
-    logChatRequest('Conductor', 1, req.body.model, req.body.messages);
+    logChatRequest('Conductor', 1, req.body.model, req.body.messages, req);
     try {
       const { result, provider } = await raceProvidersParallel(availableProviders, req.body, maxLatencyMs);
       const latency = Date.now() - startTime;
@@ -1850,7 +1856,7 @@ app.post('/v1/messages', validateApiKey, async (req, res) => {
         const contextWindow = providerCaps?.contextWindow || 8192;
         const requestBody = { ...req.body, messages: truncateMessagesToFit(req.body.messages, Math.floor(contextWindow * 0.85)) };
 
-        logChatRequest(provider.name, pass, requestBody.model || provider.model, requestBody.messages);
+        logChatRequest(provider.name, pass, requestBody.model || provider.model, requestBody.messages, req);
 
         config.stats[provider.id].requests++;
 
