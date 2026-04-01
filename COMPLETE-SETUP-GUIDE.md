@@ -1,6 +1,6 @@
 # LLM Proxy - Complete Setup Guide
 
-**Version**: 1.3.7 | **Updated**: April 2026
+**Version**: 1.3.9 | **Updated**: April 2026
 
 ## ✅ What's Deployed and Working
 
@@ -9,7 +9,7 @@
 - **Node 2**: tmrwww02 — https://www2.voipguru.org/llmProxy
 - **Node 3**: GCP (34.170.189.19) — https://c1conversations-avaya-01.avaya.c1cx.com/llmProxy
 - **Container**: `llm-proxy-manager` (Docker, `--restart unless-stopped`)
-- **Image**: `dblagbro/llm-proxy-manager:1.3.7`
+- **Image**: `dblagbro/llm-proxy-manager:1.3.9`
 - **Port**: 3000 (all nodes)
 - **Status**: ✅ OPERATIONAL
 
