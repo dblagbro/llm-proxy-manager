@@ -36,10 +36,17 @@
 
 ## 🚧 Deferred / Future Work
 
-### Layer 1d — Streaming Buffer for Tool Calls
+### Layer 1d — Streaming Buffer for Tool Calls (DONE in v1.3.8)
+First-chunk buffering implemented. Full SSE header buffering until first chunk — latency failover now works even for hanging providers.
 Full SSE header buffering — hold headers until first chunk type is determined.
 Gemini already delivers complete functionCall chunks; the complexity is in the SSE framing.
 Defer to Layer 3 work.
+
+### Layer 4a — Context Window Auto-Truncation (DONE in v1.3.8)
+Per-provider truncation at 85% of context window. Preserves system prompt and most recent user turn.
+
+### Layer 4b-4d — Structured Error Recovery (DONE in v1.3.8)
+`classifyProviderError()` distinguishes auth/404/client/context/rate-limit/transient/timeout/network errors. Hold-down only applied to transient failures.
 
 ### Layer 3 — Conductor/Worker Dual-Session Pattern
 Complex dual-session architecture for parallel provider management.

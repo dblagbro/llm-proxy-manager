@@ -135,8 +135,89 @@ function logChatFailover(providerName, reason, pass) {
   chatLog.info(`[${ts}] ✗ FAILOVER from ${providerName} (pass ${pass}): ${reason}`);
 }
 
+function logChatStreamResponse(providerName, model, textBuffer, latencyMs, outputTokens) {
+  const chatLog = getProviderChatLogger(providerName);
+  const ts = new Date().toISOString().replace('T', ' ').replace(/\.\d{3}Z$/, ' UTC');
+  const sep = '─'.repeat(60);
+  const cost = pricingManagerRef ? pricingManagerRef.calculateCost(model, 0, outputTokens) : 0;
+  const statsLine = `latency=${latencyMs}ms  model=${model}  tokens=out:${outputTokens}  cost=$${cost.toFixed(6)}  [streamed]`;
+  const lines = [
+    `[${ts}] ── RESPONSE ← ${providerName} (streamed) ──`,
+    `[ASSISTANT]\n${textBuffer || '(streamed — text not captured)'}`,
+    sep,
+    statsLine,
+    sep
+  ];
+  chatLog.info(lines.join('\n'));
+}
+
+// Ref set after pricingManager is created (avoids forward reference)
+let pricingManagerRef = null;
+
+// ── Layer 4a: Context Window Auto-Truncation ──────────────────────────────────
+// Trims oldest non-system messages until the estimated token count fits within maxTokens.
+// Always preserves the system prompt and the most recent user message.
+function truncateMessagesToFit(messages, maxTokens) {
+  if (!messages || messages.length === 0) return messages;
+
+  const estimate = (msgs) => Math.ceil(JSON.stringify(msgs).length / 4);
+  if (estimate(messages) <= maxTokens) return messages;
+
+  // Separate system messages from conversation
+  const system = messages.filter(m => m.role === 'system');
+  const convo   = messages.filter(m => m.role !== 'system');
+
+  // Always keep last message (most recent user turn)
+  let trimmed = [...convo];
+  while (trimmed.length > 1 && estimate([...system, ...trimmed]) > maxTokens) {
+    trimmed.shift(); // remove oldest non-system message
+  }
+
+  const result = [...system, ...trimmed];
+  logger.info(`Context truncation: reduced from ${messages.length} → ${result.length} messages to fit ${maxTokens} token window`);
+  return result;
+}
+
+// ── Layer 4b-4d: Error Classification ────────────────────────────────────────
+// Returns error category used to decide hold-down and retry behaviour.
+function classifyProviderError(error) {
+  const status = error.response?.status;
+  const msg    = (error.message || '').toLowerCase();
+  const data   = error.response?.data;
+  const dataStr = JSON.stringify(data || '').toLowerCase();
+
+  // Context length exceeded — don't hold down, but log clearly
+  if (
+    status === 400 &&
+    (dataStr.includes('context') || dataStr.includes('token') || dataStr.includes('length') ||
+     dataStr.includes('too long') || dataStr.includes('maximum') || msg.includes('context'))
+  ) return 'context_exceeded';
+
+  // Permanent auth / not-found errors — no hold-down, don't retry
+  if (status === 401 || status === 403) return 'auth_error';
+  if (status === 404) return 'not_found';
+
+  // Client schema / validation error — no hold-down, may still retry other providers
+  if (status === 400 || status === 422) return 'client_error';
+
+  // Rate limit — transient, do hold-down
+  if (status === 429) return 'rate_limit';
+
+  // Transient server / overload errors — hold-down
+  if (status === 500 || status === 502 || status === 503 || status === 529) return 'transient';
+
+  // Latency timeout (our own)
+  if (msg.includes('latency exceeded')) return 'timeout';
+
+  // Network / ECONNREFUSED / ETIMEDOUT
+  if (error.code === 'ECONNREFUSED' || error.code === 'ETIMEDOUT' || error.code === 'ENOTFOUND') return 'network';
+
+  return 'unknown';
+}
+
 // Initialize pricing manager
 const pricingManager = new PricingManager();
+pricingManagerRef = pricingManager;
 logger.info('Pricing manager initialized');
 
 // Middleware
@@ -827,6 +908,38 @@ function translateFromOpenAI(openAIResponse, model) {
   };
 }
 
+// ── Layer 1d: Streaming First-Chunk Buffer ────────────────────────────────────
+// Wraps a streaming call to buffer all SSE writes until the first data chunk
+// arrives from the provider. This keeps headers unsent long enough for the
+// latency guard (Promise.race) to still be able to failover if the provider
+// hangs at the connection stage. Once any chunk arrives we flush the buffer
+// and switch to direct passthrough for the remainder of the stream.
+function makeBufferedRes(res) {
+  let flushed = false;
+  const buffer = [];
+
+  const bufferedRes = {
+    setHeader: (k, v) => { if (!flushed) buffer.push({ type: 'header', k, v }); else res.setHeader(k, v); },
+    write: (chunk) => {
+      if (!flushed) {
+        // First write — flush headers then buffered writes
+        flushed = true;
+        for (const item of buffer) {
+          if (item.type === 'header') res.setHeader(item.k, item.v);
+        }
+        buffer.length = 0;
+        res.write(chunk);
+      } else {
+        res.write(chunk);
+      }
+    },
+    end: (...args) => res.end(...args),
+    // Expose flush state for the routing layer
+    get headersFlushed() { return flushed; }
+  };
+  return bufferedRes;
+}
+
 // Stream Anthropic API responses
 async function streamAnthropic(provider, request, res) {
   const response = await axios.post(
@@ -877,6 +990,7 @@ async function streamGemini(provider, request, res) {
   );
 
   const messageId = `msg_${Date.now()}`;
+  const streamStartTime = Date.now();
 
   // SSE emit helper
   const emit = (eventName, data) => {
@@ -893,6 +1007,7 @@ async function streamGemini(provider, request, res) {
   let textBlockOpen = false;
   let hasToolUse = false;
   let outputTokens = 0;
+  let textAccum = ''; // for chat log
 
   // Accumulate partial SSE lines across TCP chunks
   let lineBuffer = '';
@@ -906,6 +1021,7 @@ async function streamGemini(provider, request, res) {
           textBlockOpen = true;
         }
         outputTokens += part.text.length;
+        textAccum += part.text;
         emit('content_block_delta', { type: 'content_block_delta', index: blockIndex, delta: { type: 'text_delta', text: part.text } });
       } else if (part.functionCall) {
         // Close text block if open
@@ -960,6 +1076,7 @@ async function streamGemini(provider, request, res) {
       });
       emit('message_stop', { type: 'message_stop' });
 
+      logChatStreamResponse(provider.name, model, textAccum, Date.now() - streamStartTime, outputTokens);
       resolve();
     });
 
@@ -992,6 +1109,7 @@ async function streamOpenAI(provider, request, res) {
   );
 
   const messageId = `msg_${Date.now()}`;
+  const streamStartTime = Date.now();
   const model = request.model || provider.model || 'gpt-4o-mini';
 
   const emit = (eventName, data) => {
@@ -1009,6 +1127,7 @@ async function streamOpenAI(provider, request, res) {
   let textBlockOpen = false;
   let hasToolUse = false;
   let outputTokens = 0;
+  let textAccum = ''; // for chat log
 
   // tool_calls accumulator: index → {id, name, argsBuffer}
   const toolCallAccum = {};
@@ -1035,6 +1154,7 @@ async function streamOpenAI(provider, request, res) {
         emit('content_block_start', { type: 'content_block_start', index: blockIndex, content_block: { type: 'text', text: '' } });
         textBlockOpen = true;
       }
+      textAccum += delta.content;
       emit('content_block_delta', { type: 'content_block_delta', index: blockIndex, delta: { type: 'text_delta', text: delta.content } });
     }
 
@@ -1101,6 +1221,7 @@ async function streamOpenAI(provider, request, res) {
         usage: { output_tokens: outputTokens }
       });
       emit('message_stop', { type: 'message_stop' });
+      logChatStreamResponse(provider.name, model, textAccum, Date.now() - streamStartTime, outputTokens);
       resolve();
     });
     response.data.on('error', reject);
@@ -1465,26 +1586,34 @@ app.post('/v1/messages', validateApiKey, async (req, res) => {
           max_tokens: req.body.max_tokens,
           temperature: req.body.temperature
         });
-        logChatRequest(provider.name, pass, req.body.model || provider.model, req.body.messages);
+        // 4a: Context window auto-truncation — trim oldest messages if request is too long
+        const providerCaps = PROVIDER_CAPS[provider.type];
+        const contextWindow = providerCaps?.contextWindow || 8192;
+        const requestBody = { ...req.body, messages: truncateMessagesToFit(req.body.messages, Math.floor(contextWindow * 0.85)) };
+
+        logChatRequest(provider.name, pass, requestBody.model || provider.model, requestBody.messages);
 
         config.stats[provider.id].requests++;
 
         if (isStreaming) {
+          // 1d: Use a buffered response wrapper so SSE headers are held until
+          // the first chunk arrives — allowing latency-guard failover to still work
+          // even if the provider accepts the connection but never sends data.
+          const streamRes = headersSent ? res : makeBufferedRes(res);
           if (!headersSent) {
-            res.setHeader('Content-Type', 'text/event-stream');
-            res.setHeader('Cache-Control', 'no-cache');
-            res.setHeader('Connection', 'keep-alive');
-            headersSent = true;
-            logger.info(`Streaming headers set for provider: ${provider.name}`);
+            streamRes.setHeader('Content-Type', 'text/event-stream');
+            streamRes.setHeader('Cache-Control', 'no-cache');
+            streamRes.setHeader('Connection', 'keep-alive');
+            logger.info(`Streaming headers buffered for provider: ${provider.name}`);
           }
 
           const streamCall = (() => {
-            if (provider.type === 'anthropic')         return streamAnthropic(provider, req.body, res);
-            if (provider.type === 'google')            return streamGemini(provider, req.body, res);
-            if (provider.type === 'openai')            return streamOpenAI(provider, req.body, res);
-            if (provider.type === 'grok')              return streamGrok(provider, req.body, res);
-            if (provider.type === 'ollama')            return streamOllama(provider, req.body, res);
-            if (provider.type === 'openai-compatible') return streamOpenAICompatible(provider, req.body, res);
+            if (provider.type === 'anthropic')         return streamAnthropic(provider, requestBody, streamRes);
+            if (provider.type === 'google')            return streamGemini(provider, requestBody, streamRes);
+            if (provider.type === 'openai')            return streamOpenAI(provider, requestBody, streamRes);
+            if (provider.type === 'grok')              return streamGrok(provider, requestBody, streamRes);
+            if (provider.type === 'ollama')            return streamOllama(provider, requestBody, streamRes);
+            if (provider.type === 'openai-compatible') return streamOpenAICompatible(provider, requestBody, streamRes);
             throw new Error(`Unsupported provider type: ${provider.type}`);
           })();
 
@@ -1499,16 +1628,22 @@ app.post('/v1/messages', validateApiKey, async (req, res) => {
             await streamCall;
           }
 
+          // Mark headers as sent only once first chunk has actually flushed
+          if (!headersSent && streamRes.headersFlushed) {
+            headersSent = true;
+            logger.info(`Streaming headers flushed for provider: ${provider.name}`);
+          }
+
         } else {
           const nonStreamCall = (() => {
             switch (provider.type) {
-              case 'anthropic':         return callAnthropic(provider, req.body);
-              case 'google':            return callGemini(provider, req.body);
-              case 'vertex':            return callVertex(provider, req.body);
-              case 'grok':              return callGrok(provider, req.body);
-              case 'ollama':            return callOllama(provider, req.body);
-              case 'openai':            return callOpenAI(provider, req.body);
-              case 'openai-compatible': return callOpenAICompatible(provider, req.body);
+              case 'anthropic':         return callAnthropic(provider, requestBody);
+              case 'google':            return callGemini(provider, requestBody);
+              case 'vertex':            return callVertex(provider, requestBody);
+              case 'grok':              return callGrok(provider, requestBody);
+              case 'ollama':            return callOllama(provider, requestBody);
+              case 'openai':            return callOpenAI(provider, requestBody);
+              case 'openai-compatible': return callOpenAICompatible(provider, requestBody);
               default: throw new Error(`Unsupported provider type: ${provider.type}`);
             }
           })();
@@ -1557,6 +1692,13 @@ app.post('/v1/messages', validateApiKey, async (req, res) => {
 
         if (isStreaming) {
           saveStatsRecord(provider.id);
+          // For piped providers (anthropic, grok, ollama, compatible) text isn't captured —
+          // streamGemini/streamOpenAI log themselves; log a note for the rest
+          const selfLogging = provider.type === 'google' || provider.type === 'openai';
+          if (!selfLogging) {
+            const latencyMs = Date.now() - startTime;
+            logChatStreamResponse(provider.name, req.body.model || provider.model || '', null, latencyMs, 0);
+          }
           res.end();
           return;
         }
@@ -1597,15 +1739,25 @@ app.post('/v1/messages', validateApiKey, async (req, res) => {
         saveStatsRecord(provider.id);
         lastError = error;
 
-        // 400/422 are client-side schema/validation errors — don't count toward hold-down
-        const isClientError = error.response?.status === 400 || error.response?.status === 422;
-        if (!isClientError) {
-          providerMonitor.recordFailure(provider, latency, error);
-        } else {
-          logger.warn(`Client-side error with ${provider.name} (${error.response?.status}) — not counting toward hold-down`);
+        // 4b-4d: Structured error classification — controls hold-down and retry behaviour
+        const errCategory = classifyProviderError(error);
+        const noHoldDown = ['auth_error', 'not_found', 'client_error', 'context_exceeded'].includes(errCategory);
+
+        if (errCategory === 'context_exceeded') {
+          logger.warn(`Context length exceeded for ${provider.name} — skipping hold-down, trying next provider`);
+        } else if (errCategory === 'auth_error') {
+          logger.error(`Auth error for ${provider.name} (${error.response?.status}) — check API key; skipping hold-down`);
+        } else if (errCategory === 'not_found') {
+          logger.error(`Not found (404) for ${provider.name} — check model/endpoint; skipping hold-down`);
+        } else if (noHoldDown) {
+          logger.warn(`Client-side error for ${provider.name} (${error.response?.status}) — not counting toward hold-down`);
         }
 
-        logger.error(`Failed with ${provider.name} (pass ${pass}):`, {
+        if (!noHoldDown) {
+          providerMonitor.recordFailure(provider, latency, error);
+        }
+
+        logger.error(`Failed with ${provider.name} (pass ${pass}) [${errCategory}]:`, {
           error: error.message,
           status: error.response?.status,
           latency: `${latency}ms`
@@ -1613,13 +1765,14 @@ app.post('/v1/messages', validateApiKey, async (req, res) => {
 
         providerLog.error('Request failed', {
           error: error.message,
+          category: errCategory,
           status: error.response?.status,
           statusText: error.response?.statusText,
           data: error.response?.data,
           latency: `${latency}ms`,
           stack: error.stack
         });
-        logChatFailover(provider.name, `${error.message}${error.response?.status ? ` (HTTP ${error.response.status})` : ''}`, pass);
+        logChatFailover(provider.name, `[${errCategory}] ${error.message}${error.response?.status ? ` (HTTP ${error.response.status})` : ''}`, pass);
 
         // If streaming headers already sent we can't try another provider
         if (isStreaming && headersSent) {
