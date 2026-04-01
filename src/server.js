@@ -33,6 +33,7 @@ const logger = winston.createLogger({
 
 // Per-provider loggers with 50MB rotation
 const providerLoggers = {};
+const providerChatLoggers = {};
 
 function getProviderLogger(providerName) {
   if (!providerLoggers[providerName]) {
@@ -57,6 +58,81 @@ function getProviderLogger(providerName) {
     });
   }
   return providerLoggers[providerName];
+}
+
+// Per-provider human-readable chat loggers
+function getProviderChatLogger(providerName) {
+  if (!providerChatLoggers[providerName]) {
+    const safeName = providerName.replace(/[^a-zA-Z0-9_-]/g, '_');
+    providerChatLoggers[providerName] = winston.createLogger({
+      level: 'info',
+      format: winston.format.printf(({ message }) => message),
+      transports: [
+        new winston.transports.File({
+          filename: `/app/logs/chat-${safeName}.log`,
+          maxsize: 50 * 1024 * 1024,
+          maxFiles: 5,
+          tailable: true
+        })
+      ]
+    });
+  }
+  return providerChatLoggers[providerName];
+}
+
+function logChatRequest(providerName, pass, model, messages) {
+  const chatLog = getProviderChatLogger(providerName);
+  const ts = new Date().toISOString().replace('T', ' ').replace(/\.\d{3}Z$/, ' UTC');
+  const sep = '─'.repeat(60);
+  const lines = [`\n[${ts}] ── REQUEST → ${providerName} (pass ${pass}, model: ${model}) ──`, sep];
+  for (const msg of (messages || [])) {
+    const role = (msg.role || 'unknown').toUpperCase();
+    let text = '';
+    if (typeof msg.content === 'string') {
+      text = msg.content;
+    } else if (Array.isArray(msg.content)) {
+      text = msg.content.map(b => {
+        if (b.type === 'text') return b.text || '';
+        if (b.type === 'image') return '[IMAGE]';
+        if (b.type === 'tool_use') return `[TOOL_USE id=${b.id} name=${b.name}]\n${JSON.stringify(b.input, null, 2)}`;
+        if (b.type === 'tool_result') return `[TOOL_RESULT tool_use_id=${b.tool_use_id}]\n${Array.isArray(b.content) ? b.content.map(c => c.text || '').join('') : b.content || ''}`;
+        return `[${b.type}]`;
+      }).join('\n');
+    }
+    lines.push(`[${role}]\n${text}`);
+  }
+  lines.push(sep);
+  chatLog.info(lines.join('\n'));
+}
+
+function logChatResponse(providerName, model, result, latencyMs, cost) {
+  const chatLog = getProviderChatLogger(providerName);
+  const ts = new Date().toISOString().replace('T', ' ').replace(/\.\d{3}Z$/, ' UTC');
+  const sep = '─'.repeat(60);
+  const usage = result?.usage || {};
+  const statsLine = `latency=${latencyMs}ms  model=${model}  tokens=in:${usage.input_tokens || 0}/out:${usage.output_tokens || 0}  cost=$${(cost || 0).toFixed(6)}`;
+  let text = '';
+  if (Array.isArray(result?.content)) {
+    text = result.content.map(b => {
+      if (b.type === 'text') return b.text || '';
+      if (b.type === 'tool_use') return `[TOOL_USE id=${b.id} name=${b.name}]\n${JSON.stringify(b.input, null, 2)}`;
+      return `[${b.type}]`;
+    }).join('\n');
+  }
+  const lines = [
+    `[${ts}] ── RESPONSE ← ${providerName} ──`,
+    `[ASSISTANT]\n${text}`,
+    sep,
+    statsLine,
+    sep
+  ];
+  chatLog.info(lines.join('\n'));
+}
+
+function logChatFailover(providerName, reason, pass) {
+  const chatLog = getProviderChatLogger(providerName);
+  const ts = new Date().toISOString().replace('T', ' ').replace(/\.\d{3}Z$/, ' UTC');
+  chatLog.info(`[${ts}] ✗ FAILOVER from ${providerName} (pass ${pass}): ${reason}`);
 }
 
 // Initialize pricing manager
@@ -1386,10 +1462,10 @@ app.post('/v1/messages', validateApiKey, async (req, res) => {
           model: req.body.model,
           messageCount: req.body.messages?.length,
           streaming: isStreaming,
-          messages: req.body.messages,
           max_tokens: req.body.max_tokens,
           temperature: req.body.temperature
         });
+        logChatRequest(provider.name, pass, req.body.model || provider.model, req.body.messages);
 
         config.stats[provider.id].requests++;
 
@@ -1452,6 +1528,7 @@ app.post('/v1/messages', validateApiKey, async (req, res) => {
           const responseText = result?.content?.map(b => b.text || '').join('') || '';
           if (isBadModelOutput(responseText)) {
             logger.warn(`XML sentinel triggered for ${provider.name} — bad model output detected, failing over`);
+            logChatFailover(provider.name, 'Bad model output (XML sentinel)', pass);
             config.stats[provider.id].failures++;
             config.stats[provider.id].lastError = { message: 'Bad model output (XML sentinel)', timestamp: new Date().toISOString() };
             saveStatsRecord(provider.id);
@@ -1501,6 +1578,7 @@ app.post('/v1/messages', validateApiKey, async (req, res) => {
         }
 
         providerLog.info('Request success', { latency: `${latency}ms`, model, usage, cost });
+        logChatResponse(provider.name, model, result, latency, cost);
         return;
 
       } catch (error) {
@@ -1541,6 +1619,7 @@ app.post('/v1/messages', validateApiKey, async (req, res) => {
           latency: `${latency}ms`,
           stack: error.stack
         });
+        logChatFailover(provider.name, `${error.message}${error.response?.status ? ` (HTTP ${error.response.status})` : ''}`, pass);
 
         // If streaming headers already sent we can't try another provider
         if (isStreaming && headersSent) {
