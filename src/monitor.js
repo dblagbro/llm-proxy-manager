@@ -1,369 +1,367 @@
 /**
- * Provider Health Monitoring and Circuit Breaker
- * Implements intelligent failure detection with external service monitoring
+ * Provider Hold-Down System
+ *
+ * Replaces the old circuit breaker with a per-provider hold-down + retest mechanism.
+ *
+ * Per-provider config fields (stored in providers.json / SQLite):
+ *   holdDownSeconds   — seconds to hold a provider after failureThreshold failures (default 180, 0 = disabled)
+ *   maxLatencyMs      — enforced in the routing loop via Promise.race (default 1200, 0 = no limit)
+ *   failureThreshold  — consecutive failures before hold-down kicks in (default 2)
+ *
+ * Hold-down lifecycle:
+ *   failures >= threshold → enter hold-down (holdDownUntil = now + holdDownSeconds*1000)
+ *   schedule retest at 90% of hold-down elapsed
+ *   retest passes → clear hold-down immediately
+ *   retest fails  → restart hold-down from now, schedule next retest
+ *   manual release / manual hold via admin API
  */
+
+'use strict';
 
 const axios = require('axios');
 const EventEmitter = require('events');
 
-class ProviderMonitor extends EventEmitter {
-  constructor(logger) {
+// Default values — override per provider via provider fields
+const DEFAULT_HOLD_DOWN_SECONDS = 180;
+const DEFAULT_FAILURE_THRESHOLD = 2;
+
+class ProviderHoldDown extends EventEmitter {
+  /**
+   * @param {object}   logger      Winston logger
+   * @param {Function} getProvider (providerId) => live provider object from config
+   */
+  constructor(logger, getProvider) {
     super();
     this.logger = logger;
+    this.getProvider = getProvider;
 
-    // Circuit breaker configuration
-    this.circuitBreakerConfig = {
-      failureThreshold: parseInt(process.env.CIRCUIT_BREAKER_THRESHOLD || '3'),
-      timeout: parseInt(process.env.CIRCUIT_BREAKER_TIMEOUT || '60000'), // 60 seconds
-      halfOpenTimeout: parseInt(process.env.CIRCUIT_BREAKER_HALFOPEN || '30000'), // 30 seconds
-      successThreshold: parseInt(process.env.CIRCUIT_BREAKER_SUCCESS || '2') // successes to close circuit
-    };
+    // In-memory hold-down state keyed by provider.id
+    // { consecutiveFailures, holdDownUntil, retestTimer }
+    this.state = new Map();
 
-    // Provider timeouts (milliseconds)
-    this.providerTimeouts = {
-      anthropic: parseInt(process.env.ANTHROPIC_TIMEOUT || '30000'),
-      google: parseInt(process.env.GOOGLE_TIMEOUT || '30000'),
-      openai: parseInt(process.env.OPENAI_TIMEOUT || '30000'),
-      grok: parseInt(process.env.GROK_TIMEOUT || '30000'),
-      ollama: parseInt(process.env.OLLAMA_TIMEOUT || '60000'), // Local models may be slower
-      vertex: parseInt(process.env.VERTEX_TIMEOUT || '30000'),
-      'openai-compatible': parseInt(process.env.COMPATIBLE_TIMEOUT || '30000')
-    };
-
-    // Circuit breaker states per provider
-    this.circuits = new Map(); // provider.id -> { state, failures, lastFailure, lastCheck }
-
-    // External service status cache
-    this.serviceStatus = new Map(); // provider.type -> { status, lastCheck, source }
-
-    // Status page URLs for external monitoring
-    this.statusPages = {
-      anthropic: 'https://status.anthropic.com/api/v2/summary.json',
-      openai: 'https://status.openai.com/api/v2/summary.json',
-      google: 'https://status.cloud.google.com/incidents.json'
-    };
-
-    // Error patterns for billing/quota failures
-    this.billingErrors = [
-      /insufficient.*credit/i,
-      /quota.*exceeded/i,
-      /billing.*issue/i,
-      /payment.*required/i,
-      /subscription.*expired/i,
-      /rate.*limit.*exceeded/i,
-      /429.*too.*many.*requests/i
-    ];
-
-    // Monitor interval
-    this.monitorInterval = null;
-
-    this.logger.info('Provider Monitor initialized');
+    this.logger.info('ProviderHoldDown initialized');
   }
 
-  start() {
-    // Check external status pages every 5 minutes
-    this.monitorInterval = setInterval(() => {
-      this.checkExternalStatus();
-    }, 300000);
+  // ── Internal helpers ────────────────────────────────────────────────────
 
-    // Initial check after 10 seconds
-    setTimeout(() => this.checkExternalStatus(), 10000);
-
-    this.logger.info('Provider Monitor started');
-  }
-
-  stop() {
-    if (this.monitorInterval) {
-      clearInterval(this.monitorInterval);
-    }
-    this.logger.info('Provider Monitor stopped');
-  }
-
-  getProviderTimeout(providerType) {
-    return this.providerTimeouts[providerType] || 30000;
-  }
-
-  // Get circuit breaker config for a provider, with per-provider overrides
-  getCircuitConfig(provider) {
-    const cb = provider.circuitBreaker || {};
-    return {
-      failureThreshold: cb.failureThreshold != null ? parseInt(cb.failureThreshold) : this.circuitBreakerConfig.failureThreshold,
-      timeout: cb.timeout != null ? parseInt(cb.timeout) * 1000 : this.circuitBreakerConfig.timeout,
-      halfOpenTimeout: cb.halfOpenTimeout != null ? parseInt(cb.halfOpenTimeout) * 1000 : this.circuitBreakerConfig.halfOpenTimeout,
-      successThreshold: cb.successThreshold != null ? parseInt(cb.successThreshold) : this.circuitBreakerConfig.successThreshold
-    };
-  }
-
-  // Circuit Breaker State Machine
-  getCircuitState(providerId) {
-    if (!this.circuits.has(providerId)) {
-      this.circuits.set(providerId, {
-        state: 'CLOSED', // CLOSED, OPEN, HALF_OPEN
-        failures: 0,
-        successes: 0,
-        lastFailure: null,
-        lastCheck: null,
-        reason: null
+  _getState(providerId) {
+    if (!this.state.has(providerId)) {
+      this.state.set(providerId, {
+        consecutiveFailures: 0,
+        holdDownUntil: null,
+        retestTimer: null
       });
     }
-    return this.circuits.get(providerId);
+    return this.state.get(providerId);
   }
 
-  canAttemptProvider(provider) {
-    const circuit = this.getCircuitState(provider.id);
-    const now = Date.now();
-
-    // Provider explicitly disabled
-    if (!provider.enabled) {
-      return { allowed: false, reason: 'Provider disabled' };
+  _clearRetestTimer(state) {
+    if (state.retestTimer) {
+      clearTimeout(state.retestTimer);
+      state.retestTimer = null;
     }
+  }
 
-    // Check external service status
-    const externalStatus = this.serviceStatus.get(provider.type);
-    if (externalStatus && externalStatus.status === 'major_outage') {
-      return {
-        allowed: false,
-        reason: `${provider.type} reporting major outage (${externalStatus.source})`
-      };
+  _holdDownSeconds(provider) {
+    return provider.holdDownSeconds != null
+      ? parseInt(provider.holdDownSeconds)
+      : DEFAULT_HOLD_DOWN_SECONDS;
+  }
+
+  _failureThreshold(provider) {
+    return provider.failureThreshold != null
+      ? parseInt(provider.failureThreshold)
+      : DEFAULT_FAILURE_THRESHOLD;
+  }
+
+  _scheduleRetest(provider, holdDownMs) {
+    const state = this._getState(provider.id);
+    this._clearRetestTimer(state);
+
+    // Retest fires at 90% of hold-down duration
+    const retestDelayMs = Math.max(holdDownMs * 0.9, 5000);
+
+    state.retestTimer = setTimeout(async () => {
+      state.retestTimer = null;
+      // Fetch the live provider record in case config changed
+      const live = this.getProvider(provider.id) || provider;
+      await this._fireRetest(live);
+    }, retestDelayMs);
+
+    this.logger.info(`Hold-down retest scheduled for ${provider.name} in ${Math.round(retestDelayMs / 1000)}s`);
+  }
+
+  async _fireRetest(provider) {
+    this.logger.info(`Hold-down retest firing for provider: ${provider.name} (${provider.id})`);
+    try {
+      await this._sendProbe(provider);
+      // Probe passed — restore provider
+      const state = this._getState(provider.id);
+      state.consecutiveFailures = 0;
+      state.holdDownUntil = null;
+      this._clearRetestTimer(state);
+      this.logger.info(`Hold-down retest PASSED for ${provider.name} — provider restored`);
+      this.emit('holddown.cleared', { provider });
+    } catch (err) {
+      this.logger.warn(`Hold-down retest FAILED for ${provider.name}: ${err.message}`);
+      const holdDownSeconds = this._holdDownSeconds(provider);
+      if (holdDownSeconds > 0) {
+        const holdDownMs = holdDownSeconds * 1000;
+        const state = this._getState(provider.id);
+        state.holdDownUntil = Date.now() + holdDownMs;
+        this._scheduleRetest(provider, holdDownMs);
+        this.logger.warn(`Hold-down restarted for ${provider.name} until ${new Date(state.holdDownUntil).toISOString()}`);
+        this.emit('holddown.restarted', { provider });
+      }
     }
+  }
 
-    // Circuit breaker logic
-    switch (circuit.state) {
-      case 'CLOSED':
-        // Normal operation
-        return { allowed: true, reason: 'Circuit closed' };
+  async _sendProbe(provider) {
+    // Minimal probe — NOT counted in stats, NOT cost-tracked, NOT logged to activity log
+    const maxLatencyMs = (provider.maxLatencyMs != null && parseInt(provider.maxLatencyMs) > 0)
+      ? parseInt(provider.maxLatencyMs)
+      : 10000;
 
-      case 'OPEN': {
-        // Check if timeout expired -> move to HALF_OPEN
-        const cbCfg = this.getCircuitConfig(provider);
-        if (circuit.lastFailure && (now - circuit.lastFailure > cbCfg.timeout)) {
-          circuit.state = 'HALF_OPEN';
-          circuit.successes = 0;
-          this.logger.info(`Circuit HALF_OPEN for provider: ${provider.name} (${provider.id})`);
-          this.emit('circuit.half_open', { provider });
-          return { allowed: true, reason: 'Circuit half-open (testing)' };
-        }
-        return {
-          allowed: false,
-          reason: `Circuit open until ${new Date(circuit.lastFailure + cbCfg.timeout).toISOString()}`
-        };
+    switch (provider.type) {
+      case 'anthropic':
+        await axios.post(
+          'https://api.anthropic.com/v1/messages',
+          {
+            model: provider.model || 'claude-haiku-4-5-20251001',
+            messages: [{ role: 'user', content: 'hi' }],
+            max_tokens: 1,
+            stream: false
+          },
+          {
+            headers: {
+              'Content-Type': 'application/json',
+              'x-api-key': provider.apiKey,
+              'anthropic-version': '2023-06-01'
+            },
+            timeout: maxLatencyMs
+          }
+        );
+        break;
+
+      case 'openai':
+        await axios.post(
+          'https://api.openai.com/v1/chat/completions',
+          {
+            model: provider.model || 'gpt-4o-mini',
+            messages: [{ role: 'user', content: 'hi' }],
+            max_tokens: 1,
+            stream: false
+          },
+          {
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${provider.apiKey}`
+            },
+            timeout: maxLatencyMs
+          }
+        );
+        break;
+
+      case 'grok':
+        await axios.post(
+          'https://api.x.ai/v1/chat/completions',
+          {
+            model: provider.model || 'grok-beta',
+            messages: [{ role: 'user', content: 'hi' }],
+            max_tokens: 1,
+            stream: false
+          },
+          {
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${provider.apiKey}`
+            },
+            timeout: maxLatencyMs
+          }
+        );
+        break;
+
+      case 'google':
+        await axios.post(
+          `https://generativelanguage.googleapis.com/v1beta/models/${provider.model || 'gemini-2.0-flash'}:generateContent?key=${provider.apiKey}`,
+          {
+            contents: [{ role: 'user', parts: [{ text: 'hi' }] }],
+            generationConfig: { maxOutputTokens: 1 }
+          },
+          {
+            headers: { 'Content-Type': 'application/json' },
+            timeout: maxLatencyMs
+          }
+        );
+        break;
+
+      case 'openai-compatible': {
+        const baseUrl = provider.baseUrl || 'http://localhost:8080';
+        await axios.post(
+          `${baseUrl}/v1/chat/completions`,
+          {
+            model: provider.model || 'default',
+            messages: [{ role: 'user', content: 'hi' }],
+            max_tokens: 1,
+            stream: false
+          },
+          {
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${provider.apiKey}`
+            },
+            timeout: maxLatencyMs
+          }
+        );
+        break;
       }
 
-      case 'HALF_OPEN':
-        // Allow limited testing
-        return { allowed: true, reason: 'Circuit half-open (testing)' };
+      case 'ollama': {
+        const baseUrl = provider.baseUrl || 'http://localhost:11434';
+        await axios.post(
+          `${baseUrl}/api/chat`,
+          {
+            model: provider.model || 'llama2',
+            messages: [{ role: 'user', content: 'hi' }],
+            stream: false,
+            options: { num_predict: 1 }
+          },
+          {
+            headers: { 'Content-Type': 'application/json' },
+            timeout: maxLatencyMs
+          }
+        );
+        break;
+      }
+
+      case 'vertex':
+        // Vertex requires OAuth tokens — skip probe, log warning only
+        this.logger.warn(`Hold-down retest skipped for Vertex provider ${provider.name} (OAuth probe not supported)`);
+        // Throw so the retest counts as failed and hold-down continues
+        throw new Error('Vertex retest not supported — hold-down continues');
 
       default:
-        return { allowed: true, reason: 'Unknown state' };
+        throw new Error(`No probe support for provider type: ${provider.type}`);
     }
+  }
+
+  // ── Public API ───────────────────────────────────────────────────────────
+
+  /**
+   * Returns true if the provider is currently in hold-down and should be skipped.
+   */
+  isInHoldDown(provider) {
+    const state = this._getState(provider.id);
+    if (!state.holdDownUntil) return false;
+    if (Date.now() >= state.holdDownUntil) {
+      // Timer expired without retest clearing it — release automatically
+      state.holdDownUntil = null;
+      state.consecutiveFailures = 0;
+      return false;
+    }
+    return true;
   }
 
   recordSuccess(provider) {
-    const circuit = this.getCircuitState(provider.id);
-
-    if (circuit.state === 'HALF_OPEN') {
-      circuit.successes++;
-
-      if (circuit.successes >= this.getCircuitConfig(provider).successThreshold) {
-        // Restore provider
-        circuit.state = 'CLOSED';
-        circuit.failures = 0;
-        circuit.successes = 0;
-        circuit.reason = null;
-        this.logger.info(`Circuit CLOSED for provider: ${provider.name} (${provider.id}) - recovered`);
-        this.emit('circuit.closed', { provider });
-      }
-    } else if (circuit.state === 'CLOSED') {
-      // Decay failure count on success
-      circuit.failures = Math.max(0, circuit.failures - 1);
-    }
-
-    circuit.lastCheck = Date.now();
+    const state = this._getState(provider.id);
+    state.consecutiveFailures = 0;
+    // holdDownUntil is managed by the retest timer — don't touch it here
   }
 
-  recordFailure(provider, error) {
-    const circuit = this.getCircuitState(provider.id);
-    const now = Date.now();
+  /**
+   * @param {object} provider
+   * @param {number} latencyMs  Actual call latency in ms
+   * @param {Error}  error      The error that caused the failure (may be null for latency breach)
+   */
+  recordFailure(provider, latencyMs, error) {
+    const state = this._getState(provider.id);
+    state.consecutiveFailures++;
 
-    circuit.failures++;
-    circuit.lastFailure = now;
-    circuit.lastCheck = now;
+    const holdDownSeconds = this._holdDownSeconds(provider);
+    const failureThreshold = this._failureThreshold(provider);
 
-    // Check for billing/quota errors
-    const isBillingError = this.detectBillingError(error);
-    if (isBillingError) {
-      circuit.reason = 'Billing/quota issue detected';
-      this.emit('billing.error', { provider, error: error.message });
-      this.logger.error(`Billing error detected for ${provider.name}: ${error.message}`);
-    }
+    this.logger.warn(
+      `Provider ${provider.name} failure #${state.consecutiveFailures}` +
+      ` (threshold: ${failureThreshold}, latency: ${latencyMs}ms,` +
+      ` error: ${error?.message || 'latency breach'})`
+    );
 
-    // Open circuit if threshold reached
-    if (circuit.state === 'CLOSED' && circuit.failures >= this.getCircuitConfig(provider).failureThreshold) {
-      circuit.state = 'OPEN';
-      circuit.reason = isBillingError ? 'Billing/quota issue' : 'Too many failures';
-      this.logger.error(`Circuit OPEN for provider: ${provider.name} (${provider.id}) - ${circuit.reason}`);
-      this.emit('circuit.open', { provider, reason: circuit.reason });
-    } else if (circuit.state === 'HALF_OPEN') {
-      // Failed during testing, reopen circuit
-      circuit.state = 'OPEN';
-      circuit.successes = 0;
-      circuit.reason = 'Test failed';
-      this.logger.warn(`Circuit re-OPEN for provider: ${provider.name} (${provider.id})`);
-      this.emit('circuit.reopen', { provider });
+    // Enter hold-down if threshold reached and not already held
+    if (holdDownSeconds > 0 && state.consecutiveFailures >= failureThreshold && !state.holdDownUntil) {
+      const holdDownMs = holdDownSeconds * 1000;
+      state.holdDownUntil = Date.now() + holdDownMs;
+      this._scheduleRetest(provider, holdDownMs);
+      this.logger.error(
+        `Provider ${provider.name} entering hold-down for ${holdDownSeconds}s` +
+        ` (until ${new Date(state.holdDownUntil).toISOString()})`
+      );
+      this.emit('holddown.entered', { provider, consecutiveFailures: state.consecutiveFailures });
     }
   }
 
-  detectBillingError(error) {
-    const errorMsg = error.message || error.toString();
-    return this.billingErrors.some(pattern => pattern.test(errorMsg));
+  /**
+   * Manual release of hold-down via admin API.
+   */
+  manualRelease(providerId) {
+    const state = this._getState(providerId);
+    this._clearRetestTimer(state);
+    state.consecutiveFailures = 0;
+    state.holdDownUntil = null;
+    this.logger.info(`Hold-down manually released for provider: ${providerId}`);
+    this.emit('holddown.manual_release', { providerId });
   }
 
-  async checkExternalStatus() {
-    this.logger.info('Checking external service status pages...');
-
-    for (const [providerType, statusUrl] of Object.entries(this.statusPages)) {
-      try {
-        const response = await axios.get(statusUrl, {
-          timeout: 10000,
-          headers: { 'User-Agent': 'LLM-Proxy-Manager/1.0' }
-        });
-
-        let status = 'operational';
-        let incidents = [];
-
-        // Parse response based on provider
-        if (providerType === 'anthropic' || providerType === 'openai') {
-          // Statuspage.io format
-          const data = response.data;
-          if (data.status && data.status.indicator) {
-            switch (data.status.indicator) {
-              case 'none':
-                status = 'operational';
-                break;
-              case 'minor':
-                status = 'degraded';
-                break;
-              case 'major':
-              case 'critical':
-                status = 'major_outage';
-                break;
-            }
-          }
-
-          if (data.components) {
-            // Check API component specifically
-            const apiComponent = data.components.find(c =>
-              c.name.toLowerCase().includes('api')
-            );
-            if (apiComponent && apiComponent.status !== 'operational') {
-              status = 'degraded';
-            }
-          }
-        } else if (providerType === 'google') {
-          // Google Cloud Status format
-          const data = response.data;
-          if (Array.isArray(data) && data.length > 0) {
-            // Recent incidents
-            const recentIncidents = data.filter(incident => {
-              const created = new Date(incident.created);
-              const hoursSince = (Date.now() - created.getTime()) / 3600000;
-              return hoursSince < 24 && incident.currently_affected;
-            });
-
-            if (recentIncidents.length > 0) {
-              status = 'degraded';
-              incidents = recentIncidents.map(i => i.external_desc);
-            }
-          }
-        }
-
-        this.serviceStatus.set(providerType, {
-          status: status,
-          lastCheck: new Date(),
-          source: statusUrl,
-          incidents: incidents
-        });
-
-        if (status !== 'operational') {
-          this.logger.warn(`External status for ${providerType}: ${status}`);
-          this.emit('external.degraded', { providerType, status, incidents });
-        } else {
-          this.logger.info(`External status for ${providerType}: operational`);
-        }
-
-      } catch (err) {
-        this.logger.warn(`Failed to check status page for ${providerType}: ${err.message}`);
-        // Don't update status if we can't reach the status page
-      }
+  /**
+   * Manual hold-down via admin API.
+   */
+  manualHold(providerId, durationSeconds) {
+    const provider = this.getProvider(providerId) || { id: providerId, name: providerId };
+    const secs = durationSeconds != null ? parseInt(durationSeconds) : DEFAULT_HOLD_DOWN_SECONDS;
+    const state = this._getState(providerId);
+    this._clearRetestTimer(state);
+    if (secs > 0) {
+      const holdDownMs = secs * 1000;
+      state.holdDownUntil = Date.now() + holdDownMs;
+      this._scheduleRetest(provider, holdDownMs);
     }
+    this.logger.warn(`Hold-down manually applied to provider: ${providerId} for ${secs}s`);
+    this.emit('holddown.manual_hold', { providerId, durationSeconds: secs });
   }
 
-  getExternalStatus(providerType) {
-    return this.serviceStatus.get(providerType) || {
-      status: 'unknown',
-      lastCheck: null,
-      source: null
-    };
+  /**
+   * Returns current hold-down state for all providers that have been touched.
+   * Also exposes getState() as a public method for admin endpoints.
+   */
+  getState(providerId) {
+    return this._getState(providerId);
   }
 
-  getAllCircuitStates() {
-    const states = [];
-    for (const [providerId, circuit] of this.circuits.entries()) {
-      states.push({
+  getAllHoldDownStates() {
+    const result = [];
+    for (const [providerId, state] of this.state.entries()) {
+      result.push({
         providerId,
-        state: circuit.state,
-        failures: circuit.failures,
-        successes: circuit.successes,
-        lastFailure: circuit.lastFailure ? new Date(circuit.lastFailure).toISOString() : null,
-        reason: circuit.reason,
-        nextRetry: circuit.state === 'OPEN' && circuit.lastFailure
-          ? new Date(circuit.lastFailure + this.circuitBreakerConfig.timeout).toISOString()
-          : null
+        consecutiveFailures: state.consecutiveFailures,
+        inHoldDown: state.holdDownUntil != null && Date.now() < state.holdDownUntil,
+        holdDownUntil: state.holdDownUntil ? new Date(state.holdDownUntil).toISOString() : null,
+        retestScheduled: state.retestTimer != null
       });
     }
-    return states;
+    return result;
   }
 
   getMonitoringStatus() {
-    const externalStatus = {};
-    for (const [providerType, status] of this.serviceStatus.entries()) {
-      externalStatus[providerType] = {
-        status: status.status,
-        lastCheck: status.lastCheck ? status.lastCheck.toISOString() : null,
-        incidents: status.incidents || []
-      };
+    return { holdDown: { states: this.getAllHoldDownStates() } };
+  }
+
+  // Lifecycle stubs (called by server.js startup/shutdown)
+  start() { this.logger.info('ProviderHoldDown started'); }
+  stop() {
+    for (const state of this.state.values()) {
+      this._clearRetestTimer(state);
     }
-
-    return {
-      circuitBreaker: {
-        config: this.circuitBreakerConfig,
-        states: this.getAllCircuitStates()
-      },
-      externalStatus: externalStatus,
-      timeouts: this.providerTimeouts
-    };
-  }
-
-  // Manual circuit control (for emergency override)
-  manualReset(providerId) {
-    const circuit = this.getCircuitState(providerId);
-    circuit.state = 'CLOSED';
-    circuit.failures = 0;
-    circuit.successes = 0;
-    circuit.lastFailure = null;
-    circuit.reason = 'Manual reset';
-    this.logger.info(`Circuit manually CLOSED for provider: ${providerId}`);
-    this.emit('circuit.manual_reset', { providerId });
-  }
-
-  manualOpen(providerId, reason = 'Manual override') {
-    const circuit = this.getCircuitState(providerId);
-    circuit.state = 'OPEN';
-    circuit.reason = reason;
-    circuit.lastFailure = Date.now();
-    this.logger.warn(`Circuit manually OPEN for provider: ${providerId} - ${reason}`);
-    this.emit('circuit.manual_open', { providerId, reason });
+    this.logger.info('ProviderHoldDown stopped');
   }
 }
 
-module.exports = ProviderMonitor;
+module.exports = ProviderHoldDown;
