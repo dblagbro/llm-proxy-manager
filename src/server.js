@@ -1277,6 +1277,7 @@ app.post('/v1/messages', validateApiKey, async (req, res) => {
         : 1200;
 
       try {
+        let result;
         logger.info(`Trying provider: ${provider.name} (pass ${pass}, streaming: ${isStreaming})`);
         providerLog.info('Request attempt', {
           pass,
@@ -1321,7 +1322,6 @@ app.post('/v1/messages', validateApiKey, async (req, res) => {
           }
 
         } else {
-          let result;
           const nonStreamCall = (() => {
             switch (provider.type) {
               case 'anthropic':         return callAnthropic(provider, req.body);
