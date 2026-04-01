@@ -5,6 +5,11 @@ All notable changes to the LLM Proxy Manager project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.2] - 2026-04-01
+
+### Added
+- **Scan Models**: Edit Provider form now has a "🔍 Scan Models" button that queries the provider's live API and returns all available models. Models are shown as a draggable, checkboxed list — all enabled by default. Drag to reorder; uncheck to exclude. Order and enable/disable state are saved per-provider. The routing loop skips providers where the requested model is not in the enabled list. Supports: Anthropic, OpenAI, Grok, Google Gemini, Ollama, OpenAI-compatible. Vertex AI returns a static list of known models.
+
 ## [1.4.1] - 2026-04-01
 
 ### Added

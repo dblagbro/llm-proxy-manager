@@ -693,6 +693,26 @@
             margin: 4px 0;
         }
 
+        .model-scan-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 8px 12px;
+            border-bottom: 1px solid var(--border);
+            font-size: 13px;
+            cursor: default;
+            user-select: none;
+        }
+        .model-scan-item:last-child { border-bottom: none; }
+        .model-scan-item.drag-over { background: var(--accent-dim); opacity: 0.7; }
+        .model-drag-handle {
+            cursor: grab;
+            color: var(--text-muted);
+            font-size: 14px;
+            padding: 0 2px;
+        }
+        .model-drag-handle:active { cursor: grabbing; }
+
         .analytics-tile {
             background: var(--bg2);
             border: 1px solid var(--border);
@@ -717,7 +737,7 @@
     <div class="container">
         <div class="header">
             <div>
-                <h1>🤖 LLM Proxy Manager <span style="font-size: 14px; color: var(--text-muted); font-weight: normal;">v1.4.1</span></h1>
+                <h1>🤖 LLM Proxy Manager <span style="font-size: 14px; color: var(--text-muted); font-weight: normal;">v1.4.2</span></h1>
                 <p class="subtitle">Multi-provider AI proxy with automatic failover and cluster synchronization</p>
             </div>
             <div class="header-actions">
@@ -892,8 +912,25 @@
                     </div>
                 </details>
 
-                <button type="button" class="btn btn-success" onclick="testProvider()">🧪 Test This Provider</button>
+                <div style="display:flex; gap:8px; margin-top:10px;">
+                    <button type="button" class="btn btn-success" onclick="testProvider()">🧪 Test This Provider</button>
+                    <button type="button" class="btn btn-secondary" onclick="scanProviderModels()">🔍 Scan Models</button>
+                </div>
                 <div id="testResult"></div>
+
+                <!-- Model scan results -->
+                <div id="modelScanSection" style="display:none; margin-top:14px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                        <strong style="font-size:13px;">Available Models</strong>
+                        <div style="display:flex; gap:6px;">
+                            <button type="button" class="btn btn-secondary btn-small" onclick="selectAllModels(true)">Select All</button>
+                            <button type="button" class="btn btn-secondary btn-small" onclick="selectAllModels(false)">Deselect All</button>
+                        </div>
+                    </div>
+                    <p style="font-size:12px; color:var(--text-muted); margin-bottom:8px;">Drag ☰ to reorder. Checked models will be tried in the order shown.</p>
+                    <div id="modelScanList" style="border:1px solid var(--border); border-radius:6px; max-height:260px; overflow-y:auto; background:var(--bg2);"></div>
+                </div>
+
                 <div class="form-actions">
                     <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
                     <button type="submit" class="btn btn-primary">Save Changes</button>
@@ -1167,7 +1204,7 @@ export ANTHROPIC_API_KEY="proxy-handled"</textarea>
                 <div style="text-align: center; margin-bottom: 24px;">
                     <div style="font-size: 48px; margin-bottom: 8px;">🤖</div>
                     <div style="font-size: 22px; font-weight: 700; margin-bottom: 4px;">LLM Proxy Manager</div>
-                    <div style="color: var(--text-muted); font-size: 13px;">Version 1.4.1 — April 2026</div>
+                    <div style="color: var(--text-muted); font-size: 13px;">Version 1.4.2 — April 2026</div>
                 </div>
                 <p style="margin-bottom: 16px; line-height: 1.6;">Production-ready multi-provider LLM API proxy with automatic failover, intelligent routing, streaming support, cost tracking, and comprehensive web management.</p>
                 <div style="background: var(--bg3, var(--bg2)); border-radius: 8px; padding: 14px; margin-bottom: 20px; font-size: 13px; line-height: 1.8;">
@@ -1177,10 +1214,16 @@ export ANTHROPIC_API_KEY="proxy-handled"</textarea>
                     <div><strong>Source:</strong> <a href="https://github.com/dblagbro/llm-proxy-manager" target="_blank" style="color: var(--primary);">github.com/dblagbro/llm-proxy-manager</a></div>
                 </div>
                 <details style="font-size: 13px; color: var(--text-muted); line-height: 1.6;">
-                    <summary style="cursor: pointer; font-weight: 600; margin-bottom: 8px;">What's new in v1.4.1</summary>
+                    <summary style="cursor: pointer; font-weight: 600; margin-bottom: 8px;">What's new in v1.4.2</summary>
                     <ul style="margin: 8px 0 0 16px;">
-                        <li>Per-API-key rate limiting and quotas — configurable max requests/minute and/or max requests/day; disabled by default; returns 429 when exceeded</li>
+                        <li>🔍 Scan Models — Edit Provider form now has a "Scan Models" button that queries the provider's live API and shows all available models as a draggable, checkboxed list; order and enable/disable state saved per-provider; routing skips providers where the requested model is disabled</li>
                     </ul>
+                    <details style="margin-top: 8px;">
+                        <summary style="cursor: pointer;">v1.4.1</summary>
+                        <ul style="margin: 8px 0 0 16px;">
+                            <li>Per-API-key rate limiting and quotas — configurable max requests/minute and/or max requests/day; disabled by default; returns 429 when exceeded</li>
+                        </ul>
+                    </details>
                     <details style="margin-top: 8px;">
                         <summary style="cursor: pointer;">v1.4.0</summary>
                         <ul style="margin: 8px 0 0 16px;">
@@ -2229,6 +2272,19 @@ print(message.content[0].text)</pre>
             document.getElementById('edit-maxLatencyMs').value      = provider.maxLatencyMs      != null ? provider.maxLatencyMs      : '';
 
             updateFormFields();
+
+            // Show saved model list if provider has one
+            const modelScanSection = document.getElementById('modelScanSection');
+            const modelScanList = document.getElementById('modelScanList');
+            if (provider.modelOrder && provider.modelOrder.length) {
+                const models = provider.modelOrder.map(id => ({ id, name: id }));
+                renderModelScanList(models, provider.enabledModels || null);
+                modelScanSection.style.display = 'block';
+            } else {
+                modelScanSection.style.display = 'none';
+                modelScanList.innerHTML = '';
+            }
+
             document.getElementById('editModal').classList.add('show');
         }
 
@@ -2249,6 +2305,8 @@ print(message.content[0].text)</pre>
             document.getElementById('edit-failureThreshold').value = '';
             document.getElementById('edit-holdDownSeconds').value = '';
             document.getElementById('edit-maxLatencyMs').value = '';
+            document.getElementById('modelScanSection').style.display = 'none';
+            document.getElementById('modelScanList').innerHTML = '';
 
             updateFormFields();
             document.getElementById('editModal').classList.add('show');
@@ -2329,6 +2387,112 @@ print(message.content[0].text)</pre>
         function closeModal() {
             document.getElementById('editModal').classList.remove('show');
             document.getElementById('testResult').innerHTML = '';
+            document.getElementById('modelScanSection').style.display = 'none';
+            document.getElementById('modelScanList').innerHTML = '';
+        }
+
+        // ── Model Scanner ─────────────────────────────────────────────────────
+        let _scanDragSrc = null;
+
+        async function scanProviderModels() {
+            const section = document.getElementById('modelScanSection');
+            const list = document.getElementById('modelScanList');
+            list.innerHTML = '<div style="padding:12px;color:var(--text-muted);font-size:13px;">🔍 Scanning…</div>';
+            section.style.display = 'block';
+
+            let body;
+            if (editingIndex >= 0) {
+                body = { providerId: config.providers[editingIndex].id };
+            } else {
+                body = {
+                    type: document.getElementById('edit-type').value,
+                    apiKey: document.getElementById('edit-apiKey').value || undefined,
+                    projectId: document.getElementById('edit-projectId').value || undefined,
+                    location: document.getElementById('edit-location').value || undefined,
+                    baseUrl: document.getElementById('edit-baseUrl').value || undefined,
+                };
+            }
+
+            try {
+                const r = await fetch('./api/scan-provider-models', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+                const data = await r.json();
+                if (!r.ok) { list.innerHTML = `<div style="padding:12px;color:var(--danger);font-size:13px;">Error: ${escHtml(data.error)}</div>`; return; }
+
+                // Pre-populate with existing saved state if editing
+                const existing = editingIndex >= 0 ? config.providers[editingIndex] : null;
+                const savedOrder   = existing?.modelOrder    || [];
+                const savedEnabled = existing?.enabledModels || null; // null = all enabled
+
+                // Sort: saved order first, then remaining alphabetically
+                let models = data.models;
+                if (savedOrder.length) {
+                    const ordered = savedOrder.map(id => models.find(m => m.id === id)).filter(Boolean);
+                    const rest    = models.filter(m => !savedOrder.includes(m.id));
+                    models = [...ordered, ...rest];
+                }
+
+                renderModelScanList(models, savedEnabled);
+            } catch(e) {
+                list.innerHTML = `<div style="padding:12px;color:var(--danger);font-size:13px;">Error: ${escHtml(e.message)}</div>`;
+            }
+        }
+
+        function renderModelScanList(models, savedEnabled) {
+            const list = document.getElementById('modelScanList');
+            list.innerHTML = models.map((m, i) => {
+                const checked = savedEnabled === null || savedEnabled.includes(m.id);
+                return `<div class="model-scan-item" draggable="true" data-model-id="${escHtml(m.id)}"
+                            ondragstart="modelDragStart(event)" ondragover="modelDragOver(event)"
+                            ondrop="modelDrop(event)" ondragleave="modelDragLeave(event)">
+                    <span class="model-drag-handle" title="Drag to reorder">☰</span>
+                    <input type="checkbox" ${checked ? 'checked' : ''} style="width:auto;flex-shrink:0;">
+                    <span style="flex:1;font-family:monospace;font-size:12px;">${escHtml(m.id)}</span>
+                    ${m.name !== m.id ? `<span style="color:var(--text-muted);font-size:11px;">${escHtml(m.name)}</span>` : ''}
+                </div>`;
+            }).join('');
+        }
+
+        function modelDragStart(e) {
+            _scanDragSrc = e.currentTarget;
+            e.dataTransfer.effectAllowed = 'move';
+        }
+        function modelDragOver(e) {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+            e.currentTarget.classList.add('drag-over');
+        }
+        function modelDragLeave(e) { e.currentTarget.classList.remove('drag-over'); }
+        function modelDrop(e) {
+            e.preventDefault();
+            const target = e.currentTarget;
+            target.classList.remove('drag-over');
+            if (!_scanDragSrc || _scanDragSrc === target) return;
+            const list = document.getElementById('modelScanList');
+            const items = [...list.children];
+            const srcIdx = items.indexOf(_scanDragSrc);
+            const tgtIdx = items.indexOf(target);
+            if (srcIdx < tgtIdx) list.insertBefore(_scanDragSrc, target.nextSibling);
+            else list.insertBefore(_scanDragSrc, target);
+            _scanDragSrc = null;
+        }
+
+        function selectAllModels(checked) {
+            document.querySelectorAll('#modelScanList input[type=checkbox]').forEach(cb => cb.checked = checked);
+        }
+
+        function collectModelScanResult() {
+            const section = document.getElementById('modelScanSection');
+            if (section.style.display === 'none') return {};
+            const items = document.querySelectorAll('#modelScanList .model-scan-item');
+            if (!items.length) return {};
+            const modelOrder = [...items].map(el => el.dataset.modelId);
+            const enabledModels = [...items].filter(el => el.querySelector('input[type=checkbox]').checked).map(el => el.dataset.modelId);
+            // If all are checked, store null (= all enabled, no restriction)
+            const allChecked = enabledModels.length === modelOrder.length;
+            return { modelOrder, enabledModels: allChecked ? null : enabledModels };
         }
 
         // ── About Modal ──────────────────────────────────────────────────
@@ -2609,6 +2773,9 @@ print(message.content[0].text)</pre>
             const holdDownSeconds  = document.getElementById('edit-holdDownSeconds').value;
             const maxLatencyMs     = document.getElementById('edit-maxLatencyMs').value;
 
+            // Collect model scan results if present
+            const { enabledModels, modelOrder } = collectModelScanResult();
+
             const providerData = {
                 id: editingIndex >= 0 ? config.providers[editingIndex].id :
                     'provider-' + Date.now(),
@@ -2623,7 +2790,9 @@ print(message.content[0].text)</pre>
                 enabled: document.getElementById('edit-enabled').checked,
                 failureThreshold:  failureThreshold !== '' ? parseInt(failureThreshold) : 2,
                 holdDownSeconds:   holdDownSeconds  !== '' ? parseInt(holdDownSeconds)  : 180,
-                maxLatencyMs:      maxLatencyMs     !== '' ? parseInt(maxLatencyMs)     : 1800
+                maxLatencyMs:      maxLatencyMs     !== '' ? parseInt(maxLatencyMs)     : 1800,
+                enabledModels: enabledModels || (editingIndex >= 0 ? config.providers[editingIndex].enabledModels : undefined),
+                modelOrder:    modelOrder    || (editingIndex >= 0 ? config.providers[editingIndex].modelOrder    : undefined),
             };
 
             if (editingIndex >= 0) {
