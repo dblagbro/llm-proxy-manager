@@ -120,12 +120,28 @@ class PricingManager {
    * @returns {number} Cost in USD
    */
   calculateCost(model, inputTokens, outputTokens) {
-    const pricing = this.pricing[model];
+    let pricing = this.pricing[model];
 
     if (!pricing) {
-      // Unknown model - return 0 or estimate based on provider
-      return 0;
+      // Fuzzy match: strip version suffixes like -001, -002, -exp, -preview, date stamps
+      // e.g. gemini-2.0-flash-001 → gemini-2.0-flash
+      const normalized = model
+        .replace(/-\d{3}$/, '')           // trailing -001, -002 etc
+        .replace(/-\d{8}$/, '')           // trailing date -20241022 etc
+        .replace(/-exp$/, '')             // -exp suffix
+        .replace(/-latest$/, '')          // -latest suffix
+        .replace(/-preview.*$/, '')       // -preview-XXXX etc
+        .replace(/-\d{4}-\d{2}-\d{2}$/, ''); // ISO date suffix
+      pricing = this.pricing[normalized];
     }
+
+    if (!pricing) {
+      // Still unknown — find the closest key that the model string starts with
+      const key = Object.keys(this.pricing).find(k => model.startsWith(k) || k.startsWith(model.split('-').slice(0, 3).join('-')));
+      if (key) pricing = this.pricing[key];
+    }
+
+    if (!pricing) return 0;
 
     const inputCost = (inputTokens / 1000000) * pricing.input;
     const outputCost = (outputTokens / 1000000) * pricing.output;

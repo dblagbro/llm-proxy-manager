@@ -1551,7 +1551,7 @@ app.post('/api/smtp/settings', requireAuth, (req, res) => {
     config.smtp.minSeverity = minSeverity || 'WARNING';
     config.smtp.throttle = throttle || 15;
     if (req.body.sessionTimeoutMinutes != null) {
-      config.smtp.sessionTimeoutMinutes = parseInt(req.body.sessionTimeoutMinutes) || 15;
+      config.smtp.sessionTimeoutMinutes = parseInt(req.body.sessionTimeoutMinutes) || 480;
     }
 
     // Save to config
@@ -1983,8 +1983,8 @@ app.post('/api/auth/login', async (req, res) => {
     return res.status(401).json({ error: 'Invalid credentials' });
   }
 
-  // Apply configurable session timeout (default 15 minutes)
-  const sessionTimeoutMinutes = parseInt(config.smtp?.sessionTimeoutMinutes) || 15;
+  // Apply configurable session timeout (default 480 minutes = 8 hours)
+  const sessionTimeoutMinutes = parseInt(config.smtp?.sessionTimeoutMinutes) || 480;
   req.session.cookie.maxAge = sessionTimeoutMinutes * 60 * 1000;
 
   req.session.user = {
