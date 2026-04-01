@@ -2368,13 +2368,13 @@ app.get('/api/analytics', requireAuth, (req, res) => {
     t.successRate = t.requests > 0 ? Math.round((t.successes / t.requests) * 100) : 0;
   }
 
-  // Add providers with existing all-time stats but no time-series data yet
-  for (const [providerId, stats] of Object.entries(config.stats)) {
-    if (!byProvider[providerId] && window === 'all') {
+  // For window=all, use all-time config.stats totals for all providers (authoritative)
+  if (window === 'all') {
+    for (const [providerId, stats] of Object.entries(config.stats)) {
       const provider = config.providers.find(p => p.id === providerId);
       byProvider[providerId] = {
         name: provider?.name || providerId,
-        buckets: [],
+        buckets: analyticsSeries[providerId] || [],
         totals: {
           requests: stats.requests || 0,
           successes: stats.successes || 0,
@@ -2383,7 +2383,7 @@ app.get('/api/analytics', requireAuth, (req, res) => {
           inputTokens: stats.totalInputTokens || 0,
           outputTokens: stats.totalOutputTokens || 0,
           totalLatency: stats.totalLatency || 0,
-          avgLatency: stats.requests > 0 ? Math.round(stats.totalLatency / stats.requests) : 0,
+          avgLatency: stats.requests > 0 ? Math.round((stats.totalLatency || 0) / stats.requests) : 0,
           successRate: stats.requests > 0 ? Math.round((stats.successes / stats.requests) * 100) : 0,
         }
       };
