@@ -737,7 +737,7 @@
     <div class="container">
         <div class="header">
             <div>
-                <h1>🤖 LLM Proxy Manager <span style="font-size: 14px; color: var(--text-muted); font-weight: normal;">v1.4.2</span></h1>
+                <h1>🤖 LLM Proxy Manager <span style="font-size: 14px; color: var(--text-muted); font-weight: normal;">v1.4.3</span></h1>
                 <p class="subtitle">Multi-provider AI proxy with automatic failover and cluster synchronization</p>
             </div>
             <div class="header-actions">
@@ -1214,10 +1214,16 @@ export ANTHROPIC_API_KEY="proxy-handled"</textarea>
                     <div><strong>Source:</strong> <a href="https://github.com/dblagbro/llm-proxy-manager" target="_blank" style="color: var(--primary);">github.com/dblagbro/llm-proxy-manager</a></div>
                 </div>
                 <details style="font-size: 13px; color: var(--text-muted); line-height: 1.6;">
-                    <summary style="cursor: pointer; font-weight: 600; margin-bottom: 8px;">What's new in v1.4.2</summary>
+                    <summary style="cursor: pointer; font-weight: 600; margin-bottom: 8px;">What's new in v1.4.3</summary>
                     <ul style="margin: 8px 0 0 16px;">
-                        <li>🔍 Scan Models — Edit Provider form now has a "Scan Models" button that queries the provider's live API and shows all available models as a draggable, checkboxed list; order and enable/disable state saved per-provider; routing skips providers where the requested model is disabled</li>
+                        <li>📋 Enhanced chat logs — each request now includes source IP, API key name, and request ID in the log header for full attribution</li>
                     </ul>
+                    <details style="margin-top: 8px;">
+                        <summary style="cursor: pointer;">v1.4.2</summary>
+                        <ul style="margin: 8px 0 0 16px;">
+                            <li>🔍 Scan Models — Edit Provider form now has a "Scan Models" button that queries the provider's live API and shows all available models as a draggable, checkboxed list; order and enable/disable state saved per-provider; routing skips providers where the requested model is disabled</li>
+                        </ul>
+                    </details>
                     <details style="margin-top: 8px;">
                         <summary style="cursor: pointer;">v1.4.1</summary>
                         <ul style="margin: 8px 0 0 16px;">
