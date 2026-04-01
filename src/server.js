@@ -80,6 +80,15 @@ function getProviderChatLogger(providerName) {
   return providerChatLoggers[providerName];
 }
 
+function emitChatLogLines(providerName, text) {
+  const safeName = providerName.replace(/[^a-zA-Z0-9_-]/g, '_');
+  if (chatLogSubscribers[safeName] && chatLogSubscribers[safeName].size > 0) {
+    for (const line of text.split('\n')) {
+      notifyChatLogSubscribers(safeName, line);
+    }
+  }
+}
+
 function logChatRequest(providerName, pass, model, messages) {
   const chatLog = getProviderChatLogger(providerName);
   const ts = new Date().toISOString().replace('T', ' ').replace(/\.\d{3}Z$/, ' UTC');
@@ -102,7 +111,9 @@ function logChatRequest(providerName, pass, model, messages) {
     lines.push(`[${role}]\n${text}`);
   }
   lines.push(sep);
-  chatLog.info(lines.join('\n'));
+  const text = lines.join('\n');
+  chatLog.info(text);
+  emitChatLogLines(providerName, text);
 }
 
 function logChatResponse(providerName, model, result, latencyMs, cost) {
@@ -126,13 +137,17 @@ function logChatResponse(providerName, model, result, latencyMs, cost) {
     statsLine,
     sep
   ];
-  chatLog.info(lines.join('\n'));
+  const out = lines.join('\n');
+  chatLog.info(out);
+  emitChatLogLines(providerName, out);
 }
 
 function logChatFailover(providerName, reason, pass) {
   const chatLog = getProviderChatLogger(providerName);
   const ts = new Date().toISOString().replace('T', ' ').replace(/\.\d{3}Z$/, ' UTC');
-  chatLog.info(`[${ts}] ✗ FAILOVER from ${providerName} (pass ${pass}): ${reason}`);
+  const line = `[${ts}] ✗ FAILOVER from ${providerName} (pass ${pass}): ${reason}`;
+  chatLog.info(line);
+  emitChatLogLines(providerName, line);
 }
 
 function logChatStreamResponse(providerName, model, textBuffer, latencyMs, outputTokens) {
@@ -148,11 +163,54 @@ function logChatStreamResponse(providerName, model, textBuffer, latencyMs, outpu
     statsLine,
     sep
   ];
-  chatLog.info(lines.join('\n'));
+  const out = lines.join('\n');
+  chatLog.info(out);
+  emitChatLogLines(providerName, out);
 }
 
 // Ref set after pricingManager is created (avoids forward reference)
 let pricingManagerRef = null;
+
+// ── Analytics: hourly time-series ring buffer (7 days = 168 buckets) ─────────
+const ANALYTICS_BUCKETS = 168; // 7 days of hourly buckets
+const analyticsSeries = {}; // providerId → array of { hour, requests, successes, failures, cost, inputTokens, outputTokens, totalLatency }
+
+function getHourKey() {
+  const d = new Date();
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}-${String(d.getUTCDate()).padStart(2,'0')}T${String(d.getUTCHours()).padStart(2,'0')}`;
+}
+
+function recordAnalyticsTick(providerId, { success, cost, inputTokens, outputTokens, latencyMs }) {
+  if (!analyticsSeries[providerId]) analyticsSeries[providerId] = [];
+  const hour = getHourKey();
+  let bucket = analyticsSeries[providerId].find(b => b.hour === hour);
+  if (!bucket) {
+    bucket = { hour, requests: 0, successes: 0, failures: 0, cost: 0, inputTokens: 0, outputTokens: 0, totalLatency: 0 };
+    analyticsSeries[providerId].push(bucket);
+    // Keep only last ANALYTICS_BUCKETS
+    if (analyticsSeries[providerId].length > ANALYTICS_BUCKETS) {
+      analyticsSeries[providerId].shift();
+    }
+  }
+  bucket.requests++;
+  if (success) bucket.successes++; else bucket.failures++;
+  bucket.cost += cost || 0;
+  bucket.inputTokens += inputTokens || 0;
+  bucket.outputTokens += outputTokens || 0;
+  bucket.totalLatency += latencyMs || 0;
+}
+
+// ── SSE: chat log live-tail subscribers ──────────────────────────────────────
+const chatLogSubscribers = {}; // safeName → Set of res objects
+
+function notifyChatLogSubscribers(safeName, line) {
+  const subs = chatLogSubscribers[safeName];
+  if (!subs || subs.size === 0) return;
+  const data = `data: ${JSON.stringify(line)}\n\n`;
+  for (const res of subs) {
+    try { res.write(data); } catch (_) {}
+  }
+}
 
 // ── Layer 4a: Context Window Auto-Truncation ──────────────────────────────────
 // Trims oldest non-system messages until the estimated token count fits within maxTokens.
@@ -1692,6 +1750,7 @@ app.post('/v1/messages', validateApiKey, async (req, res) => {
       config.stats[provider.id].totalInputTokens  += (usage.input_tokens  || 0);
       config.stats[provider.id].totalOutputTokens += (usage.output_tokens || 0);
       if (USE_SQLITE && sqliteDb) saveStatsRecord(provider.id);
+      recordAnalyticsTick(provider.id, { success: true, cost, inputTokens: usage.input_tokens || 0, outputTokens: usage.output_tokens || 0, latencyMs: latency });
 
       if (req.clientKey) {
         req.clientKey.requests = (req.clientKey.requests || 0) + 1;
@@ -1839,6 +1898,7 @@ app.post('/v1/messages', validateApiKey, async (req, res) => {
         }
 
         if (isStreaming) {
+          recordAnalyticsTick(provider.id, { success: true, cost: 0, inputTokens: 0, outputTokens: 0, latencyMs: latency });
           saveStatsRecord(provider.id);
           // For piped providers (anthropic, grok, ollama, compatible) text isn't captured —
           // streamGemini/streamOpenAI log themselves; log a note for the rest
@@ -1860,6 +1920,7 @@ app.post('/v1/messages', validateApiKey, async (req, res) => {
         config.stats[provider.id].totalCost += cost;
         config.stats[provider.id].totalInputTokens  += (usage.input_tokens  || 0);
         config.stats[provider.id].totalOutputTokens += (usage.output_tokens || 0);
+        recordAnalyticsTick(provider.id, { success: true, cost, inputTokens: usage.input_tokens || 0, outputTokens: usage.output_tokens || 0, latencyMs: latency });
 
         if (USE_SQLITE && sqliteDb) {
           saveStatsRecord(provider.id);
@@ -1885,6 +1946,7 @@ app.post('/v1/messages', validateApiKey, async (req, res) => {
         config.stats[provider.id].failures++;
         config.stats[provider.id].lastError = { message: error.message, timestamp: new Date().toISOString() };
         saveStatsRecord(provider.id);
+        recordAnalyticsTick(provider.id, { success: false, cost: 0, inputTokens: 0, outputTokens: 0, latencyMs: latency });
         lastError = error;
 
         // 4b-4d: Structured error classification — controls hold-down and retry behaviour
@@ -2207,6 +2269,98 @@ app.post('/api/stats/reset', (req, res) => {
     saveConfig();
   }
   res.json({ success: true });
+});
+
+// Analytics — time-series data for dashboard
+app.get('/api/analytics', requireAuth, (req, res) => {
+  const window = req.query.window || '24h'; // 1h, 24h, 7d, all
+  const windowHours = window === '1h' ? 1 : window === '24h' ? 24 : window === '7d' ? 168 : ANALYTICS_BUCKETS;
+
+  // Collect cutoff bucket label
+  const cutoffMs = Date.now() - windowHours * 3600 * 1000;
+  const cutoffHour = (() => {
+    const d = new Date(cutoffMs);
+    return `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}-${String(d.getUTCDate()).padStart(2,'0')}T${String(d.getUTCHours()).padStart(2,'0')}`;
+  })();
+
+  const byProvider = {};
+  for (const [providerId, buckets] of Object.entries(analyticsSeries)) {
+    const provider = config.providers.find(p => p.id === providerId);
+    const filtered = buckets.filter(b => b.hour >= cutoffHour);
+    if (filtered.length === 0) continue;
+    byProvider[providerId] = {
+      name: provider?.name || providerId,
+      buckets: filtered,
+      totals: filtered.reduce((acc, b) => ({
+        requests: acc.requests + b.requests,
+        successes: acc.successes + b.successes,
+        failures: acc.failures + b.failures,
+        cost: acc.cost + b.cost,
+        inputTokens: acc.inputTokens + b.inputTokens,
+        outputTokens: acc.outputTokens + b.outputTokens,
+        totalLatency: acc.totalLatency + b.totalLatency,
+      }), { requests: 0, successes: 0, failures: 0, cost: 0, inputTokens: 0, outputTokens: 0, totalLatency: 0 })
+    };
+    const t = byProvider[providerId].totals;
+    t.avgLatency = t.requests > 0 ? Math.round(t.totalLatency / t.requests) : 0;
+    t.successRate = t.requests > 0 ? Math.round((t.successes / t.requests) * 100) : 0;
+  }
+
+  // Add providers with existing all-time stats but no time-series data yet
+  for (const [providerId, stats] of Object.entries(config.stats)) {
+    if (!byProvider[providerId] && window === 'all') {
+      const provider = config.providers.find(p => p.id === providerId);
+      byProvider[providerId] = {
+        name: provider?.name || providerId,
+        buckets: [],
+        totals: {
+          requests: stats.requests || 0,
+          successes: stats.successes || 0,
+          failures: stats.failures || 0,
+          cost: stats.totalCost || 0,
+          inputTokens: stats.totalInputTokens || 0,
+          outputTokens: stats.totalOutputTokens || 0,
+          totalLatency: stats.totalLatency || 0,
+          avgLatency: stats.requests > 0 ? Math.round(stats.totalLatency / stats.requests) : 0,
+          successRate: stats.requests > 0 ? Math.round((stats.successes / stats.requests) * 100) : 0,
+        }
+      };
+    }
+  }
+
+  const overall = Object.values(byProvider).reduce((acc, p) => ({
+    requests: acc.requests + p.totals.requests,
+    cost: acc.cost + p.totals.cost,
+    inputTokens: acc.inputTokens + p.totals.inputTokens,
+    outputTokens: acc.outputTokens + p.totals.outputTokens,
+    failures: acc.failures + p.totals.failures,
+  }), { requests: 0, cost: 0, inputTokens: 0, outputTokens: 0, failures: 0 });
+
+  res.json({ window, byProvider, overall });
+});
+
+// Chat log SSE live-tail stream
+app.get('/api/chat-log-stream', requireAuth, (req, res) => {
+  const { name } = req.query;
+  if (!name) return res.status(400).json({ error: 'name required' });
+  const safeName = name.replace(/[^a-zA-Z0-9_-]/g, '_');
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no'); // disable nginx buffering
+  res.flushHeaders();
+
+  // Send a heartbeat comment every 15s to keep the connection alive
+  const heartbeat = setInterval(() => { try { res.write(': heartbeat\n\n'); } catch (_) {} }, 15000);
+
+  if (!chatLogSubscribers[safeName]) chatLogSubscribers[safeName] = new Set();
+  chatLogSubscribers[safeName].add(res);
+
+  req.on('close', () => {
+    clearInterval(heartbeat);
+    if (chatLogSubscribers[safeName]) chatLogSubscribers[safeName].delete(res);
+  });
 });
 
 // Activity Log

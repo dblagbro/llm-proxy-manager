@@ -692,13 +692,32 @@
             background: var(--border);
             margin: 4px 0;
         }
+
+        .analytics-tile {
+            background: var(--bg2);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 14px 16px;
+            text-align: center;
+        }
+        .analytics-value {
+            font-size: 22px;
+            font-weight: 700;
+            color: var(--text);
+            line-height: 1.2;
+        }
+        .analytics-label {
+            font-size: 12px;
+            color: var(--text-muted);
+            margin-top: 4px;
+        }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="header">
             <div>
-                <h1>🤖 LLM Proxy Manager <span style="font-size: 14px; color: var(--text-muted); font-weight: normal;">v1.3.9</span></h1>
+                <h1>🤖 LLM Proxy Manager <span style="font-size: 14px; color: var(--text-muted); font-weight: normal;">v1.4.0</span></h1>
                 <p class="subtitle">Multi-provider AI proxy with automatic failover and cluster synchronization</p>
             </div>
             <div class="header-actions">
@@ -738,6 +757,23 @@
         <div class="card">
             <h2>Overall Statistics</h2>
             <div id="overall-stats" class="stats-grid"></div>
+        </div>
+
+        <div class="card" id="analyticsCard">
+            <h2 style="display:flex; justify-content:space-between; align-items:center;">
+                <span>Analytics Dashboard</span>
+                <div style="display:flex; gap:8px; align-items:center;">
+                    <select id="analyticsWindow" onchange="loadAnalytics()" style="font-size:13px; padding:4px 8px; background:var(--bg3); color:var(--text); border:1px solid var(--border); border-radius:4px;">
+                        <option value="1h">Last Hour</option>
+                        <option value="24h" selected>Last 24h</option>
+                        <option value="7d">Last 7 Days</option>
+                        <option value="all">All Time</option>
+                    </select>
+                    <button class="btn btn-small btn-secondary" onclick="loadAnalytics()">↻</button>
+                </div>
+            </h2>
+            <div id="analyticsOverall" style="display:grid; grid-template-columns: repeat(auto-fit, minmax(140px,1fr)); gap:12px; margin-bottom:20px;"></div>
+            <div id="analyticsCharts" style="display:grid; grid-template-columns: repeat(auto-fit, minmax(320px,1fr)); gap:16px;"></div>
         </div>
 
         <div class="card">
@@ -1111,7 +1147,7 @@ export ANTHROPIC_API_KEY="proxy-handled"</textarea>
                 <div style="text-align: center; margin-bottom: 24px;">
                     <div style="font-size: 48px; margin-bottom: 8px;">🤖</div>
                     <div style="font-size: 22px; font-weight: 700; margin-bottom: 4px;">LLM Proxy Manager</div>
-                    <div style="color: var(--text-muted); font-size: 13px;">Version 1.3.9 — April 2026</div>
+                    <div style="color: var(--text-muted); font-size: 13px;">Version 1.4.0 — April 2026</div>
                 </div>
                 <p style="margin-bottom: 16px; line-height: 1.6;">Production-ready multi-provider LLM API proxy with automatic failover, intelligent routing, streaming support, cost tracking, and comprehensive web management.</p>
                 <div style="background: var(--bg3, var(--bg2)); border-radius: 8px; padding: 14px; margin-bottom: 20px; font-size: 13px; line-height: 1.8;">
@@ -1121,12 +1157,19 @@ export ANTHROPIC_API_KEY="proxy-handled"</textarea>
                     <div><strong>Source:</strong> <a href="https://github.com/dblagbro/llm-proxy-manager" target="_blank" style="color: var(--primary);">github.com/dblagbro/llm-proxy-manager</a></div>
                 </div>
                 <details style="font-size: 13px; color: var(--text-muted); line-height: 1.6;">
-                    <summary style="cursor: pointer; font-weight: 600; margin-bottom: 8px;">What's new in v1.3.9</summary>
+                    <summary style="cursor: pointer; font-weight: 600; margin-bottom: 8px;">What's new in v1.4.0</summary>
                     <ul style="margin: 8px 0 0 16px;">
-                        <li>Layer 3 — Conductor/Worker parallel provider racing (opt-in via <code>CONDUCTOR_MODE=true</code>)</li>
-                        <li>Layer 5 — Advanced session management: active session registry, request correlation IDs, session auto-extend</li>
-                        <li>Session management UI in Profile Settings: view active sessions, revoke individual or all others</li>
+                        <li>Analytics Dashboard — per-provider request counts, cost, success rate, avg latency with bar chart sparklines; 1h/24h/7d/all-time windows</li>
+                        <li>Live Stream chat logs — SSE push replaces polling; toggle 🔴 Live Stream in the Log viewer for real-time updates</li>
                     </ul>
+                    <details style="margin-top: 8px;">
+                        <summary style="cursor: pointer;">v1.3.9</summary>
+                        <ul style="margin: 8px 0 0 16px;">
+                            <li>Layer 3 — Conductor/Worker parallel provider racing (opt-in via <code>CONDUCTOR_MODE=true</code>)</li>
+                            <li>Layer 5 — Advanced session management: active session registry, request correlation IDs, session auto-extend</li>
+                            <li>Session management UI in Profile Settings</li>
+                        </ul>
+                    </details>
                     <details style="margin-top: 8px;">
                         <summary style="cursor: pointer;">v1.3.8</summary>
                         <ul style="margin: 8px 0 0 16px;">
@@ -1454,8 +1497,9 @@ print(message.content[0].text)</pre>
                 </select>
                 <button class="btn btn-small btn-secondary" onclick="refreshProviderLog()">↻ Refresh</button>
                 <label style="margin-left: auto; font-size: 13px; display: flex; align-items: center; gap: 6px; cursor: pointer;">
-                    <input type="checkbox" id="providerLogAutoRefresh" onchange="toggleProviderLogAutoRefresh()"> Auto-refresh
+                    <input type="checkbox" id="providerLogLiveStream" onchange="toggleProviderLogLiveStream()"> 🔴 Live Stream
                 </label>
+                <span id="providerLogStreamStatus" style="font-size: 11px; color: var(--text-muted);"></span>
             </div>
             <div style="padding: 12px 20px 16px; flex: 1; min-height: 0; display: flex; flex-direction: column;">
                 <pre id="providerLogContent" style="background: #0d1117; color: #c9d1d9; border-radius: 6px; padding: 14px; font-size: 12px; line-height: 1.6; overflow-y: auto; flex: 1; min-height: 300px; resize: vertical; white-space: pre-wrap; word-break: break-word; font-family: 'Consolas','Monaco','Courier New',monospace; margin: 0;">Loading…</pre>
@@ -2262,13 +2306,14 @@ print(message.content[0].text)</pre>
 
         // ── Provider Chat Log Modal ───────────────────────────────────────
         let _providerLogName = null;
-        let _providerLogTimer = null;
+        let _providerLogESS = null; // EventSource for live stream
 
         async function openProviderLog(providerName) {
             _providerLogName = providerName;
             document.getElementById('providerLogTitle').textContent = `Chat Log — ${providerName}`;
             document.getElementById('providerLogModal').classList.add('show');
-            document.getElementById('providerLogAutoRefresh').checked = false;
+            document.getElementById('providerLogLiveStream').checked = false;
+            document.getElementById('providerLogStreamStatus').textContent = '';
             await refreshProviderLog();
         }
 
@@ -2290,17 +2335,120 @@ print(message.content[0].text)</pre>
             }
         }
 
-        function toggleProviderLogAutoRefresh() {
-            if (_providerLogTimer) { clearInterval(_providerLogTimer); _providerLogTimer = null; }
-            if (document.getElementById('providerLogAutoRefresh').checked) {
-                _providerLogTimer = setInterval(refreshProviderLog, 4000);
-            }
+        function toggleProviderLogLiveStream() {
+            const enabled = document.getElementById('providerLogLiveStream').checked;
+            const statusEl = document.getElementById('providerLogStreamStatus');
+            if (_providerLogESS) { _providerLogESS.close(); _providerLogESS = null; }
+            if (!enabled) { statusEl.textContent = ''; return; }
+
+            statusEl.textContent = 'Connecting…';
+            const el = document.getElementById('providerLogContent');
+            const ess = new EventSource(`./api/chat-log-stream?name=${encodeURIComponent(_providerLogName)}`);
+            _providerLogESS = ess;
+
+            ess.onopen = () => { statusEl.textContent = '● Live'; statusEl.style.color = 'var(--success)'; };
+            ess.onmessage = (e) => {
+                try {
+                    const line = JSON.parse(e.data);
+                    el.textContent += (el.textContent.endsWith('\n') || el.textContent === '' ? '' : '\n') + line;
+                    el.scrollTop = el.scrollHeight;
+                } catch(_) {}
+            };
+            ess.onerror = () => {
+                statusEl.textContent = '○ Disconnected';
+                statusEl.style.color = 'var(--danger)';
+            };
         }
 
         function closeProviderLogModal() {
             document.getElementById('providerLogModal').classList.remove('show');
-            if (_providerLogTimer) { clearInterval(_providerLogTimer); _providerLogTimer = null; }
+            if (_providerLogESS) { _providerLogESS.close(); _providerLogESS = null; }
+            document.getElementById('providerLogLiveStream').checked = false;
+            document.getElementById('providerLogStreamStatus').textContent = '';
             _providerLogName = null;
+        }
+
+        // ── Analytics Dashboard ──────────────────────────────────────────────
+        async function loadAnalytics() {
+            const window_ = document.getElementById('analyticsWindow').value;
+            let data;
+            try {
+                const r = await fetch(`./api/analytics?window=${window_}`);
+                if (!r.ok) return;
+                data = await r.json();
+            } catch(e) { return; }
+
+            // Overall summary tiles
+            const overall = data.overall;
+            const failRate = overall.requests > 0 ? Math.round((overall.failures / overall.requests) * 100) : 0;
+            document.getElementById('analyticsOverall').innerHTML = `
+                <div class="analytics-tile"><div class="analytics-value">${overall.requests.toLocaleString()}</div><div class="analytics-label">Requests</div></div>
+                <div class="analytics-tile"><div class="analytics-value">$${overall.cost.toFixed(4)}</div><div class="analytics-label">Total Cost</div></div>
+                <div class="analytics-tile"><div class="analytics-value">${((overall.inputTokens + overall.outputTokens)/1000).toFixed(1)}K</div><div class="analytics-label">Tokens Used</div></div>
+                <div class="analytics-tile"><div class="analytics-value" style="color:${failRate > 10 ? 'var(--danger)' : 'var(--success)'}">${100 - failRate}%</div><div class="analytics-label">Success Rate</div></div>
+                <div class="analytics-tile"><div class="analytics-value">${Object.keys(data.byProvider).length}</div><div class="analytics-label">Active Providers</div></div>
+            `;
+
+            // Per-provider charts
+            const providers = Object.values(data.byProvider).sort((a,b) => b.totals.requests - a.totals.requests);
+            const chartsEl = document.getElementById('analyticsCharts');
+            if (providers.length === 0) {
+                chartsEl.innerHTML = '<p style="color:var(--text-muted);font-size:13px;padding:8px 0;">No request data yet for this time window.</p>';
+                return;
+            }
+
+            // Bar chart using canvas
+            chartsEl.innerHTML = providers.map((p, i) => `
+                <div style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:14px;">
+                    <div style="font-weight:600;margin-bottom:10px;font-size:14px;">${escHtml(p.name)}</div>
+                    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:12px;margin-bottom:12px;">
+                        <div><span style="color:var(--text-muted)">Requests:</span> <strong>${p.totals.requests}</strong></div>
+                        <div><span style="color:var(--text-muted)">Success:</span> <strong style="color:${p.totals.successRate >= 90 ? 'var(--success)' : p.totals.successRate >= 70 ? 'var(--warning)' : 'var(--danger)'}">${p.totals.successRate}%</strong></div>
+                        <div><span style="color:var(--text-muted)">Avg Latency:</span> <strong>${p.totals.avgLatency}ms</strong></div>
+                        <div><span style="color:var(--text-muted)">Cost:</span> <strong>$${p.totals.cost.toFixed(4)}</strong></div>
+                    </div>
+                    <canvas id="chart-${i}" height="60" style="width:100%;display:block;"></canvas>
+                </div>
+            `).join('');
+
+            // Draw sparkline charts
+            providers.forEach((p, i) => {
+                const canvas = document.getElementById(`chart-${i}`);
+                if (!canvas || p.buckets.length < 2) return;
+                canvas.width = canvas.offsetWidth || 300;
+                drawSparkline(canvas, p.buckets);
+            });
+        }
+
+        function drawSparkline(canvas, buckets) {
+            const ctx = canvas.getContext('2d');
+            const W = canvas.width, H = canvas.height;
+            const isDark = document.documentElement.getAttribute('data-theme') !== 'light';
+            ctx.clearRect(0, 0, W, H);
+
+            const maxReq = Math.max(...buckets.map(b => b.requests), 1);
+            const barW = Math.max(2, Math.floor(W / buckets.length) - 1);
+            const gap = Math.floor(W / buckets.length);
+
+            buckets.forEach((b, i) => {
+                const x = i * gap;
+                const reqH = Math.round((b.requests / maxReq) * (H - 4));
+                const failH = b.requests > 0 ? Math.round((b.failures / b.requests) * reqH) : 0;
+                const succH = reqH - failH;
+
+                // Success portion
+                ctx.fillStyle = isDark ? '#238636' : '#10b981';
+                ctx.fillRect(x, H - reqH, barW, succH);
+                // Failure portion
+                if (failH > 0) {
+                    ctx.fillStyle = isDark ? '#da3633' : '#dc2626';
+                    ctx.fillRect(x, H - reqH + succH, barW, failH);
+                }
+            });
+        }
+
+        function escHtml(s) {
+            return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
         }
 
         function showSettings() {
@@ -3127,6 +3275,9 @@ print(message.content[0].text)</pre>
             loadActivityLog();
         }, 10000);
 
+        // Refresh analytics every 60 seconds
+        setInterval(() => { loadAnalytics(); }, 60000);
+
         // Initial load - check auth, load profile and theme, then load config
         checkAuth().then(authenticated => {
             if (authenticated) {
@@ -3137,6 +3288,7 @@ print(message.content[0].text)</pre>
                 loadUsers();
                 loadApiKeys();
                 loadActivityLog();
+                loadAnalytics();
             }
         });
     </script>

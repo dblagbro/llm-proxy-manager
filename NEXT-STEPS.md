@@ -61,6 +61,6 @@ Active session registry, request correlation IDs, session auto-extend, session m
 
 ### Other Future Ideas
 - Per-client-key rate limiting and quotas
-- Usage analytics dashboard
+- ~~Usage analytics dashboard~~ — DONE in v1.4.0
 - Webhook/alerting notifications
-- Streaming chat log (WebSocket push to UI instead of polling)
+- ~~Streaming chat log (WebSocket push to UI instead of polling)~~ — DONE in v1.4.0 (SSE push)
