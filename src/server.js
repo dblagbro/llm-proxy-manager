@@ -1391,6 +1391,15 @@ app.post('/v1/messages', validateApiKey, async (req, res) => {
 
       } catch (error) {
         const latency = Date.now() - startTime;
+
+        // "Cannot set headers after they are sent" means streaming already succeeded partially
+        // or headers were sent and then something internal failed — don't count as provider failure
+        const isHeadersAlreadySent = error.message && error.message.includes('Cannot set headers after they are sent');
+        if (isHeadersAlreadySent) {
+          logger.warn(`Ignoring post-stream headers error for ${provider.name} — response already delivered`);
+          return;
+        }
+
         config.stats[provider.id].failures++;
         config.stats[provider.id].lastError = { message: error.message, timestamp: new Date().toISOString() };
         saveStatsRecord(provider.id);
@@ -1418,6 +1427,17 @@ app.post('/v1/messages', validateApiKey, async (req, res) => {
           latency: `${latency}ms`,
           stack: error.stack
         });
+
+        // If streaming headers already sent we can't try another provider
+        if (isStreaming && headersSent) {
+          logger.warn(`Streaming already started for ${provider.name} — cannot failover mid-stream`);
+          try {
+            res.write(`event: error\n`);
+            res.write(`data: ${JSON.stringify({ type: 'error', error: { type: 'api_error', message: error.message } })}\n\n`);
+            res.end();
+          } catch (_) {}
+          return;
+        }
 
         logger.info(`Failing over to next provider (pass ${pass})`);
       }
@@ -1530,6 +1550,9 @@ app.post('/api/smtp/settings', requireAuth, (req, res) => {
     config.smtp.subjectPrefix = subjectPrefix || '[LLM Proxy Alert]';
     config.smtp.minSeverity = minSeverity || 'WARNING';
     config.smtp.throttle = throttle || 15;
+    if (req.body.sessionTimeoutMinutes != null) {
+      config.smtp.sessionTimeoutMinutes = parseInt(req.body.sessionTimeoutMinutes) || 15;
+    }
 
     // Save to config
     saveSmtpRecord();
@@ -1960,13 +1983,17 @@ app.post('/api/auth/login', async (req, res) => {
     return res.status(401).json({ error: 'Invalid credentials' });
   }
 
+  // Apply configurable session timeout (default 15 minutes)
+  const sessionTimeoutMinutes = parseInt(config.smtp?.sessionTimeoutMinutes) || 15;
+  req.session.cookie.maxAge = sessionTimeoutMinutes * 60 * 1000;
+
   req.session.user = {
     id: user.id,
     username: user.username,
     role: user.role
   };
 
-  logger.info('User logged in', { username: user.username });
+  logger.info('User logged in', { username: user.username, sessionTimeoutMinutes });
   addActivityLog('success', `User logged in: ${user.username}`, { role: user.role });
   if (!USE_SQLITE) saveConfig();
 
