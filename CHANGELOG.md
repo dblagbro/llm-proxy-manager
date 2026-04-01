@@ -5,6 +5,17 @@ All notable changes to the LLM Proxy Manager project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.8] - 2026-04-01
+
+### Added
+- **Layer 1d — Streaming First-Chunk Buffer**: SSE headers are now held in a buffered proxy until the first data chunk actually arrives from the provider. This means the latency guard (`Promise.race`) can still trigger a failover if the provider accepts the connection but never sends data, fixing the "headers already sent, can't failover" problem for hanging providers.
+- **Layer 4a — Context Window Auto-Truncation**: Before dispatching to each provider, the request messages are checked against that provider's known context window. If the estimated token count exceeds 85% of the window, oldest non-system messages are trimmed until it fits. The system prompt and most recent user turn are always preserved.
+- **Layer 4b-4d — Structured Error Classification**: Every provider error is now classified (`auth_error`, `not_found`, `client_error`, `context_exceeded`, `rate_limit`, `transient`, `timeout`, `network`, `unknown`). Auth errors (401/403), 404s, client errors (400/422), and context-exceeded errors no longer trigger hold-down. Rate limits and transient errors (500/503/529) do. The category is logged in both the structured JSON log and the chat log failover entry.
+- **Streaming Chat Logs for Gemini and OpenAI**: `streamGemini` and `streamOpenAI` now accumulate response text during streaming and write a complete `[ASSISTANT]` entry to the chat log on stream end, including latency and token count.
+
+### Changed
+- Piped streaming providers (Anthropic, Grok, Ollama, OpenAI-compatible) log a `[ASSISTANT] (streamed — text not captured)` note since their streams are piped directly without transformation
+
 ## [1.3.7] - 2026-04-01
 
 ### Added
