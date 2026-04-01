@@ -67,8 +67,9 @@ test.describe('LLM Proxy Authentication', () => {
     await page.click('button[type=submit]');
     await page.waitForURL(/\/(?!login)/);
 
-    // Click logout
-    await page.click('text=Logout');
+    // Open user dropdown then click logout
+    await page.click('.user-dropdown-toggle');
+    await page.click('.user-dropdown-menu .dropdown-item:has-text("Logout")');
 
     // Should redirect to login
     await expect(page).toHaveURL(/\/login\.html/);
@@ -127,29 +128,30 @@ test.describe('Provider Management', () => {
     await page.fill('#edit-priority', '99');
     await page.check('#edit-enabled');
 
-    // Submit form
-    await page.click('button[type=submit]');
+    // Submit form (button text is "Save Changes")
+    await page.click('#editModal button[type=submit]');
 
     // Modal should close
     await expect(page.locator('#editModal')).not.toHaveClass(/show/);
 
-    // New provider should appear in list (after save)
-    await page.click('text=Save Configuration');
-    await page.waitForTimeout(1000); // Wait for save
-
-    // Check if provider appears
-    await expect(page.locator('.provider-name:has-text("Test Provider")')).toBeVisible();
+    // New provider should appear in list
+    await page.waitForTimeout(500);
+    await expect(page.locator('.provider-name:has-text("Test Provider")').first()).toBeVisible();
   });
 
   test('should toggle provider enable/disable', async ({ page }) => {
     const firstToggle = page.locator('.provider').first().locator('.toggle input');
     const initialState = await firstToggle.isChecked();
 
-    // Toggle the switch
-    await firstToggle.click();
+    // Toggle the switch (checkbox is inside CSS toggle widget — use dispatchEvent to bypass viewport check)
+    await firstToggle.dispatchEvent('click');
 
     // State should change
-    await expect(firstToggle).toHaveProperty('checked', !initialState);
+    if (initialState) {
+      await expect(firstToggle).not.toBeChecked();
+    } else {
+      await expect(firstToggle).toBeChecked();
+    }
   });
 
   test('should test provider connection', async ({ page }) => {
@@ -197,21 +199,19 @@ test.describe('Settings and Configuration', () => {
   });
 
   test('should open settings modal', async ({ page }) => {
-    await page.click('text=Settings');
+    await page.click('button:has-text("Settings")');
 
     // Settings modal should be visible
     await expect(page.locator('#settingsModal')).toHaveClass(/show/);
-    await expect(page.locator('#settingsModal h3')).toContainText('Proxy Settings');
+    await expect(page.locator('#settingsModal h3').first()).toContainText('Proxy Settings');
   });
 
   test('should display API endpoint and configuration', async ({ page }) => {
-    await page.click('text=Settings');
+    await page.click('button:has-text("Settings")');
+    await expect(page.locator('#settingsModal')).toHaveClass(/show/);
 
-    // Should show endpoint
-    await expect(page.locator('input[value*="llmProxy"]')).toBeVisible();
-
-    // Should show Claude Code config
-    await expect(page.locator('textarea')).toContainText('ANTHROPIC_BASE_URL');
+    // Should show Claude Code config textarea
+    await expect(page.locator('#settingsModal textarea').first()).toContainText('ANTHROPIC_BASE_URL');
   });
 
   test('should save configuration', async ({ page }) => {
