@@ -48,18 +48,16 @@ Per-provider truncation at 85% of context window. Preserves system prompt and mo
 ### Layer 4b-4d — Structured Error Recovery (DONE in v1.3.8)
 `classifyProviderError()` distinguishes auth/404/client/context/rate-limit/transient/timeout/network errors. Hold-down only applied to transient failures.
 
-### Layer 3 — Conductor/Worker Dual-Session Pattern
-Complex dual-session architecture for parallel provider management.
-High effort, deferred.
+### Layer 3 — Conductor/Worker Dual-Session Pattern (DONE in v1.3.9)
+Parallel provider racing for non-streaming requests via `CONDUCTOR_MODE=true`. Top N providers race simultaneously; first valid response wins. Falls through to sequential on failure.
 
 ### Layer 4 — Context Window Management & Error Recovery
 - 4a: Auto-truncate messages when context window exceeded
 - 4b–4d: Structured error recovery strategies
-Defer with Layer 3.
+(All done in v1.3.8)
 
-### Layer 5 — Advanced Session Management
-Extended session state across requests.
-Defer with Layer 3/4.
+### Layer 5 — Advanced Session Management (DONE in v1.3.9)
+Active session registry, request correlation IDs, session auto-extend, session management API and UI.
 
 ### Other Future Ideas
 - Per-client-key rate limiting and quotas

@@ -698,7 +698,7 @@
     <div class="container">
         <div class="header">
             <div>
-                <h1>🤖 LLM Proxy Manager <span style="font-size: 14px; color: var(--text-muted); font-weight: normal;">v1.3.8</span></h1>
+                <h1>🤖 LLM Proxy Manager <span style="font-size: 14px; color: var(--text-muted); font-weight: normal;">v1.3.9</span></h1>
                 <p class="subtitle">Multi-provider AI proxy with automatic failover and cluster synchronization</p>
             </div>
             <div class="header-actions">
@@ -1111,7 +1111,7 @@ export ANTHROPIC_API_KEY="proxy-handled"</textarea>
                 <div style="text-align: center; margin-bottom: 24px;">
                     <div style="font-size: 48px; margin-bottom: 8px;">🤖</div>
                     <div style="font-size: 22px; font-weight: 700; margin-bottom: 4px;">LLM Proxy Manager</div>
-                    <div style="color: var(--text-muted); font-size: 13px;">Version 1.3.8 — April 2026</div>
+                    <div style="color: var(--text-muted); font-size: 13px;">Version 1.3.9 — April 2026</div>
                 </div>
                 <p style="margin-bottom: 16px; line-height: 1.6;">Production-ready multi-provider LLM API proxy with automatic failover, intelligent routing, streaming support, cost tracking, and comprehensive web management.</p>
                 <div style="background: var(--bg3, var(--bg2)); border-radius: 8px; padding: 14px; margin-bottom: 20px; font-size: 13px; line-height: 1.8;">
@@ -1121,13 +1121,21 @@ export ANTHROPIC_API_KEY="proxy-handled"</textarea>
                     <div><strong>Source:</strong> <a href="https://github.com/dblagbro/llm-proxy-manager" target="_blank" style="color: var(--primary);">github.com/dblagbro/llm-proxy-manager</a></div>
                 </div>
                 <details style="font-size: 13px; color: var(--text-muted); line-height: 1.6;">
-                    <summary style="cursor: pointer; font-weight: 600; margin-bottom: 8px;">What's new in v1.3.8</summary>
+                    <summary style="cursor: pointer; font-weight: 600; margin-bottom: 8px;">What's new in v1.3.9</summary>
                     <ul style="margin: 8px 0 0 16px;">
-                        <li>Layer 1d — Streaming first-chunk buffer (failover before headers commit)</li>
-                        <li>Layer 4a — Context window auto-truncation per provider</li>
-                        <li>Layer 4b-4d — Structured error classification (auth, context, rate limit, transient)</li>
-                        <li>Streaming chat logs now captured for Gemini and OpenAI providers</li>
+                        <li>Layer 3 — Conductor/Worker parallel provider racing (opt-in via <code>CONDUCTOR_MODE=true</code>)</li>
+                        <li>Layer 5 — Advanced session management: active session registry, request correlation IDs, session auto-extend</li>
+                        <li>Session management UI in Profile Settings: view active sessions, revoke individual or all others</li>
                     </ul>
+                    <details style="margin-top: 8px;">
+                        <summary style="cursor: pointer;">v1.3.8</summary>
+                        <ul style="margin: 8px 0 0 16px;">
+                            <li>Layer 1d — Streaming first-chunk buffer (failover before headers commit)</li>
+                            <li>Layer 4a — Context window auto-truncation per provider</li>
+                            <li>Layer 4b-4d — Structured error classification (auth, context, rate limit, transient)</li>
+                            <li>Streaming chat logs now captured for Gemini and OpenAI providers</li>
+                        </ul>
+                    </details>
                     <details style="margin-top: 8px;">
                         <summary style="cursor: pointer;">v1.3.7</summary>
                         <ul style="margin: 8px 0 0 16px;">
@@ -1565,6 +1573,14 @@ print(message.content[0].text)</pre>
                     <button type="submit" class="btn btn-danger">Change Password</button>
                 </div>
             </form>
+            <hr style="margin: 25px 0; border: none; border-top: 1px solid var(--border);">
+            <h3 style="margin-bottom: 10px; font-size: 16px;">Active Sessions</h3>
+            <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 12px;">Sessions where you are currently logged in.</p>
+            <div id="sessionsList" style="margin-bottom: 12px; max-height: 220px; overflow-y: auto; font-size: 13px;"></div>
+            <div class="form-actions" style="margin-top: 0;">
+                <button type="button" class="btn btn-secondary" onclick="revokeAllOtherSessions()">Revoke All Other Sessions</button>
+                <button type="button" class="btn btn-secondary" onclick="loadSessions()">↻ Refresh</button>
+            </div>
         </div>
     </div>
 
@@ -1605,6 +1621,46 @@ print(message.content[0].text)</pre>
             document.getElementById('theme-dark').checked = theme === 'dark';
             document.getElementById('theme-light').checked = theme === 'light';
             document.getElementById('profileModal').classList.add('show');
+            loadSessions();
+        }
+
+        async function loadSessions() {
+            const el = document.getElementById('sessionsList');
+            try {
+                const resp = await fetch('./api/sessions');
+                if (!resp.ok) { el.innerHTML = '<em style="color:var(--text-muted)">Unable to load sessions.</em>'; return; }
+                const sessions = await resp.json();
+                if (!sessions.length) { el.innerHTML = '<em style="color:var(--text-muted)">No active sessions found.</em>'; return; }
+                el.innerHTML = sessions.map(s => {
+                    const isCurrent = s.isCurrent;
+                    const loginTime = new Date(s.loginTime).toLocaleString();
+                    const lastActive = new Date(s.lastActive).toLocaleString();
+                    return `<div style="border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin-bottom:8px;background:${isCurrent ? 'var(--bg-tertiary)' : 'var(--bg-secondary)'}">
+                        <div style="display:flex;justify-content:space-between;align-items:flex-start;">
+                            <div>
+                                <strong style="font-size:12px;">${isCurrent ? '✅ This session' : '🖥 Session'}</strong>
+                                <div style="color:var(--text-muted);font-size:11px;margin-top:3px;">IP: ${s.ip} &nbsp;·&nbsp; ${s.userAgent.substring(0,60)}${s.userAgent.length>60?'…':''}</div>
+                                <div style="color:var(--text-muted);font-size:11px;">Login: ${loginTime} &nbsp;·&nbsp; Active: ${lastActive}</div>
+                            </div>
+                            ${isCurrent ? '' : `<button class="btn btn-danger" style="font-size:11px;padding:4px 10px;margin-left:10px;flex-shrink:0;" onclick="revokeSession('${s.sessionId}')">Revoke</button>`}
+                        </div>
+                    </div>`;
+                }).join('');
+            } catch(e) {
+                el.innerHTML = '<em style="color:var(--text-muted)">Error loading sessions.</em>';
+            }
+        }
+
+        async function revokeSession(sessionId) {
+            if (!confirm('Revoke this session?')) return;
+            await fetch(`./api/sessions/${sessionId}`, { method: 'DELETE' });
+            loadSessions();
+        }
+
+        async function revokeAllOtherSessions() {
+            if (!confirm('Revoke all other sessions? You will remain logged in here.')) return;
+            await fetch('./api/sessions', { method: 'DELETE' });
+            loadSessions();
         }
 
         function closeProfileModal() {
