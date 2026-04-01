@@ -417,6 +417,11 @@
             animation: slideUp 0.3s;
         }
 
+        #providerLogModal .modal-content {
+            padding: 0;
+            overflow-y: hidden;
+        }
+
         @keyframes fadeIn {
             from { opacity: 0; }
             to { opacity: 1; }
@@ -1033,12 +1038,12 @@ export ANTHROPIC_API_KEY="proxy-handled"</textarea>
 
     <!-- Show API Key Modal -->
     <div id="providerLogModal" class="modal">
-        <div class="modal-content" style="max-width: 860px; width: 95vw;">
-            <div class="modal-header">
+        <div class="modal-content" style="max-width: 1100px; width: 95vw; max-height: 92vh; display: flex; flex-direction: column;">
+            <div class="modal-header" style="flex-shrink: 0;">
                 <h3 id="providerLogTitle">Chat Log</h3>
                 <button class="close-btn" onclick="closeProviderLogModal()">&times;</button>
             </div>
-            <div style="padding: 16px 20px 8px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+            <div style="padding: 12px 20px 8px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; flex-shrink: 0; border-bottom: 1px solid var(--border-color);">
                 <label style="font-size: 13px; color: var(--text-muted);">Show last</label>
                 <select id="providerLogLines" onchange="refreshProviderLog()" style="width: auto; padding: 4px 8px; font-size: 13px;">
                     <option value="100">100 lines</option>
@@ -1052,8 +1057,8 @@ export ANTHROPIC_API_KEY="proxy-handled"</textarea>
                     <input type="checkbox" id="providerLogAutoRefresh" onchange="toggleProviderLogAutoRefresh()"> Auto-refresh
                 </label>
             </div>
-            <div style="padding: 0 20px 20px;">
-                <pre id="providerLogContent" style="background: #0d1117; color: #c9d1d9; border-radius: 6px; padding: 14px; font-size: 12px; line-height: 1.6; overflow-y: auto; max-height: 60vh; white-space: pre-wrap; word-break: break-word; font-family: 'Consolas','Monaco','Courier New',monospace;">Loading…</pre>
+            <div style="padding: 12px 20px 16px; flex: 1; min-height: 0; display: flex; flex-direction: column;">
+                <pre id="providerLogContent" style="background: #0d1117; color: #c9d1d9; border-radius: 6px; padding: 14px; font-size: 12px; line-height: 1.6; overflow-y: auto; flex: 1; min-height: 300px; resize: vertical; white-space: pre-wrap; word-break: break-word; font-family: 'Consolas','Monaco','Courier New',monospace; margin: 0;">Loading…</pre>
             </div>
         </div>
     </div>
@@ -1804,7 +1809,7 @@ export ANTHROPIC_API_KEY="proxy-handled"</textarea>
             const lines = document.getElementById('providerLogLines').value;
             const el = document.getElementById('providerLogContent');
             try {
-                const r = await fetch(`/api/provider-chat-log?name=${encodeURIComponent(_providerLogName)}&lines=${lines}`);
+                const r = await fetch(`./api/provider-chat-log?name=${encodeURIComponent(_providerLogName)}&lines=${lines}`);
                 const data = await r.json();
                 if (!data.exists) {
                     el.textContent = 'No chat log found for this provider yet. Make a request through it first.';
