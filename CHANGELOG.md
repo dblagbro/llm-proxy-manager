@@ -5,6 +5,15 @@ All notable changes to the LLM Proxy Manager project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-04-01
+
+### Added
+- **Analytics Dashboard**: New card on the main page showing total requests, cost, tokens, and success rate summary tiles. Per-provider panels display request count, success rate, avg latency, and cost with bar-chart sparklines colored by success/failure ratio. Time-window selector: Last Hour, Last 24h, Last 7 Days, All Time. Data comes from an in-memory hourly ring buffer (168 buckets = 7 days) updated on every request completion.
+- **Live Stream Chat Logs**: The per-provider chat log viewer now has a 🔴 Live Stream toggle. When enabled, new log entries are pushed to the browser in real-time via Server-Sent Events instead of polling. The connection shows a live status indicator (● Live / ○ Disconnected).
+
+### Changed
+- Chat log modal auto-refresh checkbox replaced with Live Stream SSE toggle
+
 ## [1.3.9] - 2026-04-01
 
 ### Added
