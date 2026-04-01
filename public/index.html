@@ -631,7 +631,7 @@
     <div class="container">
         <div class="header">
             <div>
-                <h1>🤖 LLM Proxy Manager <span style="font-size: 14px; color: var(--text-muted); font-weight: normal;">v1.3.3</span></h1>
+                <h1>🤖 LLM Proxy Manager <span style="font-size: 14px; color: var(--text-muted); font-weight: normal;">v1.3.4</span></h1>
                 <p class="subtitle">Multi-provider AI proxy with automatic failover and cluster synchronization</p>
             </div>
             <div class="header-actions">
@@ -890,6 +890,12 @@ export ANTHROPIC_API_KEY="proxy-handled"</textarea>
                 <div class="form-actions" style="margin-top: 15px;">
                     <button type="button" class="btn btn-secondary" onclick="sendTestEmail()">📧 Send Test Email</button>
                 </div>
+            </div>
+
+            <div class="form-group" style="margin-top: 20px;">
+                <label>Session Timeout (minutes)</label>
+                <input type="number" id="session-timeout-minutes" value="15" min="1" max="1440" placeholder="15">
+                <small style="color: var(--text-muted);">How long before an inactive login session expires (default: 15 minutes)</small>
             </div>
 
             <div class="form-actions" style="margin-top: 30px;">
@@ -1542,16 +1548,22 @@ export ANTHROPIC_API_KEY="proxy-handled"</textarea>
 
                         <div id="circuit-${provider.id}" style="margin-top: 12px; padding: 10px; border-radius: 6px; background: var(--bg3);"></div>
 
-                        ${stats.lastSuccess || stats.lastError ? `
-                            <div class="test-result ${stats.lastSuccess && (!stats.lastError || new Date(stats.lastSuccess.timestamp) > new Date(stats.lastError.timestamp)) ? 'success' : 'error'}" style="margin-top: 15px;">
-                                <strong>Last Status:</strong> ${
-                                    stats.lastSuccess && (!stats.lastError || new Date(stats.lastSuccess.timestamp) > new Date(stats.lastError.timestamp))
-                                        ? `✓ Success`
-                                        : `✗ ${stats.lastError.message}`
-                                }<br>
-                                <small>${new Date((stats.lastSuccess && (!stats.lastError || new Date(stats.lastSuccess.timestamp) > new Date(stats.lastError.timestamp)) ? stats.lastSuccess : stats.lastError).timestamp).toLocaleString()}</small>
-                            </div>
-                        ` : ''}
+                        ${(() => {
+                            const hasSuccess = stats.lastSuccess && stats.lastSuccess.timestamp;
+                            const hasError = stats.lastError && stats.lastError.timestamp;
+                            if (!hasSuccess && !hasError) return '';
+                            const successNewer = hasSuccess && (!hasError || new Date(stats.lastSuccess.timestamp) > new Date(stats.lastError.timestamp));
+                            const errorNewer = hasError && (!hasSuccess || new Date(stats.lastError.timestamp) > new Date(stats.lastSuccess.timestamp));
+                            if (successNewer) {
+                                return `<div class="test-result success" style="margin-top: 15px;"><strong>Last Status:</strong> ✓ Success<br><small>${new Date(stats.lastSuccess.timestamp).toLocaleString()}</small></div>`;
+                            } else if (errorNewer && !hasSuccess) {
+                                // Only show red if there has never been a success this session
+                                return `<div class="test-result error" style="margin-top: 15px;"><strong>Last Status:</strong> ✗ ${stats.lastError.message}<br><small>${new Date(stats.lastError.timestamp).toLocaleString()}</small></div>`;
+                            } else {
+                                // Error is newer but there was a prior success — show neutral
+                                return `<div class="test-result" style="margin-top: 15px; border-color: var(--text-muted); background: var(--bg3);"><strong>Last Status:</strong> ⚠ ${stats.lastError.message}<br><small>${new Date(stats.lastError.timestamp).toLocaleString()}</small></div>`;
+                            }
+                        })()}
                     </div>
                 `;
             }).join('');
@@ -1786,6 +1798,7 @@ export ANTHROPIC_API_KEY="proxy-handled"</textarea>
                     document.getElementById('smtp-subject-prefix').value = settings.subjectPrefix || '[LLM Proxy Alert]';
                     document.getElementById('smtp-min-severity').value = settings.minSeverity || 'WARNING';
                     document.getElementById('smtp-throttle').value = settings.throttle || 15;
+                    document.getElementById('session-timeout-minutes').value = settings.sessionTimeoutMinutes || 15;
                     toggleSmtpFields();
                 }
             } catch (error) {
@@ -1805,7 +1818,8 @@ export ANTHROPIC_API_KEY="proxy-handled"</textarea>
                 to: document.getElementById('smtp-to').value,
                 subjectPrefix: document.getElementById('smtp-subject-prefix').value,
                 minSeverity: document.getElementById('smtp-min-severity').value,
-                throttle: parseInt(document.getElementById('smtp-throttle').value)
+                throttle: parseInt(document.getElementById('smtp-throttle').value),
+                sessionTimeoutMinutes: parseInt(document.getElementById('session-timeout-minutes').value) || 15
             };
 
             try {
