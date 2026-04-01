@@ -95,7 +95,7 @@ function logChatRequest(providerName, pass, model, messages, req) {
   const sep = '─'.repeat(60);
   const lines = [`\n[${ts}] ── REQUEST → ${providerName} (pass ${pass}, model: ${model}) ──`, sep];
   if (req) {
-    const ip = req.headers['x-real-ip'] || req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.ip || 'unknown';
+    const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.headers['x-real-ip'] || req.ip || 'unknown';
     const keyName = req.clientKey?.name || '(unnamed key)';
     const reqId = req.requestId || '-';
     lines.push(`  source-ip: ${ip}  key: "${keyName}"  req-id: ${reqId}`);
@@ -579,7 +579,7 @@ async function initializeUsers() {
 // API Key validation middleware
 function validateApiKey(req, res, next) {
   // Exempt certain paths from API key validation
-  const exemptPaths = ['/health', '/api/config', '/api/stats', '/api/client-keys', '/api/test-provider', '/'];
+  const exemptPaths = ['/health', '/api/config', '/api/stats', '/api/client-keys', '/api/test-provider', '/api/scan-provider-models', '/'];
   const isExempt = exemptPaths.some(path => req.path === path || req.path.startsWith(path));
 
   if (isExempt) {
@@ -2236,11 +2236,14 @@ app.post('/api/smtp/test', requireAuth, async (req, res) => {
 
 // Get config
 app.get('/api/config', (req, res) => {
+  const isLoggedIn = !!(req.session && req.session.user);
   const safeConfig = {
     ...config,
     providers: config.providers.map(p => ({
       ...p,
-      apiKey: p.apiKey ? `${p.apiKey.slice(0, 10)}...${p.apiKey.slice(-4)}` : 'NOT SET'
+      apiKey: isLoggedIn
+        ? (p.apiKey || '')
+        : (p.apiKey ? `${p.apiKey.slice(0, 10)}...${p.apiKey.slice(-4)}` : 'NOT SET')
     }))
   };
   res.json(safeConfig);
@@ -2556,7 +2559,7 @@ app.get('/api/provider-chat-log', requireAuth, (req, res) => {
 });
 
 // Scan live models from a provider
-app.post('/api/scan-provider-models', requireAuth, async (req, res) => {
+app.post('/api/scan-provider-models', async (req, res) => {
   let { providerId, type, apiKey, projectId, location, baseUrl } = req.body;
 
   if (providerId) {
