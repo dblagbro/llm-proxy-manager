@@ -422,6 +422,68 @@
             overflow-y: hidden;
         }
 
+        #helpModal .modal-content {
+            padding: 0;
+            overflow-y: hidden;
+        }
+
+        #aboutModal .modal-content code {
+            background: var(--bg3, #2a2a3a);
+            padding: 1px 5px;
+            border-radius: 3px;
+            font-size: 12px;
+        }
+
+        .help-tab {
+            background: none;
+            border: none;
+            border-bottom: 3px solid transparent;
+            padding: 12px 16px;
+            font-size: 13px;
+            font-weight: 500;
+            color: var(--text-muted);
+            cursor: pointer;
+            white-space: nowrap;
+            transition: color 0.15s, border-color 0.15s;
+        }
+
+        .help-tab:hover {
+            color: var(--text);
+        }
+
+        .help-tab.active {
+            color: var(--primary);
+            border-bottom-color: var(--primary);
+        }
+
+        .help-pane h4 {
+            font-size: 15px;
+            font-weight: 600;
+            margin: 0 0 10px;
+            color: var(--text);
+        }
+
+        .help-pane p, .help-pane li {
+            font-size: 13px;
+            line-height: 1.7;
+            color: var(--text-secondary, var(--text));
+        }
+
+        .help-pane pre {
+            white-space: pre-wrap;
+            word-break: break-all;
+            font-family: 'Consolas','Monaco','Courier New',monospace;
+        }
+
+        .help-pane table {
+            margin-bottom: 8px;
+        }
+
+        .help-pane td, .help-pane th {
+            font-size: 13px;
+            border: 1px solid var(--border);
+        }
+
         @keyframes fadeIn {
             from { opacity: 0; }
             to { opacity: 1; }
@@ -640,6 +702,8 @@
                 <p class="subtitle">Multi-provider AI proxy with automatic failover and cluster synchronization</p>
             </div>
             <div class="header-actions">
+                <button class="btn btn-secondary" onclick="showHelp()">❓ Help</button>
+                <button class="btn btn-secondary" onclick="showAbout()">ℹ️ About</button>
                 <button class="btn btn-secondary" onclick="showSettings()">⚙️ Settings</button>
                 <button class="btn btn-primary" onclick="addProvider()">➕ Add Provider</button>
                 <div class="user-dropdown">
@@ -1033,6 +1097,325 @@ export ANTHROPIC_API_KEY="proxy-handled"</textarea>
                     <button type="submit" class="btn btn-primary">Generate Key</button>
                 </div>
             </form>
+        </div>
+    </div>
+
+    <!-- About Modal -->
+    <div id="aboutModal" class="modal">
+        <div class="modal-content" style="max-width: 560px;">
+            <div class="modal-header">
+                <h3>About LLM Proxy Manager</h3>
+                <button class="close-btn" onclick="closeAbout()">&times;</button>
+            </div>
+            <div style="padding: 24px;">
+                <div style="text-align: center; margin-bottom: 24px;">
+                    <div style="font-size: 48px; margin-bottom: 8px;">🤖</div>
+                    <div style="font-size: 22px; font-weight: 700; margin-bottom: 4px;">LLM Proxy Manager</div>
+                    <div style="color: var(--text-muted); font-size: 13px;">Version 1.3.7 — April 2026</div>
+                </div>
+                <p style="margin-bottom: 16px; line-height: 1.6;">Production-ready multi-provider LLM API proxy with automatic failover, intelligent routing, streaming support, cost tracking, and comprehensive web management.</p>
+                <div style="background: var(--bg3, var(--bg2)); border-radius: 8px; padding: 14px; margin-bottom: 20px; font-size: 13px; line-height: 1.8;">
+                    <div><strong>Providers:</strong> Anthropic, Google Gemini, Vertex AI, OpenAI, Grok, Ollama, OpenAI-compatible</div>
+                    <div><strong>License:</strong> MIT</div>
+                    <div><strong>Docker Image:</strong> <code>dblagbro/llm-proxy-manager</code></div>
+                    <div><strong>Source:</strong> <a href="https://github.com/dblagbro/llm-proxy-manager" target="_blank" style="color: var(--primary);">github.com/dblagbro/llm-proxy-manager</a></div>
+                </div>
+                <details style="font-size: 13px; color: var(--text-muted); line-height: 1.6;">
+                    <summary style="cursor: pointer; font-weight: 600; margin-bottom: 8px;">What's new in v1.3.7</summary>
+                    <ul style="margin: 8px 0 0 16px;">
+                        <li>Per-provider human-readable chat logs</li>
+                        <li>📋 Log viewer per provider in the Web UI</li>
+                        <li>Auto-refresh support in log viewer</li>
+                    </ul>
+                    <details style="margin-top: 8px;">
+                        <summary style="cursor: pointer;">v1.3.6</summary>
+                        <ul style="margin: 8px 0 0 16px;">
+                            <li>Layer 1c — Gemini turn validator</li>
+                            <li>Layer 1e — XML sentinel (bad output failover)</li>
+                            <li>Layer 2 — Capability router (tool calls, vision, context)</li>
+                            <li>maxLatencyMs default changed to 1800ms</li>
+                        </ul>
+                    </details>
+                    <details style="margin-top: 8px;">
+                        <summary style="cursor: pointer;">v1.3.5</summary>
+                        <ul style="margin: 8px 0 0 16px;">
+                            <li>Fixed cost tracking (result scoping bug — all costs were $0)</li>
+                            <li>Fuzzy model name matching in pricing engine</li>
+                            <li>SESSION_SECRET env var support</li>
+                            <li>Session timeout configurable (default 8h)</li>
+                        </ul>
+                    </details>
+                </details>
+                <div style="text-align: center; margin-top: 20px;">
+                    <button class="btn btn-primary" onclick="closeAbout()">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Help / Online Manual Modal -->
+    <div id="helpModal" class="modal">
+        <div class="modal-content" style="max-width: 860px; width: 95vw; max-height: 92vh; display: flex; flex-direction: column;">
+            <div class="modal-header" style="flex-shrink: 0;">
+                <h3>Help &amp; User Guide</h3>
+                <button class="close-btn" onclick="closeHelp()">&times;</button>
+            </div>
+            <!-- Tab bar -->
+            <div id="helpTabs" style="display: flex; gap: 0; border-bottom: 1px solid var(--border); flex-shrink: 0; overflow-x: auto;">
+                <button class="help-tab active" onclick="switchHelpTab('overview')">Overview</button>
+                <button class="help-tab" onclick="switchHelpTab('providers')">Providers</button>
+                <button class="help-tab" onclick="switchHelpTab('routing')">Routing</button>
+                <button class="help-tab" onclick="switchHelpTab('logs')">Logs</button>
+                <button class="help-tab" onclick="switchHelpTab('keys')">API Keys</button>
+                <button class="help-tab" onclick="switchHelpTab('settings')">Settings</button>
+                <button class="help-tab" onclick="switchHelpTab('cluster')">Cluster</button>
+                <button class="help-tab" onclick="switchHelpTab('cli')">CLI Setup</button>
+            </div>
+            <!-- Tab content area -->
+            <div style="overflow-y: auto; flex: 1; padding: 24px 28px;">
+
+                <div id="help-overview" class="help-pane">
+                    <h4>What is LLM Proxy Manager?</h4>
+                    <p>LLM Proxy Manager is a production-ready API proxy that sits between your AI applications and multiple LLM providers. It presents a single Anthropic-compatible API endpoint while automatically routing requests to the best available provider, handling failover, tracking costs, and giving you full visibility into every conversation.</p>
+                    <h4 style="margin-top:20px;">How it works</h4>
+                    <ol style="line-height:2;">
+                        <li>Your app sends a standard Anthropic <code>POST /v1/messages</code> request to the proxy.</li>
+                        <li>The proxy selects the highest-priority enabled provider that can handle the request.</li>
+                        <li>It translates the request into that provider's native format (Gemini, OpenAI, etc.) and sends it.</li>
+                        <li>The response is translated back into Anthropic format and returned to your app.</li>
+                        <li>If a provider fails, the proxy automatically tries the next one — up to 3 passes.</li>
+                    </ol>
+                    <h4 style="margin-top:20px;">Quick navigation</h4>
+                    <table style="width:100%; border-collapse:collapse; font-size:13px;">
+                        <tr style="background:var(--bg3,var(--bg2))"><th style="padding:8px;text-align:left;">I want to…</th><th style="padding:8px;text-align:left;">Go to tab</th></tr>
+                        <tr><td style="padding:8px;">Add or configure a provider</td><td style="padding:8px;">Providers</td></tr>
+                        <tr style="background:var(--bg3,var(--bg2))"><td style="padding:8px;">Understand failover and timeouts</td><td style="padding:8px;">Routing</td></tr>
+                        <tr><td style="padding:8px;">Read conversation logs</td><td style="padding:8px;">Logs</td></tr>
+                        <tr style="background:var(--bg3,var(--bg2))"><td style="padding:8px;">Create API keys for my apps</td><td style="padding:8px;">API Keys</td></tr>
+                        <tr><td style="padding:8px;">Configure SMTP / session timeout</td><td style="padding:8px;">Settings</td></tr>
+                        <tr style="background:var(--bg3,var(--bg2))"><td style="padding:8px;">Set up a multi-node cluster</td><td style="padding:8px;">Cluster</td></tr>
+                        <tr><td style="padding:8px;">Point Claude Code CLI at this proxy</td><td style="padding:8px;">CLI Setup</td></tr>
+                    </table>
+                </div>
+
+                <div id="help-providers" class="help-pane" style="display:none;">
+                    <h4>Provider Panels</h4>
+                    <p>Each configured provider appears as a card on the main page. From left to right the controls are:</p>
+                    <ul style="line-height:2;">
+                        <li><strong>⋮⋮ Drag handle</strong> — drag to reorder; lower position = higher priority</li>
+                        <li><strong>Status dot</strong> — green = enabled, grey = disabled</li>
+                        <li><strong>Priority badge</strong> — numerical priority (1 = tried first)</li>
+                        <li><strong>🧪 Test</strong> — sends a minimal test request and shows latency / result</li>
+                        <li><strong>📋 Log</strong> — opens the chat log viewer for this provider (see Logs tab)</li>
+                        <li><strong>✏️ Edit</strong> — edit name, type, API key, model, max latency, and more</li>
+                        <li><strong>🗑️ Delete</strong> — permanently removes the provider</li>
+                        <li><strong>Toggle</strong> — enable / disable without deleting</li>
+                    </ul>
+                    <h4 style="margin-top:20px;">Supported Provider Types</h4>
+                    <table style="width:100%; border-collapse:collapse; font-size:13px;">
+                        <tr style="background:var(--bg3,var(--bg2))"><th style="padding:8px;text-align:left;">Type</th><th style="padding:8px;text-align:left;">Notes</th></tr>
+                        <tr><td style="padding:8px;"><code>anthropic</code></td><td style="padding:8px;">Direct Anthropic API. Supports tool calls, vision, streaming.</td></tr>
+                        <tr style="background:var(--bg3,var(--bg2))"><td style="padding:8px;"><code>google</code></td><td style="padding:8px;">Google Gemini via generativelanguage.googleapis.com. Requires API key.</td></tr>
+                        <tr><td style="padding:8px;"><code>vertex</code></td><td style="padding:8px;">Google Vertex AI. Requires Project ID and Location in addition to API key.</td></tr>
+                        <tr style="background:var(--bg3,var(--bg2))"><td style="padding:8px;"><code>openai</code></td><td style="padding:8px;">OpenAI GPT models. Supports tool calls, vision, streaming.</td></tr>
+                        <tr><td style="padding:8px;"><code>grok</code></td><td style="padding:8px;">xAI Grok models. Tool calls supported; vision not supported.</td></tr>
+                        <tr style="background:var(--bg3,var(--bg2))"><td style="padding:8px;"><code>ollama</code></td><td style="padding:8px;">Local Ollama instance. Free; no tool calls or vision. Set Base URL to your Ollama host.</td></tr>
+                        <tr><td style="padding:8px;"><code>openai-compatible</code></td><td style="padding:8px;">Any OpenAI-compatible API (LM Studio, Together AI, etc.). Set Base URL.</td></tr>
+                    </table>
+                    <h4 style="margin-top:20px;">Adding a Provider</h4>
+                    <ol style="line-height:2;">
+                        <li>Click <strong>➕ Add Provider</strong> in the top-right header.</li>
+                        <li>Choose the provider type — the form adjusts to show the right fields.</li>
+                        <li>Enter the API key, model name, and optional max latency.</li>
+                        <li>Click <strong>Save Provider</strong>. The provider is enabled immediately.</li>
+                        <li>Drag it to the correct priority position, or set the priority number directly.</li>
+                    </ol>
+                </div>
+
+                <div id="help-routing" class="help-pane" style="display:none;">
+                    <h4>How Requests Are Routed</h4>
+                    <p>Every incoming request goes through a multi-stage pipeline before reaching a provider:</p>
+                    <ol style="line-height:2.2;">
+                        <li><strong>Hold-down filter</strong> — providers that have recently failed are skipped until their cooldown expires (visible in the Monitoring section).</li>
+                        <li><strong>Capability router</strong> — providers that can't satisfy the request are excluded:
+                            <ul style="margin-top:4px; line-height:1.8;">
+                                <li>Requests with <code>tools</code> → skips providers without tool-calling support (e.g. Ollama)</li>
+                                <li>Requests with image content → skips providers without vision (e.g. Grok, Ollama)</li>
+                                <li>Very long context → skips providers with insufficient context windows</li>
+                            </ul>
+                        </li>
+                        <li><strong>3-pass loop</strong> — tries each remaining provider in priority order, up to 3 full passes:
+                            <ul style="margin-top:4px; line-height:1.8;">
+                                <li><strong>Turn validator</strong> (Gemini only) — warns if the message structure is invalid (consecutive same-role turns, empty parts)</li>
+                                <li><strong>Latency guard</strong> — if the provider exceeds <em>Max Latency</em> ms, it fails over. Default: 1800ms. Set to 0 to disable.</li>
+                                <li><strong>XML sentinel</strong> — scans the response for leaked internal XML tags (e.g. <code>&lt;execute_bash&gt;</code>, <code>&lt;thought&gt;</code>). If found, fails over and tries the next provider.</li>
+                            </ul>
+                        </li>
+                        <li>If all providers are exhausted, returns <code>503 overloaded_error</code>.</li>
+                    </ol>
+                    <h4 style="margin-top:20px;">Hold-Down / Circuit Breaker</h4>
+                    <p>When a provider fails repeatedly, it enters a hold-down state and is skipped for a cooldown period. At 90% of the timer it gets one retest — if that succeeds it returns to normal. You can manually release a provider from hold-down in the <strong>Monitoring</strong> section of the main page.</p>
+                    <h4 style="margin-top:20px;">Max Latency Setting</h4>
+                    <p>Each provider has a configurable <strong>Max Latency (ms)</strong> field (default 1800ms). If a provider takes longer than this to respond, the request is immediately failed over to the next provider. Set to <code>0</code> to wait indefinitely.</p>
+                </div>
+
+                <div id="help-logs" class="help-pane" style="display:none;">
+                    <h4>Per-Provider Chat Logs</h4>
+                    <p>Every request routed through a provider is recorded in a human-readable log file at <code>/app/logs/chat-&lt;provider-name&gt;.log</code>. The format shows the full conversation and outcome:</p>
+                    <pre style="background:#0d1117;color:#c9d1d9;border-radius:6px;padding:12px;font-size:12px;line-height:1.6;overflow-x:auto;">[2026-04-01 14:23:11 UTC] ── REQUEST → My-Provider (pass 1, model: claude-sonnet-4-6) ──
+────────────────────────────────────────────────
+[SYSTEM]
+You are a helpful assistant.
+[USER]
+What is the capital of France?
+────────────────────────────────────────────────
+
+[2026-04-01 14:23:12 UTC] ── RESPONSE ← My-Provider ──
+[ASSISTANT]
+The capital of France is Paris.
+────────────────────────────────────────────────
+latency=312ms  model=claude-sonnet-4-6  tokens=in:14/out:8  cost=$0.000163
+────────────────────────────────────────────────
+
+[2026-04-01 14:23:15 UTC] ✗ FAILOVER from Other-Provider (pass 1): Request failed (HTTP 529)</pre>
+                    <h4 style="margin-top:20px;">Using the Log Viewer</h4>
+                    <ol style="line-height:2;">
+                        <li>Find the provider card on the main page.</li>
+                        <li>Click the <strong>📋 Log</strong> button.</li>
+                        <li>The log viewer opens showing the last 200 lines by default.</li>
+                        <li>Use the <strong>Show last</strong> dropdown to show more or fewer lines.</li>
+                        <li>Click <strong>↻ Refresh</strong> to reload manually.</li>
+                        <li>Check <strong>Auto-refresh</strong> to poll every 4 seconds — useful for watching live traffic.</li>
+                        <li>The <code>&lt;pre&gt;</code> area can be dragged taller from the bottom-right corner.</li>
+                    </ol>
+                    <h4 style="margin-top:20px;">Server-Side Log Files</h4>
+                    <table style="width:100%; border-collapse:collapse; font-size:13px;">
+                        <tr style="background:var(--bg3,var(--bg2))"><th style="padding:8px;text-align:left;">File</th><th style="padding:8px;text-align:left;">Contents</th></tr>
+                        <tr><td style="padding:8px;"><code>combined.log</code></td><td style="padding:8px;">All requests and events (JSON)</td></tr>
+                        <tr style="background:var(--bg3,var(--bg2))"><td style="padding:8px;"><code>error.log</code></td><td style="padding:8px;">Errors only (JSON)</td></tr>
+                        <tr><td style="padding:8px;"><code>provider-&lt;name&gt;.log</code></td><td style="padding:8px;">Per-provider structured metadata log (JSON)</td></tr>
+                        <tr style="background:var(--bg3,var(--bg2))"><td style="padding:8px;"><code>chat-&lt;name&gt;.log</code></td><td style="padding:8px;">Per-provider human-readable chat log (shown in UI)</td></tr>
+                    </table>
+                </div>
+
+                <div id="help-keys" class="help-pane" style="display:none;">
+                    <h4>Client API Keys</h4>
+                    <p>Client API keys let your applications authenticate with the proxy without exposing the underlying provider API keys. The proxy validates the key before forwarding the request.</p>
+                    <h4 style="margin-top:20px;">Creating a Key</h4>
+                    <ol style="line-height:2;">
+                        <li>Scroll to the <strong>Client API Keys</strong> section on the main page.</li>
+                        <li>Click <strong>Generate New API Key</strong>.</li>
+                        <li>Enter a descriptive name (e.g. "My Python App").</li>
+                        <li>Click <strong>Generate Key</strong>. <strong>Copy the key immediately</strong> — it is shown only once.</li>
+                    </ol>
+                    <h4 style="margin-top:20px;">Using a Key</h4>
+                    <p>Pass the key in the <code>x-api-key</code> header or as a Bearer token:</p>
+                    <pre style="background:#0d1117;color:#c9d1d9;border-radius:6px;padding:12px;font-size:12px;">curl -X POST https://www.voipguru.org/llmProxy/v1/messages \
+  -H "x-api-key: llm-proxy-YOUR-KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"claude-sonnet-4-6","max_tokens":1024,"messages":[{"role":"user","content":"Hi"}]}'</pre>
+                    <p style="margin-top:12px;">Or with the Anthropic SDK:</p>
+                    <pre style="background:#0d1117;color:#c9d1d9;border-radius:6px;padding:12px;font-size:12px;">export ANTHROPIC_API_KEY="llm-proxy-YOUR-KEY"
+export ANTHROPIC_BASE_URL="https://www.voipguru.org/llmProxy"</pre>
+                    <h4 style="margin-top:20px;">Managing Keys</h4>
+                    <ul style="line-height:2;">
+                        <li>Keys can be <strong>disabled</strong> (blocks new requests, preserves stats) or <strong>deleted</strong> (permanent).</li>
+                        <li>Each key tracks <em>total requests</em> and <em>last used</em> timestamp.</li>
+                        <li>You can have as many keys as you need — one per application is recommended.</li>
+                    </ul>
+                </div>
+
+                <div id="help-settings" class="help-pane" style="display:none;">
+                    <h4>Settings</h4>
+                    <p>Open Settings from the <strong>⚙️ Settings</strong> button in the header.</p>
+                    <h4 style="margin-top:16px;">Session Timeout</h4>
+                    <p>Sets how long a login session lasts before requiring re-authentication. Default is <strong>480 minutes (8 hours)</strong>. Set to a lower value for shared/public terminals.</p>
+                    <h4 style="margin-top:16px;">Email Notifications (SMTP)</h4>
+                    <p>Used for password reset emails and system alert notifications.</p>
+                    <table style="width:100%; border-collapse:collapse; font-size:13px; margin-top:8px;">
+                        <tr style="background:var(--bg3,var(--bg2))"><th style="padding:8px;text-align:left;">Field</th><th style="padding:8px;text-align:left;">Description</th></tr>
+                        <tr><td style="padding:8px;">Host</td><td style="padding:8px;">SMTP server hostname (e.g. <code>smtp.gmail.com</code>)</td></tr>
+                        <tr style="background:var(--bg3,var(--bg2))"><td style="padding:8px;">Port</td><td style="padding:8px;">Usually 465 (SSL) or 587 (STARTTLS)</td></tr>
+                        <tr><td style="padding:8px;">Secure</td><td style="padding:8px;">Enable TLS/SSL (recommended for port 465)</td></tr>
+                        <tr style="background:var(--bg3,var(--bg2))"><td style="padding:8px;">Username / Password</td><td style="padding:8px;">SMTP credentials; use an app-specific password with Gmail</td></tr>
+                        <tr><td style="padding:8px;">From</td><td style="padding:8px;">Sender address shown in emails</td></tr>
+                        <tr style="background:var(--bg3,var(--bg2))"><td style="padding:8px;">To</td><td style="padding:8px;">Recipient for system alert notifications</td></tr>
+                        <tr><td style="padding:8px;">Min Severity</td><td style="padding:8px;">Minimum alert level to send: INFO, WARNING, or ERROR</td></tr>
+                        <tr style="background:var(--bg3,var(--bg2))"><td style="padding:8px;">Throttle (min)</td><td style="padding:8px;">Minimum minutes between repeat alerts for the same event</td></tr>
+                    </table>
+                    <p style="margin-top:12px;">Click <strong>Send Test Email</strong> to verify SMTP configuration before saving.</p>
+                    <h4 style="margin-top:20px;">User Management</h4>
+                    <p>Scroll to the <strong>User Management</strong> section on the main page to add, edit, or remove users. Each user has a username, password, and optional email address (required for password reset).</p>
+                    <h4 style="margin-top:20px;">Password Reset</h4>
+                    <p>On the login page, click <strong>Forgot Password?</strong> and enter your username. A reset link valid for 1 hour will be sent to your registered email. Requires SMTP to be configured.</p>
+                </div>
+
+                <div id="help-cluster" class="help-pane" style="display:none;">
+                    <h4>Cluster / Multi-Node Deployment</h4>
+                    <p>LLM Proxy Manager supports running multiple nodes that sync configuration and report health to each other. Each node operates independently — it does not route requests to peers; syncing is config/stats only.</p>
+                    <h4 style="margin-top:16px;">Environment Variables</h4>
+                    <table style="width:100%; border-collapse:collapse; font-size:13px;">
+                        <tr style="background:var(--bg3,var(--bg2))"><th style="padding:8px;text-align:left;">Variable</th><th style="padding:8px;text-align:left;">Description</th></tr>
+                        <tr><td style="padding:8px;"><code>CLUSTER_ENABLED=true</code></td><td style="padding:8px;">Enables cluster mode</td></tr>
+                        <tr style="background:var(--bg3,var(--bg2))"><td style="padding:8px;"><code>CLUSTER_NODE_URL</code></td><td style="padding:8px;">This node's public URL (e.g. <code>https://www.voipguru.org/llmProxy</code>)</td></tr>
+                        <tr><td style="padding:8px;"><code>SESSION_SECRET</code></td><td style="padding:8px;">Set to a stable value so sessions survive container restarts</td></tr>
+                        <tr style="background:var(--bg3,var(--bg2))"><td style="padding:8px;"><code>USE_SQLITE=true</code></td><td style="padding:8px;">Use SQLite for persistent stats (recommended)</td></tr>
+                    </table>
+                    <h4 style="margin-top:16px;">Node 2 — Behind nginx container</h4>
+                    <p>If Node 2 is reverse-proxied by a containerised nginx, add the container to the nginx network with the expected alias:</p>
+                    <pre style="background:#0d1117;color:#c9d1d9;border-radius:6px;padding:12px;font-size:12px;">docker run ... \
+  --network llm-proxy_llm-proxy-network \
+  --network-alias llm-proxy \
+  ...</pre>
+                    <h4 style="margin-top:16px;">Adding a Cluster Node via UI</h4>
+                    <ol style="line-height:2;">
+                        <li>Scroll to the <strong>Cluster</strong> section on the main page.</li>
+                        <li>Click <strong>Add Node</strong> and enter the node's URL.</li>
+                        <li>The node appears with its last heartbeat time and sync status.</li>
+                    </ol>
+                </div>
+
+                <div id="help-cli" class="help-pane" style="display:none;">
+                    <h4>Pointing Claude Code CLI at the Proxy</h4>
+                    <p>Claude Code CLI and any application using the Anthropic SDK can be pointed at the proxy by setting two environment variables:</p>
+                    <pre style="background:#0d1117;color:#c9d1d9;border-radius:6px;padding:12px;font-size:12px;"># Use your client API key (or any value if no keys are configured)
+export ANTHROPIC_API_KEY="llm-proxy-YOUR-CLIENT-KEY"
+export ANTHROPIC_BASE_URL="https://www.voipguru.org/llmProxy"
+
+# Then use Claude Code as normal
+cc "summarise this file" -- myfile.txt</pre>
+                    <p style="margin-top:12px;">For local development:</p>
+                    <pre style="background:#0d1117;color:#c9d1d9;border-radius:6px;padding:12px;font-size:12px;">export ANTHROPIC_BASE_URL="http://localhost:3000"</pre>
+                    <h4 style="margin-top:20px;">Python / SDK Example</h4>
+                    <pre style="background:#0d1117;color:#c9d1d9;border-radius:6px;padding:12px;font-size:12px;">import anthropic
+
+client = anthropic.Anthropic(
+    api_key="llm-proxy-YOUR-CLIENT-KEY",
+    base_url="https://www.voipguru.org/llmProxy"
+)
+
+message = client.messages.create(
+    model="claude-sonnet-4-6",
+    max_tokens=1024,
+    messages=[{"role": "user", "content": "Hello!"}]
+)
+print(message.content[0].text)</pre>
+                    <h4 style="margin-top:20px;">cURL Example</h4>
+                    <pre style="background:#0d1117;color:#c9d1d9;border-radius:6px;padding:12px;font-size:12px;">curl -X POST https://www.voipguru.org/llmProxy/v1/messages \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: llm-proxy-YOUR-CLIENT-KEY" \
+  -d '{
+    "model": "claude-sonnet-4-6",
+    "max_tokens": 1024,
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'</pre>
+                    <h4 style="margin-top:20px;">Streaming</h4>
+                    <p>Streaming works automatically when <code>"stream": true</code> is set in the request body. All providers support streaming where available.</p>
+                    <h4 style="margin-top:20px;">Model Names</h4>
+                    <p>You can use any model name in the request — the proxy routes based on provider type, not model name. Specify any valid model for the provider you want to use, or just use the model name your app normally uses and let the proxy figure out the best match.</p>
+                </div>
+
+            </div><!-- end scroll area -->
         </div>
     </div>
 
@@ -1790,6 +2173,26 @@ export ANTHROPIC_API_KEY="proxy-handled"</textarea>
         function closeModal() {
             document.getElementById('editModal').classList.remove('show');
             document.getElementById('testResult').innerHTML = '';
+        }
+
+        // ── About Modal ──────────────────────────────────────────────────
+        function showAbout() { document.getElementById('aboutModal').classList.add('show'); }
+        function closeAbout() { document.getElementById('aboutModal').classList.remove('show'); }
+
+        // ── Help Modal ────────────────────────────────────────────────────
+        function showHelp(tab) {
+            document.getElementById('helpModal').classList.add('show');
+            switchHelpTab(tab || 'overview');
+        }
+        function closeHelp() { document.getElementById('helpModal').classList.remove('show'); }
+        function switchHelpTab(name) {
+            document.querySelectorAll('.help-pane').forEach(p => p.style.display = 'none');
+            document.querySelectorAll('.help-tab').forEach(t => t.classList.remove('active'));
+            const pane = document.getElementById('help-' + name);
+            if (pane) pane.style.display = 'block';
+            document.querySelectorAll('.help-tab').forEach(t => {
+                if (t.getAttribute('onclick') === `switchHelpTab('${name}')`) t.classList.add('active');
+            });
         }
 
         // ── Provider Chat Log Modal ───────────────────────────────────────
