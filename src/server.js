@@ -1452,7 +1452,13 @@ app.post('/v1/messages', validateApiKey, async (req, res) => {
     res.write(`data: ${JSON.stringify({ type: 'error', error: { type: 'api_error', message: 'All providers failed' } })}\n\n`);
     res.end();
   } else if (!res.headersSent) {
-    res.status(503).json({ error: 'All providers failed', lastError: lastError?.response?.data || lastError?.message });
+    res.status(503).json({
+      type: 'error',
+      error: {
+        type: 'overloaded_error',
+        message: 'All providers failed or are temporarily unavailable'
+      }
+    });
   }
 });
 
