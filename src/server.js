@@ -10,7 +10,7 @@ const session = require('express-session');
 const cookieParser = require('cookie-parser');
 const nodemailer = require('nodemailer');
 const ClusterManager = require('./cluster');
-const ProviderMonitor = require('./monitor');
+const ProviderHoldDown = require('./monitor');
 const NotificationManager = require('./notifications');
 const PricingManager = require('./pricing');
 
@@ -677,7 +677,7 @@ async function streamAnthropic(provider, request, res) {
         'anthropic-version': '2023-06-01'
       },
       responseType: 'stream',
-      timeout: providerMonitor.getProviderTimeout(provider.type)
+      timeout: provider.type === 'ollama' ? 60000 : 30000
     }
   );
 
@@ -701,7 +701,7 @@ async function streamGemini(provider, request, res) {
     {
       headers: { 'Content-Type': 'application/json' },
       responseType: 'stream',
-      timeout: providerMonitor.getProviderTimeout(provider.type)
+      timeout: provider.type === 'ollama' ? 60000 : 30000
     }
   );
 
@@ -816,7 +816,7 @@ async function streamOpenAI(provider, request, res) {
     {
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${provider.apiKey}` },
       responseType: 'stream',
-      timeout: providerMonitor.getProviderTimeout(provider.type)
+      timeout: provider.type === 'ollama' ? 60000 : 30000
     }
   );
 
@@ -953,7 +953,7 @@ async function streamGrok(provider, request, res) {
         'Authorization': `Bearer ${provider.apiKey}`
       },
       responseType: 'stream',
-      timeout: providerMonitor.getProviderTimeout(provider.type)
+      timeout: provider.type === 'ollama' ? 60000 : 30000
     }
   );
 
@@ -978,7 +978,7 @@ async function streamOllama(provider, request, res) {
     {
       headers: { 'Content-Type': 'application/json' },
       responseType: 'stream',
-      timeout: providerMonitor.getProviderTimeout(provider.type)
+      timeout: provider.type === 'ollama' ? 60000 : 30000
     }
   );
 
@@ -1008,7 +1008,7 @@ async function streamOpenAICompatible(provider, request, res) {
         'Authorization': `Bearer ${provider.apiKey}`
       },
       responseType: 'stream',
-      timeout: providerMonitor.getProviderTimeout(provider.type)
+      timeout: provider.type === 'ollama' ? 60000 : 30000
     }
   );
 
@@ -1040,7 +1040,7 @@ async function callAnthropic(provider, request) {
         'x-api-key': provider.apiKey,
         'anthropic-version': '2023-06-01'
       },
-      timeout: providerMonitor.getProviderTimeout(provider.type)
+      timeout: provider.type === 'ollama' ? 60000 : 30000
     }
   );
 
@@ -1056,7 +1056,7 @@ async function callGemini(provider, request) {
     geminiRequest,
     {
       headers: { 'Content-Type': 'application/json' },
-      timeout: providerMonitor.getProviderTimeout(provider.type)
+      timeout: provider.type === 'ollama' ? 60000 : 30000
     }
   );
 
@@ -1090,7 +1090,7 @@ async function callVertex(provider, request) {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${provider.apiKey}`
       },
-      timeout: providerMonitor.getProviderTimeout(provider.type)
+      timeout: provider.type === 'ollama' ? 60000 : 30000
     }
   );
 
@@ -1114,7 +1114,7 @@ async function callGrok(provider, request) {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${provider.apiKey}`
       },
-      timeout: providerMonitor.getProviderTimeout(provider.type)
+      timeout: provider.type === 'ollama' ? 60000 : 30000
     }
   );
 
@@ -1148,7 +1148,7 @@ async function callOllama(provider, request) {
     },
     {
       headers: { 'Content-Type': 'application/json' },
-      timeout: providerMonitor.getProviderTimeout(provider.type)
+      timeout: provider.type === 'ollama' ? 60000 : 30000
     }
   );
 
@@ -1185,7 +1185,7 @@ async function callOpenAI(provider, request) {
     body,
     {
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${provider.apiKey}` },
-      timeout: providerMonitor.getProviderTimeout(provider.type)
+      timeout: provider.type === 'ollama' ? 60000 : 30000
     }
   );
 
@@ -1211,7 +1211,7 @@ async function callOpenAICompatible(provider, request) {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${provider.apiKey}`
       },
-      timeout: providerMonitor.getProviderTimeout(provider.type)
+      timeout: provider.type === 'ollama' ? 60000 : 30000
     }
   );
 
@@ -1242,218 +1242,197 @@ app.post('/v1/messages', validateApiKey, async (req, res) => {
     streaming: isStreaming
   });
 
-  // Get enabled providers sorted by priority
-  let enabledProviders = config.providers
+  // Build available provider list: enabled, have API key, not in hold-down
+  const sortedProviders = config.providers
     .filter(p => p.enabled && p.apiKey)
     .sort((a, b) => a.priority - b.priority);
 
-  // Apply circuit breaker filtering
-  enabledProviders = enabledProviders.filter(p => {
-    const check = providerMonitor.canAttemptProvider(p);
-    if (!check.allowed) {
-      logger.warn(`Provider ${p.name} blocked by circuit breaker: ${check.reason}`);
+  const availableProviders = sortedProviders.filter(p => {
+    if (providerMonitor.isInHoldDown(p)) {
+      logger.warn(`Provider ${p.name} skipped — in hold-down`);
+      return false;
     }
-    return check.allowed;
+    return true;
   });
 
-  if (enabledProviders.length === 0) {
-    logger.error('No available providers (all disabled or circuit breakers open)');
+  if (availableProviders.length === 0) {
+    logger.error('No available providers (all disabled, missing API key, or in hold-down)');
     return res.status(503).json({ error: 'No providers available' });
   }
 
-  // Track if streaming headers have been sent
   let headersSent = false;
+  let lastError = null;
 
-  // Try providers in order
-  for (const provider of enabledProviders) {
-    initStats(provider.id);
+  // 3-pass retry: each pass tries every available (non-held) provider in priority order
+  passes: for (let pass = 1; pass <= 3; pass++) {
+    if (pass > 1) logger.info(`Provider routing pass ${pass}/3`);
 
-    // Get provider-specific logger (moved outside try block for catch access)
-    const providerLog = getProviderLogger(provider.name);
+    for (const provider of availableProviders) {
+      initStats(provider.id);
+      const providerLog = getProviderLogger(provider.name);
 
-    try {
-      logger.info(`Trying provider: ${provider.name} (streaming: ${isStreaming})`);
-      providerLog.info('Request attempt', {
-        model: req.body.model,
-        messageCount: req.body.messages?.length,
-        streaming: isStreaming,
-        messages: req.body.messages,
-        max_tokens: req.body.max_tokens,
-        temperature: req.body.temperature
-      });
+      // Per-provider latency limit (0 = no limit)
+      const maxLatencyMs = provider.maxLatencyMs != null
+        ? parseInt(provider.maxLatencyMs)
+        : 1200;
 
-      // Increment requests counter only when actually attempting this provider
-      config.stats[provider.id].requests++;
+      try {
+        logger.info(`Trying provider: ${provider.name} (pass ${pass}, streaming: ${isStreaming})`);
+        providerLog.info('Request attempt', {
+          pass,
+          model: req.body.model,
+          messageCount: req.body.messages?.length,
+          streaming: isStreaming,
+          messages: req.body.messages,
+          max_tokens: req.body.max_tokens,
+          temperature: req.body.temperature
+        });
 
-      if (isStreaming) {
-        // Set SSE headers only before first successful provider attempt
-        if (!headersSent) {
-          res.setHeader('Content-Type', 'text/event-stream');
-          res.setHeader('Cache-Control', 'no-cache');
-          res.setHeader('Connection', 'keep-alive');
-          headersSent = true;
-          logger.info(`Streaming headers set for provider: ${provider.name}`);
-        }
+        config.stats[provider.id].requests++;
 
-        // Streaming mode
-        if (provider.type === 'anthropic') {
-          await streamAnthropic(provider, req.body, res);
-        } else if (provider.type === 'google') {
-          await streamGemini(provider, req.body, res);
-        } else if (provider.type === 'openai') {
-          await streamOpenAI(provider, req.body, res);
-        } else if (provider.type === 'grok') {
-          await streamGrok(provider, req.body, res);
-        } else if (provider.type === 'ollama') {
-          await streamOllama(provider, req.body, res);
-        } else if (provider.type === 'openai-compatible') {
-          await streamOpenAICompatible(provider, req.body, res);
-        }
-      } else{
-        // Non-streaming mode
-        let result;
-        switch(provider.type) {
-          case 'anthropic':
-            result = await callAnthropic(provider, req.body);
-            break;
-          case 'google':
-            result = await callGemini(provider, req.body);
-            break;
-          case 'vertex':
-            result = await callVertex(provider, req.body);
-            break;
-          case 'grok':
-            result = await callGrok(provider, req.body);
-            break;
-          case 'ollama':
-            result = await callOllama(provider, req.body);
-            break;
-          case 'openai':
-            result = await callOpenAI(provider, req.body);
-            break;
-          case 'openai-compatible':
-            result = await callOpenAICompatible(provider, req.body);
-            break;
-          default:
-            throw new Error(`Unsupported provider type: ${provider.type}`);
-        }
-        res.json(result);
-      }
-
-      const latency = Date.now() - startTime;
-      config.stats[provider.id].successes++;
-      config.stats[provider.id].totalLatency += latency;
-      config.stats[provider.id].lastUsed = new Date().toISOString();
-      config.stats[provider.id].lastSuccess = {
-        timestamp: new Date().toISOString()
-      };
-
-      // Record success with circuit breaker
-      providerMonitor.recordSuccess(provider);
-
-      logger.info(`Success with ${provider.name}`, { latency: `${latency}ms` });
-
-      // Track client key usage
-      if (req.clientKey) {
-        req.clientKey.requests = (req.clientKey.requests || 0) + 1;
-        req.clientKey.lastUsed = new Date().toISOString();
-      }
-
-      if (isStreaming) {
-        // Streaming: result is undefined (stream already sent), no cost tracking possible
-        saveStatsRecord(provider.id);
-        res.end();
-        return;
-      }
-
-      // Non-streaming only: track costs from result object
-      const model = result.model || req.body.model || provider.model || 'claude-sonnet-4-5-20250929';
-      const usage = result.usage || {};
-      const cost = pricingManager.calculateCost(
-        model,
-        usage.input_tokens || 0,
-        usage.output_tokens || 0
-      );
-
-      logger.info(`Cost tracking: model=${model}, input=${usage.input_tokens}, output=${usage.output_tokens}, cost=$${cost.toFixed(6)}`);
-
-      config.stats[provider.id].totalCost += cost;
-      config.stats[provider.id].totalInputTokens += (usage.input_tokens || 0);
-      config.stats[provider.id].totalOutputTokens += (usage.output_tokens || 0);
-
-      // Save stats (targeted write in SQLite mode; periodic in JSON mode)
-      if (USE_SQLITE && sqliteDb) {
-        saveStatsRecord(provider.id);
-      } else if (config.stats[provider.id].requests % 10 === 0) {
-        saveConfig();
-      }
-
-      providerLog.info('Request success', {
-        latency: `${latency}ms`,
-        model: model,
-        usage: usage,
-        cost: cost
-      });
-
-      return;
-
-    } catch (error) {
-      const latency = Date.now() - startTime;
-      config.stats[provider.id].failures++;
-      config.stats[provider.id].lastError = {
-        message: error.message,
-        timestamp: new Date().toISOString()
-      };
-      saveStatsRecord(provider.id);
-
-      // Record failure with circuit breaker — skip for client-side errors (bad schema, etc.)
-      const isClientError = error.response?.status === 400 || error.response?.status === 422;
-      if (!isClientError) {
-        providerMonitor.recordFailure(provider, error);
-      } else {
-        logger.warn(`Client-side error with ${provider.name} (${error.response?.status}) — not counting against circuit breaker`);
-      }
-
-      logger.error(`Failed with ${provider.name}:`, {
-        error: error.message,
-        status: error.response?.status,
-        latency: `${latency}ms`
-      });
-
-      // Log error to provider-specific log
-      providerLog.error('Request failed', {
-        error: error.message,
-        status: error.response?.status,
-        statusText: error.response?.statusText,
-        data: error.response?.data,
-        latency: `${latency}ms`,
-        stack: error.stack
-      });
-
-      // If this was the last provider, return error
-      if (provider === enabledProviders[enabledProviders.length - 1]) {
         if (isStreaming) {
-          res.write(`event: error\n`);
-          res.write(`data: ${JSON.stringify({
-            type: 'error',
-            error: {
-              type: 'api_error',
-              message: 'All providers failed'
-            }
-          })}\n\n`);
-          res.end();
-        } else {
-          return res.status(error.response?.status || 500).json({
-            error: 'All providers failed',
-            lastError: error.response?.data || error.message
-          });
-        }
-        return;
-      }
+          if (!headersSent) {
+            res.setHeader('Content-Type', 'text/event-stream');
+            res.setHeader('Cache-Control', 'no-cache');
+            res.setHeader('Connection', 'keep-alive');
+            headersSent = true;
+            logger.info(`Streaming headers set for provider: ${provider.name}`);
+          }
 
-      // Otherwise continue to next provider
-      logger.info('Failing over to next provider');
+          const streamCall = (() => {
+            if (provider.type === 'anthropic')         return streamAnthropic(provider, req.body, res);
+            if (provider.type === 'google')            return streamGemini(provider, req.body, res);
+            if (provider.type === 'openai')            return streamOpenAI(provider, req.body, res);
+            if (provider.type === 'grok')              return streamGrok(provider, req.body, res);
+            if (provider.type === 'ollama')            return streamOllama(provider, req.body, res);
+            if (provider.type === 'openai-compatible') return streamOpenAICompatible(provider, req.body, res);
+            throw new Error(`Unsupported provider type: ${provider.type}`);
+          })();
+
+          if (maxLatencyMs > 0) {
+            await Promise.race([
+              streamCall,
+              new Promise((_, reject) =>
+                setTimeout(() => reject(new Error(`Provider latency exceeded ${maxLatencyMs}ms`)), maxLatencyMs)
+              )
+            ]);
+          } else {
+            await streamCall;
+          }
+
+        } else {
+          let result;
+          const nonStreamCall = (() => {
+            switch (provider.type) {
+              case 'anthropic':         return callAnthropic(provider, req.body);
+              case 'google':            return callGemini(provider, req.body);
+              case 'vertex':            return callVertex(provider, req.body);
+              case 'grok':              return callGrok(provider, req.body);
+              case 'ollama':            return callOllama(provider, req.body);
+              case 'openai':            return callOpenAI(provider, req.body);
+              case 'openai-compatible': return callOpenAICompatible(provider, req.body);
+              default: throw new Error(`Unsupported provider type: ${provider.type}`);
+            }
+          })();
+
+          if (maxLatencyMs > 0) {
+            result = await Promise.race([
+              nonStreamCall,
+              new Promise((_, reject) =>
+                setTimeout(() => reject(new Error(`Provider latency exceeded ${maxLatencyMs}ms`)), maxLatencyMs)
+              )
+            ]);
+          } else {
+            result = await nonStreamCall;
+          }
+
+          res.json(result);
+        }
+
+        // ── Success ───────────────────────────────────────────────────────
+        const latency = Date.now() - startTime;
+        config.stats[provider.id].successes++;
+        config.stats[provider.id].totalLatency += latency;
+        config.stats[provider.id].lastUsed = new Date().toISOString();
+        config.stats[provider.id].lastSuccess = { timestamp: new Date().toISOString() };
+
+        providerMonitor.recordSuccess(provider);
+        logger.info(`Success with ${provider.name}`, { latency: `${latency}ms`, pass });
+
+        if (req.clientKey) {
+          req.clientKey.requests = (req.clientKey.requests || 0) + 1;
+          req.clientKey.lastUsed = new Date().toISOString();
+        }
+
+        if (isStreaming) {
+          saveStatsRecord(provider.id);
+          res.end();
+          return;
+        }
+
+        const model = result.model || req.body.model || provider.model || 'claude-sonnet-4-5-20250929';
+        const usage = result.usage || {};
+        const cost = pricingManager.calculateCost(model, usage.input_tokens || 0, usage.output_tokens || 0);
+
+        logger.info(`Cost tracking: model=${model}, input=${usage.input_tokens}, output=${usage.output_tokens}, cost=$${cost.toFixed(6)}`);
+
+        config.stats[provider.id].totalCost += cost;
+        config.stats[provider.id].totalInputTokens  += (usage.input_tokens  || 0);
+        config.stats[provider.id].totalOutputTokens += (usage.output_tokens || 0);
+
+        if (USE_SQLITE && sqliteDb) {
+          saveStatsRecord(provider.id);
+        } else if (config.stats[provider.id].requests % 10 === 0) {
+          saveConfig();
+        }
+
+        providerLog.info('Request success', { latency: `${latency}ms`, model, usage, cost });
+        return;
+
+      } catch (error) {
+        const latency = Date.now() - startTime;
+        config.stats[provider.id].failures++;
+        config.stats[provider.id].lastError = { message: error.message, timestamp: new Date().toISOString() };
+        saveStatsRecord(provider.id);
+        lastError = error;
+
+        // 400/422 are client-side schema/validation errors — don't count toward hold-down
+        const isClientError = error.response?.status === 400 || error.response?.status === 422;
+        if (!isClientError) {
+          providerMonitor.recordFailure(provider, latency, error);
+        } else {
+          logger.warn(`Client-side error with ${provider.name} (${error.response?.status}) — not counting toward hold-down`);
+        }
+
+        logger.error(`Failed with ${provider.name} (pass ${pass}):`, {
+          error: error.message,
+          status: error.response?.status,
+          latency: `${latency}ms`
+        });
+
+        providerLog.error('Request failed', {
+          error: error.message,
+          status: error.response?.status,
+          statusText: error.response?.statusText,
+          data: error.response?.data,
+          latency: `${latency}ms`,
+          stack: error.stack
+        });
+
+        logger.info(`Failing over to next provider (pass ${pass})`);
+      }
     }
+    // End of pass — all available providers failed this pass
+  }
+
+  // All 3 passes exhausted
+  logger.error('All providers failed across 3 passes');
+  if (isStreaming && headersSent) {
+    res.write(`event: error\n`);
+    res.write(`data: ${JSON.stringify({ type: 'error', error: { type: 'api_error', message: 'All providers failed' } })}\n\n`);
+    res.end();
+  } else if (!res.headersSent) {
+    res.status(503).json({ error: 'All providers failed', lastError: lastError?.response?.data || lastError?.message });
   }
 });
 
@@ -1487,22 +1466,19 @@ app.get('/api/pricing/:model', (req, res) => {
   });
 });
 
-// Circuit breaker status endpoint
-app.get('/api/circuit-status', requireAuth, (req, res) => {
+// Hold-down status endpoint
+app.get('/api/holddown-status', requireAuth, (req, res) => {
   const statuses = {};
-
   for (const provider of config.providers) {
-    const circuit = providerMonitor.getCircuitState(provider.id);
+    const state = providerMonitor.getState(provider.id);
     statuses[provider.id] = {
       providerName: provider.name,
-      state: circuit.state,
-      failures: circuit.failures,
-      successes: circuit.successes,
-      lastFailure: circuit.lastFailure,
-      reason: circuit.reason
+      inHoldDown: providerMonitor.isInHoldDown(provider),
+      consecutiveFailures: state.consecutiveFailures,
+      holdDownUntil: state.holdDownUntil ? new Date(state.holdDownUntil).toISOString() : null,
+      retestScheduled: state.retestTimer != null
     };
   }
-
   res.json(statuses);
 });
 
@@ -1656,7 +1632,10 @@ app.post('/api/config', (req, res) => {
           projectId: p.projectId,
           location: p.location,
           baseUrl: p.baseUrl,
-          model: p.model
+          model: p.model,
+          holdDownSeconds:  p.holdDownSeconds  != null ? parseInt(p.holdDownSeconds)  : 180,
+          maxLatencyMs:     p.maxLatencyMs     != null ? parseInt(p.maxLatencyMs)     : 1200,
+          failureThreshold: p.failureThreshold != null ? parseInt(p.failureThreshold) : 2
         };
       });
     }
@@ -2330,8 +2309,10 @@ app.post('/api/auth/reset-password', async (req, res) => {
 loadConfig();
 initializeUsers();
 
-// Initialize Provider Monitor
-const providerMonitor = new ProviderMonitor(logger);
+// Initialize Provider Hold-Down
+const providerMonitor = new ProviderHoldDown(logger, (providerId) => {
+  return config.providers.find(p => p.id === providerId) || null;
+});
 
 // Initialize Cluster Manager
 const clusterManager = new ClusterManager(logger, config);
@@ -2339,38 +2320,25 @@ const clusterManager = new ClusterManager(logger, config);
 // Initialize Notification Manager
 const notificationManager = new NotificationManager(logger, config);
 
-// Monitor event handlers
-providerMonitor.on('circuit.open', ({ provider, reason }) => {
-  addActivityLog('warning', `Circuit breaker OPEN for ${provider.name}`, {
+// Hold-down event handlers
+providerMonitor.on('holddown.entered', ({ provider, consecutiveFailures }) => {
+  const state = providerMonitor.getState(provider.id);
+  addActivityLog('warning', `Provider ${provider.name} entered hold-down after ${consecutiveFailures} consecutive failures`, {
     providerId: provider.id,
-    reason: reason
+    holdDownUntil: state.holdDownUntil ? new Date(state.holdDownUntil).toISOString() : null
   });
-  notificationManager.alertCircuitBreakerOpen(provider, reason);
-  if (!USE_SQLITE) saveConfig();
 });
 
-providerMonitor.on('circuit.closed', ({ provider }) => {
-  addActivityLog('success', `Circuit breaker CLOSED for ${provider.name} - recovered`, {
+providerMonitor.on('holddown.cleared', ({ provider }) => {
+  addActivityLog('success', `Provider ${provider.name} restored — hold-down retest passed`, {
     providerId: provider.id
   });
-  if (!USE_SQLITE) saveConfig();
 });
 
-providerMonitor.on('billing.error', ({ provider, error }) => {
-  addActivityLog('error', `Billing/quota error detected for ${provider.name}`, {
-    providerId: provider.id,
-    error: error
+providerMonitor.on('holddown.restarted', ({ provider }) => {
+  addActivityLog('warning', `Provider ${provider.name} hold-down restarted — retest failed`, {
+    providerId: provider.id
   });
-  notificationManager.alertBillingError(provider, error);
-  if (!USE_SQLITE) saveConfig();
-});
-
-providerMonitor.on('external.degraded', ({ providerType, status, incidents }) => {
-  addActivityLog('warning', `External service ${providerType} reporting ${status}`, {
-    incidents: incidents
-  });
-  notificationManager.alertExternalServiceDown(providerType, status, incidents);
-  if (!USE_SQLITE) saveConfig();
 });
 
 // Cluster event handlers
@@ -2535,62 +2503,38 @@ app.put('/cluster/node', requireAuth, (req, res) => {
   res.json({ success: true });
 });
 
-// Provider monitoring status endpoint
+// Hold-down monitoring status
 app.get('/monitoring/status', requireAuth, (req, res) => {
   res.json(providerMonitor.getMonitoringStatus());
 });
 
-// Manual circuit breaker control
-app.post('/monitoring/circuit/reset', requireAuth, (req, res) => {
+// Manual hold-down release (admin UI)
+app.post('/monitoring/holddown/release', requireAuth, (req, res) => {
   const { providerId } = req.body;
-
   if (!providerId) {
     return res.status(400).json({ error: 'providerId required' });
   }
-
-  providerMonitor.manualReset(providerId);
-
-  addActivityLog('info', `Circuit breaker manually reset for provider`, {
-    providerId: providerId,
+  providerMonitor.manualRelease(providerId);
+  addActivityLog('info', `Hold-down manually released for provider`, {
+    providerId,
     username: req.session.username
   });
-  if (!USE_SQLITE) saveConfig();
-
-  res.json({ success: true, message: 'Circuit breaker reset' });
+  res.json({ success: true, message: 'Hold-down released' });
 });
 
-app.post('/monitoring/circuit/open', requireAuth, (req, res) => {
-  const { providerId, reason } = req.body;
-
+// Manual hold-down apply (admin UI)
+app.post('/monitoring/holddown/apply', requireAuth, (req, res) => {
+  const { providerId, durationSeconds } = req.body;
   if (!providerId) {
     return res.status(400).json({ error: 'providerId required' });
   }
-
-  providerMonitor.manualOpen(providerId, reason || 'Manual override');
-
-  addActivityLog('warning', `Circuit breaker manually opened for provider`, {
-    providerId: providerId,
-    reason: reason,
+  providerMonitor.manualHold(providerId, durationSeconds);
+  addActivityLog('warning', `Hold-down manually applied to provider`, {
+    providerId,
+    durationSeconds: durationSeconds || 180,
     username: req.session.username
   });
-  if (!USE_SQLITE) saveConfig();
-
-  res.json({ success: true, message: 'Circuit breaker opened' });
-});
-
-// Trigger external status check
-app.post('/monitoring/check-external', requireAuth, (req, res) => {
-  providerMonitor.checkExternalStatus()
-    .then(() => {
-      res.json({
-        success: true,
-        message: 'External status check initiated',
-        status: providerMonitor.getMonitoringStatus().externalStatus
-      });
-    })
-    .catch(err => {
-      res.status(500).json({ error: err.message });
-    });
+  res.json({ success: true, message: 'Hold-down applied' });
 });
 
 // ==================== END CLUSTER ENDPOINTS ====================
