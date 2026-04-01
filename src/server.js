@@ -2001,6 +2001,30 @@ app.patch('/api/client-keys/:id', (req, res) => {
 });
 
 // Test provider endpoint
+// GET /api/provider-chat-log?name=<providerName>&lines=<n>
+// Returns the last N lines of the chat log for a named provider
+app.get('/api/provider-chat-log', requireAuth, (req, res) => {
+  const { name, lines } = req.query;
+  if (!name) return res.status(400).json({ error: 'name required' });
+
+  const safeName = name.replace(/[^a-zA-Z0-9_-]/g, '_');
+  const logPath = `/app/logs/chat-${safeName}.log`;
+
+  if (!fs.existsSync(logPath)) {
+    return res.json({ log: '', exists: false });
+  }
+
+  try {
+    const n = Math.min(parseInt(lines) || 200, 2000);
+    const content = fs.readFileSync(logPath, 'utf8');
+    const allLines = content.split('\n');
+    const tail = allLines.slice(-n).join('\n');
+    res.json({ log: tail, exists: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.post('/api/test-provider', async (req, res) => {
   let { providerId, type, apiKey, projectId, location, baseUrl, model } = req.body;
 
