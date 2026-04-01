@@ -431,6 +431,95 @@ function sanitizeSchema(schema) {
   return out;
 }
 
+// ── 1c: Turn Validator ────────────────────────────────────────────────────────
+// Validates Gemini-bound contents array for structural correctness.
+// Returns an array of warning strings (empty = valid).
+function validateGeminiTurns(contents) {
+  const warnings = [];
+  if (!contents || contents.length === 0) return warnings;
+
+  // First turn must be user
+  if (contents[0].role !== 'user') {
+    warnings.push(`First turn is role="${contents[0].role}", expected "user"`);
+  }
+
+  // Strict alternation check
+  for (let i = 1; i < contents.length; i++) {
+    if (contents[i].role === contents[i - 1].role) {
+      warnings.push(`Consecutive same-role turns at index ${i - 1}/${i} (role="${contents[i].role}")`);
+    }
+  }
+
+  // No empty parts arrays
+  for (let i = 0; i < contents.length; i++) {
+    if (!contents[i].parts || contents[i].parts.length === 0) {
+      warnings.push(`Turn ${i} (role="${contents[i].role}") has empty parts array`);
+    }
+  }
+
+  return warnings;
+}
+
+// ── 1e: XML / Bad-Model Sentinel ──────────────────────────────────────────────
+// Scans a response body string for known bad-model output patterns.
+// Returns true if the response looks like garbage that should not be forwarded.
+const XML_SENTINEL_PATTERNS = [
+  /<execute_bash[\s>]/i,
+  /<thought[\s>]/i,
+  /<function_calls[\s>]/i,
+  /<invoke[\s>]/i,
+  /^functionCall\s*\{/m,
+  /<parameter>[\s\S]*?<\/antml:parameter>/
+];
+
+function isBadModelOutput(text) {
+  if (typeof text !== 'string') return false;
+  return XML_SENTINEL_PATTERNS.some(re => re.test(text));
+}
+
+// ── 2: Capability-Aware Router ────────────────────────────────────────────────
+const PROVIDER_CAPS = {
+  anthropic:          { toolCalling: true,  vision: true,  contextWindow: 200000  },
+  google:             { toolCalling: true,  vision: true,  contextWindow: 1000000 },
+  vertex:             { toolCalling: true,  vision: true,  contextWindow: 1000000 },
+  openai:             { toolCalling: true,  vision: true,  contextWindow: 128000  },
+  grok:               { toolCalling: true,  vision: false, contextWindow: 131072  },
+  ollama:             { toolCalling: false, vision: false, contextWindow: 8192    },
+  'openai-compatible':{ toolCalling: true,  vision: false, contextWindow: 128000  }
+};
+
+function estimateTokens(request) {
+  // Rough estimate: 4 chars ≈ 1 token
+  try {
+    return Math.ceil(JSON.stringify(request.messages || []).length / 4);
+  } catch (_) { return 0; }
+}
+
+function hasImageContent(messages) {
+  if (!messages) return false;
+  return messages.some(m =>
+    Array.isArray(m.content) && m.content.some(b => b.type === 'image' || b.type === 'image_url')
+  );
+}
+
+function capabilityFilter(providers, request) {
+  const hasTools  = request.tools?.length > 0;
+  const hasVision = hasImageContent(request.messages);
+  const tokens    = estimateTokens(request);
+
+  const capable = providers.filter(p => {
+    const caps = PROVIDER_CAPS[p.type];
+    if (!caps) return true; // unknown type — don't filter out
+    if (hasTools  && !caps.toolCalling)    return false;
+    if (hasVision && !caps.vision)         return false;
+    if (tokens > caps.contextWindow)       return false;
+    return true;
+  });
+
+  // Fall back to full list if capability filtering eliminates everything
+  return capable.length > 0 ? capable : providers;
+}
+
 // Translate Anthropic request to Google Gemini format (with tool support)
 function translateToGemini(anthropicRequest) {
   const messages = anthropicRequest.messages || [];
@@ -486,6 +575,12 @@ function translateToGemini(anthropicRequest) {
     result.systemInstruction.parts[0].text +=
       '\n\nIMPORTANT: Use the provided function tools to complete the task. ' +
       'Do not describe what you would do — call the tools directly.';
+  }
+
+  // 1c: Validate turn structure and log any warnings
+  const turnWarnings = validateGeminiTurns(result.contents);
+  if (turnWarnings.length > 0) {
+    logger.warn('Gemini turn validation warnings', { warnings: turnWarnings });
   }
 
   return result;
@@ -1247,13 +1342,20 @@ app.post('/v1/messages', validateApiKey, async (req, res) => {
     .filter(p => p.enabled && p.apiKey)
     .sort((a, b) => a.priority - b.priority);
 
-  const availableProviders = sortedProviders.filter(p => {
+  const heldDownFiltered = sortedProviders.filter(p => {
     if (providerMonitor.isInHoldDown(p)) {
       logger.warn(`Provider ${p.name} skipped — in hold-down`);
       return false;
     }
     return true;
   });
+
+  // 2: Capability-aware routing — prefer providers that support the request's features
+  const availableProviders = capabilityFilter(heldDownFiltered, req.body);
+  if (availableProviders.length < heldDownFiltered.length) {
+    const filtered = heldDownFiltered.filter(p => !availableProviders.includes(p)).map(p => p.name);
+    logger.info(`Capability router excluded providers: ${filtered.join(', ')}`);
+  }
 
   if (availableProviders.length === 0) {
     logger.error('No available providers (all disabled, missing API key, or in hold-down)');
@@ -1271,10 +1373,10 @@ app.post('/v1/messages', validateApiKey, async (req, res) => {
       initStats(provider.id);
       const providerLog = getProviderLogger(provider.name);
 
-      // Per-provider latency limit (0 = no limit)
+      // Per-provider latency limit (0 = no limit, default 1800ms)
       const maxLatencyMs = provider.maxLatencyMs != null
         ? parseInt(provider.maxLatencyMs)
-        : 1200;
+        : 1800;
 
       try {
         let result;
@@ -1344,6 +1446,18 @@ app.post('/v1/messages', validateApiKey, async (req, res) => {
             ]);
           } else {
             result = await nonStreamCall;
+          }
+
+          // 1e: XML Sentinel — scan response text for bad-model output patterns
+          const responseText = result?.content?.map(b => b.text || '').join('') || '';
+          if (isBadModelOutput(responseText)) {
+            logger.warn(`XML sentinel triggered for ${provider.name} — bad model output detected, failing over`);
+            config.stats[provider.id].failures++;
+            config.stats[provider.id].lastError = { message: 'Bad model output (XML sentinel)', timestamp: new Date().toISOString() };
+            saveStatsRecord(provider.id);
+            lastError = new Error('Bad model output detected');
+            logger.info(`Failing over to next provider (pass ${pass})`);
+            continue;
           }
 
           res.json(result);
@@ -1663,7 +1777,7 @@ app.post('/api/config', (req, res) => {
           baseUrl: p.baseUrl,
           model: p.model,
           holdDownSeconds:  p.holdDownSeconds  != null ? parseInt(p.holdDownSeconds)  : 180,
-          maxLatencyMs:     p.maxLatencyMs     != null ? parseInt(p.maxLatencyMs)     : 1200,
+          maxLatencyMs:     p.maxLatencyMs     != null ? parseInt(p.maxLatencyMs)     : 1800,
           failureThreshold: p.failureThreshold != null ? parseInt(p.failureThreshold) : 2
         };
       });

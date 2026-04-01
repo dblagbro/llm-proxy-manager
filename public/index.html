@@ -631,7 +631,7 @@
     <div class="container">
         <div class="header">
             <div>
-                <h1>🤖 LLM Proxy Manager <span style="font-size: 14px; color: var(--text-muted); font-weight: normal;">v1.3.5</span></h1>
+                <h1>🤖 LLM Proxy Manager <span style="font-size: 14px; color: var(--text-muted); font-weight: normal;">v1.3.6</span></h1>
                 <p class="subtitle">Multi-provider AI proxy with automatic failover and cluster synchronization</p>
             </div>
             <div class="header-actions">
@@ -768,7 +768,7 @@
                     <div style="padding: 10px 0 0 0;">
                         <p style="font-size: 12px; color: var(--text-muted); margin-bottom: 10px;">
                             After N consecutive failures the provider is held down and automatically retested at 90% of the hold-down period.
-                            Defaults: Threshold 2 failures, Hold-Down 180s, Max Response 1200ms. Set to 0 to disable.
+                            Defaults: Threshold 2 failures, Hold-Down 180s, Max Response 1800ms. Set to 0 to disable.
                         </p>
                         <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px;">
                             <div class="form-group" style="margin-bottom: 0;">
@@ -781,7 +781,7 @@
                             </div>
                             <div class="form-group" style="margin-bottom: 0;">
                                 <label style="font-size: 12px;">Max Response Time (ms)</label>
-                                <input type="number" id="edit-maxLatencyMs" min="0" placeholder="1200" style="font-size: 13px;">
+                                <input type="number" id="edit-maxLatencyMs" min="0" placeholder="1800" style="font-size: 13px;">
                             </div>
                         </div>
                     </div>
@@ -1885,7 +1885,7 @@ export ANTHROPIC_API_KEY="proxy-handled"</textarea>
                 enabled: document.getElementById('edit-enabled').checked,
                 failureThreshold:  failureThreshold !== '' ? parseInt(failureThreshold) : 2,
                 holdDownSeconds:   holdDownSeconds  !== '' ? parseInt(holdDownSeconds)  : 180,
-                maxLatencyMs:      maxLatencyMs     !== '' ? parseInt(maxLatencyMs)     : 1200
+                maxLatencyMs:      maxLatencyMs     !== '' ? parseInt(maxLatencyMs)     : 1800
             };
 
             if (editingIndex >= 0) {
