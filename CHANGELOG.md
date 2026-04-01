@@ -5,6 +5,11 @@ All notable changes to the LLM Proxy Manager project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.1] - 2026-04-01
+
+### Added
+- **Per-API-key rate limiting and quotas**: Each client API key can optionally have a max requests/minute (`quotaRpm`) and/or max requests/day (`quotaRpd`) limit. Disabled by default (`quotaEnabled: false`) — no behaviour change for existing keys. When enabled and a limit is exceeded, the proxy returns a `429 rate_limit_error` with a clear message. Counters are in-memory and reset automatically at the start of each new minute/day window. Configurable via the Edit Key modal in the Web UI and via `PATCH /api/client-keys/:id`.
+
 ## [1.4.0] - 2026-04-01
 
 ### Added

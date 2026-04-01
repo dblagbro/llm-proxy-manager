@@ -60,7 +60,7 @@ Parallel provider racing for non-streaming requests via `CONDUCTOR_MODE=true`. T
 Active session registry, request correlation IDs, session auto-extend, session management API and UI.
 
 ### Other Future Ideas
-- Per-client-key rate limiting and quotas
+- ~~Per-client-key rate limiting and quotas~~ — DONE in v1.4.1 (disabled by default, enable per-key via Edit modal)
 - ~~Usage analytics dashboard~~ — DONE in v1.4.0
 - Webhook/alerting notifications
 - ~~Streaming chat log (WebSocket push to UI instead of polling)~~ — DONE in v1.4.0 (SSE push)
