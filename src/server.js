@@ -758,6 +758,15 @@ function validateGeminiTurns(contents) {
   return warnings;
 }
 
+// ── Model allow-list check ────────────────────────────────────────────────────
+// Returns true if the requested model is allowed for this provider.
+// If the provider has no enabledModels list, all models are allowed.
+function isModelAllowedForProvider(provider, requestedModel) {
+  if (!provider.enabledModels || provider.enabledModels.length === 0) return true;
+  if (!requestedModel) return true;
+  return provider.enabledModels.includes(requestedModel);
+}
+
 // ── 1e: XML / Bad-Model Sentinel ──────────────────────────────────────────────
 // Scans a response body string for known bad-model output patterns.
 // Returns true if the response looks like garbage that should not be forwarded.
@@ -1811,6 +1820,12 @@ app.post('/v1/messages', validateApiKey, async (req, res) => {
     if (pass > 1) logger.info(`Provider routing pass ${pass}/3`);
 
     for (const provider of availableProviders) {
+      // Skip provider if requested model is not in its allow-list
+      if (!isModelAllowedForProvider(provider, req.body.model)) {
+        logger.info(`Skipping ${provider.name} — model ${req.body.model} not in enabledModels list`);
+        continue;
+      }
+
       initStats(provider.id);
       const providerLog = getProviderLogger(provider.name);
 
@@ -2530,6 +2545,88 @@ app.get('/api/provider-chat-log', requireAuth, (req, res) => {
     res.json({ log: tail, exists: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// Scan live models from a provider
+app.post('/api/scan-provider-models', requireAuth, async (req, res) => {
+  let { providerId, type, apiKey, projectId, location, baseUrl } = req.body;
+
+  if (providerId) {
+    const p = config.providers.find(p => p.id === providerId);
+    if (!p) return res.status(404).json({ error: 'Provider not found' });
+    type = p.type; apiKey = p.apiKey; projectId = p.projectId;
+    location = p.location; baseUrl = p.baseUrl;
+  }
+
+  if (!type) return res.status(400).json({ error: 'type required' });
+
+  try {
+    let models = [];
+
+    if (type === 'anthropic') {
+      const resp = await axios.get('https://api.anthropic.com/v1/models', {
+        headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+        timeout: 10000
+      });
+      models = (resp.data.data || []).map(m => ({ id: m.id, name: m.display_name || m.id }));
+
+    } else if (type === 'openai') {
+      const resp = await axios.get('https://api.openai.com/v1/models', {
+        headers: { 'Authorization': `Bearer ${apiKey}` },
+        timeout: 10000
+      });
+      models = (resp.data.data || [])
+        .filter(m => m.id.startsWith('gpt') || m.id.startsWith('o1') || m.id.startsWith('o3') || m.id.startsWith('o4'))
+        .sort((a, b) => a.id.localeCompare(b.id))
+        .map(m => ({ id: m.id, name: m.id }));
+
+    } else if (type === 'grok') {
+      const resp = await axios.get('https://api.x.ai/v1/models', {
+        headers: { 'Authorization': `Bearer ${apiKey}` },
+        timeout: 10000
+      });
+      models = (resp.data.data || []).map(m => ({ id: m.id, name: m.id }));
+
+    } else if (type === 'google') {
+      const resp = await axios.get(
+        `https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}&pageSize=50`,
+        { timeout: 10000 }
+      );
+      models = (resp.data.models || [])
+        .filter(m => m.supportedGenerationMethods?.includes('generateContent'))
+        .map(m => ({ id: m.name.replace('models/', ''), name: m.displayName || m.name.replace('models/', '') }));
+
+    } else if (type === 'ollama') {
+      const base = (baseUrl || 'http://localhost:11434').replace(/\/$/, '');
+      const resp = await axios.get(`${base}/api/tags`, { timeout: 10000 });
+      models = (resp.data.models || []).map(m => ({ id: m.name, name: m.name }));
+
+    } else if (type === 'openai-compatible') {
+      const base = (baseUrl || '').replace(/\/$/, '');
+      if (!base) return res.status(400).json({ error: 'baseUrl required for openai-compatible' });
+      const headers = apiKey ? { 'Authorization': `Bearer ${apiKey}` } : {};
+      const resp = await axios.get(`${base}/v1/models`, { headers, timeout: 10000 });
+      models = (resp.data.data || resp.data.models || []).map(m => ({ id: m.id || m.name, name: m.id || m.name }));
+
+    } else if (type === 'vertex') {
+      // Vertex doesn't have a simple REST models list without gcloud auth — return known models
+      models = [
+        { id: 'gemini-2.5-pro-preview-05-06', name: 'Gemini 2.5 Pro Preview' },
+        { id: 'gemini-2.5-flash-preview-04-17', name: 'Gemini 2.5 Flash Preview' },
+        { id: 'gemini-2.0-flash-001', name: 'Gemini 2.0 Flash' },
+        { id: 'gemini-1.5-pro-002', name: 'Gemini 1.5 Pro' },
+        { id: 'gemini-1.5-flash-002', name: 'Gemini 1.5 Flash' },
+      ];
+    } else {
+      return res.status(400).json({ error: `Model scanning not supported for type: ${type}` });
+    }
+
+    res.json({ models });
+  } catch (err) {
+    const status = err.response?.status;
+    const msg = err.response?.data?.error?.message || err.response?.data?.message || err.message;
+    res.status(500).json({ error: `Scan failed (${status || 'network'}): ${msg}` });
   }
 });
 
