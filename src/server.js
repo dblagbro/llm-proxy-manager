@@ -96,7 +96,7 @@ function logChatRequest(providerName, pass, model, messages, req) {
   const lines = [`\n[${ts}] ── REQUEST → ${providerName} (pass ${pass}, model: ${model}) ──`, sep];
   if (req) {
     const ip = req.headers['x-real-ip'] || req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.ip || 'unknown';
-    const keyName = req.clientKey.name;
+    const keyName = req.clientKey?.name || '(unnamed key)';
     const reqId = req.requestId || '-';
     lines.push(`  source-ip: ${ip}  key: "${keyName}"  req-id: ${reqId}`);
   }
