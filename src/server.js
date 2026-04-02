@@ -579,8 +579,8 @@ async function initializeUsers() {
 // API Key validation middleware
 function validateApiKey(req, res, next) {
   // Exempt certain paths from API key validation
-  const exemptPaths = ['/health', '/api/config', '/api/stats', '/api/client-keys', '/api/test-provider', '/api/scan-provider-models', '/'];
-  const isExempt = exemptPaths.some(path => req.path === path || req.path.startsWith(path));
+  const exemptPaths = ['/health', '/api/config', '/api/stats', '/api/client-keys', '/api/test-provider', '/api/scan-provider-models'];
+  const isExempt = exemptPaths.some(path => req.path === path || req.path.startsWith(path + '/')) || req.path === '/';
 
   if (isExempt) {
     return next();

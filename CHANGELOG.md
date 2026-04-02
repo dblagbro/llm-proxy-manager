@@ -5,6 +5,11 @@ All notable changes to the LLM Proxy Manager project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.9] - 2026-04-02
+
+### Security / Fixed
+- **API key validation bypass**: `validateApiKey` exempt path check used `req.path.startsWith('/')` which is true for every path, meaning ALL requests bypassed authentication. `req.clientKey` was never set, causing `(unnamed key)` in every chat log entry. Fixed to only exempt specific paths exactly.
+
 ## [1.4.8] - 2026-04-02
 
 ### Fixed
