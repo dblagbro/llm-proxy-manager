@@ -5,6 +5,11 @@ All notable changes to the LLM Proxy Manager project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.11] - 2026-04-02
+
+### Fixed
+- **Provider delete not persisting**: `deleteProvider()` only removed the provider from the in-memory UI state and never called `POST /api/config` to save the change. Deletes now immediately persist to the server.
+
 ## [1.4.10] - 2026-04-02
 
 ### Fixed
