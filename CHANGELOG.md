@@ -5,6 +5,11 @@ All notable changes to the LLM Proxy Manager project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.8] - 2026-04-02
+
+### Fixed
+- **Log viewer line limit**: Backend was hard-capping log reads at 2000 lines regardless of request. Cap raised to 100,000. UI dropdown now offers 500 / 1000 / 5000 / 20000 / All options instead of stopping at "All (2000)".
+
 ## [1.4.7] - 2026-04-02
 
 ### Changed
