@@ -1417,7 +1417,7 @@ latency=312ms  model=claude-sonnet-4-6  tokens=in:14/out:8  cost=$0.000163
                     <ol style="line-height:2;">
                         <li>Find the provider card on the main page.</li>
                         <li>Click the <strong>📋 Log</strong> button.</li>
-                        <li>The log viewer opens showing the last 200 lines by default.</li>
+                        <li>The log viewer opens showing the last 200 lines by default. Select up to All (100,000 lines).</li>
                         <li>Use the <strong>Show last</strong> dropdown to show more or fewer lines.</li>
                         <li>Click <strong>↻ Refresh</strong> to reload manually.</li>
                         <li>Check <strong>Auto-refresh</strong> to poll every 4 seconds — useful for watching live traffic.</li>
@@ -1568,7 +1568,9 @@ print(message.content[0].text)</pre>
                     <option value="200" selected>200 lines</option>
                     <option value="500">500 lines</option>
                     <option value="1000">1000 lines</option>
-                    <option value="2000">All (2000)</option>
+                    <option value="5000">5000 lines</option>
+                    <option value="20000">20000 lines</option>
+                    <option value="100000">All</option>
                 </select>
                 <button class="btn btn-small btn-secondary" onclick="refreshProviderLog()">↻ Refresh</button>
                 <label style="margin-left: auto; font-size: 13px; display: flex; align-items: center; gap: 6px; cursor: pointer;">

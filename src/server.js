@@ -2552,7 +2552,7 @@ app.get('/api/provider-chat-log', requireAuth, (req, res) => {
   }
 
   try {
-    const n = Math.min(parseInt(lines) || 200, 2000);
+    const n = Math.min(parseInt(lines) || 200, 100000);
     const content = fs.readFileSync(logPath, 'utf8');
     const allLines = content.split('\n');
     const tail = allLines.slice(-n).join('\n');
