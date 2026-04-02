@@ -25,8 +25,8 @@ const logger = winston.createLogger({
     winston.format.json()
   ),
   transports: [
-    new winston.transports.File({ filename: '/app/logs/error.log', level: 'error' }),
-    new winston.transports.File({ filename: '/app/logs/combined.log' }),
+    new winston.transports.File({ filename: '/app/logs/error.log', level: 'error', maxsize: 500 * 1024 * 1024, maxFiles: 5, tailable: true }),
+    new winston.transports.File({ filename: '/app/logs/combined.log', maxsize: 500 * 1024 * 1024, maxFiles: 5, tailable: true }),
     new winston.transports.Console({ format: winston.format.simple() })
   ]
 });
@@ -46,7 +46,7 @@ function getProviderLogger(providerName) {
       transports: [
         new winston.transports.File({
           filename: `/app/logs/provider-${providerName}.log`,
-          maxsize: 50 * 1024 * 1024, // 50MB
+          maxsize: 500 * 1024 * 1024, // 500MB
           maxFiles: 5,
           tailable: true
         }),
@@ -70,7 +70,7 @@ function getProviderChatLogger(providerName) {
       transports: [
         new winston.transports.File({
           filename: `/app/logs/chat-${safeName}.log`,
-          maxsize: 50 * 1024 * 1024,
+          maxsize: 500 * 1024 * 1024, // 500MB
           maxFiles: 5,
           tailable: true
         })
