@@ -5,6 +5,11 @@ All notable changes to the LLM Proxy Manager project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.7] - 2026-04-02
+
+### Changed
+- **Log rotation increased to 500MB** (from 50MB) for all log files: provider logs, chat logs, error.log, combined.log. Retains last 5 rotated files per log (up to 2.5GB total per log type).
+
 ## [1.4.6] - 2026-04-02
 
 ### Security

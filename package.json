@@ -1,6 +1,6 @@
 {
   "name": "llm-proxy-manager",
-  "version": "1.4.6",
+  "version": "1.4.7",
   "description": "Production-ready LLM API proxy with multi-provider failover and web-based management",
   "main": "src/server.js",
   "scripts": {
