@@ -2326,10 +2326,20 @@ print(message.content[0].text)</pre>
             document.getElementById('editModal').classList.add('show');
         }
 
-        function deleteProvider(idx) {
+        async function deleteProvider(idx) {
             if (!confirm('Are you sure you want to delete this provider?')) return;
             config.providers.splice(idx, 1);
             renderProviders();
+            try {
+                const response = await fetch('./api/config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(config)
+                });
+                if (!response.ok) alert('❌ Error saving deletion');
+            } catch (e) {
+                alert('❌ Error saving deletion: ' + e.message);
+            }
         }
 
         function updateFormFields() {
