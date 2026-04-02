@@ -5,6 +5,12 @@ All notable changes to the LLM Proxy Manager project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.12] - 2026-04-02
+
+### Security / Fixed
+- **Insecure default password**: First-run default admin account now uses `Super*120120` instead of `admin`. Configurable via `DEFAULT_ADMIN_PASSWORD` env var.
+- **Volume mount corrected**: Containers now mount `/opt/llm-proxy-data/config` (not `/home/dblagbro/llm-proxy-data`) so config survives container replacement.
+
 ## [1.4.11] - 2026-04-02
 
 ### Fixed

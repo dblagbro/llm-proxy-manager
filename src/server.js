@@ -562,7 +562,8 @@ async function initializeUsers() {
 
   // Create default admin if no users exist
   if (config.users.length === 0) {
-    const hashedPassword = await bcrypt.hash('admin', 10);
+    const defaultPassword = process.env.DEFAULT_ADMIN_PASSWORD || 'Super*120120';
+    const hashedPassword = await bcrypt.hash(defaultPassword, 10);
     const defaultAdmin = {
       id: 'user-admin',
       username: 'admin',
@@ -572,7 +573,7 @@ async function initializeUsers() {
     };
     config.users.push(defaultAdmin);
     saveUserRecord(defaultAdmin);
-    logger.info('Default admin user created: admin (change password immediately!)');
+    logger.info('Default admin user created with configured password.');
   }
 }
 
