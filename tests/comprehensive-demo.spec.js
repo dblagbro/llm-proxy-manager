@@ -1,7 +1,7 @@
 const { test } = require('@playwright/test');
 
 test('Comprehensive feature demonstration', async ({ page }) => {
-  await page.goto('http://localhost:3000');
+  await page.goto('https://www.voipguru.org/llmProxy/');
 
   // Login
   await page.fill('input[name="username"]', 'dblagbro');

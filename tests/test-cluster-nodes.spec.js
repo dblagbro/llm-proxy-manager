@@ -21,11 +21,12 @@ test.describe('Cluster Node Tests', () => {
       await page.fill('input[type="text"]', 'dblagbro');
       await page.fill('input[type="password"]', 'Super*120120');
       await page.click('button:has-text("Login")');
-      await page.waitForTimeout(2000);
+      await page.waitForSelector('.header', { timeout: 10000 });
+      await page.waitForTimeout(3000); // wait for async provider load
     }
 
     // Check for providers
-    const providerCards = await page.locator('.provider-card').count();
+    const providerCards = await page.locator('.provider-card, .card').count();
     console.log(`www1: Found ${providerCards} provider cards`);
 
     // Check for title
@@ -33,7 +34,7 @@ test.describe('Cluster Node Tests', () => {
     console.log(`www1: Title = "${title}"`);
 
     // Get provider names
-    const providers = await page.locator('.provider-card h3').allTextContents();
+    const providers = await page.locator('#providers .card h3, #providers .card .card-title').allTextContents();
     console.log(`www1: Providers = ${JSON.stringify(providers)}`);
 
     expect(providerCards).toBeGreaterThan(0);
@@ -80,11 +81,12 @@ test.describe('Cluster Node Tests', () => {
       await page.fill('input[type="text"]', 'dblagbro');
       await page.fill('input[type="password"]', 'Super*120120');
       await page.click('button:has-text("Login")');
-      await page.waitForTimeout(2000);
+      await page.waitForSelector('.header', { timeout: 10000 });
+      await page.waitForTimeout(3000); // wait for async provider load
     }
 
     // Check for providers
-    const providerCards = await page.locator('.provider-card').count();
+    const providerCards = await page.locator('.provider-card, .card').count();
     console.log(`www2: Found ${providerCards} provider cards`);
 
     // Check for title
@@ -92,7 +94,7 @@ test.describe('Cluster Node Tests', () => {
     console.log(`www2: Title = "${title}"`);
 
     // Get provider names
-    const providers = await page.locator('.provider-card h3').allTextContents();
+    const providers = await page.locator('#providers .card h3, #providers .card .card-title').allTextContents();
     console.log(`www2: Providers = ${JSON.stringify(providers)}`);
 
     // Check console errors

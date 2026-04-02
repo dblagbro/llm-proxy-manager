@@ -2234,19 +2234,23 @@ app.post('/api/smtp/test', requireAuth, async (req, res) => {
   }
 });
 
-// Get config
+// Get config — API keys always masked
 app.get('/api/config', (req, res) => {
-  const isLoggedIn = !!(req.session && req.session.user);
   const safeConfig = {
     ...config,
     providers: config.providers.map(p => ({
       ...p,
-      apiKey: isLoggedIn
-        ? (p.apiKey || '')
-        : (p.apiKey ? `${p.apiKey.slice(0, 10)}...${p.apiKey.slice(-4)}` : 'NOT SET')
+      apiKey: p.apiKey ? `${p.apiKey.slice(0, 10)}...${p.apiKey.slice(-4)}` : 'NOT SET'
     }))
   };
   res.json(safeConfig);
+});
+
+// Reveal real API key for a single provider — requires login
+app.get('/api/provider-apikey/:id', requireAuth, (req, res) => {
+  const provider = config.providers.find(p => p.id === req.params.id);
+  if (!provider) return res.status(404).json({ error: 'Provider not found' });
+  res.json({ apiKey: provider.apiKey || '' });
 });
 
 // Update config

@@ -1,7 +1,7 @@
 const { test, expect } = require('@playwright/test');
 
 test('Check LLM Proxy UI', async ({ page }) => {
-  await page.goto('http://localhost:3000');
+  await page.goto('https://www.voipguru.org/llmProxy/');
   
   // Login
   await page.fill('input[type="text"]', 'dblagbro');

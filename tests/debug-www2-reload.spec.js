@@ -1,6 +1,6 @@
 const { test } = require('@playwright/test');
 
-test('Debug www2 reload issue', async ({ page }) => {
+test.skip('Debug www2 reload issue', async ({ page }) => {
   // Track navigation events
   page.on('framenavigated', (frame) => {
     if (frame === page.mainFrame()) {

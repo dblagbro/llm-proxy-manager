@@ -35,9 +35,9 @@ test.describe('LLM Proxy Login Test - Browser Simulation', () => {
     console.log(`4. Page title: ${pageTitle}`);
 
     // Fill in login credentials - using ADMIN not dblagbro
-    console.log('5. Entering credentials: admin / Super*120120');
-    await page.fill('input[name="username"], input#username', 'admin');
-    await page.fill('input[name="password"], input#password', 'Super*120120');
+    console.log('5. Entering credentials: dblagbro / Super*120120');
+    await page.fill('input[name="username"], input#username, input[type="text"]', 'dblagbro');
+    await page.fill('input[name="password"], input#password, input[type="password"]', 'Super*120120');
 
     // Take screenshot with credentials filled
     await page.screenshot({ path: '/tmp/login-page-filled.png' });
@@ -57,8 +57,7 @@ test.describe('LLM Proxy Login Test - Browser Simulation', () => {
       responseBody = await response.json();
       console.log('9. Login response body:', JSON.stringify(responseBody, null, 2));
     } catch (e) {
-      const responseText = await response.text();
-      console.log('9. Login response (text):', responseText);
+      console.log('9. Login response body not available (redirect/navigation)');
     }
 
     // Should get successful login response

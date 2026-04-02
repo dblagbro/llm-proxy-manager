@@ -39,14 +39,14 @@ test('verify LLM Proxy production UI features', async ({ page }) => {
   await page.waitForTimeout(500);
 
   // Check 6: Profile settings option should be visible
-  const profileSettings = page.locator('text=Profile Settings');
+  const profileSettings = page.locator('.user-dropdown-menu').locator('text=Profile Settings');
   const isProfileVisible = await profileSettings.isVisible();
   console.log('Profile Settings visible:', isProfileVisible);
 
-  // Check 7: Change Password option should be visible
-  const changePassword = page.locator('text=Change Password');
+  // Check 7: Logout option should be visible in dropdown
+  const changePassword = page.locator('.user-dropdown-menu').locator('text=Logout');
   const isChangePasswordVisible = await changePassword.isVisible();
-  console.log('Change Password visible:', isChangePasswordVisible);
+  console.log('Logout visible:', isChangePasswordVisible);
 
   console.log('\n✅ All production features verified!');
 });

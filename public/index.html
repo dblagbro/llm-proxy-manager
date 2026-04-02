@@ -2264,7 +2264,13 @@ print(message.content[0].text)</pre>
             document.getElementById('modalTitle').textContent = 'Edit Provider';
             document.getElementById('edit-name').value = provider.name;
             document.getElementById('edit-type').value = provider.type;
-            document.getElementById('edit-apiKey').value = provider.apiKey || '';
+            const apiKeyInput = document.getElementById('edit-apiKey');
+            apiKeyInput.value = provider.apiKey || '';
+            apiKeyInput.type = 'password';
+            apiKeyInput.dataset.revealed = 'false';
+            apiKeyInput.dataset.providerId = provider.id || '';
+            const showBtn = apiKeyInput.closest('.api-key-display')?.querySelector('button');
+            if (showBtn) { showBtn.textContent = '👁️ Show'; }
             document.getElementById('edit-projectId').value = provider.projectId || '';
             document.getElementById('edit-location').value = provider.location || '';
             document.getElementById('edit-baseUrl').value = provider.baseUrl || '';
@@ -2378,10 +2384,21 @@ print(message.content[0].text)</pre>
             }
         }
 
-        function toggleProviderApiKeyVisibility() {
+        async function toggleProviderApiKeyVisibility() {
             const input = document.getElementById('edit-apiKey');
             const btn = event.target;
             if (input.type === 'password') {
+                // Fetch real key on first reveal
+                if (input.dataset.revealed !== 'true' && input.dataset.providerId) {
+                    try {
+                        const r = await fetch(`./api/provider-apikey/${input.dataset.providerId}`);
+                        if (r.ok) {
+                            const data = await r.json();
+                            input.value = data.apiKey;
+                            input.dataset.revealed = 'true';
+                        }
+                    } catch (e) { /* leave masked value */ }
+                }
                 input.type = 'text';
                 btn.textContent = '🙈 Hide';
             } else {

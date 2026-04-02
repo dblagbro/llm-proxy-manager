@@ -427,12 +427,18 @@ class ClusterManager extends EventEmitter {
 
   verifySignature(payload, signature) {
     if (!this.syncSecret) return true; // No auth required if no secret set
+    if (!signature) return false;
 
     const expected = this.generateSignature(payload);
-    return crypto.timingSafeEqual(
-      Buffer.from(expected, 'hex'),
-      Buffer.from(signature, 'hex')
-    );
+    const expectedBuf = Buffer.from(expected, 'hex');
+    let sigBuf;
+    try {
+      sigBuf = Buffer.from(signature, 'hex');
+    } catch (e) {
+      return false;
+    }
+    if (sigBuf.length !== expectedBuf.length) return false;
+    return crypto.timingSafeEqual(expectedBuf, sigBuf);
   }
 
   // Express middleware for cluster authentication

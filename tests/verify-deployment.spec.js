@@ -15,10 +15,11 @@ test.describe('LLM Proxy Deployment Verification', () => {
     expect(response.status()).toBeLessThan(500);
 
     // Page should contain login elements
-    await expect(page.locator('title')).toHaveText(/LLM Proxy Manager/i);
+    const pageTitle = await page.title();
+    expect(pageTitle).toMatch(/LLM Proxy/i);
 
     // Should have login form
-    const usernameInput = page.locator('input[name="username"], input#username');
+    const usernameInput = page.locator('input#username').first();
     await expect(usernameInput).toBeVisible();
   });
 
@@ -70,8 +71,8 @@ test.describe('LLM Proxy Deployment Verification', () => {
     // Click login button
     await page.click('button[type="submit"], button:has-text("Login")');
 
-    // Wait for navigation to dashboard
-    await page.waitForURL(/dashboard|\/(?!login)/, { timeout: 10000 });
+    // SPA - wait for dashboard to load (URL doesn't change)
+    await page.waitForSelector('.header', { timeout: 10000 });
 
     // Should see dashboard elements
     const pageContent = await page.content();

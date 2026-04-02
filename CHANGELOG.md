@@ -5,6 +5,24 @@ All notable changes to the LLM Proxy Manager project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.6] - 2026-04-02
+
+### Security
+- **Port 3000 no longer exposed on LAN/internet**: Docker containers moved to internal-only Docker network shared with nginx. Port 3000 is no longer bound to `0.0.0.0` on any node — accessible only via nginx on port 443.
+- **nginx proxy_pass updated** on all 3 nodes to use container hostname (`llm-proxy-manager`) via Docker network instead of `172.17.0.1:3000`.
+
+### Fixed
+- **Cluster signature verification crash**: `verifySignature` threw `RangeError: Input buffers must have the same byte length` when a peer sent an empty or malformed HMAC signature. Now validates presence and byte length before `crypto.timingSafeEqual`.
+- **www2 nginx 502**: nginx config used hostname `llm-proxy` (wrong container name) instead of `llm-proxy-manager`, causing DNS resolution failure inside the nginx container.
+
+### Tests
+- Updated Playwright test suite: fixed stale version checks, localhost:3000/3100 references, strict mode selector violations, SPA login flow assertions, and async provider load timing. All 32 tests passing, 2 debug tests skipped.
+
+## [1.4.5] - 2026-04-01
+
+### Fixed
+- **API key visibility**: Provider API keys are now always masked in `/api/config` (shown as `sk-ant-api0...3456`). Full key is only revealed in the Edit Provider form when the user explicitly clicks the 👁️ Show button, fetched via a new authenticated-only endpoint `GET /api/provider-apikey/:id`. Previously, logged-in users could see full API keys on the main provider list.
+
 ## [1.4.4] - 2026-04-01
 
 ### Fixed

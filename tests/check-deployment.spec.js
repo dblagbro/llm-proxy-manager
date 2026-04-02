@@ -21,7 +21,7 @@ test.describe('LLM Proxy Deployment Check', () => {
     // Check version number
     const versionText = await page.locator('h1 span').textContent();
     console.log('Version:', versionText);
-    expect(versionText).toContain('v1.0.6');
+    expect(versionText).toContain('v1.4');
 
     // Check subtitle
     const subtitle = await page.locator('.subtitle').textContent();
