@@ -5,6 +5,11 @@ All notable changes to the LLM Proxy Manager project will be documented in this 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.10] - 2026-04-02
+
+### Fixed
+- **Provider deletions restored by cluster sync**: When a provider was deleted, the cluster sync would restore it from peer nodes on the next sync cycle. Fixed by recording deleted provider IDs as tombstones (`deletedProviderIds` in config). Tombstones are shared with peers via `/cluster/config` and respected during `mergeConfiguration` — deleted providers are never re-added.
+
 ## [1.4.9] - 2026-04-02
 
 ### Security / Fixed

@@ -332,12 +332,32 @@ class ClusterManager extends EventEmitter {
       }
     }
 
-    // Merge providers (union, no duplicates by ID)
+    // Merge deleted provider tombstones from peer first
+    if (remoteConfig.deletedProviderIds && remoteConfig.deletedProviderIds.length > 0) {
+      if (!this.config.deletedProviderIds) this.config.deletedProviderIds = [];
+      for (const id of remoteConfig.deletedProviderIds) {
+        if (!this.config.deletedProviderIds.includes(id)) {
+          this.config.deletedProviderIds.push(id);
+          changes++;
+          this.logger.info(`Learned deleted provider from peer: ${id}`);
+        }
+      }
+      // Remove any locally present providers that are tombstoned
+      const tombstones = new Set(this.config.deletedProviderIds);
+      const before = this.config.providers.length;
+      this.config.providers = this.config.providers.filter(p => !tombstones.has(p.id));
+      if (this.config.providers.length < before) {
+        changes += before - this.config.providers.length;
+      }
+    }
+
+    // Merge providers (union, no duplicates by ID, respecting tombstones)
     if (remoteConfig.providers) {
+      const tombstones = new Set(this.config.deletedProviderIds || []);
       const localProviderIds = new Set(this.config.providers.map(p => p.id));
 
       for (const provider of remoteConfig.providers) {
-        if (!localProviderIds.has(provider.id)) {
+        if (!localProviderIds.has(provider.id) && !tombstones.has(provider.id)) {
           this.config.providers.push(provider);
           changes++;
           this.logger.info(`Added provider from peer: ${provider.name}`);

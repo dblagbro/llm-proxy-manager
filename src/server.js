@@ -2257,6 +2257,19 @@ app.get('/api/provider-apikey/:id', requireAuth, (req, res) => {
 app.post('/api/config', (req, res) => {
   try {
     if (req.body.providers) {
+      // Track deleted provider IDs as tombstones so cluster sync doesn't restore them
+      const incomingIds = new Set(req.body.providers.map(p => p.id));
+      const deletedIds = config.providers.map(p => p.id).filter(id => !incomingIds.has(id));
+      if (deletedIds.length > 0) {
+        if (!config.deletedProviderIds) config.deletedProviderIds = [];
+        for (const id of deletedIds) {
+          if (!config.deletedProviderIds.includes(id)) {
+            config.deletedProviderIds.push(id);
+            logger.info('Provider deleted (tombstone recorded)', { id });
+          }
+        }
+      }
+
       // Replace the entire providers array to support add/edit/delete
       config.providers = req.body.providers.map((p, idx) => {
         // Check if API key is masked (from the GET endpoint)
@@ -3371,6 +3384,7 @@ app.get('/cluster/config', (req, res) => {
       users: config.users,
       clientApiKeys: config.clientApiKeys,
       providers: config.providers,
+      deletedProviderIds: config.deletedProviderIds || [],
       activityLog: process.env.CLUSTER_SYNC_ACTIVITY_LOG === 'true'
         ? config.activityLog
         : []
