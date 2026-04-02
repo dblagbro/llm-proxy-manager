@@ -2,7 +2,7 @@ const { test, expect } = require('@playwright/test');
 
 test('Configure SMTP settings and test email', async ({ page }) => {
   // Navigate to the application
-  await page.goto('http://localhost:3000');
+  await page.goto('https://www.voipguru.org/llmProxy/');
 
   // Login
   await page.fill('input[name="username"]', 'dblagbro');

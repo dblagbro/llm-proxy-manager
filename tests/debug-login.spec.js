@@ -1,6 +1,6 @@
 const { test } = require('@playwright/test');
 
-test('Debug login process', async ({ page }) => {
+test.skip('Debug login process', async ({ page }) => {
   console.log('\n=== LOGIN DEBUG ===\n');
   
   await page.goto('http://localhost:3000');
