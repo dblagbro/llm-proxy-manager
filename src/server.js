@@ -2129,6 +2129,7 @@ app.get('/health', (req, res) => {
   const enabledCount = config.providers.filter(p => p.enabled).length;
   res.json({
     status: 'ok',
+    version: require('../package.json').version,
     providers: {
       total: config.providers.length,
       enabled: enabledCount
