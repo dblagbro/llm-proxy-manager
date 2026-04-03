@@ -12,14 +12,17 @@ class ClusterManager extends EventEmitter {
     super();
     this.logger = logger;
     this.config = config;
-    this.enabled = process.env.CLUSTER_ENABLED === 'true';
+
+    // Read cluster config from file first, fallback to env vars
+    const clusterConfig = config.cluster || {};
+    this.enabled = clusterConfig.enabled || process.env.CLUSTER_ENABLED === 'true';
 
     this.nodeId = process.env.CLUSTER_NODE_ID || require('os').hostname();
-    this.nodeName = process.env.CLUSTER_NODE_NAME || `LLM Proxy ${this.nodeId}`;
+    this.nodeName = process.env.CLUSTER_NODE_NAME || clusterConfig.localName || `LLM Proxy ${this.nodeId}`;
     this.syncSecret = process.env.CLUSTER_SYNC_SECRET || '';
 
-    // Parse peer configuration
-    this.peers = this.parsePeers(process.env.CLUSTER_PEERS || '');
+    // Parse peer configuration from config file first, fallback to env var
+    this.peers = this.parsePeersFromConfig(clusterConfig.nodes) || this.parsePeers(process.env.CLUSTER_PEERS || '');
 
     // Cluster state
     this.peerHealth = new Map();
@@ -33,12 +36,38 @@ class ClusterManager extends EventEmitter {
     }
   }
 
+  parsePeersFromConfig(nodes) {
+    if (!nodes || !Array.isArray(nodes)) return null;
+
+    // Filter only active nodes, excluding self, and convert to peer format
+    return nodes
+      .filter(node => node.active && node.name !== this.nodeId && node.name !== this.nodeName && node.host !== this.nodeId)
+      .map(node => ({
+        id: node.name || node.host,
+        name: node.name || `LLM Proxy ${node.host}`,
+        url: node.ssl
+          ? `https://${node.host}${node.path || ''}`
+          : `http://${node.host}:${node.port || 3000}`,
+        healthy: false,
+        lastHeartbeat: null,
+        latency: 0,
+        providers: 0,
+        healthyProviders: 0
+      }));
+  }
+
   parsePeers(peerString) {
     if (!peerString) return [];
 
     // Format: "id1:url1,id2:url2"
     return peerString.split(',').map(peer => {
-      const [id, url] = peer.trim().split(':');
+      const trimmed = peer.trim();
+      const colonIndex = trimmed.indexOf(':');
+      if (colonIndex === -1) return null;
+
+      const id = trimmed.substring(0, colonIndex);
+      const url = trimmed.substring(colonIndex + 1);
+
       return {
         id: id,
         name: `LLM Proxy ${id}`,
@@ -49,16 +78,21 @@ class ClusterManager extends EventEmitter {
         providers: 0,
         healthyProviders: 0
       };
-    }).filter(p => p.id && p.url);
+    }).filter(p => p && p.id && p.url);
   }
 
-  start() {
+  async start() {
     if (!this.enabled) return;
 
     this.logger.info('Starting cluster manager...');
 
     // Initial peer discovery
-    this.discoverPeers();
+    await this.discoverPeers();
+
+    // Run initial sync immediately after discovery
+    setTimeout(() => {
+      this.syncConfiguration();
+    }, 3000);
 
     // Start heartbeat (every 30 seconds)
     this.heartbeatInterval = setInterval(() => {
@@ -91,8 +125,11 @@ class ClusterManager extends EventEmitter {
         });
 
         peer.name = response.data.nodeName || peer.name;
+        peer.healthy = true; // Mark as healthy if discovery succeeds
+        peer.lastHeartbeat = new Date();
         this.logger.info(`Discovered peer: ${peer.name} (${peer.id})`);
       } catch (err) {
+        peer.healthy = false;
         this.logger.warn(`Failed to discover peer ${peer.id}: ${err.message}`);
       }
     }
@@ -151,8 +188,8 @@ class ClusterManager extends EventEmitter {
     // Calculate provider health
     const providerHealth = providers.map(p => {
       const providerStats = stats[p.id] || {};
-      const total = (providerStats.success || 0) + (providerStats.failure || 0);
-      const successRate = total > 0 ? (providerStats.success || 0) / total : 0;
+      const total = (providerStats.successes || 0) + (providerStats.failures || 0);
+      const successRate = total > 0 ? (providerStats.successes || 0) / total : 0;
 
       return {
         id: p.id,
@@ -167,8 +204,8 @@ class ClusterManager extends EventEmitter {
 
     // Calculate overall stats
     const totalRequests = Object.values(stats).reduce((sum, s) => sum + (s.requests || 0), 0);
-    const successfulRequests = Object.values(stats).reduce((sum, s) => sum + (s.success || 0), 0);
-    const failedRequests = Object.values(stats).reduce((sum, s) => sum + (s.failure || 0), 0);
+    const successfulRequests = Object.values(stats).reduce((sum, s) => sum + (s.successes || 0), 0);
+    const failedRequests = Object.values(stats).reduce((sum, s) => sum + (s.failures || 0), 0);
 
     const latencies = Object.values(stats)
       .map(s => s.latency || [])
@@ -295,6 +332,39 @@ class ClusterManager extends EventEmitter {
       }
     }
 
+    // Merge deleted provider tombstones from peer first
+    if (remoteConfig.deletedProviderIds && remoteConfig.deletedProviderIds.length > 0) {
+      if (!this.config.deletedProviderIds) this.config.deletedProviderIds = [];
+      for (const id of remoteConfig.deletedProviderIds) {
+        if (!this.config.deletedProviderIds.includes(id)) {
+          this.config.deletedProviderIds.push(id);
+          changes++;
+          this.logger.info(`Learned deleted provider from peer: ${id}`);
+        }
+      }
+      // Remove any locally present providers that are tombstoned
+      const tombstones = new Set(this.config.deletedProviderIds);
+      const before = this.config.providers.length;
+      this.config.providers = this.config.providers.filter(p => !tombstones.has(p.id));
+      if (this.config.providers.length < before) {
+        changes += before - this.config.providers.length;
+      }
+    }
+
+    // Merge providers (union, no duplicates by ID, respecting tombstones)
+    if (remoteConfig.providers) {
+      const tombstones = new Set(this.config.deletedProviderIds || []);
+      const localProviderIds = new Set(this.config.providers.map(p => p.id));
+
+      for (const provider of remoteConfig.providers) {
+        if (!localProviderIds.has(provider.id) && !tombstones.has(provider.id)) {
+          this.config.providers.push(provider);
+          changes++;
+          this.logger.info(`Added provider from peer: ${provider.name}`);
+        }
+      }
+    }
+
     // Merge activity log (optional, can be disabled)
     if (process.env.CLUSTER_SYNC_ACTIVITY_LOG === 'true' && remoteConfig.activityLog) {
       const localLogIds = new Set(this.config.activityLog.map(l => l.id));
@@ -334,6 +404,7 @@ class ClusterManager extends EventEmitter {
       data: {
         users: this.config.users,
         clientApiKeys: this.config.clientApiKeys,
+        providers: this.config.providers,
         activityLog: process.env.CLUSTER_SYNC_ACTIVITY_LOG === 'true'
           ? this.config.activityLog
           : []
@@ -376,12 +447,18 @@ class ClusterManager extends EventEmitter {
 
   verifySignature(payload, signature) {
     if (!this.syncSecret) return true; // No auth required if no secret set
+    if (!signature) return false;
 
     const expected = this.generateSignature(payload);
-    return crypto.timingSafeEqual(
-      Buffer.from(expected, 'hex'),
-      Buffer.from(signature, 'hex')
-    );
+    const expectedBuf = Buffer.from(expected, 'hex');
+    let sigBuf;
+    try {
+      sigBuf = Buffer.from(signature, 'hex');
+    } catch (e) {
+      return false;
+    }
+    if (sigBuf.length !== expectedBuf.length) return false;
+    return crypto.timingSafeEqual(expectedBuf, sigBuf);
   }
 
   // Express middleware for cluster authentication
