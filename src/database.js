@@ -70,7 +70,8 @@ CREATE TABLE IF NOT EXISTS client_api_keys (
   created     TEXT NOT NULL,
   last_used   TEXT,
   requests    INTEGER NOT NULL DEFAULT 0,
-  enabled     INTEGER NOT NULL DEFAULT 1
+  enabled     INTEGER NOT NULL DEFAULT 1,
+  key_type    TEXT NOT NULL DEFAULT 'claude-code'
 );
 
 CREATE TABLE IF NOT EXISTS stats (
@@ -107,6 +108,8 @@ CREATE TABLE IF NOT EXISTS kv (
 function initDb() {
   db = new BetterSqlite3(DB_PATH, { verbose: null });
   db.exec(SCHEMA);
+  // Migrate: add key_type to existing databases that predate this column
+  try { db.exec("ALTER TABLE client_api_keys ADD COLUMN key_type TEXT NOT NULL DEFAULT 'claude-code'"); } catch (_) {}
   return db;
 }
 
@@ -143,11 +146,12 @@ function prepareStatements() {
 
   stmts.getAllKeys = db.prepare('SELECT * FROM client_api_keys ORDER BY created ASC');
   stmts.upsertKey = db.prepare(`
-    INSERT INTO client_api_keys (id, key_value, name, created, last_used, requests, enabled)
-    VALUES (@id, @key_value, @name, @created, @last_used, @requests, @enabled)
+    INSERT INTO client_api_keys (id, key_value, name, created, last_used, requests, enabled, key_type)
+    VALUES (@id, @key_value, @name, @created, @last_used, @requests, @enabled, @key_type)
     ON CONFLICT(id) DO UPDATE SET
       key_value=excluded.key_value, name=excluded.name,
-      last_used=excluded.last_used, requests=excluded.requests, enabled=excluded.enabled
+      last_used=excluded.last_used, requests=excluded.requests, enabled=excluded.enabled,
+      key_type=excluded.key_type
   `);
   stmts.deleteKey = db.prepare('DELETE FROM client_api_keys WHERE id = ?');
 
@@ -266,6 +270,7 @@ function rowToKey(row) {
     lastUsed: row.last_used || null,
     requests: row.requests || 0,
     enabled: row.enabled === 1,
+    keyType: row.key_type || 'claude-code',
   };
 }
 
@@ -278,6 +283,7 @@ function keyToRow(k) {
     last_used: k.lastUsed || null,
     requests: k.requests || 0,
     enabled: k.enabled !== false ? 1 : 0,
+    key_type: k.keyType || 'claude-code',
   };
 }
 
