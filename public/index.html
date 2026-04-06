@@ -814,6 +814,14 @@ export ANTHROPIC_API_KEY="proxy-handled"</textarea>
                     <label>Key Name / Description</label>
                     <input type="text" id="new-key-name" required placeholder="e.g., Production App, Dev Environment">
                 </div>
+                <div class="form-group">
+                    <label>Key Type</label>
+                    <select id="new-key-type" style="width:100%;padding:8px;background:var(--bg3,#2a2a2a);color:var(--text,#eee);border:1px solid var(--border,#444);border-radius:6px;">
+                        <option value="claude-code">Claude Code — reasoning enhancements on non-Anthropic backends</option>
+                        <option value="standard">Standard — plain pass-through, no augmentation</option>
+                    </select>
+                    <small style="color:var(--text-muted,#888);font-size:11px;margin-top:4px;display:block;">Claude Code keys inject CoT pipeline or native reasoning mode when routing to Gemini, GPT-4o, etc.</small>
+                </div>
                 <div class="form-actions">
                     <button type="button" class="btn btn-secondary" onclick="closeCreateApiKeyModal()">Cancel</button>
                     <button type="submit" class="btn btn-primary">Generate Key</button>
@@ -1728,6 +1736,7 @@ export ANTHROPIC_API_KEY="proxy-handled"</textarea>
                                 <button class="btn btn-secondary btn-small" onclick="copyApiKeyValue('${key.id}')" title="Copy to clipboard">📋 Copy</button>
                             </div>
                             <div style="color: #999; font-size: 12px; margin-top: 5px;">
+                                <span style="display:inline-block;padding:1px 7px;border-radius:10px;font-size:10px;font-weight:600;margin-right:6px;${key.keyType === 'standard' ? 'background:#444;color:#aaa;' : 'background:#1a3a5c;color:#7ab8f5;'}">${key.keyType === 'standard' ? 'STANDARD' : 'CLAUDE CODE'}</span>
                                 Created: ${new Date(key.created).toLocaleString()} •
                                 Requests: ${key.requests || 0} •
                                 ${key.lastUsed ? `Last used: ${new Date(key.lastUsed).toLocaleString()}` : 'Never used'}
@@ -1796,12 +1805,13 @@ export ANTHROPIC_API_KEY="proxy-handled"</textarea>
             e.preventDefault();
 
             const name = document.getElementById('new-key-name').value;
+            const keyType = document.getElementById('new-key-type').value;
 
             try {
                 const response = await fetch('./api/client-keys', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ name })
+                    body: JSON.stringify({ name, keyType })
                 });
 
                 if (response.ok) {
