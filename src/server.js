@@ -401,6 +401,11 @@ function loadConfig() {
         config.activityLog = [];
       }
 
+      // Migrate: ensure all clientApiKeys have keyType (default: 'claude-code')
+      if (config.clientApiKeys) {
+        config.clientApiKeys.forEach(k => { if (!k.keyType) k.keyType = 'claude-code'; });
+      }
+
       // Clear per-session transient status fields so providers don't show
       // stale red/green status from the previous session on login
       if (config.stats) {
@@ -1533,6 +1538,127 @@ async function streamOpenAICompatible(provider, request, res) {
   });
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Provider Augmentation Layer (claude-code key type)
+//
+// When a request arrives with a "claude-code" API key and the selected backend
+// is NOT Anthropic, this layer improves response quality to approximate the
+// reasoning depth Claude Code gets natively from Anthropic:
+//
+//  • Anthropic backend      → pass-through (Claude reasons natively)
+//  • OpenAI o-series        → set reasoning_effort=high (native reasoning mode)
+//  • Gemini 2.5 Pro/Flash   → set thinkingConfig.thinkingBudget (native thinking)
+//  • All other providers    → two-step CoT pipeline: pre-analysis call → inject
+//                             context + reasoning framework → main call
+//
+// "standard" key type always bypasses augmentation.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const COT_PRE_ANALYSIS_PROMPT = `You are analyzing a task before responding. Think briefly through:
+1. What service, component, or system is involved?
+2. What are the 2-3 most likely root causes based on the description?
+3. What diagnostic steps would confirm or rule them out?
+4. Is there a config file pattern issue (e.g., *-Sample.json exists but the real config is missing)?
+5. Should this be investigated locally before delegating to peer systems?
+Respond in under 250 words. This analysis will be prepended to improve your main response.`;
+
+const COT_REASONING_INJECTION = `\n\n## Diagnostic Reasoning\nFollow: OBSERVE → HYPOTHESIZE → TEST → FIX.\nConfig rule: if *-Sample.*, *-Example.*, or *-Template.* config exists but the plain version does not, the real config is MISSING — that is the root cause. Copy it and edit with correct values.\nDelegation rule: run at least 3 local diagnostic commands before delegating to peer systems.`;
+
+function getAugmentationMode(provider, clientKey) {
+  if (!clientKey || clientKey.keyType !== 'claude-code') return 'passthrough';
+  const type = provider.type;
+  const model = (provider.model || '').toLowerCase();
+  if (type === 'anthropic') return 'passthrough';
+  if (type === 'openai' && /^o[1-4]/.test(model)) return 'native-o-series';
+  if (type === 'google' && model.includes('gemini-2.5')) return 'native-gemini-thinking';
+  return 'cot-pipeline';
+}
+
+function extractLastUserText(messages) {
+  const userMsgs = (messages || []).filter(m => m.role === 'user');
+  if (!userMsgs.length) return '';
+  const last = userMsgs[userMsgs.length - 1];
+  if (typeof last.content === 'string') return last.content.slice(0, 2000);
+  if (Array.isArray(last.content)) return last.content.filter(b => b.type === 'text').map(b => b.text || '').join('\n').slice(0, 2000);
+  return '';
+}
+
+function buildAugmentedRequest(request, preAnalysis) {
+  const origSystem = typeof request.system === 'string' ? request.system
+    : Array.isArray(request.system) ? request.system.filter(s => s.type === 'text').map(s => s.text).join('\n')
+    : '';
+  const augmentedSystem = origSystem + COT_REASONING_INJECTION;
+  if (!preAnalysis) return { ...request, system: augmentedSystem };
+  const messages = [...(request.messages || [])];
+  if (messages.length > 0) {
+    const last = messages[messages.length - 1];
+    if (last.role === 'user') {
+      const origContent = typeof last.content === 'string' ? last.content
+        : Array.isArray(last.content) ? last.content.filter(b => b.type === 'text').map(b => b.text).join('\n')
+        : '';
+      messages[messages.length - 1] = { ...last, content: `[Pre-analysis: ${preAnalysis}]\n\n${origContent}` };
+    }
+  }
+  return { ...request, system: augmentedSystem, messages };
+}
+
+async function cotPipeline(provider, request) {
+  let preAnalysis = '';
+  try {
+    const preRequest = {
+      model: request.model,
+      max_tokens: 400,
+      messages: [{ role: 'user', content: extractLastUserText(request.messages) || 'Analyze the task.' }],
+      system: COT_PRE_ANALYSIS_PROMPT,
+      temperature: 0.3,
+      stream: false,
+    };
+    let preResult;
+    switch (provider.type) {
+      case 'openai':            preResult = await callOpenAI(provider, preRequest); break;
+      case 'openai-compatible': preResult = await callOpenAICompatible(provider, preRequest); break;
+      case 'grok':              preResult = await callGrok(provider, preRequest); break;
+      case 'ollama':            preResult = await callOllama(provider, preRequest); break;
+      default:                  preResult = await callOpenAICompatible(provider, preRequest);
+    }
+    preAnalysis = (preResult?.content?.map(b => b.text || '').join('') || '').slice(0, 500);
+  } catch (e) {
+    logger.warn(`CoT pre-analysis skipped for ${provider.name}: ${e.message}`);
+  }
+  const augmented = buildAugmentedRequest(request, preAnalysis);
+  switch (provider.type) {
+    case 'openai':            return callOpenAI(provider, augmented);
+    case 'openai-compatible': return callOpenAICompatible(provider, augmented);
+    case 'grok':              return callGrok(provider, augmented);
+    case 'ollama':            return callOllama(provider, augmented);
+    default:                  return callOpenAICompatible(provider, augmented);
+  }
+}
+
+// Single dispatch replacing both inline switch blocks in the request handler.
+// Applies augmentation based on key type + provider, then routes the call.
+async function dispatchProviderCall(provider, request, clientKey) {
+  const mode = getAugmentationMode(provider, clientKey);
+  if (mode === 'cot-pipeline') return cotPipeline(provider, request);
+  let augmented = request;
+  if (mode === 'native-o-series') {
+    augmented = { ...request, _reasoningEffort: 'high' };
+  } else if (mode === 'native-gemini-thinking') {
+    const budget = (provider.model || '').toLowerCase().includes('pro') ? 8000 : 5000;
+    augmented = { ...request, _geminiThinkingBudget: budget };
+  }
+  switch (provider.type) {
+    case 'anthropic':         return callAnthropic(provider, augmented);
+    case 'google':            return callGemini(provider, augmented);
+    case 'vertex':            return callVertex(provider, augmented);
+    case 'grok':              return callGrok(provider, augmented);
+    case 'ollama':            return callOllama(provider, augmented);
+    case 'openai':            return callOpenAI(provider, augmented);
+    case 'openai-compatible': return callOpenAICompatible(provider, augmented);
+    default: throw new Error(`Unsupported provider type: ${provider.type}`);
+  }
+}
+
 // Non-streaming calls (original functionality)
 async function callAnthropic(provider, request) {
   const response = await axios.post(
@@ -1563,6 +1689,12 @@ async function callAnthropic(provider, request) {
 async function callGemini(provider, request) {
   const geminiRequest = translateToGemini(request);
   const model = request.model?.includes('gemini') ? request.model : 'gemini-2.5-flash';
+
+  // Apply thinking budget for Gemini 2.5 when requested by augmentation layer
+  if (request._geminiThinkingBudget) {
+    geminiRequest.generationConfig = geminiRequest.generationConfig || {};
+    geminiRequest.generationConfig.thinkingConfig = { thinkingBudget: request._geminiThinkingBudget };
+  }
 
   const response = await axios.post(
     `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${provider.apiKey}`,
@@ -1692,6 +1824,8 @@ async function callOpenAI(provider, request) {
     stream: false
   };
   if (oaiTools) body.tools = oaiTools;
+  // Apply reasoning_effort for o-series models (augmentation layer)
+  if (request._reasoningEffort) body.reasoning_effort = request._reasoningEffort;
 
   const response = await axios.post(
     'https://api.openai.com/v1/chat/completions',
@@ -1903,18 +2037,7 @@ app.post('/v1/messages', validateApiKey, async (req, res) => {
           }
 
         } else {
-          const nonStreamCall = (() => {
-            switch (provider.type) {
-              case 'anthropic':         return callAnthropic(provider, requestBody);
-              case 'google':            return callGemini(provider, requestBody);
-              case 'vertex':            return callVertex(provider, requestBody);
-              case 'grok':              return callGrok(provider, requestBody);
-              case 'ollama':            return callOllama(provider, requestBody);
-              case 'openai':            return callOpenAI(provider, requestBody);
-              case 'openai-compatible': return callOpenAICompatible(provider, requestBody);
-              default: throw new Error(`Unsupported provider type: ${provider.type}`);
-            }
-          })();
+          const nonStreamCall = dispatchProviderCall(provider, requestBody, req.clientKey);
 
           if (maxLatencyMs > 0) {
             result = await Promise.race([
@@ -2462,7 +2585,7 @@ app.get('/api/client-keys', (req, res) => {
 });
 
 app.post('/api/client-keys', (req, res) => {
-  const { name, quotaEnabled, quotaRpm, quotaRpd } = req.body;
+  const { name, quotaEnabled, quotaRpm, quotaRpd, keyType } = req.body;
 
   if (!name || name.trim() === '') {
     return res.status(400).json({ error: 'Name is required' });
@@ -2479,6 +2602,7 @@ app.post('/api/client-keys', (req, res) => {
     quotaEnabled: Boolean(quotaEnabled),
     quotaRpm: parseInt(quotaRpm) || 0,
     quotaRpd: parseInt(quotaRpd) || 0,
+    keyType: keyType === 'standard' ? 'standard' : 'claude-code',
   };
 
   if (!config.clientApiKeys) {
@@ -2514,7 +2638,7 @@ app.delete('/api/client-keys/:id', (req, res) => {
 
 app.patch('/api/client-keys/:id', (req, res) => {
   const { id } = req.params;
-  const { enabled, name, quotaEnabled, quotaRpm, quotaRpd } = req.body;
+  const { enabled, name, quotaEnabled, quotaRpm, quotaRpd, keyType } = req.body;
 
   if (!config.clientApiKeys) {
     return res.status(404).json({ error: 'Key not found' });
@@ -2531,6 +2655,7 @@ app.patch('/api/client-keys/:id', (req, res) => {
   if (quotaEnabled !== undefined) key.quotaEnabled = Boolean(quotaEnabled);
   if (quotaRpm !== undefined) key.quotaRpm = parseInt(quotaRpm) || 0;
   if (quotaRpd !== undefined) key.quotaRpd = parseInt(quotaRpd) || 0;
+  if (keyType !== undefined) key.keyType = keyType === 'standard' ? 'standard' : 'claude-code';
 
   saveApiKeyRecord(key);
 

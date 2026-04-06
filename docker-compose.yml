@@ -19,7 +19,7 @@ services:
       - ./config:/app/config
       - ./logs:/app/logs
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/health"]
+      test: ["CMD-SHELL", "curl -f http://localhost:3000/health || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
