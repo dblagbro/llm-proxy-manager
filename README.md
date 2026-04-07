@@ -2,9 +2,9 @@
 
 A production-ready LLM API proxy with **multi-provider failover**, **intelligent monitoring**, **cluster mode**, and **web-based management**. Route your AI requests through multiple LLM providers (Anthropic Claude, Google Gemini, OpenAI, Grok, and more) with automatic failover, circuit breakers, and external service monitoring.
 
-![Version](https://img.shields.io/badge/version-1.0.0-blue)
+![Version](https://img.shields.io/badge/version-1.5.1-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
-![Node](https://img.shields.io/badge/node-%3E%3D18.0.0-brightgreen)
+![Node](https://img.shields.io/badge/node-%3E%3D20.0.0-brightgreen)
 
 ## ✨ Features
 
@@ -22,7 +22,21 @@ A production-ready LLM API proxy with **multi-provider failover**, **intelligent
 - ⏱️ **Configurable Timeouts**: Per-provider timeout settings to prevent hung requests
 - 📈 **Health Tracking**: Real-time provider health status and performance metrics
 
-### Cluster Mode (NEW!)
+### Claude Code Augmentation (v1.5.x)
+- 🧠 **Claude Code Key Type**: Generate API keys with type `claude-code` to enable reasoning enhancements on non-Anthropic backends
+- 💭 **Streaming CoT Pipeline**: Pre-analysis pass produces a thinking block (index 0) before the main streamed response — gives Gemini/OpenAI/Grok calls the same extended reasoning appearance as Claude's native thinking
+- 🌀 **Gemini 2.5 Native Thinking**: Automatic state-machine passthrough for `thought:true` parts — emitted as proper `thinking` content blocks in the SSE stream
+- 🧮 **OpenAI o-series Native Reasoning**: Routes o-series models through `reasoning_effort: high` instead of CoT pipeline
+- 💾 **In-Memory Session Store**: Pass `X-Session-ID` header to enrich subsequent pre-analysis turns with prior conversation context (30-min TTL, max 3 prior analyses per session)
+- 🔑 **Standard Key Type**: Non-augmented pass-through for existing integrations
+
+### Analytics & Monitoring
+- 📊 **Cost Analytics Dashboard**: Per-provider cost tracking with charts and session breakdowns
+- 🗃️ **Per-Provider Chat Log Viewer**: Browse all requests per provider with live stream replay
+- 📋 **Session Management**: View and manage active and historical sessions
+- 🔢 **Dynamic Version Display**: Live version shown in top bar, loaded from `/health` endpoint
+
+### Cluster Mode
 - 🌍 **Multi-Instance Deployment**: Deploy to 3+ servers for high availability
 - 🔄 **Configuration Sync**: Automatic synchronization of users and API keys across nodes
 - 💓 **Heartbeat Monitoring**: Continuous health checks between cluster members
@@ -235,6 +249,25 @@ export ANTHROPIC_API_KEY="llm-proxy-your-generated-key"
 ```
 
 See [CLAUDE-CODE-SETUP.md](CLAUDE-CODE-SETUP.md) for complete integration guide.
+
+### Claude Code Key Type (Reasoning Augmentation)
+
+When generating an API key in the web UI, choose key type **Claude Code** to enable reasoning enhancements for non-Anthropic backends:
+
+- Requests routed to **Anthropic**: plain pass-through (Anthropic has native thinking)
+- Requests routed to **Gemini 2.5**: native `thinkingConfig` budget injected; `thought:true` parts emitted as thinking blocks
+- Requests routed to **OpenAI o-series**: `reasoning_effort: high` added natively
+- Requests routed to **everything else** (Gemini non-2.5, Grok, OpenAI, etc.): CoT pipeline — a pre-analysis call produces a thinking block at SSE index 0, then the augmented main call streams from index 1
+
+To use session memory across turns, pass a consistent `X-Session-ID` header:
+
+```bash
+curl -X POST http://proxy:3000/v1/messages \
+  -H "x-api-key: your-claude-code-key" \
+  -H "X-Session-ID: my-session-abc" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "claude-sonnet-4-6", "max_tokens": 2000, "stream": true, ...}'
+```
 
 ## 🏗️ Architecture
 

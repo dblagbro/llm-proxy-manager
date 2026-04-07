@@ -17,7 +17,8 @@ This guide explains how to configure Claude Code (and other Claude sessions) to 
 3. Navigate to "API Keys" tab
 4. Click "Generate New API Key"
 5. Enter a name like "Claude Code - Workstation"
-6. **Copy the generated key immediately** (you won't see it again)
+6. **Select key type "Claude Code"** — enables reasoning/thinking augmentation when routed to non-Anthropic backends (Gemini, Grok, OpenAI). Use "Standard" for plain pass-through.
+7. **Copy the generated key immediately** (you won't see it again)
 
 ### Step 2: Configure Claude Code
 
