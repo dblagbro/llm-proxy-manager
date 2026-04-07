@@ -14,6 +14,28 @@ const ProviderHoldDown = require('./monitor');
 const NotificationManager = require('./notifications');
 const PricingManager = require('./pricing');
 
+// ─── CoT Streaming Session Store (in-memory, 30-min TTL) ────────────────────
+const _cotSessions = new Map();
+const COT_SESSION_TTL_MS = 30 * 60 * 1000;
+const COT_SESSION_MAX_ANALYSES = 3;
+setInterval(() => {
+  const cutoff = Date.now() - COT_SESSION_TTL_MS;
+  for (const [k, v] of _cotSessions) { if (v.ts < cutoff) _cotSessions.delete(k); }
+}, 5 * 60 * 1000);
+function getSessionAnalyses(sessionId) {
+  if (!sessionId) return [];
+  const s = _cotSessions.get(sessionId);
+  if (!s || Date.now() - s.ts > COT_SESSION_TTL_MS) return [];
+  return s.analyses;
+}
+function saveSessionAnalysis(sessionId, analysis) {
+  if (!sessionId || !analysis) return;
+  const s = _cotSessions.get(sessionId) || { analyses: [], ts: 0 };
+  s.analyses = [...s.analyses.slice(-(COT_SESSION_MAX_ANALYSES - 1)), analysis];
+  s.ts = Date.now();
+  _cotSessions.set(sessionId, s);
+}
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -399,11 +421,6 @@ function loadConfig() {
       // Initialize activityLog if it doesn't exist
       if (!config.activityLog) {
         config.activityLog = [];
-      }
-
-      // Migrate: ensure all clientApiKeys have keyType (default: 'claude-code')
-      if (config.clientApiKeys) {
-        config.clientApiKeys.forEach(k => { if (!k.keyType) k.keyType = 'claude-code'; });
       }
 
       // Clear per-session transient status fields so providers don't show
@@ -1201,9 +1218,13 @@ async function streamAnthropic(provider, request, res) {
 }
 
 // Stream Google Gemini API responses (translate to Anthropic SSE format, with tool_use support)
-async function streamGemini(provider, request, res) {
+async function streamGemini(provider, request, res, opts = {}) {
   const geminiRequest = translateToGemini(request);
   const model = request.model?.includes('gemini') ? request.model : 'gemini-2.5-flash';
+  if (request._geminiThinkingBudget) {
+    geminiRequest.generationConfig = geminiRequest.generationConfig || {};
+    geminiRequest.generationConfig.thinkingConfig = { thinkingBudget: request._geminiThinkingBudget };
+  }
 
   const response = await axios.post(
     `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?key=${provider.apiKey}&alt=sse`,
@@ -1224,33 +1245,57 @@ async function streamGemini(provider, request, res) {
     res.write(`data: ${JSON.stringify(data)}\n\n`);
   };
 
-  emit('message_start', {
-    type: 'message_start',
-    message: { id: messageId, type: 'message', role: 'assistant', content: [], model, usage: { input_tokens: 0, output_tokens: 0 } }
-  });
+  if (!opts.skipMessageStart) {
+    emit('message_start', {
+      type: 'message_start',
+      message: { id: messageId, type: 'message', role: 'assistant', content: [], model, usage: { input_tokens: 0, output_tokens: 0 } }
+    });
+  }
 
-  let blockIndex = 0;
+  let blockIndex = opts.blockIndexOffset || 0;
   let textBlockOpen = false;
+  let thinkingBlockOpen = false;
   let hasToolUse = false;
   let outputTokens = 0;
-  let textAccum = ''; // for chat log
+  let textAccum = '';
+  let thinkingPhase = 'IDLE';
 
-  // Accumulate partial SSE lines across TCP chunks
   let lineBuffer = '';
 
   const processChunk = (data) => {
     const parts = data.candidates?.[0]?.content?.parts || [];
     for (const part of parts) {
+      if (part.thought === true) {
+        if (thinkingPhase === 'TEXT') continue;
+        if (thinkingPhase === 'IDLE') {
+          emit('content_block_start', { type: 'content_block_start', index: blockIndex, content_block: { type: 'thinking', thinking: '' } });
+          thinkingBlockOpen = true;
+          thinkingPhase = 'THINKING';
+        }
+        if (part.text) emit('content_block_delta', { type: 'content_block_delta', index: blockIndex, delta: { type: 'thinking_delta', thinking: part.text } });
+        continue;
+      }
       if (part.text) {
+        if (thinkingBlockOpen) {
+          emit('content_block_stop', { type: 'content_block_stop', index: blockIndex });
+          blockIndex++;
+          thinkingBlockOpen = false;
+          thinkingPhase = 'TEXT';
+        }
         if (!textBlockOpen) {
           emit('content_block_start', { type: 'content_block_start', index: blockIndex, content_block: { type: 'text', text: '' } });
           textBlockOpen = true;
+          if (thinkingPhase === 'IDLE') thinkingPhase = 'TEXT';
         }
         outputTokens += part.text.length;
         textAccum += part.text;
         emit('content_block_delta', { type: 'content_block_delta', index: blockIndex, delta: { type: 'text_delta', text: part.text } });
       } else if (part.functionCall) {
-        // Close text block if open
+        if (thinkingBlockOpen) {
+          emit('content_block_stop', { type: 'content_block_stop', index: blockIndex });
+          blockIndex++;
+          thinkingBlockOpen = false;
+        }
         if (textBlockOpen) {
           emit('content_block_stop', { type: 'content_block_stop', index: blockIndex });
           blockIndex++;
@@ -1290,7 +1335,10 @@ async function streamGemini(provider, request, res) {
 
   return new Promise((resolve, reject) => {
     response.data.on('end', () => {
-      // Close any open text block
+      if (thinkingBlockOpen) {
+        emit('content_block_stop', { type: 'content_block_stop', index: blockIndex });
+        blockIndex++;
+      }
       if (textBlockOpen) {
         emit('content_block_stop', { type: 'content_block_stop', index: blockIndex });
       }
@@ -1311,7 +1359,7 @@ async function streamGemini(provider, request, res) {
 }
 
 // Stream OpenAI API responses (translate to Anthropic SSE format, with tool_use support)
-async function streamOpenAI(provider, request, res) {
+async function streamOpenAI(provider, request, res, opts = {}) {
   const { messages: convertedMessages, tools: oaiTools } = translateToOpenAI(request);
 
   const body = {
@@ -1323,9 +1371,14 @@ async function streamOpenAI(provider, request, res) {
     stream: true
   };
   if (oaiTools) body.tools = oaiTools;
+  if (request._reasoningEffort) body.reasoning_effort = request._reasoningEffort;
+
+  const apiUrl = opts.overrideBaseUrl
+    ? `${opts.overrideBaseUrl}/v1/chat/completions`
+    : 'https://api.openai.com/v1/chat/completions';
 
   const response = await axios.post(
-    'https://api.openai.com/v1/chat/completions',
+    apiUrl,
     body,
     {
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${provider.apiKey}` },
@@ -1343,13 +1396,15 @@ async function streamOpenAI(provider, request, res) {
     res.write(`data: ${JSON.stringify(data)}\n\n`);
   };
 
-  emit('message_start', {
-    type: 'message_start',
-    message: { id: messageId, type: 'message', role: 'assistant', content: [], model, usage: { input_tokens: 0, output_tokens: 0 } }
-  });
+  if (!opts.skipMessageStart) {
+    emit('message_start', {
+      type: 'message_start',
+      message: { id: messageId, type: 'message', role: 'assistant', content: [], model, usage: { input_tokens: 0, output_tokens: 0 } }
+    });
+  }
 
   // Track state for text and tool_call blocks
-  let blockIndex = 0;
+  let blockIndex = opts.blockIndexOffset || 0;
   let textBlockOpen = false;
   let hasToolUse = false;
   let outputTokens = 0;
@@ -1540,18 +1595,6 @@ async function streamOpenAICompatible(provider, request, res) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Provider Augmentation Layer (claude-code key type)
-//
-// When a request arrives with a "claude-code" API key and the selected backend
-// is NOT Anthropic, this layer improves response quality to approximate the
-// reasoning depth Claude Code gets natively from Anthropic:
-//
-//  • Anthropic backend      → pass-through (Claude reasons natively)
-//  • OpenAI o-series        → set reasoning_effort=high (native reasoning mode)
-//  • Gemini 2.5 Pro/Flash   → set thinkingConfig.thinkingBudget (native thinking)
-//  • All other providers    → two-step CoT pipeline: pre-analysis call → inject
-//                             context + reasoning framework → main call
-//
-// "standard" key type always bypasses augmentation.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const COT_PRE_ANALYSIS_PROMPT = `You are analyzing a task before responding. Think briefly through:
@@ -1635,22 +1678,63 @@ async function cotPipeline(provider, request) {
   }
 }
 
-// Single dispatch replacing both inline switch blocks in the request handler.
-// Applies augmentation based on key type + provider, then routes the call.
+async function streamCotPipeline(provider, request, res, httpReq) {
+  const sessionId = httpReq.headers['x-session-id'] || null;
+  const messageId = `msg_${Date.now()}`;
+  const model = request.model || provider.model || 'unknown';
+  const emit = (eventName, data) => {
+    res.write(`event: ${eventName}\n`);
+    res.write(`data: ${JSON.stringify(data)}\n\n`);
+  };
+  let preAnalysis = '';
+  try {
+    const priorAnalyses = getSessionAnalyses(sessionId);
+    let userText = extractLastUserText(request.messages) || 'Analyze the task.';
+    if (priorAnalyses.length > 0) {
+      userText = `Prior investigation context:\n${priorAnalyses.join('\n---\n')}\n\nCurrent task:\n${userText}`;
+    }
+    const preRequest = { model: request.model, max_tokens: 400, messages: [{ role: 'user', content: userText }], system: COT_PRE_ANALYSIS_PROMPT, temperature: 0.3, stream: false };
+    let preResult;
+    switch (provider.type) {
+      case 'openai':            preResult = await callOpenAI(provider, preRequest); break;
+      case 'openai-compatible': preResult = await callOpenAICompatible(provider, preRequest); break;
+      case 'grok':              preResult = await callGrok(provider, preRequest); break;
+      case 'ollama':            preResult = await callOllama(provider, preRequest); break;
+      default:                  preResult = await callOpenAICompatible(provider, preRequest);
+    }
+    preAnalysis = (preResult?.content?.map(b => b.text || '').join('') || '').slice(0, 500);
+  } catch (e) { logger.warn(`CoT stream pre-analysis failed for ${provider.name}: ${e.message}`); }
+  emit('message_start', { type: 'message_start', message: { id: messageId, type: 'message', role: 'assistant', content: [], model, usage: { input_tokens: 0, output_tokens: 0 } } });
+  if (preAnalysis) {
+    emit('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '' } });
+    emit('content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: preAnalysis } });
+    emit('content_block_stop', { type: 'content_block_stop', index: 0 });
+  }
+  const augmented = buildAugmentedRequest(request, preAnalysis);
+  const indexOffset = preAnalysis ? 1 : 0;
+  const streamOpts = { blockIndexOffset: indexOffset, skipMessageStart: true };
+  switch (provider.type) {
+    case 'openai': await streamOpenAI(provider, augmented, res, streamOpts); break;
+    case 'grok': await streamOpenAI(provider, augmented, res, { ...streamOpts, overrideBaseUrl: 'https://api.x.ai' }); break;
+    case 'openai-compatible': await streamOpenAI(provider, augmented, res, { ...streamOpts, overrideBaseUrl: provider.baseUrl || 'http://localhost:8080' }); break;
+    case 'google': await streamGemini(provider, augmented, res, streamOpts); break;
+    default: await streamOpenAI(provider, augmented, res, { ...streamOpts, overrideBaseUrl: provider.baseUrl });
+  }
+  if (preAnalysis) saveSessionAnalysis(sessionId, preAnalysis);
+}
+
 async function dispatchProviderCall(provider, request, clientKey) {
   const mode = getAugmentationMode(provider, clientKey);
   if (mode === 'cot-pipeline') return cotPipeline(provider, request);
   let augmented = request;
-  if (mode === 'native-o-series') {
-    augmented = { ...request, _reasoningEffort: 'high' };
-  } else if (mode === 'native-gemini-thinking') {
+  if (mode === 'native-o-series') augmented = { ...request, _reasoningEffort: 'high' };
+  else if (mode === 'native-gemini-thinking') {
     const budget = (provider.model || '').toLowerCase().includes('pro') ? 8000 : 5000;
     augmented = { ...request, _geminiThinkingBudget: budget };
   }
   switch (provider.type) {
     case 'anthropic':         return callAnthropic(provider, augmented);
     case 'google':            return callGemini(provider, augmented);
-    case 'vertex':            return callVertex(provider, augmented);
     case 'grok':              return callGrok(provider, augmented);
     case 'ollama':            return callOllama(provider, augmented);
     case 'openai':            return callOpenAI(provider, augmented);
@@ -1689,12 +1773,6 @@ async function callAnthropic(provider, request) {
 async function callGemini(provider, request) {
   const geminiRequest = translateToGemini(request);
   const model = request.model?.includes('gemini') ? request.model : 'gemini-2.5-flash';
-
-  // Apply thinking budget for Gemini 2.5 when requested by augmentation layer
-  if (request._geminiThinkingBudget) {
-    geminiRequest.generationConfig = geminiRequest.generationConfig || {};
-    geminiRequest.generationConfig.thinkingConfig = { thinkingBudget: request._geminiThinkingBudget };
-  }
 
   const response = await axios.post(
     `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${provider.apiKey}`,
@@ -1824,8 +1902,6 @@ async function callOpenAI(provider, request) {
     stream: false
   };
   if (oaiTools) body.tools = oaiTools;
-  // Apply reasoning_effort for o-series models (augmentation layer)
-  if (request._reasoningEffort) body.reasoning_effort = request._reasoningEffort;
 
   const response = await axios.post(
     'https://api.openai.com/v1/chat/completions',
@@ -2009,7 +2085,16 @@ app.post('/v1/messages', validateApiKey, async (req, res) => {
             logger.info(`Streaming headers buffered for provider: ${provider.name}`);
           }
 
+          const augMode = getAugmentationMode(provider, req.clientKey);
           const streamCall = (() => {
+            if (augMode === 'cot-pipeline')
+              return streamCotPipeline(provider, requestBody, streamRes, req);
+            if (augMode === 'native-gemini-thinking') {
+              const budget = (provider.model || '').toLowerCase().includes('pro') ? 8000 : 5000;
+              return streamGemini(provider, { ...requestBody, _geminiThinkingBudget: budget }, streamRes);
+            }
+            if (augMode === 'native-o-series')
+              return streamOpenAI(provider, { ...requestBody, _reasoningEffort: 'high' }, streamRes);
             if (provider.type === 'anthropic')         return streamAnthropic(provider, requestBody, streamRes);
             if (provider.type === 'google')            return streamGemini(provider, requestBody, streamRes);
             if (provider.type === 'openai')            return streamOpenAI(provider, requestBody, streamRes);
@@ -2585,7 +2670,7 @@ app.get('/api/client-keys', (req, res) => {
 });
 
 app.post('/api/client-keys', (req, res) => {
-  const { name, quotaEnabled, quotaRpm, quotaRpd, keyType } = req.body;
+  const { name, quotaEnabled, quotaRpm, quotaRpd } = req.body;
 
   if (!name || name.trim() === '') {
     return res.status(400).json({ error: 'Name is required' });
@@ -2602,7 +2687,6 @@ app.post('/api/client-keys', (req, res) => {
     quotaEnabled: Boolean(quotaEnabled),
     quotaRpm: parseInt(quotaRpm) || 0,
     quotaRpd: parseInt(quotaRpd) || 0,
-    keyType: keyType === 'standard' ? 'standard' : 'claude-code',
   };
 
   if (!config.clientApiKeys) {
@@ -2638,7 +2722,7 @@ app.delete('/api/client-keys/:id', (req, res) => {
 
 app.patch('/api/client-keys/:id', (req, res) => {
   const { id } = req.params;
-  const { enabled, name, quotaEnabled, quotaRpm, quotaRpd, keyType } = req.body;
+  const { enabled, name, quotaEnabled, quotaRpm, quotaRpd } = req.body;
 
   if (!config.clientApiKeys) {
     return res.status(404).json({ error: 'Key not found' });
@@ -2655,7 +2739,6 @@ app.patch('/api/client-keys/:id', (req, res) => {
   if (quotaEnabled !== undefined) key.quotaEnabled = Boolean(quotaEnabled);
   if (quotaRpm !== undefined) key.quotaRpm = parseInt(quotaRpm) || 0;
   if (quotaRpd !== undefined) key.quotaRpd = parseInt(quotaRpd) || 0;
-  if (keyType !== undefined) key.keyType = keyType === 'standard' ? 'standard' : 'claude-code';
 
   saveApiKeyRecord(key);
 
