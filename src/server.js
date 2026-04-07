@@ -1642,6 +1642,12 @@ async function streamOpenAICompatible(provider, request, res) {
 // Provider Augmentation Layer (claude-code key type)
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ── CoT pipeline constants ────────────────────────────────────────────────────
+const COT_MAX_ITERATIONS     = 1;   // refinement rounds after initial draft (1 = 4 calls total)
+const COT_QUALITY_THRESHOLD  = 6;   // score < this triggers a refinement pass (1-10 scale)
+const COT_CRITIQUE_MAX_TOKENS = 200;
+const COT_TEXT_CHUNK_SIZE    = 80;  // chars per text_delta chunk when simulating streaming
+
 const COT_PRE_ANALYSIS_PROMPT = `You are analyzing a task before responding. Think briefly through:
 1. What service, component, or system is involved?
 2. What are the 2-3 most likely root causes based on the description?
@@ -1651,6 +1657,18 @@ const COT_PRE_ANALYSIS_PROMPT = `You are analyzing a task before responding. Thi
 Respond in under 250 words. This analysis will be prepended to improve your main response.`;
 
 const COT_REASONING_INJECTION = `\n\n## Diagnostic Reasoning\nFollow: OBSERVE → HYPOTHESIZE → TEST → FIX.\nConfig rule: if *-Sample.*, *-Example.*, or *-Template.* config exists but the plain version does not, the real config is MISSING — that is the root cause. Copy it and edit with correct values.\nDelegation rule: run at least 3 local diagnostic commands before delegating to peer systems.`;
+
+const COT_CRITIQUE_PROMPT = `You are a quality evaluator for AI responses.
+Given the original task and a draft response, rate the response quality.
+Respond EXACTLY in this format — no other text:
+SCORE: <number 1-10>
+GAPS: <one sentence describing the key issue, or "none" if the response is complete and accurate>`;
+
+const COT_REFINE_SYSTEM = `You are improving an AI response based on a quality critique.
+Produce a complete, improved response that directly addresses the identified gaps.
+Be specific, accurate, and concise. Do not reference the critique in your response.`;
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 function getAugmentationMode(provider, clientKey) {
   if (!clientKey || clientKey.keyType !== 'claude-code') return 'passthrough';
@@ -1668,6 +1686,13 @@ function extractLastUserText(messages) {
   const last = userMsgs[userMsgs.length - 1];
   if (typeof last.content === 'string') return last.content.slice(0, 2000);
   if (Array.isArray(last.content)) return last.content.filter(b => b.type === 'text').map(b => b.text || '').join('\n').slice(0, 2000);
+  return '';
+}
+
+function extractResponseText(result) {
+  if (!result) return '';
+  if (Array.isArray(result.content)) return result.content.filter(b => b.type === 'text').map(b => b.text || '').join('');
+  if (typeof result.content === 'string') return result.content;
   return '';
 }
 
@@ -1690,82 +1715,191 @@ function buildAugmentedRequest(request, preAnalysis) {
   return { ...request, system: augmentedSystem, messages };
 }
 
-async function cotPipeline(provider, request) {
-  let preAnalysis = '';
-  try {
-    const preRequest = {
-      model: request.model,
-      max_tokens: 400,
-      messages: [{ role: 'user', content: extractLastUserText(request.messages) || 'Analyze the task.' }],
-      system: COT_PRE_ANALYSIS_PROMPT,
-      temperature: 0.3,
-      stream: false,
-    };
-    let preResult;
-    switch (provider.type) {
-      case 'openai':            preResult = await callOpenAI(provider, preRequest); break;
-      case 'openai-compatible': preResult = await callOpenAICompatible(provider, preRequest); break;
-      case 'grok':              preResult = await callGrok(provider, preRequest); break;
-      case 'ollama':            preResult = await callOllama(provider, preRequest); break;
-      default:                  preResult = await callOpenAICompatible(provider, preRequest);
-    }
-    preAnalysis = (preResult?.content?.map(b => b.text || '').join('') || '').slice(0, 500);
-  } catch (e) {
-    logger.warn(`CoT pre-analysis skipped for ${provider.name}: ${e.message}`);
-  }
-  const augmented = buildAugmentedRequest(request, preAnalysis);
+// Route a non-streaming call to the correct provider function.
+async function callProviderSync(provider, request) {
   switch (provider.type) {
-    case 'openai':            return callOpenAI(provider, augmented);
-    case 'openai-compatible': return callOpenAICompatible(provider, augmented);
-    case 'grok':              return callGrok(provider, augmented);
-    case 'ollama':            return callOllama(provider, augmented);
-    default:                  return callOpenAICompatible(provider, augmented);
+    case 'anthropic':         return callAnthropic(provider, request);
+    case 'google':            return callGemini(provider, request);
+    case 'grok':              return callGrok(provider, request);
+    case 'ollama':            return callOllama(provider, request);
+    case 'openai':            return callOpenAI(provider, request);
+    case 'openai-compatible': return callOpenAICompatible(provider, request);
+    default:                  return callOpenAICompatible(provider, request);
   }
 }
 
+// Emit a complete thinking block (start → single delta → stop).
+function emitThinkingBlock(emit, index, text) {
+  emit('content_block_start', { type: 'content_block_start', index, content_block: { type: 'thinking', thinking: '' } });
+  emit('content_block_delta', { type: 'content_block_delta', index, delta: { type: 'thinking_delta', thinking: text } });
+  emit('content_block_stop', { type: 'content_block_stop', index });
+}
+
+// Emit a text block as simulated streaming chunks, then close the message.
+function emitTextBlock(emit, index, text) {
+  emit('content_block_start', { type: 'content_block_start', index, content_block: { type: 'text', text: '' } });
+  for (let i = 0; i < text.length; i += COT_TEXT_CHUNK_SIZE) {
+    emit('content_block_delta', { type: 'content_block_delta', index, delta: { type: 'text_delta', text: text.slice(i, i + COT_TEXT_CHUNK_SIZE) } });
+  }
+  emit('content_block_stop', { type: 'content_block_stop', index });
+  emit('message_delta', { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: Math.ceil(text.length / 4) } });
+  emit('message_stop', { type: 'message_stop' });
+}
+
+// ── Non-streaming CoT pipeline (used for non-streaming requests) ──────────────
+async function cotPipeline(provider, request) {
+  const userText = extractLastUserText(request.messages) || 'Analyze the task.';
+
+  // Pass 0: pre-analysis
+  let preAnalysis = '';
+  try {
+    const preResult = await callProviderSync(provider, {
+      model: request.model, max_tokens: 400, temperature: 0.3,
+      messages: [{ role: 'user', content: userText }],
+      system: COT_PRE_ANALYSIS_PROMPT,
+    });
+    preAnalysis = extractResponseText(preResult).slice(0, 500);
+  } catch (e) {
+    logger.warn(`CoT pre-analysis skipped for ${provider.name}: ${e.message}`);
+  }
+
+  // Pass 1: initial draft
+  const augmented = buildAugmentedRequest(request, preAnalysis);
+  let draft = '';
+  try {
+    const draftResult = await callProviderSync(provider, augmented);
+    draft = extractResponseText(draftResult);
+  } catch (e) {
+    logger.warn(`CoT initial draft failed for ${provider.name}: ${e.message}`);
+    return { content: [{ type: 'text', text: '' }] };
+  }
+
+  // Iterative refinement
+  let finalAnswer = draft;
+  for (let iter = 0; iter < COT_MAX_ITERATIONS; iter++) {
+    try {
+      const critiqueResult = await callProviderSync(provider, {
+        model: request.model, max_tokens: COT_CRITIQUE_MAX_TOKENS, temperature: 0.2,
+        messages: [{ role: 'user', content: `Task: ${userText.slice(0, 1000)}\n\nResponse:\n${finalAnswer.slice(0, 2000)}` }],
+        system: COT_CRITIQUE_PROMPT,
+      });
+      const critiqueText = extractResponseText(critiqueResult);
+      const scoreMatch = critiqueText.match(/SCORE:\s*(\d+)/i);
+      const gapsMatch  = critiqueText.match(/GAPS:\s*(.+)/i);
+      const score = scoreMatch ? parseInt(scoreMatch[1], 10) : 10;
+      const gaps  = gapsMatch ? gapsMatch[1].trim() : 'none';
+      if (score >= COT_QUALITY_THRESHOLD || gaps.toLowerCase() === 'none') break;
+      const refineResult = await callProviderSync(provider, {
+        model: request.model, max_tokens: request.max_tokens || 4096,
+        temperature: request.temperature || 0.7,
+        system: COT_REFINE_SYSTEM,
+        messages: [{ role: 'user', content: `Original task: ${userText.slice(0, 1000)}\n\nDraft:\n${finalAnswer.slice(0, 2000)}\n\nCritique: ${gaps}\n\nImproved response:` }],
+      });
+      const refined = extractResponseText(refineResult);
+      if (refined) finalAnswer = refined;
+    } catch (e) {
+      logger.warn(`CoT refinement skipped (iter ${iter}) for ${provider.name}: ${e.message}`);
+      break;
+    }
+  }
+
+  return { content: [{ type: 'text', text: finalAnswer }] };
+}
+
+// ── Streaming CoT pipeline with iterative refinement ─────────────────────────
 async function streamCotPipeline(provider, request, res, httpReq) {
-  const sessionId = httpReq.headers['x-session-id'] || null;
-  const messageId = `msg_${Date.now()}`;
-  const model = request.model || provider.model || 'unknown';
+  const sessionId  = httpReq.headers['x-session-id'] || null;
+  const messageId  = `msg_${Date.now()}`;
+  const model      = request.model || provider.model || 'unknown';
   const emit = (eventName, data) => {
     res.write(`event: ${eventName}\n`);
     res.write(`data: ${JSON.stringify(data)}\n\n`);
   };
+  const userText = extractLastUserText(request.messages) || 'Analyze the task.';
+  let blockIndex = 0;
+
+  emit('message_start', { type: 'message_start', message: { id: messageId, type: 'message', role: 'assistant', content: [], model, usage: { input_tokens: 0, output_tokens: 0 } } });
+
+  // ── Pass 0: Planning / pre-analysis ────────────────────────────────────────
   let preAnalysis = '';
   try {
     const priorAnalyses = await getSessionAnalyses(sessionId);
-    let userText = extractLastUserText(request.messages) || 'Analyze the task.';
-    if (priorAnalyses.length > 0) {
-      userText = `Prior investigation context:\n${priorAnalyses.join('\n---\n')}\n\nCurrent task:\n${userText}`;
-    }
-    const preRequest = { model: request.model, max_tokens: 400, messages: [{ role: 'user', content: userText }], system: COT_PRE_ANALYSIS_PROMPT, temperature: 0.3, stream: false };
-    let preResult;
-    switch (provider.type) {
-      case 'openai':            preResult = await callOpenAI(provider, preRequest); break;
-      case 'openai-compatible': preResult = await callOpenAICompatible(provider, preRequest); break;
-      case 'grok':              preResult = await callGrok(provider, preRequest); break;
-      case 'ollama':            preResult = await callOllama(provider, preRequest); break;
-      default:                  preResult = await callOpenAICompatible(provider, preRequest);
-    }
-    preAnalysis = (preResult?.content?.map(b => b.text || '').join('') || '').slice(0, 500);
-  } catch (e) { logger.warn(`CoT stream pre-analysis failed for ${provider.name}: ${e.message}`); }
-  emit('message_start', { type: 'message_start', message: { id: messageId, type: 'message', role: 'assistant', content: [], model, usage: { input_tokens: 0, output_tokens: 0 } } });
-  if (preAnalysis) {
-    emit('content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '' } });
-    emit('content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: preAnalysis } });
-    emit('content_block_stop', { type: 'content_block_stop', index: 0 });
+    let analysisInput = userText;
+    if (priorAnalyses.length > 0)
+      analysisInput = `Prior investigation context:\n${priorAnalyses.join('\n---\n')}\n\nCurrent task:\n${userText}`;
+    const preResult = await callProviderSync(provider, {
+      model: request.model, max_tokens: 400, temperature: 0.3,
+      messages: [{ role: 'user', content: analysisInput }],
+      system: COT_PRE_ANALYSIS_PROMPT,
+    });
+    preAnalysis = extractResponseText(preResult).slice(0, 500);
+  } catch (e) {
+    logger.warn(`CoT pre-analysis failed for ${provider.name}: ${e.message}`);
   }
-  const augmented = buildAugmentedRequest(request, preAnalysis);
-  const indexOffset = preAnalysis ? 1 : 0;
-  const streamOpts = { blockIndexOffset: indexOffset, skipMessageStart: true };
-  switch (provider.type) {
-    case 'openai': await streamOpenAI(provider, augmented, res, streamOpts); break;
-    case 'grok': await streamOpenAI(provider, augmented, res, { ...streamOpts, overrideBaseUrl: 'https://api.x.ai' }); break;
-    case 'openai-compatible': await streamOpenAI(provider, augmented, res, { ...streamOpts, overrideBaseUrl: provider.baseUrl || 'http://localhost:8080' }); break;
-    case 'google': await streamGemini(provider, augmented, res, streamOpts); break;
-    default: await streamOpenAI(provider, augmented, res, { ...streamOpts, overrideBaseUrl: provider.baseUrl });
+  if (preAnalysis)
+    emitThinkingBlock(emit, blockIndex++, `## Planning\n${preAnalysis}`);
+
+  // ── Pass 1: Initial draft (non-streaming — needed for critique) ─────────────
+  let draft = '';
+  try {
+    const draftResult = await callProviderSync(provider, buildAugmentedRequest(request, preAnalysis));
+    draft = extractResponseText(draftResult);
+  } catch (e) {
+    logger.warn(`CoT initial draft failed for ${provider.name}: ${e.message}`);
   }
-  if (preAnalysis) await saveSessionAnalysis(sessionId, preAnalysis);
+  if (!draft) {
+    emitTextBlock(emit, blockIndex, '(No response from provider)');
+    return;
+  }
+
+  // ── Iterative refinement loop ───────────────────────────────────────────────
+  let finalAnswer = draft;
+  for (let iter = 0; iter < COT_MAX_ITERATIONS; iter++) {
+    let score = 10;
+    let gaps  = 'none';
+    try {
+      const critiqueResult = await callProviderSync(provider, {
+        model: request.model, max_tokens: COT_CRITIQUE_MAX_TOKENS, temperature: 0.2,
+        messages: [{ role: 'user', content: `Task: ${userText.slice(0, 1000)}\n\nResponse to evaluate:\n${finalAnswer.slice(0, 2000)}` }],
+        system: COT_CRITIQUE_PROMPT,
+      });
+      const critiqueText = extractResponseText(critiqueResult);
+      const scoreMatch = critiqueText.match(/SCORE:\s*(\d+)/i);
+      const gapsMatch  = critiqueText.match(/GAPS:\s*(.+)/i);
+      if (scoreMatch) score = parseInt(scoreMatch[1], 10);
+      if (gapsMatch)  gaps  = gapsMatch[1].trim();
+      emitThinkingBlock(emit, blockIndex++, `## Quality Check (pass ${iter + 1})\nScore: ${score}/10\nGaps: ${gaps}`);
+    } catch (e) {
+      logger.warn(`CoT critique failed (iter ${iter}) for ${provider.name}: ${e.message}`);
+      break;
+    }
+
+    if (score >= COT_QUALITY_THRESHOLD || gaps.toLowerCase() === 'none') break;
+
+    try {
+      const refineResult = await callProviderSync(provider, {
+        model: request.model,
+        max_tokens: request.max_tokens || 4096,
+        temperature: request.temperature || 0.7,
+        system: COT_REFINE_SYSTEM,
+        messages: [{ role: 'user', content: `Original task: ${userText.slice(0, 1000)}\n\nDraft response:\n${finalAnswer.slice(0, 2000)}\n\nCritique: ${gaps}\n\nProvide a complete improved response:` }],
+      });
+      const refined = extractResponseText(refineResult);
+      if (refined) {
+        emitThinkingBlock(emit, blockIndex++, `## Refinement (pass ${iter + 1})\n${refined.slice(0, 300)}${refined.length > 300 ? '…' : ''}`);
+        finalAnswer = refined;
+      }
+    } catch (e) {
+      logger.warn(`CoT refinement failed (iter ${iter}) for ${provider.name}: ${e.message}`);
+      break;
+    }
+  }
+
+  // ── Save session analysis for multi-turn context ────────────────────────────
+  if (preAnalysis) await saveSessionAnalysis(sessionId, preAnalysis).catch(() => {});
+
+  // ── Emit final answer as simulated streaming text ───────────────────────────
+  emitTextBlock(emit, blockIndex, finalAnswer);
 }
 
 async function dispatchProviderCall(provider, request, clientKey) {
@@ -3661,7 +3795,7 @@ app.get('/cluster/config', (req, res) => {
 });
 
 // Cluster status endpoint (for client applications)
-app.get('/cluster/status', validateApiKey, (req, res) => {
+app.get('/cluster/status', requireAuth, (req, res) => {
   if (!clusterManager.enabled) {
     return res.json({
       clusterEnabled: false,
