@@ -2206,6 +2206,14 @@ app.post('/v1/messages', validateApiKey, async (req, res) => {
         providerMonitor.recordSuccess(provider);
         logger.info(`Success with ${provider.name}`, { latency: `${latency}ms`, pass });
 
+        addActivityLog('success', `Request completed via ${provider.name}`, {
+          model: req.body.model || provider.model,
+          latency: `${latency}ms`,
+          pass,
+          keyName: req.clientKey?.name || 'unknown',
+          streaming: isStreaming,
+        });
+
         if (req.clientKey) {
           req.clientKey.requests = (req.clientKey.requests || 0) + 1;
           req.clientKey.lastUsed = new Date().toISOString();
@@ -2317,6 +2325,10 @@ app.post('/v1/messages', validateApiKey, async (req, res) => {
 
   // All 3 passes exhausted
   logger.error('All providers failed across 3 passes');
+  addActivityLog('error', 'All providers failed — request returned 503', {
+    model: req.body?.model,
+    keyName: req.clientKey?.name || 'unknown',
+  });
   if (isStreaming && headersSent) {
     res.write(`event: error\n`);
     res.write(`data: ${JSON.stringify({ type: 'error', error: { type: 'api_error', message: 'All providers failed' } })}\n\n`);
