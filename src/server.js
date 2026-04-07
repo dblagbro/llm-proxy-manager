@@ -14,26 +14,71 @@ const ProviderHoldDown = require('./monitor');
 const NotificationManager = require('./notifications');
 const PricingManager = require('./pricing');
 
-// ─── CoT Streaming Session Store (in-memory, 30-min TTL) ────────────────────
-const _cotSessions = new Map();
-const COT_SESSION_TTL_MS = 30 * 60 * 1000;
+// ─── CoT Session Store (Redis-backed, in-memory fallback) ───────────────────
+const COT_SESSION_TTL_SEC = 30 * 60; // 30 minutes (Redis uses seconds)
+const COT_SESSION_TTL_MS = COT_SESSION_TTL_SEC * 1000;
 const COT_SESSION_MAX_ANALYSES = 3;
+const COT_SESSION_KEY_PREFIX = 'llmproxy:cot:';
+
+let _redisClient = null;
+let _redisAvailable = false;
+const _cotSessionsFallback = new Map(); // fallback when Redis unavailable
+
+// Initialize Redis if REDIS_URL is set
+if (process.env.REDIS_URL) {
+  const Redis = require('ioredis');
+  _redisClient = new Redis(process.env.REDIS_URL, {
+    lazyConnect: true,
+    maxRetriesPerRequest: 1,
+    connectTimeout: 5000,
+    enableOfflineQueue: false,
+  });
+  _redisClient.on('ready', () => { _redisAvailable = true; });
+  _redisClient.on('error', () => { _redisAvailable = false; });
+  _redisClient.on('close', () => { _redisAvailable = false; });
+  _redisClient.connect().catch(() => {}); // non-fatal; fallback kicks in
+}
+
+// Fallback cleanup interval (only needed when Redis not available)
 setInterval(() => {
+  if (_redisAvailable) return;
   const cutoff = Date.now() - COT_SESSION_TTL_MS;
-  for (const [k, v] of _cotSessions) { if (v.ts < cutoff) _cotSessions.delete(k); }
+  for (const [k, v] of _cotSessionsFallback) { if (v.ts < cutoff) _cotSessionsFallback.delete(k); }
 }, 5 * 60 * 1000);
-function getSessionAnalyses(sessionId) {
+
+async function getSessionAnalyses(sessionId) {
   if (!sessionId) return [];
-  const s = _cotSessions.get(sessionId);
+  if (_redisAvailable) {
+    try {
+      const raw = await _redisClient.get(COT_SESSION_KEY_PREFIX + sessionId);
+      if (!raw) return [];
+      return JSON.parse(raw).analyses || [];
+    } catch (_) { /* fall through to in-memory */ }
+  }
+  const s = _cotSessionsFallback.get(sessionId);
   if (!s || Date.now() - s.ts > COT_SESSION_TTL_MS) return [];
   return s.analyses;
 }
-function saveSessionAnalysis(sessionId, analysis) {
+
+async function saveSessionAnalysis(sessionId, analysis) {
   if (!sessionId || !analysis) return;
-  const s = _cotSessions.get(sessionId) || { analyses: [], ts: 0 };
+  if (_redisAvailable) {
+    try {
+      const raw = await _redisClient.get(COT_SESSION_KEY_PREFIX + sessionId);
+      const existing = raw ? (JSON.parse(raw).analyses || []) : [];
+      const analyses = [...existing.slice(-(COT_SESSION_MAX_ANALYSES - 1)), analysis];
+      await _redisClient.set(
+        COT_SESSION_KEY_PREFIX + sessionId,
+        JSON.stringify({ analyses }),
+        'EX', COT_SESSION_TTL_SEC
+      );
+      return;
+    } catch (_) { /* fall through to in-memory */ }
+  }
+  const s = _cotSessionsFallback.get(sessionId) || { analyses: [], ts: 0 };
   s.analyses = [...s.analyses.slice(-(COT_SESSION_MAX_ANALYSES - 1)), analysis];
   s.ts = Date.now();
-  _cotSessions.set(sessionId, s);
+  _cotSessionsFallback.set(sessionId, s);
 }
 
 const app = express();
@@ -1688,7 +1733,7 @@ async function streamCotPipeline(provider, request, res, httpReq) {
   };
   let preAnalysis = '';
   try {
-    const priorAnalyses = getSessionAnalyses(sessionId);
+    const priorAnalyses = await getSessionAnalyses(sessionId);
     let userText = extractLastUserText(request.messages) || 'Analyze the task.';
     if (priorAnalyses.length > 0) {
       userText = `Prior investigation context:\n${priorAnalyses.join('\n---\n')}\n\nCurrent task:\n${userText}`;
@@ -1720,7 +1765,7 @@ async function streamCotPipeline(provider, request, res, httpReq) {
     case 'google': await streamGemini(provider, augmented, res, streamOpts); break;
     default: await streamOpenAI(provider, augmented, res, { ...streamOpts, overrideBaseUrl: provider.baseUrl });
   }
-  if (preAnalysis) saveSessionAnalysis(sessionId, preAnalysis);
+  if (preAnalysis) await saveSessionAnalysis(sessionId, preAnalysis);
 }
 
 async function dispatchProviderCall(provider, request, clientKey) {
