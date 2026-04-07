@@ -4,12 +4,63 @@ This document provides a comprehensive overview of all features in the LLM Proxy
 
 ## Table of Contents
 
-1. [Core Proxy Features](#core-proxy-features)
-2. [Intelligent Monitoring](#intelligent-monitoring)
-3. [Cluster Mode](#cluster-mode)
-4. [Email Notifications](#email-notifications)
-5. [Web Dashboard](#web-dashboard)
-6. [Authentication & Security](#authentication--security)
+1. [Claude Code Augmentation (v1.5.x)](#claude-code-augmentation-v15x)
+2. [Core Proxy Features](#core-proxy-features)
+3. [Intelligent Monitoring](#intelligent-monitoring)
+4. [Cluster Mode](#cluster-mode)
+5. [Email Notifications](#email-notifications)
+6. [Web Dashboard](#web-dashboard)
+7. [Authentication & Security](#authentication--security)
+
+---
+
+## Claude Code Augmentation (v1.5.x)
+
+### API Key Types
+
+When creating an API key in the web UI, two key types are available:
+
+- **Claude Code** — Enables reasoning/thinking augmentation for non-Anthropic backends. Intended for use with the `cc` coordinator wrapper or Claude Code CLI.
+- **Standard** — Plain pass-through. No augmentation. Use for direct API integrations.
+
+### Augmentation Routing
+
+The `getAugmentationMode()` function selects the augmentation strategy per request:
+
+| Backend | Mode | Behavior |
+|---------|------|----------|
+| Anthropic | `passthrough` | No augmentation — Anthropic has native extended thinking |
+| OpenAI o-series (`o1`, `o3`, `o4-mini`, etc.) | `native-o-series` | Adds `reasoning_effort: high` to the request |
+| Gemini 2.5 models | `native-gemini-thinking` | Injects `thinkingConfig` budget; `thought:true` SSE parts emitted as `thinking` blocks |
+| All others (Gemini non-2.5, Grok, other OpenAI, etc.) | `cot-pipeline` | Full CoT augmentation pipeline (see below) |
+
+Only applies when the API key has `keyType = 'claude-code'`. Standard keys always use pass-through.
+
+### Streaming CoT Pipeline
+
+For backends that don't have native thinking support, the CoT pipeline synthesizes a thinking block:
+
+1. **Pre-analysis call** (non-streaming, max 400 tokens): sends the user's last message with a meta-prompt asking the model to identify key considerations, constraints, and approach.
+2. **Thinking block emitted** at SSE index 0 containing the pre-analysis result.
+3. **Augmented main call** streamed from index 1 with reasoning injected into the system prompt as an `<augmented_reasoning>` block.
+
+The client receives a standard Anthropic SSE stream with a thinking block followed by the main response — identical in structure to Claude's native extended thinking output.
+
+### In-Memory Session Store
+
+Pass an `X-Session-ID` header to accumulate context across turns:
+
+- The proxy stores up to 3 prior pre-analysis results per session (30-minute TTL).
+- On subsequent turns, prior analyses are injected into the pre-analysis prompt as context, enabling coherent multi-turn reasoning without a persistent backend.
+- Sessions are per-process (not persisted to disk); resets on container restart.
+
+### Gemini 2.5 Thinking State Machine
+
+For Gemini 2.5 models with `thinkingConfig` enabled:
+
+- SSE parts with `thought: true` trigger a `THINKING` state — emitted as a `thinking` content block.
+- The first non-thinking part closes the thinking block and opens a `text` content block at the next index.
+- Subsequent text parts continue the same text block.
 
 ---
 
