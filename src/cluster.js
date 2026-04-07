@@ -39,15 +39,22 @@ class ClusterManager extends EventEmitter {
   parsePeersFromConfig(nodes) {
     if (!nodes || !Array.isArray(nodes)) return null;
 
-    // Filter only active nodes, excluding self, and convert to peer format
+    const localName = this.config.cluster?.localName || '';
+
+    // Filter only active nodes, excluding self by any known identifier
     return nodes
-      .filter(node => node.active && node.name !== this.nodeId && node.name !== this.nodeName && node.host !== this.nodeId)
+      .filter(node => node.active
+        && node.name !== this.nodeId
+        && node.name !== this.nodeName
+        && node.host !== this.nodeId
+        && node.name !== localName)
       .map(node => ({
         id: node.name || node.host,
         name: node.name || `LLM Proxy ${node.host}`,
-        url: node.ssl
+        // Support explicit url field; otherwise build from host/port/path/ssl
+        url: node.url || (node.ssl
           ? `https://${node.host}${node.path || ''}`
-          : `http://${node.host}:${node.port || 3000}`,
+          : `http://${node.host}:${node.port || 3000}${node.path || ''}`),
         healthy: false,
         lastHeartbeat: null,
         latency: 0,
