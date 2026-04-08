@@ -183,7 +183,7 @@ class ProviderHoldDown extends EventEmitter {
 
       case 'google':
         await axios.post(
-          `https://generativelanguage.googleapis.com/v1beta/models/${provider.model || 'gemini-2.0-flash'}:generateContent?key=${provider.apiKey}`,
+          `https://generativelanguage.googleapis.com/v1beta/models/${provider.model || 'gemini-2.5-flash'}:generateContent?key=${provider.apiKey}`,
           {
             contents: [{ role: 'user', parts: [{ text: 'hi' }] }],
             generationConfig: { maxOutputTokens: 1 }

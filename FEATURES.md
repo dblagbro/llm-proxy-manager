@@ -1,20 +1,114 @@
 # LLM Proxy Manager - Feature Overview
 
-This document provides a comprehensive overview of all features in the LLM Proxy Manager.
+This document provides a comprehensive overview of all features in the LLM Proxy Manager (v1.10.0).
 
 ## Table of Contents
 
-1. [Claude Code Augmentation (v1.5.x)](#claude-code-augmentation-v15x)
-2. [Core Proxy Features](#core-proxy-features)
-3. [Intelligent Monitoring](#intelligent-monitoring)
-4. [Cluster Mode](#cluster-mode)
-5. [Email Notifications](#email-notifications)
-6. [Web Dashboard](#web-dashboard)
-7. [Authentication & Security](#authentication--security)
+1. [LMRH — LLM Model Routing Hint Protocol (v1.8.0+)](#lmrh--llm-model-routing-hint-protocol-v180)
+2. [Claude Code Augmentation (v1.5.x+)](#claude-code-augmentation-v15x)
+3. [Core Proxy Features](#core-proxy-features)
+4. [Intelligent Monitoring](#intelligent-monitoring)
+5. [Cluster Mode](#cluster-mode)
+6. [Email Notifications](#email-notifications)
+7. [Web Dashboard](#web-dashboard)
+8. [Authentication & Security](#authentication--security)
 
 ---
 
-## Claude Code Augmentation (v1.5.x)
+## LMRH — LLM Model Routing Hint Protocol (v1.8.0+)
+
+The first open-source implementation of `draft-blagbrough-lmrh-00`. LMRH adds semantic routing on top of the existing priority/failover system without breaking any existing behavior.
+
+### How It Works
+
+A caller adds an `LLM-Hint:` request header expressing what kind of task the request is for. The proxy scores all active provider+model pairs against the hint and re-ranks them before routing. The winner is selected, the hint is stripped before forwarding, and a `LLM-Capability:` response header is returned describing what was actually used.
+
+### LLM-Hint Request Header
+
+Uses RFC 8941 Structured Field Values — space-separated `key=value` pairs:
+
+```
+LLM-Hint: task=reasoning, cost=economy, region=us, safety-min=3
+```
+
+**Affinity dimensions:**
+
+| Key | Values | Weight | Notes |
+|-----|--------|--------|-------|
+| `task` | `chat`, `reasoning`, `analysis`, `code`, `creative`, `audio`, `vision` | 10 | Primary routing dimension |
+| `latency` | `low`, `medium`, `high` | 4 | `low` = fast/small models |
+| `cost` | `economy`, `standard`, `premium` | 3 | Maps to model tier |
+| `safety-min` | `1`–`5` | 8 | Minimum safety rating required |
+| `safety-max` | `1`–`5` | 8 | Maximum safety rating (exclude overly-safe providers) |
+| `region` | `us`, `eu`, `asia`, etc. | 6 | Geographic preference |
+| `context-length` | token count (integer) | 2 | Minimum context window required |
+| `modality` | `text`, `audio`, `vision`, `multimodal` | 5 | Input/output capability |
+
+Append `;require` to any affinity to make it a **hard constraint** — providers that don't match return HTTP 503:
+```
+LLM-Hint: task=reasoning, safety-min=4;require, region=us
+```
+
+### LLM-Capability Response Header
+
+The proxy always returns a `LLM-Capability:` header when a hint was provided:
+
+```
+LLM-Capability: v=1, provider=google-gemini-api, model=gemini-2.5-flash, task=reasoning, safety=4, latency=medium, cost=economy, region=us, unmet=cost, cot-engaged=?1
+```
+
+| Field | Description |
+|-------|-------------|
+| `provider` | Slug of the selected provider |
+| `model` | Model ID that was used |
+| `task`, `safety`, `latency`, etc. | Actual capability values of the selected model |
+| `unmet` | Space-separated list of affinities that were soft-preferred but not satisfied |
+| `cot-engaged=?1` | Present when CoT pipeline was auto-engaged via `task=reasoning` |
+
+### CoT Auto-Engagement (v1.10.0)
+
+When `LLM-Hint: task=reasoning` is set and the selected model has `native_reasoning: false` in its capability profile, the proxy automatically engages the CoT pipeline (plan→draft→critique→refine) — no `claude-code` key type required. The response header includes `cot-engaged=?1`.
+
+This means any caller using the hint protocol gets reasoning augmentation transparently, without needing to know which model was selected.
+
+### Capability Profiles
+
+Each provider+model pair has a capability profile stored in SQLite (`model_capabilities` table):
+
+```json
+{
+  "task": ["reasoning", "code", "analysis"],
+  "latency": "medium",
+  "cost": "standard",
+  "safety": 4,
+  "context_length": 200000,
+  "region": ["us"],
+  "modality": ["text"],
+  "native_reasoning": true
+}
+```
+
+Profiles are managed via:
+- **Scan Models** button on each provider's edit page — queries the provider's API to discover models and auto-infers capability profiles from model names (claude-opus → reasoning+premium, haiku → chat+economy, gemini-2.5-flash → reasoning+economy, etc.)
+- **Inline editor** per model — badge display with click-to-edit for manual overrides
+- `source=inferred` vs `source=manual` flag tracks whether a profile was auto-generated or human-reviewed
+
+### Management API
+
+```bash
+# List capability profiles for a provider
+GET /api/providers/:id/model-capabilities
+
+# Auto-infer profiles from model names
+POST /api/providers/:id/model-capabilities/infer
+
+# Set/update a profile manually
+PUT /api/providers/:id/model-capabilities/:modelId
+```
+
+---
+
+## Claude Code Augmentation (v1.5.x+)
 
 ### API Key Types
 
