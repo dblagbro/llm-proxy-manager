@@ -1003,7 +1003,7 @@ function scoreModelAgainstHint(caps, hint) {
 // Returns a re-ranked provider list with the best-scoring model attached per provider.
 // Providers whose best model fails a hard constraint are removed.
 // Returns { rankedProviders, unmetAffinities[], selectedModel per provider stored in p._lmrhModel }
-function rankProvidersWithHint(providers, hint, sqliteDb) {
+function rankProvidersWithHint(providers, hint, sqliteDb, requestModel) {
   const scored = [];
   const unmetAffinities = new Set();
 
@@ -1019,8 +1019,12 @@ function rankProvidersWithHint(providers, hint, sqliteDb) {
     }
 
     // If no profiles yet, use the provider's default model with inferred caps
-    if (modelCaps.length === 0 && provider.model) {
-      modelCaps = [{ model_id: provider.model, ...inferCapabilitiesFromModelName(provider.model) }];
+    if (modelCaps.length === 0) {
+      // Fall back to request model, then provider default model, then provider type
+      const modelToInfer = provider.model || requestModel ||
+        ({ anthropic: 'claude-sonnet', google: 'gemini-1.5-pro', openai: 'gpt-4o',
+           grok: 'grok-1', ollama: 'llama3', 'openai-compatible': 'gpt-4o' }[provider.type] || 'unknown');
+      modelCaps = [{ model_id: modelToInfer, ...inferCapabilitiesFromModelName(modelToInfer) }];
     }
 
     let bestScore = -Infinity;
@@ -2356,7 +2360,7 @@ app.post('/v1/messages', validateApiKey, async (req, res) => {
 
   if (lmrhHint) {
     const { rankedProviders, unmetAffinities, topCaps } =
-      rankProvidersWithHint(availableProviders, lmrhHint, USE_SQLITE ? sqliteDb : null);
+      rankProvidersWithHint(availableProviders, lmrhHint, USE_SQLITE ? sqliteDb : null, req.body.model);
 
     if (rankedProviders.length === 0 && lmrhHint.hard.size > 0) {
       logger.warn('LMRH: no provider satisfies hard constraints', { hint: lmrhHint.raw });
