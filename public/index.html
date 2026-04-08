@@ -695,16 +695,38 @@
 
         .model-scan-item {
             display: flex;
-            align-items: center;
+            align-items: flex-start;
             gap: 10px;
             padding: 8px 12px;
             border-bottom: 1px solid var(--border);
             font-size: 13px;
             cursor: default;
             user-select: none;
+            flex-wrap: wrap;
         }
         .model-scan-item:last-child { border-bottom: none; }
         .model-scan-item.drag-over { background: var(--accent-dim); opacity: 0.7; }
+        .model-scan-row { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; }
+        .model-caps-badges { display: flex; gap: 4px; flex-wrap: wrap; margin-left: auto; }
+        .cap-badge { font-size: 10px; padding: 1px 6px; border-radius: 10px; white-space: nowrap;
+                     border: 1px solid var(--border); color: var(--text-muted); background: var(--bg); }
+        .cap-badge.task  { border-color: var(--accent); color: var(--accent); }
+        .cap-badge.speed-low    { border-color: #4caf50; color: #4caf50; }
+        .cap-badge.speed-medium { border-color: #ff9800; color: #ff9800; }
+        .cap-badge.speed-high   { border-color: #f44336; color: #f44336; }
+        .cap-badge.cost-economy { border-color: #4caf50; color: #4caf50; }
+        .cap-badge.cost-premium { border-color: #9c27b0; color: #9c27b0; }
+        .cap-badge.reasoning    { border-color: #00bcd4; color: #00bcd4; }
+        .model-caps-editor { display: none; width: 100%; margin-top: 6px; padding: 10px;
+                             background: var(--bg); border: 1px solid var(--border); border-radius: 6px; }
+        .model-caps-editor.open { display: block; }
+        .caps-editor-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin-bottom: 8px; }
+        .caps-editor-grid label { font-size: 11px; color: var(--text-muted); display: block; margin-bottom: 2px; }
+        .caps-editor-grid select, .caps-editor-grid input { width: 100%; font-size: 12px; padding: 3px 6px; }
+        .caps-task-pills { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 8px; }
+        .caps-task-pill { font-size: 11px; padding: 2px 8px; border-radius: 12px; cursor: pointer;
+                          border: 1px solid var(--border); background: var(--bg2); color: var(--text-muted); }
+        .caps-task-pill.selected { background: var(--accent); border-color: var(--accent); color: #fff; }
         .model-drag-handle {
             cursor: grab;
             color: var(--text-muted);
@@ -2304,12 +2326,21 @@ print(message.content[0].text)</pre>
 
             updateFormFields();
 
-            // Show saved model list if provider has one
+            // Show saved model list if provider has one; load capability profiles for badges
             const modelScanSection = document.getElementById('modelScanSection');
             const modelScanList = document.getElementById('modelScanList');
+            _scanCapProfiles = {};
             if (provider.modelOrder && provider.modelOrder.length) {
-                const models = provider.modelOrder.map(id => ({ id, name: id }));
-                renderModelScanList(models, provider.enabledModels || null);
+                // Load capability profiles so badges render immediately
+                fetch(`./api/providers/${provider.id}/model-capabilities`)
+                    .then(r => r.json()).then(rows => {
+                        rows.forEach(r => { _scanCapProfiles[r.model_id] = r; });
+                        const models = provider.modelOrder.map(id => ({ id, name: id }));
+                        renderModelScanList(models, provider.enabledModels || null);
+                    }).catch(() => {
+                        const models = provider.modelOrder.map(id => ({ id, name: id }));
+                        renderModelScanList(models, provider.enabledModels || null);
+                    });
                 modelScanSection.style.display = 'block';
             } else {
                 modelScanSection.style.display = 'none';
@@ -2445,16 +2476,21 @@ print(message.content[0].text)</pre>
 
         // ── Model Scanner ─────────────────────────────────────────────────────
         let _scanDragSrc = null;
+        let _scanCapProfiles = {};  // modelId → capability profile
+
+        const ALL_TASKS = ['reasoning','coding','analysis','chat','summarize','creative','vision','audio'];
 
         async function scanProviderModels() {
             const section = document.getElementById('modelScanSection');
             const list = document.getElementById('modelScanList');
             list.innerHTML = '<div style="padding:12px;color:var(--text-muted);font-size:13px;">🔍 Scanning…</div>';
             section.style.display = 'block';
+            _scanCapProfiles = {};
 
             let body;
-            if (editingIndex >= 0) {
-                body = { providerId: config.providers[editingIndex].id };
+            const providerId = editingIndex >= 0 ? config.providers[editingIndex].id : null;
+            if (providerId) {
+                body = { providerId };
             } else {
                 body = {
                     type: document.getElementById('edit-type').value,
@@ -2486,25 +2522,156 @@ print(message.content[0].text)</pre>
                     models = [...ordered, ...rest];
                 }
 
+                // Auto-infer + save capabilities for all scanned models (runs in background)
+                if (providerId) {
+                    list.innerHTML = '<div style="padding:12px;color:var(--text-muted);font-size:13px;">🔍 Loading capability profiles…</div>';
+                    try {
+                        const ir = await fetch(`./api/providers/${providerId}/model-capabilities/infer`, {
+                            method: 'POST', headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ modelIds: models.map(m => m.id) })
+                        });
+                        if (ir.ok) {
+                            const idata = await ir.json();
+                            _scanCapProfiles = idata.profiles || {};
+                        }
+                    } catch(_) {}
+                }
+
                 renderModelScanList(models, savedEnabled);
             } catch(e) {
                 list.innerHTML = `<div style="padding:12px;color:var(--danger);font-size:13px;">Error: ${escHtml(e.message)}</div>`;
             }
         }
 
+        function capBadgesHtml(caps) {
+            if (!caps) return '';
+            const badges = [];
+            if (caps.task?.[0]) badges.push(`<span class="cap-badge task">${escHtml(caps.task[0])}</span>`);
+            if (caps.latency)   badges.push(`<span class="cap-badge speed-${caps.latency}">${caps.latency}</span>`);
+            if (caps.cost && caps.cost !== 'standard') badges.push(`<span class="cap-badge cost-${caps.cost}">${caps.cost}</span>`);
+            if (caps.native_reasoning) badges.push(`<span class="cap-badge reasoning">native-reasoning</span>`);
+            return `<span class="model-caps-badges">${badges.join('')}</span>`;
+        }
+
         function renderModelScanList(models, savedEnabled) {
             const list = document.getElementById('modelScanList');
-            list.innerHTML = models.map((m, i) => {
+            list.innerHTML = models.map((m) => {
                 const checked = savedEnabled === null || savedEnabled.includes(m.id);
+                const caps = _scanCapProfiles[m.id] || null;
+                const editorId = `caps-editor-${m.id.replace(/[^a-z0-9]/gi,'_')}`;
                 return `<div class="model-scan-item" draggable="true" data-model-id="${escHtml(m.id)}"
                             ondragstart="modelDragStart(event)" ondragover="modelDragOver(event)"
                             ondrop="modelDrop(event)" ondragleave="modelDragLeave(event)">
-                    <span class="model-drag-handle" title="Drag to reorder">☰</span>
-                    <input type="checkbox" ${checked ? 'checked' : ''} style="width:auto;flex-shrink:0;">
-                    <span style="flex:1;font-family:monospace;font-size:12px;">${escHtml(m.id)}</span>
-                    ${m.name !== m.id ? `<span style="color:var(--text-muted);font-size:11px;">${escHtml(m.name)}</span>` : ''}
+                    <div class="model-scan-row">
+                        <span class="model-drag-handle" title="Drag to reorder">☰</span>
+                        <input type="checkbox" ${checked ? 'checked' : ''} style="width:auto;flex-shrink:0;">
+                        <span style="flex:1;font-family:monospace;font-size:12px;">${escHtml(m.id)}</span>
+                        ${m.name !== m.id ? `<span style="color:var(--text-muted);font-size:11px;">${escHtml(m.name)}</span>` : ''}
+                        ${capBadgesHtml(caps)}
+                        <button type="button" class="btn btn-secondary" style="font-size:10px;padding:2px 7px;flex-shrink:0;"
+                            onclick="toggleCapsEditor('${escHtml(editorId)}', '${escHtml(m.id)}')" title="Edit routing capabilities">⚙</button>
+                    </div>
+                    <div class="model-caps-editor" id="${escHtml(editorId)}" data-model-id="${escHtml(m.id)}">
+                        ${buildCapsEditorHtml(m.id, caps)}
+                    </div>
                 </div>`;
             }).join('');
+        }
+
+        function buildCapsEditorHtml(modelId, caps) {
+            const tasks = caps?.task || [];
+            const taskPills = ALL_TASKS.map(t =>
+                `<span class="caps-task-pill ${tasks.includes(t) ? 'selected' : ''}"
+                    onclick="toggleTaskPill(this,'${t}')">${t}</span>`
+            ).join('');
+            return `
+                <div style="font-size:11px;color:var(--text-muted);margin-bottom:6px;">
+                    Routing capabilities ${caps?._source ? `<em>(source: ${caps._source})</em>` : ''} —
+                    used by LMRH to route requests to the best model for the task.
+                </div>
+                <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">Task affinities:</div>
+                <div class="caps-task-pills">${taskPills}</div>
+                <div class="caps-editor-grid">
+                    <div><label>Latency</label>
+                        <select class="caps-latency">
+                            ${['low','medium','high'].map(v => `<option ${caps?.latency===v?'selected':''} value="${v}">${v}</option>`).join('')}
+                        </select></div>
+                    <div><label>Cost tier</label>
+                        <select class="caps-cost">
+                            ${['economy','standard','premium'].map(v => `<option ${caps?.cost===v?'selected':''} value="${v}">${v}</option>`).join('')}
+                        </select></div>
+                    <div><label>Safety (0–5)</label>
+                        <input type="number" class="caps-safety" min="0" max="5" value="${caps?.safety ?? 3}"></div>
+                    <div><label>Context length (tokens)</label>
+                        <input type="number" class="caps-context" min="1024" step="1000" value="${caps?.context_length ?? 32000}"></div>
+                    <div><label>Region(s) (comma-sep)</label>
+                        <input type="text" class="caps-region" value="${(caps?.region||['us']).join(',')}"></div>
+                    <div><label>Native reasoning</label>
+                        <select class="caps-native">
+                            <option value="false" ${!caps?.native_reasoning?'selected':''}>No</option>
+                            <option value="true"  ${caps?.native_reasoning?'selected':''}>Yes</option>
+                        </select></div>
+                </div>
+                <div style="display:flex;gap:8px;">
+                    <button type="button" class="btn btn-primary" style="font-size:11px;padding:4px 10px;"
+                        onclick="saveCapsEditor('${escHtml(editorHtmlId(modelId))}','${escHtml(modelId)}')">Save</button>
+                    <button type="button" class="btn btn-secondary" style="font-size:11px;padding:4px 10px;"
+                        onclick="toggleCapsEditor('${escHtml(editorHtmlId(modelId))}','${escHtml(modelId)}')">Cancel</button>
+                </div>`;
+        }
+
+        function editorHtmlId(modelId) {
+            return `caps-editor-${modelId.replace(/[^a-z0-9]/gi,'_')}`;
+        }
+
+        function toggleCapsEditor(editorId, modelId) {
+            const el = document.getElementById(editorId);
+            if (!el) return;
+            el.classList.toggle('open');
+            // Re-render editor content when opening so it reflects latest saved caps
+            if (el.classList.contains('open')) {
+                el.innerHTML = buildCapsEditorHtml(modelId, _scanCapProfiles[modelId] || null);
+            }
+        }
+
+        function toggleTaskPill(pill, task) {
+            pill.classList.toggle('selected');
+        }
+
+        async function saveCapsEditor(editorId, modelId) {
+            const el = document.getElementById(editorId);
+            if (!el) return;
+            const providerId = editingIndex >= 0 ? config.providers[editingIndex]?.id : null;
+            if (!providerId) { alert('Save provider first before editing capabilities.'); return; }
+
+            const tasks = [...el.querySelectorAll('.caps-task-pill.selected')].map(p => p.textContent);
+            const caps = {
+                task:             tasks.length ? tasks : ['chat'],
+                latency:          el.querySelector('.caps-latency').value,
+                cost:             el.querySelector('.caps-cost').value,
+                safety:           parseInt(el.querySelector('.caps-safety').value) || 3,
+                context_length:   parseInt(el.querySelector('.caps-context').value) || 32000,
+                region:           el.querySelector('.caps-region').value.split(',').map(s=>s.trim()).filter(Boolean),
+                native_reasoning: el.querySelector('.caps-native').value === 'true',
+            };
+
+            try {
+                const r = await fetch(`./api/providers/${providerId}/model-capabilities/${encodeURIComponent(modelId)}`, {
+                    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(caps)
+                });
+                const data = await r.json();
+                if (!r.ok) { alert('Save failed: ' + data.error); return; }
+                // Update local cache and re-render badges
+                _scanCapProfiles[modelId] = { ...caps, _source: 'manual' };
+                el.classList.remove('open');
+                // Refresh the badge display for this row
+                const row = el.previousElementSibling;
+                if (row) {
+                    const badgeEl = row.querySelector('.model-caps-badges');
+                    if (badgeEl) badgeEl.outerHTML = capBadgesHtml(_scanCapProfiles[modelId]);
+                }
+            } catch(e) { alert('Save failed: ' + e.message); }
         }
 
         function modelDragStart(e) {
