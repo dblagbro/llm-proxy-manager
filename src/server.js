@@ -3281,6 +3281,54 @@ app.post('/api/scan-provider-models', async (req, res) => {
   }
 });
 
+// ── LMRH Capability Profile API ───────────────────────────────────────────────
+
+// GET /api/providers/:id/model-capabilities — list all capability profiles for a provider
+app.get('/api/providers/:id/model-capabilities', (req, res) => {
+  if (!USE_SQLITE || !sqliteDb) return res.json([]);
+  const provider = config.providers.find(p => p.id === req.params.id);
+  if (!provider) return res.status(404).json({ error: 'Provider not found' });
+  res.json(sqliteDb.listModelCapabilities(provider.id));
+});
+
+// POST /api/providers/:id/model-capabilities/infer — infer+save caps for a list of model IDs
+// Body: { modelIds: ['claude-sonnet-4-6', ...] }
+// Returns: { profiles: { modelId: caps, ... } }
+app.post('/api/providers/:id/model-capabilities/infer', (req, res) => {
+  if (!USE_SQLITE || !sqliteDb) return res.json({ profiles: {} });
+  const provider = config.providers.find(p => p.id === req.params.id);
+  if (!provider) return res.status(404).json({ error: 'Provider not found' });
+  const { modelIds } = req.body;
+  if (!Array.isArray(modelIds)) return res.status(400).json({ error: 'modelIds array required' });
+  sqliteDb.inferAndSaveCapabilities(provider.id, modelIds);
+  const profiles = {};
+  for (const modelId of modelIds) {
+    profiles[modelId] = sqliteDb.getModelCapabilities(provider.id, modelId);
+  }
+  res.json({ profiles });
+});
+
+// PUT /api/providers/:id/model-capabilities/:modelId — manually save one model's capability profile
+// Body: { task:[], latency, cost, safety, context_length, region:[], modality:[], native_reasoning }
+app.put('/api/providers/:id/model-capabilities/:modelId', (req, res) => {
+  if (!USE_SQLITE || !sqliteDb) return res.status(503).json({ error: 'SQLite not enabled' });
+  const provider = config.providers.find(p => p.id === req.params.id);
+  if (!provider) return res.status(404).json({ error: 'Provider not found' });
+  const { task, latency, cost, safety, context_length, region, modality, native_reasoning } = req.body;
+  const caps = {
+    task:             Array.isArray(task) ? task : (task ? [task] : ['chat']),
+    latency:          latency   || 'medium',
+    cost:             cost      || 'standard',
+    safety:           safety    != null ? parseInt(safety) : 3,
+    context_length:   context_length ? parseInt(context_length) : 32000,
+    region:           Array.isArray(region) ? region : (region ? [region] : ['us']),
+    modality:         Array.isArray(modality) ? modality : ['text', 'tool'],
+    native_reasoning: !!native_reasoning,
+  };
+  sqliteDb.setModelCapabilities(provider.id, req.params.modelId, caps, 'manual');
+  res.json({ ok: true, modelId: req.params.modelId, caps });
+});
+
 app.post('/api/test-provider', async (req, res) => {
   let { providerId, type, apiKey, projectId, location, baseUrl, model } = req.body;
 
