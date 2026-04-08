@@ -1,8 +1,8 @@
 # LLM Proxy Manager
 
-A production-ready LLM API proxy with **multi-provider failover**, **intelligent monitoring**, **cluster mode**, and **web-based management**. Route your AI requests through multiple LLM providers (Anthropic Claude, Google Gemini, OpenAI, Grok, and more) with automatic failover, circuit breakers, and external service monitoring.
+A production-ready LLM API proxy with **multi-provider failover**, **intelligent monitoring**, **cluster mode**, **LMRH semantic routing**, and **web-based management**. Route your AI requests through multiple LLM providers (Anthropic Claude, Google Gemini, OpenAI, Grok, and more) with automatic failover, semantic task-based routing, CoT auto-engagement, and capability advertisement.
 
-![Version](https://img.shields.io/badge/version-1.5.1-blue)
+![Version](https://img.shields.io/badge/version-1.10.0-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Node](https://img.shields.io/badge/node-%3E%3D20.0.0-brightgreen)
 
@@ -22,7 +22,30 @@ A production-ready LLM API proxy with **multi-provider failover**, **intelligent
 - ⏱️ **Configurable Timeouts**: Per-provider timeout settings to prevent hung requests
 - 📈 **Health Tracking**: Real-time provider health status and performance metrics
 
-### Claude Code Augmentation (v1.5.x)
+### LMRH — LLM Model Routing Hint Protocol (v1.8.0+)
+The first open-source implementation of [draft-blagbrough-lmrh-00](LMRH-PROTOCOL.md).
+
+- 🗺️ **Semantic Routing**: Callers add `LLM-Hint:` request header to express task type, latency, cost, safety, region, context length, and modality preferences
+- 🏆 **Capability Scoring**: Proxy scores all provider+model pairs against the hint using weighted affinity dimensions (task=10, safety=8, region=6, latency=4, cost=3, context=2, modality=5)
+- 🚫 **Hard Constraints**: Append `;require` to any affinity to enforce it — non-matching providers return HTTP 503
+- 📣 **Capability Advertisement**: `LLM-Capability:` response header reports what was actually used, including unmet soft preferences
+- 🧠 **CoT Auto-Engage** (v1.10.0): `LLM-Hint: task=reasoning` on a model with `native_reasoning=false` automatically engages the CoT pipeline — `cot-engaged=?1` appears in the capability header
+- 🔬 **Capability Profiles UI**: Per-provider, per-model capability editor with badge display; "Scan Models" auto-populates inferred profiles
+- 🔒 **RFC 8941 Structured Fields**: Fully extensible — unknown affinities are soft-ignored; backward compatible per RFC 9110 §6.3
+
+**Example:**
+```bash
+# Route to a reasoning-capable, cost-efficient model in the US:
+curl -X POST http://proxy:3000/v1/messages \
+  -H "LLM-Hint: task=reasoning, cost=economy, region=us" \
+  -H "x-api-key: your-key" \
+  -d '{"model": "claude-sonnet-4-6", "max_tokens": 1024, ...}'
+
+# Response header shows routing decision:
+# LLM-Capability: v=1, provider=google-gemini-api, model=gemini-2.5-flash, task=reasoning, safety=4, latency=medium, cost=economy, region=us
+```
+
+### Claude Code Augmentation (v1.5.x+)
 - 🧠 **Claude Code Key Type**: Generate API keys with type `claude-code` to enable reasoning enhancements on non-Anthropic backends
 - 💭 **Streaming CoT Pipeline**: Pre-analysis pass produces a thinking block (index 0) before the main streamed response — gives Gemini/OpenAI/Grok calls the same extended reasoning appearance as Claude's native thinking
 - 🌀 **Gemini 2.5 Native Thinking**: Automatic state-machine passthrough for `thought:true` parts — emitted as proper `thinking` content blocks in the SSE stream
@@ -515,6 +538,7 @@ curl -X POST http://localhost:3000/monitoring/circuit/reset \
 ## 📚 Documentation
 
 - **[FEATURES.md](FEATURES.md)** - Complete feature documentation
+- **[LMRH-PROTOCOL.md](LMRH-PROTOCOL.md)** - LMRH protocol RFC draft and implementation guide
 - **[CLUSTER-ARCHITECTURE.md](CLUSTER-ARCHITECTURE.md)** - Cluster design and implementation
 - **[CLAUDE-CODE-SETUP.md](CLAUDE-CODE-SETUP.md)** - Claude Code integration guide
 - **[PUBLISHING.md](PUBLISHING.md)** - GitHub and Docker Hub publishing guide

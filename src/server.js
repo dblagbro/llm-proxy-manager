@@ -1064,7 +1064,7 @@ function rankProvidersWithHint(providers, hint, sqliteDb, requestModel) {
 }
 
 // Build LLM-Capability response header value
-function buildLmrhCapabilityHeader(provider, modelId, caps, unmet) {
+function buildLmrhCapabilityHeader(provider, modelId, caps, unmet, cotEngaged) {
   if (!provider) return null;
   const parts = [
     `v=1`,
@@ -1080,6 +1080,7 @@ function buildLmrhCapabilityHeader(provider, modelId, caps, unmet) {
     if (Array.isArray(caps.region) && caps.region[0]) parts.push(`region=${caps.region[0]}`);
   }
   if (unmet && unmet.length) parts.push(`unmet=${unmet.join(' ')}`);
+  if (cotEngaged) parts.push(`cot-engaged=?1`);
   return parts.join(', ');
 }
 
@@ -1851,7 +1852,11 @@ Be specific, accurate, and concise. Do not reference the critique in your respon
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function getAugmentationMode(provider, clientKey) {
+function getAugmentationMode(provider, clientKey, lmrhHint, modelCaps) {
+  // LMRH Phase 4: task=reasoning hint on a non-native-reasoning model → engage CoT
+  if (lmrhHint?.task === 'reasoning' && modelCaps?.native_reasoning === false) {
+    return 'cot-pipeline';
+  }
   if (!clientKey || clientKey.keyType !== 'claude-code') return 'passthrough';
   const type = provider.type;
   const model = (provider.model || '').toLowerCase();
@@ -2083,9 +2088,14 @@ async function streamCotPipeline(provider, request, res, httpReq) {
   emitTextBlock(emit, blockIndex, finalAnswer);
 }
 
-async function dispatchProviderCall(provider, request, clientKey) {
-  const mode = getAugmentationMode(provider, clientKey);
-  if (mode === 'cot-pipeline') return cotPipeline(provider, request);
+async function dispatchProviderCall(provider, request, clientKey, lmrhHint, modelCaps) {
+  const mode = getAugmentationMode(provider, clientKey, lmrhHint, modelCaps);
+  if (mode === 'cot-pipeline') {
+    if (lmrhHint?.task === 'reasoning' && modelCaps?.native_reasoning === false) {
+      logger.info(`LMRH CoT auto-engaged: task=reasoning on non-native-reasoning model ${provider._lmrhModel || provider.model || 'unknown'} via ${provider.name}`);
+    }
+    return cotPipeline(provider, request);
+  }
   let augmented = request;
   if (mode === 'native-o-series') augmented = { ...request, _reasoningEffort: 'high' };
   else if (mode === 'native-gemini-thinking') {
@@ -2467,6 +2477,14 @@ app.post('/v1/messages', validateApiKey, async (req, res) => {
         config.stats[provider.id].requests++;
 
         if (isStreaming) {
+          // LMRH Phase 4: look up model caps for CoT auto-engage via task=reasoning
+          let _lmrhModelCaps = null;
+          if (lmrhHint?.task === 'reasoning' && USE_SQLITE && sqliteDb) {
+            const _mid = provider._lmrhModel || requestBody.model || provider.model;
+            try { _lmrhModelCaps = sqliteDb.getModelCapabilities(provider.id, _mid); } catch (_) {}
+          }
+          const augMode = getAugmentationMode(provider, req.clientKey, lmrhHint, _lmrhModelCaps);
+
           // 1d: Use a buffered response wrapper so SSE headers are held until
           // the first chunk arrives — allowing latency-guard failover to still work
           // even if the provider accepts the connection but never sends data.
@@ -2476,13 +2494,12 @@ app.post('/v1/messages', validateApiKey, async (req, res) => {
             streamRes.setHeader('Cache-Control', 'no-cache');
             streamRes.setHeader('Connection', 'keep-alive');
             if (lmrhHint) {
-              const cap = buildLmrhCapabilityHeader(provider, provider._lmrhModel, lmrhTopCaps, lmrhUnmet);
+              const cap = buildLmrhCapabilityHeader(provider, provider._lmrhModel, lmrhTopCaps, lmrhUnmet,
+                augMode === 'cot-pipeline' && lmrhHint.task === 'reasoning');
               if (cap) streamRes.setHeader('LLM-Capability', cap);
             }
             logger.info(`Streaming headers buffered for provider: ${provider.name}`);
           }
-
-          const augMode = getAugmentationMode(provider, req.clientKey);
           const streamCall = (() => {
             if (augMode === 'cot-pipeline')
               return streamCotPipeline(provider, requestBody, streamRes, req);
@@ -2519,7 +2536,13 @@ app.post('/v1/messages', validateApiKey, async (req, res) => {
           }
 
         } else {
-          const nonStreamCall = dispatchProviderCall(provider, requestBody, req.clientKey);
+          // LMRH Phase 4: look up model caps for CoT auto-engage via task=reasoning
+          let _lmrhModelCaps = null;
+          if (lmrhHint?.task === 'reasoning' && USE_SQLITE && sqliteDb) {
+            const _mid = provider._lmrhModel || requestBody.model || provider.model;
+            try { _lmrhModelCaps = sqliteDb.getModelCapabilities(provider.id, _mid); } catch (_) {}
+          }
+          const nonStreamCall = dispatchProviderCall(provider, requestBody, req.clientKey, lmrhHint, _lmrhModelCaps);
 
           if (maxLatencyMs > 0) {
             result = await Promise.race([
@@ -2546,7 +2569,8 @@ app.post('/v1/messages', validateApiKey, async (req, res) => {
           }
 
           if (lmrhHint) {
-            const cap = buildLmrhCapabilityHeader(provider, provider._lmrhModel, lmrhTopCaps, lmrhUnmet);
+            const _cotEngaged = lmrhHint.task === 'reasoning' && _lmrhModelCaps?.native_reasoning === false;
+            const cap = buildLmrhCapabilityHeader(provider, provider._lmrhModel, lmrhTopCaps, lmrhUnmet, _cotEngaged);
             if (cap) res.setHeader('LLM-Capability', cap);
           }
           res.json(result);

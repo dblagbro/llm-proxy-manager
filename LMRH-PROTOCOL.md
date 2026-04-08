@@ -465,131 +465,93 @@ Author's Address
 
 ---
 
-## 4. Current Application State (as of 2026-04-07)
+## 4. Implementation Status — COMPLETE (as of 2026-04-08)
 
-### llm-proxy (`/home/dblagbro/llm-proxy`)
-- **Version:** 1.7.0 (`package.json`)
-- **Entry point:** `src/server.js`
-- **Database:** SQLite via `better-sqlite3`
-- **Providers supported:** Anthropic, OpenAI, Google Gemini, Grok, Ollama (+ generic OpenAI-compat)
-- **Key features already built:**
-  - Multi-provider failover with priority ordering
-  - Per-key API token management with tier assignment
-  - Web UI for provider/model management
-  - **"Scan Models" button** on each provider's edit page — queries the provider's API
-    to discover available models and stores them in `provider_models` table
-  - **CoT iterative refinement pipeline** (v1.7.0): for non-native-reasoning models,
-    routes through plan→draft→critique→refine loop before streaming final answer
-  - Model routing by `model_id` field in request body (passthrough)
+All four phases are fully implemented, tested, and deployed to production.
 
-### coordinator-hub (`/home/dblagbro/docker/coordinator-hub`)
-- **Version:** 1.0.46 (`app/__init__.py`)
-- **Language:** Python / Flask
-- **Key relevance to LMRH:**
-  - Hub posts messages to bots (Avaya CM/SM/SMGR, general bots)
-  - Bot task dispatch goes through `web_ui.py` → calls Anthropic API directly
-  - Hub would become an LMRH client: adding `LLM-Hint` to its outbound API calls
-    to route through the proxy with appropriate task/safety affinities
-  - Hub's LLM endpoint is configured in hub settings (the proxy URL)
+### Phase 1 — llm-proxy v1.8.0: LMRH Routing Engine ✅
 
-### Git repositories
-- Hub: `/home/dblagbro/coordinator-hub-git/`
-- LLM proxy: `/home/dblagbro/llm-proxy/` (this directory — is a git repo)
+**Shipped:** `src/server.js` — `parseLmrhHint()`, `LMRH_WEIGHTS`, `scoreModelAgainstHint()`, `rankProvidersWithHint()`, `buildLmrhCapabilityHeader()`
 
----
+- `LLM-Hint` header parsed on every `/v1/messages` request (RFC 8941 key=value)
+- `model_capabilities` SQLite table added (via `src/database.js`)
+- Weighted scoring: task=10, safety=8, region=6, latency=4, cost=3, context=2, modality=5
+- Hard constraints via `;require` → HTTP 503 on failure with `{"error":"no_provider_satisfies_constraints","failed":[...]}`
+- `LLM-Capability` response header set on success
+- `LLM-Hint` stripped before forwarding to backend (RFC 9110 §6.3 compliant)
 
-## 5. Implementation Plan (to be designed in new session)
+### Phase 2 — llm-proxy v1.9.0: Capability Profiles UI ✅
 
-### Phase 1 — llm-proxy: LMRH Routing Engine
+**Shipped:** `src/database.js`, `src/server.js` (3 new API routes), `public/index.html`
 
-**What to build:**
-1. Parse `LLM-Hint` header on every incoming request in `src/server.js`
-2. Define capability profiles for each provider+model pair (stored in SQLite)
-3. Scoring algorithm: for each active provider's models, compute match score against hint
-4. Override normal priority-based failover with scored selection when hint is present
-5. Strip `LLM-Hint` before forwarding to backend
-6. Return `LLM-Capability` header with what was actually used
+- `inferCapabilitiesFromModelName()` — 15 pattern rules (claude-opus/sonnet/haiku, gpt-4o/mini, o1/o3-mini, gemini-2.5-pro/flash, grok, llama, mistral, deepseek, etc.)
+- `POST /api/providers/:id/model-capabilities/infer` — bulk infer + save
+- `GET /api/providers/:id/model-capabilities` — list profiles
+- `PUT /api/providers/:id/model-capabilities/:modelId` — manual update
+- Web UI: "Scan Models" auto-populates profiles; inline badge editor per model row
+- `source=inferred` vs `source=manual` tracked in DB
 
-**Key files:**
-- `src/server.js` — main routing logic (provider selection currently in failover loop)
-- SQLite DB — add `model_capabilities` table (task[], latency, cost, safety, context_length, region[], modality[])
-- Web UI — add capability profile editor per model (extend existing Scan Models flow)
+### Phase 3 — coordinator-hub v1.0.47: Hub as LMRH Client ✅
 
-**Routing algorithm sketch:**
-```
-parseHint(header) → {task, latency, cost, safety_min, safety_max, region, hard: Set}
-scoreModel(model_caps, hint) → {score, failedHard: []}
-selectBest(providers × models, hint) → {provider, model} | HTTP 503
-```
+**Shipped:** `app/web_ui.py`, `app/templates/settings.html`
 
-### Phase 2 — llm-proxy: Auto-Discovery of Capabilities
+- `_make_anthropic_client(api_key, lmrh_hint=None)` — attaches `LLM-Hint` via `default_headers` when proxy URL is configured
+- `_LMRH_DEFAULT_HINTS` dict — 7 use-case defaults:
+  - `bot_task`: `task=reasoning, safety-min=3, latency=medium`
+  - `bot_quick`: `task=chat, latency=low, cost=economy`
+  - `kb_analysis`: `task=analysis, context-length=100000`
+  - `avui_interpret`: `task=chat, latency=low`
+  - `avaya_task`: `task=reasoning, safety-min=4, latency=medium`
+  - `kb_import`: `task=analysis, context-length=200000`
+  - `dev_session`: `task=reasoning, latency=medium`
+- `_get_lmrh_hint(use_case)` — checks DB override `lmrh.hint.<use_case>` first, falls back to default
+- All 7 LLM call sites updated with appropriate use-case hints
+- `POST /ui/api/lmrh-hints` route — saves per-use-case overrides to DB
+- Settings page: "LLM Routing Hints (LMRH)" card with per-use-case text inputs and defaults shown as placeholders
 
-**What to build:**
-- When "Scan Models" runs, also attempt to infer capability profile from model name
-  (e.g., `claude-opus` → reasoning+premium, `haiku` → chat+economy, `gpt-4o-mini` → chat+economy)
-- Store inferred profiles with a `source=inferred` flag
-- Allow manual override via web UI (source=manual)
-- Admin can accept/edit inferred profiles before they go live
+### Phase 4 — llm-proxy v1.10.0: CoT Auto-Engage from task=reasoning ✅
 
-### Phase 3 — coordinator-hub: LMRH Client
+**Shipped:** `src/server.js` — `getAugmentationMode()`, `dispatchProviderCall()`
 
-**What to build:**
-- Hub's bot task dispatch (in `web_ui.py`) adds `LLM-Hint` to outbound API calls
-- Different bot types get different hints:
-  - Avaya CM/SM task: `task=reasoning, safety-min=3, latency=medium`
-  - Quick status check: `task=chat, latency=low, cost=economy`
-  - KB article search/analysis: `task=analysis, context-length=100000`
-- Hub settings page: configure per-bot-type affinity profiles
-- Hub settings page: configure global safety floor (safety-min;require for all hub calls)
+- `getAugmentationMode(provider, clientKey, lmrhHint, modelCaps)` — new params
+- When `lmrhHint.task === 'reasoning'` AND `modelCaps.native_reasoning === false` → returns `'cot-pipeline'`
+- Applies to both streaming and non-streaming paths
+- `cot-engaged=?1` added to `LLM-Capability` response header when CoT auto-engaged
+- Log line: `LMRH CoT auto-engaged: task=reasoning on non-native-reasoning model <model> via <provider>`
+- Does NOT require `claude-code` key type — any caller with a hint gets reasoning augmentation
 
-### Phase 4 — Capability Advertisement (full loop)
+### Bug Fixes During Implementation ✅
 
-- Proxy returns `LLM-Capability` header
-- Hub reads and logs which provider/model was selected for each task
-- Hub UI: "LLM Routing" panel showing recent routing decisions
+- **v1.9.1**: `monitor.js` probe used `gemini-2.0-flash` (discontinued) as default for Google hold-down retests → changed to `gemini-2.5-flash`
+- **v1.9.1**: Google providers had `maxLatencyMs=1800ms` default; Gemini 2.5 with thinking takes 3–8s → set to `30000ms` in SQLite for all Google providers on all nodes
 
 ---
 
-## 6. Key Design Decisions Still Open
+## 5. Production Deployment
 
-1. **Capability profile storage format** — flat SQLite columns vs JSON blob per model
-   - Recommend: JSON blob in `provider_models.capabilities` column (flexible, no schema migration per new affinity)
-2. **Safety scale source of truth** — who sets a provider's safety=N value?
-   - Recommend: operator-configured (default values provided, editable in web UI)
-3. **Scoring algorithm weights** — how to rank soft mismatches?
-   - Recommend: weighted sum (task=10, safety=8, latency=4, cost=3, region=6, context=2)
-   - Hard constraints are pass/fail before scoring
-4. **What happens when no model matches hard constraints?**
-   - Per RFC: HTTP 503 with `{"error": "no_provider_satisfies_constraints", "failed": [...]}`
-   - Option: fallback to warning + best-effort (operator-configurable)
-5. **CoT pipeline integration** — when `task=reasoning` and provider doesn't natively support it,
-   should the proxy automatically engage the CoT pipeline?
-   - Recommend: yes — `task=reasoning` + `model.native_reasoning=false` → route through CoT
+| Component | Version | Nodes |
+|-----------|---------|-------|
+| `llm-proxy-manager` | 1.10.0 | www.voipguru.org, www2.voipguru.org |
+| `coordinator-hub` | 1.0.48 | www.voipguru.org (primary) |
+
+Docker Hub: `dblagbro/llm-proxy-manager:1.10.0`, `dblagbro/coordinator-hub:1.0.48`
 
 ---
 
-## 7. Context the Next Session Needs
+## 6. Key Implementation Files
 
-- The user is the operator of both applications and is the author of the LMRH RFC
-- The user wants `llm-proxy` and `coordinator-hub` to be the **first open-source implementations** of LMRH
-- Do not start coding until a complete implementation plan is agreed upon
-- The RFC is finalized (draft-blagbrough-lmrh-00) — do not redesign it, only implement against it
-- Implementation must not break existing behavior (backward compatible)
-- The existing "Scan Models" feature in llm-proxy web UI is the natural hook for capability discovery
-- The CoT pipeline (added in v1.7.0) should integrate with `task=reasoning` routing
-- coordinator-hub's LLM calls go through Python `anthropic` SDK — adding a header requires
-  using `httpx` transport override or moving to raw `httpx` for that call
+| File | Role |
+|------|------|
+| `llm-proxy/src/server.js` | LMRH parsing, scoring, routing, capability header, CoT auto-engage |
+| `llm-proxy/src/database.js` | `model_capabilities` table, `inferCapabilitiesFromModelName()` |
+| `llm-proxy/src/monitor.js` | Hold-down probe (uses `gemini-2.5-flash` default) |
+| `coordinator-hub/app/web_ui.py` | `_make_anthropic_client()`, `_LMRH_DEFAULT_HINTS`, `_get_lmrh_hint()`, 7 call sites |
+| `coordinator-hub/app/templates/settings.html` | LMRH Routing Hints card |
 
 ---
 
-## 8. How to Continue
+## 7. Reusable Patterns for Future Extensions
 
-Load this document in your new session, then:
-
-1. Read `src/server.js` to understand current provider routing/failover logic
-2. Read the current SQLite schema (look for `CREATE TABLE` statements in `src/server.js` or `src/db.js`)
-3. Read `web_ui.py` in coordinator-hub to understand how bot task dispatch works
-4. Propose the full implementation plan before writing any code
-5. Implement Phase 1 first, fully tested and deployed, before Phase 2
-
-The user will say "plan this build" or similar to kick off the implementation design discussion.
+- **New affinity dimension**: add key to `LMRH_WEIGHTS` in `server.js`, add field to `MODEL_INFERENCE_RULES` in `database.js`, add scoring branch in `scoreModelAgainstHint()`
+- **New hub use case**: add entry to `_LMRH_DEFAULT_HINTS`, call `_get_lmrh_hint('new_use_case')`, pass to `_make_anthropic_client()`
+- **New model patterns**: add rule to `MODEL_INFERENCE_RULES` array in `database.js`
