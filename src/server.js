@@ -423,6 +423,8 @@ const CONFIG_PATH = process.env.CONFIG_PATH || '/app/config/providers.json';
 const USE_SQLITE = process.env.USE_SQLITE === 'true';
 let sqliteDb = null;
 
+const { inferCapabilitiesFromModelName } = require('./database');
+
 if (USE_SQLITE) {
   try {
     sqliteDb = require('./database').open(logger);
@@ -900,6 +902,181 @@ function capabilityFilter(providers, request) {
 
   // Fall back to full list if capability filtering eliminates everything
   return capable.length > 0 ? capable : providers;
+}
+
+// ── LMRH: LLM Model Routing Hint Protocol (draft-blagbrough-lmrh-00) ─────────
+//
+// Parses the LLM-Hint request header (RFC 8941-style key=value pairs) and uses
+// capability profiles stored in model_capabilities to score and rank providers.
+// The header is proxy-internal only — never forwarded to backend providers.
+
+function parseLmrhHint(headerValue) {
+  if (!headerValue) return null;
+  const hint = {
+    task: null, latency: null, cost: null,
+    safetyMin: null, safetyMax: null,
+    region: null, contextLength: null,
+    modality: [], providerHint: null,
+    version: 1, hard: new Set(), raw: headerValue,
+  };
+  // Split on commas, parse each token as key=value[;require]
+  for (const token of headerValue.split(',')) {
+    const t = token.trim();
+    if (!t) continue;
+    const isHard = /;require\b/i.test(t);
+    const kv = t.replace(/;require\b.*$/i, '').trim();
+    const eqIdx = kv.indexOf('=');
+    if (eqIdx < 0) { if (kv === 'v') continue; }
+    const key = kv.slice(0, eqIdx < 0 ? undefined : eqIdx).trim().toLowerCase();
+    const val = eqIdx >= 0 ? kv.slice(eqIdx + 1).trim().replace(/^"|"$/g, '') : null;
+    if (!key || key === 'v') { if (key === 'v' && val) hint.version = parseInt(val) || 1; continue; }
+    switch (key) {
+      case 'task':           hint.task = val; break;
+      case 'latency':        hint.latency = val; break;
+      case 'cost':           hint.cost = val; break;
+      case 'safety-min':     hint.safetyMin = parseInt(val); break;
+      case 'safety-max':     hint.safetyMax = parseInt(val); break;
+      case 'region':         hint.region = val; break;
+      case 'context-length': hint.contextLength = parseInt(val); break;
+      case 'modality':       hint.modality.push(val); break;
+      case 'provider-hint':  hint.providerHint = val; break;
+    }
+    if (isHard) hint.hard.add(key);
+  }
+  return hint;
+}
+
+// Affinity scoring weights (soft constraints only — hard constraints are pass/fail)
+const LMRH_WEIGHTS = { task: 10, safety: 8, region: 6, latency: 4, cost: 3, context: 2, modality: 5 };
+const LATENCY_ORDER  = { low: 0, medium: 1, high: 2 };
+const COST_ORDER     = { economy: 0, standard: 1, premium: 2 };
+
+function scoreModelAgainstHint(caps, hint) {
+  const failedHard = [];
+  let score = 0;
+
+  // --- Hard constraint checks (fail-fast) ---
+  if (hint.safetyMin !== null && hint.hard.has('safety-min') && (caps.safety ?? 2) < hint.safetyMin)
+    failedHard.push('safety-min');
+  if (hint.safetyMax !== null && hint.hard.has('safety-max') && (caps.safety ?? 2) > hint.safetyMax)
+    failedHard.push('safety-max');
+  if (hint.contextLength !== null && hint.hard.has('context-length') && (caps.context_length ?? 8192) < hint.contextLength)
+    failedHard.push('context-length');
+  if (hint.region && hint.hard.has('region') && Array.isArray(caps.region) && !caps.region.includes(hint.region))
+    failedHard.push('region');
+  if (hint.providerHint && hint.hard.has('provider-hint'))
+    {} // enforced at provider level, not model level
+  for (const mod of hint.modality) {
+    if (hint.hard.has('modality') && Array.isArray(caps.modality) && !caps.modality.includes(mod))
+      failedHard.push('modality');
+  }
+  if (failedHard.length) return { score: -Infinity, failedHard };
+
+  // --- Soft scoring ---
+  if (hint.task && Array.isArray(caps.task) && caps.task.includes(hint.task))
+    score += LMRH_WEIGHTS.task;
+  if (hint.safetyMin !== null && (caps.safety ?? 2) >= hint.safetyMin)
+    score += LMRH_WEIGHTS.safety;
+  if (hint.safetyMax !== null && (caps.safety ?? 2) <= hint.safetyMax)
+    score += LMRH_WEIGHTS.safety;
+  if (hint.latency && caps.latency === hint.latency)
+    score += LMRH_WEIGHTS.latency;
+  else if (hint.latency && caps.latency) {
+    // Partial credit: adjacent latency tier
+    const diff = Math.abs((LATENCY_ORDER[caps.latency] ?? 1) - (LATENCY_ORDER[hint.latency] ?? 1));
+    if (diff === 1) score += Math.floor(LMRH_WEIGHTS.latency / 2);
+  }
+  if (hint.cost && caps.cost === hint.cost)
+    score += LMRH_WEIGHTS.cost;
+  if (hint.region && Array.isArray(caps.region) && caps.region.includes(hint.region))
+    score += LMRH_WEIGHTS.region;
+  if (hint.contextLength && (caps.context_length ?? 8192) >= hint.contextLength)
+    score += LMRH_WEIGHTS.context;
+  for (const mod of hint.modality) {
+    if (Array.isArray(caps.modality) && caps.modality.includes(mod))
+      score += LMRH_WEIGHTS.modality;
+  }
+
+  return { score, failedHard: [] };
+}
+
+// Returns a re-ranked provider list with the best-scoring model attached per provider.
+// Providers whose best model fails a hard constraint are removed.
+// Returns { rankedProviders, unmetAffinities[], selectedModel per provider stored in p._lmrhModel }
+function rankProvidersWithHint(providers, hint, sqliteDb) {
+  const scored = [];
+  const unmetAffinities = new Set();
+
+  for (const provider of providers) {
+    // If provider-hint is hard and doesn't match, skip
+    if (hint.providerHint && hint.hard.has('provider-hint') &&
+        provider.name.toLowerCase() !== hint.providerHint.toLowerCase()) continue;
+
+    // Get all capability profiles for this provider
+    let modelCaps = [];
+    if (sqliteDb) {
+      try { modelCaps = sqliteDb.listModelCapabilities(provider.id); } catch (_) {}
+    }
+
+    // If no profiles yet, use the provider's default model with inferred caps
+    if (modelCaps.length === 0 && provider.model) {
+      modelCaps = [{ model_id: provider.model, ...inferCapabilitiesFromModelName(provider.model) }];
+    }
+
+    let bestScore = -Infinity;
+    let bestModel = provider.model;
+    let bestCaps  = null;
+
+    for (const caps of modelCaps) {
+      const { score, failedHard } = scoreModelAgainstHint(caps, hint);
+      if (failedHard.length) continue; // hard fail — skip this model
+      if (score > bestScore) { bestScore = score; bestModel = caps.model_id; bestCaps = caps; }
+    }
+
+    if (bestScore === -Infinity) continue; // all models hard-failed for this provider
+
+    // Collect soft unmet affinities for LLM-Capability header
+    if (hint.task && bestCaps && Array.isArray(bestCaps.task) && !bestCaps.task.includes(hint.task))
+      unmetAffinities.add('task');
+    if (hint.latency && bestCaps && bestCaps.latency !== hint.latency)
+      unmetAffinities.add('latency');
+    if (hint.cost && bestCaps && bestCaps.cost !== hint.cost)
+      unmetAffinities.add('cost');
+
+    scored.push({ provider, model: bestModel, caps: bestCaps, score: bestScore });
+  }
+
+  // Sort descending by score, preserve original priority order for ties
+  scored.sort((a, b) => b.score - a.score || a.provider.priority - b.provider.priority);
+
+  // Attach selected model onto provider object for downstream use
+  for (const s of scored) s.provider._lmrhModel = s.model;
+
+  return {
+    rankedProviders: scored.map(s => s.provider),
+    unmetAffinities: [...unmetAffinities],
+    topCaps: scored[0]?.caps || null,
+  };
+}
+
+// Build LLM-Capability response header value
+function buildLmrhCapabilityHeader(provider, modelId, caps, unmet) {
+  if (!provider) return null;
+  const parts = [
+    `v=1`,
+    `provider=${provider.name.toLowerCase().replace(/\s+/g, '-')}`,
+    `model=${modelId || provider.model || 'unknown'}`,
+  ];
+  if (caps) {
+    if (Array.isArray(caps.task) && caps.task[0]) parts.push(`task=${caps.task[0]}`);
+    if (caps.safety != null)         parts.push(`safety=${caps.safety}`);
+    if (caps.latency)                parts.push(`latency=${caps.latency}`);
+    if (caps.cost)                   parts.push(`cost=${caps.cost}`);
+    if (caps.context_length)         parts.push(`context-length=${caps.context_length}`);
+    if (Array.isArray(caps.region) && caps.region[0]) parts.push(`region=${caps.region[0]}`);
+  }
+  if (unmet && unmet.length) parts.push(`unmet=${unmet.join(' ')}`);
+  return parts.join(', ');
 }
 
 // Translate Anthropic request to Google Gemini format (with tool support)
@@ -2170,12 +2347,45 @@ app.post('/v1/messages', validateApiKey, async (req, res) => {
     return res.status(503).json({ error: 'No providers available' });
   }
 
+  // ── LMRH: parse LLM-Hint and re-rank providers if hint is present ─────────
+  // The header is proxy-internal — backends never see it (they build their own headers).
+  const lmrhHint = parseLmrhHint(req.headers['llm-hint'] || req.headers['LLM-Hint']);
+  let routingProviders = availableProviders;
+  let lmrhUnmet = [];
+  let lmrhTopCaps = null;
+
+  if (lmrhHint) {
+    const { rankedProviders, unmetAffinities, topCaps } =
+      rankProvidersWithHint(availableProviders, lmrhHint, USE_SQLITE ? sqliteDb : null);
+
+    if (rankedProviders.length === 0 && lmrhHint.hard.size > 0) {
+      logger.warn('LMRH: no provider satisfies hard constraints', { hint: lmrhHint.raw });
+      return res.status(503).json({
+        error: 'no_provider_satisfies_constraints',
+        failed: [...lmrhHint.hard],
+        hint: lmrhHint.raw
+      });
+    }
+
+    if (rankedProviders.length > 0) {
+      routingProviders = rankedProviders;
+      lmrhUnmet = unmetAffinities;
+      lmrhTopCaps = topCaps;
+      logger.info(`LMRH routing: task=${lmrhHint.task} → ${rankedProviders[0].name}` +
+        (rankedProviders[0]._lmrhModel ? `/${rankedProviders[0]._lmrhModel}` : '') +
+        (unmetAffinities.length ? ` (unmet: ${unmetAffinities.join(',')})` : ''));
+    } else {
+      // Soft-only hints with no match — keep original order, log it
+      logger.info(`LMRH hint present but no scored match, using default routing: ${lmrhHint.raw}`);
+    }
+  }
+
   // ── Layer 3: Conductor path — parallel racing for non-streaming requests ──
-  if (CONDUCTOR_MODE && !isStreaming && availableProviders.length >= 2) {
+  if (CONDUCTOR_MODE && !isStreaming && routingProviders.length >= 2) {
     const maxLatencyMs = 1800; // use global default for conductor
     logChatRequest('Conductor', 1, req.body.model, req.body.messages, req);
     try {
-      const { result, provider } = await raceProvidersParallel(availableProviders, req.body, maxLatencyMs);
+      const { result, provider } = await raceProvidersParallel(routingProviders, req.body, maxLatencyMs);
       const latency = Date.now() - startTime;
 
       // Update stats for winning provider
@@ -2217,7 +2427,7 @@ app.post('/v1/messages', validateApiKey, async (req, res) => {
   passes: for (let pass = 1; pass <= 3; pass++) {
     if (pass > 1) logger.info(`Provider routing pass ${pass}/3`);
 
-    for (const provider of availableProviders) {
+    for (const provider of routingProviders) {
       // Skip provider if requested model is not in its allow-list
       if (!isModelAllowedForProvider(provider, req.body.model)) {
         logger.info(`Skipping ${provider.name} — model ${req.body.model} not in enabledModels list`);
@@ -2261,6 +2471,10 @@ app.post('/v1/messages', validateApiKey, async (req, res) => {
             streamRes.setHeader('Content-Type', 'text/event-stream');
             streamRes.setHeader('Cache-Control', 'no-cache');
             streamRes.setHeader('Connection', 'keep-alive');
+            if (lmrhHint) {
+              const cap = buildLmrhCapabilityHeader(provider, provider._lmrhModel, lmrhTopCaps, lmrhUnmet);
+              if (cap) streamRes.setHeader('LLM-Capability', cap);
+            }
             logger.info(`Streaming headers buffered for provider: ${provider.name}`);
           }
 
@@ -2327,6 +2541,10 @@ app.post('/v1/messages', validateApiKey, async (req, res) => {
             continue;
           }
 
+          if (lmrhHint) {
+            const cap = buildLmrhCapabilityHeader(provider, provider._lmrhModel, lmrhTopCaps, lmrhUnmet);
+            if (cap) res.setHeader('LLM-Capability', cap);
+          }
           res.json(result);
         }
 
