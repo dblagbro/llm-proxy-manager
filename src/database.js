@@ -100,6 +100,16 @@ CREATE TABLE IF NOT EXISTS kv (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL       -- JSON
 );
+
+CREATE TABLE IF NOT EXISTS model_capabilities (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  provider_id TEXT NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
+  model_id    TEXT NOT NULL,
+  source      TEXT NOT NULL DEFAULT 'inferred',  -- 'manual', 'inferred'
+  capabilities TEXT NOT NULL DEFAULT '{}',        -- JSON blob
+  updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(provider_id, model_id)
+);
 `;
 
 // ---------------------------------------------------------------------------
@@ -110,6 +120,8 @@ function initDb() {
   db.exec(SCHEMA);
   // Migrate: add key_type to existing databases that predate this column
   try { db.exec("ALTER TABLE client_api_keys ADD COLUMN key_type TEXT NOT NULL DEFAULT 'claude-code'"); } catch (_) {}
+  // Migrate: create model_capabilities if not present (CREATE IF NOT EXISTS handles it, but re-exec is safe)
+  try { db.exec("CREATE TABLE IF NOT EXISTS model_capabilities (id INTEGER PRIMARY KEY AUTOINCREMENT, provider_id TEXT NOT NULL, model_id TEXT NOT NULL, source TEXT NOT NULL DEFAULT 'inferred', capabilities TEXT NOT NULL DEFAULT '{}', updated_at TEXT NOT NULL DEFAULT (datetime('now')), UNIQUE(provider_id, model_id))"); } catch (_) {}
   return db;
 }
 
@@ -601,6 +613,94 @@ module.exports = {
 
       // Raw DB handle for advanced use
       db,
+
+      // LMRH model capability profiles
+      getModelCapabilities,
+      setModelCapabilities,
+      listModelCapabilities,
+      inferAndSaveCapabilities,
     };
   },
 };
+
+// ---------------------------------------------------------------------------
+// LMRH Model Capability Helpers
+// ---------------------------------------------------------------------------
+
+function getModelCapabilities(providerId, modelId) {
+  if (!db) return null;
+  const row = db.prepare(
+    'SELECT capabilities, source FROM model_capabilities WHERE provider_id = ? AND model_id = ?'
+  ).get(providerId, modelId);
+  if (!row) return null;
+  try { return { ...JSON.parse(row.capabilities), _source: row.source }; } catch (_) { return null; }
+}
+
+function setModelCapabilities(providerId, modelId, caps, source = 'manual') {
+  if (!db) return;
+  db.prepare(`
+    INSERT INTO model_capabilities (provider_id, model_id, capabilities, source, updated_at)
+    VALUES (?, ?, ?, ?, datetime('now'))
+    ON CONFLICT(provider_id, model_id) DO UPDATE SET
+      capabilities = excluded.capabilities,
+      source       = excluded.source,
+      updated_at   = excluded.updated_at
+  `).run(providerId, modelId, JSON.stringify(caps), source);
+}
+
+function listModelCapabilities(providerId) {
+  if (!db) return [];
+  return db.prepare(
+    'SELECT model_id, capabilities, source, updated_at FROM model_capabilities WHERE provider_id = ? ORDER BY model_id'
+  ).all(providerId).map(r => {
+    let caps = {};
+    try { caps = JSON.parse(r.capabilities); } catch (_) {}
+    return { model_id: r.model_id, source: r.source, updated_at: r.updated_at, ...caps };
+  });
+}
+
+// Pattern-based capability inference from model name.
+// Applied automatically when Scan Models runs; source = 'inferred'.
+const MODEL_INFERENCE_RULES = [
+  { pattern: /claude-opus/i,       caps: { task: ['reasoning','coding','analysis','creative'], latency: 'high',   cost: 'premium',  safety: 4, native_reasoning: false } },
+  { pattern: /claude-sonnet/i,     caps: { task: ['reasoning','coding','analysis'],            latency: 'medium', cost: 'standard', safety: 4, native_reasoning: false } },
+  { pattern: /claude-haiku/i,      caps: { task: ['chat','summarize'],                         latency: 'low',    cost: 'economy',  safety: 4, native_reasoning: false } },
+  { pattern: /gpt-4o-mini/i,       caps: { task: ['chat','summarize'],                         latency: 'low',    cost: 'economy',  safety: 3, native_reasoning: false } },
+  { pattern: /gpt-4o/i,            caps: { task: ['reasoning','coding','analysis'],             latency: 'medium', cost: 'premium',  safety: 3, native_reasoning: false } },
+  { pattern: /\bo[1-9]\b/i,        caps: { task: ['reasoning'],                                latency: 'high',   cost: 'premium',  safety: 3, native_reasoning: true  } },
+  { pattern: /o3-mini/i,           caps: { task: ['reasoning','coding'],                        latency: 'medium', cost: 'standard', safety: 3, native_reasoning: true  } },
+  { pattern: /gemini-2\.5.*pro/i,  caps: { task: ['reasoning','analysis','coding'],             latency: 'high',   cost: 'premium',  safety: 3, native_reasoning: true  } },
+  { pattern: /gemini-2\.5.*flash/i,caps: { task: ['reasoning','chat','summarize'],              latency: 'medium', cost: 'standard', safety: 3, native_reasoning: true  } },
+  { pattern: /gemini.*flash/i,     caps: { task: ['chat','summarize'],                          latency: 'low',    cost: 'economy',  safety: 3, native_reasoning: false } },
+  { pattern: /gemini.*pro/i,       caps: { task: ['reasoning','analysis'],                      latency: 'medium', cost: 'standard', safety: 3, native_reasoning: false } },
+  { pattern: /grok/i,              caps: { task: ['chat','analysis','creative'],                latency: 'medium', cost: 'standard', safety: 2, native_reasoning: false } },
+  { pattern: /llama/i,             caps: { task: ['chat','summarize'],                          latency: 'low',    cost: 'economy',  safety: 2, native_reasoning: false } },
+  { pattern: /mistral|mixtral/i,   caps: { task: ['chat','coding'],                             latency: 'low',    cost: 'economy',  safety: 2, native_reasoning: false } },
+  { pattern: /deepseek.*r[0-9]/i,  caps: { task: ['reasoning','coding'],                        latency: 'high',   cost: 'economy',  safety: 1, native_reasoning: true  } },
+  { pattern: /deepseek/i,          caps: { task: ['coding','chat'],                             latency: 'medium', cost: 'economy',  safety: 1, native_reasoning: false } },
+];
+
+function inferCapabilitiesFromModelName(modelId) {
+  for (const rule of MODEL_INFERENCE_RULES) {
+    if (rule.pattern.test(modelId)) {
+      return { context_length: 32000, region: ['us'], modality: ['text', 'tool'], ...rule.caps };
+    }
+  }
+  // Generic fallback
+  return { task: ['chat'], latency: 'medium', cost: 'standard', safety: 3,
+           context_length: 32000, region: ['us'], modality: ['text'], native_reasoning: false };
+}
+
+function inferAndSaveCapabilities(providerId, modelIds) {
+  for (const modelId of modelIds) {
+    const existing = getModelCapabilities(providerId, modelId);
+    // Don't overwrite manual entries
+    if (existing && existing._source === 'manual') continue;
+    const caps = inferCapabilitiesFromModelName(modelId);
+    setModelCapabilities(providerId, modelId, caps, 'inferred');
+  }
+}
+
+
+// Export standalone utilities needed by server.js
+module.exports.inferCapabilitiesFromModelName = inferCapabilitiesFromModelName;
