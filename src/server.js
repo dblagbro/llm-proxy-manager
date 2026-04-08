@@ -3107,7 +3107,7 @@ app.get('/api/client-keys', (req, res) => {
 });
 
 app.post('/api/client-keys', (req, res) => {
-  const { name, quotaEnabled, quotaRpm, quotaRpd } = req.body;
+  const { name, quotaEnabled, quotaRpm, quotaRpd, keyType } = req.body;
 
   if (!name || name.trim() === '') {
     return res.status(400).json({ error: 'Name is required' });
@@ -3121,6 +3121,7 @@ app.post('/api/client-keys', (req, res) => {
     lastUsed: null,
     requests: 0,
     enabled: true,
+    keyType: ['claude-code', 'standard'].includes(keyType) ? keyType : 'claude-code',
     quotaEnabled: Boolean(quotaEnabled),
     quotaRpm: parseInt(quotaRpm) || 0,
     quotaRpd: parseInt(quotaRpd) || 0,
@@ -3159,7 +3160,7 @@ app.delete('/api/client-keys/:id', (req, res) => {
 
 app.patch('/api/client-keys/:id', (req, res) => {
   const { id } = req.params;
-  const { enabled, name, quotaEnabled, quotaRpm, quotaRpd } = req.body;
+  const { enabled, name, quotaEnabled, quotaRpm, quotaRpd, keyType } = req.body;
 
   if (!config.clientApiKeys) {
     return res.status(404).json({ error: 'Key not found' });
@@ -3173,6 +3174,7 @@ app.patch('/api/client-keys/:id', (req, res) => {
 
   if (enabled !== undefined) key.enabled = Boolean(enabled);
   if (name && name.trim() !== '') key.name = name.trim();
+  if (keyType && ['claude-code', 'standard'].includes(keyType)) key.keyType = keyType;
   if (quotaEnabled !== undefined) key.quotaEnabled = Boolean(quotaEnabled);
   if (quotaRpm !== undefined) key.quotaRpm = parseInt(quotaRpm) || 0;
   if (quotaRpd !== undefined) key.quotaRpd = parseInt(quotaRpd) || 0;

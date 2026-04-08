@@ -1653,6 +1653,13 @@ print(message.content[0].text)</pre>
                     <input type="text" id="edit-key-name" required placeholder="e.g., Production App, Dev Environment">
                 </div>
                 <div class="form-group">
+                    <label>Key Type</label>
+                    <select id="edit-key-type" style="width:100%;padding:8px;background:var(--bg3,#2a2a2a);color:var(--text,#eee);border:1px solid var(--border,#444);border-radius:6px;">
+                        <option value="claude-code">Claude Code — reasoning enhancements on non-Anthropic backends</option>
+                        <option value="standard">Standard — plain pass-through, no augmentation</option>
+                    </select>
+                </div>
+                <div class="form-group">
                     <label>API Key (Read-Only)</label>
                     <div style="display: flex; align-items: center; gap: 8px;">
                         <input type="password" id="edit-key-value" readonly class="readonly-code" style="flex: 1;">
@@ -3682,6 +3689,9 @@ print(message.content[0].text)</pre>
             document.getElementById('edit-key-quota-rpd').value = key.quotaRpd || 0;
             document.getElementById('edit-key-quota-fields').style.display = quotaEnabled ? 'block' : 'none';
 
+            // Key type
+            document.getElementById('edit-key-type').value = key.keyType || 'claude-code';
+
             // Load live usage if quota enabled
             if (quotaEnabled) {
                 fetch(`./api/client-keys/${keyId}/quota-status`).then(r => r.json()).then(s => {
@@ -3735,6 +3745,7 @@ print(message.content[0].text)</pre>
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         name, enabled,
+                        keyType: document.getElementById('edit-key-type').value,
                         quotaEnabled: document.getElementById('edit-key-quota-enabled').checked,
                         quotaRpm: parseInt(document.getElementById('edit-key-quota-rpm').value) || 0,
                         quotaRpd: parseInt(document.getElementById('edit-key-quota-rpd').value) || 0,
