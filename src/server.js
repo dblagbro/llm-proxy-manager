@@ -3175,7 +3175,9 @@ app.post('/v1/chat/completions', validateApiKey, async (req, res) => {
 
     } catch (err) {
       logger.warn(`Provider ${provider.name} failed for /v1/chat/completions: ${err.message}`);
-      providerMonitor.recordFailure(provider, err);
+      const _errCat = classifyProviderError(err);
+      const _noHD   = ['auth_error', 'not_found', 'client_error', 'context_exceeded'].includes(_errCat);
+      if (!_noHD) providerMonitor.recordFailure(provider, err);
       config.stats[provider.id] = config.stats[provider.id] || {};
       config.stats[provider.id].failures = (config.stats[provider.id].failures || 0) + 1;
       if (isStreaming && res.headersSent) { res.end(); return; }
@@ -3235,7 +3237,9 @@ app.post('/v1/images/generations', validateApiKey, async (req, res) => {
       return res.json(response.data);
     } catch (err) {
       logger.warn(`Image generation failed on ${provider.name}: ${err.message}`);
-      providerMonitor.recordFailure(provider, err);
+      const _imgErrCat = classifyProviderError(err);
+      const _imgNoHD   = ['auth_error', 'not_found', 'client_error'].includes(_imgErrCat);
+      if (!_imgNoHD) providerMonitor.recordFailure(provider, err);
     }
   }
 
