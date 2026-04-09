@@ -931,6 +931,15 @@
                                 <input type="number" id="edit-maxLatencyMs" min="0" placeholder="1800" style="font-size: 13px;">
                             </div>
                         </div>
+                        <div style="margin-top: 10px;">
+                            <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 13px;">
+                                <input type="checkbox" id="edit-excludeFromToolRequests" style="width:15px; height:15px;">
+                                <span>Exclude from tool-bearing requests</span>
+                            </label>
+                            <small style="color: var(--text-muted, #888); font-size: 11px; margin-left: 23px;">
+                                When checked, this provider is never selected for requests that include tool definitions (e.g. agentic Claude sessions). Use for providers that don't reliably handle Claude's native tool schemas.
+                            </small>
+                        </div>
                     </div>
                 </details>
 
@@ -2340,6 +2349,7 @@ print(message.content[0].text)</pre>
             document.getElementById('edit-failureThreshold').value  = provider.failureThreshold  != null ? provider.failureThreshold  : '';
             document.getElementById('edit-holdDownSeconds').value   = provider.holdDownSeconds   != null ? provider.holdDownSeconds   : '';
             document.getElementById('edit-maxLatencyMs').value      = provider.maxLatencyMs      != null ? provider.maxLatencyMs      : '';
+            document.getElementById('edit-excludeFromToolRequests').checked = !!provider.excludeFromToolRequests;
 
             updateFormFields();
 
@@ -2384,6 +2394,7 @@ print(message.content[0].text)</pre>
             document.getElementById('edit-failureThreshold').value = '';
             document.getElementById('edit-holdDownSeconds').value = '';
             document.getElementById('edit-maxLatencyMs').value = '';
+            document.getElementById('edit-excludeFromToolRequests').checked = false;
             document.getElementById('modelScanSection').style.display = 'none';
             document.getElementById('modelScanList').innerHTML = '';
 
@@ -2770,6 +2781,10 @@ print(message.content[0].text)</pre>
             const el = document.getElementById('providerLogContent');
             try {
                 const r = await fetch(`./api/provider-chat-log?name=${encodeURIComponent(_providerLogName)}&lines=${lines}`);
+                if (r.status === 401) {
+                    el.textContent = 'Session expired — please refresh the page and log in again.';
+                    return;
+                }
                 const data = await r.json();
                 if (!data.exists) {
                     el.textContent = 'No chat log found for this provider yet. Make a request through it first.';
@@ -3088,6 +3103,7 @@ print(message.content[0].text)</pre>
                 failureThreshold:  failureThreshold !== '' ? parseInt(failureThreshold) : 2,
                 holdDownSeconds:   holdDownSeconds  !== '' ? parseInt(holdDownSeconds)  : 180,
                 maxLatencyMs:      maxLatencyMs     !== '' ? parseInt(maxLatencyMs)     : 1800,
+                excludeFromToolRequests: document.getElementById('edit-excludeFromToolRequests').checked,
                 enabledModels: enabledModels || (editingIndex >= 0 ? config.providers[editingIndex].enabledModels : undefined),
                 modelOrder:    modelOrder    || (editingIndex >= 0 ? config.providers[editingIndex].modelOrder    : undefined),
             };
