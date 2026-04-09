@@ -2569,11 +2569,6 @@ app.post('/v1/chat/completions', validateApiKey, async (req, res) => {
         config.stats[provider.id].successes++;
         config.stats[provider.id].totalLatency += Date.now() - startTime;
         providerMonitor.recordSuccess(provider);
-        if (req.clientKey) {
-          req.clientKey.requests = (req.clientKey.requests || 0) + 1;
-          req.clientKey.lastUsed = new Date().toISOString();
-          saveApiKeyRecord(req.clientKey);
-        }
         res.end();
         return;
       }
@@ -2587,11 +2582,6 @@ app.post('/v1/chat/completions', validateApiKey, async (req, res) => {
       config.stats[provider.id].totalOutputTokens += anthropicResp.usage?.output_tokens || 0;
       if (USE_SQLITE && sqliteDb) saveStatsRecord(provider.id);
       providerMonitor.recordSuccess(provider);
-      if (req.clientKey) {
-        req.clientKey.requests = (req.clientKey.requests || 0) + 1;
-        req.clientKey.lastUsed = new Date().toISOString();
-        saveApiKeyRecord(req.clientKey);
-      }
       return res.json(oaiResp);
 
     } catch (err) {
@@ -2645,13 +2635,7 @@ app.post('/v1/images/generations', validateApiKey, async (req, res) => {
       initStats(provider.id);
       config.stats[provider.id].requests = (config.stats[provider.id].requests || 0) + 1;
       config.stats[provider.id].successes = (config.stats[provider.id].successes || 0) + 1;
-      if (USE_SQLITE && sqliteDb) saveStatsRecord(provider.id);
       providerMonitor.recordSuccess(provider);
-      if (req.clientKey) {
-        req.clientKey.requests = (req.clientKey.requests || 0) + 1;
-        req.clientKey.lastUsed = new Date().toISOString();
-        saveApiKeyRecord(req.clientKey);
-      }
       logger.info(`Image generation via ${provider.name}: "${prompt.substring(0, 60)}..."`);
       return res.json(response.data);
     } catch (err) {
@@ -2762,7 +2746,6 @@ app.post('/v1/messages', validateApiKey, async (req, res) => {
       if (req.clientKey) {
         req.clientKey.requests = (req.clientKey.requests || 0) + 1;
         req.clientKey.lastUsed = new Date().toISOString();
-        saveApiKeyRecord(req.clientKey);
       }
 
       logger.info(`Conductor success via ${provider.name}`, { latency: `${latency}ms`, requestId: req.requestId });
@@ -2937,7 +2920,6 @@ app.post('/v1/messages', validateApiKey, async (req, res) => {
         if (req.clientKey) {
           req.clientKey.requests = (req.clientKey.requests || 0) + 1;
           req.clientKey.lastUsed = new Date().toISOString();
-          saveApiKeyRecord(req.clientKey);
         }
 
         if (isStreaming) {
@@ -3021,8 +3003,9 @@ app.post('/v1/messages', validateApiKey, async (req, res) => {
           category: errCategory,
           status: error.response?.status,
           statusText: error.response?.statusText,
-          data: (() => { const d = error.response?.data; if (!d) return undefined; if (typeof d === 'string') return d.slice(0, 500); if (typeof d === 'object' && !Buffer.isBuffer(d)) { const seen = new WeakSet(); try { return JSON.parse(JSON.stringify(d, (_k, v) => { if (typeof v === 'object' && v !== null) { if (seen.has(v)) return '[circular]'; seen.add(v); } return v; })); } catch(e) { return `[non-serializable ${typeof d}]`; } } return `[${typeof d}]`; })(),
+          data: error.response?.data,
           latency: `${latency}ms`,
+          stack: error.stack
         });
         logChatFailover(provider.name, `[${errCategory}] ${error.message}${error.response?.status ? ` (HTTP ${error.response.status})` : ''}`, pass);
 
@@ -3461,7 +3444,7 @@ app.post('/api/client-keys', (req, res) => {
     lastUsed: null,
     requests: 0,
     enabled: true,
-    keyType: ['claude-code', 'standard', 'openai', 'anthropic', 'microsoft', 'google', 'grok'].includes(keyType) ? keyType : 'claude-code',
+    keyType: ['claude-code', 'standard', 'openai'].includes(keyType) ? keyType : 'claude-code',
     quotaEnabled: Boolean(quotaEnabled),
     quotaRpm: parseInt(quotaRpm) || 0,
     quotaRpd: parseInt(quotaRpd) || 0,
@@ -3514,7 +3497,7 @@ app.patch('/api/client-keys/:id', (req, res) => {
 
   if (enabled !== undefined) key.enabled = Boolean(enabled);
   if (name && name.trim() !== '') key.name = name.trim();
-  if (keyType && ['claude-code', 'standard', 'openai', 'anthropic', 'microsoft', 'google', 'grok'].includes(keyType)) key.keyType = keyType;
+  if (keyType && ['claude-code', 'standard', 'openai'].includes(keyType)) key.keyType = keyType;
   if (quotaEnabled !== undefined) key.quotaEnabled = Boolean(quotaEnabled);
   if (quotaRpm !== undefined) key.quotaRpm = parseInt(quotaRpm) || 0;
   if (quotaRpd !== undefined) key.quotaRpd = parseInt(quotaRpd) || 0;
