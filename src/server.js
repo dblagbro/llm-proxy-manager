@@ -315,7 +315,8 @@ function classifyProviderError(error) {
   const status = error.response?.status;
   const msg    = (error.message || '').toLowerCase();
   const data   = error.response?.data;
-  const dataStr = JSON.stringify(data || '').toLowerCase();
+  let dataStr = '';
+  try { dataStr = JSON.stringify(data || '').toLowerCase(); } catch (_) { dataStr = String(data || '').toLowerCase(); }
 
   // Context length exceeded — don't hold down, but log clearly
   if (
@@ -359,10 +360,64 @@ app.use(express.static('public'));
 
 // Session configuration
 app.use(cookieParser());
+// ── SQLite-backed session store (survives container restarts) ─────────────────
+// Implements the express-session Store interface using better-sqlite3.
+// Sessions are stored in the main config SQLite DB under the 'sessions' table.
+const SessionStore = require('express-session').Store;
+class SqliteSessionStore extends SessionStore {
+  constructor(dbPath) {
+    super();
+    try {
+      const Database = require('better-sqlite3');
+      this._db = new Database(dbPath);
+      this._db.exec(`CREATE TABLE IF NOT EXISTS sessions (
+        sid TEXT PRIMARY KEY,
+        sess TEXT NOT NULL,
+        expires INTEGER NOT NULL
+      )`);
+      // Prune expired sessions every 10 minutes
+      setInterval(() => {
+        try { this._db.prepare('DELETE FROM sessions WHERE expires < ?').run(Date.now()); } catch (_) {}
+      }, 10 * 60 * 1000);
+    } catch (err) {
+      logger.warn('SqliteSessionStore init failed — falling back to MemoryStore:', err.message);
+      this._db = null;
+    }
+  }
+  get(sid, cb) {
+    if (!this._db) return cb();
+    try {
+      const row = this._db.prepare('SELECT sess, expires FROM sessions WHERE sid=?').get(sid);
+      if (!row || row.expires < Date.now()) return cb();
+      cb(null, JSON.parse(row.sess));
+    } catch (e) { cb(e); }
+  }
+  set(sid, sess, cb) {
+    if (!this._db) return cb && cb();
+    try {
+      const expires = sess.cookie?.expires ? new Date(sess.cookie.expires).getTime() : Date.now() + 86400000;
+      this._db.prepare('INSERT OR REPLACE INTO sessions (sid,sess,expires) VALUES (?,?,?)').run(sid, JSON.stringify(sess), expires);
+      cb && cb();
+    } catch (e) { cb && cb(e); }
+  }
+  destroy(sid, cb) {
+    if (!this._db) return cb && cb();
+    try {
+      this._db.prepare('DELETE FROM sessions WHERE sid=?').run(sid);
+      cb && cb();
+    } catch (e) { cb && cb(e); }
+  }
+}
+
+const _sessionStore = new SqliteSessionStore(
+  process.env.SQLITE_DB_PATH || '/app/config/llm-proxy.db'
+);
+
 app.use(session({
   secret: process.env.SESSION_SECRET || 'llm-proxy-secret-change-in-production',
   resave: false,
   saveUninitialized: false,
+  store: _sessionStore,
   cookie: {
     secure: false, // Set to true if using HTTPS
     httpOnly: true,
@@ -861,15 +916,460 @@ function isBadModelOutput(text) {
   return XML_SENTINEL_PATTERNS.some(re => re.test(text));
 }
 
+// ── 1f: Prompt-Based Tool Calling (PBTC) ─────────────────────────────────────
+// For non-Anthropic providers that don't reliably produce native function-call
+// outputs, the proxy intercepts tool-bearing requests and:
+//   1. Strips the `tools` array from the request
+//   2. Injects a system-prompt section teaching the model a <tool_call> text format
+//   3. Converts any tool_use / tool_result blocks in message history to plain text
+//   4. After the provider responds, parses <tool_call> blocks from the text and
+//      emits a proper Anthropic-format response with tool_use content blocks
+//
+// This prevents the coordinator daemon from ever seeing bad-model XML stubs and
+// falling to FALLBACK TEXT-ONLY MODE — the proxy transparently bridges the gap.
+
+const PBTC_TAG_OPEN  = '<tool_call>';
+const PBTC_TAG_CLOSE = '</tool_call>';
+
+/** Decide whether to use prompt-based tool calling for this provider+request. */
+function shouldUsePromptToolCalling(provider, request) {
+  if (!request.tools || request.tools.length === 0) return false;
+  if (provider.type === 'anthropic') return false;   // native tool calling works
+  if (provider.excludeFromToolRequests) return false; // hard-excluded — skip entirely
+  return true;  // all other providers with tools → PBTC
+}
+
+/** Build the system-prompt section that teaches the model the <tool_call> format. */
+function buildPbtcSystemSection(tools) {
+  const toolList = (tools || []).map(t => {
+    const props = t.input_schema?.properties || {};
+    const required = new Set(t.input_schema?.required || []);
+    const params = Object.entries(props).map(([k, v]) => {
+      const req = required.has(k) ? '' : ' (optional)';
+      const typ = v.type || 'string';
+      const desc = v.description ? ` — ${v.description}` : '';
+      return `    • ${k} (${typ}${req})${desc}`;
+    }).join('\n') || '    (no parameters)';
+    return `  **${t.name}**: ${t.description || ''}\n${params}`;
+  }).join('\n\n');
+
+  return `## Tool Use
+
+You have access to the following tools. To call a tool, output EXACTLY this format — one tool call per response, no other content on the same lines as the tags:
+
+${PBTC_TAG_OPEN}
+{"name": "ToolName", "input": {"param": "value"}}
+${PBTC_TAG_CLOSE}
+
+Rules:
+- Call only ONE tool per response.
+- After the ${PBTC_TAG_OPEN} / ${PBTC_TAG_CLOSE} block you MUST stop generating — wait for the tool result.
+- If you need no tools, respond with plain text only (no tool_call tags).
+- Use the exact tool names listed below.
+
+### Available Tools
+
+${toolList}`;
+}
+
+/** Pre-process an Anthropic request for prompt-based tool calling.
+ *  Returns a new request object with tools stripped and injected into system prompt. */
+function pbtcPreprocess(originalRequest) {
+  const req = JSON.parse(JSON.stringify(originalRequest)); // deep copy
+
+  // Inject tool descriptions into system prompt
+  const toolSection = buildPbtcSystemSection(req.tools || []);
+  if (typeof req.system === 'string') {
+    req.system = req.system + '\n\n' + toolSection;
+  } else if (Array.isArray(req.system)) {
+    req.system = [
+      ...req.system,
+      { type: 'text', text: toolSection }
+    ];
+  } else {
+    req.system = toolSection;
+  }
+
+  // Convert tool_use / tool_result blocks in message history to plain text
+  req.messages = (req.messages || []).flatMap(msg => {
+    if (typeof msg.content === 'string') return [msg];
+    if (!Array.isArray(msg.content)) return [msg];
+
+    const hasToolBlocks = msg.content.some(
+      c => c.type === 'tool_use' || c.type === 'tool_result'
+    );
+    if (!hasToolBlocks) return [msg];
+
+    // Split into one message per content block type to keep roles correct
+    const assistantParts = [];
+    const userParts = [];
+
+    for (const block of msg.content) {
+      if (block.type === 'text') {
+        (msg.role === 'assistant' ? assistantParts : userParts).push(block.text);
+      } else if (block.type === 'tool_use') {
+        assistantParts.push(
+          `${PBTC_TAG_OPEN}\n${JSON.stringify({ name: block.name, input: block.input })}\n${PBTC_TAG_CLOSE}`
+        );
+      } else if (block.type === 'tool_result') {
+        const content = typeof block.content === 'string'
+          ? block.content
+          : (Array.isArray(block.content) ? block.content.map(c => c.text || '').join('') : '');
+        userParts.push(`[Tool result]:\n${content}`);
+      }
+    }
+
+    const out = [];
+    if (assistantParts.length) out.push({ role: 'assistant', content: assistantParts.join('\n\n') });
+    if (userParts.length)      out.push({ role: 'user',      content: userParts.join('\n\n') });
+    return out.length ? out : [{ role: msg.role, content: '' }];
+  });
+
+  // Strip native tool definitions — model will use text format instead
+  delete req.tools;
+  delete req.tool_choice;
+
+  return req;
+}
+
+/** Parse <tool_call> blocks from a provider text response.
+ *  Returns { textBlocks: [{type:'text',text}], toolBlocks: [{type:'tool_use',...}] } */
+function pbtcParseResponse(text) {
+  const textBlocks = [];
+  const toolBlocks = [];
+  let remaining = text;
+  let callIndex = 0;
+
+  while (true) {
+    const start = remaining.indexOf(PBTC_TAG_OPEN);
+    if (start === -1) break;
+
+    const pre = remaining.slice(0, start).trim();
+    if (pre) textBlocks.push({ type: 'text', text: pre });
+
+    const end = remaining.indexOf(PBTC_TAG_CLOSE, start + PBTC_TAG_OPEN.length);
+    if (end === -1) {
+      // Unclosed tag — treat rest as text
+      textBlocks.push({ type: 'text', text: remaining.slice(start) });
+      remaining = '';
+      break;
+    }
+
+    const jsonStr = remaining.slice(start + PBTC_TAG_OPEN.length, end).trim();
+    remaining = remaining.slice(end + PBTC_TAG_CLOSE.length);
+
+    try {
+      const parsed = JSON.parse(jsonStr);
+      const name  = String(parsed.name || '').trim();
+      const input = parsed.input || {};
+      if (name) {
+        toolBlocks.push({
+          type:  'tool_use',
+          id:    `toolu_pbtc_${Date.now()}_${callIndex++}`,
+          name,
+          input
+        });
+      }
+    } catch (e) {
+      logger.debug(`PBTC: failed to parse tool_call JSON: ${jsonStr.slice(0, 100)}`);
+    }
+  }
+
+  const tail = remaining.trim();
+  if (tail) textBlocks.push({ type: 'text', text: tail });
+
+  return { textBlocks, toolBlocks };
+}
+
+/** Post-process an Anthropic-format response to replace text tool_call blocks
+ *  with proper tool_use content blocks. Returns the modified response. */
+function pbtcPostprocess(anthropicResponse, originalTools) {
+  const content = anthropicResponse.content || [];
+  const newContent = [];
+  let hasToolUse = false;
+
+  for (const block of content) {
+    if (block.type !== 'text') {
+      newContent.push(block);
+      continue;
+    }
+    const { textBlocks, toolBlocks } = pbtcParseResponse(block.text || '');
+    for (const tb of textBlocks) if (tb.text) newContent.push(tb);
+    for (const tc of toolBlocks) {
+      hasToolUse = true;
+      newContent.push(tc);
+    }
+  }
+
+  if (!hasToolUse) return anthropicResponse; // no tool calls — return unchanged
+
+  if (newContent.length === 0) newContent.push({ type: 'text', text: '' });
+
+  logger.info(`PBTC: converted ${newContent.filter(b => b.type === 'tool_use').length} text tool_call(s) to tool_use blocks`);
+  return {
+    ...anthropicResponse,
+    content:     newContent,
+    stop_reason: 'tool_use'
+  };
+}
+
+/** Emit a synthetic Anthropic SSE stream for a PBTC response (non-native streaming). */
+async function pbtcEmitStream(res, pbtcResult, originalModel) {
+  const msgId = `msg_pbtc_${Date.now()}`;
+  const emit = (event, data) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+
+  emit('message_start', {
+    type: 'message_start',
+    message: { id: msgId, type: 'message', role: 'assistant', content: [],
+               model: originalModel || 'unknown', stop_reason: null, usage: { input_tokens: 0, output_tokens: 0 } }
+  });
+
+  let blockIdx = 0;
+  for (const block of pbtcResult.content) {
+    if (block.type === 'text') {
+      emit('content_block_start', { type: 'content_block_start', index: blockIdx, content_block: { type: 'text', text: '' } });
+      emit('content_block_delta', { type: 'content_block_delta', index: blockIdx, delta: { type: 'text_delta', text: block.text } });
+      emit('content_block_stop', { type: 'content_block_stop', index: blockIdx });
+    } else if (block.type === 'tool_use') {
+      emit('content_block_start', { type: 'content_block_start', index: blockIdx,
+        content_block: { type: 'tool_use', id: block.id, name: block.name, input: {} } });
+      emit('content_block_delta', { type: 'content_block_delta', index: blockIdx,
+        delta: { type: 'input_json_delta', partial_json: JSON.stringify(block.input) } });
+      emit('content_block_stop', { type: 'content_block_stop', index: blockIdx });
+    }
+    blockIdx++;
+  }
+
+  emit('message_delta', { type: 'message_delta',
+    delta: { stop_reason: pbtcResult.stop_reason || 'end_turn', stop_sequence: null },
+    usage: { output_tokens: 0 } });
+  emit('message_stop', { type: 'message_stop' });
+}
+
+// ── 1g: Prompt-Based Reasoning Chain (PBRC) ───────────────────────────────────
+// For providers that don't natively support extended thinking / reasoning, the proxy
+// intercepts requests with `thinking: {type:"enabled"}` and:
+//   1. Strips the `thinking` parameter (providers would reject it)
+//   2. Injects a system-prompt section instructing the model to reason step-by-step
+//      inside <thinking>…</thinking> tags before answering
+//   3. Parses those <thinking> blocks from the response and converts them to proper
+//      Anthropic extended-thinking content blocks {type:"thinking"}
+//   4. For streaming: collects full non-streaming response, then emits synthetic SSE
+//
+// Symmetrical to PBTC — but for reasoning instead of tool calling.
+
+const PBRC_THINK_OPEN  = '<thinking>';
+const PBRC_THINK_CLOSE = '</thinking>';
+
+/** Return true when reasoning simulation should be engaged for this provider+request. */
+function shouldSimulateReasoning(provider, request) {
+  if (!request.thinking || request.thinking.type !== 'enabled') return false;
+  if (provider.type === 'anthropic') return false;                                       // native extended thinking
+  if (provider.type === 'openai' && /^o[1-9]/i.test(provider.model || '')) return false; // o-series: native reasoning
+  if (provider.type === 'google' && (provider.model || '').includes('gemini-2.5')) return false; // Gemini 2.5+
+  return true; // all other providers → PBRC
+}
+
+/** Build system-prompt section that teaches the model to emit <thinking> tags. */
+function buildPbrcSystemSection() {
+  return `## Reasoning / Thinking
+
+Before responding, reason through the problem completely. Output your ENTIRE thought \
+process between ${PBRC_THINK_OPEN} and ${PBRC_THINK_CLOSE} tags, then give your final answer.
+
+Required format:
+${PBRC_THINK_OPEN}
+[Step-by-step reasoning, analysis, edge cases, self-checks — be thorough and honest]
+${PBRC_THINK_CLOSE}
+
+[Your final response, based on the reasoning above]
+
+Rules:
+- ALWAYS open with a ${PBRC_THINK_OPEN} block — never skip it.
+- The thinking section is a private scratchpad; explore freely before committing.
+- Content AFTER the ${PBRC_THINK_CLOSE} tag is your actual answer to the user.`;
+}
+
+/** Pre-process a request for PBRC: strip thinking param, inject reasoning instruction,
+ *  convert any existing thinking blocks in history to text. */
+function pbrcPreprocess(originalRequest) {
+  const req = JSON.parse(JSON.stringify(originalRequest));
+  delete req.thinking; // remove — provider won't recognise it
+
+  const section = buildPbrcSystemSection();
+  if (typeof req.system === 'string') {
+    req.system = section + '\n\n' + req.system;
+  } else if (Array.isArray(req.system)) {
+    req.system = [{ type: 'text', text: section }, ...req.system];
+  } else {
+    req.system = section;
+  }
+
+  // Convert existing thinking blocks in message history → tagged text
+  req.messages = (req.messages || []).map(msg => {
+    if (!Array.isArray(msg.content)) return msg;
+    if (!msg.content.some(c => c.type === 'thinking')) return msg;
+    return {
+      ...msg,
+      content: msg.content.map(c =>
+        c.type === 'thinking'
+          ? { type: 'text', text: `${PBRC_THINK_OPEN}\n${c.thinking || ''}\n${PBRC_THINK_CLOSE}` }
+          : c
+      )
+    };
+  });
+
+  return req;
+}
+
+/** Parse <thinking>…</thinking> from provider text. Returns { thinkingBlocks, textContent }. */
+function pbrcParseResponse(text) {
+  const thinkingBlocks = [];
+  const textParts = [];
+  let remaining = text;
+
+  while (true) {
+    const start = remaining.indexOf(PBRC_THINK_OPEN);
+    if (start === -1) break;
+    const pre = remaining.slice(0, start).trim();
+    if (pre) textParts.push(pre);
+    const end = remaining.indexOf(PBRC_THINK_CLOSE, start + PBRC_THINK_OPEN.length);
+    if (end === -1) {
+      // Unclosed — everything from here is thinking
+      thinkingBlocks.push(remaining.slice(start + PBRC_THINK_OPEN.length).trim());
+      remaining = '';
+      break;
+    }
+    const t = remaining.slice(start + PBRC_THINK_OPEN.length, end).trim();
+    if (t) thinkingBlocks.push(t);
+    remaining = remaining.slice(end + PBRC_THINK_CLOSE.length);
+  }
+  const tail = remaining.trim();
+  if (tail) textParts.push(tail);
+  return { thinkingBlocks, textContent: textParts.join('\n\n').trim() };
+}
+
+/** Post-process Anthropic-format response: convert text <thinking> blocks → thinking content blocks. */
+function pbrcPostprocess(anthropicResponse) {
+  const content = anthropicResponse.content || [];
+  const newContent = [];
+  let thinkingCount = 0;
+
+  for (const block of content) {
+    if (block.type !== 'text') { newContent.push(block); continue; }
+    const { thinkingBlocks, textContent } = pbrcParseResponse(block.text || '');
+    for (const t of thinkingBlocks) {
+      thinkingCount++;
+      newContent.push({ type: 'thinking', thinking: t, signature: `pbrc-sim-${Date.now()}` });
+    }
+    if (textContent) newContent.push({ type: 'text', text: textContent });
+  }
+
+  if (thinkingCount === 0) return anthropicResponse;
+  logger.info(`PBRC: extracted ${thinkingCount} simulated thinking block(s)`);
+  return { ...anthropicResponse, content: newContent };
+}
+
+/** Emit synthetic Anthropic SSE stream for a PBRC response. */
+async function pbrcEmitStream(res, pbrcResult, originalModel) {
+  const msgId = `msg_pbrc_${Date.now()}`;
+  const emit = (event, data) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+
+  emit('message_start', {
+    type: 'message_start',
+    message: { id: msgId, type: 'message', role: 'assistant', content: [],
+               model: originalModel || 'unknown', stop_reason: null, usage: { input_tokens: 0, output_tokens: 0 } }
+  });
+
+  let blockIdx = 0;
+  for (const block of pbrcResult.content) {
+    if (block.type === 'thinking') {
+      emit('content_block_start', { type: 'content_block_start', index: blockIdx,
+        content_block: { type: 'thinking', thinking: '' } });
+      emit('content_block_delta', { type: 'content_block_delta', index: blockIdx,
+        delta: { type: 'thinking_delta', thinking: block.thinking } });
+      emit('content_block_stop', { type: 'content_block_stop', index: blockIdx });
+    } else if (block.type === 'text') {
+      emit('content_block_start', { type: 'content_block_start', index: blockIdx,
+        content_block: { type: 'text', text: '' } });
+      emit('content_block_delta', { type: 'content_block_delta', index: blockIdx,
+        delta: { type: 'text_delta', text: block.text } });
+      emit('content_block_stop', { type: 'content_block_stop', index: blockIdx });
+    }
+    blockIdx++;
+  }
+
+  emit('message_delta', { type: 'message_delta',
+    delta: { stop_reason: pbrcResult.stop_reason || 'end_turn', stop_sequence: null },
+    usage: { output_tokens: 0 } });
+  emit('message_stop', { type: 'message_stop' });
+}
+
+// ── 1h: Cross-Provider Feature Emulation helpers ──────────────────────────────
+// Utility functions for emulating provider capabilities that aren't natively supported.
+
+/** Strip image content blocks for providers that don't support vision.
+ *  Replaces image blocks with a text placeholder so the provider doesn't error. */
+function stripImagesForTextOnlyProvider(request) {
+  if (!hasImageContent(request.messages)) return request;
+  const req = JSON.parse(JSON.stringify(request));
+  req.messages = req.messages.map(msg => {
+    if (!Array.isArray(msg.content)) return msg;
+    if (!msg.content.some(c => c.type === 'image' || c.type === 'image_url')) return msg;
+    const newContent = msg.content.map(c => {
+      if (c.type === 'image' || c.type === 'image_url') {
+        return { type: 'text', text: '[Image content — not supported by this provider]' };
+      }
+      return c;
+    });
+    return { ...msg, content: newContent };
+  });
+  return req;
+}
+
+/** Apply all applicable emulation layers to a request for a given provider.
+ *  Returns { requestBody, usePbtc, usePbrc } so callers know which post-processing to apply. */
+function applyProviderEmulation(provider, originalRequestBody) {
+  let requestBody = originalRequestBody;
+  let usePbtc = false;
+  let usePbrc = false;
+
+  // Vision stripping for text-only providers
+  const caps = PROVIDER_CAPS[provider.type] || {};
+  if (!caps.vision && hasImageContent(requestBody.messages)) {
+    requestBody = stripImagesForTextOnlyProvider(requestBody);
+    logger.info(`Vision-strip: provider ${provider.name} is text-only — images replaced with text placeholders`);
+  }
+
+  // PBTC — tool calling emulation
+  if (shouldUsePromptToolCalling(provider, requestBody)) {
+    usePbtc = true;
+    requestBody = pbtcPreprocess(requestBody);
+    logger.info(`PBTC: active for ${provider.name} — tools converted to prompt instructions`);
+  }
+
+  // PBRC — reasoning emulation
+  if (shouldSimulateReasoning(provider, requestBody)) {
+    usePbrc = true;
+    requestBody = pbrcPreprocess(requestBody);
+    logger.info(`PBRC: active for ${provider.name} — reasoning simulated via <thinking> tags`);
+  }
+
+  return { requestBody, usePbtc, usePbrc };
+}
+
 // ── 2: Capability-Aware Router ────────────────────────────────────────────────
+// nativeReasoning: true = model natively supports extended_thinking / reasoning tokens
+// toolCalling: true = natively produces tool_use blocks (PBTC handles false case)
+// vision: true = accepts image content blocks (strip-images handles false case)
 const PROVIDER_CAPS = {
-  anthropic:          { toolCalling: true,  vision: true,  contextWindow: 200000  },
-  google:             { toolCalling: true,  vision: true,  contextWindow: 1000000 },
-  vertex:             { toolCalling: true,  vision: true,  contextWindow: 1000000 },
-  openai:             { toolCalling: true,  vision: true,  contextWindow: 128000  },
-  grok:               { toolCalling: true,  vision: false, contextWindow: 131072  },
-  ollama:             { toolCalling: false, vision: false, contextWindow: 8192    },
-  'openai-compatible':{ toolCalling: true,  vision: false, contextWindow: 128000  }
+  anthropic:          { toolCalling: true,  vision: true,  nativeReasoning: true,  contextWindow: 200000  },
+  google:             { toolCalling: true,  vision: true,  nativeReasoning: false, contextWindow: 1000000 },
+  vertex:             { toolCalling: true,  vision: true,  nativeReasoning: false, contextWindow: 1000000 },
+  openai:             { toolCalling: true,  vision: true,  nativeReasoning: false, contextWindow: 128000  },
+  grok:               { toolCalling: true,  vision: false, nativeReasoning: false, contextWindow: 131072  },
+  ollama:             { toolCalling: false, vision: false, nativeReasoning: false, contextWindow: 8192    },
+  'openai-compatible':{ toolCalling: true,  vision: false, nativeReasoning: false, contextWindow: 128000  }
 };
 
 function estimateTokens(request) {
@@ -894,7 +1394,8 @@ function capabilityFilter(providers, request) {
   const capable = providers.filter(p => {
     const caps = PROVIDER_CAPS[p.type];
     if (!caps) return true; // unknown type — don't filter out
-    if (hasTools  && !caps.toolCalling)    return false;
+    if (hasTools  && !caps.toolCalling && !shouldUsePromptToolCalling(p, request)) return false;
+    if (hasTools  && p.excludeFromToolRequests) return false; // admin hard-excluded (no PBTC fallback)
     if (hasVision && !caps.vision)         return false;
     if (tokens > caps.contextWindow)       return false;
     return true;
@@ -1344,9 +1845,12 @@ function convertOpenAIRequestToAnthropic(oaiBody) {
 }
 
 // Convert a complete Anthropic /v1/messages response to OpenAI /v1/chat/completions format.
+// Thinking blocks are exposed as a non-standard `reasoning_content` field on the message
+// (mirrors OpenAI o1's convention) so callers can access simulated/native reasoning.
 function convertAnthropicResponseToOpenAI(anthropicResp, model) {
   const content = (anthropicResp.content || []);
   const textParts = content.filter(c => c.type === 'text').map(c => c.text).join('');
+  const thinkingParts = content.filter(c => c.type === 'thinking').map(c => c.thinking || '').join('\n\n');
   const toolCalls = content.filter(c => c.type === 'tool_use').map(tu => ({
     id: tu.id,
     type: 'function',
@@ -1355,6 +1859,7 @@ function convertAnthropicResponseToOpenAI(anthropicResp, model) {
 
   const message = { role: 'assistant', content: textParts || null };
   if (toolCalls.length) message.tool_calls = toolCalls;
+  if (thinkingParts) message.reasoning_content = thinkingParts; // non-standard extension
 
   return {
     id:      anthropicResp.id || `chatcmpl-${Date.now()}`,
@@ -1415,6 +1920,9 @@ async function streamAsOpenAI(provider, anthropicRequest, res) {
           if (delta?.type === 'text_delta') {
             textAccum += delta.text;
             emitChunk({ content: delta.text });
+          } else if (delta?.type === 'thinking_delta') {
+            // Anthropic thinking delta → OpenAI reasoning_content delta (non-standard extension)
+            emitChunk({ reasoning_content: delta.thinking || '' });
           } else if (delta?.type === 'input_json_delta') {
             const idx = ev.index ?? toolCallIndex;
             if (!toolCallMap[idx]) toolCallMap[idx] = { id: '', name: '', argsBuffer: '' };
@@ -2564,8 +3072,37 @@ app.post('/v1/chat/completions', validateApiKey, async (req, res) => {
       initStats(provider.id);
       config.stats[provider.id].requests++;
 
+      // Apply provider emulation (PBTC, PBRC, vision-strip) on the translated Anthropic body
+      const { requestBody: emuBody, usePbtc: _ePbtc, usePbrc: _ePbrc } = applyProviderEmulation(provider, anthropicBody);
+
       if (isStreaming) {
-        await streamAsOpenAI(provider, anthropicBody, res);
+        // Emulated streaming (PBTC/PBRC): collect non-streaming, post-process, emit OpenAI SSE
+        if (_ePbtc || _ePbrc) {
+          const _emuRaw = await dispatchProviderCall(provider, { ...emuBody, stream: false }, req.clientKey, lmrhHint, null);
+          let _emuResult = _emuRaw;
+          if (_ePbtc) _emuResult = pbtcPostprocess(_emuResult, req.body.tools);
+          if (_ePbrc) _emuResult = pbrcPostprocess(_emuResult);
+          // Re-emit as OpenAI SSE by converting thinking blocks to reasoning_content deltas
+          const chatId = `chatcmpl-${Date.now()}`;
+          const emitOaiChunk = (delta, finishReason = null) => {
+            res.write(`data: ${JSON.stringify({ id: chatId, object: 'chat.completion.chunk',
+              created: Math.floor(Date.now() / 1000), model: emuBody.model || provider.model || 'unknown',
+              choices: [{ index: 0, delta, finish_reason: finishReason, logprobs: null }] })}\n\n`);
+          };
+          emitOaiChunk({ role: 'assistant', content: '' });
+          for (const block of (_emuResult.content || [])) {
+            if (block.type === 'thinking') emitOaiChunk({ reasoning_content: block.thinking || '' });
+            else if (block.type === 'text') emitOaiChunk({ content: block.text || '' });
+            else if (block.type === 'tool_use') {
+              emitOaiChunk({ tool_calls: [{ index: 0, id: block.id, type: 'function', function: { name: block.name, arguments: JSON.stringify(block.input || {}) } }] });
+            }
+          }
+          const finishReason = _emuResult.stop_reason === 'tool_use' ? 'tool_calls' : 'stop';
+          emitOaiChunk({}, finishReason);
+          res.write('data: [DONE]\n\n');
+        } else {
+          await streamAsOpenAI(provider, emuBody, res);
+        }
         config.stats[provider.id].successes++;
         config.stats[provider.id].totalLatency += Date.now() - startTime;
         providerMonitor.recordSuccess(provider);
@@ -2578,8 +3115,10 @@ app.post('/v1/chat/completions', validateApiKey, async (req, res) => {
         return;
       }
 
-      // Non-streaming: dispatch and convert response
-      const anthropicResp = await dispatchProviderCall(provider, anthropicBody, req.clientKey, lmrhHint, null);
+      // Non-streaming: dispatch, apply emulation post-processing, convert to OpenAI format
+      let anthropicResp = await dispatchProviderCall(provider, emuBody, req.clientKey, lmrhHint, null);
+      if (_ePbtc) anthropicResp = pbtcPostprocess(anthropicResp, req.body.tools);
+      if (_ePbrc) anthropicResp = pbrcPostprocess(anthropicResp);
       const oaiResp = convertAnthropicResponseToOpenAI(anthropicResp, anthropicBody.model);
       config.stats[provider.id].successes++;
       config.stats[provider.id].totalLatency += Date.now() - startTime;
@@ -2810,11 +3349,43 @@ app.post('/v1/messages', validateApiKey, async (req, res) => {
         // 4a: Context window auto-truncation — trim oldest messages if request is too long
         const providerCaps = PROVIDER_CAPS[provider.type];
         const contextWindow = providerCaps?.contextWindow || 8192;
-        const requestBody = { ...req.body, messages: truncateMessagesToFit(req.body.messages, Math.floor(contextWindow * 0.85)) };
+        const _truncated = { ...req.body, messages: truncateMessagesToFit(req.body.messages, Math.floor(contextWindow * 0.85)) };
+
+        // 4a-emulation: Apply PBTC (tool emulation), PBRC (reasoning emulation),
+        // vision stripping, and any other cross-provider feature bridges.
+        const { requestBody, usePbtc: _usePbtc, usePbrc: _usePbrc } = applyProviderEmulation(provider, _truncated);
 
         logChatRequest(provider.name, pass, requestBody.model || provider.model, requestBody.messages, req);
 
         config.stats[provider.id].requests++;
+
+        // Emulated streaming: PBTC and/or PBRC require a non-streaming call so we can
+        // post-process the full response before re-emitting as synthetic SSE.
+        if ((_usePbtc || _usePbrc) && isStreaming) {
+          const _emuRaw = await dispatchProviderCall(provider, { ...requestBody, stream: false }, req.clientKey, lmrhHint, null);
+          let _emuResult = _emuRaw;
+          if (_usePbtc) _emuResult = pbtcPostprocess(_emuResult, req.body.tools);
+          if (_usePbrc) _emuResult = pbrcPostprocess(_emuResult);
+          const streamRes = headersSent ? res : makeBufferedRes(res);
+          if (!headersSent) {
+            streamRes.setHeader('Content-Type', 'text/event-stream');
+            streamRes.setHeader('Cache-Control', 'no-cache');
+            streamRes.setHeader('Connection', 'keep-alive');
+          }
+          // Emit via PBRC stream (handles both thinking + text blocks) — PBTC-only uses pbtcEmitStream
+          if (_usePbrc) {
+            await pbrcEmitStream(streamRes, _emuResult, req.body.model || provider.model);
+          } else {
+            await pbtcEmitStream(streamRes, _emuResult, req.body.model || provider.model);
+          }
+          headersSent = true;
+          config.stats[provider.id].successes++;
+          config.stats[provider.id].totalLatency += (Date.now() - startTime);
+          providerMonitor.recordSuccess(provider);
+          logger.info(`Emulated stream emitted via ${provider.name} (pbtc=${_usePbtc} pbrc=${_usePbrc})`);
+          res.end();
+          return;
+        }
 
         if (isStreaming) {
           // LMRH Phase 4: look up model caps for CoT auto-engage via task=reasoning
@@ -2896,8 +3467,15 @@ app.post('/v1/messages', validateApiKey, async (req, res) => {
           }
 
           // 1e: XML Sentinel — scan response text for bad-model output patterns
+          // When PBTC/PBRC is active, post-process first; only sentinel-fail if still bad.
           const responseText = result?.content?.map(b => b.text || '').join('') || '';
-          if (isBadModelOutput(responseText)) {
+          if (_usePbtc) {
+            result = pbtcPostprocess(result, req.body.tools);
+          }
+          if (_usePbrc) {
+            result = pbrcPostprocess(result);
+          }
+          if (!_usePbtc && !_usePbrc && isBadModelOutput(responseText)) {
             logger.warn(`XML sentinel triggered for ${provider.name} — bad model output detected, failing over`);
             logChatFailover(provider.name, 'Bad model output (XML sentinel)', pass);
             config.stats[provider.id].failures++;
@@ -3021,8 +3599,9 @@ app.post('/v1/messages', validateApiKey, async (req, res) => {
           category: errCategory,
           status: error.response?.status,
           statusText: error.response?.statusText,
-          data: (() => { const d = error.response?.data; if (!d) return undefined; if (typeof d === 'string') return d.slice(0, 500); if (typeof d === 'object' && !Buffer.isBuffer(d)) { const seen = new WeakSet(); try { return JSON.parse(JSON.stringify(d, (_k, v) => { if (typeof v === 'object' && v !== null) { if (seen.has(v)) return '[circular]'; seen.add(v); } return v; })); } catch(e) { return `[non-serializable ${typeof d}]`; } } return `[${typeof d}]`; })(),
+          data: error.response?.data,
           latency: `${latency}ms`,
+          stack: error.stack
         });
         logChatFailover(provider.name, `[${errCategory}] ${error.message}${error.response?.status ? ` (HTTP ${error.response.status})` : ''}`, pass);
 
@@ -3285,9 +3864,10 @@ app.post('/api/config', (req, res) => {
           location: p.location,
           baseUrl: p.baseUrl,
           model: p.model,
-          holdDownSeconds:  p.holdDownSeconds  != null ? parseInt(p.holdDownSeconds)  : 180,
-          maxLatencyMs:     p.maxLatencyMs     != null ? parseInt(p.maxLatencyMs)     : 1800,
-          failureThreshold: p.failureThreshold != null ? parseInt(p.failureThreshold) : 2
+          holdDownSeconds:       p.holdDownSeconds       != null ? parseInt(p.holdDownSeconds)  : 180,
+          maxLatencyMs:          p.maxLatencyMs          != null ? parseInt(p.maxLatencyMs)     : 1800,
+          failureThreshold:      p.failureThreshold      != null ? parseInt(p.failureThreshold) : 2,
+          excludeFromToolRequests: p.excludeFromToolRequests === true
         };
       });
     }
