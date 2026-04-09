@@ -1,17 +1,82 @@
 # LLM Proxy Manager - Feature Overview
 
-This document provides a comprehensive overview of all features in the LLM Proxy Manager (v1.10.0).
+This document provides a comprehensive overview of all features in the LLM Proxy Manager (v1.12.1).
 
 ## Table of Contents
 
-1. [LMRH — LLM Model Routing Hint Protocol (v1.8.0+)](#lmrh--llm-model-routing-hint-protocol-v180)
-2. [Claude Code Augmentation (v1.5.x+)](#claude-code-augmentation-v15x)
-3. [Core Proxy Features](#core-proxy-features)
-4. [Intelligent Monitoring](#intelligent-monitoring)
-5. [Cluster Mode](#cluster-mode)
-6. [Email Notifications](#email-notifications)
-7. [Web Dashboard](#web-dashboard)
-8. [Authentication & Security](#authentication--security)
+1. [Provider Emulation Layer (v1.11.0+)](#provider-emulation-layer-v1110)
+2. [LMRH — LLM Model Routing Hint Protocol (v1.8.0+)](#lmrh--llm-model-routing-hint-protocol-v180)
+3. [Claude Code Augmentation (v1.5.x+)](#claude-code-augmentation-v15x)
+4. [Core Proxy Features](#core-proxy-features)
+5. [Intelligent Monitoring](#intelligent-monitoring)
+6. [Cluster Mode](#cluster-mode)
+7. [Email Notifications](#email-notifications)
+8. [Web Dashboard](#web-dashboard)
+9. [Authentication & Security](#authentication--security)
+
+---
+
+## Provider Emulation Layer (v1.11.0+)
+
+The proxy emulates full Anthropic/OpenAI capability sets toward all provider types so callers always see a consistent, feature-complete API regardless of which upstream model is selected.
+
+### PBTC — Prompt-Based Tool Calling (v1.11.0)
+
+For providers without native Anthropic tool schemas (Ollama, OpenAI-compatible, some Google variants):
+
+1. Tool definitions are stripped from the request before forwarding.
+2. Plain-English instructions describing each tool are injected into the system prompt.
+3. The model responds with inline `<tool_call>` blocks containing JSON.
+4. The proxy parses those blocks and converts them to proper Anthropic `tool_use` content blocks before returning to the caller.
+
+Callers never need to know whether the upstream natively supports tools.
+
+**Multi-tag support (v1.12.1):** The PBTC parser (`findNextPbtcTag()`) recognises all common tag variants that models may emit:
+
+| Tag | Used by |
+|-----|---------|
+| `<tool_call>` | Default PBTC format (system-prompted) |
+| `<tool_code>` | Google Gemini native format |
+| `<function_call>` | Some OpenAI-compatible models |
+| `<tool_use>` | Alternate format |
+
+The parser picks whichever appears first so no raw XML ever leaks to the caller. The `input` field also accepts `parameters` or `args` as aliases for robustness.
+
+**Hard-exclude flag:** Setting `excludeFromToolRequests: true` on a provider completely bypasses PBTC — the provider is skipped entirely for tool-bearing requests. Use this when a provider should never handle agentic sessions even with emulation.
+
+### PBRC — Prompt-Based Reasoning Chain (v1.12.0)
+
+For providers that lack native extended thinking (non-Anthropic, non-Gemini-2.5, non-o1):
+
+When `thinking: {type: "enabled"}` is requested:
+
+1. A `<thinking>…</thinking>` system prompt teaches the model to introspect before answering.
+2. The model's thinking content is parsed from its response.
+3. Parsed blocks are converted to `{type: "thinking"}` content blocks — identical to Anthropic's native format.
+4. Streaming: thinking content is emitted as `thinking_delta` SSE events, matching Anthropic's streaming protocol.
+
+### Vision Stripping (v1.12.0)
+
+When `vision: false` in a provider's capability profile and the request contains image content, images are automatically replaced with text placeholders (`[Image: <mime_type>]`) before forwarding. Prevents API errors on text-only models transparently.
+
+### Bidirectional Format Translation (v1.12.0)
+
+Both `/v1/messages` (Anthropic) and `/v1/chat/completions` (OpenAI) paths apply the full emulation stack:
+
+- Anthropic-format callers can reach OpenAI/Gemini/Grok providers.
+- OpenAI-format callers can reach Anthropic providers.
+- `reasoning_content` field synthesised in OpenAI responses when thinking blocks are present (mirrors OpenAI o1 convention).
+- Streaming: `thinking_delta` events translated to `reasoning_content` chunks on the OpenAI streaming path.
+
+### `applyProviderEmulation()` — Unified Middleware
+
+All requests pass through a single emulation pipeline:
+
+```
+vision-strip → PBTC (if tools present + provider non-native) → PBRC (if thinking requested + provider non-native)
+```
+
+Both `/v1/messages` and `/v1/chat/completions` use this same code path.
 
 ---
 

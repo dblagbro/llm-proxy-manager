@@ -937,7 +937,7 @@
                                 <span>Exclude from tool-bearing requests</span>
                             </label>
                             <small style="color: var(--text-muted, #888); font-size: 11px; margin-left: 23px;">
-                                When checked, this provider is never selected for requests that include tool definitions (e.g. agentic Claude sessions). Use for providers that don't reliably handle Claude's native tool schemas.
+                                Hard-exclude from ALL tool-bearing requests (no PBTC fallback either). By default the proxy automatically emulates tool calling for non-native providers via Prompt-Based Tool Calling (PBTC) — check this only if the provider should be completely skipped for agentic requests.
                             </small>
                         </div>
                     </div>
