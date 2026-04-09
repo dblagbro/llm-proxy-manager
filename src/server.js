@@ -931,6 +931,14 @@ function isBadModelOutput(text) {
 const PBTC_TAG_OPEN  = '<tool_call>';
 const PBTC_TAG_CLOSE = '</tool_call>';
 
+// Alternate tag pairs that some models (e.g. Gemini) use instead of <tool_call>
+// The proxy accepts all of these and normalises them to tool_use blocks.
+const PBTC_ALT_TAGS = [
+  { open: '<tool_code>',   close: '</tool_code>'   },
+  { open: '<function_call>', close: '</function_call>' },
+  { open: '<tool_use>',    close: '</tool_use>'    },
+];
+
 /** Decide whether to use prompt-based tool calling for this provider+request. */
 function shouldUsePromptToolCalling(provider, request) {
   if (!request.tools || request.tools.length === 0) return false;
@@ -955,17 +963,25 @@ function buildPbtcSystemSection(tools) {
 
   return `## Tool Use
 
-You have access to the following tools. To call a tool, output EXACTLY this format — one tool call per response, no other content on the same lines as the tags:
+You have access to the following tools. To call a tool, output a JSON object wrapped in ONE of these tag formats on its own line (the system accepts all of them equivalently):
 
 ${PBTC_TAG_OPEN}
 {"name": "ToolName", "input": {"param": "value"}}
 ${PBTC_TAG_CLOSE}
 
+or equivalently:
+
+<tool_code>
+{"name": "ToolName", "input": {"param": "value"}}
+</tool_code>
+
 Rules:
-- Call only ONE tool per response.
-- After the ${PBTC_TAG_OPEN} / ${PBTC_TAG_CLOSE} block you MUST stop generating — wait for the tool result.
-- If you need no tools, respond with plain text only (no tool_call tags).
-- Use the exact tool names listed below.
+- Output ONLY ONE tool call per response.
+- The tag + JSON must appear on their own lines with no other content on the same lines.
+- After the closing tag you MUST stop generating — the system will run the tool and send you the result.
+- If you need no tools, respond with plain text only (no tags).
+- Use the EXACT tool names listed below — do not invent new names.
+- The JSON must have a "name" key (tool name) and an "input" key (object of parameters).
 
 ### Available Tools
 
@@ -1032,8 +1048,27 @@ function pbtcPreprocess(originalRequest) {
   return req;
 }
 
-/** Parse <tool_call> blocks from a provider text response.
- *  Returns { textBlocks: [{type:'text',text}], toolBlocks: [{type:'tool_use',...}] } */
+/** Find the earliest occurrence of any PBTC open tag in `text`.
+ *  Returns { start, tagOpen, tagClose } or null if none found. */
+function findNextPbtcTag(text) {
+  // Build list of all tag pairs to search
+  const allTags = [
+    { open: PBTC_TAG_OPEN, close: PBTC_TAG_CLOSE },
+    ...PBTC_ALT_TAGS
+  ];
+  let best = null;
+  for (const tag of allTags) {
+    const idx = text.indexOf(tag.open);
+    if (idx !== -1 && (best === null || idx < best.start)) {
+      best = { start: idx, tagOpen: tag.open, tagClose: tag.close };
+    }
+  }
+  return best;
+}
+
+/** Parse <tool_call> / <tool_code> / <function_call> blocks from a provider text response.
+ *  Recognises primary <tool_call> tag AND provider-specific alternate tags (e.g. Gemini's
+ *  <tool_code>). Returns { textBlocks: [{type:'text',text}], toolBlocks: [{type:'tool_use',...}] } */
 function pbtcParseResponse(text) {
   const textBlocks = [];
   const toolBlocks = [];
@@ -1041,13 +1076,15 @@ function pbtcParseResponse(text) {
   let callIndex = 0;
 
   while (true) {
-    const start = remaining.indexOf(PBTC_TAG_OPEN);
-    if (start === -1) break;
+    const found = findNextPbtcTag(remaining);
+    if (!found) break;
+
+    const { start, tagOpen, tagClose } = found;
 
     const pre = remaining.slice(0, start).trim();
     if (pre) textBlocks.push({ type: 'text', text: pre });
 
-    const end = remaining.indexOf(PBTC_TAG_CLOSE, start + PBTC_TAG_OPEN.length);
+    const end = remaining.indexOf(tagClose, start + tagOpen.length);
     if (end === -1) {
       // Unclosed tag — treat rest as text
       textBlocks.push({ type: 'text', text: remaining.slice(start) });
@@ -1055,14 +1092,17 @@ function pbtcParseResponse(text) {
       break;
     }
 
-    const jsonStr = remaining.slice(start + PBTC_TAG_OPEN.length, end).trim();
-    remaining = remaining.slice(end + PBTC_TAG_CLOSE.length);
+    const jsonStr = remaining.slice(start + tagOpen.length, end).trim();
+    remaining = remaining.slice(end + tagClose.length);
 
     try {
       const parsed = JSON.parse(jsonStr);
       const name  = String(parsed.name || '').trim();
-      const input = parsed.input || {};
+      const input = parsed.input || parsed.parameters || parsed.args || {};
       if (name) {
+        if (tagOpen !== PBTC_TAG_OPEN) {
+          logger.debug(`PBTC: parsed tool call via alternate tag ${tagOpen}: ${name}`);
+        }
         toolBlocks.push({
           type:  'tool_use',
           id:    `toolu_pbtc_${Date.now()}_${callIndex++}`,
@@ -1071,7 +1111,7 @@ function pbtcParseResponse(text) {
         });
       }
     } catch (e) {
-      logger.debug(`PBTC: failed to parse tool_call JSON: ${jsonStr.slice(0, 100)}`);
+      logger.debug(`PBTC: failed to parse ${tagOpen} JSON: ${jsonStr.slice(0, 100)}`);
     }
   }
 
