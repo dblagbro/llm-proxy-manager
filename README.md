@@ -2,7 +2,7 @@
 
 A production-ready LLM API proxy with **multi-provider failover**, **intelligent monitoring**, **cluster mode**, **LMRH semantic routing**, and **web-based management**. Route your AI requests through multiple LLM providers (Anthropic Claude, Google Gemini, OpenAI, Grok, and more) with automatic failover, semantic task-based routing, CoT auto-engagement, and capability advertisement.
 
-![Version](https://img.shields.io/badge/version-1.10.0-blue)
+![Version](https://img.shields.io/badge/version-1.12.1-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Node](https://img.shields.io/badge/node-%3E%3D20.0.0-brightgreen)
 
@@ -52,6 +52,17 @@ curl -X POST http://proxy:3000/v1/messages \
 - 🧮 **OpenAI o-series Native Reasoning**: Routes o-series models through `reasoning_effort: high` instead of CoT pipeline
 - 💾 **In-Memory Session Store**: Pass `X-Session-ID` header to enrich subsequent pre-analysis turns with prior conversation context (30-min TTL, max 3 prior analyses per session)
 - 🔑 **Standard Key Type**: Non-augmented pass-through for existing integrations
+
+### Provider Emulation Layer (v1.12.0+)
+
+The proxy emulates full Anthropic/OpenAI capability sets toward all providers — so callers always see a consistent, feature-complete API regardless of which upstream model is selected.
+
+- 🛠️ **PBTC — Prompt-Based Tool Calling** (v1.11.0+): For providers without native tool schemas (Ollama, OpenAI-compatible, some Google models), strips tool definitions, injects plain-English instructions into the system prompt, parses `<tool_call>` / `<tool_code>` / `<function_call>` / `<tool_use>` blocks in the response, and converts them back to proper `tool_use` content blocks before returning to the caller. Callers never need to know whether the upstream supports tools natively.
+- 🔖 **PBTC Multi-Tag Support** (v1.12.1): Parser recognises all common tag variants — Gemini natively responds with `<tool_code>`, others may use `<function_call>` or `<tool_use>`. `findNextPbtcTag()` picks whichever format appears first so no raw XML leaks to the caller.
+- 🧠 **PBRC — Prompt-Based Reasoning Chain** (v1.12.0): For providers that lack native extended thinking, injects `<thinking>…</thinking>` system prompt instructions and parses the model's introspection blocks back into `{type:"thinking"}` content blocks (and streaming `thinking_delta` events) — identical to Anthropic's native thinking format.
+- 👁️ **Vision Stripping** (v1.12.0): Image content is automatically replaced with text placeholders when the selected provider has `vision: false` in its capability profile, preventing API errors on text-only models.
+- 🔁 **Bidirectional Format Translation** (v1.12.0): `/v1/messages` ↔ `/v1/chat/completions` translation flows in both directions — Anthropic-format callers reach OpenAI-type providers, and OpenAI-format callers reach Anthropic providers. `reasoning_content` field is synthesised for thinking blocks to mirror the OpenAI o1 convention.
+- ⚙️ **`applyProviderEmulation()`**: Unified middleware applying vision-strip → PBTC → PBRC in sequence on every request. Hard-exclude flag (`excludeFromToolRequests`) per provider bypasses PBTC entirely when a provider should be skipped for agentic sessions.
 
 ### Analytics & Monitoring
 - 📊 **Cost Analytics Dashboard**: Per-provider cost tracking with charts and session breakdowns
