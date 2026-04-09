@@ -2168,6 +2168,8 @@ print(message.content[0].text)</pre>
                                 <span class="priority-badge">Priority ${provider.priority}</span>
                             </div>
                             <div class="provider-controls">
+                                <button class="btn btn-small btn-secondary" title="Move up" onclick="moveProvider(${provider.originalIndex}, -1)" style="padding: 4px 7px; font-size: 13px;">▲</button>
+                                <button class="btn btn-small btn-secondary" title="Move down" onclick="moveProvider(${provider.originalIndex}, 1)" style="padding: 4px 7px; font-size: 13px;">▼</button>
                                 <button class="btn btn-small btn-secondary" onclick="testSingleProvider(${provider.originalIndex})">🧪 Test</button>
                                 <button class="btn btn-small btn-secondary" onclick="openProviderLog('${provider.name.replace(/'/g, "\\'")}')">📋 Log</button>
                                 <button class="btn btn-small btn-primary" onclick="editProvider(${provider.originalIndex})">✏️ Edit</button>
@@ -2316,6 +2318,27 @@ print(message.content[0].text)</pre>
         function handleDragEnd(e) {
             e.target.classList.remove('dragging');
             draggedElement = null;
+        }
+
+        function moveProvider(originalIndex, direction) {
+            // Build sorted list to find the current sorted position
+            const sorted = config.providers
+                .map((p, idx) => ({ ...p, originalIndex: idx }))
+                .sort((a, b) => a.priority - b.priority);
+
+            const sortedPos = sorted.findIndex(p => p.originalIndex === originalIndex);
+            const swapPos = sortedPos + direction;
+            if (swapPos < 0 || swapPos >= sorted.length) return;
+
+            // Swap priorities between this provider and its neighbour
+            const a = sorted[sortedPos];
+            const b = sorted[swapPos];
+            const tmp = config.providers[a.originalIndex].priority;
+            config.providers[a.originalIndex].priority = config.providers[b.originalIndex].priority;
+            config.providers[b.originalIndex].priority = tmp;
+
+            renderProviders();
+            saveConfiguration();
         }
 
         function toggleProvider(idx) {
