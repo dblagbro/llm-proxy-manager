@@ -4910,7 +4910,7 @@ const providerMonitor = new ProviderHoldDown(logger, (providerId) => {
 });
 
 // Initialize Cluster Manager
-const clusterManager = new ClusterManager(logger, config);
+const clusterManager = new ClusterManager(logger, config, USE_SQLITE ? sqliteDb : null);
 
 // Initialize Notification Manager
 const notificationManager = new NotificationManager(logger, config);
@@ -5040,6 +5040,23 @@ app.get('/cluster/config', (req, res) => {
     return res.status(403).json({ error: 'Invalid cluster signature' });
   }
 
+  // Build model capabilities map for sync
+  const modelCapabilities = {};
+  if (USE_SQLITE && sqliteDb) {
+    for (const provider of config.providers) {
+      try {
+        const caps = sqliteDb.listModelCapabilities(provider.id);
+        if (caps && caps.length > 0) {
+          modelCapabilities[provider.id] = {};
+          for (const cap of caps) {
+            const { model_id, source, updated_at, ...rest } = cap; // eslint-disable-line no-unused-vars
+            modelCapabilities[provider.id][model_id] = rest;
+          }
+        }
+      } catch (_) {}
+    }
+  }
+
   res.json({
     success: true,
     config: {
@@ -5047,6 +5064,7 @@ app.get('/cluster/config', (req, res) => {
       clientApiKeys: config.clientApiKeys,
       providers: config.providers,
       deletedProviderIds: config.deletedProviderIds || [],
+      modelCapabilities,
       activityLog: process.env.CLUSTER_SYNC_ACTIVITY_LOG === 'true'
         ? config.activityLog
         : []

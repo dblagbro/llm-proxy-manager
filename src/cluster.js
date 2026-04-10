@@ -8,10 +8,11 @@ const crypto = require('crypto');
 const EventEmitter = require('events');
 
 class ClusterManager extends EventEmitter {
-  constructor(logger, config) {
+  constructor(logger, config, sqliteDb) {
     super();
     this.logger = logger;
     this.config = config;
+    this.sqliteDb = sqliteDb || null;
 
     // Read cluster config from file first, fallback to env vars
     const clusterConfig = config.cluster || {};
@@ -358,16 +359,39 @@ class ClusterManager extends EventEmitter {
       }
     }
 
-    // Merge providers (union, no duplicates by ID, respecting tombstones)
+    // Merge providers (union + enabled-state sync, respecting tombstones)
     if (remoteConfig.providers) {
       const tombstones = new Set(this.config.deletedProviderIds || []);
-      const localProviderIds = new Set(this.config.providers.map(p => p.id));
+      const localProviderMap = new Map(this.config.providers.map(p => [p.id, p]));
 
       for (const provider of remoteConfig.providers) {
-        if (!localProviderIds.has(provider.id) && !tombstones.has(provider.id)) {
+        if (tombstones.has(provider.id)) continue;
+        const local = localProviderMap.get(provider.id);
+        if (!local) {
           this.config.providers.push(provider);
           changes++;
           this.logger.info(`Added provider from peer: ${provider.name}`);
+        } else if (provider.enabled === false && local.enabled !== false) {
+          // Propagate disabled state only — a peer can never re-enable a locally disabled provider
+          local.enabled = false;
+          changes++;
+          this.logger.info(`Provider disabled via peer sync: ${provider.name}`);
+        }
+      }
+    }
+
+    // Merge model capability profiles (SQLite)
+    if (this.sqliteDb && remoteConfig.modelCapabilities) {
+      for (const [providerId, models] of Object.entries(remoteConfig.modelCapabilities)) {
+        for (const [modelId, caps] of Object.entries(models)) {
+          try {
+            const existing = this.sqliteDb.getModelCapabilities(providerId, modelId);
+            if (!existing) {
+              this.sqliteDb.setModelCapabilities(providerId, modelId, caps, 'synced');
+              changes++;
+              this.logger.info(`Synced capability profile: ${providerId}/${modelId}`);
+            }
+          } catch (_) {}
         }
       }
     }
@@ -405,6 +429,23 @@ class ClusterManager extends EventEmitter {
     const peer = this.peers.find(p => p.id === targetPeerId);
     if (!peer || !peer.healthy) return;
 
+    // Build model capabilities map from SQLite for sync
+    const modelCapabilities = {};
+    if (this.sqliteDb) {
+      for (const provider of this.config.providers) {
+        try {
+          const caps = this.sqliteDb.listModelCapabilities(provider.id);
+          if (caps && caps.length > 0) {
+            modelCapabilities[provider.id] = {};
+            for (const cap of caps) {
+              const { model_id, source, updated_at, ...rest } = cap; // eslint-disable-line no-unused-vars
+              modelCapabilities[provider.id][model_id] = rest;
+            }
+          }
+        } catch (_) {}
+      }
+    }
+
     const payload = {
       sourceNode: this.nodeId,
       timestamp: new Date().toISOString(),
@@ -412,6 +453,8 @@ class ClusterManager extends EventEmitter {
         users: this.config.users,
         clientApiKeys: this.config.clientApiKeys,
         providers: this.config.providers,
+        deletedProviderIds: this.config.deletedProviderIds || [],
+        modelCapabilities,
         activityLog: process.env.CLUSTER_SYNC_ACTIVITY_LOG === 'true'
           ? this.config.activityLog
           : []
