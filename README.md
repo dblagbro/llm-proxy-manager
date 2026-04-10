@@ -2,7 +2,7 @@
 
 A production-ready LLM API proxy with **multi-provider failover**, **intelligent monitoring**, **cluster mode**, **LMRH semantic routing**, and **web-based management**. Route your AI requests through multiple LLM providers (Anthropic Claude, Google Gemini, OpenAI, Grok, and more) with automatic failover, semantic task-based routing, CoT auto-engagement, and capability advertisement.
 
-![Version](https://img.shields.io/badge/version-1.12.1-blue)
+![Version](https://img.shields.io/badge/version-1.13.1-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Node](https://img.shields.io/badge/node-%3E%3D20.0.0-brightgreen)
 
@@ -70,9 +70,11 @@ The proxy emulates full Anthropic/OpenAI capability sets toward all providers �
 - 📋 **Session Management**: View and manage active and historical sessions
 - 🔢 **Dynamic Version Display**: Live version shown in top bar, loaded from `/health` endpoint
 
-### Cluster Mode
+### Cluster Mode (v1.13.0+)
 - 🌍 **Multi-Instance Deployment**: Deploy to 3+ servers for high availability
-- 🔄 **Configuration Sync**: Automatic synchronization of users and API keys across nodes
+- 🔄 **Full Configuration Sync**: Automatic synchronization of users, API keys, providers, provider enabled/disabled state, and LMRH model capability profiles across all nodes
+- 🚫 **One-Way Disable Propagation**: Disabling a provider on any node propagates to all peers — a peer can never re-enable something disabled locally
+- 🧠 **LMRH Profile Sync**: Model capability profiles stored in SQLite automatically sync to all cluster peers on startup and configuration push
 - 💓 **Heartbeat Monitoring**: Continuous health checks between cluster members
 - 🎛️ **Independent Provider Config**: Each node can have unique provider priorities
 - 📡 **Cluster Status API**: Monitor entire cluster health from any node

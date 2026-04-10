@@ -1436,6 +1436,15 @@ export ANTHROPIC_API_KEY="proxy-handled"</textarea>
                     <p>When a provider fails repeatedly, it enters a hold-down state and is skipped for a cooldown period. At 90% of the timer it gets one retest — if that succeeds it returns to normal. You can manually release a provider from hold-down in the <strong>Monitoring</strong> section of the main page.</p>
                     <h4 style="margin-top:20px;">Max Latency Setting</h4>
                     <p>Each provider has a configurable <strong>Max Latency (ms)</strong> field (default 1800ms). If a provider takes longer than this to respond, the request is immediately failed over to the next provider. Set to <code>0</code> to wait indefinitely.</p>
+
+                    <h4 style="margin-top:20px;">LMRH — Semantic Routing via LLM-Hint Header</h4>
+                    <p>Add a <code>LLM-Hint</code> request header to express routing preferences. The proxy scores all providers against the hint and selects the best match.</p>
+                    <pre style="background:#0d1117;color:#c9d1d9;border-radius:6px;padding:12px;font-size:12px;">LLM-Hint: task=chat, cost=economy, latency=low
+LLM-Hint: task=reasoning, cost=standard, region=us
+LLM-Hint: task=creative, modality=image-generation</pre>
+                    <p style="margin-top:8px;"><strong>Affinity keys:</strong> <code>task</code>, <code>cost</code> (economy/standard/premium), <code>latency</code> (low/medium/high), <code>safety-min</code>, <code>safety-max</code>, <code>region</code>, <code>context-length</code>, <code>modality</code>, <code>provider-hint</code>. Append <code>;require</code> to enforce a hard constraint.</p>
+                    <p style="margin-top:8px;"><strong>Capability Profiles:</strong> Configure per-provider, per-model capability profiles in the admin UI (<em>Edit Provider → Capability Profiles</em>) or use <em>Scan Models</em> to auto-populate them. Profiles are synced automatically across all cluster nodes.</p>
+                    <p style="margin-top:8px;"><strong>Important:</strong> Model names in capability profiles must match what the provider API accepts. For Google Gemini, use exact names like <code>gemini-2.5-flash</code> — deprecated models return HTTP 404.</p>
                 </div>
 
                 <div id="help-logs" class="help-pane" style="display:none;">
@@ -1531,21 +1540,32 @@ export ANTHROPIC_BASE_URL="https://www.voipguru.org/llmProxy"</pre>
 
                 <div id="help-cluster" class="help-pane" style="display:none;">
                     <h4>Cluster / Multi-Node Deployment</h4>
-                    <p>LLM Proxy Manager supports running multiple nodes that sync configuration and report health to each other. Each node operates independently — it does not route requests to peers; syncing is config/stats only.</p>
+                    <p>LLM Proxy Manager supports running multiple nodes that sync configuration across all peers. Each node serves requests independently — syncing propagates config changes (providers, users, API keys, LMRH capability profiles) to every peer automatically.</p>
+
+                    <h4 style="margin-top:16px;">What Gets Synced</h4>
+                    <table style="width:100%; border-collapse:collapse; font-size:13px;">
+                        <tr style="background:var(--bg3,var(--bg2))"><th style="padding:8px;text-align:left;">Data</th><th style="padding:8px;text-align:left;">Sync Behaviour</th></tr>
+                        <tr><td style="padding:8px;"><strong>Users</strong></td><td style="padding:8px;">Union merge — new users from any peer are added everywhere</td></tr>
+                        <tr style="background:var(--bg3,var(--bg2))"><td style="padding:8px;"><strong>API Keys</strong></td><td style="padding:8px;">Union merge — keys added on any node propagate to all</td></tr>
+                        <tr><td style="padding:8px;"><strong>Providers</strong></td><td style="padding:8px;">Union merge for new providers; disabled state propagates one-way (a disable on any node propagates to all — peers can never re-enable)</td></tr>
+                        <tr style="background:var(--bg3,var(--bg2))"><td style="padding:8px;"><strong>LMRH Capability Profiles</strong></td><td style="padding:8px;">Additive sync via SQLite — profiles added on any node are copied to peers that don't have them yet</td></tr>
+                        <tr><td style="padding:8px;"><strong>Provider Tombstones</strong></td><td style="padding:8px;">Deleted provider IDs sync so removed providers don't reappear from peer configs</td></tr>
+                    </table>
+
                     <h4 style="margin-top:16px;">Environment Variables</h4>
                     <table style="width:100%; border-collapse:collapse; font-size:13px;">
                         <tr style="background:var(--bg3,var(--bg2))"><th style="padding:8px;text-align:left;">Variable</th><th style="padding:8px;text-align:left;">Description</th></tr>
                         <tr><td style="padding:8px;"><code>CLUSTER_ENABLED=true</code></td><td style="padding:8px;">Enables cluster mode</td></tr>
-                        <tr style="background:var(--bg3,var(--bg2))"><td style="padding:8px;"><code>CLUSTER_NODE_URL</code></td><td style="padding:8px;">This node's public URL (e.g. <code>https://www.voipguru.org/llmProxy</code>)</td></tr>
-                        <tr><td style="padding:8px;"><code>SESSION_SECRET</code></td><td style="padding:8px;">Set to a stable value so sessions survive container restarts</td></tr>
-                        <tr style="background:var(--bg3,var(--bg2))"><td style="padding:8px;"><code>USE_SQLITE=true</code></td><td style="padding:8px;">Use SQLite for persistent stats (recommended)</td></tr>
+                        <tr style="background:var(--bg3,var(--bg2))"><td style="padding:8px;"><code>CLUSTER_NODE_ID</code></td><td style="padding:8px;">Unique ID for this node (e.g. <code>www1</code>, <code>www2</code>)</td></tr>
+                        <tr><td style="padding:8px;"><code>CLUSTER_NODE_URL</code></td><td style="padding:8px;">This node's public URL (e.g. <code>https://www.voipguru.org/llmProxy</code>)</td></tr>
+                        <tr style="background:var(--bg3,var(--bg2))"><td style="padding:8px;"><code>CLUSTER_PEERS</code></td><td style="padding:8px;">Comma-separated peer list: <code>www2:https://www2.example.com/llmProxy</code></td></tr>
+                        <tr><td style="padding:8px;"><code>CLUSTER_SYNC_SECRET</code></td><td style="padding:8px;">Shared HMAC secret — must match on all nodes</td></tr>
+                        <tr style="background:var(--bg3,var(--bg2))"><td style="padding:8px;"><code>USE_SQLITE=true</code></td><td style="padding:8px;">Required for LMRH profile sync and persistent stats</td></tr>
                     </table>
-                    <h4 style="margin-top:16px;">Node 2 — Behind nginx container</h4>
-                    <p>If Node 2 is reverse-proxied by a containerised nginx, add the container to the nginx network with the expected alias:</p>
-                    <pre style="background:#0d1117;color:#c9d1d9;border-radius:6px;padding:12px;font-size:12px;">docker run ... \
-  --network llm-proxy_llm-proxy-network \
-  --network-alias llm-proxy \
-  ...</pre>
+
+                    <h4 style="margin-top:16px;">Peer Discovery via Redis</h4>
+                    <p>If all nodes share a Redis instance (<code>REDIS_URL</code>), they register via Redis and discover each other automatically — even nodes not listed in <code>CLUSTER_PEERS</code> will be found.</p>
+
                     <h4 style="margin-top:16px;">Adding a Cluster Node via UI</h4>
                     <ol style="line-height:2;">
                         <li>Scroll to the <strong>Cluster</strong> section on the main page.</li>

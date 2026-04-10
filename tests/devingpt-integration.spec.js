@@ -94,12 +94,12 @@ test.describe('DevInGPT Integration', () => {
 
   // ── Proxy health ─────────────────────────────────────────────────────────────
 
-  test('llm-proxy health reports v1.13.1', async ({ request }) => {
+  test('llm-proxy health reports v1.13.2', async ({ request }) => {
     const resp = await request.get('https://www.voipguru.org/llmProxy/health');
     expect(resp.ok()).toBeTruthy();
     const body = await resp.json();
     expect(body.status).toBe('ok');
-    expect(body.version).toBe('1.13.1');
+    expect(body.version).toBe('1.13.2');
   });
 
   test('devingpt version endpoint', async ({ request }) => {
