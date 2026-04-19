@@ -88,7 +88,7 @@ class ActivityLog(Base):
     message = Column(Text)
     provider_id = Column(String)
     api_key_id = Column(String)
-    metadata = Column(JSON, default=dict)
+    event_meta = Column(JSON, default=dict)
     created_at = Column(DateTime, server_default=func.now())
 
 

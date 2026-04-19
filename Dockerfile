@@ -7,15 +7,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# ── deps layer (cached unless pyproject.toml changes) ──
+# ── deps layer (cached unless requirements.txt changes) ──
 FROM base AS deps
-COPY pyproject.toml .
-RUN pip install --no-cache-dir ".[dev]" 2>/dev/null || pip install --no-cache-dir .
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
 # ── runtime ──
 FROM deps AS runtime
 COPY app/ ./app/
-COPY config/ ./config/
 COPY alembic.ini .
 COPY alembic/ ./alembic/
 
