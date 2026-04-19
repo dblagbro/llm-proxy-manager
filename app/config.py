@@ -1,0 +1,58 @@
+from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field
+from typing import Optional
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+
+    # Server
+    port: int = Field(3000, alias="PORT")
+    log_level: str = Field("info", alias="LOG_LEVEL")
+    secret_key: str = Field("change-me-in-production", alias="SECRET_KEY")
+
+    # Database
+    database_url: str = Field(
+        "sqlite+aiosqlite:////app/data/llmproxy.db", alias="DATABASE_URL"
+    )
+
+    # Redis (optional — in-memory fallback when not set)
+    redis_url: Optional[str] = Field(None, alias="REDIS_URL")
+
+    # Circuit breaker defaults
+    circuit_breaker_threshold: int = Field(3, alias="CIRCUIT_BREAKER_THRESHOLD")
+    circuit_breaker_timeout_sec: int = Field(60, alias="CIRCUIT_BREAKER_TIMEOUT_SEC")
+    circuit_breaker_halfopen_sec: int = Field(30, alias="CIRCUIT_BREAKER_HALFOPEN_SEC")
+    circuit_breaker_success_needed: int = Field(2, alias="CIRCUIT_BREAKER_SUCCESS_NEEDED")
+
+    # Hold-down timer (seconds to suppress a provider after failure)
+    hold_down_sec: int = Field(120, alias="HOLD_DOWN_SEC")
+
+    # CoT-E pipeline
+    cot_max_iterations: int = Field(1, alias="COT_MAX_ITERATIONS")
+    cot_quality_threshold: int = Field(6, alias="COT_QUALITY_THRESHOLD")
+    cot_critique_max_tokens: int = Field(200, alias="COT_CRITIQUE_MAX_TOKENS")
+    cot_plan_max_tokens: int = Field(400, alias="COT_PLAN_MAX_TOKENS")
+    cot_session_ttl_sec: int = Field(1800, alias="COT_SESSION_TTL_SEC")
+    cot_session_max_analyses: int = Field(3, alias="COT_SESSION_MAX_ANALYSES")
+
+    # Cluster
+    cluster_enabled: bool = Field(False, alias="CLUSTER_ENABLED")
+    cluster_node_id: Optional[str] = Field(None, alias="CLUSTER_NODE_ID")
+    cluster_node_name: Optional[str] = Field(None, alias="CLUSTER_NODE_NAME")
+    cluster_node_url: Optional[str] = Field(None, alias="CLUSTER_NODE_URL")
+    cluster_peers: Optional[str] = Field(None, alias="CLUSTER_PEERS")  # "id:url,id:url"
+    cluster_sync_secret: Optional[str] = Field(None, alias="CLUSTER_SYNC_SECRET")
+    cluster_heartbeat_sec: int = Field(30, alias="CLUSTER_HEARTBEAT_SEC")
+
+    # Notifications
+    smtp_enabled: bool = Field(False, alias="SMTP_ENABLED")
+    smtp_host: Optional[str] = Field(None, alias="SMTP_HOST")
+    smtp_port: int = Field(587, alias="SMTP_PORT")
+    smtp_user: Optional[str] = Field(None, alias="SMTP_USER")
+    smtp_pass: Optional[str] = Field(None, alias="SMTP_PASS")
+    smtp_from: Optional[str] = Field(None, alias="SMTP_FROM")
+    smtp_to: Optional[str] = Field(None, alias="SMTP_TO")
+
+
+settings = Settings()

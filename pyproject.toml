@@ -1,0 +1,59 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "llm-proxy"
+version = "2.0.0"
+description = "Self-hosted LLM routing gateway with LMRH protocol, CoT-E augmentation, and multi-provider failover"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.13"
+dependencies = [
+    # Core
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+    "pydantic>=2.7.0",
+    "pydantic-settings>=2.3.0",
+    # LLM routing — provider abstraction layer
+    "litellm>=1.40.0",
+    # Database
+    "sqlalchemy>=2.0.0",
+    "alembic>=1.13.0",
+    "aiosqlite>=0.20.0",       # SQLite async (single-node default)
+    "asyncpg>=0.29.0",         # PostgreSQL async (cluster mode)
+    # Redis — circuit state, hold-down timers, CoT sessions, rate limits
+    "redis[hiredis]>=5.0.0",
+    # Auth
+    "passlib[bcrypt]>=1.7.4",
+    "python-jose[cryptography]>=3.3.0",
+    "python-multipart>=0.0.9",
+    # HTTP client
+    "httpx>=0.27.0",
+    # Utilities
+    "python-dotenv>=1.0.0",
+    "structlog>=24.0.0",
+    "tenacity>=8.3.0",
+    "anyio>=4.4.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-httpx>=0.30.0",
+    "httpx>=0.27.0",
+    "ruff>=0.4.0",
+    "mypy>=1.10.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
