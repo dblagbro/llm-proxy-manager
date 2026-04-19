@@ -18,6 +18,8 @@ from app.routing.router import select_provider
 from app.routing.lmrh import parse_hint
 from app.routing.circuit_breaker import record_success, record_failure, is_billing_error
 from app.cot.pipeline import run_cot_pipeline
+from app.monitoring.metrics import record_request
+from app.monitoring.pricing import estimate_cost
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -78,13 +80,19 @@ async def messages(
                 headers=resp_headers,
             )
         else:
+            t0 = time.monotonic()
             result = await litellm.acompletion(
                 model=route.litellm_model,
                 messages=messages_list,
                 stream=False,
                 **extra,
             )
+            latency_ms = (time.monotonic() - t0) * 1000
             await record_success(route.provider.id)
+            in_tok = getattr(result.usage, "prompt_tokens", 0)
+            out_tok = getattr(result.usage, "completion_tokens", 0)
+            cost = estimate_cost(route.litellm_model, in_tok, out_tok)
+            await record_request(db, route.provider.id, True, in_tok, out_tok, latency_ms, cost, key_record.id)
             return JSONResponse(
                 content=_to_anthropic_response(result),
                 headers=resp_headers,
@@ -94,6 +102,7 @@ async def messages(
         err_str = str(e)
         billing = is_billing_error(err_str)
         await record_failure(route.provider.id, billing_error=billing)
+        await record_request(db, route.provider.id, False, 0, 0, 0, 0, key_record.id)
         logger.error(f"Provider {route.provider.id} failed: {err_str}")
         raise HTTPException(502, f"Upstream provider error: {err_str}")
 
