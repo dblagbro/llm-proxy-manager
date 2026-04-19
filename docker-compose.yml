@@ -1,31 +1,38 @@
-version: '3.8'
-
 services:
-  llm-proxy:
-    build: .
-    container_name: llm-proxy
+  llm-proxy2:
+    container_name: llm-proxy2
+    image: llm-proxy2:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
     restart: unless-stopped
     ports:
-      - "3100:3000"
+      - "${PORT:-3000}:3000"
     environment:
-      - NODE_ENV=production
-      - PORT=3000
-      # Optional: Pre-configure provider API keys via environment variables
-      # - ANTHROPIC_KEY_1=your-anthropic-api-key-here
-      # - GOOGLE_API_KEY_1=your-google-api-key-here
-      # - OPENAI_KEY_1=your-openai-api-key-here
-      # Or configure through the Web UI after startup
+      - DATABASE_URL=${DATABASE_URL:-sqlite+aiosqlite:////app/data/llmproxy.db}
+      - REDIS_URL=${REDIS_URL:-}
+      - SECRET_KEY=${SECRET_KEY:-change-me-in-production}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - CLUSTER_NODE_ID=${CLUSTER_NODE_ID:-}
+      - CLUSTER_NODE_URL=${CLUSTER_NODE_URL:-}
+      - CLUSTER_PEERS=${CLUSTER_PEERS:-}
+      - CLUSTER_SYNC_SECRET=${CLUSTER_SYNC_SECRET:-}
     volumes:
-      - ./config:/app/config
-      - ./logs:/app/logs
+      - llm-proxy2-data:/app/data
+      - llm-proxy2-logs:/app/logs
+    networks:
+      - llm-proxy2-net
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:3000/health || exit 1"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:3000/health')"]
       interval: 30s
       timeout: 10s
       retries: 3
-    networks:
-      - llm-proxy-network
+      start_period: 15s
+
+volumes:
+  llm-proxy2-data:
+  llm-proxy2-logs:
 
 networks:
-  llm-proxy-network:
+  llm-proxy2-net:
     driver: bridge

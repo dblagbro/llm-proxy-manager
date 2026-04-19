@@ -1,0 +1,156 @@
+"""
+/v1/messages — Anthropic-format endpoint (same path as v1).
+Handles both streaming and non-streaming responses.
+"""
+import json
+import logging
+import time
+from typing import Optional, AsyncIterator
+
+import litellm
+from fastapi import APIRouter, Request, Depends, HTTPException, Header
+from fastapi.responses import StreamingResponse, JSONResponse
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.database import get_db
+from app.auth.keys import verify_api_key, ApiKeyRecord
+from app.routing.router import select_provider
+from app.routing.lmrh import parse_hint
+from app.routing.circuit_breaker import record_success, record_failure, is_billing_error
+from app.cot.pipeline import run_cot_pipeline
+
+logger = logging.getLogger(__name__)
+router = APIRouter()
+
+
+@router.post("/v1/messages")
+async def messages(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    x_api_key: Optional[str] = Header(None, alias="x-api-key"),
+    llm_hint: Optional[str] = Header(None, alias="llm-hint"),
+    x_session_id: Optional[str] = Header(None, alias="x-session-id"),
+):
+    key_record = await verify_api_key(db, x_api_key)
+
+    body = await request.json()
+    messages_list = body.get("messages", [])
+    stream = body.get("stream", False)
+    max_tokens = body.get("max_tokens", 1024)
+    system = body.get("system")
+    thinking = body.get("thinking")
+    tools = body.get("tools")
+
+    hint = parse_hint(llm_hint)
+    has_tools = bool(tools)
+    has_images = _has_images(messages_list)
+
+    route = await select_provider(
+        db, hint, has_tools=has_tools, has_images=has_images, key_type=key_record.key_type
+    )
+
+    # Build extra kwargs for litellm
+    extra = {**route.litellm_kwargs, "max_tokens": max_tokens}
+    if system:
+        extra["system"] = system
+    if tools:
+        extra["tools"] = tools
+
+    resp_headers = {
+        "X-Provider": route.provider.name,
+        "LLM-Capability": route.capability_header,
+    }
+
+    try:
+        if route.cot_engaged:
+            if not stream:
+                raise HTTPException(422, "CoT-E requires stream=true")
+            return StreamingResponse(
+                run_cot_pipeline(route.litellm_model, messages_list, x_session_id, extra),
+                media_type="text/event-stream",
+                headers=resp_headers,
+            )
+
+        if stream:
+            return StreamingResponse(
+                _stream_anthropic(route.litellm_model, messages_list, extra, route.provider.id),
+                media_type="text/event-stream",
+                headers=resp_headers,
+            )
+        else:
+            result = await litellm.acompletion(
+                model=route.litellm_model,
+                messages=messages_list,
+                stream=False,
+                **extra,
+            )
+            await record_success(route.provider.id)
+            return JSONResponse(
+                content=_to_anthropic_response(result),
+                headers=resp_headers,
+            )
+
+    except Exception as e:
+        err_str = str(e)
+        billing = is_billing_error(err_str)
+        await record_failure(route.provider.id, billing_error=billing)
+        logger.error(f"Provider {route.provider.id} failed: {err_str}")
+        raise HTTPException(502, f"Upstream provider error: {err_str}")
+
+
+async def _stream_anthropic(
+    model: str, messages: list, extra: dict, provider_id: str
+) -> AsyncIterator[bytes]:
+    try:
+        response = await litellm.acompletion(model=model, messages=messages, stream=True, **extra)
+        index = 0
+        text_started = False
+
+        async for chunk in response:
+            delta = chunk.choices[0].delta if chunk.choices else None
+            if not delta:
+                continue
+            content = delta.content or ""
+            if not text_started and content:
+                yield f'data: {{"type":"content_block_start","index":{index},"content_block":{{"type":"text","text":""}}}}\n\n'.encode()
+                text_started = True
+            if content:
+                escaped = json.dumps(content)[1:-1]
+                yield f'data: {{"type":"content_block_delta","index":{index},"delta":{{"type":"text_delta","text":"{escaped}"}}}}\n\n'.encode()
+
+        if text_started:
+            yield f'data: {{"type":"content_block_stop","index":{index}}}\n\n'.encode()
+        yield b'data: {"type":"message_stop"}\n\ndata: [DONE]\n\n'
+        await record_success(provider_id)
+    except Exception as e:
+        await record_failure(provider_id, billing_error=is_billing_error(str(e)))
+        yield f'data: {{"type":"error","error":{{"message":"{str(e)}"}}}}\n\n'.encode()
+
+
+def _to_anthropic_response(litellm_response) -> dict:
+    """Convert litellm response to Anthropic messages API format."""
+    choice = litellm_response.choices[0]
+    content_text = choice.message.content or ""
+    return {
+        "id": litellm_response.id or "msg_proxy",
+        "type": "message",
+        "role": "assistant",
+        "content": [{"type": "text", "text": content_text}],
+        "model": litellm_response.model or "unknown",
+        "stop_reason": choice.finish_reason or "end_turn",
+        "stop_sequence": None,
+        "usage": {
+            "input_tokens": getattr(litellm_response.usage, "prompt_tokens", 0),
+            "output_tokens": getattr(litellm_response.usage, "completion_tokens", 0),
+        },
+    }
+
+
+def _has_images(messages: list[dict]) -> bool:
+    for m in messages:
+        content = m.get("content", "")
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") in ("image", "image_url"):
+                    return True
+    return False
