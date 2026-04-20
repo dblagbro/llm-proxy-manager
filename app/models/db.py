@@ -10,6 +10,18 @@ class Base(DeclarativeBase):
     pass
 
 
+class Session(Base):
+    """Persisted login sessions — survives container restarts."""
+    __tablename__ = "sessions"
+
+    token = Column(String, primary_key=True)
+    user_id = Column(String, nullable=False)
+    username = Column(String, nullable=False)
+    role = Column(String, nullable=False)
+    created_at = Column(Float, nullable=False)   # Unix timestamp
+    last_seen_at = Column(Float, nullable=False)  # updated on each /me call
+
+
 class Provider(Base):
     __tablename__ = "providers"
 
@@ -23,6 +35,9 @@ class Provider(Base):
     enabled = Column(Boolean, default=True)
     timeout_sec = Column(Integer, default=30)
     exclude_from_tool_requests = Column(Boolean, default=False)
+    # Per-provider CB overrides (null = use global setting)
+    hold_down_sec = Column(Integer, nullable=True)
+    failure_threshold = Column(Integer, nullable=True)
     extra_config = Column(JSON, default=dict)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())

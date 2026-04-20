@@ -5,7 +5,7 @@ interface Props {
 }
 
 export function CircuitBreakerBadge({ state }: Props) {
-  if (state === 'closed') return <Badge variant="success">Closed</Badge>
-  if (state === 'open') return <Badge variant="danger">Open</Badge>
-  return <Badge variant="warning">Half-Open</Badge>
+  if (state === 'closed') return <Badge variant="success">Online</Badge>
+  if (state === 'open') return <Badge variant="danger">Tripped</Badge>
+  return <Badge variant="warning">Recovering</Badge>
 }

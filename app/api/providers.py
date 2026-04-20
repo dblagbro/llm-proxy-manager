@@ -26,6 +26,8 @@ class ProviderCreate(BaseModel):
     enabled: bool = True
     timeout_sec: int = 30
     exclude_from_tool_requests: bool = False
+    hold_down_sec: Optional[int] = None       # None = use global setting
+    failure_threshold: Optional[int] = None   # None = use global setting
     extra_config: dict = {}
 
 
@@ -69,7 +71,7 @@ async def create_provider(
     db.add(provider)
     await db.commit()
     await db.refresh(provider)
-    register_provider(provider.id, provider.provider_type)
+    register_provider(provider.id, provider.provider_type, provider.hold_down_sec, provider.failure_threshold)
     return _serialize(provider)
 
 
@@ -95,6 +97,7 @@ async def update_provider(
         setattr(p, field, value)
     await db.commit()
     await db.refresh(p)
+    register_provider(p.id, p.provider_type, p.hold_down_sec, p.failure_threshold)
     return _serialize(p)
 
 
@@ -241,6 +244,8 @@ def _serialize(p: Provider) -> dict:
         "enabled": p.enabled,
         "timeout_sec": p.timeout_sec,
         "exclude_from_tool_requests": p.exclude_from_tool_requests,
+        "hold_down_sec": p.hold_down_sec,
+        "failure_threshold": p.failure_threshold,
         "extra_config": p.extra_config,
         "created_at": p.created_at.isoformat() if p.created_at else None,
     }
