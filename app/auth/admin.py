@@ -1,8 +1,7 @@
 """
 Admin session authentication.
-Web UI uses cookie-based sessions; API callers use x-api-key.
+Web UI uses cookie-based sessions (persisted to SQLite); API callers use x-api-key.
 """
-import hashlib
 import secrets
 import time
 import logging
@@ -13,16 +12,15 @@ import bcrypt as _bcrypt_lib
 
 from fastapi import HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, delete
 
-from app.models.database import get_db
-from app.models.db import User
+from app.models.database import AsyncSessionLocal
+from app.models.db import User, Session
 
 logger = logging.getLogger(__name__)
 
-# In-process session store (Redis upgrade path via same interface as CoT sessions)
-_sessions: dict[str, dict] = {}
-SESSION_TTL_SEC = 86400  # 24 hours
+SESSION_TTL_SEC = 86400 * 7   # 7-day rolling sessions
+SESSION_IDLE_SEC = 86400      # Extend last_seen on each /me call
 
 
 def hash_password(plain: str) -> str:
@@ -36,29 +34,58 @@ def verify_password(plain: str, hashed: str) -> bool:
         return False
 
 
-def create_session(user_id: str, username: str, role: str) -> str:
+async def create_session(user_id: str, username: str, role: str) -> str:
     token = secrets.token_urlsafe(32)
-    _sessions[token] = {
-        "user_id": user_id,
-        "username": username,
-        "role": role,
-        "created_at": time.time(),
-    }
+    now = time.time()
+    async with AsyncSessionLocal() as db:
+        db.add(Session(
+            token=token,
+            user_id=user_id,
+            username=username,
+            role=role,
+            created_at=now,
+            last_seen_at=now,
+        ))
+        await db.commit()
     return token
 
 
-def destroy_session(token: str):
-    _sessions.pop(token, None)
+async def destroy_session(token: str):
+    async with AsyncSessionLocal() as db:
+        await db.execute(delete(Session).where(Session.token == token))
+        await db.commit()
 
 
-def _get_session(token: str) -> Optional[dict]:
-    s = _sessions.get(token)
-    if not s:
-        return None
-    if time.time() - s["created_at"] > SESSION_TTL_SEC:
-        _sessions.pop(token, None)
-        return None
-    return s
+async def _get_session(token: str) -> Optional[dict]:
+    now = time.time()
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(select(Session).where(Session.token == token))
+        s = result.scalar_one_or_none()
+        if not s:
+            return None
+        # Expire sessions idle > SESSION_TTL_SEC since last seen
+        if now - s.last_seen_at > SESSION_TTL_SEC:
+            await db.delete(s)
+            await db.commit()
+            return None
+        return {"user_id": s.user_id, "username": s.username, "role": s.role}
+
+
+async def touch_session(token: str):
+    """Update last_seen_at to keep session alive."""
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(select(Session).where(Session.token == token))
+        s = result.scalar_one_or_none()
+        if s:
+            s.last_seen_at = time.time()
+            await db.commit()
+
+
+async def purge_expired_sessions():
+    cutoff = time.time() - SESSION_TTL_SEC
+    async with AsyncSessionLocal() as db:
+        await db.execute(delete(Session).where(Session.last_seen_at < cutoff))
+        await db.commit()
 
 
 @dataclass
@@ -69,11 +96,9 @@ class AdminUser:
 
 
 def _extract_token(request: Request) -> Optional[str]:
-    # Cookie (browser sessions)
     token = request.cookies.get("session")
     if token:
         return token
-    # Authorization header (API-style admin access)
     auth = request.headers.get("Authorization", "")
     if auth.startswith("Bearer "):
         return auth[7:]
@@ -84,7 +109,7 @@ async def require_admin(request: Request) -> AdminUser:
     token = _extract_token(request)
     if not token:
         raise HTTPException(401, "Not authenticated")
-    s = _get_session(token)
+    s = await _get_session(token)
     if not s:
         raise HTTPException(401, "Session expired or invalid")
     if s["role"] != "admin":
@@ -96,7 +121,7 @@ async def require_any_user(request: Request) -> AdminUser:
     token = _extract_token(request)
     if not token:
         raise HTTPException(401, "Not authenticated")
-    s = _get_session(token)
+    s = await _get_session(token)
     if not s:
         raise HTTPException(401, "Session expired or invalid")
     return AdminUser(user_id=s["user_id"], username=s["username"], role=s["role"])
@@ -106,10 +131,8 @@ async def ensure_default_admin(db: AsyncSession):
     """Create default admin/admin on first boot if no users exist."""
     result = await db.execute(select(User))
     if result.first() is None:
-        from app.models.db import User as UserModel
-        import secrets as _s
-        admin = UserModel(
-            id=_s.token_hex(8),
+        admin = User(
+            id=secrets.token_hex(8),
             username="admin",
             password_hash=hash_password("admin"),
             role="admin",

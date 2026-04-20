@@ -20,6 +20,15 @@ AsyncSessionLocal = async_sessionmaker(
 async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # Add new columns to existing tables (SQLite doesn't support IF NOT EXISTS for columns)
+        for stmt in [
+            "ALTER TABLE providers ADD COLUMN hold_down_sec INTEGER",
+            "ALTER TABLE providers ADD COLUMN failure_threshold INTEGER",
+        ]:
+            try:
+                await conn.exec_driver_sql(stmt)
+            except Exception:
+                pass  # column already exists
     logger.info("Database initialized")
 
 

@@ -18,6 +18,8 @@ export interface Provider {
   enabled: boolean
   timeout_sec: number
   exclude_from_tool_requests: boolean
+  hold_down_sec: number | null
+  failure_threshold: number | null
   extra_config: Record<string, unknown>
   created_at: string
 }
@@ -32,6 +34,8 @@ export interface ProviderFormData {
   enabled: boolean
   timeout_sec: number
   exclude_from_tool_requests: boolean
+  hold_down_sec: number | null
+  failure_threshold: number | null
   extra_config: Record<string, unknown>
 }
 
