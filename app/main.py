@@ -6,10 +6,10 @@ import time
 from contextlib import asynccontextmanager
 
 import structlog
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 import os
 
 from app.config import settings
@@ -111,12 +111,6 @@ app.include_router(users_router)
 app.include_router(cluster_router)
 app.include_router(monitoring_router)
 
-# ── Static files (web dashboard) — mounted last ──────────────────────────────
-_static_dir = os.path.join(os.path.dirname(__file__), "..", "frontend", "dist")
-if os.path.isdir(_static_dir):
-    app.mount("/", StaticFiles(directory=_static_dir, html=True), name="static")
-
-
 # ── Utility endpoints ────────────────────────────────────────────────────────
 @app.get("/health")
 async def health():
@@ -126,3 +120,34 @@ async def health():
 @app.get("/version")
 async def version():
     return {"service": "llm-proxy", "version": "2.0.0", "docs": "/docs"}
+
+
+# ── Static files (web dashboard) ─────────────────────────────────────────────
+# Mount /assets directly so JS/CSS are served correctly.
+# All other unknown paths return index.html for React Router (SPA catch-all).
+_static_dir = os.path.join(os.path.dirname(__file__), "..", "frontend", "dist")
+_assets_dir = os.path.join(_static_dir, "assets")
+
+if os.path.isdir(_assets_dir):
+    app.mount("/assets", StaticFiles(directory=_assets_dir), name="assets")
+
+if os.path.isdir(_static_dir):
+    # Serve favicon and other root-level static files explicitly
+    @app.get("/favicon.svg", include_in_schema=False)
+    @app.get("/favicon.ico", include_in_schema=False)
+    async def favicon():
+        p = os.path.join(_static_dir, "favicon.svg")
+        return FileResponse(p) if os.path.isfile(p) else JSONResponse({"detail": "Not Found"}, 404)
+
+    @app.get("/icons.svg", include_in_schema=False)
+    async def icons_svg():
+        p = os.path.join(_static_dir, "icons.svg")
+        return FileResponse(p) if os.path.isfile(p) else JSONResponse({"detail": "Not Found"}, 404)
+
+    # SPA catch-all: return index.html for all unmatched GET paths
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def spa_catch_all(full_path: str):
+        index = os.path.join(_static_dir, "index.html")
+        if os.path.isfile(index):
+            return FileResponse(index)
+        raise HTTPException(404, "Not found")

@@ -56,7 +56,7 @@ export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <ThemeProvider>
-        <BrowserRouter>
+        <BrowserRouter basename="/llm-proxy2">
           <AuthProvider>
             <AppRoutes />
             <Toaster />
