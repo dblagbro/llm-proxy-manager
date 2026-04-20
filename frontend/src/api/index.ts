@@ -23,7 +23,7 @@ export const providersApi = {
   delete:     (id: string)               => api.delete<void>(`/api/providers/${id}`),
   toggle:     (id: string)               => api.patch<{ enabled: boolean }>(`/api/providers/${id}/toggle`),
   test:       (id: string)               => api.post<TestResult>(`/api/providers/${id}/test`),
-  scanModels: (id: string)               => api.post<{ scanned: number; models: ScannedModel[] }>(`/api/providers/${id}/scan-models`),
+  scanModels: (id: string)               => api.post<{ scanned: number; models: ScannedModel[]; warning?: string }>(`/api/providers/${id}/scan-models`),
   capabilities: (id: string)             => api.get<ModelCapability[]>(`/api/providers/${id}/model-capabilities`),
   updateCapability: (id: string, modelId: string, data: Partial<ModelCapability>) =>
     api.put<ModelCapability>(`/api/providers/${id}/model-capabilities/${encodeURIComponent(modelId)}`, data),
