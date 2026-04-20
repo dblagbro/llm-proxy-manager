@@ -80,9 +80,13 @@ export function ProvidersPage() {
 
   const scanMutation = useMutation({
     mutationFn: (id: string) => providersApi.scanModels(id),
-    onSuccess: (_data, id) => {
+    onSuccess: (data, id) => {
       qc.invalidateQueries({ queryKey: ['providers'] })
-      toast.success('Model scan complete')
+      if (data.warning) {
+        toast.error(data.warning)
+      } else {
+        toast.success(`Scanned ${data.scanned} model${data.scanned !== 1 ? 's' : ''}`)
+      }
       setExpanded(id)
     },
     onError: (e: Error) => toast.error(e.message),

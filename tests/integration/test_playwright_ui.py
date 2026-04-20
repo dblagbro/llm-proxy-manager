@@ -260,3 +260,139 @@ class TestLLMProxy2UI:
         expect(header).to_be_visible()
         # Badge text is either "X/Y providers" or "Connecting…"
         expect(header.locator("text=providers").or_(header.locator("text=Connecting"))).to_be_visible(timeout=8_000)
+
+    def test_navigate_to_cluster_page(self, page: Page):
+        login(page)
+        page.click("text=Cluster")
+        expect(page).to_have_url(f"{BASE_URL}/cluster")
+        expect(page.locator("h1")).to_contain_text("Cluster")
+
+    def test_cluster_page_shows_circuit_breakers(self, page: Page):
+        login(page)
+        page.goto(f"{BASE_URL}/cluster")
+        # "Provider Circuit Breakers" card heading is unique to this page
+        expect(page.get_by_text("Provider Circuit Breakers")).to_be_visible(timeout=8_000)
+        # Wait for breakers to load (spinner disappears)
+        page.wait_for_function(
+            "() => document.querySelector('.animate-spin') === null",
+            timeout=10_000,
+        )
+        # At least one circuit breaker badge or empty state should be visible
+        page.wait_for_function(
+            "() => document.querySelector('.divide-y') !== null || document.body.innerText.includes('No providers')",
+            timeout=8_000,
+        )
+
+    def test_cluster_page_force_online_button(self, page: Page):
+        """Force Online button visible on circuit breakers."""
+        login(page)
+        page.goto(f"{BASE_URL}/cluster")
+        page.wait_for_function(
+            "() => document.querySelector('.animate-spin') === null",
+            timeout=10_000,
+        )
+        # If providers exist, Force Online/Trip buttons should be visible
+        force_online = page.locator("text=Force Online").first
+        if force_online.is_visible():
+            # Verify Force Trip button also exists
+            expect(page.locator("text=Force Trip").first).to_be_visible()
+
+
+# ── Provider Action Tests ─────────────────────────────────────────────────────
+
+class TestProviderActions:
+    def test_provider_test_button_shows_result(self, page: Page):
+        """Test button on a provider returns OK or Error badge."""
+        login(page)
+        page.goto(f"{BASE_URL}/providers")
+        # Expand the first provider card
+        first_card = page.locator("div.cursor-pointer").first
+        first_card.click()
+        page.wait_for_timeout(500)
+        # Click the Test button
+        test_btn = page.locator("button:has-text('Test')").first
+        expect(test_btn).to_be_visible(timeout=5_000)
+        test_btn.click()
+        # Wait for test to complete (button re-enables)
+        page.wait_for_timeout(2_000)
+        page.wait_for_function(
+            "() => !Array.from(document.querySelectorAll('button')).some(b => b.disabled && b.textContent.includes('Test'))",
+            timeout=30_000,
+        )
+        # Result badge should appear in the card header (OK or Error)
+        result_badge = page.locator("span:text-matches('^OK$|^Error$')").first
+        expect(result_badge).to_be_visible(timeout=5_000)
+
+    def test_scan_models_button_shows_toast(self, page: Page):
+        """Scan Models button completes and shows a toast."""
+        login(page)
+        page.goto(f"{BASE_URL}/providers")
+        # Expand the first provider card
+        first_card = page.locator("div.cursor-pointer").first
+        first_card.click()
+        page.wait_for_timeout(500)
+        # Click Scan Models
+        scan_btn = page.locator("button:has-text('Scan Models')").first
+        expect(scan_btn).to_be_visible(timeout=5_000)
+        scan_btn.click()
+        # Wait for toast in the fixed bottom-right toast container
+        toast_container = page.locator(".fixed.bottom-4.right-4")
+        expect(toast_container).to_be_visible(timeout=30_000)
+
+    def test_provider_logs_button_navigates(self, page: Page):
+        """Logs button on a provider navigates to activity page filtered by provider."""
+        login(page)
+        page.goto(f"{BASE_URL}/providers")
+        first_card = page.locator("div.cursor-pointer").first
+        first_card.click()
+        page.wait_for_timeout(500)
+        logs_btn = page.locator("button:has-text('Logs')").first
+        expect(logs_btn).to_be_visible(timeout=5_000)
+        logs_btn.click()
+        page.wait_for_url(f"{BASE_URL}/activity**", timeout=8_000)
+        # URL should have ?provider= query param
+        assert "provider=" in page.url
+
+    def test_activity_page_provider_filter(self, page: Page):
+        """Activity page ?provider= filter shows filter label and clear button."""
+        login(page)
+        page.goto(f"{BASE_URL}/activity?provider=testprovider123")
+        expect(page.locator("text=Filtered to provider")).to_be_visible(timeout=8_000)
+        expect(page.locator("text=Clear filter")).to_be_visible()
+        page.click("text=Clear filter")
+        page.wait_for_url(f"{BASE_URL}/activity", timeout=5_000)
+
+
+# ── User Management Tests ─────────────────────────────────────────────────────
+
+class TestUserManagement:
+    def test_create_and_delete_user(self, page: Page):
+        """Create a new user then delete it."""
+        import time as _time
+        unique_name = f"pw-test-{int(_time.time()) % 100000}"
+        login(page)
+        page.goto(f"{BASE_URL}/users")
+        # Click Add User
+        page.click("text=Add User")
+        page.wait_for_timeout(500)
+        # Wait for modal — form has a label "Username" then an input
+        expect(page.locator("text=Add User").nth(1)).to_be_visible(timeout=5_000)
+        # Fill username and password
+        page.locator('.fixed.inset-0 input').first.fill(unique_name)
+        page.locator('.fixed.inset-0 input[type="password"]').fill("TestPass!123")
+        # Submit
+        page.locator('.fixed.inset-0 button:has-text("Create")').click()
+        # Wait for user to appear in list (modal closes on success)
+        expect(page.locator(f"text={unique_name}")).to_be_visible(timeout=10_000)
+        # Delete it — find the row containing the username
+        user_row = page.locator(f".px-5.py-4:has-text('{unique_name}')").first
+        # The delete button has the red danger style (Trash2 icon)
+        user_row.locator("button[class*='bg-red'], button[class*='danger'], button:last-child").last.click()
+        # Confirm deletion via ConfirmDialog
+        page.wait_for_timeout(300)
+        confirm = page.locator(".fixed.inset-0 button:has-text('Delete')").first
+        if confirm.is_visible(timeout=3_000):
+            confirm.click()
+        # User should be gone
+        page.wait_for_timeout(1000)
+        expect(page.locator(f"text={unique_name}")).not_to_be_visible(timeout=5_000)

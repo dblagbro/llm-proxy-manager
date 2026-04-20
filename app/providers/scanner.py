@@ -147,6 +147,7 @@ async def test_provider(provider: Provider) -> dict:
     """Send a minimal test request to verify provider is reachable."""
     import litellm
     from app.routing.router import _build_litellm_model, _build_litellm_kwargs
+    from app.routing.circuit_breaker import record_failure, record_success, is_billing_error
 
     model = _build_litellm_model(provider)
     kwargs = _build_litellm_kwargs(provider)
@@ -160,6 +161,15 @@ async def test_provider(provider: Provider) -> dict:
             **kwargs,
         )
         text = result.choices[0].message.content or ""
+        await record_success(provider.id)
         return {"success": True, "response": text, "model": model}
     except Exception as e:
-        return {"success": False, "error": str(e), "model": model}
+        err_str = str(e)
+        billing = is_billing_error(err_str)
+        await record_failure(provider.id, billing_error=billing)
+        return {
+            "success": False,
+            "error": err_str,
+            "model": model,
+            "billing_error": billing,
+        }

@@ -143,8 +143,13 @@ async def scan_models(
     _: AdminUser = Depends(require_admin),
 ):
     p = await _get_or_404(db, provider_id)
-    models = await scan_provider_models(db, p)
-    return {"scanned": len(models), "models": models}
+    try:
+        models = await scan_provider_models(db, p)
+        if not models:
+            return {"scanned": 0, "models": [], "warning": "No models discovered — check API key and provider type"}
+        return {"scanned": len(models), "models": models}
+    except Exception as e:
+        raise HTTPException(500, f"Model scan failed: {e}")
 
 
 @router.get("/{provider_id}/model-capabilities")

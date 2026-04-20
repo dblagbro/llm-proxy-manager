@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from app.config import settings
-from app.models.db import User, ApiKey
+from app.models.db import User, ApiKey, Provider
 
 logger = logging.getLogger(__name__)
 
@@ -88,10 +88,10 @@ async def _heartbeat_loop(notify_fn=None):
 
 
 async def _ping_peer(peer: PeerNode, notify_fn=None):
-    url = f"{peer.url.rstrip('/')}/cluster/health"
+    url = f"{peer.url.rstrip('/')}/health"
     start = time.monotonic()
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
+        async with httpx.AsyncClient(timeout=10, verify=False) as client:
             resp = await client.get(url, headers={"X-Cluster-Node": settings.cluster_node_id or ""})
         latency_ms = (time.monotonic() - start) * 1000
         data = resp.json()
@@ -137,18 +137,29 @@ async def _push_sync(peer: PeerNode, db_factory):
              "key_type": k.key_type, "enabled": k.enabled}
             for k in keys_result.scalars().all()
         ]
+        providers_result = await db.execute(select(Provider))
+        providers = [
+            {"id": p.id, "name": p.name, "provider_type": p.provider_type, "api_key": p.api_key,
+             "base_url": p.base_url, "default_model": p.default_model, "priority": p.priority,
+             "enabled": p.enabled, "timeout_sec": p.timeout_sec,
+             "exclude_from_tool_requests": p.exclude_from_tool_requests,
+             "hold_down_sec": p.hold_down_sec, "failure_threshold": p.failure_threshold,
+             "extra_config": p.extra_config or {}}
+            for p in providers_result.scalars().all()
+        ]
 
     payload = {
         "source_node": settings.cluster_node_id,
         "timestamp": time.time(),
         "users": users,
         "api_keys": keys,
+        "providers": providers,
     }
     body = json.dumps(payload, sort_keys=True).encode()
     sig = _sign(body)
 
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with httpx.AsyncClient(timeout=15, verify=False) as client:
             await client.post(
                 f"{peer.url.rstrip('/')}/cluster/sync",
                 content=body,
@@ -160,7 +171,7 @@ async def _push_sync(peer: PeerNode, db_factory):
 
 
 async def apply_sync(db: AsyncSession, payload: dict):
-    """Merge incoming user/key data from a peer (timestamp-wins strategy)."""
+    """Merge incoming user/key/provider data from a peer (insert-if-missing strategy)."""
     for u_data in payload.get("users", []):
         result = await db.execute(select(User).where(User.username == u_data["username"]))
         existing = result.scalar_one_or_none()
@@ -184,6 +195,29 @@ async def apply_sync(db: AsyncSession, payload: dict):
                 key_type=k_data.get("key_type", "standard"),
                 enabled=k_data.get("enabled", True),
             ))
+
+    for p_data in payload.get("providers", []):
+        result = await db.execute(select(Provider).where(Provider.id == p_data["id"]))
+        existing = result.scalar_one_or_none()
+        if not existing:
+            from app.monitoring.status import register_provider
+            p = Provider(
+                id=p_data["id"],
+                name=p_data["name"],
+                provider_type=p_data["provider_type"],
+                api_key=p_data.get("api_key"),
+                base_url=p_data.get("base_url"),
+                default_model=p_data.get("default_model"),
+                priority=p_data.get("priority", 10),
+                enabled=p_data.get("enabled", True),
+                timeout_sec=p_data.get("timeout_sec", 60),
+                exclude_from_tool_requests=p_data.get("exclude_from_tool_requests", False),
+                hold_down_sec=p_data.get("hold_down_sec"),
+                failure_threshold=p_data.get("failure_threshold"),
+                extra_config=p_data.get("extra_config", {}),
+            )
+            db.add(p)
+            register_provider(p.id, p.provider_type, p.hold_down_sec, p.failure_threshold)
 
     await db.commit()
 

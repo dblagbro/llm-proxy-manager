@@ -22,7 +22,7 @@ interface SidebarProps {
   liveActivity?: boolean
 }
 
-export function Sidebar({ collapsed, onToggle, clusterEnabled = false, openCircuitBreakers = 0, liveActivity = false }: SidebarProps) {
+export function Sidebar({ collapsed, onToggle, openCircuitBreakers = 0, liveActivity = false }: Omit<SidebarProps, 'clusterEnabled'> & { clusterEnabled?: boolean }) {
   const navItems: (NavItem | 'divider')[] = [
     { to: '/',         icon: LayoutDashboard, label: 'Dashboard' },
     { to: '/providers', icon: Server,          label: 'Providers',
@@ -32,7 +32,7 @@ export function Sidebar({ collapsed, onToggle, clusterEnabled = false, openCircu
     { to: '/keys',     icon: Key,              label: 'API Keys' },
     { to: '/users',    icon: Users,            label: 'Users' },
     'divider',
-    { to: '/cluster',  icon: Network,          label: 'Cluster', hidden: !clusterEnabled },
+    { to: '/cluster',  icon: Network,          label: 'Cluster' },
     { to: '/metrics',  icon: BarChart2,        label: 'Metrics' },
     { to: '/activity', icon: Activity,         label: 'Activity',
       badge: liveActivity ? '●' : undefined },
