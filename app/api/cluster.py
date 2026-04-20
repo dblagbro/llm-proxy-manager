@@ -28,7 +28,10 @@ async def health():
         providers = result.scalars().all()
 
     total = len(providers)
-    healthy = sum(1 for p in providers if await is_available(p.id))
+    healthy = 0
+    for p in providers:
+        if await is_available(p.id):
+            healthy += 1
 
     return {
         "status": "healthy" if healthy > 0 else "degraded",

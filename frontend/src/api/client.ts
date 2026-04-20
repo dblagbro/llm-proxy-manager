@@ -1,4 +1,6 @@
-const BASE = ''  // proxied by Vite dev server; empty = same origin in prod
+// Vite sets import.meta.env.BASE_URL to the configured base (e.g. '/llm-proxy2/').
+// Strip the trailing slash so we can prefix '/api/...' cleanly.
+const BASE = import.meta.env.BASE_URL.replace(/\/$/, '')
 
 async function req<T>(
   method: string,

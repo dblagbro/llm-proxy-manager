@@ -9,17 +9,16 @@ import logging
 from typing import Optional
 from dataclasses import dataclass
 
-from fastapi import HTTPException, Request, Depends, Cookie
+import bcrypt as _bcrypt_lib
+
+from fastapi import HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from passlib.context import CryptContext
 
 from app.models.database import get_db
 from app.models.db import User
 
 logger = logging.getLogger(__name__)
-
-_pwd_ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 # In-process session store (Redis upgrade path via same interface as CoT sessions)
 _sessions: dict[str, dict] = {}
@@ -27,11 +26,14 @@ SESSION_TTL_SEC = 86400  # 24 hours
 
 
 def hash_password(plain: str) -> str:
-    return _pwd_ctx.hash(plain)
+    return _bcrypt_lib.hashpw(plain.encode(), _bcrypt_lib.gensalt()).decode()
 
 
 def verify_password(plain: str, hashed: str) -> bool:
-    return _pwd_ctx.verify(plain, hashed)
+    try:
+        return _bcrypt_lib.checkpw(plain.encode(), hashed.encode())
+    except Exception:
+        return False
 
 
 def create_session(user_id: str, username: str, role: str) -> str:
