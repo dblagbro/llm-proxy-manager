@@ -33,6 +33,22 @@ class _LocalState:
 
 _local_states: dict[str, _LocalState] = {}
 _lock = asyncio.Lock()
+_provider_overrides: dict[str, dict] = {}  # provider_id → {hold_down_sec, failure_threshold}
+
+
+def set_provider_config(provider_id: str, hold_down_sec: Optional[int], failure_threshold: Optional[int]):
+    _provider_overrides[provider_id] = {
+        "hold_down_sec": hold_down_sec,
+        "failure_threshold": failure_threshold,
+    }
+
+
+def _hold_down_sec(provider_id: str) -> int:
+    return _provider_overrides.get(provider_id, {}).get("hold_down_sec") or settings.hold_down_sec
+
+
+def _failure_threshold(provider_id: str) -> int:
+    return _provider_overrides.get(provider_id, {}).get("failure_threshold") or settings.circuit_breaker_threshold
 
 
 def _get_local(provider_id: str) -> _LocalState:
@@ -89,10 +105,10 @@ async def record_failure(provider_id: str, billing_error: bool = False):
             logger.warning("circuit_breaker.billing_error", extra={"provider": provider_id})
             return
 
-        if s.failures >= settings.circuit_breaker_threshold:
+        if s.failures >= _failure_threshold(provider_id):
             s.state = CBState.OPEN
             s.opened_at = now
-            s.hold_down_until = now + settings.hold_down_sec
+            s.hold_down_until = now + _hold_down_sec(provider_id)
             logger.warning(
                 "circuit_breaker.opened",
                 extra={"provider": provider_id, "failures": s.failures},

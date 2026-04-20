@@ -12,7 +12,7 @@ from playwright.sync_api import sync_playwright, Page, expect
 
 BASE_URL = "https://www.voipguru.org/llm-proxy2"
 ADMIN_USER = "admin"
-ADMIN_PASS = "admin"
+ADMIN_PASS = "Super*120120"
 
 
 @pytest.fixture(scope="session")
@@ -38,8 +38,11 @@ def login(page: Page):
     page.fill('input[autocomplete="username"]', ADMIN_USER)
     page.fill('input[autocomplete="current-password"]', ADMIN_PASS)
     page.click('button[type="submit"]')
-    # React Router may navigate to BASE_URL with or without trailing slash
-    page.wait_for_url(f"{BASE_URL}/**", timeout=15_000)
+    # Wait for redirect away from /login — success lands on dashboard or root
+    page.wait_for_function(
+        "() => !window.location.href.includes('/login')",
+        timeout=15_000,
+    )
     page.wait_for_load_state("networkidle")
 
 
@@ -94,9 +97,11 @@ class TestLLMProxy2API:
         assert resp.status == 401
 
     def test_login_api(self, page: Page):
+        import json
         resp = page.request.post(
             f"{BASE_URL}/api/auth/login",
-            data={"username": ADMIN_USER, "password": ADMIN_PASS},
+            data=json.dumps({"username": ADMIN_USER, "password": ADMIN_PASS}),
+            headers={"Content-Type": "application/json"},
         )
         assert resp.status == 200
         data = resp.json()

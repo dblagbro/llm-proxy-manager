@@ -43,9 +43,21 @@ PROVIDER_TYPE_TO_LITELLM = {
 }
 
 
+PROVIDER_DEFAULT_MODELS = {
+    "anthropic": "claude-sonnet-4-6",
+    "google":    "gemini-2.0-flash",
+    "vertex":    "gemini-2.0-flash-002",
+    "openai":    "gpt-4o",
+    "grok":      "grok-2",
+    "ollama":    "llama3",
+    "compatible": "gpt-4o",
+}
+
+
 def _build_litellm_model(provider: Provider) -> str:
     prefix = PROVIDER_TYPE_TO_LITELLM.get(provider.provider_type, "openai")
-    model = provider.default_model or "gpt-4o"
+    default = PROVIDER_DEFAULT_MODELS.get(provider.provider_type, "gpt-4o")
+    model = provider.default_model or default
     return f"{prefix}/{model}"
 
 

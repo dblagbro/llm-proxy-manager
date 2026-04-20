@@ -42,10 +42,10 @@ async def lifespan(app: FastAPI):
     async with AsyncSessionLocal() as db:
         await ensure_default_admin(db)
 
-        # Register all providers with status monitor
+        # Register all providers with status monitor + per-provider CB config
         result = await db.execute(select(Provider))
         for p in result.scalars().all():
-            register_provider(p.id, p.provider_type)
+            register_provider(p.id, p.provider_type, p.hold_down_sec, p.failure_threshold)
 
     # Start background tasks
     start_monitor(notify_fn=_notify_provider_degraded)

@@ -42,7 +42,7 @@ export function TopBar() {
 
         {health && Object.values(health.circuitBreakers ?? {}).some(cb => cb.state === 'open') && (
           <Badge variant="danger" size="md">
-            ⚡ Circuit breaker open
+            ⚡ Provider tripped
           </Badge>
         )}
       </div>
@@ -70,8 +70,10 @@ export function TopBar() {
           <div className="flex items-center gap-2 px-2 py-1.5 rounded-lg text-sm text-gray-700 dark:text-gray-300">
             <User className="h-4 w-4" />
             <span className="hidden sm:block font-medium">{user?.username}</span>
-            {user?.role === 'admin' && (
-              <Badge variant="info" size="sm">admin</Badge>
+            {user?.role && (
+              <span className={`text-xs font-semibold px-2 py-0.5 rounded-full text-white ${user.role === 'admin' ? 'bg-indigo-600' : 'bg-gray-500'}`}>
+                {user.role}
+              </span>
             )}
           </div>
           <button

@@ -82,7 +82,7 @@ export function UsersPage() {
                       {u.username === me?.username && <Badge variant="muted">You</Badge>}
                     </div>
                   </div>
-                  <Badge variant={u.role === 'admin' ? 'info' : 'default'}>{u.role}</Badge>
+                  <span className={`text-xs font-semibold px-2 py-0.5 rounded-full text-white ${u.role === 'admin' ? 'bg-indigo-600' : 'bg-gray-500'}`}>{u.role}</span>
                   <div className="flex gap-2">
                     <Button size="sm" variant="outline" onClick={() => openEdit(u)}>
                       <Edit2 className="h-3.5 w-3.5" />

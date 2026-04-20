@@ -29,8 +29,10 @@ _task: Optional[asyncio.Task] = None
 _provider_type_map: dict[str, str] = {}
 
 
-def register_provider(provider_id: str, provider_type: str):
+def register_provider(provider_id: str, provider_type: str, hold_down_sec=None, failure_threshold=None):
     _provider_type_map[provider_id] = provider_type
+    from app.routing.circuit_breaker import set_provider_config
+    set_provider_config(provider_id, hold_down_sec, failure_threshold)
 
 
 def _is_degraded_statuspage(data: dict, provider_type: str) -> bool:

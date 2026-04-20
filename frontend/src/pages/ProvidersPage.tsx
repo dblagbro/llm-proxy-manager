@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Plus, RefreshCw, Search, ChevronDown, ChevronUp, Trash2, Edit2, ToggleLeft, ToggleRight, Play } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
+import { Plus, RefreshCw, Search, ChevronDown, ChevronUp, Trash2, Edit2, ToggleLeft, ToggleRight, Play, FileText } from 'lucide-react'
 import { providersApi, clusterApi } from '@/api'
 import { Card, CardContent } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
@@ -16,7 +17,7 @@ import { clsx } from 'clsx'
 
 const PROVIDER_TYPES: ProviderType[] = ['anthropic', 'openai', 'google', 'vertex', 'grok', 'ollama', 'compatible']
 
-type ProviderForm = Omit<ProviderFormData, 'extra_config'> & { api_key?: string; extra_config: Record<string, unknown> }
+type ProviderForm = Omit<ProviderFormData, 'extra_config'> & { api_key?: string; extra_config: Record<string, unknown>; hold_down_sec: number | null; failure_threshold: number | null }
 
 function emptyForm(): ProviderForm {
   return {
@@ -29,6 +30,8 @@ function emptyForm(): ProviderForm {
     enabled: true,
     timeout_sec: 60,
     exclude_from_tool_requests: false,
+    hold_down_sec: null,
+    failure_threshold: null,
     extra_config: {},
   }
 }
@@ -36,6 +39,7 @@ function emptyForm(): ProviderForm {
 export function ProvidersPage() {
   const qc = useQueryClient()
   const toast = useToast()
+  const navigate = useNavigate()
   const [search, setSearch] = useState('')
   const [expanded, setExpanded] = useState<string | null>(null)
   const [showModal, setShowModal] = useState(false)
@@ -102,6 +106,8 @@ export function ProvidersPage() {
       enabled: p.enabled,
       timeout_sec: p.timeout_sec,
       exclude_from_tool_requests: p.exclude_from_tool_requests,
+      hold_down_sec: p.hold_down_sec ?? null,
+      failure_threshold: p.failure_threshold ?? null,
       extra_config: p.extra_config ?? {},
     })
     setShowModal(true)
@@ -186,8 +192,16 @@ export function ProvidersPage() {
                     <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
                       <div><p className="text-xs text-gray-400 mb-1">Base URL</p><p className="truncate text-gray-700 dark:text-gray-300">{p.base_url || '—'}</p></div>
                       <div><p className="text-xs text-gray-400 mb-1">Timeout</p><p className="text-gray-700 dark:text-gray-300">{p.timeout_sec}s</p></div>
-                      <div><p className="text-xs text-gray-400 mb-1">Tools excluded</p><p className="text-gray-700 dark:text-gray-300">{p.exclude_from_tool_requests ? 'Yes' : 'No'}</p></div>
-                      <div><p className="text-xs text-gray-400 mb-1">CB hold-down</p><p className="text-gray-700 dark:text-gray-300">{cb?.hold_down_remaining ? `${cb.hold_down_remaining}s` : '—'}</p></div>
+                      <div>
+                        <p className="text-xs text-gray-400 mb-1">Hold-down</p>
+                        <p className="text-gray-700 dark:text-gray-300">
+                          {cb?.hold_down_remaining ? <span className="text-amber-500">{Math.ceil(cb.hold_down_remaining)}s remaining</span> : p.hold_down_sec ? `${p.hold_down_sec}s` : `${120}s (global)`}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="text-xs text-gray-400 mb-1">Fail threshold</p>
+                        <p className="text-gray-700 dark:text-gray-300">{p.failure_threshold ?? '3 (global)'}</p>
+                      </div>
                     </div>
                     {!test?.success && test?.error && <p className="text-xs text-red-400 bg-red-900/10 rounded p-2">{test.error}</p>}
                     <div className="flex gap-2 flex-wrap">
@@ -203,6 +217,9 @@ export function ProvidersPage() {
                       </Button>
                       <Button size="sm" variant="outline" onClick={() => openEdit(p)}>
                         <Edit2 className="h-3.5 w-3.5 mr-1" />Edit
+                      </Button>
+                      <Button size="sm" variant="outline" onClick={() => navigate(`/activity?provider=${p.id}`)}>
+                        <FileText className="h-3.5 w-3.5 mr-1" />Logs
                       </Button>
                       <Button size="sm" variant="danger" onClick={() => setDeleteId(p.id)}>
                         <Trash2 className="h-3.5 w-3.5 mr-1" />Delete
@@ -267,6 +284,20 @@ export function ProvidersPage() {
               type="number"
               value={String(form.timeout_sec ?? 60)}
               onChange={e => setForm(f => ({ ...f, timeout_sec: Number(e.target.value) }))}
+            />
+            <Input
+              label="Hold-down after failure (seconds, blank = global 120s)"
+              type="number"
+              value={form.hold_down_sec == null ? '' : String(form.hold_down_sec)}
+              onChange={e => setForm(f => ({ ...f, hold_down_sec: e.target.value === '' ? null : Number(e.target.value) }))}
+              placeholder="120"
+            />
+            <Input
+              label="Failure threshold before trip (blank = global 3)"
+              type="number"
+              value={form.failure_threshold == null ? '' : String(form.failure_threshold)}
+              onChange={e => setForm(f => ({ ...f, failure_threshold: e.target.value === '' ? null : Number(e.target.value) }))}
+              placeholder="3"
             />
             <div className="flex items-center gap-3 mt-5">
               <label className="text-sm text-gray-700 dark:text-gray-300">Exclude from tool requests</label>

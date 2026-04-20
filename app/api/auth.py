@@ -6,7 +6,10 @@ from sqlalchemy import select
 
 from app.models.database import get_db
 from app.models.db import User
-from app.auth.admin import verify_password, create_session, destroy_session, require_any_user, AdminUser
+from app.auth.admin import (
+    verify_password, create_session, destroy_session, touch_session,
+    require_any_user, AdminUser, _extract_token,
+)
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -23,23 +26,30 @@ async def login(body: LoginRequest, response: Response, db: AsyncSession = Depen
     if not user or not verify_password(body.password, user.password_hash):
         raise HTTPException(401, "Invalid credentials")
 
-    token = create_session(user.id, user.username, user.role)
+    token = await create_session(user.id, user.username, user.role)
     response.set_cookie(
         "session", token,
-        httponly=True, samesite="lax", max_age=86400,
+        httponly=True, samesite="lax", max_age=SESSION_COOKIE_MAX_AGE,
+        path="/",
     )
     return {"username": user.username, "role": user.role}
+
+
+SESSION_COOKIE_MAX_AGE = 86400 * 7  # 7 days, matches SESSION_TTL_SEC
 
 
 @router.post("/logout")
 async def logout(request: Request, response: Response):
     token = request.cookies.get("session")
     if token:
-        destroy_session(token)
-    response.delete_cookie("session")
+        await destroy_session(token)
+    response.delete_cookie("session", path="/")
     return {"ok": True}
 
 
 @router.get("/me")
-async def me(admin: AdminUser = Depends(require_any_user)):
+async def me(request: Request, admin: AdminUser = Depends(require_any_user)):
+    token = _extract_token(request)
+    if token:
+        await touch_session(token)
     return {"username": admin.username, "role": admin.role}
