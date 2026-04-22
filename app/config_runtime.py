@@ -28,6 +28,9 @@ SCHEMA: dict[str, dict] = {
     "cot_critique_max_tokens":{"type": "int",   "default": settings.cot_critique_max_tokens,"label": "Critique max tokens"},
     "cot_plan_max_tokens":    {"type": "int",   "default": settings.cot_plan_max_tokens,    "label": "Plan max tokens"},
     "cot_min_tokens_skip":    {"type": "int",   "default": settings.cot_min_tokens_skip,    "label": "Min draft tokens to skip refinement"},
+    "cot_verify_enabled":     {"type": "bool",  "default": settings.cot_verify_enabled,     "label": "Enable verification pass"},
+    "cot_verify_max_tokens":  {"type": "int",   "default": settings.cot_verify_max_tokens,  "label": "Verification max tokens"},
+    "cot_verify_auto_detect": {"type": "bool",  "default": settings.cot_verify_auto_detect, "label": "Auto-detect shell/infra commands"},
     # Circuit breaker
     "circuit_breaker_threshold":    {"type": "int", "default": settings.circuit_breaker_threshold,    "label": "CB failure threshold"},
     "circuit_breaker_timeout_sec":  {"type": "int", "default": settings.circuit_breaker_timeout_sec,  "label": "CB timeout (seconds)"},
