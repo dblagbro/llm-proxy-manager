@@ -18,7 +18,6 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 import httpx
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from app.config import settings
@@ -47,14 +46,7 @@ _sync_task: Optional[asyncio.Task] = None
 # Private alias for internal use within this module
 _peers = peers
 
-# Per-peer cost accumulator: {peer_node_id: {key_id: total_cost_usd}}
-# Updated every sync cycle; used for global spending-cap enforcement.
-_peer_key_costs: dict[str, dict[str, float]] = {}
-
-
-def get_peer_total_cost(key_id: str) -> float:
-    """Sum of total_cost_usd reported by all peers for a given key."""
-    return sum(costs.get(key_id, 0.0) for costs in _peer_key_costs.values())
+from app.cluster.sync import get_peer_total_cost  # noqa: E402 — after peers dict defined
 
 
 def active_node_count() -> int:
@@ -209,130 +201,7 @@ async def push_sync(peer: PeerNode, db_factory):
 _push_sync = push_sync
 
 
-async def apply_sync(db: AsyncSession, payload: dict):
-    """Merge incoming user/key/provider data from a peer (insert-if-missing strategy)."""
-    for u_data in payload.get("users", []):
-        result = await db.execute(select(User).where(User.username == u_data["username"]))
-        existing = result.scalar_one_or_none()
-        if not existing:
-            db.add(User(
-                id=u_data["id"],
-                username=u_data["username"],
-                password_hash=u_data["password_hash"],
-                role=u_data.get("role", "user"),
-            ))
-
-    source_node = payload.get("source_node", "unknown")
-    peer_costs: dict[str, float] = {}
-
-    for k_data in payload.get("api_keys", []):
-        result = await db.execute(select(ApiKey).where(ApiKey.key_hash == k_data["key_hash"]))
-        existing = result.scalar_one_or_none()
-        if existing:
-            # Propagate config-only fields (including None to clear); never overwrite local cost
-            if "spending_cap_usd" in k_data:
-                existing.spending_cap_usd = k_data["spending_cap_usd"]
-            if "rate_limit_rpm" in k_data:
-                existing.rate_limit_rpm = k_data["rate_limit_rpm"]
-        else:
-            db.add(ApiKey(
-                id=k_data["id"],
-                name=k_data["name"],
-                key_hash=k_data["key_hash"],
-                key_prefix=k_data["key_prefix"],
-                key_type=k_data.get("key_type", "standard"),
-                enabled=k_data.get("enabled", True),
-                spending_cap_usd=k_data.get("spending_cap_usd"),
-                rate_limit_rpm=k_data.get("rate_limit_rpm"),
-            ))
-        # Track per-peer cost for global spending-cap enforcement
-        key_id = k_data.get("id")
-        if key_id and "total_cost_usd" in k_data:
-            peer_costs[key_id] = float(k_data["total_cost_usd"])
-
-    _peer_key_costs[source_node] = peer_costs
-
-    from app.monitoring.status import register_provider
-    for p_data in payload.get("providers", []):
-        # Check by ID first (exact match)
-        result = await db.execute(select(Provider).where(Provider.id == p_data["id"]))
-        existing = result.scalar_one_or_none()
-        if existing:
-            # Update config fields so changes on one node propagate
-            existing.api_key = p_data.get("api_key", existing.api_key)
-            existing.base_url = p_data.get("base_url", existing.base_url)
-            existing.default_model = p_data.get("default_model", existing.default_model)
-            existing.priority = p_data.get("priority", existing.priority)
-            existing.enabled = p_data.get("enabled", existing.enabled)
-            existing.timeout_sec = p_data.get("timeout_sec", existing.timeout_sec)
-            existing.exclude_from_tool_requests = p_data.get("exclude_from_tool_requests", existing.exclude_from_tool_requests)
-            existing.hold_down_sec = p_data.get("hold_down_sec", existing.hold_down_sec)
-            existing.failure_threshold = p_data.get("failure_threshold", existing.failure_threshold)
-            existing.extra_config = p_data.get("extra_config", existing.extra_config)
-            continue
-        # Check by name — update existing entry if same name under a different ID
-        result2 = await db.execute(select(Provider).where(Provider.name == p_data["name"]))
-        existing_by_name = result2.scalar_one_or_none()
-        if existing_by_name:
-            existing_by_name.api_key = p_data.get("api_key", existing_by_name.api_key)
-            existing_by_name.base_url = p_data.get("base_url", existing_by_name.base_url)
-            existing_by_name.default_model = p_data.get("default_model", existing_by_name.default_model)
-            existing_by_name.priority = p_data.get("priority", existing_by_name.priority)
-            existing_by_name.enabled = p_data.get("enabled", existing_by_name.enabled)
-            existing_by_name.timeout_sec = p_data.get("timeout_sec", existing_by_name.timeout_sec)
-            existing_by_name.exclude_from_tool_requests = p_data.get("exclude_from_tool_requests", existing_by_name.exclude_from_tool_requests)
-            existing_by_name.hold_down_sec = p_data.get("hold_down_sec", existing_by_name.hold_down_sec)
-            existing_by_name.failure_threshold = p_data.get("failure_threshold", existing_by_name.failure_threshold)
-            existing_by_name.extra_config = p_data.get("extra_config", existing_by_name.extra_config)
-            continue
-        p = Provider(
-            id=p_data["id"],
-            name=p_data["name"],
-            provider_type=p_data["provider_type"],
-            api_key=p_data.get("api_key"),
-            base_url=p_data.get("base_url"),
-            default_model=p_data.get("default_model"),
-            priority=p_data.get("priority", 10),
-            enabled=p_data.get("enabled", True),
-            timeout_sec=p_data.get("timeout_sec", 60),
-            exclude_from_tool_requests=p_data.get("exclude_from_tool_requests", False),
-            hold_down_sec=p_data.get("hold_down_sec"),
-            failure_threshold=p_data.get("failure_threshold"),
-            extra_config=p_data.get("extra_config", {}),
-        )
-        db.add(p)
-        register_provider(p.id, p.provider_type, p.hold_down_sec, p.failure_threshold)
-
-    # Merge settings — last-write-wins by updated_at timestamp
-    from app import config_runtime
-    settings_to_apply: dict = {}
-    for s_data in payload.get("settings", []):
-        key = s_data.get("key", "")
-        if key not in config_runtime.SCHEMA:
-            continue
-        incoming_ts = float(s_data.get("updated_at", 0))
-        result = await db.execute(select(SystemSetting).where(SystemSetting.key == key))
-        existing = result.scalar_one_or_none()
-        if existing and (existing.updated_at or 0) >= incoming_ts:
-            continue  # local copy is same age or newer — keep it
-        if existing:
-            existing.value = s_data["value"]
-            existing.value_type = s_data.get("value_type", "str")
-            existing.updated_at = incoming_ts
-        else:
-            db.add(SystemSetting(
-                key=key,
-                value=s_data["value"],
-                value_type=s_data.get("value_type", "str"),
-                updated_at=incoming_ts,
-            ))
-        settings_to_apply[key] = config_runtime._coerce(s_data["value"], s_data.get("value_type", "str"))
-
-    await db.commit()
-
-    if settings_to_apply:
-        config_runtime.apply(settings_to_apply)
-        logger.info("cluster_settings_applied count=%s keys=%s", len(settings_to_apply), list(settings_to_apply))
+from app.cluster.sync import apply_sync  # noqa: E402
 
 
 def get_cluster_status() -> dict:
