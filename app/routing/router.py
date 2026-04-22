@@ -33,6 +33,7 @@ class RouteResult:
     litellm_kwargs: dict
     unmet_hints: list[str]
     cot_engaged: bool
+    tool_emulation_engaged: bool
     capability_header: str
     native_thinking_params: dict = field(default_factory=dict)
 
@@ -109,6 +110,7 @@ async def _load_profile(db: AsyncSession, provider: Provider) -> CapabilityProfi
             regions=cap.regions or [],
             modalities=cap.modalities or ["text"],
             native_reasoning=cap.native_reasoning or False,
+            native_tools=cap.native_tools if cap.native_tools is not None else True,
             priority=provider.priority,
         )
     return infer_capability_profile(provider.id, provider.provider_type, model_id, provider.priority)
@@ -138,11 +140,12 @@ async def select_provider(
     if not available:
         raise RuntimeError("All providers are currently unavailable (circuit breakers open)")
 
-    # Filter tool-incompatible providers
+    # Hard-block providers explicitly excluded from tool requests
+    # (exclude_from_tool_requests=True means "never, even with emulation")
     if has_tools:
         available = [p for p in available if not p.exclude_from_tool_requests]
-    if not available:
-        raise RuntimeError("No providers available that support tool requests")
+    if has_tools and not available:
+        raise RuntimeError("No providers available for tool requests (all excluded)")
 
     # Load capability profiles
     profiles = [await _load_profile(db, p) for p in available]
@@ -173,7 +176,9 @@ async def select_provider(
     if best_profile.native_reasoning and not cot_engaged:
         native_params = _native_thinking_params(provider.provider_type, best_profile.model_id)
 
-    cap_header = build_capability_header(best_profile, unmet, cot_engaged)
+    tool_emulation = has_tools and not best_profile.native_tools and not cot_engaged
+
+    cap_header = build_capability_header(best_profile, unmet, cot_engaged, tool_emulation)
 
     logger.info(
         "router.selected",
@@ -192,6 +197,7 @@ async def select_provider(
         litellm_kwargs=litellm_kwargs,
         unmet_hints=unmet,
         cot_engaged=cot_engaged,
+        tool_emulation_engaged=tool_emulation,
         capability_header=cap_header,
         native_thinking_params=native_params,
     )
