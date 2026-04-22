@@ -8,7 +8,6 @@ All intermediate passes are emitted as Anthropic-format thinking blocks so
 the caller sees the same structure as Claude's native extended thinking.
 """
 import asyncio
-import json
 import logging
 import re
 from typing import AsyncIterator
@@ -17,6 +16,11 @@ import litellm
 
 from app.config import settings
 from app.cot.session import get_session_analyses, save_session_analysis
+from app.cot.sse import (
+    sse_thinking_start, sse_thinking_delta, sse_thinking_stop,
+    sse_text_start, sse_text_delta, sse_text_stop,
+    sse_message_delta, sse_done,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -75,45 +79,6 @@ _INFRA_TOOLS: frozenset[str] = frozenset({
 })
 
 _SHELL_CODE_BLOCK = re.compile(r"```(?:bash|sh|shell|zsh|fish|powershell)", re.IGNORECASE)
-
-
-# ── SSE helpers ───────────────────────────────────────────────────────────────
-
-def _sse_thinking_start(index: int) -> bytes:
-    return f'data: {{"type":"content_block_start","index":{index},"content_block":{{"type":"thinking","thinking":""}}}}\n\n'.encode()
-
-
-def _sse_thinking_delta(index: int, text: str) -> bytes:
-    escaped = json.dumps(text)[1:-1]
-    return f'data: {{"type":"content_block_delta","index":{index},"delta":{{"type":"thinking_delta","thinking":"{escaped}"}}}}\n\n'.encode()
-
-
-def _sse_thinking_stop(index: int) -> bytes:
-    return f'data: {{"type":"content_block_stop","index":{index}}}\n\n'.encode()
-
-
-def _sse_text_start(index: int) -> bytes:
-    return f'data: {{"type":"content_block_start","index":{index},"content_block":{{"type":"text","text":""}}}}\n\n'.encode()
-
-
-def _sse_text_delta(index: int, text: str) -> bytes:
-    escaped = json.dumps(text)[1:-1]
-    return f'data: {{"type":"content_block_delta","index":{index},"delta":{{"type":"text_delta","text":"{escaped}"}}}}\n\n'.encode()
-
-
-def _sse_text_stop(index: int) -> bytes:
-    return f'data: {{"type":"content_block_stop","index":{index}}}\n\n'.encode()
-
-
-def _sse_message_delta(stop_reason: str, input_tokens: int, output_tokens: int) -> bytes:
-    return (
-        f'data: {{"type":"message_delta","delta":{{"stop_reason":"{stop_reason}","stop_sequence":null}},'
-        f'"usage":{{"input_tokens":{input_tokens},"output_tokens":{output_tokens}}}}}\n\n'
-    ).encode()
-
-
-def _sse_done() -> bytes:
-    return b'data: {"type":"message_stop"}\n\ndata: [DONE]\n\n'
 
 
 # ── Core helpers ──────────────────────────────────────────────────────────────
@@ -218,9 +183,9 @@ async def run_cot_pipeline(
     )
     await save_session_analysis(session_id, plan_text)
 
-    yield _sse_thinking_start(block_index)
-    yield _sse_thinking_delta(block_index, f"## Planning\n{plan_text}")
-    yield _sse_thinking_stop(block_index)
+    yield sse_thinking_start(block_index)
+    yield sse_thinking_delta(block_index, f"## Planning\n{plan_text}")
+    yield sse_thinking_stop(block_index)
     block_index += 1
 
     # ── Pass 1: Initial draft (buffered, not streamed) ────────────────────────
@@ -263,9 +228,9 @@ async def run_cot_pipeline(
             **cot_kwargs,
         )
 
-        yield _sse_thinking_start(block_index)
-        yield _sse_thinking_delta(block_index, f"## Quality Check (iter {iteration})\n{critique_text}")
-        yield _sse_thinking_stop(block_index)
+        yield sse_thinking_start(block_index)
+        yield sse_thinking_delta(block_index, f"## Quality Check (iter {iteration})\n{critique_text}")
+        yield sse_thinking_stop(block_index)
         block_index += 1
 
         score = _parse_score(critique_text)
@@ -285,33 +250,33 @@ async def run_cot_pipeline(
         )
         current_answer = refined.choices[0].message.content or current_answer
 
-        yield _sse_thinking_start(block_index)
-        yield _sse_thinking_delta(block_index, f"## Refinement (iter {iteration})\n[Refined answer produced]")
-        yield _sse_thinking_stop(block_index)
+        yield sse_thinking_start(block_index)
+        yield sse_thinking_delta(block_index, f"## Refinement (iter {iteration})\n[Refined answer produced]")
+        yield sse_thinking_stop(block_index)
         block_index += 1
 
     # ── Verification pass ─────────────────────────────────────────────────────
     run_verify = _resolve_verify(force_verify, current_answer)
     if run_verify:
         verify_text = await _run_verify_pass(model, user_text, current_answer, extra_kwargs)
-        yield _sse_thinking_start(block_index)
-        yield _sse_thinking_delta(block_index, f"## Verification\n{verify_text}")
-        yield _sse_thinking_stop(block_index)
+        yield sse_thinking_start(block_index)
+        yield sse_thinking_delta(block_index, f"## Verification\n{verify_text}")
+        yield sse_thinking_stop(block_index)
         block_index += 1
         logger.debug("cot_verify_pass_complete", tokens=len(verify_text.split()))
 
     # ── Stream final answer ───────────────────────────────────────────────────
-    yield _sse_text_start(block_index)
+    yield sse_text_start(block_index)
     chunk_size = 50
     for i in range(0, len(current_answer), chunk_size):
-        yield _sse_text_delta(block_index, current_answer[i:i + chunk_size])
+        yield sse_text_delta(block_index, current_answer[i:i + chunk_size])
         await asyncio.sleep(0)  # yield control to event loop
-    yield _sse_text_stop(block_index)
+    yield sse_text_stop(block_index)
 
     input_tokens = sum(len(m.get("content", "")) for m in messages) // 4
     output_tokens = len(current_answer) // 4
-    yield _sse_message_delta("end_turn", input_tokens, output_tokens)
-    yield _sse_done()
+    yield sse_message_delta("end_turn", input_tokens, output_tokens)
+    yield sse_done()
 
 
 def _resolve_verify(force_verify: bool | None, answer: str) -> bool:

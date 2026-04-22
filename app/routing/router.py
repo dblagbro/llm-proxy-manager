@@ -16,8 +16,9 @@ from app.config import settings
 from app.models.db import Provider, ModelCapability
 from app.routing.circuit_breaker import is_available, record_success, record_failure, is_billing_error
 from app.routing.lmrh import (
-    LMRHHint, CapabilityProfile, rank_candidates, infer_capability_profile, build_capability_header
+    LMRHHint, CapabilityProfile, rank_candidates, build_capability_header
 )
+from app.routing.capability_inference import infer_capability_profile
 
 logger = logging.getLogger(__name__)
 
