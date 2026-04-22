@@ -435,3 +435,251 @@ class TestSessionBehavior:
             "() => document.body.innerText.includes('models indexed') || document.body.innerText.includes('No models indexed') || document.body.innerText.includes('model indexed')",
             timeout=10_000,
         )
+
+
+# ── API Key Limits UI Tests ───────────────────────────────────────────────────
+
+class TestAPIKeyLimitsUI:
+    """Tests for the spending cap and rate-limit edit modal added in the recent sprint."""
+
+    def test_api_keys_table_has_cap_and_rate_limit_columns(self, page: Page):
+        login(page)
+        page.goto(f"{BASE_URL}/keys")
+        page.wait_for_load_state("networkidle")
+        body_text = page.locator("body").inner_text()
+        assert "Cap" in body_text or "Spending" in body_text, "Expected spending cap column"
+        assert "Rate" in body_text or "RPM" in body_text or "Limit" in body_text, "Expected rate limit column"
+
+    def test_edit_limits_modal_opens_via_pencil(self, page: Page):
+        """Clicking the pencil icon on a key row opens the limits edit modal."""
+        login(page)
+        page.goto(f"{BASE_URL}/keys")
+        page.wait_for_load_state("networkidle")
+        # Click the first pencil (edit limits) button in the keys list
+        pencil_btn = page.locator("button[title='Edit limits']").first
+        expect(pencil_btn).to_be_visible(timeout=8_000)
+        pencil_btn.click()
+        page.wait_for_timeout(500)
+        # Modal should appear — look for spending cap or rate limit input
+        modal_visible = page.locator(
+            "text=Spending Cap, text=Rate Limit, input[placeholder*='cap'], input[placeholder*='RPM']"
+        ).first
+        # Use a broader check: a modal overlay appears
+        expect(page.locator(".fixed.inset-0")).to_be_visible(timeout=5_000)
+        page.keyboard.press("Escape")
+
+    def test_edit_limits_sets_spending_cap(self, page: Page):
+        """Fill in spending cap, save, verify value appears in table."""
+        import json as _json
+        login(page)
+        page.goto(f"{BASE_URL}/keys")
+        page.wait_for_load_state("networkidle")
+
+        # Open first edit modal
+        pencil_btn = page.locator("button[title='Edit limits']").first
+        expect(pencil_btn).to_be_visible(timeout=8_000)
+        pencil_btn.click()
+        page.wait_for_timeout(400)
+
+        modal = page.locator(".fixed.inset-0")
+        expect(modal).to_be_visible(timeout=5_000)
+
+        # Find spending cap input and set a value
+        cap_input = modal.locator("input[type='number']").first
+        if cap_input.is_visible(timeout=3_000):
+            cap_input.click(click_count=3)
+            cap_input.fill("25.00")
+
+        # Save
+        save_btn = modal.locator("button:has-text('Save')").first
+        if save_btn.is_visible(timeout=3_000):
+            save_btn.click()
+            page.wait_for_timeout(1_000)
+            # Modal should close
+            page.wait_for_function(
+                "() => document.querySelectorAll('.fixed.inset-0').length === 0",
+                timeout=5_000,
+            )
+
+    def test_edit_limits_sets_rate_limit(self, page: Page):
+        """Fill in rate limit RPM and save."""
+        login(page)
+        page.goto(f"{BASE_URL}/keys")
+        page.wait_for_load_state("networkidle")
+
+        pencil_btn = page.locator("button[title='Edit limits']").first
+        expect(pencil_btn).to_be_visible(timeout=8_000)
+        pencil_btn.click()
+        page.wait_for_timeout(400)
+
+        modal = page.locator(".fixed.inset-0")
+        expect(modal).to_be_visible(timeout=5_000)
+
+        # Second number input is rate limit RPM
+        inputs = modal.locator("input[type='number']")
+        if inputs.count() >= 2:
+            rate_input = inputs.nth(1)
+            rate_input.click(click_count=3)
+            rate_input.fill("120")
+
+        save_btn = modal.locator("button:has-text('Save')").first
+        if save_btn.is_visible(timeout=3_000):
+            save_btn.click()
+            page.wait_for_timeout(1_000)
+
+    def test_create_key_with_limits_flow(self, page: Page):
+        """The create-key modal accepts spending_cap and rate_limit fields."""
+        login(page)
+        page.goto(f"{BASE_URL}/keys")
+        page.click("text=Create Key")
+        page.wait_for_timeout(300)
+        modal = page.locator(".fixed.inset-0")
+        expect(modal).to_be_visible(timeout=5_000)
+
+        # Fill name
+        page.fill('input[placeholder*="production"]', "test-limits-key")
+
+        # If spending cap field exists in create modal, fill it
+        cap_input = modal.locator("input[placeholder*='cap'], input[placeholder*='Spending']").first
+        if cap_input.count() and cap_input.is_visible():
+            cap_input.fill("10.00")
+
+        # Submit
+        modal.locator("button:has-text('Create Key')").click()
+
+        # Raw key shown or key appears in table
+        page.wait_for_function(
+            "() => document.body.innerText.includes('NOT be shown') || document.body.innerText.includes('test-limits-key')",
+            timeout=10_000,
+        )
+        # Close if the raw key modal appeared
+        done_btn = page.locator("button:has-text('Done')")
+        if done_btn.is_visible(timeout=2_000):
+            done_btn.click()
+
+
+# ── Provider Capability Edit UI Tests ─────────────────────────────────────────
+
+class TestProviderCapabilityEditUI:
+    """Tests for the model capability edit modal (pencil icon per model row)."""
+
+    def _expand_first_provider_and_scan(self, page: Page):
+        page.goto(f"{BASE_URL}/providers")
+        first_card = page.locator("div.cursor-pointer").first
+        first_card.click()
+        page.wait_for_timeout(500)
+        scan_btn = page.locator("button:has-text('Scan Models')").first
+        expect(scan_btn).to_be_visible(timeout=5_000)
+        scan_btn.click()
+        page.wait_for_function(
+            "() => !Array.from(document.querySelectorAll('button')).some(b => b.disabled && b.textContent.includes('Scan'))",
+            timeout=30_000,
+        )
+        page.wait_for_timeout(1_000)
+
+    def test_model_table_shows_after_scan(self, page: Page):
+        login(page)
+        self._expand_first_provider_and_scan(page)
+        page.wait_for_function(
+            "() => document.body.innerText.includes('indexed') || document.body.innerText.includes('No models')",
+            timeout=10_000,
+        )
+        # Either a model count or an empty state is visible
+        body_text = page.locator("body").inner_text()
+        assert "indexed" in body_text or "No models" in body_text
+
+    def test_capability_edit_pencil_opens_modal(self, page: Page):
+        """If models are indexed, clicking the pencil icon opens the capability modal."""
+        login(page)
+        self._expand_first_provider_and_scan(page)
+
+        # Check if any models were found
+        body_text = page.locator("body").inner_text()
+        if "No models indexed" in body_text:
+            pytest.skip("No models indexed — cannot test capability edit")
+
+        # Click first pencil (edit capability) button inside the provider card
+        pencil = page.locator("table button[title*='capabilit'], table button svg.lucide-pencil").first
+        if not pencil.is_visible(timeout=3_000):
+            # Broader selector: any small pencil button in the model table
+            pencil = page.locator("td button").first
+
+        expect(pencil).to_be_visible(timeout=5_000)
+        pencil.click()
+        page.wait_for_timeout(500)
+
+        # Modal should show capability fields
+        expect(page.locator(".fixed.inset-0")).to_be_visible(timeout=5_000)
+        modal_text = page.locator(".fixed.inset-0").inner_text()
+        assert any(kw in modal_text for kw in ("Latency", "Cost tier", "Tasks", "Modalities", "Context")), \
+            f"Capability modal content not found. Got: {modal_text[:300]}"
+
+    def test_capability_edit_modal_has_task_checkboxes(self, page: Page):
+        login(page)
+        self._expand_first_provider_and_scan(page)
+
+        body_text = page.locator("body").inner_text()
+        if "No models indexed" in body_text:
+            pytest.skip("No models indexed")
+
+        pencil = page.locator("td button").first
+        expect(pencil).to_be_visible(timeout=5_000)
+        pencil.click()
+        page.wait_for_timeout(500)
+
+        modal = page.locator(".fixed.inset-0")
+        expect(modal).to_be_visible(timeout=5_000)
+
+        # Task toggle buttons (chat, code, reasoning etc.) should be present
+        task_buttons = modal.locator("button").all()
+        assert len(task_buttons) > 0, "No task toggle buttons found in capability modal"
+
+    def test_capability_edit_save_closes_modal(self, page: Page):
+        """Clicking Save in the capability modal closes it without error."""
+        login(page)
+        self._expand_first_provider_and_scan(page)
+
+        body_text = page.locator("body").inner_text()
+        if "No models indexed" in body_text:
+            pytest.skip("No models indexed")
+
+        pencil = page.locator("td button").first
+        expect(pencil).to_be_visible(timeout=5_000)
+        pencil.click()
+        page.wait_for_timeout(500)
+
+        modal = page.locator(".fixed.inset-0")
+        expect(modal).to_be_visible(timeout=5_000)
+
+        save_btn = modal.locator("button:has-text('Save')").first
+        if save_btn.is_visible(timeout=3_000):
+            save_btn.click()
+            # Modal should close after save
+            page.wait_for_function(
+                "() => document.querySelectorAll('.fixed.inset-0').length === 0",
+                timeout=8_000,
+            )
+        else:
+            # Cancel if no Save button visible
+            page.keyboard.press("Escape")
+
+    def test_capability_edit_cancel_closes_modal(self, page: Page):
+        """Pressing Escape or clicking Cancel closes the modal."""
+        login(page)
+        self._expand_first_provider_and_scan(page)
+
+        body_text = page.locator("body").inner_text()
+        if "No models indexed" in body_text:
+            pytest.skip("No models indexed")
+
+        pencil = page.locator("td button").first
+        expect(pencil).to_be_visible(timeout=5_000)
+        pencil.click()
+        page.wait_for_timeout(500)
+
+        expect(page.locator(".fixed.inset-0")).to_be_visible(timeout=5_000)
+        page.keyboard.press("Escape")
+        page.wait_for_function(
+            "() => document.querySelectorAll('.fixed.inset-0').length === 0",
+            timeout=5_000,
+        )

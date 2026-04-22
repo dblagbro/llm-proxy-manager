@@ -18,6 +18,7 @@ router = APIRouter(prefix="/api/keys", tags=["api-keys"])
 class KeyCreate(BaseModel):
     name: str
     key_type: str = "standard"  # standard|claude-code
+    spending_cap_usd: Optional[float] = None
     rate_limit_rpm: Optional[int] = None
 
 
@@ -53,6 +54,7 @@ async def create_key(
         key_prefix=raw_key[:12],
         key_type=body.key_type,
         enabled=True,
+        spending_cap_usd=body.spending_cap_usd,
         rate_limit_rpm=body.rate_limit_rpm,
     )
     db.add(key)

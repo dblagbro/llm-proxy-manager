@@ -63,7 +63,7 @@ async def verify_api_key(db: AsyncSession, raw_key: Optional[str]) -> ApiKeyReco
         raise HTTPException(401, "Invalid or disabled API key")
 
     if key.spending_cap_usd is not None:
-        from app.cluster.manager import get_peer_total_cost
+        from app.cluster.sync import get_peer_total_cost
         global_cost = (key.total_cost_usd or 0.0) + get_peer_total_cost(key.id)
         if global_cost >= key.spending_cap_usd:
             raise HTTPException(429, f"API key spending cap of ${key.spending_cap_usd:.4f} reached")
