@@ -38,6 +38,12 @@ class Settings(BaseSettings):
     # Skip critique/refinement when the initial draft exceeds this token count;
     # 0 = always refine. Avoids wasted calls on already-thorough long answers.
     cot_min_tokens_skip: int = Field(800, alias="COT_MIN_TOKENS_SKIP")
+    # Native reasoning — injected into requests routed to thinking-capable providers.
+    # budget_tokens applies to Gemini 2.5 and is passed through for Anthropic thinking requests.
+    # reasoning_effort applies to OpenAI o-series (low / medium / high).
+    native_thinking_budget_tokens: int = Field(8192, alias="NATIVE_THINKING_BUDGET_TOKENS")
+    native_reasoning_effort: str = Field("medium", alias="NATIVE_REASONING_EFFORT")
+
     # Verification pass — generates "what commands verify this answer?" after refinement.
     # Disabled by default (adds one extra LLM call). Enable globally or per-request
     # via X-Cot-Verify: true.

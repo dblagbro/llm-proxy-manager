@@ -3,8 +3,9 @@ Provider router — selects the best available provider+model for a request.
 Integrates circuit breaker, LMRH hint scoring, and CoT-E auto-engagement.
 """
 import logging
+import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional, Any
 
 import litellm
@@ -21,6 +22,9 @@ from app.routing.lmrh import (
 logger = logging.getLogger(__name__)
 
 
+_O_SERIES = re.compile(r"^o[0-9]")
+
+
 @dataclass
 class RouteResult:
     provider: Provider
@@ -30,6 +34,17 @@ class RouteResult:
     unmet_hints: list[str]
     cot_engaged: bool
     capability_header: str
+    native_thinking_params: dict = field(default_factory=dict)
+
+
+def _native_thinking_params(provider_type: str, model_id: str) -> dict:
+    """Return provider-specific reasoning kwargs to inject when native_reasoning=True."""
+    m = model_id.lower()
+    if provider_type in ("google", "vertex") and "2.5" in m:
+        return {"thinking": {"type": "enabled", "budget_tokens": settings.native_thinking_budget_tokens}}
+    if provider_type == "openai" and _O_SERIES.match(m):
+        return {"reasoning_effort": settings.native_reasoning_effort}
+    return {}
 
 
 PROVIDER_TYPE_TO_LITELLM = {
@@ -154,6 +169,10 @@ async def select_provider(
     litellm_model = _build_litellm_model(provider)
     litellm_kwargs = _build_litellm_kwargs(provider)
 
+    native_params: dict = {}
+    if best_profile.native_reasoning and not cot_engaged:
+        native_params = _native_thinking_params(provider.provider_type, best_profile.model_id)
+
     cap_header = build_capability_header(best_profile, unmet, cot_engaged)
 
     logger.info(
@@ -174,4 +193,5 @@ async def select_provider(
         unmet_hints=unmet,
         cot_engaged=cot_engaged,
         capability_header=cap_header,
+        native_thinking_params=native_params,
     )

@@ -123,6 +123,32 @@ export function SettingsPage() {
         </CardContent>
       </Card>
 
+      {/* Native Reasoning */}
+      <Card>
+        <CardHeader><CardTitle>Native Reasoning</CardTitle></CardHeader>
+        <CardContent className="space-y-4">
+          <p className="text-xs text-gray-400">
+            Applied automatically when routing to providers with native thinking capability
+            (Gemini 2.5, OpenAI o-series). Anthropic extended-thinking passes the client's
+            own <code className="font-mono text-indigo-400">thinking</code> block through unchanged.
+          </p>
+          <div className="grid grid-cols-2 gap-4">
+            <Input
+              label="Thinking budget tokens (Gemini 2.5)"
+              type="number"
+              {...numField('native_thinking_budget_tokens')}
+              min={1024}
+              max={32768}
+            />
+            <Input
+              label="Reasoning effort (o-series: low / medium / high)"
+              {...strField('native_reasoning_effort')}
+              placeholder="medium"
+            />
+          </div>
+        </CardContent>
+      </Card>
+
       {/* Circuit breaker */}
       <Card>
         <CardHeader><CardTitle>Circuit Breaker</CardTitle></CardHeader>
