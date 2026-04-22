@@ -121,7 +121,7 @@ async def messages(
             return StreamingResponse(
                 _stream_cot_anthropic(
                     route.litellm_model, messages_list, x_session_id, extra,
-                    cot_max, route.provider.id, force_verify,
+                    cot_max, route.provider.id, db, key_record.id, force_verify,
                 ),
                 media_type="text/event-stream",
                 headers=resp_headers,
@@ -168,15 +168,35 @@ async def _stream_cot_anthropic(
     extra: dict,
     max_iterations: int | None,
     provider_id: str,
+    db: AsyncSession,
+    key_record_id: str,
     force_verify: bool | None = None,
 ) -> AsyncIterator[bytes]:
-    """Pass-through wrapper around run_cot_pipeline that updates the circuit breaker."""
+    """Pass-through wrapper around run_cot_pipeline; records metrics after completion."""
+    import json as _json
+    in_tok = out_tok = 0
+    t0 = time.monotonic()
     try:
         async for chunk in run_cot_pipeline(model, messages, session_id, extra, max_iterations, force_verify):
             yield chunk
+            # Extract token counts from the message_delta usage event
+            line = chunk.decode(errors="ignore").strip()
+            if line.startswith("data: "):
+                try:
+                    evt = _json.loads(line[6:])
+                    if evt.get("type") == "message_delta":
+                        usage = evt.get("usage", {})
+                        in_tok = usage.get("input_tokens", in_tok)
+                        out_tok = usage.get("output_tokens", out_tok)
+                except (ValueError, KeyError):
+                    pass
+        latency_ms = (time.monotonic() - t0) * 1000
+        cost = estimate_cost(model, in_tok, out_tok)
         await record_success(provider_id)
+        await record_request(db, provider_id, True, in_tok, out_tok, latency_ms, cost, key_record_id)
     except Exception as e:
         await record_failure(provider_id, billing_error=is_billing_error(str(e)))
+        await record_request(db, provider_id, False, 0, 0, 0, 0, key_record_id)
         yield f'data: {{"type":"error","error":{{"message":"{str(e)}"}}}}\n\n'.encode()
 
 
