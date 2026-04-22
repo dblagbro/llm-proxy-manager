@@ -48,3 +48,58 @@ video support, changing placeholder format) require one edit.
 - 3 new focused modules totalling ~200 lines
 - ~180 lines removed from existing files
 - No behaviour changes; all 9 providers healthy post-deploy
+
+---
+
+## 2026-04-22 — Incremental architectural refactor (second pass)
+
+### Motivation
+Two mixed-responsibility violations remained after the first pass: SSE serialization code
+living inside a reasoning pipeline file, and model-family knowledge embedded in a routing
+protocol file.
+
+### Change 1: Wire format serialization extracted to `cot/sse.py`
+**New file**: `app/cot/sse.py`
+
+**Before**: `cot/pipeline.py` contained 8 SSE helper functions (lines 82–117) whose sole
+job was producing Anthropic SSE event bytes — a serialization concern in a pipeline
+execution file. `cot/tool_emulation.py` independently reimplemented the same Anthropic
+event format (plus OpenAI variants) in its response generators (lines 215–347), with no
+shared foundation.
+
+**After**: `cot/sse.py` is the single source of truth for all SSE event serialization:
+- 8 Anthropic SSE primitives (`sse_thinking_start/delta/stop`, `sse_text_start/delta/stop`,
+  `sse_message_delta`, `sse_done`) — used by `pipeline.py`
+- 8 Anthropic + OpenAI response generators (`anthropic_tool_sse`, `openai_tool_response`,
+  etc.) — imported directly by `api/messages.py` and `api/completions.py`
+
+`pipeline.py`: −40 lines (352→312), now pure reasoning logic with no format code.
+`tool_emulation.py`: −136 lines (346→210), now pure emulation logic (prompt building,
+normalization, parsing, LLM call). Removed unused `secrets` and `AsyncIterator` imports.
+
+**Dependency direction preserved**: `api/ → cot/sse.py → (none)`.
+Changing the Anthropic SSE format now requires one file edit.
+
+**Files changed**: `cot/pipeline.py`, `cot/tool_emulation.py`, `cot/sse.py` (new),
+`api/messages.py`, `api/completions.py`
+
+### Change 2: Model heuristics extracted to `routing/capability_inference.py`
+**New file**: `app/routing/capability_inference.py`
+
+**Before**: `routing/lmrh.py` mixed two unrelated concerns: the LMRH routing protocol
+(parse, score, rank, build header) and `infer_capability_profile` — a 54-line knowledge
+base of model naming conventions that acts as a fallback when no DB record exists.
+These change for different reasons: the protocol evolves with the LMRH spec; the
+inference evolves with new model families.
+
+**After**: `lmrh.py` (288→235 lines) contains only the LMRH protocol. Adding a new
+model family means editing one clearly named file. `router.py` (the sole caller) now
+imports `infer_capability_profile` directly from `routing/capability_inference.py`.
+
+**Files changed**: `routing/lmrh.py`, `routing/capability_inference.py` (new),
+`routing/router.py`
+
+### Net result
+- 2 new focused modules totalling ~250 lines
+- ~175 lines removed from existing files (net zero growth)
+- 131/131 tests pass; no behaviour changes

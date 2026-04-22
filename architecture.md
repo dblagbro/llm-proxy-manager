@@ -27,15 +27,18 @@ app/
 │   └── admin.py             bcrypt password hashing, admin session handling
 │
 ├── routing/
-│   ├── router.py            Provider selection — returns RouteResult
-│   ├── lmrh.py              LLM-Request-Hint parsing + CapabilityProfile dataclass
-│   └── circuit_breaker.py   Per-provider open/half-open/closed state + hold-down
+│   ├── router.py                  Provider selection — returns RouteResult
+│   ├── lmrh.py                    LMRH protocol: parse_hint, score_candidate, rank_candidates,
+│   │                                build_capability_header, CapabilityProfile dataclass
+│   ├── capability_inference.py    Heuristic fallback: infer_capability_profile from model name
+│   └── circuit_breaker.py         Per-provider open/half-open/closed state + hold-down
 │
 ├── cot/
-│   ├── pipeline.py          Chain-of-Thought iterative refinement pipeline
-│   └── tool_emulation.py    Tool-use emulation for non-native providers:
-│                              prompt building, message normalisation, parsing,
-│                              Anthropic + OpenAI SSE/JSON response generators
+│   ├── pipeline.py          Chain-of-Thought iterative refinement pipeline (pure reasoning logic)
+│   ├── tool_emulation.py    Tool-use emulation for non-native providers:
+│   │                          prompt building, message normalisation, parsing, LLM call
+│   └── sse.py               Wire format serialization — Anthropic + OpenAI SSE primitives
+│                              and tool/text response generators for both wire formats
 │
 ├── cluster/
 │   ├── manager.py           Peer state, heartbeat loop, push-sync outgoing
@@ -81,7 +84,7 @@ app/
 
 ## Extension Points
 
-- **New provider type**: add row to DB, optionally add `infer_capability_profile()` case in `lmrh.py`
+- **New provider type**: add row to DB, optionally add `infer_capability_profile()` case in `routing/capability_inference.py`
 - **New routing criterion**: extend `RouteHint` in `lmrh.py`, filter in `select_provider()` in `router.py`
-- **New wire format**: add endpoint file in `api/`, add image utils to `image_utils.py`, add SSE generators to `cot/tool_emulation.py`
+- **New wire format**: add endpoint file in `api/`, add image utils to `image_utils.py`, add SSE generators to `cot/sse.py`
 - **New metric**: update `record_outcome()` in `monitoring/helpers.py` — propagates to all 6 call-sites automatically
