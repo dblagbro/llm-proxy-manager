@@ -196,28 +196,56 @@ async def apply_sync(db: AsyncSession, payload: dict):
                 enabled=k_data.get("enabled", True),
             ))
 
+    from app.monitoring.status import register_provider
     for p_data in payload.get("providers", []):
+        # Check by ID first (exact match)
         result = await db.execute(select(Provider).where(Provider.id == p_data["id"]))
         existing = result.scalar_one_or_none()
-        if not existing:
-            from app.monitoring.status import register_provider
-            p = Provider(
-                id=p_data["id"],
-                name=p_data["name"],
-                provider_type=p_data["provider_type"],
-                api_key=p_data.get("api_key"),
-                base_url=p_data.get("base_url"),
-                default_model=p_data.get("default_model"),
-                priority=p_data.get("priority", 10),
-                enabled=p_data.get("enabled", True),
-                timeout_sec=p_data.get("timeout_sec", 60),
-                exclude_from_tool_requests=p_data.get("exclude_from_tool_requests", False),
-                hold_down_sec=p_data.get("hold_down_sec"),
-                failure_threshold=p_data.get("failure_threshold"),
-                extra_config=p_data.get("extra_config", {}),
-            )
-            db.add(p)
-            register_provider(p.id, p.provider_type, p.hold_down_sec, p.failure_threshold)
+        if existing:
+            # Update config fields so changes on one node propagate
+            existing.api_key = p_data.get("api_key", existing.api_key)
+            existing.base_url = p_data.get("base_url", existing.base_url)
+            existing.default_model = p_data.get("default_model", existing.default_model)
+            existing.priority = p_data.get("priority", existing.priority)
+            existing.enabled = p_data.get("enabled", existing.enabled)
+            existing.timeout_sec = p_data.get("timeout_sec", existing.timeout_sec)
+            existing.exclude_from_tool_requests = p_data.get("exclude_from_tool_requests", existing.exclude_from_tool_requests)
+            existing.hold_down_sec = p_data.get("hold_down_sec", existing.hold_down_sec)
+            existing.failure_threshold = p_data.get("failure_threshold", existing.failure_threshold)
+            existing.extra_config = p_data.get("extra_config", existing.extra_config)
+            continue
+        # Check by name — update existing entry if same name under a different ID
+        result2 = await db.execute(select(Provider).where(Provider.name == p_data["name"]))
+        existing_by_name = result2.scalar_one_or_none()
+        if existing_by_name:
+            existing_by_name.api_key = p_data.get("api_key", existing_by_name.api_key)
+            existing_by_name.base_url = p_data.get("base_url", existing_by_name.base_url)
+            existing_by_name.default_model = p_data.get("default_model", existing_by_name.default_model)
+            existing_by_name.priority = p_data.get("priority", existing_by_name.priority)
+            existing_by_name.enabled = p_data.get("enabled", existing_by_name.enabled)
+            existing_by_name.timeout_sec = p_data.get("timeout_sec", existing_by_name.timeout_sec)
+            existing_by_name.exclude_from_tool_requests = p_data.get("exclude_from_tool_requests", existing_by_name.exclude_from_tool_requests)
+            existing_by_name.hold_down_sec = p_data.get("hold_down_sec", existing_by_name.hold_down_sec)
+            existing_by_name.failure_threshold = p_data.get("failure_threshold", existing_by_name.failure_threshold)
+            existing_by_name.extra_config = p_data.get("extra_config", existing_by_name.extra_config)
+            continue
+        p = Provider(
+            id=p_data["id"],
+            name=p_data["name"],
+            provider_type=p_data["provider_type"],
+            api_key=p_data.get("api_key"),
+            base_url=p_data.get("base_url"),
+            default_model=p_data.get("default_model"),
+            priority=p_data.get("priority", 10),
+            enabled=p_data.get("enabled", True),
+            timeout_sec=p_data.get("timeout_sec", 60),
+            exclude_from_tool_requests=p_data.get("exclude_from_tool_requests", False),
+            hold_down_sec=p_data.get("hold_down_sec"),
+            failure_threshold=p_data.get("failure_threshold"),
+            extra_config=p_data.get("extra_config", {}),
+        )
+        db.add(p)
+        register_provider(p.id, p.provider_type, p.hold_down_sec, p.failure_threshold)
 
     await db.commit()
 

@@ -29,7 +29,7 @@ async def login(body: LoginRequest, response: Response, db: AsyncSession = Depen
     token = await create_session(user.id, user.username, user.role)
     response.set_cookie(
         "session", token,
-        httponly=True, samesite="lax", max_age=SESSION_COOKIE_MAX_AGE,
+        httponly=True, samesite="lax", secure=True, max_age=SESSION_COOKIE_MAX_AGE,
         path="/",
     )
     return {"username": user.username, "role": user.role}

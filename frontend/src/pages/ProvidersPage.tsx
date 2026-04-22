@@ -12,8 +12,54 @@ import { Modal, ModalHeader, ModalBody, ModalFooter } from '@/components/ui/Moda
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { CircuitBreakerBadge } from '@/components/providers/CircuitBreakerBadge'
 import { useToast } from '@/components/ui/Toast'
-import type { Provider, ProviderType, ProviderFormData } from '@/types'
+import type { Provider, ProviderType, ProviderFormData, ModelCapability } from '@/types'
 import { clsx } from 'clsx'
+
+function ProviderModels({ providerId }: { providerId: string }) {
+  const { data: caps, isLoading } = useQuery<ModelCapability[]>({
+    queryKey: ['capabilities', providerId],
+    queryFn: () => providersApi.capabilities(providerId),
+  })
+  if (isLoading) return <div className="text-xs text-gray-400 py-2">Loading models…</div>
+  if (!caps || caps.length === 0) return (
+    <p className="text-xs text-gray-400 py-2">No models indexed — click <strong>Scan Models</strong> to discover them.</p>
+  )
+  return (
+    <div className="mt-1">
+      <p className="text-xs text-gray-400 mb-2 font-medium">{caps.length} model{caps.length !== 1 ? 's' : ''} indexed</p>
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs border-collapse">
+          <thead>
+            <tr className="text-left text-gray-400 border-b border-gray-200 dark:border-gray-700">
+              <th className="pb-1 pr-4 font-medium">Model ID</th>
+              <th className="pb-1 pr-4 font-medium">Tasks</th>
+              <th className="pb-1 pr-4 font-medium">Cost</th>
+              <th className="pb-1 pr-4 font-medium">Latency</th>
+              <th className="pb-1 pr-4 font-medium">Context</th>
+              <th className="pb-1 font-medium">Features</th>
+            </tr>
+          </thead>
+          <tbody>
+            {caps.map(c => (
+              <tr key={c.id} className="border-b border-gray-100 dark:border-gray-800 last:border-0">
+                <td className="py-1 pr-4 font-mono text-gray-700 dark:text-gray-300 whitespace-nowrap">{c.model_id}</td>
+                <td className="py-1 pr-4 text-gray-600 dark:text-gray-400">{c.tasks.join(', ') || '—'}</td>
+                <td className="py-1 pr-4 text-gray-600 dark:text-gray-400">{c.cost_tier}</td>
+                <td className="py-1 pr-4 text-gray-600 dark:text-gray-400">{c.latency}</td>
+                <td className="py-1 pr-4 text-gray-600 dark:text-gray-400">{c.context_length >= 1000 ? `${Math.round(c.context_length / 1000)}k` : c.context_length}</td>
+                <td className="py-1 text-gray-500 dark:text-gray-500 whitespace-nowrap">
+                  {c.native_reasoning && <span title="Reasoning" className="mr-1">🧠</span>}
+                  {c.native_tools && <span title="Tool use" className="mr-1">🔧</span>}
+                  {c.native_vision && <span title="Vision" className="mr-1">👁</span>}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
 
 const PROVIDER_TYPES: ProviderType[] = ['anthropic', 'openai', 'google', 'vertex', 'grok', 'ollama', 'compatible']
 
@@ -82,6 +128,7 @@ export function ProvidersPage() {
     mutationFn: (id: string) => providersApi.scanModels(id),
     onSuccess: (data, id) => {
       qc.invalidateQueries({ queryKey: ['providers'] })
+      qc.invalidateQueries({ queryKey: ['capabilities', id] })
       if (data.warning) {
         toast.error(data.warning)
       } else {
@@ -208,6 +255,7 @@ export function ProvidersPage() {
                       </div>
                     </div>
                     {!test?.success && test?.error && <p className="text-xs text-red-400 bg-red-900/10 rounded p-2">{test.error}</p>}
+                    <ProviderModels providerId={p.id} />
                     <div className="flex gap-2 flex-wrap">
                       <Button size="sm" variant="outline" onClick={() => handleTest(p.id)} loading={testingId === p.id}>
                         <Play className="h-3.5 w-3.5 mr-1" />Test

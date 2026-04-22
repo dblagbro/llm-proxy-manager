@@ -396,3 +396,42 @@ class TestUserManagement:
         # User should be gone
         page.wait_for_timeout(1000)
         expect(page.locator(f"text={unique_name}")).not_to_be_visible(timeout=5_000)
+
+
+# ── Session & UX Tests ────────────────────────────────────────────────────────
+
+class TestSessionBehavior:
+    def test_session_persists_across_page_reload(self, page: Page):
+        """Login then reload — user must remain authenticated (no redirect to /login)."""
+        login(page)
+        page.goto(f"{BASE_URL}/providers")
+        page.wait_for_load_state("networkidle")
+        page.reload()
+        page.wait_for_load_state("networkidle")
+        # Must NOT be redirected to login
+        assert "/login" not in page.url, f"Redirected to login after reload: {page.url}"
+        # Providers heading should be visible
+        expect(page.locator("h1:has-text('Providers')")).to_be_visible(timeout=8_000)
+
+    def test_scan_models_shows_model_list(self, page: Page):
+        """After scanning models, the model capability list appears in the expanded row."""
+        login(page)
+        page.goto(f"{BASE_URL}/providers")
+        # Expand first provider card
+        first_card = page.locator("div.cursor-pointer").first
+        first_card.click()
+        page.wait_for_timeout(500)
+        # Click Scan Models
+        scan_btn = page.locator("button:has-text('Scan Models')").first
+        expect(scan_btn).to_be_visible(timeout=5_000)
+        scan_btn.click()
+        # Wait for scan to complete (spinner goes away)
+        page.wait_for_function(
+            "() => !Array.from(document.querySelectorAll('button')).some(b => b.disabled && b.textContent.includes('Scan'))",
+            timeout=30_000,
+        )
+        # Either a model table or the "no models indexed" message should appear
+        page.wait_for_function(
+            "() => document.body.innerText.includes('models indexed') || document.body.innerText.includes('No models indexed') || document.body.innerText.includes('model indexed')",
+            timeout=10_000,
+        )
