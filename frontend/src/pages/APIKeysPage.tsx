@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Plus, Trash2 } from 'lucide-react'
+import { Plus, Trash2, Pencil } from 'lucide-react'
 import { keysApi } from '@/api'
 import { Card, CardContent } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
@@ -11,7 +11,7 @@ import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { CopyButton } from '@/components/ui/CopyButton'
 import { Spinner } from '@/components/ui/Spinner'
 import { useToast } from '@/components/ui/Toast'
-import type { KeyType } from '@/types'
+import type { ApiKey, KeyType } from '@/types'
 
 const KEY_TYPES: KeyType[] = ['standard', 'claude-code']
 
@@ -21,6 +21,9 @@ export function APIKeysPage() {
   const [showCreate, setShowCreate] = useState(false)
   const [newKey, setNewKey] = useState<{ raw: string; prefix: string } | null>(null)
   const [deleteId, setDeleteId] = useState<string | null>(null)
+  const [editLimits, setEditLimits] = useState<ApiKey | null>(null)
+  const [capInput, setCapInput] = useState('')
+  const [rpmInput, setRpmInput] = useState('')
   const [form, setForm] = useState({ name: '', key_type: 'standard' as KeyType, rate_limit_rpm: '' })
 
   const { data: keys, isLoading } = useQuery({ queryKey: ['apikeys'], queryFn: keysApi.list })
@@ -40,6 +43,20 @@ export function APIKeysPage() {
     onError: (e: Error) => toast.error(e.message),
   })
 
+  const updateLimitsMutation = useMutation({
+    mutationFn: ({ id, cap, rpm }: { id: string; cap: number | null; rpm: number | null }) =>
+      keysApi.update(id, {
+        spending_cap_usd: cap === null ? -1 : cap,
+        rate_limit_rpm: rpm === null ? -1 : rpm,
+      } as any),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['apikeys'] })
+      toast.success('Limits updated')
+      setEditLimits(null)
+    },
+    onError: (e: Error) => toast.error(e.message),
+  })
+
   const deleteMutation = useMutation({
     mutationFn: (id: string) => keysApi.delete(id),
     onSuccess: () => {
@@ -49,8 +66,43 @@ export function APIKeysPage() {
     onError: (e: Error) => toast.error(e.message),
   })
 
+  function openLimitsEdit(k: ApiKey) {
+    setEditLimits(k)
+    setCapInput(k.spending_cap_usd != null ? String(k.spending_cap_usd) : '')
+    setRpmInput(k.rate_limit_rpm != null ? String(k.rate_limit_rpm) : '')
+  }
+
+  function saveLimits() {
+    if (!editLimits) return
+    const capRaw = capInput.trim()
+    const rpmRaw = rpmInput.trim()
+    const cap = capRaw === '' ? null : Number(capRaw)
+    const rpm = rpmRaw === '' ? null : Number(rpmRaw)
+    if (capRaw !== '' && (isNaN(cap!) || cap! < 0)) {
+      toast.error('Spending cap must be a positive number or blank')
+      return
+    }
+    if (rpmRaw !== '' && (isNaN(rpm!) || rpm! < 1 || !Number.isInteger(rpm))) {
+      toast.error('Rate limit must be a positive integer or blank')
+      return
+    }
+    updateLimitsMutation.mutate({ id: editLimits.id, cap, rpm })
+  }
+
   function fmtDate(ts: string) {
     return new Date(ts).toLocaleDateString()
+  }
+
+  function capLabel(k: ApiKey) {
+    return k.spending_cap_usd != null ? `$${k.spending_cap_usd.toFixed(2)}` : '∞'
+  }
+
+  function capColor(k: ApiKey) {
+    if (k.spending_cap_usd == null) return 'text-gray-400'
+    const pct = k.total_cost_usd / k.spending_cap_usd
+    if (pct >= 1) return 'text-red-600 font-semibold'
+    if (pct >= 0.8) return 'text-amber-500 font-semibold'
+    return 'text-gray-700 dark:text-gray-300'
   }
 
   return (
@@ -80,7 +132,7 @@ export function APIKeysPage() {
                     </div>
                     <p className="text-xs text-gray-500 font-mono">{k.key_prefix}…</p>
                   </div>
-                  <div className="hidden md:grid grid-cols-3 gap-6 text-right text-sm">
+                  <div className="hidden md:grid grid-cols-5 gap-5 text-right text-sm">
                     <div>
                       <p className="text-xs text-gray-400">Requests</p>
                       <p className="font-medium text-gray-700 dark:text-gray-300">{k.total_requests.toLocaleString()}</p>
@@ -93,8 +145,25 @@ export function APIKeysPage() {
                       <p className="text-xs text-gray-400">Cost</p>
                       <p className="font-medium text-gray-700 dark:text-gray-300">${k.total_cost_usd.toFixed(3)}</p>
                     </div>
+                    <div>
+                      <p className="text-xs text-gray-400">Cap</p>
+                      <p className={`text-sm ${capColor(k)}`}>{capLabel(k)}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-gray-400">Rate limit</p>
+                      <p className="text-sm text-gray-700 dark:text-gray-300">
+                        {k.rate_limit_rpm != null ? `${k.rate_limit_rpm}/min` : '∞'}
+                      </p>
+                    </div>
                   </div>
                   <p className="text-xs text-gray-400 hidden lg:block shrink-0">Created {fmtDate(k.created_at)}</p>
+                  <button
+                    onClick={() => openLimitsEdit(k)}
+                    className="text-gray-400 hover:text-indigo-500 transition-colors shrink-0"
+                    title="Edit limits"
+                  >
+                    <Pencil className="h-4 w-4" />
+                  </button>
                   <Button size="sm" variant="danger" onClick={() => setDeleteId(k.id)}>
                     <Trash2 className="h-3.5 w-3.5" />
                   </Button>
@@ -142,6 +211,48 @@ export function APIKeysPage() {
           <Button onClick={() => createMutation.mutate()} loading={createMutation.isPending}>Create Key</Button>
         </ModalFooter>
       </Modal>
+
+      {/* Limits Edit Modal */}
+      {editLimits && (
+        <Modal open onClose={() => setEditLimits(null)}>
+          <ModalHeader onClose={() => setEditLimits(null)}>
+            Limits — {editLimits.name || editLimits.key_prefix}
+          </ModalHeader>
+          <ModalBody>
+            <div className="space-y-4">
+              <p className="text-sm text-gray-600 dark:text-gray-400">
+                Current spend: <strong>${editLimits.total_cost_usd.toFixed(4)}</strong>
+              </p>
+              <Input
+                label="Lifetime spending cap in USD (blank = unlimited)"
+                type="number"
+                min="0"
+                step="0.01"
+                value={capInput}
+                onChange={e => setCapInput(e.target.value)}
+                placeholder="e.g. 10.00"
+              />
+              <Input
+                label="Rate limit (requests/minute, blank = unlimited)"
+                type="number"
+                min="1"
+                step="1"
+                value={rpmInput}
+                onChange={e => setRpmInput(e.target.value)}
+                placeholder="e.g. 60"
+              />
+              <p className="text-xs text-gray-400">
+                Spending cap: requests are rejected with HTTP 429 once the key's lifetime cost reaches the limit.
+                Rate limit: enforced per-node using a 60-second sliding window.
+              </p>
+            </div>
+          </ModalBody>
+          <ModalFooter>
+            <Button variant="ghost" onClick={() => setEditLimits(null)}>Cancel</Button>
+            <Button onClick={saveLimits} loading={updateLimitsMutation.isPending}>Save Limits</Button>
+          </ModalFooter>
+        </Modal>
+      )}
 
       {/* New Key Display */}
       {newKey && (

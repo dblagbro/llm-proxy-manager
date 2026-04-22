@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.database import get_db
 from app.auth.admin import require_admin, AdminUser
-from app.cluster.manager import get_cluster_status, apply_sync, verify_cluster_request, _sign
+from app.cluster.manager import get_cluster_status, apply_sync, verify_cluster_request, sign_payload, verify_payload, peers as cluster_peers
 from app.routing.circuit_breaker import get_all_states
 from app.config import settings
 from app import config_runtime
@@ -75,7 +75,7 @@ async def cluster_settings(request: Request):
         raise HTTPException(403, "Cluster mode not enabled")
     node_id = request.headers.get("X-Cluster-Node", "")
     sig = request.headers.get("X-Cluster-Sig", "")
-    if not node_id or not verify_cluster_request(node_id.encode(), sig):
+    if not node_id or not verify_payload(node_id.encode(), sig):
         raise HTTPException(403, "Invalid cluster signature")
 
     s = config_runtime.settings

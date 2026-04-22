@@ -93,6 +93,7 @@ class CapabilityProfile:
     modalities: list[str] = field(default_factory=lambda: ["text"])
     native_reasoning: bool = False
     native_tools: bool = True
+    native_vision: bool = False
     priority: int = 10
 
 
@@ -265,6 +266,7 @@ def infer_capability_profile(provider_id: str, provider_type: str, model_id: str
     # Vision
     if any(x in m for x in ["vision", "vl", "gpt-4o", "gemini", "claude-3", "llava"]):
         profile.modalities = ["text", "vision"]
+        profile.native_vision = True
 
     # Native tool support
     # Ollama: most local models don't support function calling — default False

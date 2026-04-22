@@ -62,11 +62,11 @@ async def _get_session(token: str) -> Optional[dict]:
         result = await db.execute(select(Session).where(Session.token == token))
         s = result.scalar_one_or_none()
         if not s:
-            logger.warning("session_not_found", token_prefix=token[:8])
+            logger.warning("session_not_found token_prefix=%s", token[:8])
             return None
         # Expire sessions idle > SESSION_TTL_SEC since last seen
         if now - s.last_seen_at > SESSION_TTL_SEC:
-            logger.warning("session_expired", username=s.username, idle_sec=int(now - s.last_seen_at))
+            logger.warning("session_expired username=%s idle_sec=%s", s.username, int(now - s.last_seen_at))
             await db.delete(s)
             await db.commit()
             return None
