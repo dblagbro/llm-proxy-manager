@@ -30,6 +30,7 @@ from app.api.apikeys import router as apikeys_router
 from app.api.users import router as users_router
 from app.api.cluster import router as cluster_router
 from app.api.monitoring import router as monitoring_router
+from app.api.settings_api import router as settings_router
 
 logging.basicConfig(level=settings.log_level.upper())
 logger = structlog.get_logger()
@@ -37,10 +38,12 @@ logger = structlog.get_logger()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # DB init + default admin
+    # DB init + default admin + runtime settings
     await init_db()
     async with AsyncSessionLocal() as db:
         await ensure_default_admin(db)
+        from app import config_runtime
+        await config_runtime.load(db)
 
         # Register all providers with status monitor + per-provider CB config
         result = await db.execute(select(Provider))
@@ -110,6 +113,7 @@ app.include_router(apikeys_router)
 app.include_router(users_router)
 app.include_router(cluster_router)
 app.include_router(monitoring_router)
+app.include_router(settings_router)
 
 # ── Utility endpoints ────────────────────────────────────────────────────────
 @app.get("/health")

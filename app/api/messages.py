@@ -75,7 +75,10 @@ async def messages(
                 except ValueError:
                     pass
             return StreamingResponse(
-                run_cot_pipeline(route.litellm_model, messages_list, x_session_id, extra, max_iterations=cot_max),
+                _stream_cot_anthropic(
+                    route.litellm_model, messages_list, x_session_id, extra,
+                    cot_max, route.provider.id,
+                ),
                 media_type="text/event-stream",
                 headers=resp_headers,
             )
@@ -112,6 +115,24 @@ async def messages(
         await record_request(db, route.provider.id, False, 0, 0, 0, 0, key_record.id)
         logger.error(f"Provider {route.provider.id} failed: {err_str}")
         raise HTTPException(502, f"Upstream provider error: {err_str}")
+
+
+async def _stream_cot_anthropic(
+    model: str,
+    messages: list,
+    session_id: str | None,
+    extra: dict,
+    max_iterations: int | None,
+    provider_id: str,
+) -> AsyncIterator[bytes]:
+    """Pass-through wrapper around run_cot_pipeline that updates the circuit breaker."""
+    try:
+        async for chunk in run_cot_pipeline(model, messages, session_id, extra, max_iterations):
+            yield chunk
+        await record_success(provider_id)
+    except Exception as e:
+        await record_failure(provider_id, billing_error=is_billing_error(str(e)))
+        yield f'data: {{"type":"error","error":{{"message":"{str(e)}"}}}}\n\n'.encode()
 
 
 async def _stream_anthropic(
