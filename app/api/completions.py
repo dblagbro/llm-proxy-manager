@@ -16,6 +16,16 @@ from app.routing.router import select_provider
 from app.routing.lmrh import parse_hint
 from app.routing.circuit_breaker import record_success, record_failure, is_billing_error
 from app.cot.pipeline import run_cot_pipeline
+from app.cot.tool_emulation import (
+    build_openai_tool_prompt,
+    normalize_openai_messages,
+    parse_tool_call,
+    call_with_tool_prompt,
+    openai_tool_sse,
+    openai_text_sse,
+    openai_tool_response,
+    openai_text_response,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -67,6 +77,34 @@ async def chat_completions(
     }
 
     try:
+        if route.tool_emulation_engaged:
+            # Inject tool schema as system prompt; normalize tool_use/result message history
+            tool_prompt = build_openai_tool_prompt(tools or [])
+            norm_msgs = normalize_openai_messages(messages_list)
+            # Prepend/merge tool system prompt
+            if norm_msgs and norm_msgs[0]["role"] == "system":
+                norm_msgs[0]["content"] = tool_prompt + "\n\n" + norm_msgs[0]["content"]
+            else:
+                norm_msgs = [{"role": "system", "content": tool_prompt}] + norm_msgs
+            emul_extra = {k: v for k, v in extra.items() if k != "tools"}
+            response_text = await call_with_tool_prompt(
+                route.litellm_model, norm_msgs, None, emul_extra
+            )
+            await record_success(route.provider.id)
+            tool_call = parse_tool_call(response_text)
+            if stream:
+                gen = (
+                    openai_tool_sse(tool_call["name"], tool_call["input"])
+                    if tool_call else openai_text_sse(response_text)
+                )
+                return StreamingResponse(gen, media_type="text/event-stream", headers=resp_headers)
+            else:
+                content = (
+                    openai_tool_response(tool_call["name"], tool_call["input"], route.litellm_model)
+                    if tool_call else openai_text_response(response_text, route.litellm_model)
+                )
+                return JSONResponse(content=content, headers=resp_headers)
+
         if route.cot_engaged:
             if not stream:
                 raise HTTPException(422, "CoT-E requires stream=true")

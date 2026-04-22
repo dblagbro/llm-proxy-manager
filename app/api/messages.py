@@ -18,6 +18,16 @@ from app.routing.router import select_provider
 from app.routing.lmrh import parse_hint
 from app.routing.circuit_breaker import record_success, record_failure, is_billing_error
 from app.cot.pipeline import run_cot_pipeline
+from app.cot.tool_emulation import (
+    build_anthropic_tool_prompt,
+    normalize_anthropic_messages,
+    parse_tool_call,
+    call_with_tool_prompt,
+    anthropic_tool_sse,
+    anthropic_text_sse,
+    anthropic_tool_response,
+    anthropic_text_response,
+)
 from app.monitoring.metrics import record_request
 from app.monitoring.pricing import estimate_cost
 
@@ -73,6 +83,29 @@ async def messages(
     }
 
     try:
+        if route.tool_emulation_engaged:
+            tool_system = build_anthropic_tool_prompt(tools or [])
+            merged_system = tool_system + ("\n\n" + system if system else "")
+            norm_msgs = normalize_anthropic_messages(messages_list)
+            emul_extra = {k: v for k, v in extra.items() if k not in ("tools", "system")}
+            response_text = await call_with_tool_prompt(
+                route.litellm_model, norm_msgs, merged_system, emul_extra
+            )
+            await record_success(route.provider.id)
+            tool_call = parse_tool_call(response_text)
+            if stream:
+                gen = (
+                    anthropic_tool_sse(tool_call["name"], tool_call["input"])
+                    if tool_call else anthropic_text_sse(response_text)
+                )
+                return StreamingResponse(gen, media_type="text/event-stream", headers=resp_headers)
+            else:
+                content = (
+                    anthropic_tool_response(tool_call["name"], tool_call["input"], route.litellm_model)
+                    if tool_call else anthropic_text_response(response_text, route.litellm_model)
+                )
+                return JSONResponse(content=content, headers=resp_headers)
+
         if route.cot_engaged:
             if not stream:
                 raise HTTPException(422, "CoT-E requires stream=true")

@@ -92,6 +92,7 @@ class CapabilityProfile:
     regions: list[str] = field(default_factory=list)
     modalities: list[str] = field(default_factory=lambda: ["text"])
     native_reasoning: bool = False
+    native_tools: bool = True
     priority: int = 10
 
 
@@ -210,6 +211,7 @@ def build_capability_header(
     profile: CapabilityProfile,
     unmet: list[str],
     cot_engaged: bool = False,
+    tool_emulation: bool = False,
 ) -> str:
     parts = [
         "v=1",
@@ -225,6 +227,8 @@ def build_capability_header(
         parts.append(f"unmet={' '.join(unmet)}")
     if cot_engaged:
         parts.append("cot-engaged=?1")
+    if tool_emulation:
+        parts.append("tool-emulation=?1")
     return ", ".join(parts)
 
 
@@ -261,6 +265,13 @@ def infer_capability_profile(provider_id: str, provider_type: str, model_id: str
     # Vision
     if any(x in m for x in ["vision", "vl", "gpt-4o", "gemini", "claude-3", "llava"]):
         profile.modalities = ["text", "vision"]
+
+    # Native tool support
+    # Ollama: most local models don't support function calling — default False
+    # Compatible: unknown endpoint — default False to be safe
+    # Everything else (Anthropic, OpenAI, Google, Grok, Vertex): True
+    if provider_type in ("ollama", "compatible"):
+        profile.native_tools = False
 
     # Provider-specific region defaults
     if provider_type == "google":
