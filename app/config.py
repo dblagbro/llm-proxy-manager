@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     cot_plan_max_tokens: int = Field(400, alias="COT_PLAN_MAX_TOKENS")
     cot_session_ttl_sec: int = Field(1800, alias="COT_SESSION_TTL_SEC")
     cot_session_max_analyses: int = Field(3, alias="COT_SESSION_MAX_ANALYSES")
+    # Skip critique/refinement when the initial draft exceeds this token count;
+    # 0 = always refine. Avoids wasted calls on already-thorough long answers.
+    cot_min_tokens_skip: int = Field(800, alias="COT_MIN_TOKENS_SKIP")
 
     # Cluster
     cluster_enabled: bool = Field(False, alias="CLUSTER_ENABLED")

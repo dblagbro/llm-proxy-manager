@@ -96,6 +96,7 @@ async def run_cot_pipeline(
     messages: list[dict],
     session_id: str | None,
     extra_kwargs: dict,
+    max_iterations: int | None = None,
 ) -> AsyncIterator[bytes]:
     """
     Full CoT-E pipeline. Yields SSE bytes.
@@ -139,7 +140,15 @@ async def run_cot_pipeline(
 
     # ── Critique + Refinement loop ────────────────────────────────────────────
     current_answer = draft_text
-    for iteration in range(1, settings.cot_max_iterations + 1):
+    iterations = max_iterations if max_iterations is not None else settings.cot_max_iterations
+
+    # Skip refinement when the draft is already long (high token count signals
+    # the model produced a thorough answer; critique would rarely improve it).
+    draft_tokens = len(draft_text.split()) * 4 // 3  # rough word→token estimate
+    if settings.cot_min_tokens_skip > 0 and draft_tokens >= settings.cot_min_tokens_skip:
+        iterations = 0
+
+    for iteration in range(1, iterations + 1):
         critique_system = CRITIQUE_SYSTEM.format(
             threshold=settings.cot_quality_threshold,
             max_tokens=settings.cot_critique_max_tokens,

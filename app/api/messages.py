@@ -32,6 +32,7 @@ async def messages(
     x_api_key: Optional[str] = Header(None, alias="x-api-key"),
     llm_hint: Optional[str] = Header(None, alias="llm-hint"),
     x_session_id: Optional[str] = Header(None, alias="x-session-id"),
+    x_cot_iterations: Optional[str] = Header(None, alias="x-cot-iterations"),
 ):
     key_record = await verify_api_key(db, x_api_key)
 
@@ -67,8 +68,14 @@ async def messages(
         if route.cot_engaged:
             if not stream:
                 raise HTTPException(422, "CoT-E requires stream=true")
+            cot_max = None
+            if x_cot_iterations is not None:
+                try:
+                    cot_max = max(0, int(x_cot_iterations))
+                except ValueError:
+                    pass
             return StreamingResponse(
-                run_cot_pipeline(route.litellm_model, messages_list, x_session_id, extra),
+                run_cot_pipeline(route.litellm_model, messages_list, x_session_id, extra, max_iterations=cot_max),
                 media_type="text/event-stream",
                 headers=resp_headers,
             )
