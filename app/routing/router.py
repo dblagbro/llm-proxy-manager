@@ -143,8 +143,10 @@ async def select_provider(
 
     # CoT-E auto-engagement:
     # Triggered when key_type=claude-code OR LLM-Hint task=reasoning + native_reasoning=false
+    # Can be disabled globally via the cot_enabled runtime setting.
     cot_engaged = False
-    if not best_profile.native_reasoning:
+    cot_globally_enabled = getattr(settings, "cot_enabled", True)
+    if cot_globally_enabled and not best_profile.native_reasoning:
         task_hint = hint.get("task") if hint else None
         if key_type == "claude-code" or (task_hint and task_hint.value == "reasoning"):
             cot_engaged = True

@@ -1,111 +1,134 @@
-import { useState } from 'react'
-import { Save } from 'lucide-react'
+import { useState, useEffect } from 'react'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { Save, RefreshCw } from 'lucide-react'
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 import { Switch } from '@/components/ui/Switch'
 import { useToast } from '@/components/ui/Toast'
+import { settingsApi } from '@/api'
 
-// Settings are read/written via the backend settings endpoint.
-// For now we expose the subset that can be tuned at runtime.
-
-interface SettingsForm {
-  cot_enabled: boolean
-  cot_threshold: number
-  cot_max_refinements: number
-  cb_failure_threshold: number
-  cb_success_threshold: number
-  cb_hold_down_sec: number
-  cb_billing_hold_down_sec: number
-  smtp_host: string
-  smtp_port: number
-  smtp_from: string
-  smtp_to: string
-}
-
-const DEFAULTS: SettingsForm = {
-  cot_enabled: true,
-  cot_threshold: 7,
-  cot_max_refinements: 2,
-  cb_failure_threshold: 3,
-  cb_success_threshold: 2,
-  cb_hold_down_sec: 60,
-  cb_billing_hold_down_sec: 3600,
-  smtp_host: '',
-  smtp_port: 587,
-  smtp_from: '',
-  smtp_to: '',
-}
+type SettingsMap = Record<string, unknown>
 
 export function SettingsPage() {
   const toast = useToast()
-  const [form, setForm] = useState<SettingsForm>(DEFAULTS)
+  const qc = useQueryClient()
+  const [form, setForm] = useState<SettingsMap | null>(null)
 
-  function field<K extends keyof SettingsForm>(key: K) {
+  const { data: serverSettings, isLoading } = useQuery<SettingsMap>({
+    queryKey: ['settings'],
+    queryFn: settingsApi.get,
+  })
+
+  // Populate form once on first load (don't overwrite in-progress edits)
+  useEffect(() => {
+    if (serverSettings && !form) {
+      setForm(serverSettings)
+    }
+  }, [serverSettings, form])
+
+  const saveMut = useMutation({
+    mutationFn: (data: SettingsMap) => settingsApi.save(data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['settings'] })
+      toast.success('Settings saved and applied live')
+    },
+    onError: (e: Error) => toast.error(`Save failed: ${e.message}`),
+  })
+
+  function numField(key: string): React.InputHTMLAttributes<HTMLInputElement> {
     return {
-      value: String(form[key]),
-      onChange: (e: React.ChangeEvent<HTMLInputElement>) =>
-        setForm(f => ({ ...f, [key]: typeof DEFAULTS[key] === 'number' ? Number(e.target.value) : e.target.value })),
+      value: String(form?.[key] ?? ''),
+      onChange: (e) => setForm(f => ({ ...f!, [key]: Number(e.target.value) })),
+    }
+  }
+  function boolField(key: string): { checked: boolean; onChange: (v: boolean) => void } {
+    return {
+      checked: Boolean(form?.[key] ?? true),
+      onChange: (v: boolean) => setForm(f => ({ ...f!, [key]: v })),
+    }
+  }
+  function strField(key: string): React.InputHTMLAttributes<HTMLInputElement> {
+    return {
+      value: String(form?.[key] ?? ''),
+      onChange: (e) => setForm(f => ({ ...f!, [key]: e.target.value })),
     }
   }
 
-  function handleSave() {
-    // POST to /api/settings when backend endpoint is available
-    toast.success('Settings saved (restart may be needed for some changes)')
+  if (isLoading || !form) {
+    return (
+      <div className="p-6 flex items-center gap-2 text-gray-400">
+        <RefreshCw className="h-4 w-4 animate-spin" /> Loading settings…
+      </div>
+    )
   }
 
   return (
     <div className="p-6 space-y-6 max-w-3xl">
       <div>
         <h1 className="text-xl font-bold text-gray-900 dark:text-gray-100">Settings</h1>
-        <p className="text-sm text-gray-500 mt-0.5">Runtime configuration — environment variables take precedence</p>
+        <p className="text-sm text-gray-500 mt-0.5">
+          Changes apply live — no restart required. Environment variables remain the defaults.
+        </p>
       </div>
 
-      {/* CoT-E settings */}
+      {/* CoT-E */}
       <Card>
         <CardHeader><CardTitle>Chain-of-Thought Emulation (CoT-E)</CardTitle></CardHeader>
         <CardContent className="space-y-4">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-sm font-medium text-gray-800 dark:text-gray-200">Enable CoT-E</p>
-              <p className="text-xs text-gray-400">Applies multi-pass reasoning to non-native-reasoning models</p>
+              <p className="text-sm font-medium text-gray-800 dark:text-gray-200">Enable CoT-E globally</p>
+              <p className="text-xs text-gray-400">
+                Multi-pass reasoning for non-native-thinking providers (claude-code keys &amp; reasoning hints)
+              </p>
             </div>
-            <Switch
-              checked={form.cot_enabled}
-              onChange={v => setForm(f => ({ ...f, cot_enabled: v }))}
-            />
+            <Switch {...boolField('cot_enabled')} />
           </div>
           <div className="grid grid-cols-2 gap-4">
-            <Input label="Quality Threshold (1–10)" type="number" {...field('cot_threshold')} />
-            <Input label="Max Refinement Passes" type="number" {...field('cot_max_refinements')} />
+            <Input label="Max refinement passes" type="number" {...numField('cot_max_iterations')} min={0} max={5} />
+            <Input label="Quality threshold (1–10)" type="number" {...numField('cot_quality_threshold')} min={1} max={10} />
+            <Input label="Min draft tokens to skip refinement" type="number" {...numField('cot_min_tokens_skip')} min={0} />
+            <Input label="Critique max tokens" type="number" {...numField('cot_critique_max_tokens')} min={50} max={500} />
           </div>
+          <p className="text-xs text-gray-400">
+            <strong>Min draft tokens:</strong> When the initial draft exceeds this count, critique/refinement is
+            skipped — the answer is already thorough. Set to 0 to always refine.
+          </p>
         </CardContent>
       </Card>
 
-      {/* Circuit breaker settings */}
+      {/* Circuit breaker */}
       <Card>
         <CardHeader><CardTitle>Circuit Breaker</CardTitle></CardHeader>
         <CardContent className="grid grid-cols-2 gap-4">
-          <Input label="Failure Threshold (opens CB)" type="number" {...field('cb_failure_threshold')} />
-          <Input label="Success Threshold (closes CB)" type="number" {...field('cb_success_threshold')} />
-          <Input label="Hold-Down (seconds)" type="number" {...field('cb_hold_down_sec')} />
-          <Input label="Billing Error Hold-Down (seconds)" type="number" {...field('cb_billing_hold_down_sec')} />
+          <Input label="Failure threshold (opens CB)" type="number" {...numField('circuit_breaker_threshold')} min={1} />
+          <Input label="Successes to close CB" type="number" {...numField('circuit_breaker_success_needed')} min={1} />
+          <Input label="Open timeout (seconds)" type="number" {...numField('circuit_breaker_timeout_sec')} min={10} />
+          <Input label="Half-open window (seconds)" type="number" {...numField('circuit_breaker_halfopen_sec')} min={5} />
+          <Input label="Provider hold-down (seconds)" type="number" {...numField('hold_down_sec')} min={0} />
         </CardContent>
       </Card>
 
-      {/* Email notifications */}
+      {/* Email alerts */}
       <Card>
-        <CardHeader><CardTitle>Email Notifications</CardTitle></CardHeader>
-        <CardContent className="grid grid-cols-2 gap-4">
-          <Input label="SMTP Host" placeholder="smtp.example.com" {...field('smtp_host')} />
-          <Input label="SMTP Port" type="number" {...field('smtp_port')} />
-          <Input label="From Address" type="email" {...field('smtp_from')} />
-          <Input label="Alert Recipient" type="email" {...field('smtp_to')} />
+        <CardHeader><CardTitle>Email Alerts</CardTitle></CardHeader>
+        <CardContent className="space-y-4">
+          <div className="flex items-center justify-between">
+            <p className="text-sm font-medium text-gray-800 dark:text-gray-200">Enable email alerts</p>
+            <Switch {...boolField('smtp_enabled')} />
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <Input label="SMTP host" placeholder="smtp.example.com" {...strField('smtp_host')} />
+            <Input label="SMTP port" type="number" {...numField('smtp_port')} />
+            <Input label="From address" type="email" {...strField('smtp_from')} />
+            <Input label="Alert recipient" type="email" {...strField('smtp_to')} />
+          </div>
         </CardContent>
       </Card>
 
       <div className="flex justify-end">
-        <Button onClick={handleSave}>
+        <Button onClick={() => saveMut.mutate(form)} loading={saveMut.isPending}>
           <Save className="h-4 w-4 mr-1.5" />Save Settings
         </Button>
       </div>

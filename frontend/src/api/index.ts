@@ -60,6 +60,12 @@ export const monitoringApi = {
   statusPages: ()           => api.get<ExternalStatus>('/api/monitoring/status-pages'),
 }
 
+// ── Settings ──────────────────────────────────────────────────────────────────
+export const settingsApi = {
+  get: ()                  => api.get<Record<string, unknown>>('/api/settings'),
+  save: (data: Record<string, unknown>) => api.put<{ saved: string[] }>('/api/settings', data),
+}
+
 // ── Cluster ───────────────────────────────────────────────────────────────────
 export const clusterApi = {
   status:  ()                              => api.get<ClusterStatus>('/cluster/status'),

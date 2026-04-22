@@ -94,6 +94,15 @@ class User(Base):
     created_at = Column(DateTime, server_default=func.now())
 
 
+class SystemSetting(Base):
+    """Key/value store for runtime-tunable settings (overlays env-var defaults)."""
+    __tablename__ = "system_settings"
+
+    key = Column(String, primary_key=True)
+    value = Column(Text, nullable=False)        # always stored as string
+    value_type = Column(String, default="str")  # str|int|float|bool
+
+
 class ActivityLog(Base):
     __tablename__ = "activity_log"
 
