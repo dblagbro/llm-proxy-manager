@@ -80,6 +80,8 @@ class ApiKey(Base):
     total_requests = Column(Integer, default=0)
     total_tokens = Column(Integer, default=0)
     total_cost_usd = Column(Float, default=0.0)
+    spending_cap_usd = Column(Float, nullable=True)  # None = unlimited
+    rate_limit_rpm = Column(Integer, nullable=True)   # None = unlimited
     last_used_at = Column(DateTime)
     created_at = Column(DateTime, server_default=func.now())
 

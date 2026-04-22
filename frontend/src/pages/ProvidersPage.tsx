@@ -6,81 +6,16 @@ import { providersApi, clusterApi } from '@/api'
 import { Card, CardContent } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
 import { Badge } from '@/components/ui/Badge'
-import { Input } from '@/components/ui/Input'
 import { Spinner } from '@/components/ui/Spinner'
 import { Modal, ModalHeader, ModalBody, ModalFooter } from '@/components/ui/Modal'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { CircuitBreakerBadge } from '@/components/providers/CircuitBreakerBadge'
 import { useToast } from '@/components/ui/Toast'
-import type { Provider, ProviderType, ProviderFormData, ModelCapability } from '@/types'
+import type { Provider } from '@/types'
+import { ProviderModels } from '@/components/providers/ProviderModels'
+import { ProviderForm, type ProviderFormState, emptyProviderForm, providerToForm } from '@/components/providers/ProviderForm'
 import { clsx } from 'clsx'
 
-function ProviderModels({ providerId }: { providerId: string }) {
-  const { data: caps, isLoading } = useQuery<ModelCapability[]>({
-    queryKey: ['capabilities', providerId],
-    queryFn: () => providersApi.capabilities(providerId),
-  })
-  if (isLoading) return <div className="text-xs text-gray-400 py-2">Loading models…</div>
-  if (!caps || caps.length === 0) return (
-    <p className="text-xs text-gray-400 py-2">No models indexed — click <strong>Scan Models</strong> to discover them.</p>
-  )
-  return (
-    <div className="mt-1">
-      <p className="text-xs text-gray-400 mb-2 font-medium">{caps.length} model{caps.length !== 1 ? 's' : ''} indexed</p>
-      <div className="overflow-x-auto">
-        <table className="w-full text-xs border-collapse">
-          <thead>
-            <tr className="text-left text-gray-400 border-b border-gray-200 dark:border-gray-700">
-              <th className="pb-1 pr-4 font-medium">Model ID</th>
-              <th className="pb-1 pr-4 font-medium">Tasks</th>
-              <th className="pb-1 pr-4 font-medium">Cost</th>
-              <th className="pb-1 pr-4 font-medium">Latency</th>
-              <th className="pb-1 pr-4 font-medium">Context</th>
-              <th className="pb-1 font-medium">Features</th>
-            </tr>
-          </thead>
-          <tbody>
-            {caps.map(c => (
-              <tr key={c.id} className="border-b border-gray-100 dark:border-gray-800 last:border-0">
-                <td className="py-1 pr-4 font-mono text-gray-700 dark:text-gray-300 whitespace-nowrap">{c.model_id}</td>
-                <td className="py-1 pr-4 text-gray-600 dark:text-gray-400">{c.tasks.join(', ') || '—'}</td>
-                <td className="py-1 pr-4 text-gray-600 dark:text-gray-400">{c.cost_tier}</td>
-                <td className="py-1 pr-4 text-gray-600 dark:text-gray-400">{c.latency}</td>
-                <td className="py-1 pr-4 text-gray-600 dark:text-gray-400">{c.context_length >= 1000 ? `${Math.round(c.context_length / 1000)}k` : c.context_length}</td>
-                <td className="py-1 text-gray-500 dark:text-gray-500 whitespace-nowrap">
-                  {c.native_reasoning && <span title="Reasoning" className="mr-1">🧠</span>}
-                  {c.native_tools && <span title="Tool use" className="mr-1">🔧</span>}
-                  {c.native_vision && <span title="Vision" className="mr-1">👁</span>}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  )
-}
-
-const PROVIDER_TYPES: ProviderType[] = ['anthropic', 'openai', 'google', 'vertex', 'grok', 'ollama', 'compatible']
-
-type ProviderForm = Omit<ProviderFormData, 'extra_config'> & { api_key?: string; extra_config: Record<string, unknown>; hold_down_sec: number | null; failure_threshold: number | null }
-
-function emptyForm(): ProviderForm {
-  return {
-    name: '',
-    provider_type: 'openai',
-    api_key: '',
-    base_url: '',
-    default_model: '',
-    priority: 10,
-    enabled: true,
-    timeout_sec: 60,
-    exclude_from_tool_requests: false,
-    hold_down_sec: null,
-    failure_threshold: null,
-    extra_config: {},
-  }
-}
 
 export function ProvidersPage() {
   const qc = useQueryClient()
@@ -90,7 +25,7 @@ export function ProvidersPage() {
   const [expanded, setExpanded] = useState<string | null>(null)
   const [showModal, setShowModal] = useState(false)
   const [editing, setEditing] = useState<Provider | null>(null)
-  const [form, setForm] = useState<ProviderForm>(emptyForm())
+  const [form, setForm] = useState<ProviderFormState>(emptyProviderForm())
   const [deleteId, setDeleteId] = useState<string | null>(null)
   const [testResults, setTestResults] = useState<Record<string, { success: boolean; response?: string; error?: string }>>({})
   const [testingId, setTestingId] = useState<string | null>(null)
@@ -99,7 +34,7 @@ export function ProvidersPage() {
   const { data: health } = useQuery({ queryKey: ['health'], queryFn: clusterApi.health, refetchInterval: 15_000 })
 
   const saveMutation = useMutation({
-    mutationFn: (data: ProviderForm) =>
+    mutationFn: (data: ProviderFormState) =>
       editing ? providersApi.update(editing.id, data) : providersApi.create(data),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['providers'] })
@@ -141,26 +76,13 @@ export function ProvidersPage() {
 
   function openCreate() {
     setEditing(null)
-    setForm(emptyForm())
+    setForm(emptyProviderForm())
     setShowModal(true)
   }
 
   function openEdit(p: Provider) {
     setEditing(p)
-    setForm({
-      name: p.name,
-      provider_type: p.provider_type,
-      api_key: '',
-      base_url: p.base_url ?? '',
-      default_model: p.default_model ?? '',
-      priority: p.priority,
-      enabled: p.enabled,
-      timeout_sec: p.timeout_sec,
-      exclude_from_tool_requests: p.exclude_from_tool_requests,
-      hold_down_sec: p.hold_down_sec ?? null,
-      failure_threshold: p.failure_threshold ?? null,
-      extra_config: p.extra_config ?? {},
-    })
+    setForm(providerToForm(p))
     setShowModal(true)
   }
 
@@ -289,78 +211,7 @@ export function ProvidersPage() {
       <Modal open={showModal} onClose={closeModal} size="lg">
         <ModalHeader onClose={closeModal}>{editing ? 'Edit Provider' : 'Add Provider'}</ModalHeader>
         <ModalBody>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <Input
-              label="Name"
-              value={form.name ?? ''}
-              onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
-              required
-            />
-            <div className="flex flex-col gap-1.5">
-              <label className="text-sm font-medium text-gray-700 dark:text-gray-300">Provider Type</label>
-              <select
-                value={form.provider_type ?? 'openai'}
-                onChange={e => setForm(f => ({ ...f, provider_type: e.target.value as ProviderType }))}
-                className="px-3 py-2 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-              >
-                {PROVIDER_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
-              </select>
-            </div>
-            <Input
-              label={editing ? 'API Key (leave blank to keep current)' : 'API Key'}
-              type="password"
-              value={form.api_key ?? ''}
-              onChange={e => setForm(f => ({ ...f, api_key: e.target.value }))}
-              required={!editing}
-            />
-            <Input
-              label="Base URL (optional)"
-              value={form.base_url ?? ''}
-              onChange={e => setForm(f => ({ ...f, base_url: e.target.value }))}
-              placeholder="https://api.example.com"
-            />
-            <Input
-              label="Default Model"
-              value={form.default_model ?? ''}
-              onChange={e => setForm(f => ({ ...f, default_model: e.target.value }))}
-              placeholder="e.g. gpt-4o"
-            />
-            <Input
-              label="Priority (lower = preferred)"
-              type="number"
-              value={String(form.priority ?? 10)}
-              onChange={e => setForm(f => ({ ...f, priority: Number(e.target.value) }))}
-            />
-            <Input
-              label="Timeout (seconds)"
-              type="number"
-              value={String(form.timeout_sec ?? 60)}
-              onChange={e => setForm(f => ({ ...f, timeout_sec: Number(e.target.value) }))}
-            />
-            <Input
-              label="Hold-down after failure (seconds, blank = global 120s)"
-              type="number"
-              value={form.hold_down_sec == null ? '' : String(form.hold_down_sec)}
-              onChange={e => setForm(f => ({ ...f, hold_down_sec: e.target.value === '' ? null : Number(e.target.value) }))}
-              placeholder="120"
-            />
-            <Input
-              label="Failure threshold before trip (blank = global 3)"
-              type="number"
-              value={form.failure_threshold == null ? '' : String(form.failure_threshold)}
-              onChange={e => setForm(f => ({ ...f, failure_threshold: e.target.value === '' ? null : Number(e.target.value) }))}
-              placeholder="3"
-            />
-            <div className="flex items-center gap-3 mt-5">
-              <label className="text-sm text-gray-700 dark:text-gray-300">Exclude from tool requests</label>
-              <input
-                type="checkbox"
-                checked={!!form.exclude_from_tool_requests}
-                onChange={e => setForm(f => ({ ...f, exclude_from_tool_requests: e.target.checked }))}
-                className="h-4 w-4 accent-indigo-600"
-              />
-            </div>
-          </div>
+          <ProviderForm form={form} onChange={setForm} editing={!!editing} />
         </ModalBody>
         <ModalFooter>
           <Button variant="ghost" onClick={closeModal}>Cancel</Button>

@@ -43,16 +43,16 @@ async def put_settings(
     if unknown:
         raise HTTPException(400, f"Unknown setting keys: {unknown}")
     await config_runtime.save(db, body)
-    logger.info("settings_updated", keys=list(body.keys()))
+    logger.info("settings_updated keys=%s", list(body.keys()))
 
     # Kick off an immediate sync to peers so they pick up the change within seconds
     if settings.cluster_enabled:
         import asyncio
-        from app.cluster.manager import _peers, _push_sync
+        from app.cluster.manager import peers as cluster_peers, push_sync
         from app.models.database import AsyncSessionLocal
-        for peer in list(_peers.values()):
+        for peer in list(cluster_peers.values()):
             if peer.status != "unreachable":
-                asyncio.create_task(_push_sync(peer, AsyncSessionLocal))
+                asyncio.create_task(push_sync(peer, AsyncSessionLocal))
 
     return {"saved": list(body.keys())}
 
@@ -66,17 +66,17 @@ async def cluster_diff(_user: AdminUser = Depends(require_admin)):
     if not settings.cluster_enabled:
         return {"cluster_enabled": False, "peers": []}
 
-    from app.cluster.manager import _peers, _sign
+    from app.cluster.manager import peers as cluster_peers, sign_payload
 
     # Local settings
     s = config_runtime.settings
     local_settings = {k: getattr(s, k, meta["default"]) for k, meta in config_runtime.SCHEMA.items()}
     node_id = settings.cluster_node_id or "local"
-    sig = _sign(node_id.encode())
+    sig = sign_payload(node_id.encode())
     headers = {"X-Cluster-Node": node_id, "X-Cluster-Sig": sig}
 
     peers_result = []
-    for peer in _peers.values():
+    for peer in cluster_peers.values():
         if peer.status == "unreachable":
             peers_result.append({"id": peer.id, "name": peer.name, "status": "unreachable", "settings": None, "diffs": []})
             continue

@@ -77,6 +77,9 @@ async def messages(
     elif thinking and route.profile.provider_type == "anthropic":
         extra["thinking"] = thinking
 
+    if route.vision_stripped:
+        messages_list = _strip_images_anthropic(messages_list)
+
     resp_headers = {
         "X-Provider": route.provider.name,
         "LLM-Capability": route.capability_header,
@@ -129,7 +132,8 @@ async def messages(
 
         if stream:
             return StreamingResponse(
-                _stream_anthropic(route.litellm_model, messages_list, extra, route.provider.id),
+                _stream_anthropic(route.litellm_model, messages_list, extra, route.provider.id,
+                                  db, key_record.id, time.monotonic()),
                 media_type="text/event-stream",
                 headers=resp_headers,
             )
@@ -197,49 +201,139 @@ async def _stream_cot_anthropic(
     except Exception as e:
         await record_failure(provider_id, billing_error=is_billing_error(str(e)))
         await record_request(db, provider_id, False, 0, 0, 0, 0, key_record_id)
-        yield f'data: {{"type":"error","error":{{"message":"{str(e)}"}}}}\n\n'.encode()
+        yield (b'data: ' + json.dumps({"type": "error", "error": {"message": str(e)}}).encode() + b'\n\n')
 
 
 async def _stream_anthropic(
-    model: str, messages: list, extra: dict, provider_id: str
+    model: str, messages: list, extra: dict, provider_id: str,
+    db: AsyncSession, key_record_id: str, t0: float,
 ) -> AsyncIterator[bytes]:
     try:
         response = await litellm.acompletion(model=model, messages=messages, stream=True, **extra)
         index = 0
         text_started = False
+        tool_started = False
+        finish_reason = "stop"
+        input_tokens = 0
+        output_tokens = 0
+        streamed_chars = 0
+        tool_id: str = ""
+        tool_name: str = ""
+
+        yield (
+            f'data: {{"type":"message_start","message":{{"id":"msg_proxy","type":"message",'
+            f'"role":"assistant","content":[],"model":"{model}",'
+            f'"stop_reason":null,"stop_sequence":null,'
+            f'"usage":{{"input_tokens":0,"output_tokens":0}}}}}}\n\n'
+        ).encode()
 
         async for chunk in response:
-            delta = chunk.choices[0].delta if chunk.choices else None
-            if not delta:
+            if not chunk.choices:
                 continue
-            content = delta.content or ""
+            choice = chunk.choices[0]
+            delta = choice.delta
+            if choice.finish_reason:
+                finish_reason = choice.finish_reason
+            if hasattr(chunk, "usage") and chunk.usage:
+                input_tokens = getattr(chunk.usage, "prompt_tokens", input_tokens)
+                output_tokens = getattr(chunk.usage, "completion_tokens", output_tokens)
+
+            # Tool call streaming
+            tool_calls = getattr(delta, "tool_calls", None) or []
+            for tc_delta in tool_calls:
+                fn = getattr(tc_delta, "function", None)
+                if not fn:
+                    continue
+                if not tool_started:
+                    tool_id = getattr(tc_delta, "id", "") or f"toolu_{id(tc_delta)}"
+                    tool_name = getattr(fn, "name", "") or ""
+                    yield (
+                        f'data: {{"type":"content_block_start","index":{index},'
+                        f'"content_block":{{"type":"tool_use","id":"{tool_id}",'
+                        f'"name":"{tool_name}","input":{{}}}}}}\n\n'
+                    ).encode()
+                    tool_started = True
+                args_fragment = getattr(fn, "arguments", "") or ""
+                if args_fragment:
+                    escaped = json.dumps(args_fragment)[1:-1]
+                    yield (
+                        f'data: {{"type":"content_block_delta","index":{index},'
+                        f'"delta":{{"type":"input_json_delta","partial_json":"{escaped}"}}}}\n\n'
+                    ).encode()
+
+            # Text streaming
+            content = getattr(delta, "content", None) or ""
             if not text_started and content:
                 yield f'data: {{"type":"content_block_start","index":{index},"content_block":{{"type":"text","text":""}}}}\n\n'.encode()
                 text_started = True
             if content:
+                streamed_chars += len(content)
                 escaped = json.dumps(content)[1:-1]
                 yield f'data: {{"type":"content_block_delta","index":{index},"delta":{{"type":"text_delta","text":"{escaped}"}}}}\n\n'.encode()
 
-        if text_started:
+        if text_started or tool_started:
             yield f'data: {{"type":"content_block_stop","index":{index}}}\n\n'.encode()
+
+        # Use reported usage if available; fall back to char-based estimate
+        if output_tokens == 0 and streamed_chars > 0:
+            output_tokens = max(1, streamed_chars // 4)
+
+        stop_reason = _FINISH_TO_STOP.get(finish_reason, "end_turn")
+        yield (
+            f'data: {{"type":"message_delta","delta":{{"stop_reason":"{stop_reason}",'
+            f'"stop_sequence":null}},"usage":{{"output_tokens":{output_tokens}}}}}\n\n'
+        ).encode()
         yield b'data: {"type":"message_stop"}\n\ndata: [DONE]\n\n'
+        latency_ms = (time.monotonic() - t0) * 1000
+        cost = estimate_cost(model, input_tokens, output_tokens)
         await record_success(provider_id)
+        await record_request(db, provider_id, True, input_tokens, output_tokens, latency_ms, cost, key_record_id)
     except Exception as e:
         await record_failure(provider_id, billing_error=is_billing_error(str(e)))
-        yield f'data: {{"type":"error","error":{{"message":"{str(e)}"}}}}\n\n'.encode()
+        await record_request(db, provider_id, False, 0, 0, 0, 0, key_record_id)
+        yield (b'data: ' + json.dumps({"type": "error", "error": {"message": str(e)}}).encode() + b'\n\n')
+
+
+_FINISH_TO_STOP = {
+    "stop": "end_turn",
+    "length": "max_tokens",
+    "tool_calls": "tool_use",
+    "content_filter": "end_turn",
+}
 
 
 def _to_anthropic_response(litellm_response) -> dict:
     """Convert litellm response to Anthropic messages API format."""
+    import secrets as _secrets
     choice = litellm_response.choices[0]
-    content_text = choice.message.content or ""
+    finish = choice.finish_reason or "stop"
+    content: list = []
+    if choice.message.content:
+        content.append({"type": "text", "text": choice.message.content})
+    tool_calls = getattr(choice.message, "tool_calls", None) or []
+    for tc in tool_calls:
+        fn = getattr(tc, "function", None)
+        if not fn:
+            continue
+        try:
+            tool_input = json.loads(getattr(fn, "arguments", "{}") or "{}")
+        except (ValueError, TypeError):
+            tool_input = {}
+        content.append({
+            "type": "tool_use",
+            "id": getattr(tc, "id", None) or f"toolu_{_secrets.token_hex(8)}",
+            "name": getattr(fn, "name", "") or "",
+            "input": tool_input,
+        })
+    if not content:
+        content = [{"type": "text", "text": ""}]
     return {
         "id": litellm_response.id or "msg_proxy",
         "type": "message",
         "role": "assistant",
-        "content": [{"type": "text", "text": content_text}],
+        "content": content,
         "model": litellm_response.model or "unknown",
-        "stop_reason": choice.finish_reason or "end_turn",
+        "stop_reason": _FINISH_TO_STOP.get(finish, "end_turn"),
         "stop_sequence": None,
         "usage": {
             "input_tokens": getattr(litellm_response.usage, "prompt_tokens", 0),
@@ -256,3 +350,26 @@ def _has_images(messages: list[dict]) -> bool:
                 if isinstance(block, dict) and block.get("type") in ("image", "image_url"):
                     return True
     return False
+
+
+def _strip_images_anthropic(messages: list[dict]) -> list[dict]:
+    """Replace Anthropic-format image blocks with text placeholders."""
+    out = []
+    for msg in messages:
+        content = msg.get("content", "")
+        if not isinstance(content, list):
+            out.append(msg)
+            continue
+        new_blocks = []
+        for block in content:
+            if not isinstance(block, dict):
+                new_blocks.append(block)
+                continue
+            if block.get("type") == "image":
+                src = block.get("source", {})
+                media = src.get("media_type", "image")
+                new_blocks.append({"type": "text", "text": f"[Image: {media} — not supported by this provider]"})
+            else:
+                new_blocks.append(block)
+        out.append({**msg, "content": new_blocks})
+    return out

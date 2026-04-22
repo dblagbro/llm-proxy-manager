@@ -199,6 +199,8 @@ async def run_cot_pipeline(
                         None  → use settings.cot_verify_enabled + auto-detection
     """
     block_index = 0
+    # Strip keys that are passed explicitly to _call to avoid duplicate-arg errors
+    cot_kwargs = {k: v for k, v in extra_kwargs.items() if k not in ("max_tokens", "system", "stream")}
 
     # ── Pass 0: Plan ──────────────────────────────────────────────────────────
     prior_analyses = await get_session_analyses(session_id)
@@ -212,7 +214,7 @@ async def run_cot_pipeline(
         [{"role": "user", "content": user_text + plan_context}],
         PLAN_SYSTEM,
         settings.cot_plan_max_tokens,
-        **extra_kwargs,
+        **cot_kwargs,
     )
     await save_session_analysis(session_id, plan_text)
 
@@ -258,7 +260,7 @@ async def run_cot_pipeline(
             ],
             critique_system,
             settings.cot_critique_max_tokens,
-            **extra_kwargs,
+            **cot_kwargs,
         )
 
         yield _sse_thinking_start(block_index)
@@ -337,13 +339,14 @@ async def _run_verify_pass(
         {"role": "user", "content": f"Question:\n{user_text}\n\nAnswer:\n{answer}"},
     ]
     try:
+        cot_kw = {k: v for k, v in extra_kwargs.items() if k not in ("max_tokens", "system", "stream")}
         return await _call(
             model,
             verify_messages,
             VERIFY_SYSTEM,
             settings.cot_verify_max_tokens,
-            **extra_kwargs,
+            **cot_kw,
         )
     except Exception as e:
-        logger.warning("cot_verify_pass_failed", error=str(e))
+        logger.warning("cot_verify_pass_failed error=%s", str(e))
         return f"(verification pass failed: {e})"

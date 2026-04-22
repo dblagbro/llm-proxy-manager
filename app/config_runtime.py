@@ -48,9 +48,6 @@ SCHEMA: dict[str, dict] = {
     "smtp_to":      {"type": "str",   "default": settings.smtp_to or "",     "label": "Alert recipient"},
 }
 
-# Non-DB default (not in pydantic settings)
-_extra_defaults: dict[str, Any] = {"cot_enabled": True}
-
 
 def _coerce(raw: str, typ: str) -> Any:
     if typ == "bool":
@@ -87,7 +84,7 @@ async def load(db: AsyncSession) -> None:
             overrides[row.key] = _coerce(row.value, row.value_type)
     if overrides:
         apply(overrides)
-        logger.info("runtime_settings_loaded", count=len(overrides))
+        logger.info("runtime_settings_loaded count=%s", len(overrides))
 
 
 async def save(db: AsyncSession, updates: dict[str, Any], timestamp: float | None = None) -> None:

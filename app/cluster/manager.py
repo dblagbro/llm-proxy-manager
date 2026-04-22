@@ -40,9 +40,26 @@ class PeerNode:
     total_providers: int = 0
 
 
-_peers: dict[str, PeerNode] = {}
+peers: dict[str, PeerNode] = {}
 _heartbeat_task: Optional[asyncio.Task] = None
 _sync_task: Optional[asyncio.Task] = None
+
+# Private alias for internal use within this module
+_peers = peers
+
+# Per-peer cost accumulator: {peer_node_id: {key_id: total_cost_usd}}
+# Updated every sync cycle; used for global spending-cap enforcement.
+_peer_key_costs: dict[str, dict[str, float]] = {}
+
+
+def get_peer_total_cost(key_id: str) -> float:
+    """Sum of total_cost_usd reported by all peers for a given key."""
+    return sum(costs.get(key_id, 0.0) for costs in _peer_key_costs.values())
+
+
+def active_node_count() -> int:
+    """Number of nodes currently reachable, including self."""
+    return 1 + sum(1 for p in _peers.values() if p.status != "unreachable")
 
 
 def _parse_peers() -> list[PeerNode]:
@@ -57,27 +74,36 @@ def _parse_peers() -> list[PeerNode]:
     return nodes
 
 
-def _sign(payload: bytes) -> str:
+def sign_payload(payload: bytes) -> str:
+    """HMAC-sign arbitrary bytes with the cluster shared secret."""
     key = (settings.cluster_sync_secret or "").encode()
     return hmac.new(key, payload, hashlib.sha256).hexdigest()
 
 
-def _verify(payload: bytes, signature: str) -> bool:
-    expected = _sign(payload)
-    return hmac.compare_digest(expected, signature)
+def verify_payload(payload: bytes, signature: str) -> bool:
+    """Verify an HMAC signature produced by sign_payload()."""
+    return hmac.compare_digest(sign_payload(payload), signature)
 
 
-def _auth_headers(payload: dict) -> dict:
+def verify_cluster_request(body: bytes, signature: str) -> bool:
+    """Convenience alias used by the /cluster/sync endpoint."""
+    return verify_payload(body, signature)
+
+
+def auth_headers_for(payload: dict) -> dict:
+    """Build HMAC-signed headers for an outgoing cluster request."""
     body = json.dumps(payload, sort_keys=True).encode()
     return {
         "X-Cluster-Node": settings.cluster_node_id or "",
-        "X-Cluster-Sig": _sign(body),
+        "X-Cluster-Sig": sign_payload(body),
         "Content-Type": "application/json",
     }
 
 
-def verify_cluster_request(body: bytes, signature: str) -> bool:
-    return _verify(body, signature)
+# Keep private aliases so internal call-sites don't need updating
+_sign = sign_payload
+_verify = verify_payload
+_auth_headers = auth_headers_for
 
 
 async def _heartbeat_loop(notify_fn=None):
@@ -120,10 +146,10 @@ async def _sync_loop(db_factory):
         await asyncio.sleep(60)
         for peer in list(_peers.values()):
             if peer.status != "unreachable":
-                await _push_sync(peer, db_factory)
+                await push_sync(peer, db_factory)
 
 
-async def _push_sync(peer: PeerNode, db_factory):
+async def push_sync(peer: PeerNode, db_factory):
     async with db_factory() as db:
         users_result = await db.execute(select(User))
         users = [
@@ -134,7 +160,10 @@ async def _push_sync(peer: PeerNode, db_factory):
         keys_result = await db.execute(select(ApiKey))
         keys = [
             {"id": k.id, "name": k.name, "key_hash": k.key_hash, "key_prefix": k.key_prefix,
-             "key_type": k.key_type, "enabled": k.enabled}
+             "key_type": k.key_type, "enabled": k.enabled,
+             "spending_cap_usd": k.spending_cap_usd,
+             "rate_limit_rpm": k.rate_limit_rpm,
+             "total_cost_usd": k.total_cost_usd or 0.0}
             for k in keys_result.scalars().all()
         ]
         providers_result = await db.execute(select(Provider))
@@ -177,6 +206,9 @@ async def _push_sync(peer: PeerNode, db_factory):
         logger.warning(f"Sync to {peer.id} failed: {e}")
 
 
+_push_sync = push_sync
+
+
 async def apply_sync(db: AsyncSession, payload: dict):
     """Merge incoming user/key/provider data from a peer (insert-if-missing strategy)."""
     for u_data in payload.get("users", []):
@@ -190,10 +222,19 @@ async def apply_sync(db: AsyncSession, payload: dict):
                 role=u_data.get("role", "user"),
             ))
 
+    source_node = payload.get("source_node", "unknown")
+    peer_costs: dict[str, float] = {}
+
     for k_data in payload.get("api_keys", []):
         result = await db.execute(select(ApiKey).where(ApiKey.key_hash == k_data["key_hash"]))
         existing = result.scalar_one_or_none()
-        if not existing:
+        if existing:
+            # Propagate config-only fields (including None to clear); never overwrite local cost
+            if "spending_cap_usd" in k_data:
+                existing.spending_cap_usd = k_data["spending_cap_usd"]
+            if "rate_limit_rpm" in k_data:
+                existing.rate_limit_rpm = k_data["rate_limit_rpm"]
+        else:
             db.add(ApiKey(
                 id=k_data["id"],
                 name=k_data["name"],
@@ -201,7 +242,15 @@ async def apply_sync(db: AsyncSession, payload: dict):
                 key_prefix=k_data["key_prefix"],
                 key_type=k_data.get("key_type", "standard"),
                 enabled=k_data.get("enabled", True),
+                spending_cap_usd=k_data.get("spending_cap_usd"),
+                rate_limit_rpm=k_data.get("rate_limit_rpm"),
             ))
+        # Track per-peer cost for global spending-cap enforcement
+        key_id = k_data.get("id")
+        if key_id and "total_cost_usd" in k_data:
+            peer_costs[key_id] = float(k_data["total_cost_usd"])
+
+    _peer_key_costs[source_node] = peer_costs
 
     from app.monitoring.status import register_provider
     for p_data in payload.get("providers", []):
@@ -283,7 +332,7 @@ async def apply_sync(db: AsyncSession, payload: dict):
 
     if settings_to_apply:
         config_runtime.apply(settings_to_apply)
-        logger.info("cluster_settings_applied", count=len(settings_to_apply), keys=list(settings_to_apply))
+        logger.info("cluster_settings_applied count=%s keys=%s", len(settings_to_apply), list(settings_to_apply))
 
 
 def get_cluster_status() -> dict:

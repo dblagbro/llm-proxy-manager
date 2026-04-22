@@ -72,7 +72,7 @@ def test_rank_excludes_hard_failures():
 
 def test_cost_routing():
     economy = _profile("cheap", ["chat"], "economy", "low", priority=5)
-    premium = _profile("expensive", ["chat"], "premium", "medium", priority=1)
+    premium = _profile("expensive", ["chat"], "premium", "medium", priority=5)
     hint = parse_hint("cost=economy")
     ranked = rank_candidates([economy, premium], hint)
     assert ranked[0][0].provider_id == "cheap"

@@ -58,8 +58,9 @@ async def chat_completions(
 
     hint = parse_hint(llm_hint)
     has_tools = bool(tools)
+    has_images = _has_images_openai(messages_list)
 
-    route = await select_provider(db, hint, has_tools=has_tools, key_type=key_record.key_type)
+    route = await select_provider(db, hint, has_tools=has_tools, has_images=has_images, key_type=key_record.key_type)
 
     extra = {**route.litellm_kwargs}
     if tools:
@@ -73,6 +74,9 @@ async def chat_completions(
         extra.update(route.native_thinking_params)
         if "reasoning_effort" in route.native_thinking_params and body.get("reasoning_effort"):
             extra["reasoning_effort"] = body["reasoning_effort"]
+
+    if route.vision_stripped:
+        messages_list = _strip_images_openai(messages_list)
 
     resp_headers = {
         "X-Provider": route.provider.name,
@@ -131,23 +135,32 @@ async def chat_completions(
 
         if stream:
             return StreamingResponse(
-                _stream_openai(route.litellm_model, messages_list, extra, route.provider.id),
+                _stream_openai(route.litellm_model, messages_list, extra, route.provider.id,
+                               db, key_record.id, time.monotonic()),
                 media_type="text/event-stream",
                 headers=resp_headers,
             )
         else:
+            t0 = time.monotonic()
             result = await litellm.acompletion(
                 model=route.litellm_model,
                 messages=messages_list,
                 stream=False,
                 **extra,
             )
+            latency_ms = (time.monotonic() - t0) * 1000
             await record_success(route.provider.id)
+            in_tok = getattr(result.usage, "prompt_tokens", 0)
+            out_tok = getattr(result.usage, "completion_tokens", 0)
+            cost = estimate_cost(route.litellm_model, in_tok, out_tok)
+            await record_request(db, route.provider.id, True, in_tok, out_tok, latency_ms, cost, key_record.id)
             return JSONResponse(content=result.model_dump(), headers=resp_headers)
 
     except Exception as e:
         err_str = str(e)
-        await record_failure(route.provider.id, billing_error=is_billing_error(err_str))
+        billing = is_billing_error(err_str)
+        await record_failure(route.provider.id, billing_error=billing)
+        await record_request(db, route.provider.id, False, 0, 0, 0, 0, key_record.id)
         raise HTTPException(502, f"Upstream provider error: {err_str}")
 
 
@@ -239,18 +252,58 @@ async def _stream_cot_openai(
     except Exception as e:
         await record_failure(provider_id, billing_error=is_billing_error(str(e)))
         await record_request(db, provider_id, False, 0, 0, 0, 0, key_record_id)
-        yield f'data: {{"error": "{str(e)}"}}\n\n'.encode()
+        yield (b'data: ' + json.dumps({"error": str(e)}).encode() + b'\n\n')
+
+
+def _has_images_openai(messages: list[dict]) -> bool:
+    for m in messages:
+        content = m.get("content", "")
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "image_url":
+                    return True
+    return False
+
+
+def _strip_images_openai(messages: list[dict]) -> list[dict]:
+    """Replace OpenAI-format image_url content items with text placeholders."""
+    out = []
+    for msg in messages:
+        content = msg.get("content", "")
+        if not isinstance(content, list):
+            out.append(msg)
+            continue
+        new_parts = []
+        for part in content:
+            if not isinstance(part, dict):
+                new_parts.append(part)
+                continue
+            if part.get("type") == "image_url":
+                new_parts.append({"type": "text", "text": "[Image — not supported by this provider]"})
+            else:
+                new_parts.append(part)
+        out.append({**msg, "content": new_parts})
+    return out
 
 
 async def _stream_openai(
-    model: str, messages: list, extra: dict, provider_id: str
+    model: str, messages: list, extra: dict, provider_id: str,
+    db: AsyncSession, key_record_id: str, t0: float,
 ) -> AsyncIterator[bytes]:
+    in_tok = out_tok = 0
     try:
         response = await litellm.acompletion(model=model, messages=messages, stream=True, **extra)
         async for chunk in response:
+            if hasattr(chunk, "usage") and chunk.usage:
+                in_tok = getattr(chunk.usage, "prompt_tokens", in_tok)
+                out_tok = getattr(chunk.usage, "completion_tokens", out_tok)
             yield f"data: {chunk.model_dump_json()}\n\n".encode()
         yield b"data: [DONE]\n\n"
+        latency_ms = (time.monotonic() - t0) * 1000
+        cost = estimate_cost(model, in_tok, out_tok)
         await record_success(provider_id)
+        await record_request(db, provider_id, True, in_tok, out_tok, latency_ms, cost, key_record_id)
     except Exception as e:
         await record_failure(provider_id, billing_error=is_billing_error(str(e)))
-        yield f'data: {{"error": "{str(e)}"}}\n\n'.encode()
+        await record_request(db, provider_id, False, 0, 0, 0, 0, key_record_id)
+        yield (b'data: ' + json.dumps({"error": str(e)}).encode() + b'\n\n')

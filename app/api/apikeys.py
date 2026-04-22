@@ -18,12 +18,15 @@ router = APIRouter(prefix="/api/keys", tags=["api-keys"])
 class KeyCreate(BaseModel):
     name: str
     key_type: str = "standard"  # standard|claude-code
+    rate_limit_rpm: Optional[int] = None
 
 
 class KeyUpdate(BaseModel):
     name: Optional[str] = None
     key_type: Optional[str] = None
     enabled: Optional[bool] = None
+    spending_cap_usd: Optional[float] = None  # -1 to clear the cap
+    rate_limit_rpm: Optional[int] = None       # -1 to clear the limit
 
 
 @router.get("")
@@ -50,6 +53,7 @@ async def create_key(
         key_prefix=raw_key[:12],
         key_type=body.key_type,
         enabled=True,
+        rate_limit_rpm=body.rate_limit_rpm,
     )
     db.add(key)
     await db.commit()
@@ -74,6 +78,10 @@ async def update_key(
         k.key_type = body.key_type
     if body.enabled is not None:
         k.enabled = body.enabled
+    if body.spending_cap_usd is not None:
+        k.spending_cap_usd = None if body.spending_cap_usd < 0 else body.spending_cap_usd
+    if body.rate_limit_rpm is not None:
+        k.rate_limit_rpm = None if body.rate_limit_rpm < 0 else body.rate_limit_rpm
     await db.commit()
     return _serialize(k)
 
@@ -108,6 +116,8 @@ def _serialize(k: ApiKey) -> dict:
         "total_requests": k.total_requests,
         "total_tokens": k.total_tokens,
         "total_cost_usd": k.total_cost_usd,
+        "spending_cap_usd": k.spending_cap_usd,
+        "rate_limit_rpm": k.rate_limit_rpm,
         "last_used_at": k.last_used_at.isoformat() if k.last_used_at else None,
         "created_at": k.created_at.isoformat() if k.created_at else None,
     }

@@ -18,7 +18,10 @@ from typing import AsyncIterator
 
 import litellm
 
-_TOOL_CALL_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
+_TOOL_CALL_RE = re.compile(
+    r"<(?:tool_call|tool_code|function_call|tool_use)>\s*(\{.*?\})\s*</(?:tool_call|tool_code|function_call|tool_use)>",
+    re.DOTALL,
+)
 
 _TOOL_PROMPT = """\
 You have access to the following tools. When you want to call a tool, output ONLY this \
@@ -155,7 +158,9 @@ def normalize_openai_messages(messages: list[dict]) -> list[dict]:
 
 def parse_tool_call(text: str) -> dict | None:
     """
-    Extract the first <tool_call> block from a model response.
+    Extract the first tool-call block from a model response.
+    Handles <tool_call>, <tool_code>, <function_call>, and <tool_use> tags.
+    Normalizes alternate field names (function_name→name, parameters/arguments/args→input).
     Returns {"name": str, "input": dict} or None.
     """
     m = _TOOL_CALL_RE.search(text)
@@ -163,8 +168,18 @@ def parse_tool_call(text: str) -> dict | None:
         return None
     try:
         payload = json.loads(m.group(1))
+        # Normalize name field
+        for alt_name in ("function_name", "tool_name"):
+            if alt_name in payload and "name" not in payload:
+                payload["name"] = payload.pop(alt_name)
         if "name" not in payload:
             return None
+        # Normalize input field
+        if "input" not in payload:
+            for alt_input in ("parameters", "arguments", "args", "kwargs"):
+                if alt_input in payload:
+                    payload["input"] = payload.pop(alt_input)
+                    break
         payload.setdefault("input", {})
         return payload
     except (json.JSONDecodeError, ValueError):
@@ -180,12 +195,13 @@ async def call_with_tool_prompt(
     extra: dict,
 ) -> str:
     """Non-streaming litellm call; returns the assistant text content."""
-    kwargs = {k: v for k, v in extra.items() if k not in ("max_tokens", "system", "tools")}
+    kwargs = {k: v for k, v in extra.items() if k not in ("max_tokens", "system", "tools", "stream")}
+    msgs = list(messages)
     if system:
-        kwargs["system"] = system
+        msgs = [{"role": "system", "content": system}] + msgs
     resp = await litellm.acompletion(
         model=model,
-        messages=messages,
+        messages=msgs,
         stream=False,
         max_tokens=extra.get("max_tokens", 1024),
         **kwargs,

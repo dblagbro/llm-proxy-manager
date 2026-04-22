@@ -1,7 +1,9 @@
 """API key authentication."""
+import collections
 import hashlib
 import secrets
 import logging
+import time
 from dataclasses import dataclass
 from typing import Optional
 
@@ -13,6 +15,25 @@ from sqlalchemy.sql import func
 from app.models.db import ApiKey
 
 logger = logging.getLogger(__name__)
+
+# Sliding-window RPM tracker: key_id → deque of request timestamps
+_rpm_windows: dict[str, collections.deque] = {}
+
+
+def _check_rate_limit(key_id: str, limit_rpm: int) -> None:
+    """Raise HTTP 429 if this node's share of limit_rpm is exceeded in the last 60 seconds."""
+    from app.cluster.manager import active_node_count
+    nodes = max(1, active_node_count())
+    per_node_limit = max(1, limit_rpm // nodes)
+
+    now = time.monotonic()
+    window = _rpm_windows.setdefault(key_id, collections.deque())
+    cutoff = now - 60.0
+    while window and window[0] < cutoff:
+        window.popleft()
+    if len(window) >= per_node_limit:
+        raise HTTPException(429, f"Rate limit exceeded: {limit_rpm} requests/minute (cluster-wide)")
+    window.append(now)
 
 
 @dataclass
@@ -40,6 +61,15 @@ async def verify_api_key(db: AsyncSession, raw_key: Optional[str]) -> ApiKeyReco
     key = result.scalar_one_or_none()
     if not key:
         raise HTTPException(401, "Invalid or disabled API key")
+
+    if key.spending_cap_usd is not None:
+        from app.cluster.manager import get_peer_total_cost
+        global_cost = (key.total_cost_usd or 0.0) + get_peer_total_cost(key.id)
+        if global_cost >= key.spending_cap_usd:
+            raise HTTPException(429, f"API key spending cap of ${key.spending_cap_usd:.4f} reached")
+
+    if key.rate_limit_rpm is not None:
+        _check_rate_limit(key.id, key.rate_limit_rpm)
 
     # Update usage stats (fire-and-forget, non-blocking)
     await db.execute(

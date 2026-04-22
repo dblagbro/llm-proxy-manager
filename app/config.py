@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     hold_down_sec: int = Field(120, alias="HOLD_DOWN_SEC")
 
     # CoT-E pipeline
+    cot_enabled: bool = Field(True, alias="COT_ENABLED")
     cot_max_iterations: int = Field(1, alias="COT_MAX_ITERATIONS")
     cot_quality_threshold: int = Field(6, alias="COT_QUALITY_THRESHOLD")
     cot_critique_max_tokens: int = Field(200, alias="COT_CRITIQUE_MAX_TOKENS")

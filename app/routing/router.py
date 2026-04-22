@@ -34,6 +34,7 @@ class RouteResult:
     unmet_hints: list[str]
     cot_engaged: bool
     tool_emulation_engaged: bool
+    vision_stripped: bool
     capability_header: str
     native_thinking_params: dict = field(default_factory=dict)
 
@@ -111,6 +112,7 @@ async def _load_profile(db: AsyncSession, provider: Provider) -> CapabilityProfi
             modalities=cap.modalities or ["text"],
             native_reasoning=cap.native_reasoning or False,
             native_tools=cap.native_tools if cap.native_tools is not None else True,
+            native_vision=cap.native_vision if cap.native_vision is not None else False,
             priority=provider.priority,
         )
     return infer_capability_profile(provider.id, provider.provider_type, model_id, provider.priority)
@@ -177,6 +179,7 @@ async def select_provider(
         native_params = _native_thinking_params(provider.provider_type, best_profile.model_id)
 
     tool_emulation = has_tools and not best_profile.native_tools and not cot_engaged
+    vision_stripped = has_images and not best_profile.native_vision
 
     cap_header = build_capability_header(best_profile, unmet, cot_engaged, tool_emulation)
 
@@ -198,6 +201,7 @@ async def select_provider(
         unmet_hints=unmet,
         cot_engaged=cot_engaged,
         tool_emulation_engaged=tool_emulation,
+        vision_stripped=vision_stripped,
         capability_header=cap_header,
         native_thinking_params=native_params,
     )

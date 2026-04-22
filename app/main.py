@@ -57,7 +57,7 @@ async def lifespan(app: FastAPI):
         notify_fn=alert_cluster_node_down,
     )
 
-    logger.info("llm-proxy v2 started", port=settings.port, cluster=settings.cluster_enabled)
+    logger.info("llm-proxy v2 started port=%s cluster=%s", settings.port, settings.cluster_enabled)
     yield
     logger.info("llm-proxy v2 shutting down")
 

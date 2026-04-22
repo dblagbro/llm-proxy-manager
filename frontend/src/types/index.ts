@@ -91,6 +91,8 @@ export interface ApiKey {
   total_requests: number
   total_tokens: number
   total_cost_usd: number
+  spending_cap_usd: number | null
+  rate_limit_rpm: number | null
   last_used_at: string | null
   created_at: string
   raw_key?: string  // only on create response
