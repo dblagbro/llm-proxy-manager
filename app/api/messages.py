@@ -33,6 +33,7 @@ async def messages(
     llm_hint: Optional[str] = Header(None, alias="llm-hint"),
     x_session_id: Optional[str] = Header(None, alias="x-session-id"),
     x_cot_iterations: Optional[str] = Header(None, alias="x-cot-iterations"),
+    x_cot_verify: Optional[str] = Header(None, alias="x-cot-verify"),
 ):
     key_record = await verify_api_key(db, x_api_key)
 
@@ -74,10 +75,13 @@ async def messages(
                     cot_max = max(0, int(x_cot_iterations))
                 except ValueError:
                     pass
+            force_verify: bool | None = None
+            if x_cot_verify is not None:
+                force_verify = x_cot_verify.lower() in ("1", "true", "yes")
             return StreamingResponse(
                 _stream_cot_anthropic(
                     route.litellm_model, messages_list, x_session_id, extra,
-                    cot_max, route.provider.id,
+                    cot_max, route.provider.id, force_verify,
                 ),
                 media_type="text/event-stream",
                 headers=resp_headers,
@@ -124,10 +128,11 @@ async def _stream_cot_anthropic(
     extra: dict,
     max_iterations: int | None,
     provider_id: str,
+    force_verify: bool | None = None,
 ) -> AsyncIterator[bytes]:
     """Pass-through wrapper around run_cot_pipeline that updates the circuit breaker."""
     try:
-        async for chunk in run_cot_pipeline(model, messages, session_id, extra, max_iterations):
+        async for chunk in run_cot_pipeline(model, messages, session_id, extra, max_iterations, force_verify):
             yield chunk
         await record_success(provider_id)
     except Exception as e:

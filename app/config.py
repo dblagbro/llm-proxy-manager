@@ -38,6 +38,14 @@ class Settings(BaseSettings):
     # Skip critique/refinement when the initial draft exceeds this token count;
     # 0 = always refine. Avoids wasted calls on already-thorough long answers.
     cot_min_tokens_skip: int = Field(800, alias="COT_MIN_TOKENS_SKIP")
+    # Verification pass — generates "what commands verify this answer?" after refinement.
+    # Disabled by default (adds one extra LLM call). Enable globally or per-request
+    # via X-Cot-Verify: true.
+    cot_verify_enabled: bool = Field(False, alias="COT_VERIFY_ENABLED")
+    cot_verify_max_tokens: int = Field(400, alias="COT_VERIFY_MAX_TOKENS")
+    # When True, only verify answers that contain shell code blocks or infra CLI tools.
+    # When False, verify every CoT response (use with care — adds latency to all requests).
+    cot_verify_auto_detect: bool = Field(True, alias="COT_VERIFY_AUTO_DETECT")
 
     # Cluster
     cluster_enabled: bool = Field(False, alias="CLUSTER_ENABLED")

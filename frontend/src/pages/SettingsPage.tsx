@@ -95,6 +95,31 @@ export function SettingsPage() {
             <strong>Min draft tokens:</strong> When the initial draft exceeds this count, critique/refinement is
             skipped — the answer is already thorough. Set to 0 to always refine.
           </p>
+
+          <div className="border-t border-gray-200 dark:border-gray-700 pt-4 space-y-4">
+            <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide">Verification Pass</p>
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-medium text-gray-800 dark:text-gray-200">Enable verification pass</p>
+                <p className="text-xs text-gray-400">
+                  After refining, generates shell/API commands that confirm the answer is correct.
+                  Adds one LLM call. Can also be forced per-request with <code className="font-mono text-indigo-400">X-Cot-Verify: true</code>.
+                </p>
+              </div>
+              <Switch {...boolField('cot_verify_enabled')} />
+            </div>
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-medium text-gray-800 dark:text-gray-200">Auto-detect shell commands</p>
+                <p className="text-xs text-gray-400">
+                  Only verify answers that contain shell code blocks or infrastructure CLI tools.
+                  Turn off to verify every CoT response.
+                </p>
+              </div>
+              <Switch {...boolField('cot_verify_auto_detect')} />
+            </div>
+            <Input label="Verification max tokens" type="number" {...numField('cot_verify_max_tokens')} min={100} max={800} />
+          </div>
         </CardContent>
       </Card>
 
