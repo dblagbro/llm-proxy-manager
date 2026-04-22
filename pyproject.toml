@@ -57,3 +57,6 @@ select = ["E", "F", "I", "UP"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "real_providers: requires real LLM API calls (use --run-real to enable)",
+]
