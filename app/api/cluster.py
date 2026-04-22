@@ -7,9 +7,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.database import get_db
 from app.auth.admin import require_admin, AdminUser
-from app.cluster.manager import get_cluster_status, apply_sync, verify_cluster_request
+from app.cluster.manager import get_cluster_status, apply_sync, verify_cluster_request, _sign
 from app.routing.circuit_breaker import get_all_states
 from app.config import settings
+from app import config_runtime
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["cluster"])
@@ -61,6 +62,27 @@ async def cluster_sync(request: Request, db: AsyncSession = Depends(get_db)):
     payload = json.loads(body)
     await apply_sync(db, payload)
     return {"ok": True}
+
+
+@router.get("/cluster/settings")
+async def cluster_settings(request: Request):
+    """
+    Returns this node's current effective settings.
+    Used by peers during cluster-diff queries.
+    Secured with the same HMAC shared secret as /cluster/sync.
+    """
+    if not settings.cluster_enabled:
+        raise HTTPException(403, "Cluster mode not enabled")
+    node_id = request.headers.get("X-Cluster-Node", "")
+    sig = request.headers.get("X-Cluster-Sig", "")
+    if not node_id or not verify_cluster_request(node_id.encode(), sig):
+        raise HTTPException(403, "Invalid cluster signature")
+
+    s = config_runtime.settings
+    result = {}
+    for key, meta in config_runtime.SCHEMA.items():
+        result[key] = getattr(s, key, meta["default"])
+    return {"node_id": settings.cluster_node_id, "settings": result}
 
 
 @router.post("/cluster/circuit-breaker/{provider_id}/reset")

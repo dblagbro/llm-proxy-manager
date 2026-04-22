@@ -3,6 +3,7 @@
 """
 import json
 import logging
+import time
 from typing import Optional, AsyncIterator
 
 import litellm
@@ -15,6 +16,8 @@ from app.auth.keys import verify_api_key
 from app.routing.router import select_provider
 from app.routing.lmrh import parse_hint
 from app.routing.circuit_breaker import record_success, record_failure, is_billing_error
+from app.monitoring.metrics import record_request
+from app.monitoring.pricing import estimate_cost
 from app.cot.pipeline import run_cot_pipeline
 from app.cot.tool_emulation import (
     build_openai_tool_prompt,
@@ -120,7 +123,7 @@ async def chat_completions(
             return StreamingResponse(
                 _stream_cot_openai(
                     route.litellm_model, messages_list, x_session_id, extra,
-                    cot_max, route.provider.id, force_verify,
+                    cot_max, route.provider.id, db, key_record.id, force_verify,
                 ),
                 media_type="text/event-stream",
                 headers=resp_headers,
@@ -155,6 +158,8 @@ async def _stream_cot_openai(
     extra: dict,
     max_iterations: int | None,
     provider_id: str,
+    db: AsyncSession,
+    key_record_id: str,
     force_verify: bool | None = None,
 ) -> AsyncIterator[bytes]:
     """
@@ -166,6 +171,8 @@ async def _stream_cot_openai(
     text_buf: list[str] = []
     in_thinking = False
     in_text = False
+    in_tok = out_tok = 0
+    t0 = time.monotonic()
 
     try:
         async for raw in run_cot_pipeline(model, messages, session_id, extra, max_iterations, force_verify):
@@ -194,6 +201,10 @@ async def _stream_cot_openai(
             elif t == "content_block_stop":
                 in_thinking = False
                 in_text = False
+            elif t == "message_delta":
+                usage = evt.get("usage", {})
+                in_tok = usage.get("input_tokens", in_tok)
+                out_tok = usage.get("output_tokens", out_tok)
 
         thinking_text = "".join(thinking_buf).strip()
         answer_text = "".join(text_buf).strip()
@@ -203,12 +214,10 @@ async def _stream_cot_openai(
         )
 
         msg_id = "chatcmpl-cot"
-        # Role delta
         yield (
             f'data: {{"id":"{msg_id}","object":"chat.completion.chunk",'
             f'"choices":[{{"index":0,"delta":{{"role":"assistant"}},"finish_reason":null}}]}}\n\n'
         ).encode()
-        # Content in chunks
         chunk_size = 50
         for i in range(0, len(full_text), chunk_size):
             piece = json.dumps(full_text[i:i + chunk_size])[1:-1]
@@ -216,16 +225,20 @@ async def _stream_cot_openai(
                 f'data: {{"id":"{msg_id}","object":"chat.completion.chunk",'
                 f'"choices":[{{"index":0,"delta":{{"content":"{piece}"}},"finish_reason":null}}]}}\n\n'
             ).encode()
-        # Stop chunk
         yield (
             f'data: {{"id":"{msg_id}","object":"chat.completion.chunk",'
             f'"choices":[{{"index":0,"delta":{{}},"finish_reason":"stop"}}]}}\n\n'
         ).encode()
         yield b"data: [DONE]\n\n"
+
+        latency_ms = (time.monotonic() - t0) * 1000
+        cost = estimate_cost(model, in_tok, out_tok)
         await record_success(provider_id)
+        await record_request(db, provider_id, True, in_tok, out_tok, latency_ms, cost, key_record_id)
 
     except Exception as e:
         await record_failure(provider_id, billing_error=is_billing_error(str(e)))
+        await record_request(db, provider_id, False, 0, 0, 0, 0, key_record_id)
         yield f'data: {{"error": "{str(e)}"}}\n\n'.encode()
 
 

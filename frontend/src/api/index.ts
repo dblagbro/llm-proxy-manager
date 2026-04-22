@@ -62,8 +62,19 @@ export const monitoringApi = {
 
 // ── Settings ──────────────────────────────────────────────────────────────────
 export const settingsApi = {
-  get: ()                  => api.get<Record<string, unknown>>('/api/settings'),
-  save: (data: Record<string, unknown>) => api.put<{ saved: string[] }>('/api/settings', data),
+  get:  ()                               => api.get<Record<string, unknown>>('/api/settings'),
+  save: (data: Record<string, unknown>)  => api.put<{ saved: string[] }>('/api/settings', data),
+  clusterDiff: ()                        => api.get<{
+    cluster_enabled: boolean
+    all_synced?: boolean
+    local?: { node_id: string; settings: Record<string, unknown> }
+    peers?: Array<{
+      id: string; name: string; status: string
+      settings: Record<string, unknown> | null
+      diffs: string[]
+      error?: string
+    }>
+  }>('/api/settings/cluster-diff'),
 }
 
 // ── Cluster ───────────────────────────────────────────────────────────────────
