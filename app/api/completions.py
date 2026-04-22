@@ -15,6 +15,7 @@ from app.auth.keys import verify_api_key
 from app.routing.router import select_provider
 from app.routing.lmrh import parse_hint
 from app.routing.circuit_breaker import record_success, record_failure, is_billing_error
+from app.cot.pipeline import run_cot_pipeline
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -27,6 +28,8 @@ async def chat_completions(
     authorization: Optional[str] = Header(None),
     x_api_key: Optional[str] = Header(None, alias="x-api-key"),
     llm_hint: Optional[str] = Header(None, alias="llm-hint"),
+    x_session_id: Optional[str] = Header(None, alias="x-session-id"),
+    x_cot_iterations: Optional[str] = Header(None, alias="x-cot-iterations"),
 ):
     # Accept Bearer token or x-api-key
     token = x_api_key
@@ -37,7 +40,6 @@ async def chat_completions(
     body = await request.json()
     messages_list = body.get("messages", [])
     stream = body.get("stream", False)
-    model_hint = body.get("model")  # caller model hint (ignored for routing, used as override hint)
     tools = body.get("tools")
 
     hint = parse_hint(llm_hint)
@@ -59,6 +61,24 @@ async def chat_completions(
     }
 
     try:
+        if route.cot_engaged:
+            if not stream:
+                raise HTTPException(422, "CoT-E requires stream=true")
+            cot_max = None
+            if x_cot_iterations is not None:
+                try:
+                    cot_max = max(0, int(x_cot_iterations))
+                except ValueError:
+                    pass
+            return StreamingResponse(
+                _stream_cot_openai(
+                    route.litellm_model, messages_list, x_session_id, extra,
+                    cot_max, route.provider.id,
+                ),
+                media_type="text/event-stream",
+                headers=resp_headers,
+            )
+
         if stream:
             return StreamingResponse(
                 _stream_openai(route.litellm_model, messages_list, extra, route.provider.id),
@@ -79,6 +99,86 @@ async def chat_completions(
         err_str = str(e)
         await record_failure(route.provider.id, billing_error=is_billing_error(err_str))
         raise HTTPException(502, f"Upstream provider error: {err_str}")
+
+
+async def _stream_cot_openai(
+    model: str,
+    messages: list,
+    session_id: str | None,
+    extra: dict,
+    max_iterations: int | None,
+    provider_id: str,
+) -> AsyncIterator[bytes]:
+    """
+    Run the CoT-E pipeline and re-emit as OpenAI-format SSE chunks.
+    Thinking blocks are collected and prepended as <thinking>…</thinking>
+    text so callers can strip or display them.
+    """
+    thinking_buf: list[str] = []
+    text_buf: list[str] = []
+    in_thinking = False
+    in_text = False
+
+    try:
+        async for raw in run_cot_pipeline(model, messages, session_id, extra, max_iterations):
+            line = raw.decode(errors="ignore").strip()
+            if not line.startswith("data: "):
+                continue
+            payload = line[6:]
+            if payload in ("[DONE]", ""):
+                continue
+            try:
+                evt = json.loads(payload)
+            except ValueError:
+                continue
+
+            t = evt.get("type", "")
+            if t == "content_block_start":
+                block_type = evt.get("content_block", {}).get("type", "")
+                in_thinking = block_type == "thinking"
+                in_text = block_type == "text"
+            elif t == "content_block_delta":
+                delta = evt.get("delta", {})
+                if in_thinking:
+                    thinking_buf.append(delta.get("thinking", ""))
+                elif in_text:
+                    text_buf.append(delta.get("text", ""))
+            elif t == "content_block_stop":
+                in_thinking = False
+                in_text = False
+
+        thinking_text = "".join(thinking_buf).strip()
+        answer_text = "".join(text_buf).strip()
+        full_text = (
+            f"<thinking>\n{thinking_text}\n</thinking>\n\n{answer_text}"
+            if thinking_text else answer_text
+        )
+
+        msg_id = "chatcmpl-cot"
+        # Role delta
+        yield (
+            f'data: {{"id":"{msg_id}","object":"chat.completion.chunk",'
+            f'"choices":[{{"index":0,"delta":{{"role":"assistant"}},"finish_reason":null}}]}}\n\n'
+        ).encode()
+        # Content in chunks
+        chunk_size = 50
+        for i in range(0, len(full_text), chunk_size):
+            piece = json.dumps(full_text[i:i + chunk_size])[1:-1]
+            yield (
+                f'data: {{"id":"{msg_id}","object":"chat.completion.chunk",'
+                f'"choices":[{{"index":0,"delta":{{"content":"{piece}"}},"finish_reason":null}}]}}\n\n'
+            ).encode()
+        # Stop chunk
+        yield (
+            f'data: {{"id":"{msg_id}","object":"chat.completion.chunk",'
+            f'"choices":[{{"index":0,"delta":{{}},"finish_reason":"stop"}}]}}\n\n'
+        ).encode()
+        yield b"data: [DONE]\n\n"
+        await record_success(provider_id)
+
+    except Exception as e:
+        await record_failure(provider_id, billing_error=is_billing_error(str(e)))
+        yield f'data: {{"error": "{str(e)}"}}\n\n'.encode()
 
 
 async def _stream_openai(
