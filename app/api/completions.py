@@ -55,6 +55,11 @@ async def chat_completions(
         extra["max_tokens"] = body["max_tokens"]
     if body.get("temperature") is not None:
         extra["temperature"] = body["temperature"]
+    # Native reasoning: inject router-computed params; allow per-request reasoning_effort override
+    if route.native_thinking_params:
+        extra.update(route.native_thinking_params)
+        if "reasoning_effort" in route.native_thinking_params and body.get("reasoning_effort"):
+            extra["reasoning_effort"] = body["reasoning_effort"]
 
     resp_headers = {
         "X-Provider": route.provider.name,

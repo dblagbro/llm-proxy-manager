@@ -59,6 +59,13 @@ async def messages(
         extra["system"] = system
     if tools:
         extra["tools"] = tools
+    # Native reasoning injection:
+    # - Gemini 2.5 / o-series: inject from router-computed params
+    # - Anthropic extended-thinking: forward the client's `thinking` block as-is
+    if route.native_thinking_params:
+        extra.update(route.native_thinking_params)
+    elif thinking and route.profile.provider_type == "anthropic":
+        extra["thinking"] = thinking
 
     resp_headers = {
         "X-Provider": route.provider.name,
