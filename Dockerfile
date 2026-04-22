@@ -3,7 +3,7 @@ FROM node:22-slim AS frontend-build
 
 WORKDIR /ui
 COPY frontend/package*.json ./
-RUN npm ci --prefer-offline
+RUN npm ci
 COPY frontend/ ./
 RUN npm run build
 

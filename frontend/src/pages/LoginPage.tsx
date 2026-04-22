@@ -70,9 +70,7 @@ export function LoginPage() {
           </form>
         </div>
 
-        <p className="text-center text-xs text-gray-600 mt-6">
-          Default credentials: admin / admin
-        </p>
+
       </div>
     </div>
   )
