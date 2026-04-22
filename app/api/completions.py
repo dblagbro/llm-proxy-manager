@@ -23,6 +23,8 @@ from app.cot.tool_emulation import (
     normalize_openai_messages,
     parse_tool_call,
     call_with_tool_prompt,
+)
+from app.cot.sse import (
     openai_tool_sse,
     openai_text_sse,
     openai_tool_response,

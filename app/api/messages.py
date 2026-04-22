@@ -22,6 +22,8 @@ from app.cot.tool_emulation import (
     normalize_anthropic_messages,
     parse_tool_call,
     call_with_tool_prompt,
+)
+from app.cot.sse import (
     anthropic_tool_sse,
     anthropic_text_sse,
     anthropic_tool_response,
