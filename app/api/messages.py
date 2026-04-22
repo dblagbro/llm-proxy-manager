@@ -16,7 +16,6 @@ from app.models.database import get_db
 from app.auth.keys import verify_api_key, ApiKeyRecord
 from app.routing.router import select_provider
 from app.routing.lmrh import parse_hint
-from app.routing.circuit_breaker import record_success, record_failure, is_billing_error
 from app.cot.pipeline import run_cot_pipeline
 from app.cot.tool_emulation import (
     build_anthropic_tool_prompt,
@@ -28,8 +27,8 @@ from app.cot.tool_emulation import (
     anthropic_tool_response,
     anthropic_text_response,
 )
-from app.monitoring.metrics import record_request
-from app.monitoring.pricing import estimate_cost
+from app.monitoring.helpers import record_outcome
+from app.api.image_utils import has_images_anthropic, strip_images_anthropic
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -57,7 +56,7 @@ async def messages(
 
     hint = parse_hint(llm_hint)
     has_tools = bool(tools)
-    has_images = _has_images(messages_list)
+    has_images = has_images_anthropic(messages_list)
 
     route = await select_provider(
         db, hint, has_tools=has_tools, has_images=has_images, key_type=key_record.key_type
@@ -78,7 +77,7 @@ async def messages(
         extra["thinking"] = thinking
 
     if route.vision_stripped:
-        messages_list = _strip_images_anthropic(messages_list)
+        messages_list = strip_images_anthropic(messages_list)
 
     resp_headers = {
         "X-Provider": route.provider.name,
@@ -94,7 +93,8 @@ async def messages(
             response_text = await call_with_tool_prompt(
                 route.litellm_model, norm_msgs, merged_system, emul_extra
             )
-            await record_success(route.provider.id)
+            await record_outcome(db, route.provider.id, route.litellm_model, success=True,
+                                 t0=time.monotonic(), key_record_id=key_record.id)
             tool_call = parse_tool_call(response_text)
             if stream:
                 gen = (
@@ -145,12 +145,10 @@ async def messages(
                 stream=False,
                 **extra,
             )
-            latency_ms = (time.monotonic() - t0) * 1000
-            await record_success(route.provider.id)
             in_tok = getattr(result.usage, "prompt_tokens", 0)
             out_tok = getattr(result.usage, "completion_tokens", 0)
-            cost = estimate_cost(route.litellm_model, in_tok, out_tok)
-            await record_request(db, route.provider.id, True, in_tok, out_tok, latency_ms, cost, key_record.id)
+            await record_outcome(db, route.provider.id, route.litellm_model, success=True,
+                                 in_tok=in_tok, out_tok=out_tok, t0=t0, key_record_id=key_record.id)
             return JSONResponse(
                 content=_to_anthropic_response(result),
                 headers=resp_headers,
@@ -158,9 +156,8 @@ async def messages(
 
     except Exception as e:
         err_str = str(e)
-        billing = is_billing_error(err_str)
-        await record_failure(route.provider.id, billing_error=billing)
-        await record_request(db, route.provider.id, False, 0, 0, 0, 0, key_record.id)
+        await record_outcome(db, route.provider.id, route.litellm_model, success=False,
+                             key_record_id=key_record.id, error_str=err_str)
         logger.error(f"Provider {route.provider.id} failed: {err_str}")
         raise HTTPException(502, f"Upstream provider error: {err_str}")
 
@@ -194,13 +191,11 @@ async def _stream_cot_anthropic(
                         out_tok = usage.get("output_tokens", out_tok)
                 except (ValueError, KeyError):
                     pass
-        latency_ms = (time.monotonic() - t0) * 1000
-        cost = estimate_cost(model, in_tok, out_tok)
-        await record_success(provider_id)
-        await record_request(db, provider_id, True, in_tok, out_tok, latency_ms, cost, key_record_id)
+        await record_outcome(db, provider_id, model, success=True,
+                             in_tok=in_tok, out_tok=out_tok, t0=t0, key_record_id=key_record_id)
     except Exception as e:
-        await record_failure(provider_id, billing_error=is_billing_error(str(e)))
-        await record_request(db, provider_id, False, 0, 0, 0, 0, key_record_id)
+        await record_outcome(db, provider_id, model, success=False,
+                             key_record_id=key_record_id, error_str=str(e))
         yield (b'data: ' + json.dumps({"type": "error", "error": {"message": str(e)}}).encode() + b'\n\n')
 
 
@@ -284,13 +279,11 @@ async def _stream_anthropic(
             f'"stop_sequence":null}},"usage":{{"output_tokens":{output_tokens}}}}}\n\n'
         ).encode()
         yield b'data: {"type":"message_stop"}\n\ndata: [DONE]\n\n'
-        latency_ms = (time.monotonic() - t0) * 1000
-        cost = estimate_cost(model, input_tokens, output_tokens)
-        await record_success(provider_id)
-        await record_request(db, provider_id, True, input_tokens, output_tokens, latency_ms, cost, key_record_id)
+        await record_outcome(db, provider_id, model, success=True,
+                             in_tok=input_tokens, out_tok=output_tokens, t0=t0, key_record_id=key_record_id)
     except Exception as e:
-        await record_failure(provider_id, billing_error=is_billing_error(str(e)))
-        await record_request(db, provider_id, False, 0, 0, 0, 0, key_record_id)
+        await record_outcome(db, provider_id, model, success=False,
+                             key_record_id=key_record_id, error_str=str(e))
         yield (b'data: ' + json.dumps({"type": "error", "error": {"message": str(e)}}).encode() + b'\n\n')
 
 
@@ -342,34 +335,3 @@ def _to_anthropic_response(litellm_response) -> dict:
     }
 
 
-def _has_images(messages: list[dict]) -> bool:
-    for m in messages:
-        content = m.get("content", "")
-        if isinstance(content, list):
-            for block in content:
-                if isinstance(block, dict) and block.get("type") in ("image", "image_url"):
-                    return True
-    return False
-
-
-def _strip_images_anthropic(messages: list[dict]) -> list[dict]:
-    """Replace Anthropic-format image blocks with text placeholders."""
-    out = []
-    for msg in messages:
-        content = msg.get("content", "")
-        if not isinstance(content, list):
-            out.append(msg)
-            continue
-        new_blocks = []
-        for block in content:
-            if not isinstance(block, dict):
-                new_blocks.append(block)
-                continue
-            if block.get("type") == "image":
-                src = block.get("source", {})
-                media = src.get("media_type", "image")
-                new_blocks.append({"type": "text", "text": f"[Image: {media} — not supported by this provider]"})
-            else:
-                new_blocks.append(block)
-        out.append({**msg, "content": new_blocks})
-    return out
