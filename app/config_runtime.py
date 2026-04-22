@@ -84,8 +84,10 @@ async def load(db: AsyncSession) -> None:
         logger.info("runtime_settings_loaded", count=len(overrides))
 
 
-async def save(db: AsyncSession, updates: dict[str, Any]) -> None:
+async def save(db: AsyncSession, updates: dict[str, Any], timestamp: float | None = None) -> None:
+    import time as _time
     from app.models.db import SystemSetting
+    now = timestamp if timestamp is not None else _time.time()
     for key, val in updates.items():
         schema = SCHEMA.get(key)
         if not schema:
@@ -97,9 +99,20 @@ async def save(db: AsyncSession, updates: dict[str, Any]) -> None:
         if row:
             row.value = raw
             row.value_type = typ
+            row.updated_at = now
         else:
-            db.add(SystemSetting(key=key, value=raw, value_type=typ))
+            db.add(SystemSetting(key=key, value=raw, value_type=typ, updated_at=now))
     await db.commit()
     # Apply to live settings singleton
     coerced = {k: _coerce(str(v), SCHEMA[k]["type"]) for k, v in updates.items() if k in SCHEMA}
     apply(coerced)
+
+
+async def get_all_db_settings(db: AsyncSession) -> list[dict]:
+    """Return all rows from system_settings for cluster sync payload."""
+    from app.models.db import SystemSetting
+    result = await db.execute(select(SystemSetting))
+    return [
+        {"key": r.key, "value": r.value, "value_type": r.value_type, "updated_at": r.updated_at or 0.0}
+        for r in result.scalars().all()
+    ]

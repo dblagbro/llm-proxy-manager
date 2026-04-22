@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from app.config import settings
-from app.models.db import User, ApiKey, Provider
+from app.models.db import User, ApiKey, Provider, SystemSetting
 
 logger = logging.getLogger(__name__)
 
@@ -147,6 +147,12 @@ async def _push_sync(peer: PeerNode, db_factory):
              "extra_config": p.extra_config or {}}
             for p in providers_result.scalars().all()
         ]
+        # Only push settings that were explicitly saved (have a DB row) — not env-var defaults
+        settings_result = await db.execute(select(SystemSetting))
+        node_settings = [
+            {"key": s.key, "value": s.value, "value_type": s.value_type, "updated_at": s.updated_at or 0.0}
+            for s in settings_result.scalars().all()
+        ]
 
     payload = {
         "source_node": settings.cluster_node_id,
@@ -154,6 +160,7 @@ async def _push_sync(peer: PeerNode, db_factory):
         "users": users,
         "api_keys": keys,
         "providers": providers,
+        "settings": node_settings,
     }
     body = json.dumps(payload, sort_keys=True).encode()
     sig = _sign(body)
@@ -247,7 +254,36 @@ async def apply_sync(db: AsyncSession, payload: dict):
         db.add(p)
         register_provider(p.id, p.provider_type, p.hold_down_sec, p.failure_threshold)
 
+    # Merge settings — last-write-wins by updated_at timestamp
+    from app import config_runtime
+    settings_to_apply: dict = {}
+    for s_data in payload.get("settings", []):
+        key = s_data.get("key", "")
+        if key not in config_runtime.SCHEMA:
+            continue
+        incoming_ts = float(s_data.get("updated_at", 0))
+        result = await db.execute(select(SystemSetting).where(SystemSetting.key == key))
+        existing = result.scalar_one_or_none()
+        if existing and (existing.updated_at or 0) >= incoming_ts:
+            continue  # local copy is same age or newer — keep it
+        if existing:
+            existing.value = s_data["value"]
+            existing.value_type = s_data.get("value_type", "str")
+            existing.updated_at = incoming_ts
+        else:
+            db.add(SystemSetting(
+                key=key,
+                value=s_data["value"],
+                value_type=s_data.get("value_type", "str"),
+                updated_at=incoming_ts,
+            ))
+        settings_to_apply[key] = config_runtime._coerce(s_data["value"], s_data.get("value_type", "str"))
+
     await db.commit()
+
+    if settings_to_apply:
+        config_runtime.apply(settings_to_apply)
+        logger.info("cluster_settings_applied", count=len(settings_to_apply), keys=list(settings_to_apply))
 
 
 def get_cluster_status() -> dict:

@@ -24,6 +24,7 @@ async def init_db():
         for stmt in [
             "ALTER TABLE providers ADD COLUMN hold_down_sec INTEGER",
             "ALTER TABLE providers ADD COLUMN failure_threshold INTEGER",
+            "ALTER TABLE system_settings ADD COLUMN updated_at REAL DEFAULT 0",
         ]:
             try:
                 await conn.exec_driver_sql(stmt)

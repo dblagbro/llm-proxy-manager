@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.database import get_db
 from app.auth.admin import require_admin, AdminUser
+from app.config import settings
 from app import config_runtime
 
 logger = logging.getLogger(__name__)
@@ -41,4 +42,14 @@ async def put_settings(
         raise HTTPException(400, f"Unknown setting keys: {unknown}")
     await config_runtime.save(db, body)
     logger.info("settings_updated", keys=list(body.keys()))
+
+    # Kick off an immediate sync to peers so they pick up the change within seconds
+    if settings.cluster_enabled:
+        import asyncio
+        from app.cluster.manager import _peers, _push_sync
+        from app.models.database import AsyncSessionLocal
+        for peer in list(_peers.values()):
+            if peer.status != "unreachable":
+                asyncio.create_task(_push_sync(peer, AsyncSessionLocal))
+
     return {"saved": list(body.keys())}

@@ -101,6 +101,7 @@ class SystemSetting(Base):
     key = Column(String, primary_key=True)
     value = Column(Text, nullable=False)        # always stored as string
     value_type = Column(String, default="str")  # str|int|float|bool
+    updated_at = Column(Float, default=0.0)     # Unix timestamp — used for last-write-wins sync
 
 
 class ActivityLog(Base):
