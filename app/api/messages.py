@@ -33,6 +33,7 @@ from app.cot.sse import (
 )
 from app.monitoring.helpers import record_outcome
 from app.api.image_utils import has_images_anthropic, strip_images_anthropic
+from app.routing.aliases import resolve_alias
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -62,8 +63,11 @@ async def messages(
     has_tools = bool(tools)
     has_images = has_images_anthropic(messages_list)
 
+    alias = await resolve_alias(db, body.get("model"))
     route = await select_provider(
-        db, hint, has_tools=has_tools, has_images=has_images, key_type=key_record.key_type
+        db, hint, has_tools=has_tools, has_images=has_images, key_type=key_record.key_type,
+        pinned_provider_id=alias.provider_id if alias else None,
+        model_override=alias.model_id if alias else None,
     )
 
     # Build extra kwargs for litellm

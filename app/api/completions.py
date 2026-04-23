@@ -17,6 +17,7 @@ from app.routing.router import select_provider
 from app.routing.lmrh import parse_hint
 from app.monitoring.helpers import record_outcome
 from app.api.image_utils import has_images_openai, strip_images_openai
+from app.routing.aliases import resolve_alias
 from app.cot.pipeline import run_cot_pipeline, parse_cot_request_headers
 from app.cot.tool_emulation import (
     build_openai_tool_prompt,
@@ -61,7 +62,12 @@ async def chat_completions(
     has_tools = bool(tools)
     has_images = has_images_openai(messages_list)
 
-    route = await select_provider(db, hint, has_tools=has_tools, has_images=has_images, key_type=key_record.key_type)
+    alias = await resolve_alias(db, body.get("model"))
+    route = await select_provider(
+        db, hint, has_tools=has_tools, has_images=has_images, key_type=key_record.key_type,
+        pinned_provider_id=alias.provider_id if alias else None,
+        model_override=alias.model_id if alias else None,
+    )
 
     extra = {**route.litellm_kwargs}
     if tools:

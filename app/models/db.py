@@ -135,3 +135,14 @@ class ProviderMetric(Base):
     avg_ttft_ms = Column(Float, default=0.0)
     ttft_requests = Column(Integer, default=0)
     circuit_state = Column(String, default="closed")  # closed|open|half-open
+
+
+class ModelAlias(Base):
+    """Client-facing model name → specific provider + model mapping."""
+    __tablename__ = "model_aliases"
+
+    alias = Column(String, primary_key=True)
+    provider_id = Column(String, ForeignKey("providers.id", ondelete="CASCADE"), nullable=True)
+    model_id = Column(String, nullable=False)
+    description = Column(String, nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
