@@ -367,10 +367,86 @@ async def run_cot_pipeline(
     run_verify = _resolve_verify(force_verify, current_answer)
     if run_verify:
         verify_text = await _run_verify_pass(model, user_text, current_answer, extra_kwargs)
-        yield sse_thinking_start(block_index)
-        yield sse_thinking_delta(block_index, f"## Verification\n{verify_text}")
-        yield sse_thinking_stop(block_index)
-        block_index += 1
+
+        # Always parse into structured steps so agent frameworks can act on them
+        from app.cot.verify_exec import (
+            parse_verify_block, execute_step, render_executed_block,
+            has_failures,
+        )
+        verify_steps = parse_verify_block(verify_text)
+
+        # Optionally execute the network-safe subset (HTTP/DNS/TCP via stdlib)
+        if settings.cot_verify_execute and verify_steps:
+            try:
+                from app.observability.prometheus import observe_verify_execution
+            except Exception:
+                observe_verify_execution = None
+            for step in verify_steps:
+                await execute_step(step, timeout_sec=settings.cot_verify_step_timeout_sec)
+                if observe_verify_execution and step.status != "skipped":
+                    try:
+                        observe_verify_execution(step.status)
+                    except Exception:
+                        pass
+
+            rendered = render_executed_block(verify_steps)
+            yield sse_thinking_start(block_index)
+            yield sse_thinking_delta(block_index, rendered)
+            yield sse_thinking_stop(block_index)
+            block_index += 1
+
+            # Emit structured SSE event for agent frameworks
+            import json as _json
+            steps_json = _json.dumps([s.to_dict() for s in verify_steps])
+            yield (
+                f'event: verify_steps\ndata: {steps_json}\n\n'.encode()
+            )
+
+            # Reflexion: if any executed step failed, run ONE revision pass
+            # with the actual failures surfaced back to the model.
+            if has_failures(verify_steps):
+                failures = [s for s in verify_steps if s.status in ("fail", "error")]
+                failure_detail = "\n".join(
+                    f"- `{s.command}` expected: {s.expected}; actual: {(s.actual or s.error)[:300]}"
+                    for s in failures
+                )
+                reflexion = await acompletion_with_retry(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": REFINE_SYSTEM},
+                        {"role": "user", "content": user_text},
+                        {"role": "assistant", "content": current_answer},
+                        {"role": "user", "content": (
+                            "The following verification steps FAILED when executed. "
+                            "Update your answer to be consistent with these actual outputs, "
+                            "or explain why the expectation was wrong.\n\n" + failure_detail
+                        )},
+                    ],
+                    stream=False,
+                    **{k: v for k, v in extra_kwargs.items() if k not in ("max_tokens", "system", "stream")},
+                )
+                current_answer = reflexion.choices[0].message.content or current_answer
+                yield sse_thinking_start(block_index)
+                yield sse_thinking_delta(
+                    block_index,
+                    f"## Refinement (post-verification)\nAnswer updated based on "
+                    f"{len(failures)} failed verification step(s).",
+                )
+                yield sse_thinking_stop(block_index)
+                block_index += 1
+        else:
+            yield sse_thinking_start(block_index)
+            yield sse_thinking_delta(block_index, f"## Verification\n{verify_text}")
+            yield sse_thinking_stop(block_index)
+            block_index += 1
+            # Still emit structured steps so clients can consume them
+            if verify_steps:
+                import json as _json
+                steps_json = _json.dumps([s.to_dict() for s in verify_steps])
+                yield (
+                    f'event: verify_steps\ndata: {steps_json}\n\n'.encode()
+                )
+
         logger.debug("cot_verify_pass_complete", tokens=len(verify_text.split()))
 
     # ── Stream final answer ───────────────────────────────────────────────────

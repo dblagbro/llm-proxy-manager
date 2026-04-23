@@ -97,6 +97,12 @@ HEDGE_BUCKET_REJECTS = Counter(
     "Hedges skipped because the global token bucket was empty.",
 )
 
+VERIFY_EXECUTIONS = Counter(
+    "llm_proxy_verify_executions_total",
+    "Verification steps executed (not skipped) by pass/fail/error status.",
+    ["status"],
+)
+
 SERVICE_INFO = Info("llm_proxy_service", "Service metadata.")
 
 _CB_STATE_MAP = {"closed": 0, "half-open": 1, "open": 2}
@@ -165,6 +171,10 @@ def observe_hedge_win(winner: str) -> None:
 
 def observe_hedge_bucket_reject() -> None:
     HEDGE_BUCKET_REJECTS.inc()
+
+
+def observe_verify_execution(status: str) -> None:
+    VERIFY_EXECUTIONS.labels(status=status).inc()
 
 
 async def metrics_response() -> Response:
