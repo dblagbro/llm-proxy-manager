@@ -3,7 +3,7 @@ import secrets
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
@@ -106,6 +106,29 @@ async def update_key(
         k.semantic_cache_enabled = body.semantic_cache_enabled
     await db.commit()
     return _serialize(k)
+
+
+class BulkDeleteBody(BaseModel):
+    ids: list[str] = Field(default_factory=list)
+
+
+@router.post("/bulk-delete")
+async def bulk_delete_keys(
+    body: BulkDeleteBody,
+    db: AsyncSession = Depends(get_db),
+    _: AdminUser = Depends(require_admin),
+):
+    """Delete multiple API keys in one call. Returns count deleted."""
+    if not body.ids:
+        return {"deleted": 0}
+    result = await db.execute(select(ApiKey).where(ApiKey.id.in_(body.ids)))
+    keys = result.scalars().all()
+    count = 0
+    for k in keys:
+        await db.delete(k)
+        count += 1
+    await db.commit()
+    return {"deleted": count, "requested": len(body.ids)}
 
 
 @router.delete("/{key_id}")

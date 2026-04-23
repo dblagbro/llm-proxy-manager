@@ -389,6 +389,7 @@ async def _stream_cot_openai(
         await record_outcome(db, provider_id, model, endpoint="completions", success=False,
                              key_record_id=key_record_id, error_str=str(e))
         yield (b'data: ' + json.dumps({"error": str(e)}).encode() + b'\n\n')
+        yield b'data: [DONE]\n\n'
 
 
 async def _stream_openai(
@@ -437,6 +438,7 @@ async def _stream_openai(
         await record_outcome(db, provider_id, model, endpoint="completions", success=False,
                              key_record_id=key_record_id, error_str=str(e))
         yield (b'data: ' + json.dumps({"error": str(e)}).encode() + b'\n\n')
+        yield b'data: [DONE]\n\n'
 
 
 async def _webhook_completion_openai(
