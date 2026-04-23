@@ -29,8 +29,15 @@ logger = logging.getLogger(__name__)
 def parse_cot_request_headers(
     x_cot_iterations: str | None,
     x_cot_verify: str | None,
-) -> tuple[int | None, bool | None]:
-    """Parse X-Cot-Iterations and X-Cot-Verify headers into typed (cot_max, force_verify)."""
+    x_cot_samples: str | None = None,
+    x_cot_mode: str | None = None,
+) -> tuple[int | None, bool | None, int]:
+    """Parse CoT request headers into typed (cot_max, force_verify, samples).
+
+    X-Cot-Samples: integer N>1 activates Self-Consistency mode with N drafts.
+    X-Cot-Mode: 'self-consistency' is an alias for X-Cot-Samples: 3 when
+                 X-Cot-Samples wasn't explicitly set.
+    """
     cot_max: int | None = None
     if x_cot_iterations is not None:
         try:
@@ -40,7 +47,17 @@ def parse_cot_request_headers(
     force_verify: bool | None = None
     if x_cot_verify is not None:
         force_verify = x_cot_verify.lower() in ("1", "true", "yes")
-    return cot_max, force_verify
+
+    samples = 1
+    if x_cot_samples is not None:
+        try:
+            samples = max(1, min(10, int(x_cot_samples)))  # clamp 1..10
+        except ValueError:
+            pass
+    elif (x_cot_mode or "").lower() == "self-consistency":
+        samples = 3  # sensible default for mode flag
+
+    return cot_max, force_verify, samples
 
 
 # ── Prompts ───────────────────────────────────────────────────────────────────
@@ -72,6 +89,15 @@ CRITIQUE_SYSTEM = (
 REFINE_SYSTEM = (
     "You are an expert assistant. A draft response has been critiqued. "
     "Produce an improved, complete answer addressing the identified gaps."
+)
+
+RECONCILE_SYSTEM = (
+    "You are a reconciler. Below are {n} independently generated candidate "
+    "answers to the same user question. Identify the consensus across them, "
+    "resolve any disagreements by weight of evidence, and produce a SINGLE "
+    "final answer that reflects the majority reasoning.\n\n"
+    "Do NOT explain your choice; do NOT reference the candidates; just emit "
+    "the final answer the user should see."
 )
 
 VERIFY_SYSTEM = (
@@ -216,6 +242,7 @@ async def run_cot_pipeline(
     force_verify: bool | None = None,
     critique_model: str | None = None,
     critique_kwargs: dict | None = None,
+    samples: int = 1,
 ) -> AsyncIterator[bytes]:
     """
     Full CoT-E pipeline. Yields Anthropic-format SSE bytes.
@@ -235,6 +262,11 @@ async def run_cot_pipeline(
                         if None. (Wave 2 #8)
         critique_kwargs: litellm kwargs (api_key, api_base, timeout) for the
                          critique_model provider.
+        samples:        Self-Consistency (Wave 2 #10). When >1, generate N
+                        independent drafts in parallel at temperature=0.7 and
+                        reconcile to consensus before entering the critique
+                        loop. Published lift is +5-15pp on reasoning
+                        benchmarks at ~N× cost. Default 1 (disabled).
     """
     block_index = 0
     # Strip keys that are passed explicitly to _call to avoid duplicate-arg errors
@@ -267,13 +299,57 @@ async def run_cot_pipeline(
         "Use the reasoning above to produce a high-quality response."
     )
     draft_kwargs = {k: v for k, v in extra_kwargs.items() if k not in ("max_tokens", "system")}
-    draft = await acompletion_with_retry(
-        model=model,
-        messages=[{"role": "system", "content": augmented_system}] + messages,
-        stream=False,
-        **draft_kwargs,
-    )
-    draft_text = draft.choices[0].message.content or ""
+
+    if samples > 1:
+        # Self-Consistency: N parallel drafts at T=0.7, reconcile to consensus
+        import asyncio as _asyncio
+        sc_kwargs = {**draft_kwargs, "temperature": 0.7}
+        async def _one_draft():
+            resp = await acompletion_with_retry(
+                model=model,
+                messages=[{"role": "system", "content": augmented_system}] + messages,
+                stream=False,
+                **sc_kwargs,
+            )
+            return resp.choices[0].message.content or ""
+        drafts = await _asyncio.gather(*[_one_draft() for _ in range(samples)])
+
+        yield sse_thinking_start(block_index)
+        yield sse_thinking_delta(
+            block_index,
+            f"## Self-Consistency ({samples} parallel drafts)\n"
+            + "\n".join(
+                f"- Draft {i + 1}: {d[:200]}{'…' if len(d) > 200 else ''}"
+                for i, d in enumerate(drafts)
+            ),
+        )
+        yield sse_thinking_stop(block_index)
+        block_index += 1
+
+        # Reconcile to a single consensus answer
+        candidates_text = "\n\n---\n\n".join(
+            f"Candidate {i + 1}:\n{d}" for i, d in enumerate(drafts)
+        )
+        reconcile = await acompletion_with_retry(
+            model=model,
+            messages=[
+                {"role": "system", "content": RECONCILE_SYSTEM.format(n=samples)},
+                {"role": "user", "content": user_text},
+                {"role": "assistant", "content": candidates_text},
+                {"role": "user", "content": "Produce the consensus answer."},
+            ],
+            stream=False,
+            **draft_kwargs,
+        )
+        draft_text = reconcile.choices[0].message.content or drafts[0]
+    else:
+        draft = await acompletion_with_retry(
+            model=model,
+            messages=[{"role": "system", "content": augmented_system}] + messages,
+            stream=False,
+            **draft_kwargs,
+        )
+        draft_text = draft.choices[0].message.content or ""
 
     # ── Critique + Refinement loop ────────────────────────────────────────────
     current_answer = draft_text
