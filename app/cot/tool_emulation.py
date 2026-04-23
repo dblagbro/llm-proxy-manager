@@ -39,12 +39,7 @@ If no tool call is needed, respond normally without the <tool_call> tags.
 
 # ── Schema → system prompt ────────────────────────────────────────────────────
 
-def _describe_anthropic(tool: dict) -> str:
-    name = tool.get("name", "unknown")
-    desc = tool.get("description", "No description.")
-    schema = tool.get("input_schema", {})
-    props = schema.get("properties", {})
-    required = set(schema.get("required", []))
+def _render_tool_description(name: str, desc: str, props: dict, required: set) -> str:
     lines = [f"### {name}", desc]
     if props:
         lines.append("Parameters:")
@@ -54,24 +49,27 @@ def _describe_anthropic(tool: dict) -> str:
             req = " (required)" if pname in required else ""
             lines.append(f"  - {pname} ({typ}{req}): {pdesc}")
     return "\n".join(lines)
+
+
+def _describe_anthropic(tool: dict) -> str:
+    schema = tool.get("input_schema", {})
+    return _render_tool_description(
+        tool.get("name", "unknown"),
+        tool.get("description", "No description."),
+        schema.get("properties", {}),
+        set(schema.get("required", [])),
+    )
 
 
 def _describe_openai(tool: dict) -> str:
     func = tool.get("function", tool)
-    name = func.get("name", "unknown")
-    desc = func.get("description", "No description.")
     params = func.get("parameters", {})
-    props = params.get("properties", {})
-    required = set(params.get("required", []))
-    lines = [f"### {name}", desc]
-    if props:
-        lines.append("Parameters:")
-        for pname, pdef in props.items():
-            typ = pdef.get("type", "any")
-            pdesc = pdef.get("description", "")
-            req = " (required)" if pname in required else ""
-            lines.append(f"  - {pname} ({typ}{req}): {pdesc}")
-    return "\n".join(lines)
+    return _render_tool_description(
+        func.get("name", "unknown"),
+        func.get("description", "No description."),
+        params.get("properties", {}),
+        set(params.get("required", [])),
+    )
 
 
 def build_anthropic_tool_prompt(tools: list[dict]) -> str:
