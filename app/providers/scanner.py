@@ -152,6 +152,18 @@ async def test_provider(provider: Provider) -> dict:
     model = build_litellm_model(provider)
     kwargs = build_litellm_kwargs(provider)
 
+    # Pre-flight: catch the common "no API key configured" case before we hit
+    # litellm and get a 600-char Python traceback back. Anthropic/OpenAI/Grok
+    # store the key on the provider row; ollama and compatible can be keyless.
+    if provider.provider_type in ("anthropic", "openai", "google", "vertex", "grok", "cohere", "mistral", "groq", "together", "fireworks") and not provider.api_key:
+        return {
+            "success": False,
+            "error": f"No API key configured for this {provider.provider_type} provider. Open the Edit modal and paste a key.",
+            "model": model,
+            "billing_error": False,
+            "hint": "missing_api_key",
+        }
+
     try:
         result = await litellm.acompletion(
             model=model,
@@ -166,10 +178,15 @@ async def test_provider(provider: Provider) -> dict:
     except Exception as e:
         err_str = str(e)
         billing = is_billing_error(err_str)
+        # Trim litellm's traceback to the first informative line for UI display
+        short_err = err_str.split("\nTraceback", 1)[0].strip()
+        if len(short_err) > 500:
+            short_err = short_err[:500] + "…"
         await record_failure(provider.id, billing_error=billing)
         return {
             "success": False,
-            "error": err_str,
+            "error": short_err,
+            "error_detail": err_str,  # full trace still available to power-users
             "model": model,
             "billing_error": billing,
         }
