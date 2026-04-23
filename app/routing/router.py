@@ -17,7 +17,7 @@ from app.config import settings
 from app.models.db import Provider, ModelCapability, ProviderMetric
 from app.routing.circuit_breaker import is_available, record_success, record_failure, is_billing_error
 from app.routing.lmrh import (
-    LMRHHint, CapabilityProfile, rank_candidates, build_capability_header
+    LMRHHint, CapabilityProfile, rank_candidates, rank_candidates_with_scores, build_capability_header
 )
 from app.routing.capability_inference import infer_capability_profile
 
@@ -204,12 +204,35 @@ async def select_provider(
     profiles = [await _load_profile(db, p) for p in available]
     provider_map = {p.id: p for p in available}
 
-    # LMRH ranking
-    ranked = rank_candidates(profiles, hint)
-    if not ranked:
+    # LMRH ranking (with scores so we can identify the top tier for P2C)
+    ranked_scored = rank_candidates_with_scores(profiles, hint)
+    if not ranked_scored:
         raise RuntimeError("No providers satisfy the required routing constraints (LLM-Hint hard constraints)")
 
-    best_profile, unmet = ranked[0]
+    # Wave 3 #13 — PeakEWMA + P2C intra-tier selection.
+    # Identify candidates within 1.0 score of the top (a loose equality band
+    # that catches "essentially tied" profiles). If ≥2 qualify, sample two
+    # and pick the one with lower PeakEWMA TTFT (falling back to priority
+    # when neither has samples yet).
+    from app.routing.hedging import peak_ewma
+    import random as _random
+    top_score = ranked_scored[0][2]
+    top_tier = [t for t in ranked_scored if top_score - t[2] < 1.0]
+    if len(top_tier) >= 2:
+        c1, c2 = _random.sample(top_tier, 2)
+        e1 = peak_ewma(c1[0].provider_id)
+        e2 = peak_ewma(c2[0].provider_id)
+        if e1 is None and e2 is None:
+            winner = c1 if c1[0].priority <= c2[0].priority else c2
+        elif e1 is None:
+            winner = c2
+        elif e2 is None:
+            winner = c1
+        else:
+            winner = c1 if e1 <= e2 else c2
+        best_profile, unmet, _ = winner
+    else:
+        best_profile, unmet, _ = ranked_scored[0]
     provider = provider_map[best_profile.provider_id]
 
     # CoT-E auto-engagement:
