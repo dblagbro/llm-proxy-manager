@@ -161,12 +161,17 @@ async def select_provider(
     pinned_provider_id: Optional[str] = None,
     model_override: Optional[str] = None,
     exclude_provider_id: Optional[str] = None,
+    prefer_cheapest: bool = False,
 ) -> RouteResult:
     """
     Select the best available provider+model for this request.
     Raises RuntimeError if no providers are available.
 
     exclude_provider_id: skip this provider (used by hedging to pick a backup).
+    prefer_cheapest:     pick the cheapest-tier candidate among those satisfying
+                         hard constraints (used by cascade routing as the
+                         "cheap first" step). cost_tier ordering: economy <
+                         standard < premium. Ties broken by priority.
     """
     result = await db.execute(
         select(Provider).where(Provider.enabled == True).order_by(Provider.priority)
@@ -208,6 +213,31 @@ async def select_provider(
     ranked_scored = rank_candidates_with_scores(profiles, hint)
     if not ranked_scored:
         raise RuntimeError("No providers satisfy the required routing constraints (LLM-Hint hard constraints)")
+
+    # Wave 3 #14 — cascade pre-step: prefer cheapest candidate that satisfies
+    # hard constraints. economy < standard < premium, tie-break by priority.
+    if prefer_cheapest:
+        _COST_ORDER = {"economy": 0, "standard": 1, "premium": 2}
+        best_profile, unmet, _ = min(
+            ranked_scored,
+            key=lambda t: (_COST_ORDER.get(t[0].cost_tier, 1), t[0].priority),
+        )
+        provider = provider_map[best_profile.provider_id]
+        litellm_model = build_litellm_model(provider, model_override)
+        litellm_kwargs = build_litellm_kwargs(provider)
+        cap_header = build_capability_header(best_profile, unmet, False, False)
+        return RouteResult(
+            provider=provider,
+            profile=best_profile,
+            litellm_model=litellm_model,
+            litellm_kwargs=litellm_kwargs,
+            unmet_hints=unmet,
+            cot_engaged=False,
+            tool_emulation_engaged=False,
+            vision_stripped=False,
+            capability_header=cap_header,
+            native_thinking_params={},
+        )
 
     # Wave 3 #13 — PeakEWMA + P2C intra-tier selection.
     # Identify candidates within 1.0 score of the top (a loose equality band
