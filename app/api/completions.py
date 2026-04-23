@@ -143,8 +143,15 @@ async def chat_completions(
         if "reasoning_effort" in route.native_thinking_params and body.get("reasoning_effort"):
             extra["reasoning_effort"] = body["reasoning_effort"]
 
+    vision_routed_count = 0
     if route.vision_stripped:
-        messages_list = strip_images_openai(messages_list)
+        if _cfg_settings.vision_route_enabled:
+            from app.api.vision_route import transcribe_openai
+            messages_list, vision_routed_count = await transcribe_openai(
+                messages_list, db, exclude_provider_id=route.provider.id,
+            )
+        else:
+            messages_list = strip_images_openai(messages_list)
 
     budget_total = body.get("max_tokens", 0) or 0
     resp_headers = {
@@ -154,6 +161,8 @@ async def chat_completions(
     }
     if auto_task:
         resp_headers["X-Task-Auto-Detected"] = auto_task
+    if vision_routed_count:
+        resp_headers["X-Vision-Routed"] = str(vision_routed_count)
     if hint is not None:
         from app.routing.lmrh import build_hint_set_header
         hint_set = build_hint_set_header(hint, route.unmet_hints)
