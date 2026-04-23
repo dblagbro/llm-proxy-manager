@@ -71,7 +71,7 @@ async def _notify_provider_degraded(severity: str, message: str, provider_id: st
 
 app = FastAPI(
     title="llm-proxy",
-    version="2.0.5",
+    version="2.0.6",
     description="Self-hosted LLM routing gateway — LMRH protocol + CoT-E augmentation",
     lifespan=lifespan,
     docs_url="/docs",
@@ -122,12 +122,12 @@ app.include_router(aliases_router)
 # ── Utility endpoints ────────────────────────────────────────────────────────
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": "2.0.5"}
+    return {"status": "ok", "version": "2.0.6"}
 
 
 @app.get("/version")
 async def version():
-    return {"service": "llm-proxy", "version": "2.0.5", "docs": "/docs"}
+    return {"service": "llm-proxy", "version": "2.0.6", "docs": "/docs"}
 
 
 # ── Static files (web dashboard) ─────────────────────────────────────────────
