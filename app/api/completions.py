@@ -85,11 +85,14 @@ async def chat_completions(
     if route.vision_stripped:
         messages_list = strip_images_openai(messages_list)
 
+    budget_total = body.get("max_tokens", 0) or 0
     resp_headers = {
         "X-Provider": route.provider.name,
         "LLM-Capability": route.capability_header,
         "X-Resolved-Model": route.litellm_model,
     }
+    if budget_total:
+        resp_headers["X-Token-Budget-Remaining"] = str(budget_total)
 
     try:
         if route.tool_emulation_engaged:
@@ -137,7 +140,7 @@ async def chat_completions(
         if stream:
             return StreamingResponse(
                 _stream_openai(route.litellm_model, messages_list, extra, route.provider.id,
-                               db, key_record.id, time.monotonic()),
+                               db, key_record.id, time.monotonic(), budget_total),
                 media_type="text/event-stream",
                 headers=resp_headers,
             )
@@ -153,6 +156,8 @@ async def chat_completions(
             out_tok = getattr(result.usage, "completion_tokens", 0)
             await record_outcome(db, route.provider.id, route.litellm_model, success=True,
                                  in_tok=in_tok, out_tok=out_tok, t0=t0, key_record_id=key_record.id)
+            if budget_total:
+                resp_headers["X-Token-Budget-Remaining"] = str(max(0, budget_total - out_tok))
             return JSONResponse(content=result.model_dump(), headers=resp_headers)
 
     except Exception as e:
@@ -253,7 +258,7 @@ async def _stream_cot_openai(
 
 async def _stream_openai(
     model: str, messages: list, extra: dict, provider_id: str,
-    db: AsyncSession, key_record_id: str, t0: float,
+    db: AsyncSession, key_record_id: str, t0: float, budget_total: int = 0,
 ) -> AsyncIterator[bytes]:
     in_tok = out_tok = 0
     ttft_ms: float = 0.0
@@ -268,6 +273,12 @@ async def _stream_openai(
                 in_tok = getattr(chunk.usage, "prompt_tokens", in_tok)
                 out_tok = getattr(chunk.usage, "completion_tokens", out_tok)
             yield f"data: {chunk.model_dump_json()}\n\n".encode()
+        if budget_total > 0:
+            remaining = max(0, budget_total - out_tok)
+            yield (
+                f'event: budget\ndata: {{"remaining":{remaining},'
+                f'"used":{out_tok},"total":{budget_total}}}\n\n'
+            ).encode()
         yield b"data: [DONE]\n\n"
         await record_outcome(db, provider_id, model, success=True,
                              in_tok=in_tok, out_tok=out_tok, t0=t0,

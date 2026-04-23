@@ -91,6 +91,7 @@ async def messages(
         "X-Provider": route.provider.name,
         "LLM-Capability": route.capability_header,
         "X-Resolved-Model": route.litellm_model,
+        "X-Token-Budget-Remaining": str(max_tokens),
     }
 
     try:
@@ -134,7 +135,7 @@ async def messages(
         if stream:
             return StreamingResponse(
                 _stream_anthropic(route.litellm_model, messages_list, extra, route.provider.id,
-                                  db, key_record.id, time.monotonic()),
+                                  db, key_record.id, time.monotonic(), max_tokens),
                 media_type="text/event-stream",
                 headers=resp_headers,
             )
@@ -150,6 +151,8 @@ async def messages(
             out_tok = getattr(result.usage, "completion_tokens", 0)
             await record_outcome(db, route.provider.id, route.litellm_model, success=True,
                                  in_tok=in_tok, out_tok=out_tok, t0=t0, key_record_id=key_record.id)
+            remaining = max(0, max_tokens - out_tok)
+            resp_headers["X-Token-Budget-Remaining"] = str(remaining)
             return JSONResponse(
                 content=to_anthropic_response(result),
                 headers=resp_headers,
@@ -202,7 +205,7 @@ async def _stream_cot_anthropic(
 
 async def _stream_anthropic(
     model: str, messages: list, extra: dict, provider_id: str,
-    db: AsyncSession, key_record_id: str, t0: float,
+    db: AsyncSession, key_record_id: str, t0: float, budget_total: int = 0,
 ) -> AsyncIterator[bytes]:
     try:
         response = await litellm.acompletion(model=model, messages=messages, stream=True, **extra)
@@ -284,6 +287,12 @@ async def _stream_anthropic(
             f'data: {{"type":"message_delta","delta":{{"stop_reason":"{stop_reason}",'
             f'"stop_sequence":null}},"usage":{{"output_tokens":{output_tokens}}}}}\n\n'
         ).encode()
+        if budget_total > 0:
+            remaining = max(0, budget_total - output_tokens)
+            yield (
+                f'event: budget\ndata: {{"remaining":{remaining},'
+                f'"used":{output_tokens},"total":{budget_total}}}\n\n'
+            ).encode()
         yield b'data: {"type":"message_stop"}\n\ndata: [DONE]\n\n'
         await record_outcome(db, provider_id, model, success=True,
                              in_tok=input_tokens, out_tok=output_tokens, t0=t0,
