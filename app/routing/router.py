@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from app.config import settings
-from app.models.db import Provider, ModelCapability
+from app.models.db import Provider, ModelCapability, ProviderMetric
 from app.routing.circuit_breaker import is_available, record_success, record_failure, is_billing_error
 from app.routing.lmrh import (
     LMRHHint, CapabilityProfile, rank_candidates, build_capability_header
@@ -100,7 +100,7 @@ async def _load_profile(db: AsyncSession, provider: Provider) -> CapabilityProfi
     )
     cap = result.scalar_one_or_none()
     if cap:
-        return CapabilityProfile(
+        profile = CapabilityProfile(
             provider_id=provider.id,
             provider_type=provider.provider_type,
             model_id=model_id,
@@ -116,7 +116,21 @@ async def _load_profile(db: AsyncSession, provider: Provider) -> CapabilityProfi
             native_vision=cap.native_vision if cap.native_vision is not None else False,
             priority=provider.priority,
         )
-    return infer_capability_profile(provider.id, provider.provider_type, model_id, provider.priority)
+    else:
+        profile = infer_capability_profile(provider.id, provider.provider_type, model_id, provider.priority)
+
+    # Populate avg_ttft_ms from the most recent metric bucket for LMRH scoring
+    metric_res = await db.execute(
+        select(ProviderMetric)
+        .where(ProviderMetric.provider_id == provider.id)
+        .order_by(ProviderMetric.bucket_ts.desc())
+        .limit(1)
+    )
+    recent = metric_res.scalar_one_or_none()
+    if recent and recent.avg_ttft_ms:
+        profile.avg_ttft_ms = recent.avg_ttft_ms
+
+    return profile
 
 
 async def select_provider(
