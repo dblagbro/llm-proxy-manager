@@ -17,7 +17,7 @@ def clear_windows():
 
 
 def _patch_nodes(n: int):
-    return patch("app.cluster.manager.active_node_count", return_value=n)
+    return patch("app.auth.keys.active_node_count", return_value=n)
 
 
 # ── basic behaviour ───────────────────────────────────────────────────────────

@@ -13,6 +13,8 @@ from sqlalchemy import select, update
 from sqlalchemy.sql import func
 
 from app.models.db import ApiKey
+from app.cluster.manager import active_node_count
+from app.cluster.sync import get_peer_total_cost
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +24,6 @@ _rpm_windows: dict[str, collections.deque] = {}
 
 def _check_rate_limit(key_id: str, limit_rpm: int) -> None:
     """Raise HTTP 429 if this node's share of limit_rpm is exceeded in the last 60 seconds."""
-    from app.cluster.manager import active_node_count
     nodes = max(1, active_node_count())
     per_node_limit = max(1, limit_rpm // nodes)
 
@@ -63,7 +64,6 @@ async def verify_api_key(db: AsyncSession, raw_key: Optional[str]) -> ApiKeyReco
         raise HTTPException(401, "Invalid or disabled API key")
 
     if key.spending_cap_usd is not None:
-        from app.cluster.sync import get_peer_total_cost
         global_cost = (key.total_cost_usd or 0.0) + get_peer_total_cost(key.id)
         if global_cost >= key.spending_cap_usd:
             raise HTTPException(429, f"API key spending cap of ${key.spending_cap_usd:.4f} reached")
