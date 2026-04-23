@@ -11,7 +11,7 @@ from app.routing.circuit_breaker import record_success, record_failure, is_billi
 from app.monitoring.metrics import record_request
 from app.monitoring.pricing import estimate_cost
 from app.monitoring.activity import log_event
-from app.observability.prometheus import observe_request, observe_ttft
+from app.observability.prometheus import observe_request, observe_ttft, observe_cache_tokens
 
 
 async def record_outcome(
@@ -27,6 +27,8 @@ async def record_outcome(
     error_str: str = "",
     ttft_ms: float = 0.0,
     endpoint: str = "messages",
+    cache_creation: int = 0,
+    cache_read: int = 0,
 ) -> None:
     if success:
         latency_ms = (time.monotonic() - t0) * 1000
@@ -40,6 +42,8 @@ async def record_outcome(
         )
         if ttft_ms > 0:
             observe_ttft(provider_id, model, ttft_ms / 1000.0)
+        if cache_creation or cache_read:
+            observe_cache_tokens(provider_id, model, cache_creation, cache_read)
         await log_event(
             db,
             event_type="llm_request",

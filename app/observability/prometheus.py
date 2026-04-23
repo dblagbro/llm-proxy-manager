@@ -43,6 +43,12 @@ TOKENS_TOTAL = Counter(
     ["provider", "model", "direction"],
 )
 
+CACHE_TOKENS_TOTAL = Counter(
+    "llm_proxy_cache_tokens_total",
+    "Prompt cache tokens by kind (creation=write, read=hit).",
+    ["provider", "model", "kind"],
+)
+
 COST_USD_TOTAL = Counter(
     "llm_proxy_cost_usd_total",
     "Cost accumulated in USD.",
@@ -97,6 +103,13 @@ def observe_request(
 def observe_ttft(provider: str, model: str, ttft_sec: float) -> None:
     if ttft_sec > 0:
         TTFT.labels(provider=provider, model=model).observe(ttft_sec)
+
+
+def observe_cache_tokens(provider: str, model: str, creation: int, read: int) -> None:
+    if creation > 0:
+        CACHE_TOKENS_TOTAL.labels(provider=provider, model=model, kind="creation").inc(creation)
+    if read > 0:
+        CACHE_TOKENS_TOTAL.labels(provider=provider, model=model, kind="read").inc(read)
 
 
 def observe_circuit_breaker_state(provider: str, state: str) -> None:

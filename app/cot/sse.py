@@ -193,6 +193,24 @@ FINISH_TO_STOP = {
 }
 
 
+def extract_cache_tokens(usage) -> tuple[int, int]:
+    """Extract (cache_creation, cache_read) tokens from a litellm usage object.
+
+    Works across provider SDKs: Anthropic-style fields on usage,
+    OpenAI-style `prompt_tokens_details.cached_tokens`, and the
+    `_response_ms._hidden_params` escape hatch litellm uses.
+    """
+    if not usage:
+        return 0, 0
+    creation = int(getattr(usage, "cache_creation_input_tokens", 0) or 0)
+    read = int(getattr(usage, "cache_read_input_tokens", 0) or 0)
+    if not read:
+        details = getattr(usage, "prompt_tokens_details", None)
+        if details is not None:
+            read = int(getattr(details, "cached_tokens", 0) or 0)
+    return creation, read
+
+
 def to_anthropic_response(litellm_response) -> dict:
     choice = litellm_response.choices[0]
     finish = choice.finish_reason or "stop"
@@ -216,6 +234,15 @@ def to_anthropic_response(litellm_response) -> dict:
         })
     if not content:
         content = [{"type": "text", "text": ""}]
+    cache_creation, cache_read = extract_cache_tokens(litellm_response.usage)
+    usage_out = {
+        "input_tokens": getattr(litellm_response.usage, "prompt_tokens", 0),
+        "output_tokens": getattr(litellm_response.usage, "completion_tokens", 0),
+    }
+    if cache_creation:
+        usage_out["cache_creation_input_tokens"] = cache_creation
+    if cache_read:
+        usage_out["cache_read_input_tokens"] = cache_read
     return {
         "id": litellm_response.id or "msg_proxy",
         "type": "message",
@@ -224,8 +251,5 @@ def to_anthropic_response(litellm_response) -> dict:
         "model": litellm_response.model or "unknown",
         "stop_reason": FINISH_TO_STOP.get(finish, "end_turn"),
         "stop_sequence": None,
-        "usage": {
-            "input_tokens": getattr(litellm_response.usage, "prompt_tokens", 0),
-            "output_tokens": getattr(litellm_response.usage, "completion_tokens", 0),
-        },
+        "usage": usage_out,
     }
