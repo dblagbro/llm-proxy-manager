@@ -151,6 +151,11 @@ async def chat_completions(
     }
     if auto_task:
         resp_headers["X-Task-Auto-Detected"] = auto_task
+    if hint is not None:
+        from app.routing.lmrh import build_hint_set_header
+        hint_set = build_hint_set_header(hint, route.unmet_hints)
+        if hint_set:
+            resp_headers["LLM-Hint-Set"] = hint_set
     if budget_total:
         resp_headers["X-Token-Budget-Remaining"] = str(budget_total)
     # Budget visibility headers (soft-cap warning, remaining $ today/this hour)
