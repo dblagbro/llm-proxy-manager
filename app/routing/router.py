@@ -160,10 +160,13 @@ async def select_provider(
     key_type: str = "standard",
     pinned_provider_id: Optional[str] = None,
     model_override: Optional[str] = None,
+    exclude_provider_id: Optional[str] = None,
 ) -> RouteResult:
     """
     Select the best available provider+model for this request.
     Raises RuntimeError if no providers are available.
+
+    exclude_provider_id: skip this provider (used by hedging to pick a backup).
     """
     result = await db.execute(
         select(Provider).where(Provider.enabled == True).order_by(Provider.priority)
@@ -178,6 +181,12 @@ async def select_provider(
         providers = [p for p in providers if p.id == pinned_provider_id]
         if not providers:
             raise RuntimeError(f"Aliased provider '{pinned_provider_id}' is not enabled")
+
+    # Hedge path: exclude the primary before CB/availability filtering
+    if exclude_provider_id:
+        providers = [p for p in providers if p.id != exclude_provider_id]
+        if not providers:
+            raise RuntimeError("No backup provider available (only one provider)")
 
     # Filter available (circuit breaker + hold-down)
     available = [p for p in providers if await is_available(p.id)]

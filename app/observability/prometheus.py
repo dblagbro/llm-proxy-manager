@@ -80,6 +80,23 @@ CACHE_SIMILARITY = Histogram(
     buckets=(0.80, 0.85, 0.88, 0.90, 0.92, 0.95, 0.98, 1.0),
 )
 
+HEDGE_ATTEMPTS = Counter(
+    "llm_proxy_hedge_attempts_total",
+    "Times a backup request was fired because the primary exceeded p95 TTFT.",
+    ["primary_provider", "backup_provider"],
+)
+
+HEDGE_WINS = Counter(
+    "llm_proxy_hedge_wins_total",
+    "Hedge races by which side won.",
+    ["winner"],  # primary | backup
+)
+
+HEDGE_BUCKET_REJECTS = Counter(
+    "llm_proxy_hedge_bucket_rejects_total",
+    "Hedges skipped because the global token bucket was empty.",
+)
+
 SERVICE_INFO = Info("llm_proxy_service", "Service metadata.")
 
 _CB_STATE_MAP = {"closed": 0, "half-open": 1, "open": 2}
@@ -136,6 +153,18 @@ def observe_cache_lookup(status: str, endpoint: str, similarity: float = 0.0) ->
     CACHE_LOOKUPS_TOTAL.labels(status=status, endpoint=endpoint).inc()
     if status == "hit" and similarity > 0:
         CACHE_SIMILARITY.observe(similarity)
+
+
+def observe_hedge_attempt(primary: str, backup: str) -> None:
+    HEDGE_ATTEMPTS.labels(primary_provider=primary, backup_provider=backup).inc()
+
+
+def observe_hedge_win(winner: str) -> None:
+    HEDGE_WINS.labels(winner=winner).inc()
+
+
+def observe_hedge_bucket_reject() -> None:
+    HEDGE_BUCKET_REJECTS.inc()
 
 
 async def metrics_response() -> Response:
