@@ -62,12 +62,24 @@ def parse_cot_request_headers(
 
 # ── Prompts ───────────────────────────────────────────────────────────────────
 
-PLAN_SYSTEM = (
+PLAN_SYSTEM_VERBOSE = (
     "You are a reasoning planner. Analyse the user's request and identify:\n"
     "1. The core task and goal\n"
     "2. Key constraints and edge cases\n"
     "3. Recommended approach and steps\n"
     "Be concise. This output will guide the main response."
+)
+
+# Chain-of-Draft (Xu et al. 2025, arXiv:2502.18600): constrain plan steps to
+# ~5 words each. Reported ~78% token reduction + ~76% TTFT reduction with
+# <5pp quality drop on GSM8K. Better economics for streaming UX.
+PLAN_SYSTEM_COMPACT = (
+    "Plan the reasoning as numbered mini-steps. "
+    "Each line: 1-7 words, no prose. No preamble, no summary.\n"
+    "Format:\n"
+    "1. <mini-step>\n"
+    "2. <mini-step>\n"
+    "..."
 )
 
 CRITIQUE_SYSTEM = (
@@ -303,17 +315,22 @@ async def run_cot_pipeline(
         plan_context = "\n\nPrior reasoning context:\n" + "\n---\n".join(prior_analyses[-3:])
 
     user_text = _last_user_text(messages)
+    # Wave 2 #12 — Chain-of-Draft compression: terse prompt + smaller budget
+    plan_compact = getattr(settings, "cot_plan_compact", True)
+    plan_system = PLAN_SYSTEM_COMPACT if plan_compact else PLAN_SYSTEM_VERBOSE
+    plan_budget = min(settings.cot_plan_max_tokens, 120) if plan_compact else settings.cot_plan_max_tokens
     plan_text = await _call(
         model,
         [{"role": "user", "content": user_text + plan_context}],
-        PLAN_SYSTEM,
-        settings.cot_plan_max_tokens,
+        plan_system,
+        plan_budget,
         **cot_kwargs,
     )
     await save_session_analysis(session_id, plan_text)
 
     yield sse_thinking_start(block_index)
-    yield sse_thinking_delta(block_index, f"## Planning\n{plan_text}")
+    plan_label = "## Planning (compact)" if plan_compact else "## Planning"
+    yield sse_thinking_delta(block_index, f"{plan_label}\n{plan_text}")
     yield sse_thinking_stop(block_index)
     block_index += 1
 
