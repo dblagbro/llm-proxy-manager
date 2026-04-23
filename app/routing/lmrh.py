@@ -40,6 +40,23 @@ TASK_ALIASES = {
 LATENCY_RANK = {"low": 0, "medium": 1, "high": 2}
 COST_RANK = {"economy": 0, "standard": 1, "premium": 2}
 
+# Wave 4 #21 — refusal-rate human-readable alias maps to safety integer scale.
+# Higher safety integer = more willing to refuse, so:
+#   permissive → prefer low safety (willing to answer anything reasonable)
+#   maximum    → prefer high safety (strict refusals)
+_REFUSAL_RATE_TO_SAFETY_CEIL = {
+    "permissive": 2,   # profile.safety ≤ 2
+    "standard":   3,   # ≤ 3
+    "strict":     4,   # ≤ 4
+    "maximum":    5,   # ≤ 5 (any)
+}
+_REFUSAL_RATE_TO_SAFETY_FLOOR = {
+    "permissive": 1,
+    "standard":   2,
+    "strict":     3,
+    "maximum":    4,
+}
+
 
 @dataclass
 class HintDimension:
@@ -296,6 +313,18 @@ def score_candidate(profile: CapabilityProfile, hint: LMRHHint) -> tuple[float, 
             # Wave 4 #19 — pass-through dims (consumed by endpoint, not scorer)
             case "effort" | "cascade" | "hedge" | "tenant" | "freshness":
                 pass
+
+            # Wave 4 #21 — refusal-rate human-readable alias for safety
+            case "refusal-rate":
+                ceil_ = _REFUSAL_RATE_TO_SAFETY_CEIL.get(dim.value.lower())
+                if ceil_ is None:
+                    unmet.append(dim.key)
+                elif profile.safety <= ceil_:
+                    score += WEIGHTS["safety-max"]
+                else:
+                    if dim.required:
+                        return float("-inf"), [dim.key]
+                    unmet.append(dim.key)
 
     # TTFT bonus: up to +5 for fast providers (0 ms→+5, 3000 ms→0, no data→no adjustment)
     if profile.avg_ttft_ms > 0:

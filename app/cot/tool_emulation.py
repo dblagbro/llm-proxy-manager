@@ -22,12 +22,34 @@ _TOOL_CALL_RE = re.compile(
 )
 
 _TOOL_PROMPT = """\
-You have access to the following tools. When you want to call a tool, output ONLY this \
-exact format and nothing else:
+You have access to the following tools. When you want to call a tool, output ONLY \
+tool_call blocks — no prose between or around them:
 
 <tool_call>
 {{"name": "TOOL_NAME", "input": {{...arguments as JSON...}}}}
 </tool_call>
+
+PARALLEL TOOL USE: If you need to call MULTIPLE independent tools, emit MULTIPLE \
+<tool_call> blocks in sequence — one block per tool. The tools will run in parallel \
+and all results will be returned together in the next turn.
+
+After the tool(s) execute you will receive the result(s) and can continue. \
+If no tool call is needed, respond normally without any <tool_call> tags.
+
+## Available Tools
+
+{descriptions}"""
+
+
+_TOOL_PROMPT_SERIAL = """\
+You have access to the following tools. When you want to call a tool, output ONLY \
+this exact format and nothing else:
+
+<tool_call>
+{{"name": "TOOL_NAME", "input": {{...arguments as JSON...}}}}
+</tool_call>
+
+Only ONE tool call per turn — the client has opted out of parallel tool calls.
 
 After the tool executes you will receive the result and can continue. \
 If no tool call is needed, respond normally without the <tool_call> tags.
@@ -72,14 +94,16 @@ def _describe_openai(tool: dict) -> str:
     )
 
 
-def build_anthropic_tool_prompt(tools: list[dict]) -> str:
+def build_anthropic_tool_prompt(tools: list[dict], allow_parallel: bool = True) -> str:
     descriptions = "\n\n".join(_describe_anthropic(t) for t in tools)
-    return _TOOL_PROMPT.format(descriptions=descriptions)
+    template = _TOOL_PROMPT if allow_parallel else _TOOL_PROMPT_SERIAL
+    return template.format(descriptions=descriptions)
 
 
-def build_openai_tool_prompt(tools: list[dict]) -> str:
+def build_openai_tool_prompt(tools: list[dict], allow_parallel: bool = True) -> str:
     descriptions = "\n\n".join(_describe_openai(t) for t in tools)
-    return _TOOL_PROMPT.format(descriptions=descriptions)
+    template = _TOOL_PROMPT if allow_parallel else _TOOL_PROMPT_SERIAL
+    return template.format(descriptions=descriptions)
 
 
 # ── Message normalisation (for multi-turn tool use) ───────────────────────────
@@ -152,34 +176,43 @@ def normalize_openai_messages(messages: list[dict]) -> list[dict]:
 
 # ── Response parser ───────────────────────────────────────────────────────────
 
+def _normalize_tool_payload(payload: dict) -> dict | None:
+    for alt_name in ("function_name", "tool_name"):
+        if alt_name in payload and "name" not in payload:
+            payload["name"] = payload.pop(alt_name)
+    if "name" not in payload:
+        return None
+    if "input" not in payload:
+        for alt_input in ("parameters", "arguments", "args", "kwargs"):
+            if alt_input in payload:
+                payload["input"] = payload.pop(alt_input)
+                break
+    payload.setdefault("input", {})
+    return payload
+
+
+def parse_tool_calls(text: str) -> list[dict]:
+    """Wave 5 #23 — Extract ALL tool-call blocks from a model response.
+
+    Returns a possibly-empty list of {"name": str, "input": dict} dicts,
+    preserving emission order. Used for parallel-tool-call emulation.
+    """
+    out: list[dict] = []
+    for m in _TOOL_CALL_RE.finditer(text):
+        try:
+            payload = json.loads(m.group(1))
+        except (json.JSONDecodeError, ValueError):
+            continue
+        norm = _normalize_tool_payload(payload)
+        if norm is not None:
+            out.append(norm)
+    return out
+
+
 def parse_tool_call(text: str) -> dict | None:
-    """
-    Extract the first tool-call block from a model response.
-    Handles <tool_call>, <tool_code>, <function_call>, and <tool_use> tags.
-    Normalizes alternate field names (function_name→name, parameters/arguments/args→input).
-    Returns {"name": str, "input": dict} or None.
-    """
-    m = _TOOL_CALL_RE.search(text)
-    if not m:
-        return None
-    try:
-        payload = json.loads(m.group(1))
-        # Normalize name field
-        for alt_name in ("function_name", "tool_name"):
-            if alt_name in payload and "name" not in payload:
-                payload["name"] = payload.pop(alt_name)
-        if "name" not in payload:
-            return None
-        # Normalize input field
-        if "input" not in payload:
-            for alt_input in ("parameters", "arguments", "args", "kwargs"):
-                if alt_input in payload:
-                    payload["input"] = payload.pop(alt_input)
-                    break
-        payload.setdefault("input", {})
-        return payload
-    except (json.JSONDecodeError, ValueError):
-        return None
+    """Backward-compatible single-tool-call extractor (returns the FIRST)."""
+    calls = parse_tool_calls(text)
+    return calls[0] if calls else None
 
 
 # ── Internal LLM call ─────────────────────────────────────────────────────────

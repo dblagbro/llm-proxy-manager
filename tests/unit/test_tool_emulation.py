@@ -3,6 +3,7 @@ import json
 import pytest
 from app.cot.tool_emulation import (
     parse_tool_call,
+    parse_tool_calls,
     build_anthropic_tool_prompt,
     build_openai_tool_prompt,
     normalize_anthropic_messages,
@@ -275,3 +276,46 @@ def test_normalize_openai_preserves_system_role():
     msgs = [{"role": "system", "content": "You are helpful."}]
     result = normalize_openai_messages(msgs)
     assert result == [{"role": "system", "content": "You are helpful."}]
+
+
+# ── Wave 5 #23 — parse_tool_calls (parallel tool emulation) ──────────────────
+
+def test_parse_tool_calls_extracts_all():
+    text = (
+        '<tool_call>{"name":"a","input":{"x":1}}</tool_call>\n'
+        '<tool_call>{"name":"b","input":{"y":2}}</tool_call>'
+    )
+    calls = parse_tool_calls(text)
+    assert len(calls) == 2
+    assert [c["name"] for c in calls] == ["a", "b"]
+
+
+def test_parse_tool_calls_single_returns_one_item_list():
+    text = '<tool_call>{"name":"solo","input":{}}</tool_call>'
+    calls = parse_tool_calls(text)
+    assert len(calls) == 1
+    assert calls[0]["name"] == "solo"
+
+
+def test_parse_tool_calls_empty_when_no_tags():
+    assert parse_tool_calls("just some text") == []
+
+
+def test_parse_tool_calls_skips_malformed_mixed_with_valid():
+    text = (
+        '<tool_call>{"broken}</tool_call>\n'
+        '<tool_call>{"name":"good","input":{"z":3}}</tool_call>'
+    )
+    calls = parse_tool_calls(text)
+    assert len(calls) == 1
+    assert calls[0]["name"] == "good"
+
+
+def test_build_anthropic_tool_prompt_parallel_default_allowed():
+    prompt = build_anthropic_tool_prompt([TOOL_DEF_ANTHROPIC])
+    assert "MULTIPLE <tool_call> blocks" in prompt
+
+
+def test_build_anthropic_tool_prompt_serial_when_disabled():
+    prompt = build_anthropic_tool_prompt([TOOL_DEF_ANTHROPIC], allow_parallel=False)
+    assert "Only ONE tool call per turn" in prompt

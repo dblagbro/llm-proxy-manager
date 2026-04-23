@@ -21,12 +21,15 @@ from app.cot.tool_emulation import (
     build_anthropic_tool_prompt,
     normalize_anthropic_messages,
     parse_tool_call,
+    parse_tool_calls,
     call_with_tool_prompt,
 )
 from app.cot.sse import (
     anthropic_tool_sse,
+    anthropic_tools_sse,
     anthropic_text_sse,
     anthropic_tool_response,
+    anthropic_tools_response,
     anthropic_text_response,
     FINISH_TO_STOP,
     to_anthropic_response,
@@ -222,7 +225,13 @@ async def messages(
 
     try:
         if route.tool_emulation_engaged:
-            tool_system = build_anthropic_tool_prompt(tools or [])
+            # Wave 5 #23 — respect parallel_tool_calls from the inbound body
+            # (Anthropic expresses this as tool_choice={disable_parallel_tool_use:true})
+            tool_choice = body.get("tool_choice") or {}
+            allow_parallel = True
+            if isinstance(tool_choice, dict) and tool_choice.get("disable_parallel_tool_use"):
+                allow_parallel = False
+            tool_system = build_anthropic_tool_prompt(tools or [], allow_parallel=allow_parallel)
             merged_system = tool_system + ("\n\n" + system if system else "")
             norm_msgs = normalize_anthropic_messages(messages_list)
             emul_extra = {k: v for k, v in extra.items() if k not in ("tools", "system")}
@@ -231,18 +240,27 @@ async def messages(
             )
             await record_outcome(db, route.provider.id, route.litellm_model, success=True,
                                  t0=time.monotonic(), key_record_id=key_record.id)
-            tool_call = parse_tool_call(response_text)
+            tool_calls = parse_tool_calls(response_text)
+            # Enforce serial when parallel is disabled
+            if not allow_parallel and len(tool_calls) > 1:
+                tool_calls = tool_calls[:1]
+            if tool_calls:
+                resp_headers["X-Tool-Calls-Emitted"] = str(len(tool_calls))
             if stream:
-                gen = (
-                    anthropic_tool_sse(tool_call["name"], tool_call["input"])
-                    if tool_call else anthropic_text_sse(response_text)
-                )
+                if len(tool_calls) >= 2:
+                    gen = anthropic_tools_sse(tool_calls)
+                elif len(tool_calls) == 1:
+                    gen = anthropic_tool_sse(tool_calls[0]["name"], tool_calls[0]["input"])
+                else:
+                    gen = anthropic_text_sse(response_text)
                 return StreamingResponse(gen, media_type="text/event-stream", headers=resp_headers)
             else:
-                content = (
-                    anthropic_tool_response(tool_call["name"], tool_call["input"], route.litellm_model)
-                    if tool_call else anthropic_text_response(response_text, route.litellm_model)
-                )
+                if len(tool_calls) >= 2:
+                    content = anthropic_tools_response(tool_calls, route.litellm_model)
+                elif len(tool_calls) == 1:
+                    content = anthropic_tool_response(tool_calls[0]["name"], tool_calls[0]["input"], route.litellm_model)
+                else:
+                    content = anthropic_text_response(response_text, route.litellm_model)
                 return JSONResponse(content=content, headers=resp_headers)
 
         if route.cot_engaged:

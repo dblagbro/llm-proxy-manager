@@ -23,12 +23,15 @@ from app.cot.tool_emulation import (
     build_openai_tool_prompt,
     normalize_openai_messages,
     parse_tool_call,
+    parse_tool_calls,
     call_with_tool_prompt,
 )
 from app.cot.sse import (
     openai_tool_sse,
+    openai_tools_sse,
     openai_text_sse,
     openai_tool_response,
+    openai_tools_response,
     openai_text_response,
 )
 from app.api.webhook import post_webhook
@@ -212,10 +215,10 @@ async def chat_completions(
 
     try:
         if route.tool_emulation_engaged:
-            # Inject tool schema as system prompt; normalize tool_use/result message history
-            tool_prompt = build_openai_tool_prompt(tools or [])
+            # Wave 5 #23 — respect parallel_tool_calls=false from body
+            allow_parallel = body.get("parallel_tool_calls", True) is not False
+            tool_prompt = build_openai_tool_prompt(tools or [], allow_parallel=allow_parallel)
             norm_msgs = normalize_openai_messages(messages_list)
-            # Prepend/merge tool system prompt
             if norm_msgs and norm_msgs[0]["role"] == "system":
                 norm_msgs[0]["content"] = tool_prompt + "\n\n" + norm_msgs[0]["content"]
             else:
@@ -226,18 +229,26 @@ async def chat_completions(
             )
             await record_outcome(db, route.provider.id, route.litellm_model, endpoint="completions", success=True,
                                  t0=time.monotonic(), key_record_id=key_record.id)
-            tool_call = parse_tool_call(response_text)
+            tool_calls = parse_tool_calls(response_text)
+            if not allow_parallel and len(tool_calls) > 1:
+                tool_calls = tool_calls[:1]
+            if tool_calls:
+                resp_headers["X-Tool-Calls-Emitted"] = str(len(tool_calls))
             if stream:
-                gen = (
-                    openai_tool_sse(tool_call["name"], tool_call["input"])
-                    if tool_call else openai_text_sse(response_text)
-                )
+                if len(tool_calls) >= 2:
+                    gen = openai_tools_sse(tool_calls)
+                elif len(tool_calls) == 1:
+                    gen = openai_tool_sse(tool_calls[0]["name"], tool_calls[0]["input"])
+                else:
+                    gen = openai_text_sse(response_text)
                 return StreamingResponse(gen, media_type="text/event-stream", headers=resp_headers)
             else:
-                content = (
-                    openai_tool_response(tool_call["name"], tool_call["input"], route.litellm_model)
-                    if tool_call else openai_text_response(response_text, route.litellm_model)
-                )
+                if len(tool_calls) >= 2:
+                    content = openai_tools_response(tool_calls, route.litellm_model)
+                elif len(tool_calls) == 1:
+                    content = openai_tool_response(tool_calls[0]["name"], tool_calls[0]["input"], route.litellm_model)
+                else:
+                    content = openai_text_response(response_text, route.litellm_model)
                 return JSONResponse(content=content, headers=resp_headers)
 
         if route.cot_engaged:

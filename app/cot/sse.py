@@ -88,6 +88,49 @@ def anthropic_tool_response(tool_name: str, tool_input: dict, model: str) -> dic
     }
 
 
+def anthropic_tools_response(tool_calls: list[dict], model: str) -> dict:
+    """Wave 5 #23 — emit MULTIPLE tool_use blocks for parallel tool calling."""
+    content = [
+        {
+            "type": "tool_use",
+            "id": f"toolu_{secrets.token_hex(8)}",
+            "name": tc["name"],
+            "input": tc.get("input", {}),
+        }
+        for tc in tool_calls
+    ]
+    return {
+        "id": f"msg_emul_{secrets.token_hex(4)}",
+        "type": "message",
+        "role": "assistant",
+        "content": content,
+        "model": model,
+        "stop_reason": "tool_use",
+        "stop_sequence": None,
+        "usage": {"input_tokens": 0, "output_tokens": 0},
+    }
+
+
+async def anthropic_tools_sse(tool_calls: list[dict]) -> AsyncIterator[bytes]:
+    """Stream MULTIPLE tool_use content blocks (one block index per tool)."""
+    for idx, tc in enumerate(tool_calls):
+        tool_id = f"toolu_{secrets.token_hex(8)}"
+        tool_name = tc["name"]
+        input_json = json.dumps(tc.get("input", {}))
+        escaped = json.dumps(input_json)[1:-1]
+        yield (
+            f'data: {{"type":"content_block_start","index":{idx},"content_block":{{'
+            f'"type":"tool_use","id":"{tool_id}","name":"{tool_name}","input":{{}}}}}}\n\n'
+        ).encode()
+        yield (
+            f'data: {{"type":"content_block_delta","index":{idx},"delta":{{'
+            f'"type":"input_json_delta","partial_json":"{escaped}"}}}}\n\n'
+        ).encode()
+        yield f'data: {{"type":"content_block_stop","index":{idx}}}\n\n'.encode()
+    yield b'data: {"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"output_tokens":10}}\n\n'
+    yield b'data: {"type":"message_stop"}\n\ndata: [DONE]\n\n'
+
+
 def anthropic_text_response(text: str, model: str) -> dict:
     return {
         "id": f"msg_emul_{secrets.token_hex(4)}",
@@ -147,6 +190,69 @@ def openai_tool_response(tool_name: str, tool_input: dict, model: str) -> dict:
         }],
         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
     }
+
+
+def openai_tools_response(tool_calls: list[dict], model: str) -> dict:
+    """Wave 5 #23 — emit multiple tool_calls for parallel tool calling."""
+    return {
+        "id": f"chatcmpl-emul-{secrets.token_hex(4)}",
+        "object": "chat.completion",
+        "model": model,
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": f"call_{secrets.token_hex(8)}",
+                        "type": "function",
+                        "function": {
+                            "name": tc["name"],
+                            "arguments": json.dumps(tc.get("input", {})),
+                        },
+                    }
+                    for tc in tool_calls
+                ],
+            },
+            "finish_reason": "tool_calls",
+        }],
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+    }
+
+
+async def openai_tools_sse(tool_calls: list[dict]) -> AsyncIterator[bytes]:
+    """Stream multiple tool_calls in a single OpenAI chunk."""
+    msg_id = f"chatcmpl-emul-{secrets.token_hex(4)}"
+    call_headers = []
+    for idx, tc in enumerate(tool_calls):
+        call_id = f"call_{secrets.token_hex(8)}"
+        call_headers.append({
+            "index": idx, "id": call_id, "type": "function",
+            "function": {"name": tc["name"], "arguments": ""},
+        })
+    first_chunk = {
+        "id": msg_id, "object": "chat.completion.chunk",
+        "choices": [{"index": 0, "delta": {"role": "assistant", "tool_calls": call_headers},
+                     "finish_reason": None}],
+    }
+    yield f"data: {json.dumps(first_chunk)}\n\n".encode()
+    # Stream arguments one tool at a time
+    for idx, tc in enumerate(tool_calls):
+        args_json = json.dumps(tc.get("input", {}))
+        delta = {
+            "id": msg_id, "object": "chat.completion.chunk",
+            "choices": [{"index": 0,
+                         "delta": {"tool_calls": [{"index": idx, "function": {"arguments": args_json}}]},
+                         "finish_reason": None}],
+        }
+        yield f"data: {json.dumps(delta)}\n\n".encode()
+    final = {
+        "id": msg_id, "object": "chat.completion.chunk",
+        "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}],
+    }
+    yield f"data: {json.dumps(final)}\n\n".encode()
+    yield b"data: [DONE]\n\n"
 
 
 def openai_text_response(text: str, model: str) -> dict:
