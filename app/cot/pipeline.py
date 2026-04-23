@@ -214,6 +214,8 @@ async def run_cot_pipeline(
     extra_kwargs: dict,
     max_iterations: int | None = None,
     force_verify: bool | None = None,
+    critique_model: str | None = None,
+    critique_kwargs: dict | None = None,
 ) -> AsyncIterator[bytes]:
     """
     Full CoT-E pipeline. Yields Anthropic-format SSE bytes.
@@ -227,6 +229,12 @@ async def run_cot_pipeline(
         force_verify:   True  → always run verification pass
                         False → never run verification pass
                         None  → use settings.cot_verify_enabled + auto-detection
+        critique_model: override model for the critique pass only. When set,
+                        the critique runs on a different provider than the draft,
+                        eliminating self-preference bias. Falls back to `model`
+                        if None. (Wave 2 #8)
+        critique_kwargs: litellm kwargs (api_key, api_base, timeout) for the
+                         critique_model provider.
     """
     block_index = 0
     # Strip keys that are passed explicitly to _call to avoid duplicate-arg errors
@@ -276,6 +284,15 @@ async def run_cot_pipeline(
     if settings.cot_min_tokens_skip > 0 and draft_tokens >= settings.cot_min_tokens_skip:
         iterations = 0
 
+    # Resolve critique provider: use caller-supplied override, else fall back
+    # to the draft model. Separate kwargs so the critique uses the correct
+    # api_key / api_base for its provider.
+    critique_model_effective = critique_model or model
+    critique_call_kwargs = (
+        {k: v for k, v in (critique_kwargs or {}).items() if k not in ("max_tokens", "system", "stream")}
+        if critique_model else cot_kwargs
+    )
+
     iterations_used = 0
     for iteration in range(1, iterations + 1):
         iterations_used = iteration
@@ -283,7 +300,7 @@ async def run_cot_pipeline(
             max_tokens=settings.cot_critique_max_tokens,
         )
         critique_text = await _call(
-            model,
+            critique_model_effective,
             [
                 {"role": "user", "content": user_text},
                 {"role": "assistant", "content": current_answer},
@@ -291,7 +308,7 @@ async def run_cot_pipeline(
             ],
             critique_system,
             settings.cot_critique_max_tokens,
-            **cot_kwargs,
+            **critique_call_kwargs,
         )
 
         rubric = _parse_critique(critique_text)
@@ -308,8 +325,13 @@ async def run_cot_pipeline(
         summary_parts.append(f"**Sufficient for user:** {rubric['sufficient_for_user']}")
         critique_rendered = "\n\n".join(summary_parts)
 
+        critique_label = (
+            f"## Quality Check (iter {iteration}, via {critique_model_effective})"
+            if critique_model and critique_model != model
+            else f"## Quality Check (iter {iteration})"
+        )
         yield sse_thinking_start(block_index)
-        yield sse_thinking_delta(block_index, f"## Quality Check (iter {iteration})\n{critique_rendered}")
+        yield sse_thinking_delta(block_index, f"{critique_label}\n{critique_rendered}")
         yield sse_thinking_stop(block_index)
         block_index += 1
 

@@ -31,6 +31,7 @@ SCHEMA: dict[str, dict] = {
     "cot_verify_enabled":     {"type": "bool",  "default": settings.cot_verify_enabled,     "label": "Enable verification pass"},
     "cot_verify_max_tokens":  {"type": "int",   "default": settings.cot_verify_max_tokens,  "label": "Verification max tokens"},
     "cot_verify_auto_detect": {"type": "bool",  "default": settings.cot_verify_auto_detect, "label": "Auto-detect shell/infra commands"},
+    "cot_cross_provider_critique": {"type": "bool", "default": settings.cot_cross_provider_critique, "label": "Route critique to a different provider than the draft (eliminates self-preference bias)"},
     # Semantic cache (Wave 1 #3)
     "semantic_cache_enabled":          {"type": "bool", "default": settings.semantic_cache_enabled,         "label": "Enable semantic cache globally"},
     "semantic_cache_threshold":        {"type": "str",  "default": str(settings.semantic_cache_threshold),  "label": "Cosine threshold (0.0–1.0)"},

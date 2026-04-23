@@ -53,6 +53,10 @@ class Settings(BaseSettings):
     # When True, only verify answers that contain shell code blocks or infra CLI tools.
     # When False, verify every CoT response (use with care — adds latency to all requests).
     cot_verify_auto_detect: bool = Field(True, alias="COT_VERIFY_AUTO_DETECT")
+    # Cross-provider critique (Wave 2 #8): route the critique pass to a DIFFERENT
+    # provider than the one producing the draft. Eliminates ~5-15% self-preference
+    # bias documented in 2024-25 LLM-as-Judge surveys.
+    cot_cross_provider_critique: bool = Field(True, alias="COT_CROSS_PROVIDER_CRITIQUE")
 
     # Semantic cache (Wave 1 #3). Requires Redis-Stack / RediSearch.
     semantic_cache_enabled: bool = Field(True, alias="SEMANTIC_CACHE_ENABLED")
