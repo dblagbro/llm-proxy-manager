@@ -150,11 +150,19 @@ export function ProvidersPage() {
                     <p className="text-xs text-gray-500">{p.provider_type} · {p.default_model ?? 'no default model'} · priority {p.priority}</p>
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
-                    <CircuitBreakerBadge state={(cb?.state as 'closed' | 'open' | 'half-open') ?? 'closed'} />
-                    {test && (
-                      <Badge variant={test.success ? 'success' : 'danger'}>
-                        {test.success ? 'OK' : 'Error'}
-                      </Badge>
+                    {/*
+                      Single status badge, most-specific-wins:
+                      1. Last test result (if run this session)
+                      2. Circuit-breaker state (live)
+                    */}
+                    {test ? (
+                      <span title="Last test result this session">
+                        <Badge variant={test.success ? 'success' : 'danger'}>
+                          {test.success ? 'Test OK' : 'Test failed'}
+                        </Badge>
+                      </span>
+                    ) : (
+                      <CircuitBreakerBadge state={(cb?.state as 'closed' | 'open' | 'half-open') ?? 'closed'} />
                     )}
                     {open ? <ChevronUp className="h-4 w-4 text-gray-400" /> : <ChevronDown className="h-4 w-4 text-gray-400" />}
                   </div>
