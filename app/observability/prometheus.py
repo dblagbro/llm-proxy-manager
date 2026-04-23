@@ -103,6 +103,13 @@ VERIFY_EXECUTIONS = Counter(
     ["status"],
 )
 
+SHADOW_SIMILARITY = Histogram(
+    "llm_proxy_shadow_similarity",
+    "Embedding-cosine similarity between primary and shadow-candidate responses.",
+    ["primary_model", "shadow_model"],
+    buckets=(0.50, 0.60, 0.70, 0.80, 0.85, 0.90, 0.93, 0.96, 0.98, 0.99, 1.0),
+)
+
 SERVICE_INFO = Info("llm_proxy_service", "Service metadata.")
 
 _CB_STATE_MAP = {"closed": 0, "half-open": 1, "open": 2}
@@ -175,6 +182,10 @@ def observe_hedge_bucket_reject() -> None:
 
 def observe_verify_execution(status: str) -> None:
     VERIFY_EXECUTIONS.labels(status=status).inc()
+
+
+def observe_shadow_similarity(primary_model: str, shadow_model: str, similarity: float) -> None:
+    SHADOW_SIMILARITY.labels(primary_model=primary_model, shadow_model=shadow_model).observe(similarity)
 
 
 async def metrics_response() -> Response:
