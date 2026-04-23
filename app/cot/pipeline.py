@@ -15,6 +15,7 @@ from typing import AsyncIterator
 import litellm
 
 from app.config import settings
+from app.routing.retry import acompletion_with_retry
 from app.cot.session import get_session_analyses, save_session_analysis
 from app.cot.sse import (
     sse_thinking_start, sse_thinking_delta, sse_thinking_stop,
@@ -109,7 +110,7 @@ async def _call(model: str, messages: list[dict], system: str, max_tokens: int, 
     """
     kwargs.pop("max_tokens", None)
     kwargs.pop("system", None)
-    resp = await litellm.acompletion(
+    resp = await acompletion_with_retry(
         model=model,
         messages=[{"role": "system", "content": system}] + messages,
         max_tokens=max_tokens,
@@ -212,7 +213,7 @@ async def run_cot_pipeline(
         "Use the reasoning above to produce a high-quality response."
     )
     draft_kwargs = {k: v for k, v in extra_kwargs.items() if k not in ("max_tokens", "system")}
-    draft = await litellm.acompletion(
+    draft = await acompletion_with_retry(
         model=model,
         messages=[{"role": "system", "content": augmented_system}] + messages,
         stream=False,
@@ -256,7 +257,7 @@ async def run_cot_pipeline(
         if score >= settings.cot_quality_threshold or gaps_line.lower() == "none":
             break
 
-        refined = await litellm.acompletion(
+        refined = await acompletion_with_retry(
             model=model,
             messages=[{"role": "system", "content": REFINE_SYSTEM}] + [
                 {"role": "user", "content": user_text},
