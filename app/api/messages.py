@@ -210,10 +210,26 @@ async def messages(
             if not stream:
                 raise HTTPException(422, "CoT-E requires stream=true")
             cot_max, force_verify = parse_cot_request_headers(x_cot_iterations, x_cot_verify)
+            # Wave 2 #8 — pick a different provider for the critique pass
+            critique_model: Optional[str] = None
+            critique_kwargs: Optional[dict] = None
+            if settings.cot_cross_provider_critique:
+                try:
+                    critique_route = await select_provider(
+                        db, hint, has_tools=False, has_images=False,
+                        key_type=key_record.key_type,
+                        exclude_provider_id=route.provider.id,
+                    )
+                    critique_model = critique_route.litellm_model
+                    critique_kwargs = critique_route.litellm_kwargs
+                    resp_headers["X-Critique-Provider"] = critique_route.provider.name
+                except Exception:
+                    pass  # no alternate available; critique stays on primary
             return StreamingResponse(
                 _stream_cot_anthropic(
                     route.litellm_model, messages_list, x_session_id, extra,
                     cot_max, route.provider.id, db, key_record.id, force_verify,
+                    critique_model=critique_model, critique_kwargs=critique_kwargs,
                 ),
                 media_type="text/event-stream",
                 headers=resp_headers,
@@ -324,6 +340,8 @@ async def _stream_cot_anthropic(
     db: AsyncSession,
     key_record_id: str,
     force_verify: bool | None = None,
+    critique_model: str | None = None,
+    critique_kwargs: dict | None = None,
 ) -> AsyncIterator[bytes]:
     """Pass-through wrapper around run_cot_pipeline; records metrics after completion."""
     import json as _json
@@ -331,7 +349,10 @@ async def _stream_cot_anthropic(
     cache_creation = cache_read = 0
     t0 = time.monotonic()
     try:
-        async for chunk in run_cot_pipeline(model, messages, session_id, extra, max_iterations, force_verify):
+        async for chunk in run_cot_pipeline(
+            model, messages, session_id, extra, max_iterations, force_verify,
+            critique_model=critique_model, critique_kwargs=critique_kwargs,
+        ):
             yield chunk
             # Extract token counts from the message_delta usage event
             line = chunk.decode(errors="ignore").strip()
