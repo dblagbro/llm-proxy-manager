@@ -15,25 +15,32 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null)
   const [loading, setLoading] = useState(true)
 
-  const checkSession = useCallback(async () => {
+  const checkSession = useCallback(async (isInitial = false) => {
     try {
       const me = await authApi.me()
       setUser(me)
-    } catch {
-      setUser(null)
+    } catch (err: any) {
+      // Only clear user on the initial session probe (no prior state) or on
+      // an explicit auth-expired signal (handled by window event listener).
+      // Network blips / 502s during a deploy must NOT log the user out.
+      if (isInitial) {
+        setUser(null)
+      }
+      // For non-initial checks: keep existing user, let auth:expired clear it
+      // if and only if the backend truly invalidated the session.
     } finally {
       setLoading(false)
     }
   }, [])
 
   useEffect(() => {
-    checkSession()
+    checkSession(true)  // initial probe — clears user if unauthed
     const handler = () => setUser(null)
     window.addEventListener('auth:expired', handler)
     // Touch /me every 5 minutes so last_seen_at stays fresh.
-    // Backend idle TTL is 7 days; we just need to show the user the session
-    // is still valid without waiting for them to navigate somewhere.
-    const interval = window.setInterval(() => { checkSession() }, 5 * 60 * 1000)
+    // Pass isInitial=false so transient failures (deploy windows, network
+    // blips) don't log the user out — only real 401s via auth:expired.
+    const interval = window.setInterval(() => { checkSession(false) }, 5 * 60 * 1000)
     return () => {
       window.removeEventListener('auth:expired', handler)
       window.clearInterval(interval)
