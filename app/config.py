@@ -63,6 +63,9 @@ class Settings(BaseSettings):
     # always emitted as structured SSE verify_step events for client-side exec.
     cot_verify_execute: bool = Field(False, alias="COT_VERIFY_EXECUTE")
     cot_verify_step_timeout_sec: float = Field(5.0, alias="COT_VERIFY_STEP_TIMEOUT_SEC")
+    # Wave 2 #12: Chain-of-Draft plan compression (~5-word mini-steps).
+    # Published 78% token cut, 76% TTFT cut, <5pp quality drop vs verbose plan.
+    cot_plan_compact: bool = Field(True, alias="COT_PLAN_COMPACT")
 
     # Semantic cache (Wave 1 #3). Requires Redis-Stack / RediSearch.
     semantic_cache_enabled: bool = Field(True, alias="SEMANTIC_CACHE_ENABLED")
