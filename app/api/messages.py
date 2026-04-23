@@ -127,6 +127,10 @@ async def messages(
         "X-Resolved-Model": route.litellm_model,
         "X-Token-Budget-Remaining": str(max_tokens),
     }
+    # Budget visibility headers (soft-cap warning, remaining $ today/this hour)
+    if key_record.budget_status is not None:
+        from app.budget.tracker import warnings_for
+        resp_headers.update(warnings_for(key_record.budget_status))
 
     # Semantic cache — check before anything LLM-ish runs
     cache_decision = decide_cacheable(
