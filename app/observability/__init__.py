@@ -13,6 +13,8 @@ from app.observability.prometheus import (
     observe_ttft,
     observe_circuit_breaker_state,
     observe_cot_iterations,
+    observe_cache_lookup,
+    observe_cache_tokens,
 )
 from app.observability.otel import (
     init_tracer,
@@ -26,6 +28,8 @@ __all__ = [
     "observe_ttft",
     "observe_circuit_breaker_state",
     "observe_cot_iterations",
+    "observe_cache_lookup",
+    "observe_cache_tokens",
     "init_tracer",
     "llm_span",
     "NOOP_SPAN",

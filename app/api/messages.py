@@ -37,6 +37,7 @@ from app.routing.aliases import resolve_alias
 from app.api.webhook import post_webhook
 from app.routing.retry import acompletion_with_retry
 from app.observability.otel import llm_span
+from app.cache.middleware import decide_cacheable, maybe_check, maybe_store
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -54,6 +55,8 @@ async def messages(
     x_cot_verify: Optional[str] = Header(None, alias="x-cot-verify"),
     x_webhook_url: Optional[str] = Header(None, alias="x-webhook-url"),
     anthropic_beta: Optional[str] = Header(None, alias="anthropic-beta"),
+    x_cache: Optional[str] = Header(None, alias="x-cache"),
+    x_cache_ttl: Optional[str] = Header(None, alias="x-cache-ttl"),
 ):
     key_record = await verify_api_key(db, x_api_key)
 
@@ -118,6 +121,41 @@ async def messages(
         "X-Token-Budget-Remaining": str(max_tokens),
     }
 
+    # Semantic cache — check before anything LLM-ish runs
+    cache_decision = decide_cacheable(
+        x_cache_header=x_cache,
+        api_key_opt_in=bool(getattr(key_record, "semantic_cache_enabled", False)),
+        key_type=key_record.key_type,
+        cot_engaged=route.cot_engaged,
+        tool_emulation=route.tool_emulation_engaged,
+        has_tools=has_tools,
+        webhook_url=x_webhook_url,
+        temperature=body.get("temperature"),
+        messages=messages_list,
+        model=route.litellm_model,
+        tenant_id=key_record.id,
+        system=system,
+        tools=tools,
+        x_cache_ttl_header=x_cache_ttl,
+    )
+    resp_headers["X-Cache-Status"] = "bypass" if not cache_decision.eligible else "miss"
+    if cache_decision.eligible:
+        cache_hit = await maybe_check(cache_decision, endpoint="messages")
+        if cache_hit:
+            resp_headers["X-Cache-Status"] = "hit"
+            resp_headers["X-Cache-Similarity"] = f"{cache_hit.similarity:.3f}"
+            from app.cot.sse import anthropic_text_sse, anthropic_text_response
+            if stream:
+                return StreamingResponse(
+                    anthropic_text_sse(cache_hit.response_text),
+                    media_type="text/event-stream",
+                    headers=resp_headers,
+                )
+            return JSONResponse(
+                content=anthropic_text_response(cache_hit.response_text, route.litellm_model),
+                headers=resp_headers,
+            )
+
     # Webhook async: fire-and-forget completion, return 202 immediately
     if x_webhook_url:
         background_tasks.add_task(
@@ -172,7 +210,8 @@ async def messages(
         if stream:
             return StreamingResponse(
                 _stream_anthropic(route.litellm_model, messages_list, extra, route.provider.id,
-                                  db, key_record.id, time.monotonic(), max_tokens),
+                                  db, key_record.id, time.monotonic(), max_tokens,
+                                  cache_decision=cache_decision),
                 media_type="text/event-stream",
                 headers=resp_headers,
             )
@@ -191,6 +230,12 @@ async def messages(
             await record_outcome(db, route.provider.id, route.litellm_model, success=True,
                                  in_tok=in_tok, out_tok=out_tok, t0=t0, key_record_id=key_record.id,
                                  cache_creation=cache_creation, cache_read=cache_read)
+            # Store in semantic cache (fire-and-forget; won't affect response latency)
+            try:
+                answer_text = result.choices[0].message.content or ""
+                await maybe_store(cache_decision, answer_text)
+            except Exception:
+                pass
             remaining = max(0, max_tokens - out_tok)
             resp_headers["X-Token-Budget-Remaining"] = str(remaining)
             return JSONResponse(
@@ -250,6 +295,7 @@ async def _stream_cot_anthropic(
 async def _stream_anthropic(
     model: str, messages: list, extra: dict, provider_id: str,
     db: AsyncSession, key_record_id: str, t0: float, budget_total: int = 0,
+    cache_decision=None,
 ) -> AsyncIterator[bytes]:
     try:
         response = await acompletion_with_retry(model=model, messages=messages, stream=True, **extra)
@@ -265,6 +311,7 @@ async def _stream_anthropic(
         tool_id: str = ""
         tool_name: str = ""
         ttft_ms: float = 0.0
+        full_text_buf: list[str] = []
 
         yield (
             f'data: {{"type":"message_start","message":{{"id":"msg_proxy","type":"message",'
@@ -324,6 +371,7 @@ async def _stream_anthropic(
                 text_started = True
             if content:
                 streamed_chars += len(content)
+                full_text_buf.append(content)
                 escaped = json.dumps(content)[1:-1]
                 yield f'data: {{"type":"content_block_delta","index":{index},"delta":{{"type":"text_delta","text":"{escaped}"}}}}\n\n'.encode()
 
@@ -355,6 +403,11 @@ async def _stream_anthropic(
                              in_tok=input_tokens, out_tok=output_tokens, t0=t0,
                              key_record_id=key_record_id, ttft_ms=ttft_ms,
                              cache_creation=cache_creation, cache_read=cache_read)
+        if cache_decision is not None and cache_decision.eligible:
+            try:
+                await maybe_store(cache_decision, "".join(full_text_buf))
+            except Exception:
+                pass
     except Exception as e:
         await record_outcome(db, provider_id, model, success=False,
                              key_record_id=key_record_id, error_str=str(e))
