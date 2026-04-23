@@ -53,6 +53,7 @@ async def messages(
     x_cot_iterations: Optional[str] = Header(None, alias="x-cot-iterations"),
     x_cot_verify: Optional[str] = Header(None, alias="x-cot-verify"),
     x_webhook_url: Optional[str] = Header(None, alias="x-webhook-url"),
+    anthropic_beta: Optional[str] = Header(None, alias="anthropic-beta"),
 ):
     key_record = await verify_api_key(db, x_api_key)
 
@@ -101,6 +102,11 @@ async def messages(
         extra.update(route.native_thinking_params)
     elif thinking and route.profile.provider_type == "anthropic":
         extra["thinking"] = thinking
+
+    # Forward anthropic-beta header when routing to Anthropic — some cache
+    # directives (e.g. 1-hour TTL) require this. No-op for other providers.
+    if anthropic_beta and route.profile.provider_type == "anthropic":
+        extra["extra_headers"] = {"anthropic-beta": anthropic_beta}
 
     if route.vision_stripped:
         messages_list = strip_images_anthropic(messages_list)
@@ -180,8 +186,11 @@ async def messages(
             )
             in_tok = getattr(result.usage, "prompt_tokens", 0)
             out_tok = getattr(result.usage, "completion_tokens", 0)
+            from app.cot.sse import extract_cache_tokens
+            cache_creation, cache_read = extract_cache_tokens(result.usage)
             await record_outcome(db, route.provider.id, route.litellm_model, success=True,
-                                 in_tok=in_tok, out_tok=out_tok, t0=t0, key_record_id=key_record.id)
+                                 in_tok=in_tok, out_tok=out_tok, t0=t0, key_record_id=key_record.id,
+                                 cache_creation=cache_creation, cache_read=cache_read)
             remaining = max(0, max_tokens - out_tok)
             resp_headers["X-Token-Budget-Remaining"] = str(remaining)
             return JSONResponse(
@@ -211,6 +220,7 @@ async def _stream_cot_anthropic(
     """Pass-through wrapper around run_cot_pipeline; records metrics after completion."""
     import json as _json
     in_tok = out_tok = 0
+    cache_creation = cache_read = 0
     t0 = time.monotonic()
     try:
         async for chunk in run_cot_pipeline(model, messages, session_id, extra, max_iterations, force_verify):
@@ -224,10 +234,13 @@ async def _stream_cot_anthropic(
                         usage = evt.get("usage", {})
                         in_tok = usage.get("input_tokens", in_tok)
                         out_tok = usage.get("output_tokens", out_tok)
+                        cache_creation = usage.get("cache_creation_input_tokens", cache_creation) or cache_creation
+                        cache_read = usage.get("cache_read_input_tokens", cache_read) or cache_read
                 except (ValueError, KeyError):
                     pass
         await record_outcome(db, provider_id, model, success=True,
-                             in_tok=in_tok, out_tok=out_tok, t0=t0, key_record_id=key_record_id)
+                             in_tok=in_tok, out_tok=out_tok, t0=t0, key_record_id=key_record_id,
+                             cache_creation=cache_creation, cache_read=cache_read)
     except Exception as e:
         await record_outcome(db, provider_id, model, success=False,
                              key_record_id=key_record_id, error_str=str(e))
@@ -246,6 +259,8 @@ async def _stream_anthropic(
         finish_reason = "stop"
         input_tokens = 0
         output_tokens = 0
+        cache_creation = 0
+        cache_read = 0
         streamed_chars = 0
         tool_id: str = ""
         tool_name: str = ""
@@ -268,6 +283,12 @@ async def _stream_anthropic(
             if hasattr(chunk, "usage") and chunk.usage:
                 input_tokens = getattr(chunk.usage, "prompt_tokens", input_tokens)
                 output_tokens = getattr(chunk.usage, "completion_tokens", output_tokens)
+                from app.cot.sse import extract_cache_tokens
+                c_create, c_read = extract_cache_tokens(chunk.usage)
+                if c_create:
+                    cache_creation = c_create
+                if c_read:
+                    cache_read = c_read
 
             # Tool call streaming
             tool_calls = getattr(delta, "tool_calls", None) or []
@@ -314,9 +335,14 @@ async def _stream_anthropic(
             output_tokens = max(1, streamed_chars // 4)
 
         stop_reason = FINISH_TO_STOP.get(finish_reason, "end_turn")
+        usage_parts = [f'"output_tokens":{output_tokens}']
+        if cache_creation:
+            usage_parts.append(f'"cache_creation_input_tokens":{cache_creation}')
+        if cache_read:
+            usage_parts.append(f'"cache_read_input_tokens":{cache_read}')
         yield (
             f'data: {{"type":"message_delta","delta":{{"stop_reason":"{stop_reason}",'
-            f'"stop_sequence":null}},"usage":{{"output_tokens":{output_tokens}}}}}\n\n'
+            f'"stop_sequence":null}},"usage":{{{",".join(usage_parts)}}}}}\n\n'
         ).encode()
         if budget_total > 0:
             remaining = max(0, budget_total - output_tokens)
@@ -327,7 +353,8 @@ async def _stream_anthropic(
         yield b'data: {"type":"message_stop"}\n\ndata: [DONE]\n\n'
         await record_outcome(db, provider_id, model, success=True,
                              in_tok=input_tokens, out_tok=output_tokens, t0=t0,
-                             key_record_id=key_record_id, ttft_ms=ttft_ms)
+                             key_record_id=key_record_id, ttft_ms=ttft_ms,
+                             cache_creation=cache_creation, cache_read=cache_read)
     except Exception as e:
         await record_outcome(db, provider_id, model, success=False,
                              key_record_id=key_record_id, error_str=str(e))
@@ -349,8 +376,11 @@ async def _webhook_completion_anthropic(
         result = await acompletion_with_retry(model=model, messages=messages, stream=False, **extra)
         in_tok = getattr(result.usage, "prompt_tokens", 0)
         out_tok = getattr(result.usage, "completion_tokens", 0)
+        from app.cot.sse import extract_cache_tokens
+        cache_creation, cache_read = extract_cache_tokens(result.usage)
         await record_outcome(db, provider_id, model, success=True,
-                             in_tok=in_tok, out_tok=out_tok, t0=t0, key_record_id=key_record_id)
+                             in_tok=in_tok, out_tok=out_tok, t0=t0, key_record_id=key_record_id,
+                             cache_creation=cache_creation, cache_read=cache_read)
         await post_webhook(webhook_url, {
             "provider": provider_id,
             "model": model,
