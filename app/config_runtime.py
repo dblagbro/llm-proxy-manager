@@ -37,6 +37,9 @@ SCHEMA: dict[str, dict] = {
     "cot_plan_compact": {"type": "bool", "default": settings.cot_plan_compact, "label": "Chain-of-Draft plan: ~5-word mini-steps (-78% plan tokens, faster TTFT)"},
     "fallback_enabled": {"type": "bool", "default": settings.fallback_enabled, "label": "Ordered fallback: on provider failure, try next-ranked candidate"},
     "fallback_max_providers": {"type": "int", "default": settings.fallback_max_providers, "label": "Max providers to try per request before giving up"},
+    "task_auto_detect_enabled": {"type": "bool", "default": settings.task_auto_detect_enabled, "label": "Auto-classify LMRH task= hint via embedding cosine (~40ms overhead)"},
+    "shadow_traffic_rate": {"type": "str", "default": str(settings.shadow_traffic_rate), "label": "Shadow-traffic fraction (0.0–1.0); 0.01 = mirror 1% of requests"},
+    "shadow_candidate_provider_id": {"type": "str", "default": settings.shadow_candidate_provider_id, "label": "Provider ID to shadow-test"},
     # Semantic cache (Wave 1 #3)
     "semantic_cache_enabled":          {"type": "bool", "default": settings.semantic_cache_enabled,         "label": "Enable semantic cache globally"},
     "semantic_cache_threshold":        {"type": "str",  "default": str(settings.semantic_cache_threshold),  "label": "Cosine threshold (0.0–1.0)"},

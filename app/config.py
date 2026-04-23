@@ -69,6 +69,13 @@ class Settings(BaseSettings):
     # Wave 3 #17: Ordered fallback across ranked providers (non-streaming only).
     fallback_enabled: bool = Field(True, alias="FALLBACK_ENABLED")
     fallback_max_providers: int = Field(3, alias="FALLBACK_MAX_PROVIDERS")
+    # Wave 3 #15: auto-classify task= hint via text-embedding-3-small cosine.
+    # Adds ~40ms for one embedding API call per classified request.
+    task_auto_detect_enabled: bool = Field(False, alias="TASK_AUTO_DETECT_ENABLED")
+    # Wave 3 #16: shadow traffic — mirror a fraction of requests to a candidate
+    # provider async; measure quality-diff vs primary. No user impact.
+    shadow_traffic_rate: float = Field(0.0, alias="SHADOW_TRAFFIC_RATE")
+    shadow_candidate_provider_id: str = Field("", alias="SHADOW_CANDIDATE_PROVIDER_ID")
 
     # Semantic cache (Wave 1 #3). Requires Redis-Stack / RediSearch.
     semantic_cache_enabled: bool = Field(True, alias="SEMANTIC_CACHE_ENABLED")
