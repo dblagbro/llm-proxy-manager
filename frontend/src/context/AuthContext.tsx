@@ -30,7 +30,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     checkSession()
     const handler = () => setUser(null)
     window.addEventListener('auth:expired', handler)
-    return () => window.removeEventListener('auth:expired', handler)
+    // Touch /me every 5 minutes so last_seen_at stays fresh.
+    // Backend idle TTL is 7 days; we just need to show the user the session
+    // is still valid without waiting for them to navigate somewhere.
+    const interval = window.setInterval(() => { checkSession() }, 5 * 60 * 1000)
+    return () => {
+      window.removeEventListener('auth:expired', handler)
+      window.clearInterval(interval)
+    }
   }, [checkSession])
 
   const login = async (username: string, password: string) => {

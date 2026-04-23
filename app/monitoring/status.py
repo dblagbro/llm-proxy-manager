@@ -14,11 +14,24 @@ from app.routing.circuit_breaker import force_open, force_close, CBState, get_al
 
 logger = logging.getLogger(__name__)
 
-# Status page URLs mapped to provider_type strings
+# Status page URLs mapped to provider_type strings.
+# Most AI providers use Atlassian Statuspage (status.json schema).
+# Google is special — published incidents feed; we flag degraded when any recent
+# incident mentions Vertex/AI/Gemini.
 STATUS_PAGES: dict[str, str] = {
     "anthropic": "https://status.anthropic.com/api/v2/status.json",
-    "openai": "https://status.openai.com/api/v2/status.json",
-    "google": "https://status.cloud.google.com/incidents.json",
+    "openai":    "https://status.openai.com/api/v2/status.json",
+    "google":    "https://status.cloud.google.com/incidents.json",
+    "vertex":    "https://status.cloud.google.com/incidents.json",
+    "groq":      "https://groqstatus.com/api/v2/status.json",
+    "grok":      "https://status.x.ai/api/v2/status.json",
+    "cohere":    "https://status.cohere.com/api/v2/status.json",
+    "mistral":   "https://status.mistral.ai/api/v2/status.json",
+    "together":  "https://status.together.ai/api/v2/status.json",
+    "fireworks": "https://status.fireworks.ai/api/v2/status.json",
+    "perplexity":"https://status.perplexity.com/api/v2/status.json",
+    "deepseek":  "https://status.deepseek.com/api/v2/status.json",
+    "replicate": "https://replicatestatus.com/api/v2/status.json",
 }
 
 _cache: dict[str, dict] = {}

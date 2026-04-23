@@ -36,7 +36,7 @@ export function LoginPage() {
             <Zap className="h-7 w-7 text-white" />
           </div>
           <h1 className="text-2xl font-bold text-white">llm-proxy</h1>
-          <p className="text-sm text-gray-400 mt-1">v2.0 — LLM Routing Gateway</p>
+          <p className="text-sm text-gray-400 mt-1">LLM Routing Gateway</p>
         </div>
 
         {/* Form */}

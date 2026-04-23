@@ -15,8 +15,13 @@ async function req<T>(
   })
 
   if (res.status === 401) {
-    // Let auth context handle redirect
-    window.dispatchEvent(new CustomEvent('auth:expired'))
+    // Only treat the /api/auth/me probe as a "session expired" signal — other
+    // endpoints can return 401 for auth-scoped reasons (e.g. attempting a
+    // reveal as a non-admin, or during a brief backend race) and shouldn't
+    // log the user out of the whole UI.
+    if (path === '/api/auth/me') {
+      window.dispatchEvent(new CustomEvent('auth:expired'))
+    }
     throw new Error('Unauthorized')
   }
 
