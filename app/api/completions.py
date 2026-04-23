@@ -80,6 +80,34 @@ async def chat_completions(
     has_tools = bool(tools)
     has_images = has_images_openai(messages_list)
 
+    # Wave 3 #15 — auto-classify task= if not supplied and feature enabled
+    auto_task: Optional[str] = None
+    if _cfg_settings.task_auto_detect_enabled and (hint is None or not hint.get("task")):
+        from app.routing.classifier import classify
+        from app.routing.lmrh import LMRHHint, HintDimension
+        _user_text = ""
+        for _m in reversed(messages_list):
+            if _m.get("role") == "user":
+                _c = _m.get("content", "")
+                if isinstance(_c, str):
+                    _user_text = _c
+                elif isinstance(_c, list):
+                    _user_text = "\n".join(
+                        b.get("text", "") for b in _c
+                        if isinstance(b, dict) and b.get("type") == "text"
+                    )
+                break
+        cls = await classify(
+            _user_text[:800],
+            _cfg_settings.semantic_cache_embedding_model,
+            _cfg_settings.semantic_cache_embedding_dims,
+        )
+        if cls:
+            auto_task, _conf = cls
+            if hint is None:
+                hint = LMRHHint(raw=f"task={auto_task}")
+            hint.dimensions.append(HintDimension("task", auto_task))
+
     alias = await resolve_alias(db, body.get("model"))
     route = await select_provider(
         db, hint, has_tools=has_tools, has_images=has_images, key_type=key_record.key_type,
@@ -121,6 +149,8 @@ async def chat_completions(
         "LLM-Capability": route.capability_header,
         "X-Resolved-Model": route.litellm_model,
     }
+    if auto_task:
+        resp_headers["X-Task-Auto-Detected"] = auto_task
     if budget_total:
         resp_headers["X-Token-Budget-Remaining"] = str(budget_total)
     # Budget visibility headers (soft-cap warning, remaining $ today/this hour)

@@ -83,6 +83,34 @@ async def messages(
     has_tools = bool(tools)
     has_images = has_images_anthropic(messages_list)
 
+    # Wave 3 #15 — auto-classify task= if not supplied and feature enabled
+    auto_task: Optional[str] = None
+    if settings.task_auto_detect_enabled and (hint is None or not hint.get("task")):
+        from app.routing.classifier import classify
+        from app.routing.lmrh import LMRHHint, HintDimension
+        _user_text = ""
+        for _m in reversed(messages_list):
+            if _m.get("role") == "user":
+                _c = _m.get("content", "")
+                if isinstance(_c, str):
+                    _user_text = _c
+                elif isinstance(_c, list):
+                    _user_text = "\n".join(
+                        b.get("text", "") for b in _c
+                        if isinstance(b, dict) and b.get("type") == "text"
+                    )
+                break
+        cls = await classify(
+            _user_text[:800],
+            settings.semantic_cache_embedding_model,
+            settings.semantic_cache_embedding_dims,
+        )
+        if cls:
+            auto_task, _conf = cls
+            if hint is None:
+                hint = LMRHHint(raw=f"task={auto_task}")
+            hint.dimensions.append(HintDimension("task", auto_task))
+
     alias = await resolve_alias(db, body.get("model"))
     route = await select_provider(
         db, hint, has_tools=has_tools, has_images=has_images, key_type=key_record.key_type,
@@ -131,6 +159,8 @@ async def messages(
         "X-Resolved-Model": route.litellm_model,
         "X-Token-Budget-Remaining": str(max_tokens),
     }
+    if auto_task:
+        resp_headers["X-Task-Auto-Detected"] = auto_task
     # Budget visibility headers (soft-cap warning, remaining $ today/this hour)
     if key_record.budget_status is not None:
         from app.budget.tracker import warnings_for
@@ -452,6 +482,30 @@ async def messages(
                 await maybe_store(cache_decision, answer_text)
             except Exception:
                 pass
+
+            # Wave 3 #16 — shadow traffic (sampled, fire-and-forget)
+            if (settings.shadow_traffic_rate > 0
+                and settings.shadow_candidate_provider_id
+                and settings.shadow_candidate_provider_id != route.provider.id
+                and not has_tools):
+                from app.routing.shadow import should_shadow, run_shadow_compare
+                if should_shadow(settings.shadow_traffic_rate):
+                    from app.models.database import AsyncSessionLocal
+                    background_tasks.add_task(
+                        run_shadow_compare,
+                        AsyncSessionLocal,
+                        settings.shadow_candidate_provider_id,
+                        messages_list,
+                        answer_text,
+                        route.litellm_model,
+                        {"max_tokens": max_tokens,
+                         **({"system": system} if system else {})},
+                        settings.semantic_cache_embedding_model,
+                        settings.semantic_cache_embedding_dims,
+                        key_record.id,
+                    )
+                    resp_headers["X-Shadow-Queued"] = settings.shadow_candidate_provider_id
+
             remaining = max(0, max_tokens - out_tok)
             resp_headers["X-Token-Budget-Remaining"] = str(remaining)
             return JSONResponse(
