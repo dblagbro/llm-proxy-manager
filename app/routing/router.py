@@ -72,10 +72,10 @@ PROVIDER_DEFAULT_MODELS = {
 }
 
 
-def build_litellm_model(provider: Provider) -> str:
+def build_litellm_model(provider: Provider, model_override: Optional[str] = None) -> str:
     prefix = PROVIDER_TYPE_TO_LITELLM.get(provider.provider_type, "openai")
     default = PROVIDER_DEFAULT_MODELS.get(provider.provider_type, "gpt-4o")
-    model = provider.default_model or default
+    model = model_override or provider.default_model or default
     return f"{prefix}/{model}"
 
 
@@ -125,6 +125,8 @@ async def select_provider(
     has_tools: bool = False,
     has_images: bool = False,
     key_type: str = "standard",
+    pinned_provider_id: Optional[str] = None,
+    model_override: Optional[str] = None,
 ) -> RouteResult:
     """
     Select the best available provider+model for this request.
@@ -137,6 +139,12 @@ async def select_provider(
 
     if not providers:
         raise RuntimeError("No providers configured")
+
+    # Pin to a specific provider when an alias demands it
+    if pinned_provider_id:
+        providers = [p for p in providers if p.id == pinned_provider_id]
+        if not providers:
+            raise RuntimeError(f"Aliased provider '{pinned_provider_id}' is not enabled")
 
     # Filter available (circuit breaker + hold-down)
     available = [p for p in providers if await is_available(p.id)]
@@ -172,7 +180,7 @@ async def select_provider(
         if key_type == "claude-code" or (task_hint and task_hint.value == "reasoning"):
             cot_engaged = True
 
-    litellm_model = build_litellm_model(provider)
+    litellm_model = build_litellm_model(provider, model_override)
     litellm_kwargs = build_litellm_kwargs(provider)
 
     native_params: dict = {}
