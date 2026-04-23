@@ -41,6 +41,7 @@ from app.cache.middleware import decide_cacheable, maybe_check, maybe_store
 from app.routing.hedging import (
     should_hedge_header, wait_budget_ms, race_streams, try_acquire_hedge,
 )
+from app.config import settings
 from app.observability.prometheus import (
     observe_hedge_attempt, observe_hedge_win, observe_hedge_bucket_reject,
 )
@@ -352,6 +353,7 @@ async def _stream_cot_anthropic(
         await record_outcome(db, provider_id, model, success=False,
                              key_record_id=key_record_id, error_str=str(e))
         yield (b'data: ' + json.dumps({"type": "error", "error": {"message": str(e)}}).encode() + b'\n\n')
+        yield b'data: {"type":"message_stop"}\n\ndata: [DONE]\n\n'
 
 
 async def _stream_anthropic(
@@ -474,6 +476,7 @@ async def _stream_anthropic(
         await record_outcome(db, provider_id, model, success=False,
                              key_record_id=key_record_id, error_str=str(e))
         yield (b'data: ' + json.dumps({"type": "error", "error": {"message": str(e)}}).encode() + b'\n\n')
+        yield b'data: {"type":"message_stop"}\n\ndata: [DONE]\n\n'
 
 
 async def _webhook_completion_anthropic(
