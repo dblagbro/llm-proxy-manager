@@ -58,6 +58,8 @@ async def chat_completions(
     x_session_id: Optional[str] = Header(None, alias="x-session-id"),
     x_cot_iterations: Optional[str] = Header(None, alias="x-cot-iterations"),
     x_cot_verify: Optional[str] = Header(None, alias="x-cot-verify"),
+    x_cot_samples: Optional[str] = Header(None, alias="x-cot-samples"),
+    x_cot_mode: Optional[str] = Header(None, alias="x-cot-mode"),
     x_webhook_url: Optional[str] = Header(None, alias="x-webhook-url"),
     x_cache: Optional[str] = Header(None, alias="x-cache"),
     x_cache_ttl: Optional[str] = Header(None, alias="x-cache-ttl"),
@@ -206,7 +208,11 @@ async def chat_completions(
         if route.cot_engaged:
             if not stream:
                 raise HTTPException(422, "CoT-E requires stream=true")
-            cot_max, force_verify = parse_cot_request_headers(x_cot_iterations, x_cot_verify)
+            cot_max, force_verify, samples = parse_cot_request_headers(
+                x_cot_iterations, x_cot_verify, x_cot_samples, x_cot_mode
+            )
+            if samples > 1:
+                resp_headers["X-Cot-Samples"] = str(samples)
             # Wave 2 #8 — pick a different provider for critique
             critique_model: Optional[str] = None
             critique_kwargs: Optional[dict] = None
@@ -227,6 +233,7 @@ async def chat_completions(
                     route.litellm_model, messages_list, x_session_id, extra,
                     cot_max, route.provider.id, db, key_record.id, force_verify,
                     critique_model=critique_model, critique_kwargs=critique_kwargs,
+                    samples=samples,
                 ),
                 media_type="text/event-stream",
                 headers=resp_headers,
@@ -330,6 +337,7 @@ async def _stream_cot_openai(
     force_verify: bool | None = None,
     critique_model: str | None = None,
     critique_kwargs: dict | None = None,
+    samples: int = 1,
 ) -> AsyncIterator[bytes]:
     """
     Run the CoT-E pipeline and re-emit as OpenAI-format SSE chunks.
@@ -347,6 +355,7 @@ async def _stream_cot_openai(
         async for raw in run_cot_pipeline(
             model, messages, session_id, extra, max_iterations, force_verify,
             critique_model=critique_model, critique_kwargs=critique_kwargs,
+            samples=samples,
         ):
             line = raw.decode(errors="ignore").strip()
             if not line.startswith("data: "):
