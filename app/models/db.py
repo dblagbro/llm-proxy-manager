@@ -38,6 +38,7 @@ class Provider(Base):
     # Per-provider CB overrides (null = use global setting)
     hold_down_sec = Column(Integer, nullable=True)
     failure_threshold = Column(Integer, nullable=True)
+    daily_budget_usd = Column(Float, nullable=True)  # None = unlimited
     extra_config = Column(JSON, default=dict)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())

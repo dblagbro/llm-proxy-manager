@@ -29,6 +29,7 @@ async def init_db():
             "ALTER TABLE api_keys ADD COLUMN rate_limit_rpm INTEGER",
             "ALTER TABLE provider_metrics ADD COLUMN avg_ttft_ms REAL DEFAULT 0",
             "ALTER TABLE provider_metrics ADD COLUMN ttft_requests INTEGER DEFAULT 0",
+            "ALTER TABLE providers ADD COLUMN daily_budget_usd REAL",
         ]:
             try:
                 await conn.exec_driver_sql(stmt)

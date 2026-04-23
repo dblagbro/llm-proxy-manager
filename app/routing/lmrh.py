@@ -96,6 +96,7 @@ class CapabilityProfile:
     native_vision: bool = False
     priority: int = 10
     avg_ttft_ms: float = 0.0
+    over_daily_budget: bool = False
 
 
 def score_candidate(profile: CapabilityProfile, hint: LMRHHint) -> tuple[float, list[str]]:
@@ -184,6 +185,11 @@ def score_candidate(profile: CapabilityProfile, hint: LMRHHint) -> tuple[float, 
     # TTFT bonus: up to +5 for fast providers (0 ms→+5, 3000 ms→0, no data→no adjustment)
     if profile.avg_ttft_ms > 0:
         score += 5.0 * max(0.0, 1.0 - profile.avg_ttft_ms / 3000.0)
+
+    # Budget demotion: heavy penalty when over daily spend cap, but not a hard block
+    # (keeps provider as last-resort fallback if all providers are over budget)
+    if profile.over_daily_budget:
+        score -= 50.0
 
     # Base score from provider priority (lower priority number = higher score)
     score += max(0, 100 - profile.priority)

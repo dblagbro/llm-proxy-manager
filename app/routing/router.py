@@ -6,11 +6,12 @@ import logging
 import re
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Optional, Any
 
 import litellm
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, func
 
 from app.config import settings
 from app.models.db import Provider, ModelCapability, ProviderMetric
@@ -129,6 +130,24 @@ async def _load_profile(db: AsyncSession, provider: Provider) -> CapabilityProfi
     recent = metric_res.scalar_one_or_none()
     if recent and recent.avg_ttft_ms:
         profile.avg_ttft_ms = recent.avg_ttft_ms
+
+    # Check daily budget cap: sum today's spend across all metric buckets
+    if provider.daily_budget_usd is not None:
+        today_midnight = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        cost_res = await db.execute(
+            select(func.sum(ProviderMetric.total_cost_usd)).where(
+                ProviderMetric.provider_id == provider.id,
+                ProviderMetric.bucket_ts >= today_midnight,
+            )
+        )
+        today_cost = cost_res.scalar_one_or_none() or 0.0
+        if today_cost >= provider.daily_budget_usd:
+            profile.over_daily_budget = True
+            logger.info(
+                "router.budget_demotion",
+                extra={"provider": provider.id, "today_cost": today_cost,
+                       "budget": provider.daily_budget_usd},
+            )
 
     return profile
 

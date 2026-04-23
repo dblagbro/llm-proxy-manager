@@ -29,6 +29,7 @@ class ProviderCreate(BaseModel):
     exclude_from_tool_requests: bool = False
     hold_down_sec: Optional[int] = None       # None = use global setting
     failure_threshold: Optional[int] = None   # None = use global setting
+    daily_budget_usd: Optional[float] = None  # None = unlimited
     extra_config: dict = {}
 
 
@@ -251,6 +252,7 @@ def _serialize(p: Provider) -> dict:
         "exclude_from_tool_requests": p.exclude_from_tool_requests,
         "hold_down_sec": p.hold_down_sec,
         "failure_threshold": p.failure_threshold,
+        "daily_budget_usd": p.daily_budget_usd,
         "extra_config": p.extra_config,
         "created_at": p.created_at.isoformat() if p.created_at else None,
     }
