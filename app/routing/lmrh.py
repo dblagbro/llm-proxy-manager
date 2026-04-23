@@ -95,6 +95,7 @@ class CapabilityProfile:
     native_tools: bool = True
     native_vision: bool = False
     priority: int = 10
+    avg_ttft_ms: float = 0.0
 
 
 def score_candidate(profile: CapabilityProfile, hint: LMRHHint) -> tuple[float, list[str]]:
@@ -179,6 +180,10 @@ def score_candidate(profile: CapabilityProfile, hint: LMRHHint) -> tuple[float, 
                     if dim.required:
                         return float("-inf"), [dim.key]
                     unmet.append(dim.key)
+
+    # TTFT bonus: up to +5 for fast providers (0 ms→+5, 3000 ms→0, no data→no adjustment)
+    if profile.avg_ttft_ms > 0:
+        score += 5.0 * max(0.0, 1.0 - profile.avg_ttft_ms / 3000.0)
 
     # Base score from provider priority (lower priority number = higher score)
     score += max(0, 100 - profile.priority)
