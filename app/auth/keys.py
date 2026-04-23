@@ -15,6 +15,7 @@ from sqlalchemy.sql import func
 from app.models.db import ApiKey
 from app.cluster.manager import active_node_count
 from app.cluster.sync import get_peer_total_cost
+from app.budget.tracker import check_budget_pre_request, BudgetStatus
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +43,8 @@ class ApiKeyRecord:
     id: str
     name: str
     key_type: str  # standard|claude-code
+    semantic_cache_enabled: bool = False
+    budget_status: Optional[BudgetStatus] = None
 
 
 def _hash_key(raw_key: str) -> str:
@@ -68,6 +71,9 @@ async def verify_api_key(db: AsyncSession, raw_key: Optional[str]) -> ApiKeyReco
         if global_cost >= key.spending_cap_usd:
             raise HTTPException(429, f"API key spending cap of ${key.spending_cap_usd:.4f} reached")
 
+    # Wave 1 #5 — tiered budget caps (hourly burst + daily soft/hard)
+    budget_status = await check_budget_pre_request(db, key)
+
     if key.rate_limit_rpm is not None:
         _check_rate_limit(key.id, key.rate_limit_rpm)
 
@@ -79,4 +85,10 @@ async def verify_api_key(db: AsyncSession, raw_key: Optional[str]) -> ApiKeyReco
     )
     await db.commit()
 
-    return ApiKeyRecord(id=key.id, name=key.name, key_type=key.key_type)
+    return ApiKeyRecord(
+        id=key.id,
+        name=key.name,
+        key_type=key.key_type,
+        semantic_cache_enabled=bool(key.semantic_cache_enabled),
+        budget_status=budget_status,
+    )

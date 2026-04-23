@@ -81,9 +81,18 @@ class ApiKey(Base):
     total_requests = Column(Integer, default=0)
     total_tokens = Column(Integer, default=0)
     total_cost_usd = Column(Float, default=0.0)
-    spending_cap_usd = Column(Float, nullable=True)  # None = unlimited
+    spending_cap_usd = Column(Float, nullable=True)  # lifetime hard cap; None = unlimited
     rate_limit_rpm = Column(Integer, nullable=True)   # None = unlimited
     semantic_cache_enabled = Column(Boolean, default=False)  # Wave 1 #3 opt-in
+    # Wave 1 #5 — tiered budget caps (None = unlimited at that tier)
+    daily_soft_cap_usd = Column(Float, nullable=True)  # warning only; X-Budget-Warning header
+    daily_hard_cap_usd = Column(Float, nullable=True)  # 402 Payment Required
+    hourly_cap_usd = Column(Float, nullable=True)      # burst control; 429
+    # Self-resetting bucket counters (reset when bucket_ts differs from current)
+    day_bucket_ts = Column(DateTime, nullable=True)
+    day_cost_usd = Column(Float, default=0.0)
+    hour_bucket_ts = Column(DateTime, nullable=True)
+    hour_cost_usd = Column(Float, default=0.0)
     last_used_at = Column(DateTime)
     created_at = Column(DateTime, server_default=func.now())
 

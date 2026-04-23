@@ -121,6 +121,10 @@ async def chat_completions(
     }
     if budget_total:
         resp_headers["X-Token-Budget-Remaining"] = str(budget_total)
+    # Budget visibility headers (soft-cap warning, remaining $ today/this hour)
+    if key_record.budget_status is not None:
+        from app.budget.tracker import warnings_for
+        resp_headers.update(warnings_for(key_record.budget_status))
 
     # Semantic cache — check before anything LLM-ish runs
     cache_decision = decide_cacheable(
