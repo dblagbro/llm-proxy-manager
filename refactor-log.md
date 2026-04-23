@@ -236,3 +236,41 @@ want to log exactly which model variant was used.
 - 1 new file (`api/models.py`, ~35 lines)
 - Small targeted edits to 4 existing files
 - 113/113 unit tests pass; all 3 nodes healthy post-deploy
+
+---
+
+## 2026-04-23 — Short-term improvements S5–S6 + version discipline
+
+### S5: TTFT tracking
+**Files**: `app/monitoring/metrics.py`, `app/monitoring/helpers.py`, `app/api/messages.py`,
+`app/api/completions.py`, `app/models/db.py`, `app/models/database.py`
+
+Time-to-first-token is now tracked per 5-minute bucket in `ProviderMetric`:
+- `avg_ttft_ms`: rolling CMA of TTFT across streaming requests in the bucket
+- `ttft_requests`: count of streaming requests that contributed (denominator for the CMA)
+- Only updated when `ttft_ms > 0` — non-streaming calls and CoT (multi-pass) contribute 0
+- `_stream_anthropic`: TTFT captured at first text or tool-call content chunk
+- `_stream_openai`: TTFT captured at first chunk from litellm
+- Schema additions handled via `init_db()` ALTER TABLE (same pattern as existing columns)
+- `get_provider_history()` and `get_all_provider_summary()` both expose `avg_ttft_ms`
+- Unblocks M2 (latency-weighted routing)
+
+### S6: Code quality cleanup
+**Files**: `app/auth/keys.py`, `app/cot/tool_emulation.py`, `app/cluster/manager.py`,
+`tests/unit/test_rate_limiting.py`
+
+- `auth/keys.py`: `active_node_count` and `get_peer_total_cost` promoted from lazy
+  in-function imports to file-top imports. Test patch target updated to `app.auth.keys`.
+- `cot/tool_emulation.py`: `_render_tool_description(name, desc, props, required)` extracted
+  from identical bodies of `_describe_anthropic` and `_describe_openai`.
+- `cluster/manager.py`: `_build_sync_payload(db)` extracted from `push_sync()`, separating
+  the DB-fetch-and-serialize concern from the HTTP-send concern.
+
+### Version discipline
+Version strings now increment with each deploy batch. `main.py`, `api/cluster.py` are the
+two files to update. Pattern: `2.0.x` — each session's deploy batch gets the next patch.
+
+### Net result
+- No new files; targeted edits across 8 files
+- 113/113 unit tests pass; 47/47 integration tests pass (3 pre-existing timing flakes on retry)
+- All 3 nodes healthy at v2.0.3; pushed to GitHub (v2 branch) + Docker Hub (2.0.3, v2-latest)
