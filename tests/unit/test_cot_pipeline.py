@@ -34,6 +34,7 @@ from app.cot.pipeline import (  # noqa: E402 — must come after stubs
     _parse_gaps,
     _parse_critique,
     _last_user_text,
+    parse_cot_request_headers,
 )
 
 
@@ -233,3 +234,47 @@ class TestLastUserText:
 
     def test_no_user_message(self):
         assert _last_user_text([{"role": "assistant", "content": "hi"}]) == ""
+
+
+# ── parse_cot_request_headers (Wave 2 #10 — self-consistency) ────────────────
+
+class TestParseCotHeaders:
+    def test_defaults(self):
+        cot_max, force, samples = parse_cot_request_headers(None, None)
+        assert cot_max is None
+        assert force is None
+        assert samples == 1
+
+    def test_iterations_and_verify(self):
+        cot_max, force, samples = parse_cot_request_headers("2", "true")
+        assert cot_max == 2
+        assert force is True
+        assert samples == 1
+
+    def test_samples_header(self):
+        cot_max, force, samples = parse_cot_request_headers(None, None, "5", None)
+        assert samples == 5
+
+    def test_samples_clamp_max(self):
+        _, _, samples = parse_cot_request_headers(None, None, "99", None)
+        assert samples == 10
+
+    def test_samples_clamp_min(self):
+        _, _, samples = parse_cot_request_headers(None, None, "0", None)
+        assert samples == 1
+
+    def test_mode_alias(self):
+        _, _, samples = parse_cot_request_headers(None, None, None, "self-consistency")
+        assert samples == 3
+
+    def test_explicit_samples_overrides_mode(self):
+        _, _, samples = parse_cot_request_headers(None, None, "7", "self-consistency")
+        assert samples == 7
+
+    def test_invalid_samples_falls_back(self):
+        _, _, samples = parse_cot_request_headers(None, None, "nope", None)
+        assert samples == 1
+
+    def test_iterations_zero_allowed(self):
+        cot_max, _, _ = parse_cot_request_headers("0", None)
+        assert cot_max == 0
