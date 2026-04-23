@@ -27,6 +27,18 @@ _MIN_SAMPLES = 20   # below this, p95 is too noisy to act on
 
 _ttft_samples: dict[str, deque[float]] = {}
 
+# PeakEWMA (Wave 3 #13) — exponentially-weighted moving average per provider.
+# Lambda chosen to give roughly equal weight to the most recent ~10 samples.
+# Finagle's "peak" variant: on each sample, we take max(ewma_after, ewma_before)
+# to bias toward the *recent peak*, which is what matters for tail latency.
+_PEAK_EWMA_LAMBDA = 0.2
+_peak_ewma_ms: dict[str, float] = {}
+
+
+def peak_ewma(provider_id: str) -> float | None:
+    """Return the PeakEWMA for a provider, or None if never sampled."""
+    return _peak_ewma_ms.get(provider_id)
+
 
 def record_ttft_sample(provider_id: str, ttft_ms: float) -> None:
     if ttft_ms <= 0:
@@ -36,6 +48,14 @@ def record_ttft_sample(provider_id: str, ttft_ms: float) -> None:
         buf = deque(maxlen=_WINDOW_SIZE)
         _ttft_samples[provider_id] = buf
     buf.append(ttft_ms)
+    # PeakEWMA update
+    prev = _peak_ewma_ms.get(provider_id)
+    if prev is None:
+        _peak_ewma_ms[provider_id] = ttft_ms
+    else:
+        updated = prev * (1.0 - _PEAK_EWMA_LAMBDA) + ttft_ms * _PEAK_EWMA_LAMBDA
+        # "Peak" variant — recent spike stays sticky briefly
+        _peak_ewma_ms[provider_id] = max(prev, updated) if ttft_ms > prev else updated
 
 
 def provider_p95_ms(provider_id: str) -> Optional[float]:

@@ -219,6 +219,28 @@ def rank_candidates(
     return [(p, unmet) for p, unmet, _ in scored]
 
 
+def rank_candidates_with_scores(
+    profiles: list[CapabilityProfile], hint: Optional[LMRHHint]
+) -> list[tuple[CapabilityProfile, list[str], float]]:
+    """Same as rank_candidates but returns scores — used by the P2C balancer
+    to identify ties within the top LMRH tier."""
+    if not hint:
+        # Fabricate descending scores from priority so the caller can still
+        # identify "same score" via approximate equality.
+        return [
+            (p, [], float(1000 - p.priority))
+            for p in sorted(profiles, key=lambda p: p.priority)
+        ]
+    scored = []
+    for p in profiles:
+        s, unmet = score_candidate(p, hint)
+        if s == float("-inf"):
+            continue
+        scored.append((p, unmet, s))
+    scored.sort(key=lambda x: -x[2])
+    return scored
+
+
 def build_capability_header(
     profile: CapabilityProfile,
     unmet: list[str],
