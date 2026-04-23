@@ -83,6 +83,7 @@ class ApiKey(Base):
     total_cost_usd = Column(Float, default=0.0)
     spending_cap_usd = Column(Float, nullable=True)  # None = unlimited
     rate_limit_rpm = Column(Integer, nullable=True)   # None = unlimited
+    semantic_cache_enabled = Column(Boolean, default=False)  # Wave 1 #3 opt-in
     last_used_at = Column(DateTime)
     created_at = Column(DateTime, server_default=func.now())
 

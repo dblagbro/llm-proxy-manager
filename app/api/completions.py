@@ -34,6 +34,7 @@ from app.cot.sse import (
 from app.api.webhook import post_webhook
 from app.routing.retry import acompletion_with_retry
 from app.observability.otel import llm_span
+from app.cache.middleware import decide_cacheable, maybe_check, maybe_store
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -51,6 +52,8 @@ async def chat_completions(
     x_cot_iterations: Optional[str] = Header(None, alias="x-cot-iterations"),
     x_cot_verify: Optional[str] = Header(None, alias="x-cot-verify"),
     x_webhook_url: Optional[str] = Header(None, alias="x-webhook-url"),
+    x_cache: Optional[str] = Header(None, alias="x-cache"),
+    x_cache_ttl: Optional[str] = Header(None, alias="x-cache-ttl"),
 ):
     # Accept Bearer token or x-api-key
     token = x_api_key
@@ -111,6 +114,40 @@ async def chat_completions(
     if budget_total:
         resp_headers["X-Token-Budget-Remaining"] = str(budget_total)
 
+    # Semantic cache — check before anything LLM-ish runs
+    cache_decision = decide_cacheable(
+        x_cache_header=x_cache,
+        api_key_opt_in=bool(getattr(key_record, "semantic_cache_enabled", False)),
+        key_type=key_record.key_type,
+        cot_engaged=route.cot_engaged,
+        tool_emulation=route.tool_emulation_engaged,
+        has_tools=has_tools,
+        webhook_url=x_webhook_url,
+        temperature=body.get("temperature"),
+        messages=messages_list,
+        model=route.litellm_model,
+        tenant_id=key_record.id,
+        system=None,
+        tools=tools,
+        x_cache_ttl_header=x_cache_ttl,
+    )
+    resp_headers["X-Cache-Status"] = "bypass" if not cache_decision.eligible else "miss"
+    if cache_decision.eligible:
+        cache_hit = await maybe_check(cache_decision, endpoint="completions")
+        if cache_hit:
+            resp_headers["X-Cache-Status"] = "hit"
+            resp_headers["X-Cache-Similarity"] = f"{cache_hit.similarity:.3f}"
+            if stream:
+                return StreamingResponse(
+                    openai_text_sse(cache_hit.response_text),
+                    media_type="text/event-stream",
+                    headers=resp_headers,
+                )
+            return JSONResponse(
+                content=openai_text_response(cache_hit.response_text, route.litellm_model),
+                headers=resp_headers,
+            )
+
     # Webhook async: fire-and-forget completion, return 202 immediately
     if x_webhook_url:
         background_tasks.add_task(
@@ -170,7 +207,8 @@ async def chat_completions(
         if stream:
             return StreamingResponse(
                 _stream_openai(route.litellm_model, messages_list, extra, route.provider.id,
-                               db, key_record.id, time.monotonic(), budget_total),
+                               db, key_record.id, time.monotonic(), budget_total,
+                               cache_decision=cache_decision),
                 media_type="text/event-stream",
                 headers=resp_headers,
             )
@@ -184,6 +222,11 @@ async def chat_completions(
             )
             in_tok = getattr(result.usage, "prompt_tokens", 0)
             out_tok = getattr(result.usage, "completion_tokens", 0)
+            try:
+                answer_text = result.choices[0].message.content or ""
+                await maybe_store(cache_decision, answer_text)
+            except Exception:
+                pass
             await record_outcome(db, route.provider.id, route.litellm_model, endpoint="completions", success=True,
                                  in_tok=in_tok, out_tok=out_tok, t0=t0, key_record_id=key_record.id)
             if budget_total:
@@ -289,10 +332,12 @@ async def _stream_cot_openai(
 async def _stream_openai(
     model: str, messages: list, extra: dict, provider_id: str,
     db: AsyncSession, key_record_id: str, t0: float, budget_total: int = 0,
+    cache_decision=None,
 ) -> AsyncIterator[bytes]:
     in_tok = out_tok = 0
     ttft_ms: float = 0.0
     first_chunk = True
+    full_text_buf: list[str] = []
     try:
         response = await acompletion_with_retry(model=model, messages=messages, stream=True, **extra)
         async for chunk in response:
@@ -302,6 +347,14 @@ async def _stream_openai(
             if hasattr(chunk, "usage") and chunk.usage:
                 in_tok = getattr(chunk.usage, "prompt_tokens", in_tok)
                 out_tok = getattr(chunk.usage, "completion_tokens", out_tok)
+            # Buffer text content for potential cache store
+            try:
+                delta = chunk.choices[0].delta if chunk.choices else None
+                text = getattr(delta, "content", None) if delta else None
+                if text:
+                    full_text_buf.append(text)
+            except Exception:
+                pass
             yield f"data: {chunk.model_dump_json()}\n\n".encode()
         if budget_total > 0:
             remaining = max(0, budget_total - out_tok)
@@ -313,6 +366,11 @@ async def _stream_openai(
         await record_outcome(db, provider_id, model, endpoint="completions", success=True,
                              in_tok=in_tok, out_tok=out_tok, t0=t0,
                              key_record_id=key_record_id, ttft_ms=ttft_ms)
+        if cache_decision is not None and cache_decision.eligible:
+            try:
+                await maybe_store(cache_decision, "".join(full_text_buf))
+            except Exception:
+                pass
     except Exception as e:
         await record_outcome(db, provider_id, model, endpoint="completions", success=False,
                              key_record_id=key_record_id, error_str=str(e))

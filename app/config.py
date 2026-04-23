@@ -54,6 +54,18 @@ class Settings(BaseSettings):
     # When False, verify every CoT response (use with care — adds latency to all requests).
     cot_verify_auto_detect: bool = Field(True, alias="COT_VERIFY_AUTO_DETECT")
 
+    # Semantic cache (Wave 1 #3). Requires Redis-Stack / RediSearch.
+    semantic_cache_enabled: bool = Field(True, alias="SEMANTIC_CACHE_ENABLED")
+    semantic_cache_threshold: float = Field(0.88, alias="SEMANTIC_CACHE_THRESHOLD")
+    semantic_cache_ttl_sec: int = Field(86400, alias="SEMANTIC_CACHE_TTL_SEC")
+    semantic_cache_embedding_model: str = Field(
+        "text-embedding-3-small", alias="SEMANTIC_CACHE_EMBEDDING_MODEL"
+    )
+    # Matryoshka-truncated dimensions — 512 keeps ~98% quality at 33% size
+    semantic_cache_embedding_dims: int = Field(512, alias="SEMANTIC_CACHE_EMBEDDING_DIMS")
+    # Minimum response length (chars) to be worth caching — filters refusals, errors
+    semantic_cache_min_response_chars: int = Field(200, alias="SEMANTIC_CACHE_MIN_RESPONSE_CHARS")
+
     # Cluster
     cluster_enabled: bool = Field(False, alias="CLUSTER_ENABLED")
     cluster_node_id: Optional[str] = Field(None, alias="CLUSTER_NODE_ID")
