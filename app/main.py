@@ -24,6 +24,7 @@ from sqlalchemy import select
 # ── Routers ──────────────────────────────────────────────────────────────────
 from app.api.messages import router as messages_router
 from app.api.completions import router as completions_router
+from app.api.models import router as models_router
 from app.api.auth import router as auth_router
 from app.api.providers import router as providers_router
 from app.api.apikeys import router as apikeys_router
@@ -69,7 +70,7 @@ async def _notify_provider_degraded(severity: str, message: str, provider_id: st
 
 app = FastAPI(
     title="llm-proxy",
-    version="2.0.0",
+    version="2.0.2",
     description="Self-hosted LLM routing gateway — LMRH protocol + CoT-E augmentation",
     lifespan=lifespan,
     docs_url="/docs",
@@ -81,7 +82,7 @@ app.add_middleware(
     allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["LLM-Capability", "X-Provider"],
+    expose_headers=["LLM-Capability", "X-Provider", "X-Resolved-Model"],
 )
 
 
@@ -105,6 +106,7 @@ async def log_requests(request: Request, call_next):
 # ── Core LLM endpoints (same paths as v1) ────────────────────────────────────
 app.include_router(messages_router)
 app.include_router(completions_router)
+app.include_router(models_router)
 
 # ── Admin API ────────────────────────────────────────────────────────────────
 app.include_router(auth_router)
@@ -118,12 +120,12 @@ app.include_router(settings_router)
 # ── Utility endpoints ────────────────────────────────────────────────────────
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": "2.0.0"}
+    return {"status": "ok", "version": "2.0.2"}
 
 
 @app.get("/version")
 async def version():
-    return {"service": "llm-proxy", "version": "2.0.0", "docs": "/docs"}
+    return {"service": "llm-proxy", "version": "2.0.2", "docs": "/docs"}
 
 
 # ── Static files (web dashboard) ─────────────────────────────────────────────

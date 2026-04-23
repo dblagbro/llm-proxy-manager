@@ -17,6 +17,7 @@ app/
 ├── api/
 │   ├── messages.py          POST /v1/messages — Anthropic wire format handler
 │   ├── completions.py       POST /v1/chat/completions — OpenAI wire format handler
+│   ├── models.py            GET /v1/models — OpenAI-compatible model listing
 │   ├── image_utils.py       Image detection + stripping for both wire formats
 │   ├── apikeys.py           CRUD + spending-cap/rate-limit for API keys
 │   ├── providers.py         CRUD + model capability management for providers
@@ -27,22 +28,26 @@ app/
 │   └── admin.py             bcrypt password hashing, admin session handling
 │
 ├── routing/
-│   ├── router.py                  Provider selection — returns RouteResult
+│   ├── router.py                  Provider selection — returns RouteResult;
+│   │                                build_litellm_model, build_litellm_kwargs (public helpers)
 │   ├── lmrh.py                    LMRH protocol: parse_hint, score_candidate, rank_candidates,
 │   │                                build_capability_header, CapabilityProfile dataclass
 │   ├── capability_inference.py    Heuristic fallback: infer_capability_profile from model name
 │   └── circuit_breaker.py         Per-provider open/half-open/closed state + hold-down
 │
 ├── cot/
-│   ├── pipeline.py          Chain-of-Thought iterative refinement pipeline (pure reasoning logic)
+│   ├── pipeline.py          Chain-of-Thought iterative refinement pipeline (pure reasoning logic);
+│   │                          parse_cot_request_headers() shared by both endpoint handlers
 │   ├── tool_emulation.py    Tool-use emulation for non-native providers:
 │   │                          prompt building, message normalisation, parsing, LLM call
-│   └── sse.py               Wire format serialization — Anthropic + OpenAI SSE primitives
-│                              and tool/text response generators for both wire formats
+│   └── sse.py               Wire format serialization — Anthropic + OpenAI SSE primitives,
+│                              tool/text response generators, FINISH_TO_STOP, to_anthropic_response
 │
 ├── cluster/
 │   ├── manager.py           Peer state, heartbeat loop, push-sync outgoing
-│   └── sync.py              apply_sync() — incoming peer data merge; peer cost tracking
+│   ├── sync.py              apply_sync() — incoming peer data merge; peer cost tracking
+│   └── auth.py              HMAC signing/verification primitives (sign_payload, verify_payload,
+│                              verify_cluster_request, auth_headers_for)
 │
 ├── monitoring/
 │   ├── helpers.py           record_outcome() — shared success/failure metrics recorder
@@ -66,7 +71,8 @@ app/
    checks circuit breakers, ranks by priority, builds `RouteResult`
 4. Endpoint applies image stripping (if `route.vision_stripped`) and extra kwargs
 5. Dispatches to tool-emulation path, CoT path, or direct litellm call
-6. `record_outcome()` centralises all metrics recording after the response
+6. Response headers include `X-Provider`, `LLM-Capability`, `X-Resolved-Model` (litellm model string)
+7. `record_outcome()` centralises all metrics recording + activity log after the response
 
 ### Cluster sync
 - Push: `push_sync()` in `manager.py` serialises local DB and POSTs to each peer every 60s

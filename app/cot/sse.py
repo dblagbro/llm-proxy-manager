@@ -181,3 +181,51 @@ async def openai_text_sse(text: str) -> AsyncIterator[bytes]:
         f'"delta":{{}},"finish_reason":"stop"}}]}}\n\n'
     ).encode()
     yield b'data: [DONE]\n\n'
+
+
+# ── Non-streaming Anthropic response builder ──────────────────────────────────
+
+FINISH_TO_STOP = {
+    "stop": "end_turn",
+    "length": "max_tokens",
+    "tool_calls": "tool_use",
+    "content_filter": "end_turn",
+}
+
+
+def to_anthropic_response(litellm_response) -> dict:
+    choice = litellm_response.choices[0]
+    finish = choice.finish_reason or "stop"
+    content: list = []
+    if choice.message.content:
+        content.append({"type": "text", "text": choice.message.content})
+    tool_calls = getattr(choice.message, "tool_calls", None) or []
+    for tc in tool_calls:
+        fn = getattr(tc, "function", None)
+        if not fn:
+            continue
+        try:
+            tool_input = json.loads(getattr(fn, "arguments", "{}") or "{}")
+        except (ValueError, TypeError):
+            tool_input = {}
+        content.append({
+            "type": "tool_use",
+            "id": getattr(tc, "id", None) or f"toolu_{secrets.token_hex(8)}",
+            "name": getattr(fn, "name", "") or "",
+            "input": tool_input,
+        })
+    if not content:
+        content = [{"type": "text", "text": ""}]
+    return {
+        "id": litellm_response.id or "msg_proxy",
+        "type": "message",
+        "role": "assistant",
+        "content": content,
+        "model": litellm_response.model or "unknown",
+        "stop_reason": FINISH_TO_STOP.get(finish, "end_turn"),
+        "stop_sequence": None,
+        "usage": {
+            "input_tokens": getattr(litellm_response.usage, "prompt_tokens", 0),
+            "output_tokens": getattr(litellm_response.usage, "completion_tokens", 0),
+        },
+    }

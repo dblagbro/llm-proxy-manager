@@ -132,4 +132,6 @@ class ProviderMetric(Base):
     total_tokens = Column(Integer, default=0)
     total_cost_usd = Column(Float, default=0.0)
     avg_latency_ms = Column(Float, default=0.0)
+    avg_ttft_ms = Column(Float, default=0.0)
+    ttft_requests = Column(Integer, default=0)
     circuit_state = Column(String, default="closed")  # closed|open|half-open

@@ -7,7 +7,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.database import get_db
 from app.auth.admin import require_admin, AdminUser
-from app.cluster.manager import get_cluster_status, apply_sync, verify_cluster_request, sign_payload, verify_payload, peers as cluster_peers
+from app.cluster.manager import get_cluster_status, apply_sync, peers as cluster_peers
+from app.cluster.auth import verify_cluster_request, sign_payload, verify_payload
 from app.routing.circuit_breaker import get_all_states
 from app.config import settings
 from app import config_runtime
@@ -36,7 +37,7 @@ async def health():
 
     return {
         "status": "healthy" if healthy > 0 else "degraded",
-        "version": "2.0.0",
+        "version": "2.0.2",
         "nodeId": settings.cluster_node_id,
         "totalProviders": total,
         "healthyProviders": healthy,

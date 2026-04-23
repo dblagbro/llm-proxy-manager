@@ -16,7 +16,7 @@ from app.models.database import get_db
 from app.auth.keys import verify_api_key, ApiKeyRecord
 from app.routing.router import select_provider
 from app.routing.lmrh import parse_hint
-from app.cot.pipeline import run_cot_pipeline
+from app.cot.pipeline import run_cot_pipeline, parse_cot_request_headers
 from app.cot.tool_emulation import (
     build_anthropic_tool_prompt,
     normalize_anthropic_messages,
@@ -28,6 +28,8 @@ from app.cot.sse import (
     anthropic_text_sse,
     anthropic_tool_response,
     anthropic_text_response,
+    FINISH_TO_STOP,
+    to_anthropic_response,
 )
 from app.monitoring.helpers import record_outcome
 from app.api.image_utils import has_images_anthropic, strip_images_anthropic
@@ -84,6 +86,7 @@ async def messages(
     resp_headers = {
         "X-Provider": route.provider.name,
         "LLM-Capability": route.capability_header,
+        "X-Resolved-Model": route.litellm_model,
     }
 
     try:
@@ -114,15 +117,7 @@ async def messages(
         if route.cot_engaged:
             if not stream:
                 raise HTTPException(422, "CoT-E requires stream=true")
-            cot_max = None
-            if x_cot_iterations is not None:
-                try:
-                    cot_max = max(0, int(x_cot_iterations))
-                except ValueError:
-                    pass
-            force_verify: bool | None = None
-            if x_cot_verify is not None:
-                force_verify = x_cot_verify.lower() in ("1", "true", "yes")
+            cot_max, force_verify = parse_cot_request_headers(x_cot_iterations, x_cot_verify)
             return StreamingResponse(
                 _stream_cot_anthropic(
                     route.litellm_model, messages_list, x_session_id, extra,
@@ -152,7 +147,7 @@ async def messages(
             await record_outcome(db, route.provider.id, route.litellm_model, success=True,
                                  in_tok=in_tok, out_tok=out_tok, t0=t0, key_record_id=key_record.id)
             return JSONResponse(
-                content=_to_anthropic_response(result),
+                content=to_anthropic_response(result),
                 headers=resp_headers,
             )
 
@@ -216,6 +211,7 @@ async def _stream_anthropic(
         streamed_chars = 0
         tool_id: str = ""
         tool_name: str = ""
+        ttft_ms: float = 0.0
 
         yield (
             f'data: {{"type":"message_start","message":{{"id":"msg_proxy","type":"message",'
@@ -242,6 +238,8 @@ async def _stream_anthropic(
                 if not fn:
                     continue
                 if not tool_started:
+                    if not ttft_ms:
+                        ttft_ms = (time.monotonic() - t0) * 1000
                     tool_id = getattr(tc_delta, "id", "") or f"toolu_{id(tc_delta)}"
                     tool_name = getattr(fn, "name", "") or ""
                     yield (
@@ -261,6 +259,8 @@ async def _stream_anthropic(
             # Text streaming
             content = getattr(delta, "content", None) or ""
             if not text_started and content:
+                if not ttft_ms:
+                    ttft_ms = (time.monotonic() - t0) * 1000
                 yield f'data: {{"type":"content_block_start","index":{index},"content_block":{{"type":"text","text":""}}}}\n\n'.encode()
                 text_started = True
             if content:
@@ -275,65 +275,19 @@ async def _stream_anthropic(
         if output_tokens == 0 and streamed_chars > 0:
             output_tokens = max(1, streamed_chars // 4)
 
-        stop_reason = _FINISH_TO_STOP.get(finish_reason, "end_turn")
+        stop_reason = FINISH_TO_STOP.get(finish_reason, "end_turn")
         yield (
             f'data: {{"type":"message_delta","delta":{{"stop_reason":"{stop_reason}",'
             f'"stop_sequence":null}},"usage":{{"output_tokens":{output_tokens}}}}}\n\n'
         ).encode()
         yield b'data: {"type":"message_stop"}\n\ndata: [DONE]\n\n'
         await record_outcome(db, provider_id, model, success=True,
-                             in_tok=input_tokens, out_tok=output_tokens, t0=t0, key_record_id=key_record_id)
+                             in_tok=input_tokens, out_tok=output_tokens, t0=t0,
+                             key_record_id=key_record_id, ttft_ms=ttft_ms)
     except Exception as e:
         await record_outcome(db, provider_id, model, success=False,
                              key_record_id=key_record_id, error_str=str(e))
         yield (b'data: ' + json.dumps({"type": "error", "error": {"message": str(e)}}).encode() + b'\n\n')
 
-
-_FINISH_TO_STOP = {
-    "stop": "end_turn",
-    "length": "max_tokens",
-    "tool_calls": "tool_use",
-    "content_filter": "end_turn",
-}
-
-
-def _to_anthropic_response(litellm_response) -> dict:
-    """Convert litellm response to Anthropic messages API format."""
-    import secrets as _secrets
-    choice = litellm_response.choices[0]
-    finish = choice.finish_reason or "stop"
-    content: list = []
-    if choice.message.content:
-        content.append({"type": "text", "text": choice.message.content})
-    tool_calls = getattr(choice.message, "tool_calls", None) or []
-    for tc in tool_calls:
-        fn = getattr(tc, "function", None)
-        if not fn:
-            continue
-        try:
-            tool_input = json.loads(getattr(fn, "arguments", "{}") or "{}")
-        except (ValueError, TypeError):
-            tool_input = {}
-        content.append({
-            "type": "tool_use",
-            "id": getattr(tc, "id", None) or f"toolu_{_secrets.token_hex(8)}",
-            "name": getattr(fn, "name", "") or "",
-            "input": tool_input,
-        })
-    if not content:
-        content = [{"type": "text", "text": ""}]
-    return {
-        "id": litellm_response.id or "msg_proxy",
-        "type": "message",
-        "role": "assistant",
-        "content": content,
-        "model": litellm_response.model or "unknown",
-        "stop_reason": _FINISH_TO_STOP.get(finish, "end_turn"),
-        "stop_sequence": None,
-        "usage": {
-            "input_tokens": getattr(litellm_response.usage, "prompt_tokens", 0),
-            "output_tokens": getattr(litellm_response.usage, "completion_tokens", 0),
-        },
-    }
 
 
