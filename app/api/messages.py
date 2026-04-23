@@ -36,6 +36,7 @@ from app.api.image_utils import has_images_anthropic, strip_images_anthropic
 from app.routing.aliases import resolve_alias
 from app.api.webhook import post_webhook
 from app.routing.retry import acompletion_with_retry
+from app.observability.otel import llm_span
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -73,6 +74,19 @@ async def messages(
         pinned_provider_id=alias.provider_id if alias else None,
         model_override=alias.model_id if alias else None,
     )
+
+    # OTEL GenAI span: routing-decision metadata (no-op if OTLP endpoint unset)
+    with llm_span(
+        operation="chat",
+        provider_type=route.profile.provider_type,
+        requested_model=body.get("model") or "",
+        resolved_model=route.litellm_model,
+        lmrh_hint=llm_hint,
+        cot_engaged=route.cot_engaged,
+        unmet_hints=route.unmet_hints,
+        extra={"gen_ai.request.max_tokens": max_tokens},
+    ):
+        pass
 
     # Build extra kwargs for litellm
     extra = {**route.litellm_kwargs, "max_tokens": max_tokens}

@@ -230,7 +230,9 @@ async def run_cot_pipeline(
     if settings.cot_min_tokens_skip > 0 and draft_tokens >= settings.cot_min_tokens_skip:
         iterations = 0
 
+    iterations_used = 0
     for iteration in range(1, iterations + 1):
+        iterations_used = iteration
         critique_system = CRITIQUE_SYSTEM.format(
             threshold=settings.cot_quality_threshold,
             max_tokens=settings.cot_critique_max_tokens,
@@ -273,6 +275,12 @@ async def run_cot_pipeline(
         yield sse_thinking_delta(block_index, f"## Refinement (iter {iteration})\n[Refined answer produced]")
         yield sse_thinking_stop(block_index)
         block_index += 1
+
+    try:
+        from app.observability.prometheus import observe_cot_iterations
+        observe_cot_iterations(model, iterations_used)
+    except Exception:
+        pass
 
     # ── Verification pass ─────────────────────────────────────────────────────
     run_verify = _resolve_verify(force_verify, current_answer)
