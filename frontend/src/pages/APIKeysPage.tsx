@@ -1,6 +1,6 @@
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Plus, Trash2, Pencil, Eye } from 'lucide-react'
+import { Plus, Trash2, Pencil, Eye, ArrowUp, ArrowDown, ArrowUpDown, Key as KeyIcon, EyeOff } from 'lucide-react'
 import { keysApi } from '@/api'
 import { Card, CardContent } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
@@ -15,6 +15,25 @@ import type { ApiKey, KeyType } from '@/types'
 
 const KEY_TYPES: KeyType[] = ['standard', 'claude-code']
 
+type SortKey = 'name' | 'key_type' | 'total_requests' | 'total_tokens' |
+  'total_cost_usd' | 'spending_cap_usd' | 'rate_limit_rpm' | 'created_at'
+
+function sortKeys(rows: ApiKey[], key: SortKey, dir: 'asc' | 'desc'): ApiKey[] {
+  const copy = [...rows]
+  const mult = dir === 'asc' ? 1 : -1
+  copy.sort((a, b) => {
+    const av: any = (a as any)[key]
+    const bv: any = (b as any)[key]
+    // Nulls always sort to the bottom regardless of direction
+    if (av == null && bv == null) return 0
+    if (av == null) return 1
+    if (bv == null) return -1
+    if (typeof av === 'number' && typeof bv === 'number') return mult * (av - bv)
+    return mult * String(av).localeCompare(String(bv))
+  })
+  return copy
+}
+
 export function APIKeysPage() {
   const qc = useQueryClient()
   const toast = useToast()
@@ -28,6 +47,9 @@ export function APIKeysPage() {
   const [form, setForm] = useState({ name: '', key_type: 'standard' as KeyType, rate_limit_rpm: '' })
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [showBulkConfirm, setShowBulkConfirm] = useState(false)
+  const [sortKey, setSortKey] = useState<SortKey>('created_at')
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
+  const [revealedKeys, setRevealedKeys] = useState<Record<string, string>>({})
 
   const { data: keys, isLoading } = useQuery({ queryKey: ['apikeys'], queryFn: keysApi.list })
 
@@ -45,6 +67,19 @@ export function APIKeysPage() {
     },
     onError: (e: Error) => toast.error(e.message),
   })
+
+  async function toggleReveal(id: string) {
+    if (revealedKeys[id]) {
+      setRevealedKeys(r => { const { [id]: _, ...rest } = r; return rest })
+      return
+    }
+    try {
+      const resp = await keysApi.reveal(id)
+      setRevealedKeys(r => ({ ...r, [id]: resp.raw_key }))
+    } catch (e: any) {
+      toast.error(e.message || 'Could not reveal — key was created before encryption was added. Delete and create a new one.')
+    }
+  }
 
   function closeCreateModal() {
     setShowCreate(false)
@@ -106,6 +141,39 @@ export function APIKeysPage() {
 
   const allSelected = !!keys && keys.length > 0 && selectedIds.size === keys.length
 
+  const sortedKeys = useMemo(() => sortKeys(keys ?? [], sortKey, sortDir), [keys, sortKey, sortDir])
+
+  function handleSort(col: SortKey) {
+    if (col === sortKey) {
+      setSortDir(d => d === 'asc' ? 'desc' : 'asc')
+    } else {
+      setSortKey(col)
+      // Default to desc for numeric/date columns, asc for strings
+      setSortDir(['name', 'key_type'].includes(col) ? 'asc' : 'desc')
+    }
+  }
+
+  function SortHeader({ col, label, align = 'left' }: { col: SortKey; label: string; align?: 'left' | 'right' }) {
+    const active = sortKey === col
+    const Icon = !active ? ArrowUpDown : sortDir === 'asc' ? ArrowUp : ArrowDown
+    return (
+      <button
+        onClick={() => handleSort(col)}
+        className={`flex items-center gap-1 text-xs font-semibold uppercase tracking-wide transition-colors
+          ${active ? 'text-indigo-600 dark:text-indigo-400' : 'text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'}
+          ${align === 'right' ? 'justify-end w-full' : ''}`}
+        title={`Sort by ${label}`}
+      >
+        {align === 'right' ? (<><Icon className="h-3 w-3" />{label}</>) : (<>{label}<Icon className="h-3 w-3" /></>)}
+      </button>
+    )
+  }
+
+  // API base URL (for developer docs on this page)
+  const apiBase = typeof window !== 'undefined'
+    ? `${window.location.origin}${window.location.pathname.replace(/\/$/, '')}`.replace(/\/api-keys.*$/, '')
+    : ''
+
   function openLimitsEdit(k: ApiKey) {
     setEditLimits(k)
     setCapInput(k.spending_cap_usd != null ? String(k.spending_cap_usd) : '')
@@ -165,6 +233,30 @@ export function APIKeysPage() {
         </div>
       </div>
 
+      {/* API base URL + endpoints — visible to devs on the keys page */}
+      <Card>
+        <CardContent className="py-4">
+          <div className="flex items-start gap-4">
+            <div className="flex-1 min-w-0">
+              <p className="text-xs uppercase tracking-wide text-gray-500 mb-1">API Base URL</p>
+              <div className="flex items-center gap-2">
+                <code className="text-sm font-mono text-gray-900 dark:text-gray-100 break-all">{apiBase}</code>
+                <CopyButton text={apiBase} />
+              </div>
+              <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-1 text-xs text-gray-600 dark:text-gray-400 font-mono">
+                <div>POST <span className="text-indigo-500">{apiBase}/v1/messages</span> <span className="text-gray-400">(Anthropic format)</span></div>
+                <div>POST <span className="text-indigo-500">{apiBase}/v1/chat/completions</span> <span className="text-gray-400">(OpenAI format)</span></div>
+                <div>GET  <span className="text-indigo-500">{apiBase}/v1/models</span></div>
+                <div>GET  <span className="text-indigo-500">{apiBase}/metrics</span> <span className="text-gray-400">(Prometheus)</span></div>
+              </div>
+              <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
+                Auth: pass the raw key via <code className="text-indigo-500">x-api-key: &lt;key&gt;</code> header (Anthropic) or <code className="text-indigo-500">Authorization: Bearer &lt;key&gt;</code> (OpenAI).
+              </p>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
       {isLoading ? (
         <div className="flex justify-center py-16"><Spinner /></div>
       ) : (keys?.length ?? 0) === 0 ? (
@@ -172,8 +264,8 @@ export function APIKeysPage() {
       ) : (
         <Card>
           <CardContent className="p-0">
-            {/* Select-all header */}
-            <div className="flex items-center gap-4 px-5 py-2.5 bg-gray-50 dark:bg-gray-800/50 border-b border-gray-100 dark:border-gray-700">
+            {/* Column header with sort + select-all */}
+            <div className="flex items-center gap-4 px-5 py-3 bg-gray-50 dark:bg-gray-800/50 border-b border-gray-100 dark:border-gray-700">
               <input
                 type="checkbox"
                 checked={allSelected}
@@ -182,16 +274,25 @@ export function APIKeysPage() {
                 className="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
                 aria-label="Select all API keys"
               />
-              <span className="text-xs text-gray-500 dark:text-gray-400">
-                {selectedIds.size === 0
-                  ? 'Select all'
-                  : allSelected
-                    ? 'All selected — click to clear'
-                    : `${selectedIds.size} of ${keys!.length} selected`}
-              </span>
+              <div className="flex-1 min-w-0 flex items-center gap-3">
+                <SortHeader col="name" label="Name" />
+                <span className="text-gray-300 dark:text-gray-600">·</span>
+                <SortHeader col="key_type" label="Type" />
+              </div>
+              <div className="hidden md:grid grid-cols-5 gap-5 text-right">
+                <SortHeader col="total_requests" label="Requests" align="right" />
+                <SortHeader col="total_tokens" label="Tokens" align="right" />
+                <SortHeader col="total_cost_usd" label="Cost" align="right" />
+                <SortHeader col="spending_cap_usd" label="Cap" align="right" />
+                <SortHeader col="rate_limit_rpm" label="Rate" align="right" />
+              </div>
+              <div className="hidden lg:block shrink-0 w-20">
+                <SortHeader col="created_at" label="Created" />
+              </div>
+              <span className="w-[72px] shrink-0" aria-hidden />
             </div>
             <div className="divide-y divide-gray-100 dark:divide-gray-700">
-              {keys!.map(k => (
+              {sortedKeys.map(k => (
                 <div key={k.id} className={`flex items-center gap-4 px-5 py-4 ${selectedIds.has(k.id) ? 'bg-indigo-50/50 dark:bg-indigo-900/10' : ''}`}>
                   <input
                     type="checkbox"
@@ -205,7 +306,34 @@ export function APIKeysPage() {
                       <p className="font-medium text-gray-900 dark:text-gray-100">{k.name || '(unnamed)'}</p>
                       <Badge variant={k.key_type === 'claude-code' ? 'info' : 'default'}>{k.key_type}</Badge>
                     </div>
-                    <p className="text-xs text-gray-500 font-mono">{k.key_prefix}…</p>
+                    <div className="flex items-center gap-1.5">
+                      {revealedKeys[k.id] ? (
+                        <>
+                          <code className="text-xs text-gray-800 dark:text-gray-200 font-mono break-all select-all">{revealedKeys[k.id]}</code>
+                          <CopyButton text={revealedKeys[k.id]} />
+                          <button
+                            onClick={() => toggleReveal(k.id)}
+                            className="text-gray-400 hover:text-indigo-500 transition-colors shrink-0"
+                            title="Hide key"
+                          >
+                            <EyeOff className="h-3.5 w-3.5" />
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <p className="text-xs text-gray-500 font-mono">{k.key_prefix}…</p>
+                          {(k as any).can_reveal && (
+                            <button
+                              onClick={() => toggleReveal(k.id)}
+                              className="text-gray-400 hover:text-indigo-500 transition-colors shrink-0"
+                              title="Reveal full key"
+                            >
+                              <KeyIcon className="h-3 w-3" />
+                            </button>
+                          )}
+                        </>
+                      )}
+                    </div>
                   </div>
                   <div className="hidden md:grid grid-cols-5 gap-5 text-right text-sm">
                     <div>
@@ -366,6 +494,11 @@ export function APIKeysPage() {
             Key Details — {viewDetails.name || viewDetails.key_prefix}
           </ModalHeader>
           <ModalBody>
+            {!(viewDetails as any).can_reveal && (
+              <p className="text-xs text-amber-600 dark:text-amber-400 mb-4 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-900/30 rounded-md px-3 py-2">
+                This key was created before encryption-at-rest support, so its raw value cannot be retrieved. If it's lost, delete and recreate.
+              </p>
+            )}
             <dl className="grid grid-cols-2 gap-x-6 gap-y-3 text-sm">
               <dt className="text-gray-500">ID</dt>
               <dd className="font-mono text-gray-900 dark:text-gray-100">{viewDetails.id}</dd>

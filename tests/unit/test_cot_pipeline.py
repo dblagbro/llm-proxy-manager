@@ -32,6 +32,7 @@ from app.cot.pipeline import (  # noqa: E402 — must come after stubs
     _resolve_verify,
     _parse_score,
     _parse_gaps,
+    _parse_critique,
     _last_user_text,
 )
 
@@ -158,6 +159,55 @@ class TestParsers:
 
     def test_parse_gaps_missing_returns_empty(self):
         assert _parse_gaps("SCORE: 5") == ""
+
+
+# ── _parse_critique (Wave 2 #7 — structured JSON rubric) ─────────────────────
+
+class TestParseCritique:
+    def test_clean_json(self):
+        r = _parse_critique('{"factual_issues":[],"missing_coverage":[],"sufficient_for_user":true}')
+        assert r == {"factual_issues": [], "missing_coverage": [], "sufficient_for_user": True}
+
+    def test_json_with_issues(self):
+        r = _parse_critique(
+            '{"factual_issues":["wrong port","bad command"],'
+            '"missing_coverage":["docker compose"],'
+            '"sufficient_for_user":false}'
+        )
+        assert r["factual_issues"] == ["wrong port", "bad command"]
+        assert r["missing_coverage"] == ["docker compose"]
+        assert r["sufficient_for_user"] is False
+
+    def test_json_with_markdown_fences(self):
+        r = _parse_critique('```json\n{"factual_issues":[],"missing_coverage":[],"sufficient_for_user":true}\n```')
+        assert r["sufficient_for_user"] is True
+
+    def test_json_with_surrounding_prose(self):
+        r = _parse_critique('Here is my review:\n{"factual_issues":["x"],"missing_coverage":[],"sufficient_for_user":false}\nHope that helps!')
+        assert r["factual_issues"] == ["x"]
+        assert r["sufficient_for_user"] is False
+
+    def test_fallback_legacy_score_high_means_sufficient(self):
+        r = _parse_critique("SCORE: 9\nGAPS: none")
+        assert r["sufficient_for_user"] is True
+        assert r["factual_issues"] == []
+        assert r["missing_coverage"] == []
+
+    def test_fallback_legacy_score_low_not_sufficient(self):
+        r = _parse_critique("SCORE: 4\nGAPS: missing steps")
+        assert r["sufficient_for_user"] is False
+        assert r["missing_coverage"] == ["missing steps"]
+
+    def test_empty_string(self):
+        r = _parse_critique("")
+        assert r["sufficient_for_user"] in (True, False)
+        assert isinstance(r["factual_issues"], list)
+
+    def test_malformed_json_falls_back_safely(self):
+        r = _parse_critique('{"factual_issues": [oops broken')
+        # Should fall back to legacy parser path, which yields defaults for pure garbage
+        assert isinstance(r["sufficient_for_user"], bool)
+        assert isinstance(r["factual_issues"], list)
 
 
 # ── _last_user_text ───────────────────────────────────────────────────────────
