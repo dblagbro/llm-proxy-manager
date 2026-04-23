@@ -61,21 +61,100 @@ class LMRHHint:
 
 
 def parse_hint(header_value: str) -> Optional[LMRHHint]:
-    """Parse LLM-Hint header value into structured dimensions."""
+    """Parse LLM-Hint header value into structured dimensions.
+
+    Wave 4 #18 — prefers a real RFC 8941 Structured Fields parser (http-sfv)
+    which handles quoted strings, numeric types, and parameter syntax
+    correctly. Falls back to the legacy split-comma parser when http-sfv
+    isn't available or when the input is non-conforming, so existing
+    clients that send `task=reasoning,safety-min=3;require` keep working.
+    """
     if not header_value:
         return None
+
+    # First try the proper RFC 8941 parser
+    parsed = _parse_hint_rfc8941(header_value)
+    if parsed is not None:
+        return parsed
+
+    # Legacy fallback — preserves backward compatibility with clients that
+    # send `task=reasoning,safety-min=3;require` (not strict 8941).
+    return _parse_hint_legacy(header_value)
+
+
+_REQUIRE_RE = re.compile(r"\s*;\s*require\s*", re.IGNORECASE)
+
+
+def _parse_hint_legacy(header_value: str) -> Optional[LMRHHint]:
     hint = LMRHHint(raw=header_value)
     for part in header_value.split(","):
         part = part.strip()
         if not part:
             continue
-        required = ";require" in part
-        part = part.replace(";require", "").strip()
+        # Tolerate whitespace around the ;require marker
+        required = bool(_REQUIRE_RE.search(part))
+        if required:
+            part = _REQUIRE_RE.sub("", part).strip()
         if "=" not in part:
             continue
         key, _, value = part.partition("=")
         hint.dimensions.append(HintDimension(key.strip(), value.strip(), required))
     return hint if hint.dimensions else None
+
+
+def _parse_hint_rfc8941(header_value: str) -> Optional[LMRHHint]:
+    """RFC 8941 Dictionary parser.
+
+    Maps Dictionary entries to HintDimension:
+        task=reasoning → key=task, value=reasoning
+        safety-min=3;require → key=safety-min, value=3, required=True
+        cost="economy" → key=cost, value=economy (unwrapped)
+        max-ttft=500 → key=max-ttft, value="500"
+
+    Tokens, Integers, Decimals, Strings, Booleans, Byte-Sequences are all
+    coerced to their natural string representation so the ranker's
+    downstream comparisons continue to work unchanged.
+    """
+    try:
+        import http_sfv
+    except ImportError:
+        return None
+
+    try:
+        d = http_sfv.Dictionary()
+        d.parse(header_value.encode())
+    except Exception:
+        return None
+
+    hint = LMRHHint(raw=header_value)
+    for key, item in d.items():
+        # Each dict entry is an InnerList or Item — both have .value and .params
+        value_part = item.value if hasattr(item, "value") else item
+        if isinstance(value_part, list):
+            # InnerList — join values (rare for LMRH, preserve for forward compat)
+            value_str = ",".join(_coerce_sfv_value(v) for v in value_part)
+        else:
+            value_str = _coerce_sfv_value(value_part)
+        params = getattr(item, "params", {}) or {}
+        required = bool(params.get("require", False))
+        hint.dimensions.append(HintDimension(key, value_str, required))
+    return hint if hint.dimensions else None
+
+
+def _coerce_sfv_value(v) -> str:
+    """Coerce any RFC 8941 Item value (Token, String, Integer, etc.) to str."""
+    # http-sfv wraps primitives; str() of its classes produces the serialised form
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, (int, float)):
+        return str(v)
+    if isinstance(v, str):
+        return v
+    # bytes (ByteSequence), Token, etc.
+    try:
+        return v.value if hasattr(v, "value") else str(v)
+    except Exception:
+        return str(v)
 
 
 @dataclass
@@ -182,6 +261,42 @@ def score_candidate(profile: CapabilityProfile, hint: LMRHHint) -> tuple[float, 
                         return float("-inf"), [dim.key]
                     unmet.append(dim.key)
 
+            # Wave 4 #19 — numeric variants of latency & cost
+            case "max-ttft":
+                # Hard ceiling on TTFT in milliseconds (only meaningful when we
+                # have a measured sample — otherwise treat as satisfied).
+                try:
+                    cap_ms = float(dim.value)
+                except ValueError:
+                    cap_ms = 0.0
+                if profile.avg_ttft_ms == 0 or profile.avg_ttft_ms <= cap_ms:
+                    score += WEIGHTS["latency"]
+                else:
+                    if dim.required:
+                        return float("-inf"), [dim.key]
+                    unmet.append(dim.key)
+
+            case "max-cost-per-1k":
+                # Informational at scoring time — exact $/1k isn't stored on
+                # the profile. Map to cost_tier buckets as a proxy until we
+                # add precise pricing metadata (Wave 5 scope).
+                try:
+                    cap_usd = float(dim.value)
+                except ValueError:
+                    cap_usd = 0.0
+                _TIER_USD = {"economy": 0.002, "standard": 0.01, "premium": 0.05}
+                actual_usd = _TIER_USD.get(profile.cost_tier, 0.01)
+                if actual_usd <= cap_usd:
+                    score += WEIGHTS["cost"]
+                else:
+                    if dim.required:
+                        return float("-inf"), [dim.key]
+                    unmet.append(dim.key)
+
+            # Wave 4 #19 — pass-through dims (consumed by endpoint, not scorer)
+            case "effort" | "cascade" | "hedge" | "tenant" | "freshness":
+                pass
+
     # TTFT bonus: up to +5 for fast providers (0 ms→+5, 3000 ms→0, no data→no adjustment)
     if profile.avg_ttft_ms > 0:
         score += 5.0 * max(0.0, 1.0 - profile.avg_ttft_ms / 3000.0)
@@ -241,12 +356,35 @@ def rank_candidates_with_scores(
     return scored
 
 
+def build_hint_set_header(hint: Optional[LMRHHint], unmet: list[str]) -> str:
+    """Wave 4 #20 — LLM-Hint-Set echo: which hint dims were HONORED.
+
+    Parallels the HTTP `Vary:` header pattern. Absent when no hint was sent.
+    Example: `task=reasoning,safety-min=3` (dims that influenced routing)
+    """
+    if not hint or not hint.dimensions:
+        return ""
+    unmet_set = set(unmet or [])
+    honored = [f"{d.key}={d.value}" for d in hint.dimensions if d.key not in unmet_set]
+    return ",".join(honored)
+
+
 def build_capability_header(
     profile: CapabilityProfile,
     unmet: list[str],
     cot_engaged: bool = False,
     tool_emulation: bool = False,
+    chosen_because: str = "score",
 ) -> str:
+    """Build the LLM-Capability response header.
+
+    chosen_because (Wave 4 #20): explains how routing landed on this profile.
+        "score"          — ranked #1 under LMRH scoring (default)
+        "hard-constraint"— only candidate satisfying `;require` dims
+        "fallback"       — primary failed; this was an ordered-fallback pick
+        "cheapest"       — cascade cheap-first step picked this
+        "p2c"            — PeakEWMA + power-of-two-choices tie-break
+    """
     parts = [
         "v=1",
         f"provider={profile.provider_id}",
@@ -256,6 +394,7 @@ def build_capability_header(
         f"latency={profile.latency}",
         f"cost={profile.cost_tier}",
         f"region={','.join(profile.regions) if profile.regions else 'any'}",
+        f"chosen-because={chosen_because}",
     ]
     if unmet:
         parts.append(f"unmet={' '.join(unmet)}")
