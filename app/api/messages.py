@@ -67,6 +67,7 @@ async def messages(
     x_cache: Optional[str] = Header(None, alias="x-cache"),
     x_cache_ttl: Optional[str] = Header(None, alias="x-cache-ttl"),
     x_hedge: Optional[str] = Header(None, alias="x-hedge"),
+    x_cot_cascade: Optional[str] = Header(None, alias="x-cot-cascade"),
 ):
     key_record = await verify_api_key(db, x_api_key)
 
@@ -311,6 +312,10 @@ async def messages(
             t0 = time.monotonic()
             # Wave 3 #17 — ordered fallback across ranked providers
             from app.routing.fallback import try_ranked_non_streaming
+            # Wave 3 #14 — cascade routing (cheap → grade → escalate)
+            from app.routing.cascade import cascade_requested, grade_answer
+            lmrh_cascade = hint.get("cascade").value if (hint and hint.get("cascade")) else None
+            do_cascade = cascade_requested(lmrh_cascade, x_cot_cascade)
 
             async def _call_with_route(r):
                 # Rebuild extra kwargs for THIS route's provider (api_key, etc.)
@@ -329,6 +334,89 @@ async def messages(
                     model=r.litellm_model, messages=messages_list,
                     stream=False, **local_extra,
                 )
+
+            # Cascade: cheap first, grade, escalate only on reject.
+            if do_cascade and not has_tools and not route.cot_engaged:
+                try:
+                    cheap_route = await select_provider(
+                        db, hint, has_tools=False, has_images=has_images,
+                        key_type=key_record.key_type, prefer_cheapest=True,
+                    )
+                    # Grader: use the current top (route) if different from cheap
+                    grader_route = route if route.provider.id != cheap_route.provider.id else None
+                    if grader_route is None:
+                        try:
+                            grader_route = await select_provider(
+                                db, hint, has_tools=False, has_images=has_images,
+                                key_type=key_record.key_type,
+                                exclude_provider_id=cheap_route.provider.id,
+                                prefer_cheapest=True,
+                            )
+                        except Exception:
+                            grader_route = None
+
+                    cheap_result = await _call_with_route(cheap_route)
+                    cheap_answer = cheap_result.choices[0].message.content or ""
+
+                    # Extract last user turn for grader context
+                    _user_text = ""
+                    for _m in reversed(messages_list):
+                        if _m.get("role") == "user":
+                            _c = _m.get("content", "")
+                            if isinstance(_c, str):
+                                _user_text = _c
+                            elif isinstance(_c, list):
+                                _user_text = "\n".join(
+                                    b.get("text", "") for b in _c
+                                    if isinstance(b, dict) and b.get("type") == "text"
+                                )
+                            break
+
+                    if grader_route is not None:
+                        verdict = await grade_answer(
+                            grader_route.litellm_model, grader_route.litellm_kwargs,
+                            _user_text, cheap_answer,
+                        )
+                    else:
+                        # No distinct grader available → accept cheap result
+                        verdict_acc = True
+                        verdict = type("V", (), {"acceptable": True, "reason": "no-grader-available"})()
+
+                    if verdict.acceptable:
+                        resp_headers["X-Cascade"] = "accepted"
+                        resp_headers["X-Cascade-Grader"] = (
+                            grader_route.provider.name if grader_route else "—"
+                        )
+                        resp_headers["X-Provider"] = cheap_route.provider.name
+                        resp_headers["X-Resolved-Model"] = cheap_route.litellm_model
+                        result = cheap_result
+                        route = cheap_route
+                        in_tok = getattr(result.usage, "prompt_tokens", 0)
+                        out_tok = getattr(result.usage, "completion_tokens", 0)
+                        from app.cot.sse import extract_cache_tokens
+                        cache_creation, cache_read = extract_cache_tokens(result.usage)
+                        await record_outcome(db, route.provider.id, route.litellm_model, success=True,
+                                             in_tok=in_tok, out_tok=out_tok, t0=t0, key_record_id=key_record.id,
+                                             cache_creation=cache_creation, cache_read=cache_read)
+                        try:
+                            await maybe_store(cache_decision, cheap_answer)
+                        except Exception:
+                            pass
+                        remaining = max(0, max_tokens - out_tok)
+                        resp_headers["X-Token-Budget-Remaining"] = str(remaining)
+                        return JSONResponse(
+                            content=to_anthropic_response(result),
+                            headers=resp_headers,
+                        )
+                    else:
+                        # Escalate to the original top-ranked route (already in `route`)
+                        resp_headers["X-Cascade"] = "escalated"
+                        resp_headers["X-Cascade-Reason"] = verdict.reason[:100]
+                        resp_headers["X-Cascade-Grader"] = grader_route.provider.name
+                        # Fall through to fallback path below with `route` (top)
+                except Exception as cascade_exc:
+                    logger.warning(f"Cascade failed, falling through to default: {cascade_exc}")
+                    resp_headers["X-Cascade"] = f"error:{type(cascade_exc).__name__}"
 
             if settings.fallback_enabled:
                 result, final_route, chain = await try_ranked_non_streaming(
