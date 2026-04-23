@@ -38,6 +38,12 @@ from app.api.webhook import post_webhook
 from app.routing.retry import acompletion_with_retry
 from app.observability.otel import llm_span
 from app.cache.middleware import decide_cacheable, maybe_check, maybe_store
+from app.routing.hedging import (
+    should_hedge_header, wait_budget_ms, race_streams, try_acquire_hedge,
+)
+from app.observability.prometheus import (
+    observe_hedge_attempt, observe_hedge_win, observe_hedge_bucket_reject,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -57,6 +63,7 @@ async def messages(
     anthropic_beta: Optional[str] = Header(None, alias="anthropic-beta"),
     x_cache: Optional[str] = Header(None, alias="x-cache"),
     x_cache_ttl: Optional[str] = Header(None, alias="x-cache-ttl"),
+    x_hedge: Optional[str] = Header(None, alias="x-hedge"),
 ):
     key_record = await verify_api_key(db, x_api_key)
 
@@ -208,6 +215,57 @@ async def messages(
             )
 
         if stream:
+            # Hedging: if opted in and we have a TTFT p95 signal for the primary
+            lmrh_hedge = hint.get("hedge").value if (hint and hint.get("hedge")) else None
+            wants_hedge = (
+                settings.hedge_enabled
+                and should_hedge_header(x_hedge, lmrh_hedge)
+            )
+            wait_ms = wait_budget_ms(route.provider.id) if wants_hedge else None
+
+            if wait_ms is not None and await try_acquire_hedge():
+                # Pick a backup provider (different from primary)
+                try:
+                    backup_route = await select_provider(
+                        db, hint, has_tools=has_tools, has_images=has_images,
+                        key_type=key_record.key_type,
+                        exclude_provider_id=route.provider.id,
+                    )
+                except Exception:
+                    backup_route = None
+
+                if backup_route is not None:
+                    observe_hedge_attempt(route.provider.id, backup_route.provider.id)
+
+                    def _primary():
+                        return _stream_anthropic(
+                            route.litellm_model, messages_list, extra, route.provider.id,
+                            db, key_record.id, time.monotonic(), max_tokens,
+                            cache_decision=cache_decision,
+                        )
+
+                    def _backup():
+                        b_extra = {**backup_route.litellm_kwargs, "max_tokens": max_tokens}
+                        if system: b_extra["system"] = system
+                        if tools: b_extra["tools"] = tools
+                        if backup_route.native_thinking_params:
+                            b_extra.update(backup_route.native_thinking_params)
+                        return _stream_anthropic(
+                            backup_route.litellm_model, messages_list, b_extra,
+                            backup_route.provider.id,
+                            db, key_record.id, time.monotonic(), max_tokens,
+                            cache_decision=None,  # don't store backup output under primary's key
+                        )
+
+                    racer, winner = await race_streams(_primary, _backup, wait_ms)
+                    observe_hedge_win(winner)
+                    resp_headers["X-Hedged-Winner"] = winner
+                    return StreamingResponse(
+                        racer, media_type="text/event-stream", headers=resp_headers,
+                    )
+            elif wait_ms is not None:
+                observe_hedge_bucket_reject()
+
             return StreamingResponse(
                 _stream_anthropic(route.litellm_model, messages_list, extra, route.provider.id,
                                   db, key_record.id, time.monotonic(), max_tokens,

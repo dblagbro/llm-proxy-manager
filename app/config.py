@@ -66,6 +66,10 @@ class Settings(BaseSettings):
     # Minimum response length (chars) to be worth caching — filters refusals, errors
     semantic_cache_min_response_chars: int = Field(200, alias="SEMANTIC_CACHE_MIN_RESPONSE_CHARS")
 
+    # Hedged requests (Wave 1 #4)
+    hedge_enabled: bool = Field(True, alias="HEDGE_ENABLED")
+    hedge_max_per_sec: float = Field(5.0, alias="HEDGE_MAX_PER_SEC")
+
     # Cluster
     cluster_enabled: bool = Field(False, alias="CLUSTER_ENABLED")
     cluster_node_id: Optional[str] = Field(None, alias="CLUSTER_NODE_ID")

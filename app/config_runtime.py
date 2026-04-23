@@ -36,6 +36,9 @@ SCHEMA: dict[str, dict] = {
     "semantic_cache_threshold":        {"type": "str",  "default": str(settings.semantic_cache_threshold),  "label": "Cosine threshold (0.0–1.0)"},
     "semantic_cache_ttl_sec":          {"type": "int",  "default": settings.semantic_cache_ttl_sec,         "label": "TTL (seconds)"},
     "semantic_cache_min_response_chars":{"type":"int",  "default": settings.semantic_cache_min_response_chars,"label":"Min response chars to cache"},
+    # Hedged requests (Wave 1 #4)
+    "hedge_enabled":     {"type": "bool", "default": settings.hedge_enabled,     "label": "Enable hedged requests globally"},
+    "hedge_max_per_sec": {"type": "str",  "default": str(settings.hedge_max_per_sec), "label": "Max hedge requests per second (global bucket)"},
     # Native reasoning
     "native_thinking_budget_tokens": {"type": "int", "default": settings.native_thinking_budget_tokens, "label": "Thinking budget tokens (Gemini 2.5 / Anthropic)"},
     "native_reasoning_effort":       {"type": "str", "default": settings.native_reasoning_effort,       "label": "Reasoning effort (o-series: low / medium / high)"},
