@@ -65,6 +65,7 @@ async def get_state(provider_id: str) -> CBState:
             async with _lock:
                 s.state = CBState.HALF_OPEN
                 s.successes = 0
+                _export_gauge(provider_id, s.state)
     return s.state
 
 
@@ -77,6 +78,15 @@ async def is_available(provider_id: str) -> bool:
     return state != CBState.OPEN
 
 
+def _export_gauge(provider_id: str, state: "CBState") -> None:
+    # Prometheus gauge — local import keeps CB independent of observability in tests
+    try:
+        from app.observability.prometheus import observe_circuit_breaker_state
+        observe_circuit_breaker_state(provider_id, state.value)
+    except Exception:
+        pass
+
+
 async def record_success(provider_id: str):
     async with _lock:
         s = _get_local(provider_id)
@@ -87,6 +97,7 @@ async def record_success(provider_id: str):
                 s.failures = 0
                 s.successes = 0
                 logger.info("circuit_breaker.closed", extra={"provider": provider_id})
+                _export_gauge(provider_id, s.state)
         elif s.state == CBState.CLOSED:
             s.failures = max(0, s.failures - 1)
 
@@ -103,6 +114,7 @@ async def record_failure(provider_id: str, billing_error: bool = False):
             s.opened_at = now
             s.hold_down_until = now + 3600  # 1-hour hold for billing errors
             logger.warning("circuit_breaker.billing_error", extra={"provider": provider_id})
+            _export_gauge(provider_id, s.state)
             return
 
         if s.failures >= _failure_threshold(provider_id):
@@ -113,6 +125,7 @@ async def record_failure(provider_id: str, billing_error: bool = False):
                 "circuit_breaker.opened",
                 extra={"provider": provider_id, "failures": s.failures},
             )
+            _export_gauge(provider_id, s.state)
 
 
 async def force_open(provider_id: str):
@@ -120,6 +133,7 @@ async def force_open(provider_id: str):
         s = _get_local(provider_id)
         s.state = CBState.OPEN
         s.opened_at = time.time()
+        _export_gauge(provider_id, s.state)
 
 
 async def force_close(provider_id: str):
@@ -129,6 +143,7 @@ async def force_close(provider_id: str):
         s.failures = 0
         s.successes = 0
         s.hold_down_until = 0.0
+        _export_gauge(provider_id, s.state)
 
 
 def get_all_states() -> dict[str, dict]:

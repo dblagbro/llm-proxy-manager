@@ -33,6 +33,7 @@ from app.cot.sse import (
 )
 from app.api.webhook import post_webhook
 from app.routing.retry import acompletion_with_retry
+from app.observability.otel import llm_span
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -72,6 +73,18 @@ async def chat_completions(
         pinned_provider_id=alias.provider_id if alias else None,
         model_override=alias.model_id if alias else None,
     )
+
+    # OTEL GenAI span: routing-decision metadata (no-op if OTLP endpoint unset)
+    with llm_span(
+        operation="chat",
+        provider_type=route.profile.provider_type,
+        requested_model=body.get("model") or "",
+        resolved_model=route.litellm_model,
+        lmrh_hint=llm_hint,
+        cot_engaged=route.cot_engaged,
+        unmet_hints=route.unmet_hints,
+    ):
+        pass
 
     extra = {**route.litellm_kwargs}
     if tools:
@@ -125,7 +138,7 @@ async def chat_completions(
             response_text = await call_with_tool_prompt(
                 route.litellm_model, norm_msgs, None, emul_extra
             )
-            await record_outcome(db, route.provider.id, route.litellm_model, success=True,
+            await record_outcome(db, route.provider.id, route.litellm_model, endpoint="completions", success=True,
                                  t0=time.monotonic(), key_record_id=key_record.id)
             tool_call = parse_tool_call(response_text)
             if stream:
@@ -171,7 +184,7 @@ async def chat_completions(
             )
             in_tok = getattr(result.usage, "prompt_tokens", 0)
             out_tok = getattr(result.usage, "completion_tokens", 0)
-            await record_outcome(db, route.provider.id, route.litellm_model, success=True,
+            await record_outcome(db, route.provider.id, route.litellm_model, endpoint="completions", success=True,
                                  in_tok=in_tok, out_tok=out_tok, t0=t0, key_record_id=key_record.id)
             if budget_total:
                 resp_headers["X-Token-Budget-Remaining"] = str(max(0, budget_total - out_tok))
@@ -179,7 +192,7 @@ async def chat_completions(
 
     except Exception as e:
         err_str = str(e)
-        await record_outcome(db, route.provider.id, route.litellm_model, success=False,
+        await record_outcome(db, route.provider.id, route.litellm_model, endpoint="completions", success=False,
                              key_record_id=key_record.id, error_str=err_str)
         raise HTTPException(502, f"Upstream provider error: {err_str}")
 
@@ -264,11 +277,11 @@ async def _stream_cot_openai(
         ).encode()
         yield b"data: [DONE]\n\n"
 
-        await record_outcome(db, provider_id, model, success=True,
+        await record_outcome(db, provider_id, model, endpoint="completions", success=True,
                              in_tok=in_tok, out_tok=out_tok, t0=t0, key_record_id=key_record_id)
 
     except Exception as e:
-        await record_outcome(db, provider_id, model, success=False,
+        await record_outcome(db, provider_id, model, endpoint="completions", success=False,
                              key_record_id=key_record_id, error_str=str(e))
         yield (b'data: ' + json.dumps({"error": str(e)}).encode() + b'\n\n')
 
@@ -297,11 +310,11 @@ async def _stream_openai(
                 f'"used":{out_tok},"total":{budget_total}}}\n\n'
             ).encode()
         yield b"data: [DONE]\n\n"
-        await record_outcome(db, provider_id, model, success=True,
+        await record_outcome(db, provider_id, model, endpoint="completions", success=True,
                              in_tok=in_tok, out_tok=out_tok, t0=t0,
                              key_record_id=key_record_id, ttft_ms=ttft_ms)
     except Exception as e:
-        await record_outcome(db, provider_id, model, success=False,
+        await record_outcome(db, provider_id, model, endpoint="completions", success=False,
                              key_record_id=key_record_id, error_str=str(e))
         yield (b'data: ' + json.dumps({"error": str(e)}).encode() + b'\n\n')
 
@@ -321,7 +334,7 @@ async def _webhook_completion_openai(
         result = await acompletion_with_retry(model=model, messages=messages, stream=False, **extra)
         in_tok = getattr(result.usage, "prompt_tokens", 0)
         out_tok = getattr(result.usage, "completion_tokens", 0)
-        await record_outcome(db, provider_id, model, success=True,
+        await record_outcome(db, provider_id, model, endpoint="completions", success=True,
                              in_tok=in_tok, out_tok=out_tok, t0=t0, key_record_id=key_record_id)
         await post_webhook(webhook_url, {
             "provider": provider_id,
@@ -329,6 +342,6 @@ async def _webhook_completion_openai(
             "response": result.model_dump(),
         })
     except Exception as exc:
-        await record_outcome(db, provider_id, model, success=False,
+        await record_outcome(db, provider_id, model, endpoint="completions", success=False,
                              key_record_id=key_record_id, error_str=str(exc))
         await post_webhook(webhook_url, {"error": str(exc), "model": model})
