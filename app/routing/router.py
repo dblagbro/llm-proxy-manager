@@ -72,14 +72,14 @@ PROVIDER_DEFAULT_MODELS = {
 }
 
 
-def _build_litellm_model(provider: Provider) -> str:
+def build_litellm_model(provider: Provider) -> str:
     prefix = PROVIDER_TYPE_TO_LITELLM.get(provider.provider_type, "openai")
     default = PROVIDER_DEFAULT_MODELS.get(provider.provider_type, "gpt-4o")
     model = provider.default_model or default
     return f"{prefix}/{model}"
 
 
-def _build_litellm_kwargs(provider: Provider) -> dict:
+def build_litellm_kwargs(provider: Provider) -> dict:
     kwargs: dict[str, Any] = {}
     if provider.api_key:
         kwargs["api_key"] = provider.api_key
@@ -172,8 +172,8 @@ async def select_provider(
         if key_type == "claude-code" or (task_hint and task_hint.value == "reasoning"):
             cot_engaged = True
 
-    litellm_model = _build_litellm_model(provider)
-    litellm_kwargs = _build_litellm_kwargs(provider)
+    litellm_model = build_litellm_model(provider)
+    litellm_kwargs = build_litellm_kwargs(provider)
 
     native_params: dict = {}
     if best_profile.native_reasoning and not cot_engaged:

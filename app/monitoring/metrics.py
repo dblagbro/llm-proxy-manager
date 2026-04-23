@@ -32,6 +32,7 @@ async def record_request(
     latency_ms: float,
     cost_usd: float,
     api_key_id: Optional[str] = None,
+    ttft_ms: float = 0.0,
 ):
     bucket = _bucket()
     cb_states = get_all_states()
@@ -57,6 +58,10 @@ async def record_request(
             metric.avg_latency_ms = (
                 (metric.avg_latency_ms * (metric.requests - 1) + latency_ms) / metric.requests
             )
+        if ttft_ms > 0 and success:
+            metric.ttft_requests = (metric.ttft_requests or 0) + 1
+            n = metric.ttft_requests
+            metric.avg_ttft_ms = ((metric.avg_ttft_ms or 0) * (n - 1) + ttft_ms) / n
         metric.circuit_state = circuit_state
     else:
         metric = ProviderMetric(
@@ -68,6 +73,8 @@ async def record_request(
             total_tokens=input_tokens + output_tokens,
             total_cost_usd=cost_usd,
             avg_latency_ms=latency_ms,
+            avg_ttft_ms=ttft_ms if ttft_ms > 0 else 0.0,
+            ttft_requests=1 if ttft_ms > 0 and success else 0,
             circuit_state=circuit_state,
         )
         db.add(metric)
@@ -110,6 +117,7 @@ async def get_provider_history(
             "total_tokens": r.total_tokens,
             "total_cost_usd": r.total_cost_usd,
             "avg_latency_ms": r.avg_latency_ms,
+            "avg_ttft_ms": r.avg_ttft_ms,
             "circuit_state": r.circuit_state,
         }
         for r in rows
@@ -143,6 +151,7 @@ async def get_all_provider_summary(db: AsyncSession, hours: int = 24) -> list[di
             "total_tokens": r.total_tokens or 0,
             "total_cost_usd": r.total_cost_usd or 0.0,
             "avg_latency_ms": round(r.avg_latency_ms or 0, 1),
+            "avg_ttft_ms": round(r.avg_ttft_ms or 0, 1),
             "circuit_state": cb_states.get(r.provider_id, {}).get("state", "closed"),
         }
         for r in rows

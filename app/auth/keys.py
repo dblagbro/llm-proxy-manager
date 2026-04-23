@@ -32,7 +32,7 @@ def _check_rate_limit(key_id: str, limit_rpm: int) -> None:
     while window and window[0] < cutoff:
         window.popleft()
     if len(window) >= per_node_limit:
-        raise HTTPException(429, f"Rate limit exceeded: {limit_rpm} requests/minute (cluster-wide)")
+        raise HTTPException(429, f"Rate limit exceeded: {limit_rpm} requests/minute (cluster-wide)", headers={"Retry-After": "60"})
     window.append(now)
 
 
