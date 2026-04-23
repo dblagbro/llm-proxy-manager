@@ -76,3 +76,24 @@ def test_cost_routing():
     hint = parse_hint("cost=economy")
     ranked = rank_candidates([economy, premium], hint)
     assert ranked[0][0].provider_id == "cheap"
+
+
+# ── Wave 4 #18 — parser robustness (legacy fallback runs when http-sfv absent) ──
+
+def test_parse_hint_whitespace_tolerant():
+    """Parser should tolerate arbitrary whitespace around = and ,."""
+    hint = parse_hint("  task = reasoning ,  safety-min = 3 ; require  ")
+    assert hint is not None
+    assert any(d.key == "task" and d.value == "reasoning" for d in hint.dimensions)
+    assert any(d.key == "safety-min" and d.required for d in hint.dimensions)
+
+
+def test_parse_hint_missing_equals_skipped():
+    hint = parse_hint("task=reasoning,broken-no-equals,cost=economy")
+    assert hint is not None
+    keys = [d.key for d in hint.dimensions]
+    assert keys.count("task") == 1 and keys.count("cost") == 1
+
+
+def test_parse_hint_returns_none_when_no_valid_dims():
+    assert parse_hint(",,,  ,,") is None
