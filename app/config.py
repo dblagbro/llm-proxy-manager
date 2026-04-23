@@ -66,6 +66,9 @@ class Settings(BaseSettings):
     # Wave 2 #12: Chain-of-Draft plan compression (~5-word mini-steps).
     # Published 78% token cut, 76% TTFT cut, <5pp quality drop vs verbose plan.
     cot_plan_compact: bool = Field(True, alias="COT_PLAN_COMPACT")
+    # Wave 3 #17: Ordered fallback across ranked providers (non-streaming only).
+    fallback_enabled: bool = Field(True, alias="FALLBACK_ENABLED")
+    fallback_max_providers: int = Field(3, alias="FALLBACK_MAX_PROVIDERS")
 
     # Semantic cache (Wave 1 #3). Requires Redis-Stack / RediSearch.
     semantic_cache_enabled: bool = Field(True, alias="SEMANTIC_CACHE_ENABLED")

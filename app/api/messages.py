@@ -309,12 +309,48 @@ async def messages(
             )
         else:
             t0 = time.monotonic()
-            result = await acompletion_with_retry(
-                model=route.litellm_model,
-                messages=messages_list,
-                stream=False,
-                **extra,
-            )
+            # Wave 3 #17 — ordered fallback across ranked providers
+            from app.routing.fallback import try_ranked_non_streaming
+
+            async def _call_with_route(r):
+                # Rebuild extra kwargs for THIS route's provider (api_key, etc.)
+                local_extra = {**r.litellm_kwargs, "max_tokens": max_tokens}
+                if system:
+                    local_extra["system"] = system
+                if tools:
+                    local_extra["tools"] = tools
+                if r.native_thinking_params:
+                    local_extra.update(r.native_thinking_params)
+                elif thinking and r.profile.provider_type == "anthropic":
+                    local_extra["thinking"] = thinking
+                if anthropic_beta and r.profile.provider_type == "anthropic":
+                    local_extra["extra_headers"] = {"anthropic-beta": anthropic_beta}
+                return await acompletion_with_retry(
+                    model=r.litellm_model, messages=messages_list,
+                    stream=False, **local_extra,
+                )
+
+            if settings.fallback_enabled:
+                result, final_route, chain = await try_ranked_non_streaming(
+                    db, hint,
+                    has_tools=has_tools, has_images=has_images,
+                    key_type=key_record.key_type,
+                    pinned_provider_id=alias.provider_id if alias else None,
+                    model_override=alias.model_id if alias else None,
+                    primary_route=route, call_fn=_call_with_route,
+                )
+                if len(chain.attempts) > 1:
+                    resp_headers["X-Fallback-Chain"] = chain.as_header()
+                    resp_headers["X-Provider"] = final_route.provider.name
+                    resp_headers["X-Resolved-Model"] = final_route.litellm_model
+                    route = final_route  # for record_outcome below
+            else:
+                result = await acompletion_with_retry(
+                    model=route.litellm_model,
+                    messages=messages_list,
+                    stream=False,
+                    **extra,
+                )
             in_tok = getattr(result.usage, "prompt_tokens", 0)
             out_tok = getattr(result.usage, "completion_tokens", 0)
             from app.cot.sse import extract_cache_tokens

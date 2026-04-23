@@ -35,6 +35,8 @@ SCHEMA: dict[str, dict] = {
     "cot_verify_execute": {"type": "bool", "default": settings.cot_verify_execute, "label": "Actually execute the network-safe subset of verify steps (HTTP/DNS/TCP only)"},
     "cot_verify_step_timeout_sec": {"type": "str", "default": str(settings.cot_verify_step_timeout_sec), "label": "Per-step verify execution timeout (seconds)"},
     "cot_plan_compact": {"type": "bool", "default": settings.cot_plan_compact, "label": "Chain-of-Draft plan: ~5-word mini-steps (-78% plan tokens, faster TTFT)"},
+    "fallback_enabled": {"type": "bool", "default": settings.fallback_enabled, "label": "Ordered fallback: on provider failure, try next-ranked candidate"},
+    "fallback_max_providers": {"type": "int", "default": settings.fallback_max_providers, "label": "Max providers to try per request before giving up"},
     # Semantic cache (Wave 1 #3)
     "semantic_cache_enabled":          {"type": "bool", "default": settings.semantic_cache_enabled,         "label": "Enable semantic cache globally"},
     "semantic_cache_threshold":        {"type": "str",  "default": str(settings.semantic_cache_threshold),  "label": "Cosine threshold (0.0–1.0)"},
