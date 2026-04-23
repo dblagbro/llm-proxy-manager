@@ -31,6 +31,13 @@ async def init_db():
             "ALTER TABLE provider_metrics ADD COLUMN ttft_requests INTEGER DEFAULT 0",
             "ALTER TABLE providers ADD COLUMN daily_budget_usd REAL",
             "ALTER TABLE api_keys ADD COLUMN semantic_cache_enabled INTEGER DEFAULT 0",
+            "ALTER TABLE api_keys ADD COLUMN daily_soft_cap_usd REAL",
+            "ALTER TABLE api_keys ADD COLUMN daily_hard_cap_usd REAL",
+            "ALTER TABLE api_keys ADD COLUMN hourly_cap_usd REAL",
+            "ALTER TABLE api_keys ADD COLUMN day_bucket_ts DATETIME",
+            "ALTER TABLE api_keys ADD COLUMN day_cost_usd REAL DEFAULT 0",
+            "ALTER TABLE api_keys ADD COLUMN hour_bucket_ts DATETIME",
+            "ALTER TABLE api_keys ADD COLUMN hour_cost_usd REAL DEFAULT 0",
         ]:
             try:
                 await conn.exec_driver_sql(stmt)

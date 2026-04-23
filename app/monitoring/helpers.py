@@ -13,6 +13,7 @@ from app.monitoring.pricing import estimate_cost
 from app.monitoring.activity import log_event
 from app.observability.prometheus import observe_request, observe_ttft, observe_cache_tokens
 from app.routing.hedging import record_ttft_sample
+from app.budget.tracker import record_cost
 
 
 async def record_outcome(
@@ -36,6 +37,7 @@ async def record_outcome(
         cost = estimate_cost(model, in_tok, out_tok)
         await record_success(provider_id)
         await record_request(db, provider_id, True, in_tok, out_tok, latency_ms, cost, key_record_id, ttft_ms)
+        await record_cost(db, key_record_id, cost)
         observe_request(
             provider=provider_id, model=model, endpoint=endpoint,
             success=True, duration_sec=latency_ms / 1000.0,

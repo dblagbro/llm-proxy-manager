@@ -20,6 +20,10 @@ class KeyCreate(BaseModel):
     key_type: str = "standard"  # standard|claude-code
     spending_cap_usd: Optional[float] = None
     rate_limit_rpm: Optional[int] = None
+    daily_soft_cap_usd: Optional[float] = None
+    daily_hard_cap_usd: Optional[float] = None
+    hourly_cap_usd: Optional[float] = None
+    semantic_cache_enabled: bool = False
 
 
 class KeyUpdate(BaseModel):
@@ -28,6 +32,10 @@ class KeyUpdate(BaseModel):
     enabled: Optional[bool] = None
     spending_cap_usd: Optional[float] = None  # -1 to clear the cap
     rate_limit_rpm: Optional[int] = None       # -1 to clear the limit
+    daily_soft_cap_usd: Optional[float] = None   # -1 to clear
+    daily_hard_cap_usd: Optional[float] = None   # -1 to clear
+    hourly_cap_usd: Optional[float] = None       # -1 to clear
+    semantic_cache_enabled: Optional[bool] = None
 
 
 @router.get("")
@@ -56,6 +64,10 @@ async def create_key(
         enabled=True,
         spending_cap_usd=body.spending_cap_usd,
         rate_limit_rpm=body.rate_limit_rpm,
+        daily_soft_cap_usd=body.daily_soft_cap_usd,
+        daily_hard_cap_usd=body.daily_hard_cap_usd,
+        hourly_cap_usd=body.hourly_cap_usd,
+        semantic_cache_enabled=body.semantic_cache_enabled,
     )
     db.add(key)
     await db.commit()
@@ -84,6 +96,14 @@ async def update_key(
         k.spending_cap_usd = None if body.spending_cap_usd < 0 else body.spending_cap_usd
     if body.rate_limit_rpm is not None:
         k.rate_limit_rpm = None if body.rate_limit_rpm < 0 else body.rate_limit_rpm
+    if body.daily_soft_cap_usd is not None:
+        k.daily_soft_cap_usd = None if body.daily_soft_cap_usd < 0 else body.daily_soft_cap_usd
+    if body.daily_hard_cap_usd is not None:
+        k.daily_hard_cap_usd = None if body.daily_hard_cap_usd < 0 else body.daily_hard_cap_usd
+    if body.hourly_cap_usd is not None:
+        k.hourly_cap_usd = None if body.hourly_cap_usd < 0 else body.hourly_cap_usd
+    if body.semantic_cache_enabled is not None:
+        k.semantic_cache_enabled = body.semantic_cache_enabled
     await db.commit()
     return _serialize(k)
 
@@ -120,6 +140,12 @@ def _serialize(k: ApiKey) -> dict:
         "total_cost_usd": k.total_cost_usd,
         "spending_cap_usd": k.spending_cap_usd,
         "rate_limit_rpm": k.rate_limit_rpm,
+        "daily_soft_cap_usd": k.daily_soft_cap_usd,
+        "daily_hard_cap_usd": k.daily_hard_cap_usd,
+        "hourly_cap_usd": k.hourly_cap_usd,
+        "semantic_cache_enabled": bool(k.semantic_cache_enabled),
+        "day_cost_usd": float(k.day_cost_usd or 0.0),
+        "hour_cost_usd": float(k.hour_cost_usd or 0.0),
         "last_used_at": k.last_used_at.isoformat() if k.last_used_at else None,
         "created_at": k.created_at.isoformat() if k.created_at else None,
     }
