@@ -8,7 +8,7 @@ import time
 from typing import Optional, AsyncIterator
 
 import litellm
-from fastapi import APIRouter, Request, Depends, HTTPException, Header
+from fastapi import APIRouter, BackgroundTasks, Request, Depends, HTTPException, Header
 from fastapi.responses import StreamingResponse, JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -34,6 +34,7 @@ from app.cot.sse import (
 from app.monitoring.helpers import record_outcome
 from app.api.image_utils import has_images_anthropic, strip_images_anthropic
 from app.routing.aliases import resolve_alias
+from app.api.webhook import post_webhook
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -42,12 +43,14 @@ router = APIRouter()
 @router.post("/v1/messages")
 async def messages(
     request: Request,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     x_api_key: Optional[str] = Header(None, alias="x-api-key"),
     llm_hint: Optional[str] = Header(None, alias="llm-hint"),
     x_session_id: Optional[str] = Header(None, alias="x-session-id"),
     x_cot_iterations: Optional[str] = Header(None, alias="x-cot-iterations"),
     x_cot_verify: Optional[str] = Header(None, alias="x-cot-verify"),
+    x_webhook_url: Optional[str] = Header(None, alias="x-webhook-url"),
 ):
     key_record = await verify_api_key(db, x_api_key)
 
@@ -93,6 +96,19 @@ async def messages(
         "X-Resolved-Model": route.litellm_model,
         "X-Token-Budget-Remaining": str(max_tokens),
     }
+
+    # Webhook async: fire-and-forget completion, return 202 immediately
+    if x_webhook_url:
+        background_tasks.add_task(
+            _webhook_completion_anthropic,
+            x_webhook_url, route.litellm_model, messages_list, extra,
+            route.provider.id, db, key_record.id,
+        )
+        return JSONResponse(
+            {"status": "queued", "webhook_url": x_webhook_url},
+            status_code=202,
+            headers=resp_headers,
+        )
 
     try:
         if route.tool_emulation_engaged:
@@ -303,4 +319,29 @@ async def _stream_anthropic(
         yield (b'data: ' + json.dumps({"type": "error", "error": {"message": str(e)}}).encode() + b'\n\n')
 
 
-
+async def _webhook_completion_anthropic(
+    webhook_url: str,
+    model: str,
+    messages: list,
+    extra: dict,
+    provider_id: str,
+    db: AsyncSession,
+    key_record_id: str,
+) -> None:
+    """Run a non-streaming completion and POST the result to webhook_url."""
+    t0 = time.monotonic()
+    try:
+        result = await litellm.acompletion(model=model, messages=messages, stream=False, **extra)
+        in_tok = getattr(result.usage, "prompt_tokens", 0)
+        out_tok = getattr(result.usage, "completion_tokens", 0)
+        await record_outcome(db, provider_id, model, success=True,
+                             in_tok=in_tok, out_tok=out_tok, t0=t0, key_record_id=key_record_id)
+        await post_webhook(webhook_url, {
+            "provider": provider_id,
+            "model": model,
+            "response": to_anthropic_response(result),
+        })
+    except Exception as exc:
+        await record_outcome(db, provider_id, model, success=False,
+                             key_record_id=key_record_id, error_str=str(exc))
+        await post_webhook(webhook_url, {"error": str(exc), "model": model})
