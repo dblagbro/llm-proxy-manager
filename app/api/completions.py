@@ -213,6 +213,11 @@ async def chat_completions(
             )
             if samples > 1:
                 resp_headers["X-Cot-Samples"] = str(samples)
+            from app.cot.task_adaptive import select_task_branch
+            lmrh_task = hint.get("task").value if (hint and hint.get("task")) else None
+            task_branch = select_task_branch(lmrh_task)
+            if task_branch:
+                resp_headers["X-Cot-Task-Branch"] = task_branch
             # Wave 2 #8 — pick a different provider for critique
             critique_model: Optional[str] = None
             critique_kwargs: Optional[dict] = None
@@ -233,7 +238,7 @@ async def chat_completions(
                     route.litellm_model, messages_list, x_session_id, extra,
                     cot_max, route.provider.id, db, key_record.id, force_verify,
                     critique_model=critique_model, critique_kwargs=critique_kwargs,
-                    samples=samples,
+                    samples=samples, task_branch=task_branch,
                 ),
                 media_type="text/event-stream",
                 headers=resp_headers,
@@ -338,6 +343,7 @@ async def _stream_cot_openai(
     critique_model: str | None = None,
     critique_kwargs: dict | None = None,
     samples: int = 1,
+    task_branch: str | None = None,
 ) -> AsyncIterator[bytes]:
     """
     Run the CoT-E pipeline and re-emit as OpenAI-format SSE chunks.
@@ -355,7 +361,7 @@ async def _stream_cot_openai(
         async for raw in run_cot_pipeline(
             model, messages, session_id, extra, max_iterations, force_verify,
             critique_model=critique_model, critique_kwargs=critique_kwargs,
-            samples=samples,
+            samples=samples, task_branch=task_branch,
         ):
             line = raw.decode(errors="ignore").strip()
             if not line.startswith("data: "):
