@@ -153,8 +153,15 @@ async def messages(
     if anthropic_beta and route.profile.provider_type == "anthropic":
         extra["extra_headers"] = {"anthropic-beta": anthropic_beta}
 
+    vision_routed_count = 0
     if route.vision_stripped:
-        messages_list = strip_images_anthropic(messages_list)
+        if settings.vision_route_enabled:
+            from app.api.vision_route import transcribe_anthropic
+            messages_list, vision_routed_count = await transcribe_anthropic(
+                messages_list, db, exclude_provider_id=route.provider.id,
+            )
+        else:
+            messages_list = strip_images_anthropic(messages_list)
 
     resp_headers = {
         "X-Provider": route.provider.name,
@@ -164,6 +171,8 @@ async def messages(
     }
     if auto_task:
         resp_headers["X-Task-Auto-Detected"] = auto_task
+    if vision_routed_count:
+        resp_headers["X-Vision-Routed"] = str(vision_routed_count)
     # Wave 4 #20 — echo which hint dims were honored
     if hint is not None:
         from app.routing.lmrh import build_hint_set_header
