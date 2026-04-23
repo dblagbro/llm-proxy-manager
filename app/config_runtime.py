@@ -40,6 +40,8 @@ SCHEMA: dict[str, dict] = {
     "task_auto_detect_enabled": {"type": "bool", "default": settings.task_auto_detect_enabled, "label": "Auto-classify LMRH task= hint via embedding cosine (~40ms overhead)"},
     "shadow_traffic_rate": {"type": "str", "default": str(settings.shadow_traffic_rate), "label": "Shadow-traffic fraction (0.0–1.0); 0.01 = mirror 1% of requests"},
     "shadow_candidate_provider_id": {"type": "str", "default": settings.shadow_candidate_provider_id, "label": "Provider ID to shadow-test"},
+    "structured_output_enabled": {"type": "bool", "default": settings.structured_output_enabled, "label": "Enforce JSON-Schema response_format via repair loop"},
+    "structured_output_max_repairs": {"type": "int", "default": settings.structured_output_max_repairs, "label": "Max structured-output repair attempts (default 2)"},
     # Semantic cache (Wave 1 #3)
     "semantic_cache_enabled":          {"type": "bool", "default": settings.semantic_cache_enabled,         "label": "Enable semantic cache globally"},
     "semantic_cache_threshold":        {"type": "str",  "default": str(settings.semantic_cache_threshold),  "label": "Cosine threshold (0.0–1.0)"},

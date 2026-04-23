@@ -22,3 +22,4 @@ opentelemetry-sdk>=1.25.0
 opentelemetry-exporter-otlp-proto-http>=1.25.0
 redisvl>=0.4.0
 http-sfv>=0.9.9
+jsonschema>=4.20.0
