@@ -243,6 +243,7 @@ async def run_cot_pipeline(
     critique_model: str | None = None,
     critique_kwargs: dict | None = None,
     samples: int = 1,
+    task_branch: str | None = None,
 ) -> AsyncIterator[bytes]:
     """
     Full CoT-E pipeline. Yields Anthropic-format SSE bytes.
@@ -271,6 +272,29 @@ async def run_cot_pipeline(
     block_index = 0
     # Strip keys that are passed explicitly to _call to avoid duplicate-arg errors
     cot_kwargs = {k: v for k, v in extra_kwargs.items() if k not in ("max_tokens", "system", "stream")}
+
+    # ── Wave 2 #11 — task-adaptive branches ──────────────────────────────────
+    if task_branch:
+        user_text_early = _last_user_text(messages)
+        if task_branch == "summarize":
+            async for chunk in _run_summarize_branch(
+                model, messages, user_text_early, extra_kwargs
+            ):
+                yield chunk
+            return
+        if task_branch == "math":
+            async for chunk in _run_math_branch(
+                model, messages, user_text_early, extra_kwargs
+            ):
+                yield chunk
+            return
+        if task_branch == "code":
+            async for chunk in _run_code_branch(
+                model, messages, user_text_early, extra_kwargs
+            ):
+                yield chunk
+            return
+        # unknown branch name — fall through to default pipeline
 
     # ── Pass 0: Plan ──────────────────────────────────────────────────────────
     prior_analyses = await get_session_analyses(session_id)
@@ -575,3 +599,198 @@ async def _run_verify_pass(
     except Exception as e:
         logger.warning("cot_verify_pass_failed error=%s", str(e))
         return f"(verification pass failed: {e})"
+
+
+# ── Task-adaptive branches (Wave 2 #11) ──────────────────────────────────────
+
+async def _run_summarize_branch(
+    model: str, messages: list[dict], user_text: str, extra_kwargs: dict,
+) -> AsyncIterator[bytes]:
+    """task=summarize — single pass, no plan, no critique."""
+    from app.cot.task_adaptive import SUMMARIZE_SYSTEM
+    draft_kwargs = {k: v for k, v in extra_kwargs.items() if k not in ("max_tokens", "system")}
+    resp = await acompletion_with_retry(
+        model=model,
+        messages=[{"role": "system", "content": SUMMARIZE_SYSTEM}] + messages,
+        stream=False,
+        **draft_kwargs,
+    )
+    answer = resp.choices[0].message.content or ""
+
+    yield sse_thinking_start(0)
+    yield sse_thinking_delta(0, "## Task: Summarize (single-pass)\nSkipping plan/critique/refine for summarization tasks.")
+    yield sse_thinking_stop(0)
+
+    yield sse_text_start(1)
+    chunk_size = 50
+    for i in range(0, len(answer), chunk_size):
+        yield sse_text_delta(1, answer[i:i + chunk_size])
+        await asyncio.sleep(0)
+    yield sse_text_stop(1)
+    input_tokens = sum(len(m.get("content", "")) for m in messages) // 4
+    yield sse_message_delta("end_turn", input_tokens, len(answer) // 4)
+    yield sse_done()
+
+
+async def _run_math_branch(
+    model: str, messages: list[dict], user_text: str, extra_kwargs: dict,
+) -> AsyncIterator[bytes]:
+    """task=math — Program-of-Thought: generate Python, run it, report."""
+    from app.cot.task_adaptive import (
+        POT_SYSTEM, POT_REPORT_SYSTEM, extract_python, run_python_sandbox,
+    )
+    draft_kwargs = {k: v for k, v in extra_kwargs.items() if k not in ("max_tokens", "system")}
+
+    gen = await acompletion_with_retry(
+        model=model,
+        messages=[{"role": "system", "content": POT_SYSTEM}] + messages,
+        stream=False,
+        **draft_kwargs,
+    )
+    gen_text = gen.choices[0].message.content or ""
+    code = extract_python(gen_text)
+
+    yield sse_thinking_start(0)
+    yield sse_thinking_delta(
+        0,
+        "## Task: Math (Program-of-Thought)\n"
+        + (f"```python\n{code}\n```" if code else f"(no code block found)\n{gen_text[:500]}"),
+    )
+    yield sse_thinking_stop(0)
+
+    exec_result_text = ""
+    if code:
+        result = await asyncio.get_event_loop().run_in_executor(None, run_python_sandbox, code)
+        status = "✓ success" if result.ok else ("⚠ timed out" if result.timed_out else f"✗ exit {result.returncode}")
+        exec_result_text = f"```\n{result.stdout[:1000]}\n```"
+        if result.stderr:
+            exec_result_text += f"\n\nstderr:\n```\n{result.stderr[:500]}\n```"
+        yield sse_thinking_start(1)
+        yield sse_thinking_delta(1, f"## Execution ({status}, {result.duration_ms:.0f}ms)\n{exec_result_text}")
+        yield sse_thinking_stop(1)
+
+        report = await acompletion_with_retry(
+            model=model,
+            messages=[
+                {"role": "system", "content": POT_REPORT_SYSTEM},
+                {"role": "user", "content": user_text},
+                {"role": "assistant", "content": f"Computed output:\n{result.stdout}"},
+                {"role": "user", "content": "Produce the final user-facing answer."},
+            ],
+            stream=False,
+            **draft_kwargs,
+        )
+        answer = report.choices[0].message.content or gen_text
+    else:
+        # Couldn't extract code; just return what the model produced
+        answer = gen_text
+
+    yield sse_text_start(2)
+    chunk_size = 50
+    for i in range(0, len(answer), chunk_size):
+        yield sse_text_delta(2, answer[i:i + chunk_size])
+        await asyncio.sleep(0)
+    yield sse_text_stop(2)
+    input_tokens = sum(len(m.get("content", "")) for m in messages) // 4
+    yield sse_message_delta("end_turn", input_tokens, len(answer) // 4)
+    yield sse_done()
+
+
+async def _run_code_branch(
+    model: str, messages: list[dict], user_text: str, extra_kwargs: dict,
+) -> AsyncIterator[bytes]:
+    """task=code — generate implementation + tests, run tests, refine on failure."""
+    from app.cot.task_adaptive import (
+        CODEGEN_TESTS_SYSTEM, extract_python, run_python_sandbox,
+    )
+    import re as _re
+    draft_kwargs = {k: v for k, v in extra_kwargs.items() if k not in ("max_tokens", "system")}
+
+    gen = await acompletion_with_retry(
+        model=model,
+        messages=[{"role": "system", "content": CODEGEN_TESTS_SYSTEM}] + messages,
+        stream=False,
+        **draft_kwargs,
+    )
+    gen_text = gen.choices[0].message.content or ""
+
+    # Extract BOTH python blocks (implementation + tests)
+    blocks = _re.findall(r"```(?:python|py)\s*\n(.*?)\n```", gen_text, flags=_re.DOTALL)
+    impl_code = blocks[0] if len(blocks) >= 1 else None
+    test_code = blocks[1] if len(blocks) >= 2 else None
+
+    yield sse_thinking_start(0)
+    yield sse_thinking_delta(
+        0,
+        "## Task: Code (generate + test)\n"
+        + (f"Implementation found: {bool(impl_code)} · Tests found: {bool(test_code)}"),
+    )
+    yield sse_thinking_stop(0)
+
+    if impl_code and test_code:
+        # Drop both into same temp dir and run pytest
+        import tempfile, os
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with open(os.path.join(tmpdir, "impl.py"), "w") as f:
+                # Strip user-provided `from impl import` anchors; we name the file impl.py
+                f.write(impl_code)
+            with open(os.path.join(tmpdir, "test_impl.py"), "w") as f:
+                # Replace "from <anything> import" with "from impl import" if model guessed
+                test_rewritten = _re.sub(r"from\s+\w+\s+import", "from impl import", test_code)
+                f.write(test_rewritten)
+            # Combined runner
+            runner = (
+                f"import sys, subprocess\n"
+                f"sys.path.insert(0, {tmpdir!r})\n"
+                f"r = subprocess.run([sys.executable, '-m', 'pytest', '-x', '--tb=short', {os.path.join(tmpdir, 'test_impl.py')!r}],"
+                f" capture_output=True, timeout=5)\n"
+                f"print(r.stdout.decode()); print('---STDERR---'); print(r.stderr.decode())\n"
+                f"sys.exit(r.returncode)\n"
+            )
+            result = await asyncio.get_event_loop().run_in_executor(None, run_python_sandbox, runner)
+
+        status = "✓ tests pass" if result.ok else ("⚠ timed out" if result.timed_out else "✗ tests failed")
+        yield sse_thinking_start(1)
+        yield sse_thinking_delta(
+            1,
+            f"## Test Execution ({status}, {result.duration_ms:.0f}ms)\n"
+            f"```\n{result.stdout[:800]}\n```"
+            + (f"\nstderr:\n```\n{result.stderr[:400]}\n```" if result.stderr else ""),
+        )
+        yield sse_thinking_stop(1)
+
+        if not result.ok and not result.timed_out:
+            # One refinement pass with actual test output
+            refined = await acompletion_with_retry(
+                model=model,
+                messages=[
+                    {"role": "system", "content": REFINE_SYSTEM},
+                    {"role": "user", "content": user_text},
+                    {"role": "assistant", "content": gen_text},
+                    {"role": "user", "content": (
+                        f"The generated tests FAILED when executed. Output below — fix the "
+                        f"implementation or the tests, whichever is wrong.\n\n{result.stdout[:1500]}\n"
+                        f"{result.stderr[:500]}"
+                    )},
+                ],
+                stream=False,
+                **draft_kwargs,
+            )
+            answer = refined.choices[0].message.content or gen_text
+            yield sse_thinking_start(2)
+            yield sse_thinking_delta(2, "## Refinement (post-test-failure)\nAnswer revised based on actual pytest output.")
+            yield sse_thinking_stop(2)
+        else:
+            answer = gen_text
+    else:
+        answer = gen_text
+
+    yield sse_text_start(3)
+    chunk_size = 50
+    for i in range(0, len(answer), chunk_size):
+        yield sse_text_delta(3, answer[i:i + chunk_size])
+        await asyncio.sleep(0)
+    yield sse_text_stop(3)
+    input_tokens = sum(len(m.get("content", "")) for m in messages) // 4
+    yield sse_message_delta("end_turn", input_tokens, len(answer) // 4)
+    yield sse_done()
