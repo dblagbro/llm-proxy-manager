@@ -9,7 +9,7 @@ import httpx
 import litellm
 
 from app.models.db import Provider, ModelCapability
-from app.routing.lmrh import infer_capability_profile
+from app.routing.capability_inference import infer_capability_profile
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete
 
@@ -146,11 +146,11 @@ def _vertex_default_models() -> list[str]:
 async def test_provider(provider: Provider) -> dict:
     """Send a minimal test request to verify provider is reachable."""
     import litellm
-    from app.routing.router import _build_litellm_model, _build_litellm_kwargs
+    from app.routing.router import build_litellm_model, build_litellm_kwargs
     from app.routing.circuit_breaker import record_failure, record_success, is_billing_error
 
-    model = _build_litellm_model(provider)
-    kwargs = _build_litellm_kwargs(provider)
+    model = build_litellm_model(provider)
+    kwargs = build_litellm_kwargs(provider)
 
     try:
         result = await litellm.acompletion(

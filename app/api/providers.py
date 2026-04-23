@@ -12,6 +12,7 @@ from app.models.db import Provider, ModelCapability
 from app.auth.admin import require_admin, AdminUser
 from app.providers.scanner import scan_provider_models, test_provider
 from app.monitoring.status import register_provider
+from app.routing.capability_inference import infer_capability_profile
 
 router = APIRouter(prefix="/api/providers", tags=["providers"])
 
@@ -204,7 +205,6 @@ async def infer_capabilities(
     _: AdminUser = Depends(require_admin),
 ):
     """Re-run auto-inference on all existing capability records for this provider."""
-    from app.routing.lmrh import infer_capability_profile
     p = await _get_or_404(db, provider_id)
     result = await db.execute(
         select(ModelCapability).where(

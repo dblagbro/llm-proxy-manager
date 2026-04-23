@@ -9,8 +9,6 @@ shared circuit-breaker and rate-limit state automatically. This module handles:
   - Node registration on startup
 """
 import asyncio
-import hashlib
-import hmac
 import json
 import logging
 import time
@@ -22,6 +20,8 @@ from sqlalchemy import select
 
 from app.config import settings
 from app.models.db import User, ApiKey, Provider, SystemSetting
+from app.cluster.auth import sign_payload, verify_payload, verify_cluster_request, auth_headers_for
+from app.cluster.sync import apply_sync, get_peer_total_cost
 
 logger = logging.getLogger(__name__)
 
@@ -46,8 +46,6 @@ _sync_task: Optional[asyncio.Task] = None
 # Private alias for internal use within this module
 _peers = peers
 
-from app.cluster.sync import get_peer_total_cost  # noqa: E402 — after peers dict defined
-
 
 def active_node_count() -> int:
     """Number of nodes currently reachable, including self."""
@@ -65,37 +63,6 @@ def _parse_peers() -> list[PeerNode]:
         nodes.append(PeerNode(id=node_id.strip(), name=node_id.strip(), url=url.strip()))
     return nodes
 
-
-def sign_payload(payload: bytes) -> str:
-    """HMAC-sign arbitrary bytes with the cluster shared secret."""
-    key = (settings.cluster_sync_secret or "").encode()
-    return hmac.new(key, payload, hashlib.sha256).hexdigest()
-
-
-def verify_payload(payload: bytes, signature: str) -> bool:
-    """Verify an HMAC signature produced by sign_payload()."""
-    return hmac.compare_digest(sign_payload(payload), signature)
-
-
-def verify_cluster_request(body: bytes, signature: str) -> bool:
-    """Convenience alias used by the /cluster/sync endpoint."""
-    return verify_payload(body, signature)
-
-
-def auth_headers_for(payload: dict) -> dict:
-    """Build HMAC-signed headers for an outgoing cluster request."""
-    body = json.dumps(payload, sort_keys=True).encode()
-    return {
-        "X-Cluster-Node": settings.cluster_node_id or "",
-        "X-Cluster-Sig": sign_payload(body),
-        "Content-Type": "application/json",
-    }
-
-
-# Keep private aliases so internal call-sites don't need updating
-_sign = sign_payload
-_verify = verify_payload
-_auth_headers = auth_headers_for
 
 
 async def _heartbeat_loop(notify_fn=None):
@@ -184,7 +151,7 @@ async def push_sync(peer: PeerNode, db_factory):
         "settings": node_settings,
     }
     body = json.dumps(payload, sort_keys=True).encode()
-    sig = _sign(body)
+    sig = sign_payload(body)
 
     try:
         async with httpx.AsyncClient(timeout=15, verify=False) as client:
@@ -199,9 +166,6 @@ async def push_sync(peer: PeerNode, db_factory):
 
 
 _push_sync = push_sync
-
-
-from app.cluster.sync import apply_sync  # noqa: E402
 
 
 def get_cluster_status() -> dict:

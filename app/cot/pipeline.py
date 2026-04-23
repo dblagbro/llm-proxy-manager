@@ -24,6 +24,24 @@ from app.cot.sse import (
 
 logger = logging.getLogger(__name__)
 
+
+def parse_cot_request_headers(
+    x_cot_iterations: str | None,
+    x_cot_verify: str | None,
+) -> tuple[int | None, bool | None]:
+    """Parse X-Cot-Iterations and X-Cot-Verify headers into typed (cot_max, force_verify)."""
+    cot_max: int | None = None
+    if x_cot_iterations is not None:
+        try:
+            cot_max = max(0, int(x_cot_iterations))
+        except ValueError:
+            pass
+    force_verify: bool | None = None
+    if x_cot_verify is not None:
+        force_verify = x_cot_verify.lower() in ("1", "true", "yes")
+    return cot_max, force_verify
+
+
 # ── Prompts ───────────────────────────────────────────────────────────────────
 
 PLAN_SYSTEM = (

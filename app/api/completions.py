@@ -17,7 +17,7 @@ from app.routing.router import select_provider
 from app.routing.lmrh import parse_hint
 from app.monitoring.helpers import record_outcome
 from app.api.image_utils import has_images_openai, strip_images_openai
-from app.cot.pipeline import run_cot_pipeline
+from app.cot.pipeline import run_cot_pipeline, parse_cot_request_headers
 from app.cot.tool_emulation import (
     build_openai_tool_prompt,
     normalize_openai_messages,
@@ -82,6 +82,7 @@ async def chat_completions(
     resp_headers = {
         "X-Provider": route.provider.name,
         "LLM-Capability": route.capability_header,
+        "X-Resolved-Model": route.litellm_model,
     }
 
     try:
@@ -117,15 +118,7 @@ async def chat_completions(
         if route.cot_engaged:
             if not stream:
                 raise HTTPException(422, "CoT-E requires stream=true")
-            cot_max = None
-            if x_cot_iterations is not None:
-                try:
-                    cot_max = max(0, int(x_cot_iterations))
-                except ValueError:
-                    pass
-            force_verify: bool | None = None
-            if x_cot_verify is not None:
-                force_verify = x_cot_verify.lower() in ("1", "true", "yes")
+            cot_max, force_verify = parse_cot_request_headers(x_cot_iterations, x_cot_verify)
             return StreamingResponse(
                 _stream_cot_openai(
                     route.litellm_model, messages_list, x_session_id, extra,
@@ -257,16 +250,22 @@ async def _stream_openai(
     db: AsyncSession, key_record_id: str, t0: float,
 ) -> AsyncIterator[bytes]:
     in_tok = out_tok = 0
+    ttft_ms: float = 0.0
+    first_chunk = True
     try:
         response = await litellm.acompletion(model=model, messages=messages, stream=True, **extra)
         async for chunk in response:
+            if first_chunk:
+                ttft_ms = (time.monotonic() - t0) * 1000
+                first_chunk = False
             if hasattr(chunk, "usage") and chunk.usage:
                 in_tok = getattr(chunk.usage, "prompt_tokens", in_tok)
                 out_tok = getattr(chunk.usage, "completion_tokens", out_tok)
             yield f"data: {chunk.model_dump_json()}\n\n".encode()
         yield b"data: [DONE]\n\n"
         await record_outcome(db, provider_id, model, success=True,
-                             in_tok=in_tok, out_tok=out_tok, t0=t0, key_record_id=key_record_id)
+                             in_tok=in_tok, out_tok=out_tok, t0=t0,
+                             key_record_id=key_record_id, ttft_ms=ttft_ms)
     except Exception as e:
         await record_outcome(db, provider_id, model, success=False,
                              key_record_id=key_record_id, error_str=str(e))
