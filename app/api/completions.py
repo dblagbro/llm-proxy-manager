@@ -350,6 +350,47 @@ async def chat_completions(
             )
         else:
             t0 = time.monotonic()
+
+            # Wave 5 #24 — structured output repair loop for response_format
+            if (_cfg_settings.structured_output_enabled and not has_tools):
+                from app.cot.structured_output import extract_openai_schema, call_with_schema
+                schema = extract_openai_schema(body)
+                if schema is not None:
+                    parsed, raw_text, attempts = await call_with_schema(
+                        model=route.litellm_model,
+                        messages=messages_list,
+                        schema=schema,
+                        extra=extra,
+                        max_repairs=_cfg_settings.structured_output_max_repairs,
+                    )
+                    resp_headers["X-Structured-Output-Attempts"] = str(attempts)
+                    resp_headers["X-Structured-Output-Status"] = "valid" if parsed is not None else "invalid"
+                    final_text = json.dumps(parsed) if parsed is not None else raw_text
+                    await record_outcome(
+                        db, route.provider.id, route.litellm_model, endpoint="completions",
+                        success=True, t0=t0, key_record_id=key_record.id,
+                    )
+                    try:
+                        await maybe_store(cache_decision, final_text)
+                    except Exception:
+                        pass
+                    # Build an OpenAI-format response manually so the output
+                    # is exactly the validated JSON (no wrapper fences).
+                    return JSONResponse(
+                        content={
+                            "id": f"chatcmpl-struct-{int(time.monotonic()*1000)}",
+                            "object": "chat.completion",
+                            "model": route.litellm_model,
+                            "choices": [{
+                                "index": 0,
+                                "message": {"role": "assistant", "content": final_text},
+                                "finish_reason": "stop",
+                            }],
+                            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                        },
+                        headers=resp_headers,
+                    )
+
             # Wave 3 #17 — ordered fallback across ranked providers
             from app.routing.fallback import try_ranked_non_streaming
 

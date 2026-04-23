@@ -76,6 +76,9 @@ class Settings(BaseSettings):
     # provider async; measure quality-diff vs primary. No user impact.
     shadow_traffic_rate: float = Field(0.0, alias="SHADOW_TRAFFIC_RATE")
     shadow_candidate_provider_id: str = Field("", alias="SHADOW_CANDIDATE_PROVIDER_ID")
+    # Wave 5 #24: structured-output validation + repair loop
+    structured_output_enabled: bool = Field(True, alias="STRUCTURED_OUTPUT_ENABLED")
+    structured_output_max_repairs: int = Field(2, alias="STRUCTURED_OUTPUT_MAX_REPAIRS")
 
     # Semantic cache (Wave 1 #3). Requires Redis-Stack / RediSearch.
     semantic_cache_enabled: bool = Field(True, alias="SEMANTIC_CACHE_ENABLED")
