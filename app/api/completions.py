@@ -32,6 +32,7 @@ from app.cot.sse import (
     openai_text_response,
 )
 from app.api.webhook import post_webhook
+from app.routing.retry import acompletion_with_retry
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -162,7 +163,7 @@ async def chat_completions(
             )
         else:
             t0 = time.monotonic()
-            result = await litellm.acompletion(
+            result = await acompletion_with_retry(
                 model=route.litellm_model,
                 messages=messages_list,
                 stream=False,
@@ -280,7 +281,7 @@ async def _stream_openai(
     ttft_ms: float = 0.0
     first_chunk = True
     try:
-        response = await litellm.acompletion(model=model, messages=messages, stream=True, **extra)
+        response = await acompletion_with_retry(model=model, messages=messages, stream=True, **extra)
         async for chunk in response:
             if first_chunk:
                 ttft_ms = (time.monotonic() - t0) * 1000
@@ -317,7 +318,7 @@ async def _webhook_completion_openai(
     """Run a non-streaming completion and POST the result to webhook_url."""
     t0 = time.monotonic()
     try:
-        result = await litellm.acompletion(model=model, messages=messages, stream=False, **extra)
+        result = await acompletion_with_retry(model=model, messages=messages, stream=False, **extra)
         in_tok = getattr(result.usage, "prompt_tokens", 0)
         out_tok = getattr(result.usage, "completion_tokens", 0)
         await record_outcome(db, provider_id, model, success=True,

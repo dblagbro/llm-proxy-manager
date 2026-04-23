@@ -35,6 +35,7 @@ from app.monitoring.helpers import record_outcome
 from app.api.image_utils import has_images_anthropic, strip_images_anthropic
 from app.routing.aliases import resolve_alias
 from app.api.webhook import post_webhook
+from app.routing.retry import acompletion_with_retry
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -157,7 +158,7 @@ async def messages(
             )
         else:
             t0 = time.monotonic()
-            result = await litellm.acompletion(
+            result = await acompletion_with_retry(
                 model=route.litellm_model,
                 messages=messages_list,
                 stream=False,
@@ -224,7 +225,7 @@ async def _stream_anthropic(
     db: AsyncSession, key_record_id: str, t0: float, budget_total: int = 0,
 ) -> AsyncIterator[bytes]:
     try:
-        response = await litellm.acompletion(model=model, messages=messages, stream=True, **extra)
+        response = await acompletion_with_retry(model=model, messages=messages, stream=True, **extra)
         index = 0
         text_started = False
         tool_started = False
@@ -331,7 +332,7 @@ async def _webhook_completion_anthropic(
     """Run a non-streaming completion and POST the result to webhook_url."""
     t0 = time.monotonic()
     try:
-        result = await litellm.acompletion(model=model, messages=messages, stream=False, **extra)
+        result = await acompletion_with_retry(model=model, messages=messages, stream=False, **extra)
         in_tok = getattr(result.usage, "prompt_tokens", 0)
         out_tok = getattr(result.usage, "completion_tokens", 0)
         await record_outcome(db, provider_id, model, success=True,
