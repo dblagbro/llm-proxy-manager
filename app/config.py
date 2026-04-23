@@ -57,6 +57,12 @@ class Settings(BaseSettings):
     # provider than the one producing the draft. Eliminates ~5-15% self-preference
     # bias documented in 2024-25 LLM-as-Judge surveys.
     cot_cross_provider_critique: bool = Field(True, alias="COT_CROSS_PROVIDER_CRITIQUE")
+    # Wave 2 #9: actually execute verify steps (HTTP/DNS/TCP only, 5s each).
+    # Off by default; flip on once operators are comfortable that only the
+    # network-safe subset ever executes in-process. Unsafe commands are
+    # always emitted as structured SSE verify_step events for client-side exec.
+    cot_verify_execute: bool = Field(False, alias="COT_VERIFY_EXECUTE")
+    cot_verify_step_timeout_sec: float = Field(5.0, alias="COT_VERIFY_STEP_TIMEOUT_SEC")
 
     # Semantic cache (Wave 1 #3). Requires Redis-Stack / RediSearch.
     semantic_cache_enabled: bool = Field(True, alias="SEMANTIC_CACHE_ENABLED")
