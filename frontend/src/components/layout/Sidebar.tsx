@@ -1,10 +1,12 @@
 import { NavLink } from 'react-router-dom'
 import { clsx } from 'clsx'
+import { useQuery } from '@tanstack/react-query'
 import {
   LayoutDashboard, Server, GitBranch, Key, Users,
   Network, BarChart2, Activity, Settings, ChevronLeft, ChevronRight,
   Zap,
 } from 'lucide-react'
+import { clusterApi } from '@/api'
 
 interface NavItem {
   to: string
@@ -23,6 +25,13 @@ interface SidebarProps {
 }
 
 export function Sidebar({ collapsed, onToggle, openCircuitBreakers = 0, liveActivity = false }: Omit<SidebarProps, 'clusterEnabled'> & { clusterEnabled?: boolean }) {
+  const { data: health } = useQuery({
+    queryKey: ['sidebar-health'],
+    queryFn: clusterApi.health,
+    refetchInterval: 60_000,
+    staleTime: 30_000,
+  })
+  const version = health?.version ? `v${health.version}` : 'v2.x'
   const navItems: (NavItem | 'divider')[] = [
     { to: '/',         icon: LayoutDashboard, label: 'Dashboard' },
     { to: '/providers', icon: Server,          label: 'Providers',
@@ -53,7 +62,7 @@ export function Sidebar({ collapsed, onToggle, openCircuitBreakers = 0, liveActi
         {!collapsed && (
           <div className="min-w-0">
             <p className="text-sm font-bold text-white truncate">llm-proxy</p>
-            <p className="text-xs text-gray-400">v2.0</p>
+            <p className="text-xs text-gray-400">{version}</p>
           </div>
         )}
       </div>
