@@ -33,6 +33,8 @@ from app.api.users import router as users_router
 from app.api.cluster import router as cluster_router
 from app.api.monitoring import router as monitoring_router
 from app.api.settings_api import router as settings_router
+from app.observability.otel import init_tracer
+from app.observability.prometheus import metrics_response, set_service_info, observe_circuit_breaker_state
 
 logging.basicConfig(level=settings.log_level.upper())
 logger = structlog.get_logger()
@@ -49,8 +51,14 @@ async def lifespan(app: FastAPI):
 
         # Register all providers with status monitor + per-provider CB config
         result = await db.execute(select(Provider))
-        for p in result.scalars().all():
+        providers = result.scalars().all()
+        for p in providers:
             register_provider(p.id, p.provider_type, p.hold_down_sec, p.failure_threshold)
+            observe_circuit_breaker_state(p.id, "closed")  # seed Prometheus gauge
+
+    # Observability — Prometheus service info + OTEL tracer (graceful no-op when unset)
+    set_service_info(version="2.0.10", node_id=settings.cluster_node_id or "")
+    init_tracer(service_name="llm-proxy", version="2.0.10")
 
     # Start background tasks
     start_monitor(notify_fn=_notify_provider_degraded)
@@ -71,7 +79,7 @@ async def _notify_provider_degraded(severity: str, message: str, provider_id: st
 
 app = FastAPI(
     title="llm-proxy",
-    version="2.0.9",
+    version="2.0.10",
     description="Self-hosted LLM routing gateway — LMRH protocol + CoT-E augmentation",
     lifespan=lifespan,
     docs_url="/docs",
@@ -122,12 +130,17 @@ app.include_router(aliases_router)
 # ── Utility endpoints ────────────────────────────────────────────────────────
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": "2.0.9"}
+    return {"status": "ok", "version": "2.0.10"}
 
 
 @app.get("/version")
 async def version():
-    return {"service": "llm-proxy", "version": "2.0.9", "docs": "/docs"}
+    return {"service": "llm-proxy", "version": "2.0.10", "docs": "/docs"}
+
+
+@app.get("/metrics", include_in_schema=False)
+async def metrics():
+    return await metrics_response()
 
 
 # ── Static files (web dashboard) ─────────────────────────────────────────────
