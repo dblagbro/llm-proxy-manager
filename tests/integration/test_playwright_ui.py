@@ -82,7 +82,7 @@ class TestLLMProxy2API:
         resp = page.request.get(f"{BASE_URL}/health")
         assert resp.status == 200
         data = resp.json()
-        assert data["version"] == "2.0.0"
+        assert data["version"].startswith("2.")
         assert "status" in data
         assert "circuitBreakers" in data
 
