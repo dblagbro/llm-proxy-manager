@@ -11,12 +11,21 @@ from unittest.mock import patch, MagicMock
 # Stub litellm and app.cot.session so the module imports without installed deps
 _litellm_stub = types.ModuleType("litellm")
 _litellm_stub.acompletion = None  # type: ignore
+_litellm_stub.RateLimitError = type("RateLimitError", (Exception,), {})  # type: ignore
 sys.modules.setdefault("litellm", _litellm_stub)
 
 _session_stub = types.ModuleType("app.cot.session")
 _session_stub.get_session_analyses = None  # type: ignore
 _session_stub.save_session_analysis = None  # type: ignore
 sys.modules.setdefault("app.cot.session", _session_stub)
+
+# Stub app.routing.retry (pipeline imports it; CB not available in unit test context)
+_retry_stub = types.ModuleType("app.routing.retry")
+async def _acompletion_with_retry(model, messages, **kwargs):
+    import litellm
+    return await litellm.acompletion(model=model, messages=messages, **kwargs)
+_retry_stub.acompletion_with_retry = _acompletion_with_retry  # type: ignore
+sys.modules.setdefault("app.routing.retry", _retry_stub)
 
 from app.cot.pipeline import (  # noqa: E402 — must come after stubs
     _should_verify,
