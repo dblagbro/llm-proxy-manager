@@ -68,6 +68,18 @@ COT_ITERATIONS = Histogram(
     buckets=(0, 1, 2, 3, 4, 5),
 )
 
+CACHE_LOOKUPS_TOTAL = Counter(
+    "llm_proxy_cache_lookups_total",
+    "Semantic cache lookups by status.",
+    ["status", "endpoint"],  # status: hit, miss, bypass
+)
+
+CACHE_SIMILARITY = Histogram(
+    "llm_proxy_cache_similarity",
+    "Cosine similarity score for cache hits.",
+    buckets=(0.80, 0.85, 0.88, 0.90, 0.92, 0.95, 0.98, 1.0),
+)
+
 SERVICE_INFO = Info("llm_proxy_service", "Service metadata.")
 
 _CB_STATE_MAP = {"closed": 0, "half-open": 1, "open": 2}
@@ -118,6 +130,12 @@ def observe_circuit_breaker_state(provider: str, state: str) -> None:
 
 def observe_cot_iterations(model: str, iterations: int) -> None:
     COT_ITERATIONS.labels(model=model).observe(iterations)
+
+
+def observe_cache_lookup(status: str, endpoint: str, similarity: float = 0.0) -> None:
+    CACHE_LOOKUPS_TOTAL.labels(status=status, endpoint=endpoint).inc()
+    if status == "hit" and similarity > 0:
+        CACHE_SIMILARITY.observe(similarity)
 
 
 async def metrics_response() -> Response:
