@@ -11,6 +11,7 @@ from app.models.database import get_db
 from app.models.db import ApiKey
 from app.auth.admin import require_admin, AdminUser
 from app.auth.keys import generate_api_key
+from app.auth.key_encryption import encrypt_key, decrypt_key
 
 router = APIRouter(prefix="/api/keys", tags=["api-keys"])
 
@@ -60,6 +61,7 @@ async def create_key(
         name=body.name,
         key_hash=key_hash,
         key_prefix=raw_key[:12],
+        encrypted_key=encrypt_key(raw_key),  # admin-reveal requires this
         key_type=body.key_type,
         enabled=True,
         spending_cap_usd=body.spending_cap_usd,
@@ -106,6 +108,23 @@ async def update_key(
         k.semantic_cache_enabled = body.semantic_cache_enabled
     await db.commit()
     return _serialize(k)
+
+
+@router.get("/{key_id}/reveal")
+async def reveal_key(
+    key_id: str,
+    db: AsyncSession = Depends(get_db),
+    _: AdminUser = Depends(require_admin),
+):
+    """Return the decrypted raw key. Admin-only.
+
+    Returns 404 for legacy keys created before encryption-at-rest support.
+    """
+    k = await _get_or_404(db, key_id)
+    raw = decrypt_key(k.encrypted_key)
+    if raw is None:
+        raise HTTPException(404, "Raw key not retrievable (legacy pre-encryption key — delete and recreate)")
+    return {"id": k.id, "raw_key": raw}
 
 
 class BulkDeleteBody(BaseModel):
@@ -169,6 +188,7 @@ def _serialize(k: ApiKey) -> dict:
         "semantic_cache_enabled": bool(k.semantic_cache_enabled),
         "day_cost_usd": float(k.day_cost_usd or 0.0),
         "hour_cost_usd": float(k.hour_cost_usd or 0.0),
+        "can_reveal": bool(k.encrypted_key),
         "last_used_at": k.last_used_at.isoformat() if k.last_used_at else None,
         "created_at": k.created_at.isoformat() if k.created_at else None,
     }
