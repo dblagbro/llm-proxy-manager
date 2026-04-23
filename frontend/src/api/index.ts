@@ -38,6 +38,7 @@ export const keysApi = {
   update: (id: string, data: Partial<ApiKey>) => api.patch<ApiKey>(`/api/keys/${id}`, data),
   delete: (id: string)                 => api.delete<void>(`/api/keys/${id}`),
   bulkDelete: (ids: string[])          => api.post<{ deleted: number; requested: number }>('/api/keys/bulk-delete', { ids }),
+  reveal: (id: string)                 => api.get<{ id: string; raw_key: string }>(`/api/keys/${id}/reveal`),
 }
 
 // ── Users ─────────────────────────────────────────────────────────────────────

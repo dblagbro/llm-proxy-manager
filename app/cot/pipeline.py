@@ -54,10 +54,19 @@ PLAN_SYSTEM = (
 )
 
 CRITIQUE_SYSTEM = (
-    "You are a quality evaluator. Review the draft response and reply in this exact format:\n"
-    "SCORE: <1-10>\n"
-    "GAPS: <brief description of gaps, or 'none' if score >= {threshold}>\n"
-    "Be concise — max {max_tokens} tokens."
+    "You are a quality evaluator. Evaluate the draft response against the user's question.\n"
+    "Reply with ONLY a JSON object, no prose, no markdown fences. Use this exact schema:\n"
+    '{\n'
+    '  "factual_issues": ["short description per issue"],\n'
+    '  "missing_coverage": ["what the answer failed to address"],\n'
+    '  "sufficient_for_user": true|false\n'
+    '}\n\n'
+    "Rules:\n"
+    "- factual_issues: only items the answer gets wrong (not stylistic nits).\n"
+    "- missing_coverage: things the user asked for that the answer didn't address.\n"
+    "- sufficient_for_user: true only if the answer would satisfy the user as-is.\n"
+    "- Empty arrays are fine (and expected) when the answer is good.\n"
+    "Max {max_tokens} tokens. Output MUST be valid JSON."
 )
 
 REFINE_SYSTEM = (
@@ -141,6 +150,43 @@ def _parse_score(critique: str) -> int:
 def _parse_gaps(critique: str) -> str:
     m = re.search(r"GAPS:\s*(.+)", critique, re.IGNORECASE)
     return m.group(1).strip() if m else ""
+
+
+def _parse_critique(critique: str) -> dict:
+    """Parse the JSON rubric from a critique response.
+
+    Returns a dict with keys: factual_issues (list), missing_coverage (list),
+    sufficient_for_user (bool). Falls back to safe defaults if JSON parsing
+    fails or the legacy SCORE:/GAPS: format is returned instead.
+    """
+    import json as _json
+    # Strip markdown code fences if the model couldn't resist
+    cleaned = critique.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
+        cleaned = re.sub(r"\s*```\s*$", "", cleaned)
+    # Find the first { ... } block
+    start = cleaned.find("{")
+    end = cleaned.rfind("}")
+    if start >= 0 and end > start:
+        try:
+            obj = _json.loads(cleaned[start:end + 1])
+            return {
+                "factual_issues": list(obj.get("factual_issues") or []),
+                "missing_coverage": list(obj.get("missing_coverage") or []),
+                "sufficient_for_user": bool(obj.get("sufficient_for_user", False)),
+            }
+        except (ValueError, TypeError):
+            pass
+    # Legacy fallback: parse SCORE:/GAPS: style
+    score = _parse_score(critique)
+    gaps_line = _parse_gaps(critique)
+    gaps_empty = gaps_line.lower() in ("", "none", "n/a")
+    return {
+        "factual_issues": [],
+        "missing_coverage": [] if gaps_empty else [gaps_line],
+        "sufficient_for_user": score >= 8 or gaps_empty,
+    }
 
 
 def _should_verify(answer: str) -> bool:
@@ -234,7 +280,6 @@ async def run_cot_pipeline(
     for iteration in range(1, iterations + 1):
         iterations_used = iteration
         critique_system = CRITIQUE_SYSTEM.format(
-            threshold=settings.cot_quality_threshold,
             max_tokens=settings.cot_critique_max_tokens,
         )
         critique_text = await _call(
@@ -249,22 +294,36 @@ async def run_cot_pipeline(
             **cot_kwargs,
         )
 
+        rubric = _parse_critique(critique_text)
+        # Render a human-readable thinking block (preserves original UX)
+        issues = rubric["factual_issues"]
+        missing = rubric["missing_coverage"]
+        summary_parts: list[str] = []
+        if issues:
+            summary_parts.append("**Factual issues:**\n" + "\n".join(f"- {x}" for x in issues))
+        if missing:
+            summary_parts.append("**Missing coverage:**\n" + "\n".join(f"- {x}" for x in missing))
+        if not (issues or missing):
+            summary_parts.append("_No issues found._")
+        summary_parts.append(f"**Sufficient for user:** {rubric['sufficient_for_user']}")
+        critique_rendered = "\n\n".join(summary_parts)
+
         yield sse_thinking_start(block_index)
-        yield sse_thinking_delta(block_index, f"## Quality Check (iter {iteration})\n{critique_text}")
+        yield sse_thinking_delta(block_index, f"## Quality Check (iter {iteration})\n{critique_rendered}")
         yield sse_thinking_stop(block_index)
         block_index += 1
 
-        score = _parse_score(critique_text)
-        gaps_line = _parse_gaps(critique_text)
-        if score >= settings.cot_quality_threshold or gaps_line.lower() == "none":
+        # Stop when the answer is sufficient OR no concrete issues remain
+        if rubric["sufficient_for_user"] or (not issues and not missing):
             break
 
+        critique_for_refine = critique_rendered
         refined = await acompletion_with_retry(
             model=model,
             messages=[{"role": "system", "content": REFINE_SYSTEM}] + [
                 {"role": "user", "content": user_text},
                 {"role": "assistant", "content": current_answer},
-                {"role": "user", "content": f"Critique:\n{critique_text}\n\nPlease improve your answer."},
+                {"role": "user", "content": f"Critique:\n{critique_for_refine}\n\nPlease improve your answer."},
             ],
             stream=False,
             **draft_kwargs,
