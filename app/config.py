@@ -79,6 +79,9 @@ class Settings(BaseSettings):
     # Wave 5 #24: structured-output validation + repair loop
     structured_output_enabled: bool = Field(True, alias="STRUCTURED_OUTPUT_ENABLED")
     structured_output_max_repairs: int = Field(2, alias="STRUCTURED_OUTPUT_MAX_REPAIRS")
+    # Wave 5 #25: when vision-stripping is about to fire, attempt to route
+    # images through a vision-capable provider instead and inject captions.
+    vision_route_enabled: bool = Field(True, alias="VISION_ROUTE_ENABLED")
 
     # Semantic cache (Wave 1 #3). Requires Redis-Stack / RediSearch.
     semantic_cache_enabled: bool = Field(True, alias="SEMANTIC_CACHE_ENABLED")
