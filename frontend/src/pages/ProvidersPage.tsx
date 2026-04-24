@@ -34,8 +34,27 @@ export function ProvidersPage() {
   const { data: health } = useQuery({ queryKey: ['health'], queryFn: clusterApi.health, refetchInterval: 15_000 })
 
   const saveMutation = useMutation({
-    mutationFn: (data: ProviderFormState) =>
-      editing ? providersApi.update(editing.id, data) : providersApi.create(data),
+    mutationFn: (data: ProviderFormState) => {
+      // v2.7.1: claude-oauth new-create with an authorize_url + callback goes
+      // through the browser-OAuth exchange endpoint instead of the plain POST.
+      if (!editing && data.provider_type === 'claude-oauth' && data.oauth_state && data.oauth_callback) {
+        return providersApi.oauthExchange({
+          state: data.oauth_state,
+          callback: data.oauth_callback,
+          name: data.name,
+          default_model: data.default_model || undefined,
+          base_url: data.base_url || undefined,
+          priority: data.priority,
+          enabled: data.enabled,
+          timeout_sec: data.timeout_sec,
+          exclude_from_tool_requests: data.exclude_from_tool_requests,
+          hold_down_sec: data.hold_down_sec,
+          failure_threshold: data.failure_threshold,
+          extra_config: data.extra_config,
+        })
+      }
+      return editing ? providersApi.update(editing.id, data) : providersApi.create(data)
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['providers'] })
       toast.success(editing ? 'Provider updated' : 'Provider created')

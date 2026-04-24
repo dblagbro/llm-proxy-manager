@@ -1,4 +1,8 @@
+import { useState } from 'react'
 import { Input } from '@/components/ui/Input'
+import { Button } from '@/components/ui/Button'
+import { providersApi } from '@/api'
+import { useToast } from '@/components/ui/Toast'
 import type { ProviderType, Provider } from '@/types'
 
 const PROVIDER_TYPES: ProviderType[] = [
@@ -19,8 +23,13 @@ export type ProviderFormState = {
   hold_down_sec: number | null
   failure_threshold: number | null
   extra_config: Record<string, unknown>
-  // v2.7.0: only used when provider_type === 'claude-oauth'
+  // v2.7.0: the credentials-paste fallback (bare token or JSON blob)
   oauth_credentials_blob: string
+  // v2.7.1: the browser-initiated OAuth flow carries state + callback
+  // across the authorize → user-opens-URL → paste-back cycle.
+  oauth_state: string
+  oauth_authorize_url: string
+  oauth_callback: string
 }
 
 export function emptyProviderForm(): ProviderFormState {
@@ -38,6 +47,9 @@ export function emptyProviderForm(): ProviderFormState {
     failure_threshold: null,
     extra_config: {},
     oauth_credentials_blob: '',
+    oauth_state: '',
+    oauth_authorize_url: '',
+    oauth_callback: '',
   }
 }
 
@@ -56,6 +68,9 @@ export function providerToForm(p: Provider): ProviderFormState {
     failure_threshold: p.failure_threshold ?? null,
     extra_config: p.extra_config ?? {},
     oauth_credentials_blob: '',
+    oauth_state: '',
+    oauth_authorize_url: '',
+    oauth_callback: '',
   }
 }
 
@@ -68,6 +83,21 @@ interface Props {
 export function ProviderForm({ form, onChange, editing }: Props) {
   const set = (patch: Partial<ProviderFormState>) => onChange({ ...form, ...patch })
   const isOAuth = form.provider_type === 'claude-oauth'
+  const [generating, setGenerating] = useState(false)
+  const [showPasteFallback, setShowPasteFallback] = useState(false)
+  const toast = useToast()
+
+  async function handleGenerateAuthUrl() {
+    setGenerating(true)
+    try {
+      const r = await providersApi.oauthAuthorize()
+      set({ oauth_state: r.state, oauth_authorize_url: r.authorize_url, oauth_callback: '' })
+    } catch (e: unknown) {
+      toast.error((e as Error).message || 'Failed to generate auth URL')
+    } finally {
+      setGenerating(false)
+    }
+  }
 
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -88,29 +118,106 @@ export function ProviderForm({ form, onChange, editing }: Props) {
         </select>
       </div>
 
-      {/* v2.7.0: claude-oauth gets a credential-paste section instead of API Key + Base URL. */}
+      {/* v2.7.1: claude-oauth new-create gets the browser-initiated flow.
+          Editing or "I already have a token" falls back to paste-credentials. */}
       {isOAuth ? (
-        <div className="md:col-span-2 space-y-3 rounded-lg border border-indigo-200 dark:border-indigo-800 bg-indigo-50/40 dark:bg-indigo-950/30 p-4">
+        <div className="md:col-span-2 space-y-4 rounded-lg border border-indigo-200 dark:border-indigo-800 bg-indigo-50/40 dark:bg-indigo-950/30 p-4">
           <div className="text-sm font-medium text-gray-800 dark:text-gray-100">
-            Claude Pro Max credentials
+            Claude Pro Max — sign in with your subscription
           </div>
-          <ol className="list-decimal list-inside text-xs text-gray-600 dark:text-gray-300 space-y-1">
-            <li>On any machine with Claude Code installed, run <code className="px-1 font-mono bg-gray-100 dark:bg-gray-800 rounded">claude login</code></li>
-            <li>Run <code className="px-1 font-mono bg-gray-100 dark:bg-gray-800 rounded">cat ~/.claude/credentials.json</code> (or paste your <code className="font-mono">sk-ant-oat…</code> token directly)</li>
-            <li>Paste the entire output below and save. We parse, encrypt, and store — the blob itself is never persisted.</li>
-          </ol>
-          <label className="block text-xs font-medium text-gray-700 dark:text-gray-300">
-            Credentials JSON or bare token
-            {editing && <span className="ml-1 text-gray-400">(leave blank to keep current)</span>}
-          </label>
-          <textarea
-            value={form.oauth_credentials_blob}
-            onChange={e => set({ oauth_credentials_blob: e.target.value })}
-            rows={6}
-            placeholder={`{\n  "access_token": "sk-ant-oat01-…",\n  "refresh_token": "…",\n  "expires_at": "2026-05-24T00:00:00Z"\n}\n\n— or just —\n\nsk-ant-oat01-…`}
-            className="w-full px-3 py-2 text-xs font-mono bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 border border-gray-300 dark:border-gray-700 rounded focus:outline-none focus:ring-2 focus:ring-indigo-500"
-            required={!editing}
-          />
+
+          {!editing && !showPasteFallback && (
+            <div className="space-y-3">
+              <ol className="list-decimal list-inside text-xs text-gray-600 dark:text-gray-300 space-y-1">
+                <li>Click <strong>Generate Auth URL</strong> below.</li>
+                <li>Open the URL in a tab where you're signed in to claude.ai and approve access.</li>
+                <li>You'll be redirected to <code className="px-1 font-mono bg-gray-100 dark:bg-gray-800 rounded">http://localhost/callback?code=…&amp;state=…</code> — that page fails to load, but the URL is still in your address bar.</li>
+                <li>Copy the full URL (or just the <code className="font-mono">?code=…</code>) and paste it below. We'll trade it for a token automatically.</li>
+              </ol>
+
+              <div className="flex items-center gap-2">
+                <Button
+                  type="button"
+                  variant={form.oauth_authorize_url ? 'outline' : 'primary'}
+                  size="sm"
+                  onClick={handleGenerateAuthUrl}
+                  loading={generating}
+                >
+                  {form.oauth_authorize_url ? 'Regenerate Auth URL' : 'Generate Auth URL'}
+                </Button>
+                {form.oauth_authorize_url && (
+                  <a
+                    href={form.oauth_authorize_url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-xs text-indigo-600 dark:text-indigo-300 underline break-all"
+                  >
+                    Open Auth URL ↗
+                  </a>
+                )}
+              </div>
+
+              {form.oauth_authorize_url && (
+                <>
+                  <label className="block text-xs font-medium text-gray-700 dark:text-gray-300">
+                    Paste the callback URL (or just the <code className="font-mono">?code=…</code>)
+                  </label>
+                  <textarea
+                    value={form.oauth_callback}
+                    onChange={e => set({ oauth_callback: e.target.value })}
+                    rows={3}
+                    placeholder={'http://localhost/callback?code=abc123…&state=…'}
+                    className="w-full px-3 py-2 text-xs font-mono bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 border border-gray-300 dark:border-gray-700 rounded focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    required
+                  />
+                </>
+              )}
+
+              <div className="text-[11px] text-gray-500 dark:text-gray-400">
+                Already have a token from <code className="font-mono">claude login</code>?{' '}
+                <button
+                  type="button"
+                  className="underline hover:text-gray-700 dark:hover:text-gray-200"
+                  onClick={() => setShowPasteFallback(true)}
+                >
+                  Paste credentials instead
+                </button>
+              </div>
+            </div>
+          )}
+
+          {(editing || showPasteFallback) && (
+            <div className="space-y-2">
+              <ol className="list-decimal list-inside text-xs text-gray-600 dark:text-gray-300 space-y-1">
+                <li>On any machine with Claude Code installed, run <code className="px-1 font-mono bg-gray-100 dark:bg-gray-800 rounded">claude login</code></li>
+                <li>Run <code className="px-1 font-mono bg-gray-100 dark:bg-gray-800 rounded">cat ~/.claude/credentials.json</code> (or paste your <code className="font-mono">sk-ant-oat…</code> token directly)</li>
+                <li>Paste the entire output below and save. We parse, encrypt, and store — the blob itself is never persisted.</li>
+              </ol>
+              <label className="block text-xs font-medium text-gray-700 dark:text-gray-300">
+                Credentials JSON or bare token
+                {editing && <span className="ml-1 text-gray-400">(leave blank to keep current)</span>}
+              </label>
+              <textarea
+                value={form.oauth_credentials_blob}
+                onChange={e => set({ oauth_credentials_blob: e.target.value })}
+                rows={6}
+                placeholder={`{\n  "access_token": "sk-ant-oat01-…",\n  "refresh_token": "…",\n  "expires_at": "2026-05-24T00:00:00Z"\n}\n\n— or just —\n\nsk-ant-oat01-…`}
+                className="w-full px-3 py-2 text-xs font-mono bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 border border-gray-300 dark:border-gray-700 rounded focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                required={!editing}
+              />
+              {!editing && (
+                <div className="text-[11px] text-gray-500 dark:text-gray-400">
+                  <button
+                    type="button"
+                    className="underline hover:text-gray-700 dark:hover:text-gray-200"
+                    onClick={() => setShowPasteFallback(false)}
+                  >
+                    ← Back to browser sign-in
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       ) : (
         <>
