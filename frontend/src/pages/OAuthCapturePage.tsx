@@ -18,7 +18,6 @@ import {
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
-import { Switch } from '@/components/ui/Switch'
 import { useToast } from '@/components/ui/Toast'
 import {
   oauthCaptureApi,
@@ -28,7 +27,6 @@ import {
 } from '@/api'
 
 export function OAuthCapturePage() {
-  const toast = useToast()
   const qc = useQueryClient()
   const [selectedProfile, setSelectedProfile] = useState<string | null>(null)
 
@@ -177,12 +175,12 @@ function NewProfileWizard({
 // ── Profile list ─────────────────────────────────────────────────────────────
 
 function ProfileList({
-  profiles, selected, onSelect, onChanged,
+  profiles, selected, onSelect,
 }: {
   profiles: OAuthCaptureProfile[]
   selected: string | null
   onSelect: (name: string) => void
-  onChanged: () => void
+  onChanged: () => void   // still in the prop signature so callers don't break; unused here
 }) {
   if (profiles.length === 0) return null
 
@@ -229,7 +227,6 @@ function ProfileDetail({
   onChanged: () => void
 }) {
   const toast = useToast()
-  const qc = useQueryClient()
   const [secret, setSecret] = useState<string | null>(null)
   const [showSecret, setShowSecret] = useState(false)
 
@@ -379,7 +376,6 @@ function ProfileDetail({
 
 function LiveCaptureTail({ profile }: { profile: OAuthCaptureProfile }) {
   const toast = useToast()
-  const qc = useQueryClient()
   const [entries, setEntries] = useState<OAuthCaptureLogEntry[]>([])
   const [streaming, setStreaming] = useState(false)
 
