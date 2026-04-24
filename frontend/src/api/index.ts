@@ -28,6 +28,23 @@ export const providersApi = {
   updateCapability: (id: string, modelId: string, data: Partial<ModelCapability>) =>
     api.put<ModelCapability>(`/api/providers/${id}/model-capabilities/${encodeURIComponent(modelId)}`, data),
   inferCapabilities: (id: string)        => api.post<{ updated: number }>(`/api/providers/${id}/model-capabilities/infer`),
+  // v2.7.1: browser-initiated Claude Pro Max OAuth flow
+  oauthAuthorize: () =>
+    api.post<{ state: string; authorize_url: string }>('/api/providers/claude-oauth/authorize', {}),
+  oauthExchange: (data: {
+    state: string
+    callback: string
+    name: string
+    default_model?: string
+    base_url?: string
+    priority: number
+    enabled: boolean
+    timeout_sec: number
+    exclude_from_tool_requests: boolean
+    hold_down_sec: number | null
+    failure_threshold: number | null
+    extra_config: Record<string, unknown>
+  }) => api.post<Provider>('/api/providers/claude-oauth/exchange', data),
 }
 
 // ── API Keys ──────────────────────────────────────────────────────────────────
