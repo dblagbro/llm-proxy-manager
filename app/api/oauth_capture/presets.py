@@ -19,12 +19,6 @@ class CapturePreset:
     extra_upstreams: tuple[str, ...] = ()
     env_var_names: tuple[str, ...] = ()   # which env vars the CLI checks
     setup_hint: str = ""
-    # v2.6.0: in-browser terminal support. If non-empty, the UI shows a
-    # "Login to <vendor>" button that spawns this command in the sidecar
-    # container. argv[0] must match CLI_WHITELIST in
-    # sidecar/capture-runner.py. Leave blank to hide the button (user
-    # falls back to manual env-var capture).
-    login_cmd: str = ""
 
 
 PRESETS: dict[str, CapturePreset] = {
@@ -35,7 +29,6 @@ PRESETS: dict[str, CapturePreset] = {
         primary_upstream="https://console.anthropic.com",
         env_var_names=("ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_URL", "ANTHROPIC_API_URL"),
         setup_hint="Run `claude login` then `claude \"ping\"` to capture both auth and first chat.",
-        login_cmd="claude login",  # v2.6.0: in-browser terminal support
     ),
     "openai-codex": CapturePreset(
         key="openai-codex",

@@ -59,6 +59,10 @@ PROVIDER_TYPE_TO_LITELLM = {
     "ollama": "ollama",
     "grok": "xai",
     "compatible": "openai",     # OpenAI-compatible uses openai provider with custom base_url
+    # v2.7.0: claude-oauth never routes through litellm — messages.py
+    # dispatches a direct httpx call to platform.claude.com. The "anthropic"
+    # prefix here is only used for the `X-Resolved-Model` response header.
+    "claude-oauth": "anthropic",
 }
 
 
@@ -70,6 +74,8 @@ PROVIDER_DEFAULT_MODELS = {
     "grok":      "grok-2",
     "ollama":    "llama3",
     "compatible": "gpt-4o",
+    # Claude Pro Max subscription — caller chooses model at request time.
+    "claude-oauth": "claude-sonnet-4-6",
 }
 
 

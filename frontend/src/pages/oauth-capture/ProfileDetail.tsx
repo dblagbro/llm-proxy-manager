@@ -10,7 +10,6 @@ import {
   type OAuthCapturePreset,
 } from '@/api'
 import { LiveCaptureTail } from './LiveCaptureTail'
-import { TerminalPane } from './TerminalPane'
 
 export function ProfileDetail({
   profile, presets, onChanged,
@@ -156,9 +155,6 @@ export function ProfileDetail({
             )}
           </div>
         </section>
-
-        {/* v2.6.0 — In-browser terminal (hidden when preset has no login_cmd) */}
-        <TerminalPane profile={profile} preset={preset} />
 
         {/* Live tail */}
         <LiveCaptureTail profile={profile} />
