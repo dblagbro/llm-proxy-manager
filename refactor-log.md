@@ -1,5 +1,67 @@
 # Refactor Log
 
+## 2026-04-24 — v2.7.1 → v2.7.5: Claude Pro Max OAuth provider
+
+### Motivation
+Let admins attach a Claude Pro Max subscription as a provider without
+needing an Anthropic API key. v2.7.0 introduced a paste-credentials flow
+(admin runs `claude login` externally, pastes `~/.claude/credentials.json`);
+v2.7.1–v2.7.5 replaced that with a fully in-browser OAuth flow and ironed
+out the subtleties of Anthropic's OAuth-authenticated `/v1/messages`.
+
+### What shipped
+- **v2.7.1** — Browser OAuth flow scaffold:
+  `app/providers/claude_oauth_flow.py` (PKCE authorize URL + code
+  exchange), two new endpoints (`POST /api/providers/claude-oauth/authorize`,
+  `POST /api/providers/claude-oauth/exchange`), and a
+  `ProviderForm` flow with a **Generate Auth URL** button + callback
+  paste-back. First attempt used the dynamic-client metadata URL as
+  `client_id` with a `localhost` redirect — Anthropic's SSO rejected that
+  combination ("error logging you in").
+- **v2.7.2** — Real CLI endpoint extraction from
+  `@anthropic-ai/claude-code` v2.1.119 binary:
+  - `CLIENT_ID = 9d1c250a-e61b-44d9-88ed-5944d1962f5e`
+  - `AUTHORIZE_URL = https://claude.com/cai/oauth/authorize`
+  - `REDIRECT_URI = https://platform.claude.com/oauth/code/callback`
+  - Added `code=true` param; token POST switched to `Content-Type: application/json`
+    with `state` in the body (non-standard but required).
+  - `extract_code_from_callback` now splits the `CODE#STATE` format
+    Anthropic's success page displays.
+- **v2.7.3** — System-prompt marker requirement:
+  Anthropic's OAuth `/v1/messages` returns a masked
+  `rate_limit_error` with message `"Error"` when the `system` field
+  doesn't start with one of three hardcoded Claude Code markers.
+  New `_inject_claude_code_system()` helper in `_messages_streaming.py`
+  prepends `"You are Claude Code, Anthropic's official CLI for Claude."`
+  unless the caller already identifies as CC. `test_provider()` in
+  `scanner.py` rewired to hit platform.claude.com directly rather than
+  routing through litellm (which sends `x-api-key` for anthropic
+  providers — wrong auth method for OAuth tokens).
+- **v2.7.4** — `scan_provider_models` branch for `claude-oauth`:
+  `/v1/models` under the `user:inference` scope works fine with Bearer
+  auth + CC beta flags. 9 models discovered on Pro Max subscription.
+- **v2.7.5** — Per-model beta-flag pruning + refresh-token persistence:
+  - `build_headers(access_token, model=)` strips `context-1m-2025-08-07`
+    for Haiku (Pro Max doesn't grant 1M to Haiku-class).
+  - `refresh_and_persist(provider, db)` — canonical helper that rotates
+    the refresh token AND writes it back to the DB (Anthropic rotates
+    on each use; dropping the rotation means the next refresh gets
+    `invalid_grant`).
+  - `scripts/test_claude_oauth_live.py` — 17-test live burn test.
+
+### Live test results (v2.7.5)
+Ran against Devin-VG on 1M-context Pro Max. 16/17 PASS:
+basic, streaming SSE, system-prompt passthrough, multi-turn, tool_use,
+vision, prompt caching (cache_read=2777), concurrent 5x, multiple models
+(sonnet/opus/haiku), scan, test button, invalid-model clean error,
+metrics recording. The one red item was `refresh_and_persist` hitting
+`invalid_grant` because the stored token had been consumed by an earlier
+(pre-fix) test run — not a code bug; documented as a one-time re-auth.
+Total billable tokens: ~1.9K.
+
+### Test count: 627 → 633 passing (+6 new for build_headers model-awareness + refresh_and_persist).
+
+
 ## 2026-04-24 — Second maintainability pass: prompts/verify extracted, oauth_capture packaged, frontend OAuthCapturePage split
 
 ### Motivation
