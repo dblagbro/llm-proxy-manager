@@ -35,6 +35,9 @@ from app.cot.sse import (
     openai_text_response,
 )
 from app.api.webhook import post_webhook
+from app.api._completions_streaming import (
+    _stream_cot_openai, _stream_openai, _webhook_completion_openai,
+)
 from app.routing.retry import acompletion_with_retry
 from app.observability.otel import llm_span
 from app.cache.middleware import decide_cacheable, maybe_check, maybe_store
@@ -80,51 +83,15 @@ async def chat_completions(
     stream = body.get("stream", False)
     tools = body.get("tools")
 
-    # Wave 6 — Semantic prompt guard (opt-in via PROMPT_GUARD_ENABLED).
-    from app.privacy.prompt_guard import check_messages as _prompt_guard_check, is_enabled as _guard_enabled
-    if _guard_enabled():
-        _match = _prompt_guard_check(messages_list)
-        if _match:
-            raise HTTPException(400, f"Request blocked by prompt guard (pattern: {_match!r})")
+    from app.api._request_pipeline import (
+        apply_privacy_filters, build_hint_with_auto_task,
+        apply_context_compression, build_base_response_headers,
+    )
 
-    # Wave 6 — PII masking (opt-in via PII_MASKING_ENABLED).
-    from app.privacy.pii import mask_messages as _pii_mask, is_enabled as _pii_enabled
-    _pii_masked_count = 0
-    if _pii_enabled():
-        messages_list, _pii_masked_count = _pii_mask(messages_list)
-        body["messages"] = messages_list
-
-    hint = parse_hint(llm_hint)
+    messages_list, _pii_masked_count = apply_privacy_filters(messages_list, body)
+    hint, auto_task = await build_hint_with_auto_task(llm_hint, messages_list)
     has_tools = bool(tools)
     has_images = has_images_openai(messages_list)
-
-    # Wave 3 #15 — auto-classify task= if not supplied and feature enabled
-    auto_task: Optional[str] = None
-    if _cfg_settings.task_auto_detect_enabled and (hint is None or not hint.get("task")):
-        from app.routing.classifier import classify
-        from app.routing.lmrh import LMRHHint, HintDimension
-        _user_text = ""
-        for _m in reversed(messages_list):
-            if _m.get("role") == "user":
-                _c = _m.get("content", "")
-                if isinstance(_c, str):
-                    _user_text = _c
-                elif isinstance(_c, list):
-                    _user_text = "\n".join(
-                        b.get("text", "") for b in _c
-                        if isinstance(b, dict) and b.get("type") == "text"
-                    )
-                break
-        cls = await classify(
-            _user_text[:800],
-            _cfg_settings.semantic_cache_embedding_model,
-            _cfg_settings.semantic_cache_embedding_dims,
-        )
-        if cls:
-            auto_task, _conf = cls
-            if hint is None:
-                hint = LMRHHint(raw=f"task={auto_task}")
-            hint.dimensions.append(HintDimension("task", auto_task))
 
     alias = await resolve_alias(db, body.get("model"))
     route = await select_provider(
@@ -168,70 +135,24 @@ async def chat_completions(
         else:
             messages_list = strip_images_openai(messages_list)
 
-    # Wave 5 #26 — long-context map-reduce / truncate / error
-    from app.api.long_context import (
-        needs_compression, resolve_strategy, truncate_to_window, mapreduce_compress,
+    messages_list, context_strategy_applied = await apply_context_compression(
+        messages_list,
+        route=route,
+        x_context_strategy=x_context_strategy,
+        extra=extra,
+        system="",
     )
-    context_strategy_applied: Optional[str] = None
-    if needs_compression(messages_list, route.profile.context_length):
-        strategy = resolve_strategy(x_context_strategy)
-        if strategy == "error":
-            raise HTTPException(
-                413,
-                f"Context window exceeded. Max: {route.profile.context_length}",
-            )
-        if strategy == "mapreduce":
-            _user_q = ""
-            for _m in reversed(messages_list):
-                if _m.get("role") == "user":
-                    _c = _m.get("content", "")
-                    if isinstance(_c, str):
-                        _user_q = _c
-                    elif isinstance(_c, list):
-                        _user_q = "\n".join(
-                            b.get("text", "") for b in _c
-                            if isinstance(b, dict) and b.get("type") == "text"
-                        )
-                    break
-            messages_list, chunks, _ = await mapreduce_compress(
-                messages_list, model=route.litellm_model, extra=extra,
-                context_length=route.profile.context_length,
-                user_question=_user_q,
-            )
-            context_strategy_applied = f"mapreduce:{chunks}chunks"
-        else:
-            messages_list, dropped = truncate_to_window(
-                messages_list, route.profile.context_length,
-            )
-            context_strategy_applied = f"truncate:{dropped}dropped"
 
     budget_total = body.get("max_tokens", 0) or 0
-    resp_headers = {
-        "X-Provider": route.provider.name,
-        "X-Resolved-Provider": route.provider.provider_type,  # Wave 5 #28: honest disclosure
-        "LLM-Capability": route.capability_header,
-        "X-Resolved-Model": route.litellm_model,
-    }
-    # Wave 5 #28 — advertise emulation level
-    _emul_level = "minimal"
-    if route.tool_emulation_engaged or route.vision_stripped:
-        _emul_level = "standard"
-    if route.cot_engaged:
-        _emul_level = "enhanced"
-    resp_headers["X-Emulation-Level"] = _emul_level
-    if auto_task:
-        resp_headers["X-Task-Auto-Detected"] = auto_task
-    if vision_routed_count:
-        resp_headers["X-Vision-Routed"] = str(vision_routed_count)
-    if context_strategy_applied:
-        resp_headers["X-Context-Strategy-Applied"] = context_strategy_applied
-    if _pii_masked_count:
-        resp_headers["X-PII-Masked"] = str(_pii_masked_count)
-    if hint is not None:
-        from app.routing.lmrh import build_hint_set_header
-        hint_set = build_hint_set_header(hint, route.unmet_hints)
-        if hint_set:
-            resp_headers["LLM-Hint-Set"] = hint_set
+    resp_headers = build_base_response_headers(
+        route=route,
+        auto_task=auto_task,
+        vision_routed_count=vision_routed_count,
+        context_strategy_applied=context_strategy_applied,
+        pii_masked_count=_pii_masked_count,
+        hint=hint,
+        max_tokens=None,  # OpenAI endpoint doesn't emit X-Token-Budget-Remaining
+    )
     if budget_total:
         resp_headers["X-Token-Budget-Remaining"] = str(budget_total)
     # Budget visibility headers (soft-cap warning, remaining $ today/this hour)
@@ -523,176 +444,3 @@ async def chat_completions(
         raise HTTPException(502, f"Upstream provider error: {err_str}")
 
 
-async def _stream_cot_openai(
-    model: str,
-    messages: list,
-    session_id: str | None,
-    extra: dict,
-    max_iterations: int | None,
-    provider_id: str,
-    db: AsyncSession,
-    key_record_id: str,
-    force_verify: bool | None = None,
-    critique_model: str | None = None,
-    critique_kwargs: dict | None = None,
-    samples: int = 1,
-    task_branch: str | None = None,
-) -> AsyncIterator[bytes]:
-    """
-    Run the CoT-E pipeline and re-emit as OpenAI-format SSE chunks.
-    Thinking blocks are collected and prepended as <thinking>…</thinking>
-    text so callers can strip or display them.
-    """
-    thinking_buf: list[str] = []
-    text_buf: list[str] = []
-    in_thinking = False
-    in_text = False
-    in_tok = out_tok = 0
-    t0 = time.monotonic()
-
-    try:
-        async for raw in run_cot_pipeline(
-            model, messages, session_id, extra, max_iterations, force_verify,
-            critique_model=critique_model, critique_kwargs=critique_kwargs,
-            samples=samples, task_branch=task_branch,
-        ):
-            line = raw.decode(errors="ignore").strip()
-            if not line.startswith("data: "):
-                continue
-            payload = line[6:]
-            if payload in ("[DONE]", ""):
-                continue
-            try:
-                evt = json.loads(payload)
-            except ValueError:
-                continue
-
-            t = evt.get("type", "")
-            if t == "content_block_start":
-                block_type = evt.get("content_block", {}).get("type", "")
-                in_thinking = block_type == "thinking"
-                in_text = block_type == "text"
-            elif t == "content_block_delta":
-                delta = evt.get("delta", {})
-                if in_thinking:
-                    thinking_buf.append(delta.get("thinking", ""))
-                elif in_text:
-                    text_buf.append(delta.get("text", ""))
-            elif t == "content_block_stop":
-                in_thinking = False
-                in_text = False
-            elif t == "message_delta":
-                usage = evt.get("usage", {})
-                in_tok = usage.get("input_tokens", in_tok)
-                out_tok = usage.get("output_tokens", out_tok)
-
-        thinking_text = "".join(thinking_buf).strip()
-        answer_text = "".join(text_buf).strip()
-        full_text = (
-            f"<thinking>\n{thinking_text}\n</thinking>\n\n{answer_text}"
-            if thinking_text else answer_text
-        )
-
-        msg_id = "chatcmpl-cot"
-        yield (
-            f'data: {{"id":"{msg_id}","object":"chat.completion.chunk",'
-            f'"choices":[{{"index":0,"delta":{{"role":"assistant"}},"finish_reason":null}}]}}\n\n'
-        ).encode()
-        chunk_size = 50
-        for i in range(0, len(full_text), chunk_size):
-            piece = json.dumps(full_text[i:i + chunk_size])[1:-1]
-            yield (
-                f'data: {{"id":"{msg_id}","object":"chat.completion.chunk",'
-                f'"choices":[{{"index":0,"delta":{{"content":"{piece}"}},"finish_reason":null}}]}}\n\n'
-            ).encode()
-        yield (
-            f'data: {{"id":"{msg_id}","object":"chat.completion.chunk",'
-            f'"choices":[{{"index":0,"delta":{{}},"finish_reason":"stop"}}]}}\n\n'
-        ).encode()
-        yield b"data: [DONE]\n\n"
-
-        await record_outcome(db, provider_id, model, endpoint="completions", success=True,
-                             in_tok=in_tok, out_tok=out_tok, t0=t0, key_record_id=key_record_id)
-
-    except Exception as e:
-        await record_outcome(db, provider_id, model, endpoint="completions", success=False,
-                             key_record_id=key_record_id, error_str=str(e))
-        yield (b'data: ' + json.dumps({"error": str(e)}).encode() + b'\n\n')
-        yield b'data: [DONE]\n\n'
-
-
-async def _stream_openai(
-    model: str, messages: list, extra: dict, provider_id: str,
-    db: AsyncSession, key_record_id: str, t0: float, budget_total: int = 0,
-    cache_decision=None,
-) -> AsyncIterator[bytes]:
-    in_tok = out_tok = 0
-    ttft_ms: float = 0.0
-    first_chunk = True
-    full_text_buf: list[str] = []
-    try:
-        response = await acompletion_with_retry(model=model, messages=messages, stream=True, **extra)
-        async for chunk in response:
-            if first_chunk:
-                ttft_ms = (time.monotonic() - t0) * 1000
-                first_chunk = False
-            if hasattr(chunk, "usage") and chunk.usage:
-                in_tok = getattr(chunk.usage, "prompt_tokens", in_tok)
-                out_tok = getattr(chunk.usage, "completion_tokens", out_tok)
-            # Buffer text content for potential cache store
-            try:
-                delta = chunk.choices[0].delta if chunk.choices else None
-                text = getattr(delta, "content", None) if delta else None
-                if text:
-                    full_text_buf.append(text)
-            except Exception:
-                pass
-            yield f"data: {chunk.model_dump_json()}\n\n".encode()
-        if budget_total > 0:
-            remaining = max(0, budget_total - out_tok)
-            yield (
-                f'event: budget\ndata: {{"remaining":{remaining},'
-                f'"used":{out_tok},"total":{budget_total}}}\n\n'
-            ).encode()
-        yield b"data: [DONE]\n\n"
-        await record_outcome(db, provider_id, model, endpoint="completions", success=True,
-                             in_tok=in_tok, out_tok=out_tok, t0=t0,
-                             key_record_id=key_record_id, ttft_ms=ttft_ms)
-        if cache_decision is not None and cache_decision.eligible:
-            try:
-                await maybe_store(cache_decision, "".join(full_text_buf))
-            except Exception:
-                pass
-    except Exception as e:
-        await record_outcome(db, provider_id, model, endpoint="completions", success=False,
-                             key_record_id=key_record_id, error_str=str(e))
-        yield (b'data: ' + json.dumps({"error": str(e)}).encode() + b'\n\n')
-        yield b'data: [DONE]\n\n'
-
-
-async def _webhook_completion_openai(
-    webhook_url: str,
-    model: str,
-    messages: list,
-    extra: dict,
-    provider_id: str,
-    db: AsyncSession,
-    key_record_id: str,
-) -> None:
-    """Run a non-streaming completion and POST the result to webhook_url."""
-    t0 = time.monotonic()
-    try:
-        result = await acompletion_with_retry(model=model, messages=messages, stream=False, **extra)
-        in_tok = getattr(result.usage, "prompt_tokens", 0)
-        out_tok = getattr(result.usage, "completion_tokens", 0)
-        await record_outcome(db, provider_id, model, endpoint="completions", success=True,
-                             in_tok=in_tok, out_tok=out_tok, t0=t0, key_record_id=key_record_id)
-        await post_webhook(webhook_url, {
-            "provider": provider_id,
-            "model": model,
-            "response": result.model_dump(),
-        })
-    except Exception as exc:
-        await record_outcome(db, provider_id, model, endpoint="completions", success=False,
-                             key_record_id=key_record_id, error_str=str(exc))
-        await post_webhook(webhook_url, {"error": str(exc), "model": model})

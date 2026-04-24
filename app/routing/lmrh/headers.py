@@ -1,0 +1,62 @@
+"""Response-side LMRH header builders.
+
+- LLM-Capability (emitted on every response): what routing decided.
+- LLM-Hint-Set (optional): which input dimensions were honored.
+
+Split out from the monolithic ``routing/lmrh.py`` in the 2026-04-23
+refactor.
+"""
+from __future__ import annotations
+
+from typing import Optional
+
+from app.routing.lmrh.types import CapabilityProfile, LMRHHint
+
+
+def build_hint_set_header(hint: Optional[LMRHHint], unmet: list[str]) -> str:
+    """Wave 4 #20 — LLM-Hint-Set echo: which hint dims were HONORED.
+
+    Parallels the HTTP ``Vary:`` header pattern. Absent when no hint was
+    sent. Example: ``task=reasoning,safety-min=3``.
+    """
+    if not hint or not hint.dimensions:
+        return ""
+    unmet_set = set(unmet or [])
+    honored = [f"{d.key}={d.value}" for d in hint.dimensions if d.key not in unmet_set]
+    return ",".join(honored)
+
+
+def build_capability_header(
+    profile: CapabilityProfile,
+    unmet: list[str],
+    cot_engaged: bool = False,
+    tool_emulation: bool = False,
+    chosen_because: str = "score",
+) -> str:
+    """Build the LLM-Capability response header.
+
+    chosen_because (Wave 4 #20): explains how routing landed on this profile.
+        "score"           — ranked #1 under LMRH scoring (default)
+        "hard-constraint" — only candidate satisfying ``;require`` dims
+        "fallback"        — primary failed; this was an ordered-fallback pick
+        "cheapest"        — cascade cheap-first step picked this
+        "p2c"             — PeakEWMA + power-of-two-choices tie-break
+    """
+    parts = [
+        "v=1",
+        f"provider={profile.provider_id}",
+        f"model={profile.model_id}",
+        f"task={','.join(profile.tasks)}",
+        f"safety={profile.safety}",
+        f"latency={profile.latency}",
+        f"cost={profile.cost_tier}",
+        f"region={','.join(profile.regions) if profile.regions else 'any'}",
+        f"chosen-because={chosen_because}",
+    ]
+    if unmet:
+        parts.append(f"unmet={' '.join(unmet)}")
+    if cot_engaged:
+        parts.append("cot-engaged=?1")
+    if tool_emulation:
+        parts.append("tool-emulation=?1")
+    return ", ".join(parts)

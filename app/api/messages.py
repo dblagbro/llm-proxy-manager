@@ -38,6 +38,9 @@ from app.monitoring.helpers import record_outcome
 from app.api.image_utils import has_images_anthropic, strip_images_anthropic
 from app.routing.aliases import resolve_alias
 from app.api.webhook import post_webhook
+from app.api._messages_streaming import (
+    _stream_cot_anthropic, _stream_anthropic, _webhook_completion_anthropic,
+)
 from app.routing.retry import acompletion_with_retry
 from app.observability.otel import llm_span
 from app.cache.middleware import decide_cacheable, maybe_check, maybe_store
@@ -83,54 +86,15 @@ async def messages(
     thinking = body.get("thinking")
     tools = body.get("tools")
 
-    # Wave 6 — Semantic prompt guard (opt-in via PROMPT_GUARD_ENABLED).
-    # Runs BEFORE PII masking so the raw denylist check sees original text.
-    from app.privacy.prompt_guard import check_messages as _prompt_guard_check, is_enabled as _guard_enabled
-    if _guard_enabled():
-        _match = _prompt_guard_check(messages_list)
-        if _match:
-            raise HTTPException(400, f"Request blocked by prompt guard (pattern: {_match!r})")
+    from app.api._request_pipeline import (
+        apply_privacy_filters, build_hint_with_auto_task,
+        apply_context_compression, build_base_response_headers,
+    )
 
-    # Wave 6 — PII masking (opt-in via PII_MASKING_ENABLED). Replaces common
-    # PII patterns with placeholders in user/assistant content BEFORE it hits
-    # the upstream provider. Count is echoed as X-PII-Masked response header.
-    from app.privacy.pii import mask_messages as _pii_mask, is_enabled as _pii_enabled
-    _pii_masked_count = 0
-    if _pii_enabled():
-        messages_list, _pii_masked_count = _pii_mask(messages_list)
-        body["messages"] = messages_list
-
-    hint = parse_hint(llm_hint)
+    messages_list, _pii_masked_count = apply_privacy_filters(messages_list, body)
+    hint, auto_task = await build_hint_with_auto_task(llm_hint, messages_list)
     has_tools = bool(tools)
     has_images = has_images_anthropic(messages_list)
-
-    # Wave 3 #15 — auto-classify task= if not supplied and feature enabled
-    auto_task: Optional[str] = None
-    if settings.task_auto_detect_enabled and (hint is None or not hint.get("task")):
-        from app.routing.classifier import classify
-        from app.routing.lmrh import LMRHHint, HintDimension
-        _user_text = ""
-        for _m in reversed(messages_list):
-            if _m.get("role") == "user":
-                _c = _m.get("content", "")
-                if isinstance(_c, str):
-                    _user_text = _c
-                elif isinstance(_c, list):
-                    _user_text = "\n".join(
-                        b.get("text", "") for b in _c
-                        if isinstance(b, dict) and b.get("type") == "text"
-                    )
-                break
-        cls = await classify(
-            _user_text[:800],
-            settings.semantic_cache_embedding_model,
-            settings.semantic_cache_embedding_dims,
-        )
-        if cls:
-            auto_task, _conf = cls
-            if hint is None:
-                hint = LMRHHint(raw=f"task={auto_task}")
-            hint.dimensions.append(HintDimension("task", auto_task))
 
     alias = await resolve_alias(db, body.get("model"))
     route = await select_provider(
@@ -181,75 +145,23 @@ async def messages(
         else:
             messages_list = strip_images_anthropic(messages_list)
 
-    # Wave 5 #26 — long-context map-reduce / truncate / error
-    from app.api.long_context import (
-        needs_compression, resolve_strategy, truncate_to_window, mapreduce_compress,
+    messages_list, context_strategy_applied = await apply_context_compression(
+        messages_list,
+        route=route,
+        x_context_strategy=x_context_strategy,
+        extra=extra,
+        system=str(system or ""),
     )
-    context_strategy_applied: Optional[str] = None
-    context_tokens_before: int = 0
-    if needs_compression(messages_list, route.profile.context_length, str(system or "")):
-        strategy = resolve_strategy(x_context_strategy)
-        context_tokens_before = len(str(messages_list)) // 3  # rough
-        if strategy == "error":
-            from fastapi import HTTPException as _HE
-            raise _HE(
-                413,
-                f"Context window exceeded: ~{context_tokens_before} tokens > {route.profile.context_length} allowed",
-            )
-        if strategy == "mapreduce":
-            _user_q = ""
-            for _m in reversed(messages_list):
-                if _m.get("role") == "user":
-                    _c = _m.get("content", "")
-                    if isinstance(_c, str):
-                        _user_q = _c
-                    elif isinstance(_c, list):
-                        _user_q = "\n".join(
-                            b.get("text", "") for b in _c
-                            if isinstance(b, dict) and b.get("type") == "text"
-                        )
-                    break
-            messages_list, chunks, _ = await mapreduce_compress(
-                messages_list,
-                model=route.litellm_model, extra=extra,
-                context_length=route.profile.context_length,
-                user_question=_user_q,
-            )
-            context_strategy_applied = f"mapreduce:{chunks}chunks"
-        else:  # truncate (default)
-            messages_list, dropped = truncate_to_window(
-                messages_list, route.profile.context_length, str(system or "")
-            )
-            context_strategy_applied = f"truncate:{dropped}dropped"
 
-    resp_headers = {
-        "X-Provider": route.provider.name,
-        "X-Resolved-Provider": route.provider.provider_type,  # Wave 5 #28: honest disclosure
-        "LLM-Capability": route.capability_header,
-        "X-Resolved-Model": route.litellm_model,
-        "X-Token-Budget-Remaining": str(max_tokens),
-    }
-    # Wave 5 #28 — advertise emulation level so clients know if translation happened
-    _emul_level = "minimal"
-    if route.tool_emulation_engaged or route.vision_stripped:
-        _emul_level = "standard"
-    if route.cot_engaged:
-        _emul_level = "enhanced"
-    resp_headers["X-Emulation-Level"] = _emul_level
-    if auto_task:
-        resp_headers["X-Task-Auto-Detected"] = auto_task
-    if vision_routed_count:
-        resp_headers["X-Vision-Routed"] = str(vision_routed_count)
-    if context_strategy_applied:
-        resp_headers["X-Context-Strategy-Applied"] = context_strategy_applied
-    if _pii_masked_count:
-        resp_headers["X-PII-Masked"] = str(_pii_masked_count)
-    # Wave 4 #20 — echo which hint dims were honored
-    if hint is not None:
-        from app.routing.lmrh import build_hint_set_header
-        hint_set = build_hint_set_header(hint, route.unmet_hints)
-        if hint_set:
-            resp_headers["LLM-Hint-Set"] = hint_set
+    resp_headers = build_base_response_headers(
+        route=route,
+        auto_task=auto_task,
+        vision_routed_count=vision_routed_count,
+        context_strategy_applied=context_strategy_applied,
+        pii_masked_count=_pii_masked_count,
+        hint=hint,
+        max_tokens=max_tokens,
+    )
     # Budget visibility headers (soft-cap warning, remaining $ today/this hour)
     if key_record.budget_status is not None:
         from app.budget.tracker import warnings_for
@@ -625,205 +537,3 @@ async def messages(
         raise HTTPException(502, f"Upstream provider error: {err_str}")
 
 
-async def _stream_cot_anthropic(
-    model: str,
-    messages: list,
-    session_id: str | None,
-    extra: dict,
-    max_iterations: int | None,
-    provider_id: str,
-    db: AsyncSession,
-    key_record_id: str,
-    force_verify: bool | None = None,
-    critique_model: str | None = None,
-    critique_kwargs: dict | None = None,
-    samples: int = 1,
-    task_branch: str | None = None,
-) -> AsyncIterator[bytes]:
-    """Pass-through wrapper around run_cot_pipeline; records metrics after completion."""
-    import json as _json
-    in_tok = out_tok = 0
-    cache_creation = cache_read = 0
-    t0 = time.monotonic()
-    try:
-        async for chunk in run_cot_pipeline(
-            model, messages, session_id, extra, max_iterations, force_verify,
-            critique_model=critique_model, critique_kwargs=critique_kwargs,
-            samples=samples, task_branch=task_branch,
-        ):
-            yield chunk
-            # Extract token counts from the message_delta usage event
-            line = chunk.decode(errors="ignore").strip()
-            if line.startswith("data: "):
-                try:
-                    evt = _json.loads(line[6:])
-                    if evt.get("type") == "message_delta":
-                        usage = evt.get("usage", {})
-                        in_tok = usage.get("input_tokens", in_tok)
-                        out_tok = usage.get("output_tokens", out_tok)
-                        cache_creation = usage.get("cache_creation_input_tokens", cache_creation) or cache_creation
-                        cache_read = usage.get("cache_read_input_tokens", cache_read) or cache_read
-                except (ValueError, KeyError):
-                    pass
-        await record_outcome(db, provider_id, model, success=True,
-                             in_tok=in_tok, out_tok=out_tok, t0=t0, key_record_id=key_record_id,
-                             cache_creation=cache_creation, cache_read=cache_read)
-    except Exception as e:
-        await record_outcome(db, provider_id, model, success=False,
-                             key_record_id=key_record_id, error_str=str(e))
-        yield (b'data: ' + json.dumps({"type": "error", "error": {"message": str(e)}}).encode() + b'\n\n')
-        yield b'data: {"type":"message_stop"}\n\ndata: [DONE]\n\n'
-
-
-async def _stream_anthropic(
-    model: str, messages: list, extra: dict, provider_id: str,
-    db: AsyncSession, key_record_id: str, t0: float, budget_total: int = 0,
-    cache_decision=None,
-) -> AsyncIterator[bytes]:
-    try:
-        response = await acompletion_with_retry(model=model, messages=messages, stream=True, **extra)
-        index = 0
-        text_started = False
-        tool_started = False
-        finish_reason = "stop"
-        input_tokens = 0
-        output_tokens = 0
-        cache_creation = 0
-        cache_read = 0
-        streamed_chars = 0
-        tool_id: str = ""
-        tool_name: str = ""
-        ttft_ms: float = 0.0
-        full_text_buf: list[str] = []
-
-        yield (
-            f'data: {{"type":"message_start","message":{{"id":"msg_proxy","type":"message",'
-            f'"role":"assistant","content":[],"model":"{model}",'
-            f'"stop_reason":null,"stop_sequence":null,'
-            f'"usage":{{"input_tokens":0,"output_tokens":0}}}}}}\n\n'
-        ).encode()
-
-        async for chunk in response:
-            if not chunk.choices:
-                continue
-            choice = chunk.choices[0]
-            delta = choice.delta
-            if choice.finish_reason:
-                finish_reason = choice.finish_reason
-            if hasattr(chunk, "usage") and chunk.usage:
-                input_tokens = getattr(chunk.usage, "prompt_tokens", input_tokens)
-                output_tokens = getattr(chunk.usage, "completion_tokens", output_tokens)
-                from app.cot.sse import extract_cache_tokens
-                c_create, c_read = extract_cache_tokens(chunk.usage)
-                if c_create:
-                    cache_creation = c_create
-                if c_read:
-                    cache_read = c_read
-
-            # Tool call streaming
-            tool_calls = getattr(delta, "tool_calls", None) or []
-            for tc_delta in tool_calls:
-                fn = getattr(tc_delta, "function", None)
-                if not fn:
-                    continue
-                if not tool_started:
-                    if not ttft_ms:
-                        ttft_ms = (time.monotonic() - t0) * 1000
-                    tool_id = getattr(tc_delta, "id", "") or f"toolu_{id(tc_delta)}"
-                    tool_name = getattr(fn, "name", "") or ""
-                    yield (
-                        f'data: {{"type":"content_block_start","index":{index},'
-                        f'"content_block":{{"type":"tool_use","id":"{tool_id}",'
-                        f'"name":"{tool_name}","input":{{}}}}}}\n\n'
-                    ).encode()
-                    tool_started = True
-                args_fragment = getattr(fn, "arguments", "") or ""
-                if args_fragment:
-                    escaped = json.dumps(args_fragment)[1:-1]
-                    yield (
-                        f'data: {{"type":"content_block_delta","index":{index},'
-                        f'"delta":{{"type":"input_json_delta","partial_json":"{escaped}"}}}}\n\n'
-                    ).encode()
-
-            # Text streaming
-            content = getattr(delta, "content", None) or ""
-            if not text_started and content:
-                if not ttft_ms:
-                    ttft_ms = (time.monotonic() - t0) * 1000
-                yield f'data: {{"type":"content_block_start","index":{index},"content_block":{{"type":"text","text":""}}}}\n\n'.encode()
-                text_started = True
-            if content:
-                streamed_chars += len(content)
-                full_text_buf.append(content)
-                escaped = json.dumps(content)[1:-1]
-                yield f'data: {{"type":"content_block_delta","index":{index},"delta":{{"type":"text_delta","text":"{escaped}"}}}}\n\n'.encode()
-
-        if text_started or tool_started:
-            yield f'data: {{"type":"content_block_stop","index":{index}}}\n\n'.encode()
-
-        # Use reported usage if available; fall back to char-based estimate
-        if output_tokens == 0 and streamed_chars > 0:
-            output_tokens = max(1, streamed_chars // 4)
-
-        stop_reason = FINISH_TO_STOP.get(finish_reason, "end_turn")
-        usage_parts = [f'"output_tokens":{output_tokens}']
-        if cache_creation:
-            usage_parts.append(f'"cache_creation_input_tokens":{cache_creation}')
-        if cache_read:
-            usage_parts.append(f'"cache_read_input_tokens":{cache_read}')
-        yield (
-            f'data: {{"type":"message_delta","delta":{{"stop_reason":"{stop_reason}",'
-            f'"stop_sequence":null}},"usage":{{{",".join(usage_parts)}}}}}\n\n'
-        ).encode()
-        if budget_total > 0:
-            remaining = max(0, budget_total - output_tokens)
-            yield (
-                f'event: budget\ndata: {{"remaining":{remaining},'
-                f'"used":{output_tokens},"total":{budget_total}}}\n\n'
-            ).encode()
-        yield b'data: {"type":"message_stop"}\n\ndata: [DONE]\n\n'
-        await record_outcome(db, provider_id, model, success=True,
-                             in_tok=input_tokens, out_tok=output_tokens, t0=t0,
-                             key_record_id=key_record_id, ttft_ms=ttft_ms,
-                             cache_creation=cache_creation, cache_read=cache_read)
-        if cache_decision is not None and cache_decision.eligible:
-            try:
-                await maybe_store(cache_decision, "".join(full_text_buf))
-            except Exception:
-                pass
-    except Exception as e:
-        await record_outcome(db, provider_id, model, success=False,
-                             key_record_id=key_record_id, error_str=str(e))
-        yield (b'data: ' + json.dumps({"type": "error", "error": {"message": str(e)}}).encode() + b'\n\n')
-        yield b'data: {"type":"message_stop"}\n\ndata: [DONE]\n\n'
-
-
-async def _webhook_completion_anthropic(
-    webhook_url: str,
-    model: str,
-    messages: list,
-    extra: dict,
-    provider_id: str,
-    db: AsyncSession,
-    key_record_id: str,
-) -> None:
-    """Run a non-streaming completion and POST the result to webhook_url."""
-    t0 = time.monotonic()
-    try:
-        result = await acompletion_with_retry(model=model, messages=messages, stream=False, **extra)
-        in_tok = getattr(result.usage, "prompt_tokens", 0)
-        out_tok = getattr(result.usage, "completion_tokens", 0)
-        from app.cot.sse import extract_cache_tokens
-        cache_creation, cache_read = extract_cache_tokens(result.usage)
-        await record_outcome(db, provider_id, model, success=True,
-                             in_tok=in_tok, out_tok=out_tok, t0=t0, key_record_id=key_record_id,
-                             cache_creation=cache_creation, cache_read=cache_read)
-        await post_webhook(webhook_url, {
-            "provider": provider_id,
-            "model": model,
-            "response": to_anthropic_response(result),
-        })
-    except Exception as exc:
-        await record_outcome(db, provider_id, model, success=False,
-                             key_record_id=key_record_id, error_str=str(exc))
-        await post_webhook(webhook_url, {"error": str(exc), "model": model})
