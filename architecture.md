@@ -28,10 +28,11 @@ app/
 │   │                              build_base_response_headers
 │   ├── oauth_capture/           Multi-vendor OAuth capture package (v2.5.0; packaged 2026-04-24):
 │   │   ├── __init__.py          merges sub-routers; re-exports test helpers
-│   │   ├── presets.py           CapturePreset + 8-entry PRESETS table
+│   │   ├── presets.py           CapturePreset + 8-entry PRESETS table (login_cmd in v2.6.0)
 │   │   ├── profiles.py          /_presets + /_profiles/… CRUD endpoints
 │   │   ├── logs.py              /_log + SSE tail + NDJSON export
 │   │   ├── passthrough.py       /{profile}/{path} forwarding catch-all
+│   │   ├── terminal.py          v2.6.0: /login + /_terminal WS relay to sidecar
 │   │   └── serializers.py       header filters + row→dict + _safe_text
 │   ├── models.py                GET /v1/models — OpenAI-compatible model listing
 │   ├── image_utils.py           Image detection + stripping for both wire formats (deduped 2026-04-23)
@@ -126,3 +127,32 @@ app/
 - **New routing criterion**: extend `RouteHint` in `lmrh.py`, filter in `select_provider()` in `router.py`
 - **New wire format**: add endpoint file in `api/`, add image utils to `image_utils.py`, add SSE generators to `cot/sse.py`
 - **New metric**: update `record_outcome()` in `monitoring/helpers.py` — propagates to all 6 call-sites automatically
+
+## Sidecar: `llm-proxy2-capture` (v2.6.0)
+
+Separate container that runs vendor CLI tools (`claude login`, etc.) in a PTY and
+relays them to the browser via WebSocket. Lives in `sidecar/` at the repo root,
+built from its own `Dockerfile`, and runs next to `llm-proxy2` on the default
+docker network.
+
+```
+sidecar/
+├── Dockerfile          python:3.11-slim + npm + @anthropic-ai/claude-code
+│                         + aiohttp + ptyprocess
+├── capture-runner.py   POST /spawn → fork a PTY for a whitelisted CLI
+│                       WS   /term/{sid} → bidirectional stdin/stdout relay
+│                       POST /kill/{sid} → terminate
+│                       GET  /health
+└── README.md
+```
+
+**Trust boundary**: the sidecar has no auth of its own. It only accepts traffic
+from the main `llm-proxy2` container on the internal docker network. All
+externally-facing admin auth is enforced by the main proxy in
+`app/api/oauth_capture/terminal.py` before the WebSocket is relayed.
+
+**Adding a new CLI** (e.g. `codex`, `gh`): install it in the Dockerfile, add
+its binary name to `CLI_WHITELIST` in `capture-runner.py`, set `login_cmd` on
+the matching preset in `app/api/oauth_capture/presets.py`. No UI changes
+required — a new preset with a non-empty `login_cmd` automatically lights up
+the **Login** button in the OAuth Capture wizard.
