@@ -203,7 +203,7 @@ export function ProviderModels({ providerId }: { providerId: string }) {
                   <select
                     value={form.latency}
                     onChange={e => set('latency', e.target.value)}
-                    className="w-full px-2 py-1.5 text-sm bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    className="w-full px-2 py-1.5 text-sm bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 border border-gray-200 dark:border-gray-700 rounded focus:outline-none focus:ring-2 focus:ring-indigo-500"
                   >
                     {['low', 'medium', 'high'].map(v => <option key={v} value={v}>{v}</option>)}
                   </select>
@@ -213,7 +213,7 @@ export function ProviderModels({ providerId }: { providerId: string }) {
                   <select
                     value={form.cost_tier}
                     onChange={e => set('cost_tier', e.target.value)}
-                    className="w-full px-2 py-1.5 text-sm bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    className="w-full px-2 py-1.5 text-sm bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 border border-gray-200 dark:border-gray-700 rounded focus:outline-none focus:ring-2 focus:ring-indigo-500"
                   >
                     {['economy', 'standard', 'premium'].map(v => <option key={v} value={v}>{v}</option>)}
                   </select>
@@ -223,7 +223,7 @@ export function ProviderModels({ providerId }: { providerId: string }) {
                   <input
                     type="number" min={1} max={5} value={form.safety}
                     onChange={e => set('safety', Number(e.target.value))}
-                    className="w-full px-2 py-1.5 text-sm bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    className="w-full px-2 py-1.5 text-sm bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 border border-gray-200 dark:border-gray-700 rounded focus:outline-none focus:ring-2 focus:ring-indigo-500"
                   />
                 </div>
                 <div>
@@ -231,7 +231,7 @@ export function ProviderModels({ providerId }: { providerId: string }) {
                   <input
                     type="number" min={1000} value={form.context_length}
                     onChange={e => set('context_length', Number(e.target.value))}
-                    className="w-full px-2 py-1.5 text-sm bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    className="w-full px-2 py-1.5 text-sm bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 border border-gray-200 dark:border-gray-700 rounded focus:outline-none focus:ring-2 focus:ring-indigo-500"
                   />
                 </div>
               </div>
