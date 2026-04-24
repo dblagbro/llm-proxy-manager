@@ -74,7 +74,7 @@ export function ProviderForm({ form, onChange, editing }: Props) {
         <select
           value={form.provider_type}
           onChange={e => set({ provider_type: e.target.value as ProviderType })}
-          className="px-3 py-2 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+          className="px-3 py-2 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 border border-gray-200 dark:border-gray-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
         >
           {PROVIDER_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
         </select>

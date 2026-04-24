@@ -126,7 +126,7 @@ export function UsersPage() {
               <select
                 value={form.role}
                 onChange={e => setForm(f => ({ ...f, role: e.target.value as Role }))}
-                className="px-3 py-2 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                className="px-3 py-2 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 border border-gray-200 dark:border-gray-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
               >
                 <option value="user">user</option>
                 <option value="admin">admin</option>
