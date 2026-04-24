@@ -108,6 +108,85 @@ async def create_provider(
     return _serialize(provider)
 
 
+# ── v2.7.1: browser-initiated OAuth flow ────────────────────────────────────
+# Admin clicks "Generate Auth URL", we return a PKCE-signed authorize URL they
+# open in another tab, they approve on claude.ai, land on a dead
+# http://localhost/callback page, copy the URL (or just the ?code=...), paste
+# it back, and we exchange it for tokens + create the Provider row in one shot.
+
+
+class OAuthAuthorizeResponse(BaseModel):
+    state: str
+    authorize_url: str
+
+
+class OAuthExchangeRequest(BaseModel):
+    # The state returned by /authorize.
+    state: str
+    # Either the full callback URL, the query fragment, or the bare ?code= value.
+    callback: str
+    # Provider fields to populate (same shape as ProviderCreate minus api_key/
+    # oauth_credentials_blob — the access_token comes from the code exchange).
+    name: str
+    default_model: Optional[str] = None
+    base_url: Optional[str] = None
+    priority: int = 10
+    enabled: bool = True
+    timeout_sec: int = 30
+    exclude_from_tool_requests: bool = False
+    hold_down_sec: Optional[int] = None
+    failure_threshold: Optional[int] = None
+    daily_budget_usd: Optional[float] = None
+    extra_config: dict = {}
+
+
+@router.post("/claude-oauth/authorize", response_model=OAuthAuthorizeResponse)
+async def claude_oauth_authorize(
+    _: AdminUser = Depends(require_admin),
+):
+    """Start a Claude Pro Max OAuth flow. Returns the URL the admin opens."""
+    from app.providers.claude_oauth_flow import start_authorize
+    start = start_authorize()
+    return OAuthAuthorizeResponse(state=start.state, authorize_url=start.authorize_url)
+
+
+@router.post("/claude-oauth/exchange")
+async def claude_oauth_exchange(
+    body: OAuthExchangeRequest,
+    db: AsyncSession = Depends(get_db),
+    _: AdminUser = Depends(require_admin),
+):
+    """Exchange the callback code for tokens and create the Provider row."""
+    from app.providers.claude_oauth_flow import (
+        exchange_code, extract_code_from_callback, OAuthFlowError,
+    )
+    try:
+        code, callback_state = extract_code_from_callback(body.callback)
+    except ValueError as e:
+        raise HTTPException(400, f"Couldn't parse callback: {e}")
+    try:
+        result = await exchange_code(body.state, code, expected_state=callback_state)
+    except OAuthFlowError as e:
+        raise HTTPException(400, str(e))
+
+    data = body.model_dump(exclude={"state", "callback"})
+    data["provider_type"] = "claude-oauth"
+    data["api_key"] = result.access_token
+    data["oauth_refresh_token"] = result.refresh_token
+    data["oauth_expires_at"] = result.expires_at
+    if not data.get("default_model"):
+        data["default_model"] = "claude-sonnet-4-6"
+
+    provider = Provider(id=secrets.token_hex(8), **data)
+    db.add(provider)
+    await db.commit()
+    await db.refresh(provider)
+    register_provider(
+        provider.id, provider.provider_type, provider.hold_down_sec, provider.failure_threshold,
+    )
+    return _serialize(provider)
+
+
 @router.get("/{provider_id}")
 async def get_provider(
     provider_id: str,
