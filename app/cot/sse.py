@@ -292,10 +292,21 @@ async def openai_text_sse(text: str) -> AsyncIterator[bytes]:
 # ── Non-streaming Anthropic response builder ──────────────────────────────────
 
 FINISH_TO_STOP = {
-    "stop": "end_turn",
-    "length": "max_tokens",
-    "tool_calls": "tool_use",
+    # OpenAI chat-completions finish_reason → Anthropic stop_reason
+    "stop":           "end_turn",
+    "length":         "max_tokens",
+    "tool_calls":     "tool_use",
+    "function_call":  "tool_use",   # legacy OpenAI function-call (pre-tool_calls)
     "content_filter": "end_turn",
+    "end_turn":       "end_turn",   # identity pass-through
+    "max_tokens":     "max_tokens",
+    "tool_use":       "tool_use",
+    "stop_sequence":  "stop_sequence",
+    # Gemini-ish
+    "MAX_TOKENS":     "max_tokens",
+    "STOP":           "end_turn",
+    "SAFETY":         "end_turn",
+    "RECITATION":     "end_turn",
 }
 
 
