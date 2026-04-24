@@ -33,6 +33,7 @@ from app.api.users import router as users_router
 from app.api.cluster import router as cluster_router
 from app.api.monitoring import router as monitoring_router
 from app.api.settings_api import router as settings_router
+from app.api.audit import router as audit_router
 from app.observability.otel import init_tracer
 from app.observability.prometheus import metrics_response, set_service_info, observe_circuit_breaker_state
 
@@ -139,6 +140,7 @@ app.include_router(cluster_router)
 app.include_router(monitoring_router)
 app.include_router(settings_router)
 app.include_router(aliases_router)
+app.include_router(audit_router)
 
 # ── Utility endpoints ────────────────────────────────────────────────────────
 @app.get("/health")

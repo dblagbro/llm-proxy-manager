@@ -117,5 +117,27 @@ class Settings(BaseSettings):
     smtp_from: Optional[str] = Field(None, alias="SMTP_FROM")
     smtp_to: Optional[str] = Field(None, alias="SMTP_TO")
 
+    # Wave 6 — audit log export
+    audit_export_dir: Optional[str] = Field(None, alias="AUDIT_EXPORT_DIR")
+    audit_export_s3_bucket: Optional[str] = Field(None, alias="AUDIT_EXPORT_S3_BUCKET")
+    audit_export_s3_endpoint: Optional[str] = Field(None, alias="AUDIT_EXPORT_S3_ENDPOINT")
+    audit_export_s3_region: Optional[str] = Field(None, alias="AUDIT_EXPORT_S3_REGION")
+    audit_export_s3_access_key: Optional[str] = Field(None, alias="AUDIT_EXPORT_S3_ACCESS_KEY")
+    audit_export_s3_secret_key: Optional[str] = Field(None, alias="AUDIT_EXPORT_S3_SECRET_KEY")
+    audit_export_retention_days: int = Field(90, alias="AUDIT_EXPORT_RETENTION_DAYS")
+
+    # Wave 6 — PII masking
+    pii_masking_enabled: bool = Field(False, alias="PII_MASKING_ENABLED")
+
+    # Wave 6 — semantic prompt guard
+    prompt_guard_enabled: bool = Field(False, alias="PROMPT_GUARD_ENABLED")
+    prompt_guard_denylist: Optional[str] = Field(None, alias="PROMPT_GUARD_DENYLIST")
+
+    # Wave 6 — SSO/SAML
+    sso_enabled: bool = Field(False, alias="SSO_ENABLED")
+    sso_entity_id: Optional[str] = Field(None, alias="SSO_ENTITY_ID")
+    sso_idp_metadata_url: Optional[str] = Field(None, alias="SSO_IDP_METADATA_URL")
+    sso_acs_url: Optional[str] = Field(None, alias="SSO_ACS_URL")
+
 
 settings = Settings()
