@@ -104,37 +104,37 @@ class TestResolveVerify:
         return mock
 
     def test_force_true_always_verifies(self):
-        with patch("app.cot.pipeline.settings") as s:
+        with patch("app.cot.verify.settings") as s:
             s.cot_verify_enabled = False
             s.cot_verify_auto_detect = True
             assert _resolve_verify(True, "any text") is True
 
     def test_force_false_never_verifies(self):
-        with patch("app.cot.pipeline.settings") as s:
+        with patch("app.cot.verify.settings") as s:
             s.cot_verify_enabled = True
             s.cot_verify_auto_detect = False
             assert _resolve_verify(False, "```bash\nsystemctl status\n```") is False
 
     def test_none_global_disabled_never_verifies(self):
-        with patch("app.cot.pipeline.settings") as s:
+        with patch("app.cot.verify.settings") as s:
             s.cot_verify_enabled = False
             s.cot_verify_auto_detect = True
             assert _resolve_verify(None, "```bash\nsystemctl status\n```") is False
 
     def test_none_global_enabled_auto_detect_on_shell_answer(self):
-        with patch("app.cot.pipeline.settings") as s:
+        with patch("app.cot.verify.settings") as s:
             s.cot_verify_enabled = True
             s.cot_verify_auto_detect = True
             assert _resolve_verify(None, "```bash\nsystemctl restart nginx\n```") is True
 
     def test_none_global_enabled_auto_detect_on_plain_answer(self):
-        with patch("app.cot.pipeline.settings") as s:
+        with patch("app.cot.verify.settings") as s:
             s.cot_verify_enabled = True
             s.cot_verify_auto_detect = True
             assert _resolve_verify(None, "The answer is 42.") is False
 
     def test_none_global_enabled_auto_detect_off_always_verifies(self):
-        with patch("app.cot.pipeline.settings") as s:
+        with patch("app.cot.verify.settings") as s:
             s.cot_verify_enabled = True
             s.cot_verify_auto_detect = False
             assert _resolve_verify(None, "The answer is 42.") is True

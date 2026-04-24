@@ -26,8 +26,13 @@ app/
 │   │                              build_hint_with_auto_task (parse + classify),
 │   │                              apply_context_compression (truncate/mapreduce),
 │   │                              build_base_response_headers
-│   ├── oauth_capture.py         Multi-vendor OAuth capture platform (v2.5.0) — profiles,
-│   │                              SSE tail, NDJSON export, 7 CLI presets
+│   ├── oauth_capture/           Multi-vendor OAuth capture package (v2.5.0; packaged 2026-04-24):
+│   │   ├── __init__.py          merges sub-routers; re-exports test helpers
+│   │   ├── presets.py           CapturePreset + 8-entry PRESETS table
+│   │   ├── profiles.py          /_presets + /_profiles/… CRUD endpoints
+│   │   ├── logs.py              /_log + SSE tail + NDJSON export
+│   │   ├── passthrough.py       /{profile}/{path} forwarding catch-all
+│   │   └── serializers.py       header filters + row→dict + _safe_text
 │   ├── models.py                GET /v1/models — OpenAI-compatible model listing
 │   ├── image_utils.py           Image detection + stripping for both wire formats (deduped 2026-04-23)
 │   ├── apikeys.py               CRUD + spending-cap/rate-limit for API keys
@@ -54,6 +59,9 @@ app/
 ├── cot/
 │   ├── pipeline.py          Chain-of-Thought orchestration — plan/draft/critique/refine loop;
 │   │                          parse_cot_request_headers() shared by both endpoint handlers
+│   ├── prompts.py           PLAN_SYSTEM_VERBOSE/COMPACT, CRITIQUE/REFINE/RECONCILE/VERIFY_SYSTEM
+│   │                          extracted from pipeline.py (2026-04-24)
+│   ├── verify.py            resolve_verify + run_verify_pass extracted from pipeline.py (2026-04-24)
 │   ├── critique.py          Pure parsers + heuristics extracted from pipeline.py (2026-04-23):
 │   │                          parse_score, parse_gaps, parse_critique, should_verify,
 │   │                          INFRA_TOOLS, SHELL_CODE_BLOCK

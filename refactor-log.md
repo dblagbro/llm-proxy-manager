@@ -1,5 +1,89 @@
 # Refactor Log
 
+## 2026-04-24 — Second maintainability pass: prompts/verify extracted, oauth_capture packaged, frontend OAuthCapturePage split
+
+### Motivation
+Post-v2.5.0 the largest Python files were `app/cot/pipeline.py` (557 lines — still
+held prompt constants + verify helpers after the previous split) and
+`app/api/oauth_capture.py` (557 lines — a single file doing presets + serializers
++ profile CRUD + log listing + SSE tail + the catch-all passthrough). On the
+frontend, `OAuthCapturePage.tsx` (489 lines) had 4 sub-components inline. Three
+targeted splits reduce each of these to cohesive, single-responsibility files.
+
+### Changes
+
+1. **`app/cot/prompts.py`** (new, 76 lines) — extracted the 6 system prompt
+   constants (PLAN_SYSTEM_VERBOSE/COMPACT, CRITIQUE_SYSTEM, REFINE_SYSTEM,
+   RECONCILE_SYSTEM, VERIFY_SYSTEM). `pipeline.py` re-imports them so the
+   symbol surface is unchanged.
+
+2. **`app/cot/verify.py`** (new, 62 lines) — extracted `resolve_verify` and
+   `run_verify_pass`. The latter takes `call_fn` as a parameter so
+   pipeline.py's `_call` remains the sole entry point into litellm for CoT.
+   A thin 10-line back-compat wrapper in pipeline.py preserves the old
+   `_run_verify_pass` callers. Two tests updated to patch
+   `app.cot.verify.settings` (the actual call target).
+
+3. **`app/api/oauth_capture.py` → `app/api/oauth_capture/` package**
+   - `presets.py` (89 lines) — `CapturePreset` dataclass + 8 PRESETS entries
+   - `serializers.py` (82) — header filters + row→JSON-safe dicts
+   - `profiles.py` (147) — `/_presets`, `/_profiles/…` endpoints
+   - `logs.py` (127) — `/_log`, `/_log/stream`, `/_log/export`
+   - `passthrough.py` (128) — the `/{profile}/{path}` catch-all
+   - `__init__.py` (50) — merges the four sub-routers into one + re-exports
+   - Test-reachable symbols (`_filter_req_headers`, `_safe_text`, etc.)
+     re-exported from `__init__.py` so `test_oauth_capture.py` is unchanged.
+
+4. **`frontend/src/pages/OAuthCapturePage.tsx` → page shell + 4 sub-files**
+   under `frontend/src/pages/oauth-capture/`:
+   - `NewProfileWizard.tsx` (82)
+   - `ProfileList.tsx` (43)
+   - `ProfileDetail.tsx` (164)
+   - `LiveCaptureTail.tsx` (124)
+   - `OAuthCapturePage.tsx` now 97 lines — shell that composes the four.
+
+### Deliberately NOT done
+
+- **`frontend/src/pages/APIKeysPage.tsx` (569 lines)** — single giant
+  function-component with 3 inline modals tightly coupled to outer-scope
+  state (`createMutation`, `toggleReveal`, etc.). Full extraction would
+  require either prop-threading 8+ callbacks or introducing a context. No
+  frontend unit tests exist to catch regressions mid-refactor. **Prereq
+  for next split: write Playwright / jest-dom coverage for the key-create,
+  key-edit-limits, and bulk-delete flows first.**
+- **`api/providers.py` + `api/apikeys.py` CRUD dedup** — duplication is
+  real (~30 lines of shared validate+serialize pattern) but abstracting
+  would add cognitive cost without clear win. Leave alone.
+- **`routing/router.py` (311 lines)** — still cohesive; provider-selection
+  flow reads linearly.
+
+### Verification
+- **555/555 unit tests pass** through every step.
+- Public imports preserved: `from app.cot.pipeline import PLAN_SYSTEM_*`,
+  `from app.api.oauth_capture import router` etc. all unchanged.
+- No behavior change. No version bump.
+
+### Net line-count deltas (this pass)
+
+    app/cot/pipeline.py                       557 → 474  (-83)
+    app/api/oauth_capture.py                  557 → 0 (deleted)
+    frontend/src/pages/OAuthCapturePage.tsx   489 → 97 (-392)
+
+    NEW app/cot/prompts.py                     76
+    NEW app/cot/verify.py                      62
+    NEW app/api/oauth_capture/__init__.py      50
+    NEW app/api/oauth_capture/presets.py       89
+    NEW app/api/oauth_capture/profiles.py     147
+    NEW app/api/oauth_capture/logs.py         127
+    NEW app/api/oauth_capture/passthrough.py  128
+    NEW app/api/oauth_capture/serializers.py   82
+    NEW frontend/.../oauth-capture/*.tsx      413 across 4 files
+
+    Largest Python file in app/ is now api/messages.py at 539 lines
+    (unchanged). All new files are under 165 lines.
+
+---
+
 ## 2026-04-23 — Large maintainability pass: shared pipeline + streaming splits + lmrh package
 
 ### Motivation

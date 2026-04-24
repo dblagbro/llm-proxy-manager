@@ -41,6 +41,19 @@ from app.cot.branches import (
     run_code_branch as _run_code_branch,
 )
 
+# Prompts extracted to a sibling module (2026-04-24). Re-imported here so
+# any caller reaching into `pipeline.PLAN_SYSTEM_*` / `CRITIQUE_SYSTEM` /
+# `REFINE_SYSTEM` / `RECONCILE_SYSTEM` / `VERIFY_SYSTEM` keeps working.
+from app.cot.prompts import (
+    PLAN_SYSTEM_VERBOSE, PLAN_SYSTEM_COMPACT,
+    CRITIQUE_SYSTEM, REFINE_SYSTEM, RECONCILE_SYSTEM, VERIFY_SYSTEM,
+)
+
+# Verification helpers extracted to a sibling module (2026-04-24). Same
+# re-export pattern preserves the old private names used internally.
+from app.cot.verify import resolve_verify as _resolve_verify
+from app.cot.verify import run_verify_pass as _run_verify_pass_impl
+
 logger = logging.getLogger(__name__)
 
 
@@ -77,76 +90,6 @@ def parse_cot_request_headers(
 
     return cot_max, force_verify, samples
 
-
-# ── Prompts ───────────────────────────────────────────────────────────────────
-
-PLAN_SYSTEM_VERBOSE = (
-    "You are a reasoning planner. Analyse the user's request and identify:\n"
-    "1. The core task and goal\n"
-    "2. Key constraints and edge cases\n"
-    "3. Recommended approach and steps\n"
-    "Be concise. This output will guide the main response."
-)
-
-# Chain-of-Draft (Xu et al. 2025, arXiv:2502.18600): constrain plan steps to
-# ~5 words each. Reported ~78% token reduction + ~76% TTFT reduction with
-# <5pp quality drop on GSM8K. Better economics for streaming UX.
-PLAN_SYSTEM_COMPACT = (
-    "Plan the reasoning as numbered mini-steps. "
-    "Each line: 1-7 words, no prose. No preamble, no summary.\n"
-    "Format:\n"
-    "1. <mini-step>\n"
-    "2. <mini-step>\n"
-    "..."
-)
-
-CRITIQUE_SYSTEM = (
-    "You are a quality evaluator. Evaluate the draft response against the user's question.\n"
-    "Reply with ONLY a JSON object, no prose, no markdown fences. Use this exact schema:\n"
-    '{\n'
-    '  "factual_issues": ["short description per issue"],\n'
-    '  "missing_coverage": ["what the answer failed to address"],\n'
-    '  "sufficient_for_user": true|false\n'
-    '}\n\n'
-    "Rules:\n"
-    "- factual_issues: only items the answer gets wrong (not stylistic nits).\n"
-    "- missing_coverage: things the user asked for that the answer didn't address.\n"
-    "- sufficient_for_user: true only if the answer would satisfy the user as-is.\n"
-    "- Empty arrays are fine (and expected) when the answer is good.\n"
-    "Max {max_tokens} tokens. Output MUST be valid JSON."
-)
-
-REFINE_SYSTEM = (
-    "You are an expert assistant. A draft response has been critiqued. "
-    "Produce an improved, complete answer addressing the identified gaps."
-)
-
-RECONCILE_SYSTEM = (
-    "You are a reconciler. Below are {n} independently generated candidate "
-    "answers to the same user question. Identify the consensus across them, "
-    "resolve any disagreements by weight of evidence, and produce a SINGLE "
-    "final answer that reflects the majority reasoning.\n\n"
-    "Do NOT explain your choice; do NOT reference the candidates; just emit "
-    "the final answer the user should see."
-)
-
-VERIFY_SYSTEM = (
-    "You are a verification assistant for technical and infrastructure tasks.\n\n"
-    "Given a question and a completed answer, produce concise verification steps "
-    "that confirm the answer's steps were applied correctly and are working as expected.\n\n"
-    "Reply in this EXACT format:\n"
-    "## Verification Steps\n"
-    "1. `<exact command or check>` → <what success looks like / key string to look for>\n"
-    "2. `<exact command or check>` → <expected result>\n"
-    "...\n\n"
-    "Rules:\n"
-    "- Only include steps that can be run immediately after applying the answer\n"
-    "- Prefer read-only / non-destructive checks (status, logs, curl, grep)\n"
-    "- Include the expected output or the key phrase that confirms success\n"
-    "- Maximum 5 steps — be selective, not exhaustive\n"
-    "- If the answer is conceptual (no actionable steps to verify), reply:\n"
-    "  ## Verification Steps\n  (not applicable — no executable steps in answer)"
-)
 
 # ── Core helpers ──────────────────────────────────────────────────────────────
 
@@ -518,40 +461,14 @@ async def run_cot_pipeline(
     yield sse_done()
 
 
-def _resolve_verify(force_verify: bool | None, answer: str) -> bool:
-    """Decide whether to run the verification pass for this response."""
-    if force_verify is True:
-        return True
-    if force_verify is False:
-        return False
-    # None → consult global settings + optional auto-detection
-    if not settings.cot_verify_enabled:
-        return False
-    if settings.cot_verify_auto_detect:
-        return _should_verify(answer)
-    return True  # enabled globally with auto-detect off → always verify
 
 
 async def _run_verify_pass(
-    model: str,
-    user_text: str,
-    answer: str,
-    extra_kwargs: dict,
+    model: str, user_text: str, answer: str, extra_kwargs: dict,
 ) -> str:
-    """Call the model to generate verification steps for the given answer."""
-    verify_messages = [
-        {"role": "user", "content": f"Question:\n{user_text}\n\nAnswer:\n{answer}"},
-    ]
-    try:
-        cot_kw = {k: v for k, v in extra_kwargs.items() if k not in ("max_tokens", "system", "stream")}
-        return await _call(
-            model,
-            verify_messages,
-            VERIFY_SYSTEM,
-            settings.cot_verify_max_tokens,
-            **cot_kw,
-        )
-    except Exception as e:
-        logger.warning("cot_verify_pass_failed error=%s", str(e))
-        return f"(verification pass failed: {e})"
-
+    """Back-compat shim: forwards to app.cot.verify.run_verify_pass but passes
+    pipeline.py's `_call` as the injected litellm entry point so there's still
+    a single place where CoT litellm invocations originate."""
+    return await _run_verify_pass_impl(
+        model, user_text, answer, extra_kwargs, call_fn=_call,
+    )
