@@ -67,6 +67,7 @@ async def chat_completions(
     x_cache: Optional[str] = Header(None, alias="x-cache"),
     x_cache_ttl: Optional[str] = Header(None, alias="x-cache-ttl"),
     x_hedge: Optional[str] = Header(None, alias="x-hedge"),
+    x_context_strategy: Optional[str] = Header(None, alias="x-context-strategy"),
 ):
     # Accept Bearer token or x-api-key
     token = x_api_key
@@ -153,6 +154,43 @@ async def chat_completions(
         else:
             messages_list = strip_images_openai(messages_list)
 
+    # Wave 5 #26 — long-context map-reduce / truncate / error
+    from app.api.long_context import (
+        needs_compression, resolve_strategy, truncate_to_window, mapreduce_compress,
+    )
+    context_strategy_applied: Optional[str] = None
+    if needs_compression(messages_list, route.profile.context_length):
+        strategy = resolve_strategy(x_context_strategy)
+        if strategy == "error":
+            raise HTTPException(
+                413,
+                f"Context window exceeded. Max: {route.profile.context_length}",
+            )
+        if strategy == "mapreduce":
+            _user_q = ""
+            for _m in reversed(messages_list):
+                if _m.get("role") == "user":
+                    _c = _m.get("content", "")
+                    if isinstance(_c, str):
+                        _user_q = _c
+                    elif isinstance(_c, list):
+                        _user_q = "\n".join(
+                            b.get("text", "") for b in _c
+                            if isinstance(b, dict) and b.get("type") == "text"
+                        )
+                    break
+            messages_list, chunks, _ = await mapreduce_compress(
+                messages_list, model=route.litellm_model, extra=extra,
+                context_length=route.profile.context_length,
+                user_question=_user_q,
+            )
+            context_strategy_applied = f"mapreduce:{chunks}chunks"
+        else:
+            messages_list, dropped = truncate_to_window(
+                messages_list, route.profile.context_length,
+            )
+            context_strategy_applied = f"truncate:{dropped}dropped"
+
     budget_total = body.get("max_tokens", 0) or 0
     resp_headers = {
         "X-Provider": route.provider.name,
@@ -163,6 +201,8 @@ async def chat_completions(
         resp_headers["X-Task-Auto-Detected"] = auto_task
     if vision_routed_count:
         resp_headers["X-Vision-Routed"] = str(vision_routed_count)
+    if context_strategy_applied:
+        resp_headers["X-Context-Strategy-Applied"] = context_strategy_applied
     if hint is not None:
         from app.routing.lmrh import build_hint_set_header
         hint_set = build_hint_set_header(hint, route.unmet_hints)
