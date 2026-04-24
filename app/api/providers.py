@@ -31,6 +31,13 @@ class ProviderCreate(BaseModel):
     failure_threshold: Optional[int] = None   # None = use global setting
     daily_budget_usd: Optional[float] = None  # None = unlimited
     extra_config: dict = {}
+    # v2.7.0: claude-oauth credential paste. The frontend sends either:
+    #   - bare ``sk-ant-oat...`` access token, OR
+    #   - the JSON contents of ``~/.claude/credentials.json``.
+    # Server parses, extracts access/refresh/expires_at, and stores them in
+    # the existing api_key column + new oauth_* columns. The raw blob is
+    # never persisted.
+    oauth_credentials_blob: Optional[str] = None
 
 
 class ProviderUpdate(ProviderCreate):
@@ -66,10 +73,34 @@ async def create_provider(
     db: AsyncSession = Depends(get_db),
     _: AdminUser = Depends(require_admin),
 ):
-    provider = Provider(
-        id=secrets.token_hex(8),
-        **body.model_dump(),
-    )
+    data = body.model_dump()
+    blob = data.pop("oauth_credentials_blob", None)
+
+    if body.provider_type == "claude-oauth":
+        if not blob:
+            raise HTTPException(
+                400,
+                "claude-oauth providers require 'oauth_credentials_blob' — paste your "
+                "`~/.claude/credentials.json` contents or a bare 'sk-ant-oat...' token.",
+            )
+        from app.providers.claude_oauth import parse_credentials, CredentialParseError
+        try:
+            creds = parse_credentials(blob)
+        except CredentialParseError as e:
+            raise HTTPException(400, f"Credential parse failed: {e}")
+        data["api_key"] = creds.access_token
+        data["oauth_refresh_token"] = creds.refresh_token
+        data["oauth_expires_at"] = creds.expires_at
+        if not data.get("default_model"):
+            data["default_model"] = "claude-sonnet-4-6"
+    elif blob:
+        raise HTTPException(
+            400,
+            f"oauth_credentials_blob is only valid when provider_type='claude-oauth' "
+            f"(got {body.provider_type!r})",
+        )
+
+    provider = Provider(id=secrets.token_hex(8), **data)
     db.add(provider)
     await db.commit()
     await db.refresh(provider)
@@ -95,7 +126,33 @@ async def update_provider(
     _: AdminUser = Depends(require_admin),
 ):
     p = await _get_or_404(db, provider_id)
-    for field, value in body.model_dump().items():
+    data = body.model_dump()
+    blob = data.pop("oauth_credentials_blob", None)
+
+    # v2.7.0: re-paste credentials to refresh an existing claude-oauth provider
+    if blob and p.provider_type == "claude-oauth":
+        from app.providers.claude_oauth import parse_credentials, CredentialParseError
+        try:
+            creds = parse_credentials(blob)
+        except CredentialParseError as e:
+            raise HTTPException(400, f"Credential parse failed: {e}")
+        data["api_key"] = creds.access_token
+        data["oauth_refresh_token"] = creds.refresh_token
+        data["oauth_expires_at"] = creds.expires_at
+    elif blob:
+        raise HTTPException(
+            400,
+            f"oauth_credentials_blob is only valid for claude-oauth providers "
+            f"(this one is {p.provider_type!r})",
+        )
+
+    # For claude-oauth without a re-paste, keep existing api_key + oauth_* fields.
+    # If admin sent api_key="" on a claude-oauth update, ignore (they didn't mean
+    # to wipe it).
+    if p.provider_type == "claude-oauth" and not blob:
+        data.pop("api_key", None)
+
+    for field, value in data.items():
         setattr(p, field, value)
     await db.commit()
     await db.refresh(p)
@@ -255,6 +312,10 @@ def _serialize(p: Provider) -> dict:
         "daily_budget_usd": p.daily_budget_usd,
         "extra_config": p.extra_config,
         "created_at": p.created_at.isoformat() if p.created_at else None,
+        # v2.7.0: expose expiry so the UI can show "Token expires in Nh"
+        # for claude-oauth providers. Never expose refresh_token.
+        "oauth_expires_at": p.oauth_expires_at,
+        "has_oauth_refresh_token": bool(p.oauth_refresh_token),
     }
 
 

@@ -5,7 +5,9 @@ export interface AuthUser {
 }
 
 // ── Providers ─────────────────────────────────────────────────────────────────
-export type ProviderType = 'anthropic' | 'openai' | 'google' | 'vertex' | 'grok' | 'ollama' | 'compatible'
+export type ProviderType =
+  | 'anthropic' | 'openai' | 'google' | 'vertex' | 'grok' | 'ollama' | 'compatible'
+  | 'claude-oauth'   // v2.7.0: Claude Pro Max subscription via pasted OAuth credentials
 
 export interface Provider {
   id: string
@@ -22,6 +24,9 @@ export interface Provider {
   failure_threshold: number | null
   extra_config: Record<string, unknown>
   created_at: string
+  // v2.7.0: surfaced only for claude-oauth providers. null otherwise.
+  oauth_expires_at?: number | null
+  has_oauth_refresh_token?: boolean
 }
 
 export interface ProviderFormData {
@@ -37,6 +42,8 @@ export interface ProviderFormData {
   hold_down_sec: number | null
   failure_threshold: number | null
   extra_config: Record<string, unknown>
+  // v2.7.0: the JSON blob (or bare token) the admin pastes for claude-oauth
+  oauth_credentials_blob?: string
 }
 
 export interface ModelCapability {

@@ -100,7 +100,6 @@ export type OAuthCapturePreset = {
   extra_upstreams: string[]
   env_var_names: string[]
   setup_hint: string
-  login_cmd: string  // v2.6.0: non-empty = in-browser terminal supported
 }
 
 export type OAuthCaptureProfile = {
@@ -152,25 +151,6 @@ export const oauthCaptureApi = {
     `/api/oauth-capture/_log/stream/${encodeURIComponent(profile)}`,
   exportUrl: (profile: string) =>
     `/api/oauth-capture/_log/export/${encodeURIComponent(profile)}`,
-
-  // v2.6.0 — in-browser terminal
-  startLogin: (profile: string, takeover = false) =>
-    api.post<
-      { session_id?: string; profile?: string; command?: string;
-        error?: string; active_session_id?: string; age_seconds?: number }
-    >(
-      `/api/oauth-capture/_profiles/${encodeURIComponent(profile)}/login${takeover ? '?takeover=true' : ''}`
-    ),
-  killSession: (sessionId: string) =>
-    api.post<{ ok: boolean; killed: boolean }>(
-      `/api/oauth-capture/_terminal/${encodeURIComponent(sessionId)}/kill`
-    ),
-  terminalWsUrl: (sessionId: string) => {
-    // Build the absolute ws:// or wss:// URL matching the current page's protocol.
-    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const base = import.meta.env.BASE_URL.replace(/\/$/, '')
-    return `${proto}//${window.location.host}${base}/api/oauth-capture/_terminal/${encodeURIComponent(sessionId)}`
-  },
 }
 
 

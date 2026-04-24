@@ -137,11 +137,8 @@ class Settings(BaseSettings):
     oauth_capture_enabled: bool = Field(False, alias="OAUTH_CAPTURE_ENABLED")
     oauth_capture_upstream: Optional[str] = Field(None, alias="OAUTH_CAPTURE_UPSTREAM")
     oauth_capture_secret: Optional[str] = Field(None, alias="OAUTH_CAPTURE_SECRET")
-    # v2.6.0: in-browser terminal via sidecar (llm-proxy2-capture)
-    capture_sidecar_url: str = Field(
-        "http://llm-proxy2-capture:4000", alias="CAPTURE_SIDECAR_URL",
-    )
-    capture_sidecar_enabled: bool = Field(True, alias="CAPTURE_SIDECAR_ENABLED")
+    # v2.6.0 capture-sidecar settings removed in v2.7.0 — the sidecar was
+    # deleted in favor of "paste vendor CLI credentials" UX.
 
     # Wave 6 — SSO/SAML
     sso_enabled: bool = Field(False, alias="SSO_ENABLED")

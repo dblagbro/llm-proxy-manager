@@ -5,19 +5,20 @@ Extracted from ``app/api/messages.py`` in the 2026-04-23 refactor so the
 POST handler can stay focused on routing + response assembly.
 
 Functions:
-  _stream_cot_anthropic   — pass-through around run_cot_pipeline + metrics
-  _stream_anthropic       — the main Anthropic streaming translator
-  _webhook_completion_anthropic — fire-and-forget async delivery
-
-Behavior is unchanged from the pre-extraction version; this file is a
-pure move with import adjustments.
+  _stream_cot_anthropic          — pass-through around run_cot_pipeline + metrics
+  _stream_anthropic              — the main Anthropic streaming translator (litellm path)
+  _stream_claude_oauth           — direct httpx stream to platform.claude.com (v2.7.0)
+  _complete_claude_oauth         — non-streaming equivalent (v2.7.0)
+  _webhook_completion_anthropic  — fire-and-forget async delivery
 """
 from __future__ import annotations
 
 import json
+import logging
 import time
-from typing import AsyncIterator
+from typing import AsyncIterator, Optional
 
+import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.cot.pipeline import run_cot_pipeline
@@ -26,6 +27,9 @@ from app.routing.retry import acompletion_with_retry
 from app.monitoring.helpers import record_outcome
 from app.cache.middleware import maybe_store
 from app.api.webhook import post_webhook
+from app.providers.claude_oauth import build_headers as _claude_oauth_headers, PLATFORM_BASE_URL
+
+logger = logging.getLogger(__name__)
 
 
 async def _stream_cot_anthropic(
@@ -226,3 +230,141 @@ async def _webhook_completion_anthropic(
         await record_outcome(db, provider_id, model, success=False,
                              key_record_id=key_record_id, error_str=str(exc))
         await post_webhook(webhook_url, {"error": str(exc), "model": model})
+
+
+# ── Claude OAuth (v2.7.0) ────────────────────────────────────────────────────
+# Direct httpx handlers for provider_type="claude-oauth". We bypass litellm
+# because (a) platform.claude.com uses Authorization: Bearer (not x-api-key)
+# and (b) the response is already in Anthropic's native format, so we can
+# forward the stream/body verbatim without going through any adapter.
+
+
+async def _complete_claude_oauth(
+    access_token: str,
+    body: dict,
+    provider_id: str,
+    db: AsyncSession,
+    key_record_id: str,
+    t0: float,
+) -> dict:
+    """Non-streaming ``/v1/messages`` call against platform.claude.com."""
+    url = f"{PLATFORM_BASE_URL}/v1/messages?beta=true"
+    headers = {**_claude_oauth_headers(access_token), "Content-Type": "application/json"}
+    try:
+        async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+            r = await client.post(url, json=body, headers=headers)
+        if r.status_code >= 400:
+            await record_outcome(
+                db, provider_id, "claude-oauth", success=False,
+                key_record_id=key_record_id, error_str=f"{r.status_code}: {r.text[:200]}",
+            )
+            r.raise_for_status()
+        data = r.json()
+        usage = data.get("usage") or {}
+        in_tok = int(usage.get("input_tokens") or 0)
+        out_tok = int(usage.get("output_tokens") or 0)
+        cache_creation = int(usage.get("cache_creation_input_tokens") or 0)
+        cache_read = int(usage.get("cache_read_input_tokens") or 0)
+        await record_outcome(
+            db, provider_id, "claude-oauth", success=True,
+            in_tok=in_tok, out_tok=out_tok, t0=t0, key_record_id=key_record_id,
+            cache_creation=cache_creation, cache_read=cache_read,
+        )
+        return data
+    except httpx.HTTPError as e:
+        await record_outcome(
+            db, provider_id, "claude-oauth", success=False,
+            key_record_id=key_record_id, error_str=str(e),
+        )
+        raise
+
+
+async def _stream_claude_oauth(
+    access_token: str,
+    body: dict,
+    provider_id: str,
+    db: AsyncSession,
+    key_record_id: str,
+    t0: float,
+    budget_total: int = 0,
+    cache_decision=None,
+) -> AsyncIterator[bytes]:
+    """Streaming ``/v1/messages`` — platform.claude.com already emits
+    Anthropic SSE, so we can forward chunks as-is and just sniff usage
+    events for metrics + cache storage."""
+    url = f"{PLATFORM_BASE_URL}/v1/messages?beta=true"
+    headers = {**_claude_oauth_headers(access_token), "Content-Type": "application/json"}
+    # Ensure stream=true is set on the body the upstream sees
+    body = {**body, "stream": True}
+
+    in_tok = out_tok = 0
+    cache_creation = cache_read = 0
+    ttft_ms: float = 0.0
+    full_text_buf: list[str] = []
+
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(300.0), follow_redirects=True) as client:
+            async with client.stream("POST", url, json=body, headers=headers) as r:
+                if r.status_code >= 400:
+                    err_body = (await r.aread()).decode(errors="replace")[:400]
+                    raise httpx.HTTPStatusError(
+                        f"{r.status_code}: {err_body}", request=r.request, response=r,
+                    )
+                first_chunk = True
+                async for chunk in r.aiter_bytes():
+                    if not chunk:
+                        continue
+                    if first_chunk:
+                        ttft_ms = (time.monotonic() - t0) * 1000
+                        first_chunk = False
+                    # Forward verbatim
+                    yield chunk
+                    # Parse SSE events to extract usage + full text for cache/metrics
+                    for line in chunk.decode(errors="replace").splitlines():
+                        if not line.startswith("data: "):
+                            continue
+                        payload = line[6:].strip()
+                        if not payload or payload == "[DONE]":
+                            continue
+                        try:
+                            evt = json.loads(payload)
+                        except ValueError:
+                            continue
+                        t = evt.get("type")
+                        if t == "message_start":
+                            usage = (evt.get("message") or {}).get("usage") or {}
+                            in_tok = int(usage.get("input_tokens") or in_tok)
+                            cache_creation = int(usage.get("cache_creation_input_tokens") or cache_creation)
+                            cache_read = int(usage.get("cache_read_input_tokens") or cache_read)
+                        elif t == "message_delta":
+                            usage = evt.get("usage") or {}
+                            out_tok = int(usage.get("output_tokens") or out_tok)
+                        elif t == "content_block_delta":
+                            delta = evt.get("delta") or {}
+                            if delta.get("type") == "text_delta":
+                                full_text_buf.append(delta.get("text") or "")
+
+        if budget_total > 0:
+            remaining = max(0, budget_total - out_tok)
+            yield (
+                f'event: budget\ndata: {{"remaining":{remaining},'
+                f'"used":{out_tok},"total":{budget_total}}}\n\n'
+            ).encode()
+
+        await record_outcome(
+            db, provider_id, "claude-oauth", success=True,
+            in_tok=in_tok, out_tok=out_tok, t0=t0, key_record_id=key_record_id,
+            ttft_ms=ttft_ms, cache_creation=cache_creation, cache_read=cache_read,
+        )
+        if cache_decision is not None and cache_decision.eligible:
+            try:
+                await maybe_store(cache_decision, "".join(full_text_buf))
+            except Exception:
+                pass
+    except httpx.HTTPError as e:
+        await record_outcome(
+            db, provider_id, "claude-oauth", success=False,
+            key_record_id=key_record_id, error_str=str(e),
+        )
+        yield (b'data: ' + json.dumps({"type": "error", "error": {"message": str(e)}}).encode() + b'\n\n')
+        yield b'data: {"type":"message_stop"}\n\ndata: [DONE]\n\n'

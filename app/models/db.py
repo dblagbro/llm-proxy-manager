@@ -27,8 +27,8 @@ class Provider(Base):
 
     id = Column(String, primary_key=True, default=lambda: secrets.token_hex(8))
     name = Column(String, nullable=False)
-    provider_type = Column(String, nullable=False)  # anthropic|openai|google|ollama|compatible|vertex|grok
-    api_key = Column(String)
+    provider_type = Column(String, nullable=False)  # anthropic|openai|google|ollama|compatible|vertex|grok|claude-oauth
+    api_key = Column(String)                         # for OAuth providers: stores the access_token
     base_url = Column(String)
     default_model = Column(String)
     priority = Column(Integer, default=10)
@@ -40,6 +40,11 @@ class Provider(Base):
     failure_threshold = Column(Integer, nullable=True)
     daily_budget_usd = Column(Float, nullable=True)  # None = unlimited
     extra_config = Column(JSON, default=dict)
+    # v2.7.0: OAuth-specific fields. Only populated when provider_type
+    # is *-oauth (claude-oauth in v2.7.0). refresh_token lets us auto-
+    # refresh before expires_at without admin intervention.
+    oauth_refresh_token = Column(String, nullable=True)    # encrypted Fernet
+    oauth_expires_at = Column(Float, nullable=True)        # unix timestamp
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 

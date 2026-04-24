@@ -42,6 +42,9 @@ async def init_db():
             "ALTER TABLE api_keys ADD COLUMN rate_limit_tier TEXT",
             # v2.5.0 — multi-profile OAuth capture
             "ALTER TABLE oauth_capture_log ADD COLUMN profile_name TEXT",
+            # v2.7.0 — claude-oauth provider type
+            "ALTER TABLE providers ADD COLUMN oauth_refresh_token TEXT",
+            "ALTER TABLE providers ADD COLUMN oauth_expires_at REAL",
         ]:
             try:
                 await conn.exec_driver_sql(stmt)
