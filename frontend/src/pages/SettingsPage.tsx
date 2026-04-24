@@ -6,8 +6,9 @@ import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 import { Switch } from '@/components/ui/Switch'
 import { useToast } from '@/components/ui/Toast'
-import { settingsApi } from '@/api'
+import { settingsApi, type SettingSchemaItem } from '@/api'
 import { ClusterDiffPanel } from '@/components/settings/ClusterDiffPanel'
+import { DynamicSettingsPanel } from '@/components/settings/DynamicSettingsPanel'
 
 type SettingsMap = Record<string, unknown>
 
@@ -19,6 +20,11 @@ export function SettingsPage() {
   const { data: serverSettings, isLoading } = useQuery<SettingsMap>({
     queryKey: ['settings'],
     queryFn: settingsApi.get,
+  })
+
+  const { data: schema } = useQuery<SettingSchemaItem[]>({
+    queryKey: ['settings', 'schema'],
+    queryFn: settingsApi.schema,
   })
 
   // Populate form once on first load (don't overwrite in-progress edits)
@@ -178,6 +184,9 @@ export function SettingsPage() {
           </div>
         </CardContent>
       </Card>
+
+      {/* Auto-rendered extra groups (Privacy, OAuth capture, Audit export, SSO, …) */}
+      {schema && <DynamicSettingsPanel schema={schema} form={form} setForm={setForm} />}
 
       <div className="flex justify-end">
         <Button onClick={() => saveMut.mutate(form)} loading={saveMut.isPending}>

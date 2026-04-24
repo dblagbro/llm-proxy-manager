@@ -66,6 +66,101 @@ SCHEMA: dict[str, dict] = {
     "smtp_port":    {"type": "int",   "default": settings.smtp_port,         "label": "SMTP port"},
     "smtp_from":    {"type": "str",   "default": settings.smtp_from or "",   "label": "From address"},
     "smtp_to":      {"type": "str",   "default": settings.smtp_to or "",     "label": "Alert recipient"},
+    # ── Wave 6 — Audit log export ────────────────────────────────────────────
+    "audit_export_s3_bucket": {
+        "type": "str", "default": settings.audit_export_s3_bucket or "",
+        "label": "Audit export — S3 bucket name (blank = disk only)",
+        "group": "Audit export",
+    },
+    "audit_export_s3_endpoint": {
+        "type": "str", "default": settings.audit_export_s3_endpoint or "",
+        "label": "Audit export — S3 endpoint URL (blank = AWS; set for MinIO / B2 / Wasabi)",
+        "group": "Audit export",
+    },
+    "audit_export_s3_region": {
+        "type": "str", "default": settings.audit_export_s3_region or "us-east-1",
+        "label": "Audit export — S3 region",
+        "group": "Audit export",
+    },
+    "audit_export_s3_access_key": {
+        "type": "str", "default": settings.audit_export_s3_access_key or "",
+        "label": "Audit export — S3 access key ID",
+        "group": "Audit export",
+        "secret": True,
+    },
+    "audit_export_s3_secret_key": {
+        "type": "str", "default": settings.audit_export_s3_secret_key or "",
+        "label": "Audit export — S3 secret access key",
+        "group": "Audit export",
+        "secret": True,
+    },
+    "audit_export_retention_days": {
+        "type": "int", "default": settings.audit_export_retention_days,
+        "label": "Audit export — local retention (days before prune removes old files)",
+        "group": "Audit export",
+    },
+    # ── Wave 6 — PII masking ─────────────────────────────────────────────────
+    "pii_masking_enabled": {
+        "type": "bool", "default": settings.pii_masking_enabled,
+        "label": "PII masking — redact email / SSN / credit-card / phone / IPv4 in outbound requests",
+        "group": "Privacy",
+    },
+    # ── Wave 6 — Semantic prompt guard ───────────────────────────────────────
+    "prompt_guard_enabled": {
+        "type": "bool", "default": settings.prompt_guard_enabled,
+        "label": "Prompt guard — reject requests matching the denylist",
+        "group": "Privacy",
+    },
+    "prompt_guard_denylist": {
+        "type": "str", "default": settings.prompt_guard_denylist or "",
+        "label": "Prompt-guard denylist — comma-separated phrases (case-insensitive substring match)",
+        "group": "Privacy",
+        "help": "Example: ignore previous instructions, reveal your system prompt",
+    },
+    # ── Wave 6 — SSO/SAML ────────────────────────────────────────────────────
+    "sso_enabled": {
+        "type": "bool", "default": settings.sso_enabled,
+        "label": "Enable SSO (OIDC)",
+        "group": "SSO",
+    },
+    "sso_entity_id": {
+        "type": "str", "default": settings.sso_entity_id or "",
+        "label": "SSO entity ID (SAML only)",
+        "group": "SSO",
+    },
+    "sso_idp_metadata_url": {
+        "type": "str", "default": settings.sso_idp_metadata_url or "",
+        "label": "SSO IdP metadata URL",
+        "group": "SSO",
+    },
+    "sso_acs_url": {
+        "type": "str", "default": settings.sso_acs_url or "",
+        "label": "SSO Assertion Consumer Service URL",
+        "group": "SSO",
+    },
+    # ── OAuth capture (research tool for Claude Pro Max provider) ────────────
+    "oauth_capture_enabled": {
+        "type": "bool", "default": settings.oauth_capture_enabled,
+        "label": "OAuth capture recorder — enable /api/oauth-capture passthrough",
+        "group": "OAuth capture",
+        "help": (
+            "Research tool for reverse-engineering the claude-code CLI's OAuth flow. "
+            "When enabled, /api/oauth-capture/{path} records requests and forwards "
+            "them to the configured upstream. See docs/claude-pro-max-oauth-capture.md."
+        ),
+    },
+    "oauth_capture_upstream": {
+        "type": "str", "default": settings.oauth_capture_upstream or "https://console.anthropic.com",
+        "label": "OAuth capture upstream URL (no trailing slash)",
+        "group": "OAuth capture",
+    },
+    "oauth_capture_secret": {
+        "type": "str", "default": settings.oauth_capture_secret or "",
+        "label": "OAuth capture shared secret (required via ?cap=... or X-Capture-Secret header)",
+        "group": "OAuth capture",
+        "secret": True,
+        "help": "Leave blank to disable the secret check (NOT recommended on public proxies).",
+    },
 }
 
 
