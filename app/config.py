@@ -133,6 +133,11 @@ class Settings(BaseSettings):
     prompt_guard_enabled: bool = Field(False, alias="PROMPT_GUARD_ENABLED")
     prompt_guard_denylist: Optional[str] = Field(None, alias="PROMPT_GUARD_DENYLIST")
 
+    # OAuth capture (research tool for Claude Pro Max OAuth provider)
+    oauth_capture_enabled: bool = Field(False, alias="OAUTH_CAPTURE_ENABLED")
+    oauth_capture_upstream: Optional[str] = Field(None, alias="OAUTH_CAPTURE_UPSTREAM")
+    oauth_capture_secret: Optional[str] = Field(None, alias="OAUTH_CAPTURE_SECRET")
+
     # Wave 6 — SSO/SAML
     sso_enabled: bool = Field(False, alias="SSO_ENABLED")
     sso_entity_id: Optional[str] = Field(None, alias="SSO_ENTITY_ID")

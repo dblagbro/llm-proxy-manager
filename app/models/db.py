@@ -159,3 +159,26 @@ class ModelAlias(Base):
     model_id = Column(String, nullable=False)
     description = Column(String, nullable=True)
     created_at = Column(DateTime, server_default=func.now())
+
+
+class OAuthCaptureLog(Base):
+    """Recorded request+response pairs from the OAuth-passthrough endpoint.
+    Backlog: Claude Pro Max OAuth provider. Used to reverse-engineer the
+    claude-code CLI's OAuth flow before implementing a direct provider.
+    """
+    __tablename__ = "oauth_capture_log"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    capture_session = Column(String, nullable=True, index=True)  # optional group tag
+    method = Column(String, nullable=False)
+    path = Column(String, nullable=False)         # the subpath of /api/oauth-capture/
+    upstream_url = Column(String, nullable=False)  # where we actually sent it
+    req_headers = Column(JSON, default=dict)
+    req_body = Column(Text, nullable=True)         # raw body; may be JSON or form-urlencoded
+    req_query = Column(String, nullable=True)
+    resp_status = Column(Integer, nullable=True)
+    resp_headers = Column(JSON, default=dict)
+    resp_body = Column(Text, nullable=True)
+    latency_ms = Column(Float, default=0.0)
+    error = Column(Text, nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
