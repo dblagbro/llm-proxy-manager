@@ -36,10 +36,18 @@ app/
 │   └── circuit_breaker.py         Per-provider open/half-open/closed state + hold-down
 │
 ├── cot/
-│   ├── pipeline.py          Chain-of-Thought iterative refinement pipeline (pure reasoning logic);
+│   ├── pipeline.py          Chain-of-Thought orchestration — plan/draft/critique/refine loop;
 │   │                          parse_cot_request_headers() shared by both endpoint handlers
+│   ├── critique.py          Pure parsers + heuristics extracted from pipeline.py (2026-04-23):
+│   │                          parse_score, parse_gaps, parse_critique, should_verify,
+│   │                          INFRA_TOOLS, SHELL_CODE_BLOCK
+│   ├── branches.py          Task-adaptive CoT branches extracted from pipeline.py (2026-04-23):
+│   │                          run_summarize_branch, run_math_branch, run_code_branch
 │   ├── tool_emulation.py    Tool-use emulation for non-native providers:
 │   │                          prompt building, message normalisation, parsing, LLM call
+│   ├── structured_output.py JSON-schema repair loop (Wave 5 #24)
+│   ├── verify_exec.py       Reflexion verify-step parse/execute/grade
+│   ├── session.py           Redis-backed CoT session store (in-memory fallback)
 │   └── sse.py               Wire format serialization — Anthropic + OpenAI SSE primitives,
 │                              tool/text response generators, FINISH_TO_STOP, to_anthropic_response
 │

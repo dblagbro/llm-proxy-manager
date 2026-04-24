@@ -1,5 +1,45 @@
 # Refactor Log
 
+## 2026-04-23 — Split cot/pipeline.py into orchestrator + sibling modules
+
+### Motivation
+`app/cot/pipeline.py` had grown to 813 lines mixing orchestration (run_cot_pipeline,
+self-consistency, cross-provider critique) with three kinds of support code: critique
+parsers, verification heuristics, and three task-adaptive branches (summarize/math/code)
+that each run their own independent response generator. AI-assisted editing of the
+orchestrator was getting noisy because the branches cluttered the file tail.
+
+### Changes
+1. **New `app/cot/critique.py`** (89 lines) — extracted pure helpers:
+   `parse_score`, `parse_gaps`, `parse_critique`, `should_verify`, plus the
+   `INFRA_TOOLS` set and `SHELL_CODE_BLOCK` regex they operate on. No I/O, no async.
+2. **New `app/cot/branches.py`** (193 lines) — extracted the three task-adaptive
+   branch generators: `run_summarize_branch`, `run_math_branch`, `run_code_branch`.
+   Each is an `AsyncIterator[bytes]` emitting its own complete SSE response.
+3. **`app/cot/pipeline.py`** (813 → 557 lines, -31%) — re-imports the extracted
+   symbols under their prior private names (`_parse_critique`, `_run_math_branch`,
+   etc.) so every internal call site is unchanged. No public API change.
+
+### Deliberately NOT done
+- **`routing/lmrh.py` (438 lines)** — considered splitting into a package but it's
+  already well-sectioned with one clear theme (LMRH protocol) and cohesive state
+  flow (types → parser → scorer → headers). Splitting would add navigation cost
+  without clarity gain. Left alone.
+- **`api/messages.py` / `api/completions.py` shared pipeline extraction** — the
+  ~400 lines of duplication between them (auth → guard → PII → hint → auto-task →
+  alias → route → cascade → fallback → header build) is the highest-ROI refactor
+  remaining, but has the biggest blast radius and cannot be validated end-to-end
+  until upstream provider keys are refreshed (the live smoke suite is blocked).
+  Queued as the next target.
+
+### Verification
+- 536/536 unit tests pass after the split.
+- Public imports (`from app.cot.pipeline import run_cot_pipeline, parse_cot_request_headers`)
+  unchanged.
+- No behavior change; no version bump.
+
+---
+
 ## 2026-04-22 — Incremental architectural refactor (maintainability pass)
 
 ### Motivation
