@@ -71,6 +71,7 @@ async def messages(
     x_cache_ttl: Optional[str] = Header(None, alias="x-cache-ttl"),
     x_hedge: Optional[str] = Header(None, alias="x-hedge"),
     x_cot_cascade: Optional[str] = Header(None, alias="x-cot-cascade"),
+    x_context_strategy: Optional[str] = Header(None, alias="x-context-strategy"),
 ):
     key_record = await verify_api_key(db, x_api_key)
 
@@ -163,6 +164,47 @@ async def messages(
         else:
             messages_list = strip_images_anthropic(messages_list)
 
+    # Wave 5 #26 — long-context map-reduce / truncate / error
+    from app.api.long_context import (
+        needs_compression, resolve_strategy, truncate_to_window, mapreduce_compress,
+    )
+    context_strategy_applied: Optional[str] = None
+    context_tokens_before: int = 0
+    if needs_compression(messages_list, route.profile.context_length, str(system or "")):
+        strategy = resolve_strategy(x_context_strategy)
+        context_tokens_before = len(str(messages_list)) // 3  # rough
+        if strategy == "error":
+            from fastapi import HTTPException as _HE
+            raise _HE(
+                413,
+                f"Context window exceeded: ~{context_tokens_before} tokens > {route.profile.context_length} allowed",
+            )
+        if strategy == "mapreduce":
+            _user_q = ""
+            for _m in reversed(messages_list):
+                if _m.get("role") == "user":
+                    _c = _m.get("content", "")
+                    if isinstance(_c, str):
+                        _user_q = _c
+                    elif isinstance(_c, list):
+                        _user_q = "\n".join(
+                            b.get("text", "") for b in _c
+                            if isinstance(b, dict) and b.get("type") == "text"
+                        )
+                    break
+            messages_list, chunks, _ = await mapreduce_compress(
+                messages_list,
+                model=route.litellm_model, extra=extra,
+                context_length=route.profile.context_length,
+                user_question=_user_q,
+            )
+            context_strategy_applied = f"mapreduce:{chunks}chunks"
+        else:  # truncate (default)
+            messages_list, dropped = truncate_to_window(
+                messages_list, route.profile.context_length, str(system or "")
+            )
+            context_strategy_applied = f"truncate:{dropped}dropped"
+
     resp_headers = {
         "X-Provider": route.provider.name,
         "LLM-Capability": route.capability_header,
@@ -173,6 +215,8 @@ async def messages(
         resp_headers["X-Task-Auto-Detected"] = auto_task
     if vision_routed_count:
         resp_headers["X-Vision-Routed"] = str(vision_routed_count)
+    if context_strategy_applied:
+        resp_headers["X-Context-Strategy-Applied"] = context_strategy_applied
     # Wave 4 #20 — echo which hint dims were honored
     if hint is not None:
         from app.routing.lmrh import build_hint_set_header
