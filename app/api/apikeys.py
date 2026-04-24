@@ -12,6 +12,7 @@ from app.models.db import ApiKey
 from app.auth.admin import require_admin, AdminUser
 from app.auth.keys import generate_api_key
 from app.auth.key_encryption import encrypt_key, decrypt_key
+from app.auth.rate_limit_tiers import get_tier, list_tiers, tier_names
 
 router = APIRouter(prefix="/api/keys", tags=["api-keys"])
 
@@ -21,6 +22,7 @@ class KeyCreate(BaseModel):
     key_type: str = "standard"  # standard|claude-code
     spending_cap_usd: Optional[float] = None
     rate_limit_rpm: Optional[int] = None
+    rate_limit_tier: Optional[str] = None  # Wave 6: named tier
     daily_soft_cap_usd: Optional[float] = None
     daily_hard_cap_usd: Optional[float] = None
     hourly_cap_usd: Optional[float] = None
@@ -33,6 +35,7 @@ class KeyUpdate(BaseModel):
     enabled: Optional[bool] = None
     spending_cap_usd: Optional[float] = None  # -1 to clear the cap
     rate_limit_rpm: Optional[int] = None       # -1 to clear the limit
+    rate_limit_tier: Optional[str] = None      # "" to clear
     daily_soft_cap_usd: Optional[float] = None   # -1 to clear
     daily_hard_cap_usd: Optional[float] = None   # -1 to clear
     hourly_cap_usd: Optional[float] = None       # -1 to clear
@@ -66,6 +69,7 @@ async def create_key(
         enabled=True,
         spending_cap_usd=body.spending_cap_usd,
         rate_limit_rpm=body.rate_limit_rpm,
+        rate_limit_tier=_validate_tier(body.rate_limit_tier),
         daily_soft_cap_usd=body.daily_soft_cap_usd,
         daily_hard_cap_usd=body.daily_hard_cap_usd,
         hourly_cap_usd=body.hourly_cap_usd,
@@ -98,6 +102,8 @@ async def update_key(
         k.spending_cap_usd = None if body.spending_cap_usd < 0 else body.spending_cap_usd
     if body.rate_limit_rpm is not None:
         k.rate_limit_rpm = None if body.rate_limit_rpm < 0 else body.rate_limit_rpm
+    if body.rate_limit_tier is not None:
+        k.rate_limit_tier = _validate_tier(body.rate_limit_tier) if body.rate_limit_tier else None
     if body.daily_soft_cap_usd is not None:
         k.daily_soft_cap_usd = None if body.daily_soft_cap_usd < 0 else body.daily_soft_cap_usd
     if body.daily_hard_cap_usd is not None:
@@ -162,6 +168,34 @@ async def delete_key(
     return {"ok": True}
 
 
+def _validate_tier(tier_name: Optional[str]) -> Optional[str]:
+    """Return the normalized tier name, or raise 400 if unknown."""
+    if not tier_name:
+        return None
+    t = get_tier(tier_name)
+    if t is None:
+        raise HTTPException(
+            400,
+            f"Unknown rate_limit_tier '{tier_name}'. Valid: {', '.join(tier_names())}",
+        )
+    return t.name
+
+
+@router.get("/tiers", tags=["api-keys"])
+async def list_rate_limit_tiers(_: AdminUser = Depends(require_admin)):
+    """Return the available named rate-limit tiers (Wave 6)."""
+    return [
+        {
+            "name": t.name,
+            "rpm": t.rpm,
+            "rpd": t.rpd,
+            "burst": t.burst,
+            "description": t.description,
+        }
+        for t in list_tiers()
+    ]
+
+
 async def _get_or_404(db: AsyncSession, key_id: str) -> ApiKey:
     result = await db.execute(select(ApiKey).where(ApiKey.id == key_id))
     k = result.scalar_one_or_none()
@@ -182,6 +216,7 @@ def _serialize(k: ApiKey) -> dict:
         "total_cost_usd": k.total_cost_usd,
         "spending_cap_usd": k.spending_cap_usd,
         "rate_limit_rpm": k.rate_limit_rpm,
+        "rate_limit_tier": getattr(k, "rate_limit_tier", None),
         "daily_soft_cap_usd": k.daily_soft_cap_usd,
         "daily_hard_cap_usd": k.daily_hard_cap_usd,
         "hourly_cap_usd": k.hourly_cap_usd,
