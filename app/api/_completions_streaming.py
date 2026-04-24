@@ -23,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.cot.pipeline import run_cot_pipeline
 from app.routing.retry import acompletion_with_retry
 from app.monitoring.helpers import record_outcome
-from app.cache import maybe_store
+from app.cache.middleware import maybe_store
 from app.api.webhook import post_webhook
 
 
