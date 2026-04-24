@@ -7,6 +7,7 @@ import logging
 import time
 from typing import Optional, AsyncIterator
 
+import httpx
 import litellm
 from fastapi import APIRouter, BackgroundTasks, Request, Depends, HTTPException, Header
 from fastapi.responses import StreamingResponse, JSONResponse
@@ -166,6 +167,45 @@ async def messages(
     if key_record.budget_status is not None:
         from app.budget.tracker import warnings_for
         resp_headers.update(warnings_for(key_record.budget_status))
+
+    # ── v2.7.0: claude-oauth dispatch ──────────────────────────────────────
+    # Short-circuits the rest of the pipeline (no CoT, no tool emulation, no
+    # fallback chains, no cascade) — Claude Pro Max subscriptions already run
+    # through Claude Code's server-side routing, so we just forward the raw
+    # /v1/messages body to platform.claude.com with the OAuth header bundle.
+    if route.provider.provider_type == "claude-oauth":
+        from app.api._messages_streaming import (
+            _stream_claude_oauth, _complete_claude_oauth,
+        )
+        access_token = route.provider.api_key or ""
+        t0 = time.monotonic()
+        # Build the upstream body: reuse the incoming body but let the upstream
+        # default max_tokens if the client didn't specify one.
+        upstream_body = dict(body)
+        if stream:
+            resp_headers["X-Cache-Status"] = "bypass"
+            return StreamingResponse(
+                _stream_claude_oauth(
+                    access_token, upstream_body,
+                    provider_id=route.provider.id, db=db,
+                    key_record_id=key_record.id, t0=t0,
+                    budget_total=max_tokens,
+                ),
+                media_type="text/event-stream",
+                headers=resp_headers,
+            )
+        try:
+            result = await _complete_claude_oauth(
+                access_token, upstream_body,
+                provider_id=route.provider.id, db=db,
+                key_record_id=key_record.id, t0=t0,
+            )
+        except httpx.HTTPStatusError as e:
+            raise HTTPException(e.response.status_code, f"Claude OAuth upstream: {e.response.text[:200]}")
+        except httpx.HTTPError as e:
+            raise HTTPException(502, f"Claude OAuth upstream: {e}")
+        resp_headers["X-Cache-Status"] = "bypass"
+        return JSONResponse(content=result, headers=resp_headers)
 
     # Semantic cache — check before anything LLM-ish runs
     cache_decision = decide_cacheable(
