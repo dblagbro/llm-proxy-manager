@@ -159,14 +159,17 @@ def get_all_states() -> dict[str, dict]:
 
 
 BILLING_ERROR_PATTERNS = [
+    # True billing / quota-exhausted signals only. A generic 429 or "rate limit"
+    # message is a transient throttling signal and must flow through the retry
+    # loop in app/routing/retry.py — not fail fast + open the breaker for 1h.
+    # Billing-scoped 429s carry a specific substring (insufficient_quota,
+    # "payment required", etc.) and will still match.
     "insufficient_quota",
     "insufficient credit",
     "quota exceeded",
     "billing",
     "payment required",
     "subscription",
-    "rate limit",
-    "429",
 ]
 
 
