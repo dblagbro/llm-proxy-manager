@@ -17,20 +17,46 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
 
+_MASK = "*" * 8  # rendered for secret-typed settings when they have a value
+
+
 @router.get("")
 async def get_settings(
     _user: AdminUser = Depends(require_admin),
 ):
+    """Return current effective values. Secret-typed fields are masked
+    (still show whether they're set, but not the value)."""
     defaults = config_runtime.get_defaults()
-    # Overlay with whatever is currently live on the settings singleton
     from app.config import settings as s
     result = {}
     for key, meta in config_runtime.SCHEMA.items():
         if hasattr(s, key):
-            result[key] = getattr(s, key)
+            val = getattr(s, key)
         else:
-            result[key] = defaults[key]
+            val = defaults[key]
+        if meta.get("secret") and val:
+            result[key] = _MASK  # keep clients honest: we never echo a secret back
+        else:
+            result[key] = val
     return result
+
+
+@router.get("/schema")
+async def get_schema(_user: AdminUser = Depends(require_admin)):
+    """Render-ready metadata for the settings UI: types, labels, groupings,
+    help text, and a 'secret' flag that tells the UI to use a password input."""
+    out = []
+    for key, meta in config_runtime.SCHEMA.items():
+        out.append({
+            "key": key,
+            "type": meta["type"],
+            "label": meta.get("label", key),
+            "group": meta.get("group", "General"),
+            "help": meta.get("help"),
+            "secret": bool(meta.get("secret", False)),
+            "default": meta["default"],
+        })
+    return out
 
 
 @router.put("")
@@ -42,8 +68,17 @@ async def put_settings(
     unknown = [k for k in body if k not in config_runtime.SCHEMA]
     if unknown:
         raise HTTPException(400, f"Unknown setting keys: {unknown}")
-    await config_runtime.save(db, body)
-    logger.info("settings_updated keys=%s", list(body.keys()))
+    # Drop masked secrets: the UI round-trips the "********" placeholder when
+    # the user doesn't change a password/secret field; writing that back would
+    # corrupt the stored value. Dropping preserves the existing value.
+    cleaned = {
+        k: v for k, v in body.items()
+        if not (config_runtime.SCHEMA[k].get("secret") and v == _MASK)
+    }
+    if not cleaned:
+        return {"saved": []}
+    await config_runtime.save(db, cleaned)
+    logger.info("settings_updated keys=%s", list(cleaned.keys()))
 
     # Kick off an immediate sync to peers so they pick up the change within seconds
     if settings.cluster_enabled:

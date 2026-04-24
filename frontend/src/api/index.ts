@@ -63,9 +63,20 @@ export const monitoringApi = {
 }
 
 // ── Settings ──────────────────────────────────────────────────────────────────
+export type SettingSchemaItem = {
+  key: string
+  type: 'bool' | 'int' | 'float' | 'str'
+  label: string
+  group: string
+  help?: string | null
+  secret: boolean
+  default: unknown
+}
+
 export const settingsApi = {
-  get:  ()                               => api.get<Record<string, unknown>>('/api/settings'),
-  save: (data: Record<string, unknown>)  => api.put<{ saved: string[] }>('/api/settings', data),
+  get:    ()                             => api.get<Record<string, unknown>>('/api/settings'),
+  schema: ()                             => api.get<SettingSchemaItem[]>('/api/settings/schema'),
+  save:   (data: Record<string, unknown>) => api.put<{ saved: string[] }>('/api/settings', data),
   clusterDiff: ()                        => api.get<{
     cluster_enabled: boolean
     all_synced?: boolean
