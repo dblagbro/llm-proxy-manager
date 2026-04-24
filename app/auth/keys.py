@@ -16,11 +16,16 @@ from app.models.db import ApiKey
 from app.cluster.manager import active_node_count
 from app.cluster.sync import get_peer_total_cost
 from app.budget.tracker import check_budget_pre_request, BudgetStatus
+from app.auth.rate_limit_tiers import get_tier
 
 logger = logging.getLogger(__name__)
 
 # Sliding-window RPM tracker: key_id → deque of request timestamps
 _rpm_windows: dict[str, collections.deque] = {}
+# Daily request counter: key_id → (day_bucket_ts, count)
+_rpd_buckets: dict[str, tuple[int, int]] = {}
+# In-flight concurrency tracker: key_id → count
+_burst_counters: dict[str, int] = {}
 
 
 def _check_rate_limit(key_id: str, limit_rpm: int) -> None:
@@ -38,6 +43,38 @@ def _check_rate_limit(key_id: str, limit_rpm: int) -> None:
     window.append(now)
 
 
+def _check_rpd(key_id: str, limit_rpd: int) -> None:
+    """Raise HTTP 429 if the UTC-day request count exceeds limit_rpd on this node.
+    Per-node-share logic mirrors _check_rate_limit."""
+    nodes = max(1, active_node_count())
+    per_node_limit = max(1, limit_rpd // nodes)
+
+    today = int(time.time() // 86400)
+    bucket_ts, count = _rpd_buckets.get(key_id, (today, 0))
+    if bucket_ts != today:
+        bucket_ts, count = today, 0
+    if count >= per_node_limit:
+        raise HTTPException(429, f"Daily rate limit exceeded: {limit_rpd} requests/day (cluster-wide)", headers={"Retry-After": "3600"})
+    _rpd_buckets[key_id] = (bucket_ts, count + 1)
+
+
+def _check_burst(key_id: str, limit: int) -> None:
+    """Raise HTTP 429 if in-flight concurrency on this node exceeds `limit`."""
+    in_flight = _burst_counters.get(key_id, 0)
+    if in_flight >= limit:
+        raise HTTPException(429, f"Concurrency limit exceeded: {limit} in-flight requests", headers={"Retry-After": "5"})
+
+
+def begin_in_flight(key_id: str) -> None:
+    _burst_counters[key_id] = _burst_counters.get(key_id, 0) + 1
+
+
+def end_in_flight(key_id: str) -> None:
+    cur = _burst_counters.get(key_id, 0)
+    if cur > 0:
+        _burst_counters[key_id] = cur - 1
+
+
 @dataclass
 class ApiKeyRecord:
     id: str
@@ -45,6 +82,7 @@ class ApiKeyRecord:
     key_type: str  # standard|claude-code
     semantic_cache_enabled: bool = False
     budget_status: Optional[BudgetStatus] = None
+    rate_limit_tier: Optional[str] = None
 
 
 def _hash_key(raw_key: str) -> str:
@@ -74,6 +112,17 @@ async def verify_api_key(db: AsyncSession, raw_key: Optional[str]) -> ApiKeyReco
     # Wave 1 #5 — tiered budget caps (hourly burst + daily soft/hard)
     budget_status = await check_budget_pre_request(db, key)
 
+    # Wave 6: named tier applies first, then a per-key rate_limit_rpm override
+    # can tighten it further. Both checks run — most restrictive wins.
+    tier = get_tier(getattr(key, "rate_limit_tier", None))
+    if tier:
+        if tier.rpm is not None:
+            _check_rate_limit(key.id, tier.rpm)
+        if tier.rpd is not None:
+            _check_rpd(key.id, tier.rpd)
+        if tier.burst is not None:
+            _check_burst(key.id, tier.burst)
+
     if key.rate_limit_rpm is not None:
         _check_rate_limit(key.id, key.rate_limit_rpm)
 
@@ -91,4 +140,5 @@ async def verify_api_key(db: AsyncSession, raw_key: Optional[str]) -> ApiKeyReco
         key_type=key.key_type,
         semantic_cache_enabled=bool(key.semantic_cache_enabled),
         budget_status=budget_status,
+        rate_limit_tier=getattr(key, "rate_limit_tier", None),
     )
