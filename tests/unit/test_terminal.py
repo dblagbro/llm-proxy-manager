@@ -77,20 +77,25 @@ def _mk_profile(preset_key: str = "claude-code", secret: str = "s3cret") -> OAut
 
 class TestBuildEnvBlock:
     def test_claude_code_env(self):
+        # v2.6.2: URL is CLEAN — no ?cap=SECRET. Sidecar→proxy is trusted
+        # by source (no X-Forwarded-For). Adding ?cap= to the env var broke
+        # claude-code's URL composition when it appended /v1/messages.
         p = _mk_profile()
         env = _build_env_block(p, "http://llm-proxy2:3000")
-        expected_url = "http://llm-proxy2:3000/api/oauth-capture/test-profile?cap=s3cret"
+        expected_url = "http://llm-proxy2:3000/api/oauth-capture/test-profile"
         assert env["ANTHROPIC_BASE_URL"] == expected_url
         assert env["ANTHROPIC_AUTH_URL"] == expected_url
         assert env["ANTHROPIC_API_URL"] == expected_url
         # Hint var always set
         assert env["LLM_PROXY_CAPTURE_PROFILE"] == "test-profile"
 
-    def test_no_secret_omits_cap_query(self):
-        p = _mk_profile(secret="")
-        p.secret = None
+    def test_no_secret_query_ever(self):
+        # The env var never carries ?cap= (see v2.6.2 fix). Both with and
+        # without a secret on the profile, the URL is clean for the sidecar.
+        p = _mk_profile()
         env = _build_env_block(p, "http://llm-proxy2:3000")
         assert "?cap=" not in env["ANTHROPIC_BASE_URL"]
+        assert "?" not in env["ANTHROPIC_BASE_URL"]
 
     def test_strips_proxy_trailing_slash(self):
         p = _mk_profile()

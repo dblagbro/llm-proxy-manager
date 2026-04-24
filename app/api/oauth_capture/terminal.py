@@ -74,24 +74,26 @@ def _sidecar_ws_url(http_url: str) -> str:
 def _build_env_block(profile: OAuthCaptureProfile, proxy_base_url: str) -> dict[str, str]:
     """Build the env-var map the sidecar injects into the CLI's PTY.
 
-    Every env var name declared on the preset is set to the capture URL
-    for this profile (with the secret pre-applied as ``?cap=``). So
-    ``claude login`` inside the sidecar hits our capture endpoint
-    without the admin having to touch a shell.
+    Every env var name declared on the preset is set to a CLEAN capture URL
+    for this profile — NO ``?cap=SECRET`` query string. Sidecar→proxy traffic
+    is authenticated by source (docker-internal; see passthrough's secret
+    bypass for requests without X-Forwarded-For).
 
-    ``proxy_base_url`` is the main proxy's own URL as seen from the
-    sidecar container — usually ``http://llm-proxy2:3000`` on the docker
-    network.
+    v2.6.0 put ``?cap=SECRET`` in the URL. That broke URL composition in the
+    claude-code CLI: when it tried ``${BASE_URL}/v1/messages``, its URL
+    builder URL-encoded the new path+query and appended to the existing
+    ``cap=`` value, producing ``/Devin-VG?cap=SECRET%2Fv1%2Fmessages``,
+    which didn't match our catch-all. Fixed in v2.6.2.
+
+    ``proxy_base_url`` is the main proxy's URL as seen from the sidecar —
+    usually ``http://llm-proxy2:3000`` on the docker network.
     """
     preset = PRESETS.get(profile.preset or "")
     if preset is None:
         return {}
 
     capture_url = f"{proxy_base_url.rstrip('/')}/api/oauth-capture/{profile.name}"
-    secret = profile.secret or ""
-    full_url = f"{capture_url}?cap={secret}" if secret else capture_url
-
-    env = {name: full_url for name in preset.env_var_names}
+    env = {name: capture_url for name in preset.env_var_names}
     env["LLM_PROXY_CAPTURE_PROFILE"] = profile.name
     return env
 
