@@ -40,6 +40,8 @@ async def init_db():
             "ALTER TABLE api_keys ADD COLUMN hour_cost_usd REAL DEFAULT 0",
             "ALTER TABLE api_keys ADD COLUMN encrypted_key TEXT",
             "ALTER TABLE api_keys ADD COLUMN rate_limit_tier TEXT",
+            # v2.5.0 — multi-profile OAuth capture
+            "ALTER TABLE oauth_capture_log ADD COLUMN profile_name TEXT",
         ]:
             try:
                 await conn.exec_driver_sql(stmt)

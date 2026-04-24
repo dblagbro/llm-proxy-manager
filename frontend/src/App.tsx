@@ -14,6 +14,7 @@ import { ClusterPage } from '@/pages/ClusterPage'
 import { MetricsPage } from '@/pages/MetricsPage'
 import { ActivityPage } from '@/pages/ActivityPage'
 import { SettingsPage } from '@/pages/SettingsPage'
+import { OAuthCapturePage } from '@/pages/OAuthCapturePage'
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1, staleTime: 10_000 } },
@@ -46,6 +47,7 @@ function AppRoutes() {
         <Route path="metrics" element={<MetricsPage />} />
         <Route path="activity" element={<ActivityPage />} />
         <Route path="settings" element={<SettingsPage />} />
+        <Route path="oauth-capture" element={<OAuthCapturePage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
     </Routes>
