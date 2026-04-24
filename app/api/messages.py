@@ -83,6 +83,23 @@ async def messages(
     thinking = body.get("thinking")
     tools = body.get("tools")
 
+    # Wave 6 — Semantic prompt guard (opt-in via PROMPT_GUARD_ENABLED).
+    # Runs BEFORE PII masking so the raw denylist check sees original text.
+    from app.privacy.prompt_guard import check_messages as _prompt_guard_check, is_enabled as _guard_enabled
+    if _guard_enabled():
+        _match = _prompt_guard_check(messages_list)
+        if _match:
+            raise HTTPException(400, f"Request blocked by prompt guard (pattern: {_match!r})")
+
+    # Wave 6 — PII masking (opt-in via PII_MASKING_ENABLED). Replaces common
+    # PII patterns with placeholders in user/assistant content BEFORE it hits
+    # the upstream provider. Count is echoed as X-PII-Masked response header.
+    from app.privacy.pii import mask_messages as _pii_mask, is_enabled as _pii_enabled
+    _pii_masked_count = 0
+    if _pii_enabled():
+        messages_list, _pii_masked_count = _pii_mask(messages_list)
+        body["messages"] = messages_list
+
     hint = parse_hint(llm_hint)
     has_tools = bool(tools)
     has_images = has_images_anthropic(messages_list)
@@ -225,6 +242,8 @@ async def messages(
         resp_headers["X-Vision-Routed"] = str(vision_routed_count)
     if context_strategy_applied:
         resp_headers["X-Context-Strategy-Applied"] = context_strategy_applied
+    if _pii_masked_count:
+        resp_headers["X-PII-Masked"] = str(_pii_masked_count)
     # Wave 4 #20 — echo which hint dims were honored
     if hint is not None:
         from app.routing.lmrh import build_hint_set_header
