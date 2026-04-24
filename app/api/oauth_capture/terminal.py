@@ -39,7 +39,10 @@ from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisco
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.admin import require_admin, AdminUser, _get_session
+from app.auth.admin import (
+    require_admin, AdminUser, _get_session,
+    SESSION_COOKIE_NAME, _LEGACY_COOKIE_NAME,
+)
 from app.config import settings
 from app.models.database import get_db
 from app.models.db import OAuthCaptureProfile
@@ -176,7 +179,11 @@ async def terminal_ws(websocket: WebSocket, session_id: str):
     can't use FastAPI's HTTP ``Depends(require_admin)`` on a WebSocket
     route because the admin layer currently only speaks HTTP.
     """
-    token = websocket.cookies.get("admin_session") or websocket.cookies.get("session")
+    token = (
+        websocket.cookies.get(SESSION_COOKIE_NAME)
+        or websocket.cookies.get(_LEGACY_COOKIE_NAME)
+        or websocket.cookies.get("admin_session")
+    )
     if not token:
         await websocket.close(code=4401)
         return

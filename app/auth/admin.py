@@ -22,6 +22,13 @@ logger = logging.getLogger(__name__)
 SESSION_TTL_SEC = 86400 * 7   # 7-day rolling sessions
 SESSION_IDLE_SEC = 86400      # Extend last_seen on each /me call
 
+# v2.6.1: unique cookie name + path scoped to this app. The old values
+# (name="session", path="/") collided with other apps on the same domain
+# causing clobber-and-logout every ~minute.
+SESSION_COOKIE_NAME = "llmproxy_session"
+SESSION_COOKIE_PATH = "/llm-proxy2/"
+_LEGACY_COOKIE_NAME = "session"  # accepted during migration window
+
 
 def hash_password(plain: str) -> str:
     return _bcrypt_lib.hashpw(plain.encode(), _bcrypt_lib.gensalt()).decode()
@@ -98,7 +105,10 @@ class AdminUser:
 
 
 def _extract_token(request: Request) -> Optional[str]:
-    token = request.cookies.get("session")
+    # Prefer the new scoped cookie; fall back to the legacy name during the
+    # migration window so users mid-session don't get bounced to the login
+    # page the moment v2.6.1 rolls out.
+    token = request.cookies.get(SESSION_COOKIE_NAME) or request.cookies.get(_LEGACY_COOKIE_NAME)
     if token:
         return token
     auth = request.headers.get("Authorization", "")

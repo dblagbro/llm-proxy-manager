@@ -9,9 +9,17 @@ from app.models.db import User
 from app.auth.admin import (
     verify_password, create_session, destroy_session, touch_session,
     require_any_user, AdminUser, _extract_token,
+    SESSION_COOKIE_NAME, SESSION_COOKIE_PATH,
 )
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
+
+SESSION_COOKIE_MAX_AGE = 86400 * 7  # 7 days, matches SESSION_TTL_SEC
+
+# Legacy cookie name/path used before v2.6.1 — deleted on login/logout so the
+# old cookie at path=/ doesn't keep overwriting the correctly-scoped one.
+_LEGACY_COOKIE_NAME = "session"
+_LEGACY_COOKIE_PATH = "/"
 
 
 class LoginRequest(BaseModel):
@@ -27,23 +35,29 @@ async def login(body: LoginRequest, response: Response, db: AsyncSession = Depen
         raise HTTPException(401, "Invalid credentials")
 
     token = await create_session(user.id, user.username, user.role)
+    # v2.6.1 bugfix: scoped path + unique name — otherwise other apps on
+    # voipguru.org that set a cookie named `session` at path=/ overwrite
+    # ours, which was the "logged out every minute" bug.
     response.set_cookie(
-        "session", token,
+        SESSION_COOKIE_NAME, token,
         httponly=True, samesite="lax", secure=True, max_age=SESSION_COOKIE_MAX_AGE,
-        path="/",
+        path=SESSION_COOKIE_PATH,
     )
+    # Kill any lingering legacy cookie at path=/ that could still shadow us.
+    response.delete_cookie(_LEGACY_COOKIE_NAME, path=_LEGACY_COOKIE_PATH)
     return {"username": user.username, "role": user.role}
-
-
-SESSION_COOKIE_MAX_AGE = 86400 * 7  # 7 days, matches SESSION_TTL_SEC
 
 
 @router.post("/logout")
 async def logout(request: Request, response: Response):
-    token = request.cookies.get("session")
+    token = (
+        request.cookies.get(SESSION_COOKIE_NAME)
+        or request.cookies.get(_LEGACY_COOKIE_NAME)
+    )
     if token:
         await destroy_session(token)
-    response.delete_cookie("session", path="/")
+    response.delete_cookie(SESSION_COOKIE_NAME, path=SESSION_COOKIE_PATH)
+    response.delete_cookie(_LEGACY_COOKIE_NAME, path=_LEGACY_COOKIE_PATH)
     return {"ok": True}
 
 
