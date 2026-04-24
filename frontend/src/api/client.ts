@@ -15,14 +15,14 @@ async function req<T>(
   })
 
   if (res.status === 401) {
-    // Only treat the /api/auth/me probe as a "session expired" signal — other
-    // endpoints can return 401 for auth-scoped reasons (e.g. attempting a
-    // reveal as a non-admin, or during a brief backend race) and shouldn't
-    // log the user out of the whole UI.
-    if (path === '/api/auth/me') {
-      window.dispatchEvent(new CustomEvent('auth:expired'))
-    }
-    throw new Error('Unauthorized')
+    // Any 401 means the server no longer accepts our session. Fire
+    // auth:expired so the UI shows the login screen instead of a generic
+    // "Unauthorized" toast on an otherwise broken page.
+    //
+    // 403 (forbidden-for-this-role) is different and stays as-is — that's
+    // a per-action permission error, not a session-level issue.
+    window.dispatchEvent(new CustomEvent('auth:expired'))
+    throw new Error('Session expired — please sign in again')
   }
 
   if (!res.ok) {
