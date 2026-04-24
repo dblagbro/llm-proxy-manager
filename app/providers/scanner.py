@@ -71,6 +71,8 @@ async def _fetch_model_list(provider: Provider) -> list[str]:
         match provider.provider_type:
             case "anthropic":
                 return await _fetch_anthropic_models(provider)
+            case "claude-oauth":
+                return await _fetch_claude_oauth_models(provider)
             case "openai" | "compatible" | "grok":
                 return await _fetch_openai_models(provider)
             case "google":
@@ -91,6 +93,19 @@ async def _fetch_anthropic_models(provider: Provider) -> list[str]:
         resp = await client.get(
             "https://api.anthropic.com/v1/models",
             headers={"x-api-key": provider.api_key, "anthropic-version": "2023-06-01"},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return [m["id"] for m in data.get("data", [])]
+
+
+async def _fetch_claude_oauth_models(provider: Provider) -> list[str]:
+    """Claude Pro Max tokens can't use x-api-key; Bearer + CC beta flags only."""
+    from app.providers.claude_oauth import build_headers, PLATFORM_BASE_URL
+    async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+        resp = await client.get(
+            f"{PLATFORM_BASE_URL}/v1/models",
+            headers=build_headers(provider.api_key or ""),
         )
         resp.raise_for_status()
         data = resp.json()
