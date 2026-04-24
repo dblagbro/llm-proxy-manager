@@ -39,6 +39,7 @@ async def init_db():
             "ALTER TABLE api_keys ADD COLUMN hour_bucket_ts DATETIME",
             "ALTER TABLE api_keys ADD COLUMN hour_cost_usd REAL DEFAULT 0",
             "ALTER TABLE api_keys ADD COLUMN encrypted_key TEXT",
+            "ALTER TABLE api_keys ADD COLUMN rate_limit_tier TEXT",
         ]:
             try:
                 await conn.exec_driver_sql(stmt)

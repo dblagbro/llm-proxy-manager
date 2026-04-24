@@ -83,7 +83,8 @@ class ApiKey(Base):
     total_tokens = Column(Integer, default=0)
     total_cost_usd = Column(Float, default=0.0)
     spending_cap_usd = Column(Float, nullable=True)  # lifetime hard cap; None = unlimited
-    rate_limit_rpm = Column(Integer, nullable=True)   # None = unlimited
+    rate_limit_rpm = Column(Integer, nullable=True)   # None = unlimited (explicit override)
+    rate_limit_tier = Column(String, nullable=True)   # Wave 6: named tier (free/starter/pro/enterprise/unlimited). None = custom/rate_limit_rpm only.
     semantic_cache_enabled = Column(Boolean, default=False)  # Wave 1 #3 opt-in
     # Wave 1 #5 — tiered budget caps (None = unlimited at that tier)
     daily_soft_cap_usd = Column(Float, nullable=True)  # warning only; X-Budget-Warning header
