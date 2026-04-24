@@ -1,97 +1,95 @@
-# Claude Pro Max OAuth — capture guide
+# Multi-vendor OAuth capture guide
 
-Research plan for the "Claude Pro Max OAuth as a provider" backlog item.
-This doc walks through capturing the full OAuth handshake that the
-`claude-code` CLI performs against Anthropic's console, so we can
-implement a direct provider that reproduces it.
+Research tool for reverse-engineering the OAuth flows used by vendor CLIs
+(claude-code, codex, gh copilot, gcloud, az, …). Each vendor gets its
+own **capture profile** with its own upstream host(s), secret, and
+enable flag so multiple captures can run in parallel without
+interference.
 
-## Why we have to capture
+Available presets (v2.5.0):
+| Preset key | Vendor / CLI | Primary upstream |
+|---|---|---|
+| `claude-code` | Anthropic Claude Code CLI | `https://console.anthropic.com` |
+| `openai-codex` | OpenAI Codex CLI / ChatGPT | `https://auth.openai.com` (+ api) |
+| `github-copilot` | GitHub Copilot | `https://github.com` (+ copilot api) |
+| `azure-aad` | Microsoft / Azure AD | `https://login.microsoftonline.com` |
+| `google-oauth` | gcloud / Gemini CLI | `https://accounts.google.com` (+ oauth2) |
+| `xai-grok` | xAI / Grok | `https://api.x.ai` |
+| `cohere` | Cohere | `https://dashboard.cohere.com` (+ api) |
+| `custom` | anything | you pick |
 
-The `claude-code` CLI uses a private OAuth flow that Anthropic hasn't
-publicly documented. The only reliable spec is what the CLI actually
-sends on the wire. We own the proxy, so the cleanest path is:
+## UI walkthrough
 
-```
-workstation's claude-code CLI
-  → configure ANTHROPIC_*_URL to point at our proxy
-  → proxy records every request + response, then forwards to Anthropic
-  → we get a transcript we can re-implement against
-```
+Admin → **OAuth Capture** (side nav).
 
-This is legitimate protocol capture (we control both endpoints and the
-tokens are our own). Keep the capture log treated as a secret store —
-it contains authorization codes and bearer tokens.
+1. **New capture profile** card: pick a preset, give the profile a name
+   (default: `<preset>-<yyyymmdd>`), click **Create + enable**.
+2. Detail panel shows:
+   - **Reveal** button to see the auto-generated secret (once per session).
+   - Copy-paste **env block** templated to the preset's env-var names,
+     with the profile URL + secret already filled in.
+3. Run the CLI on your workstation (`claude login`, `codex auth`, etc.).
+4. **Live captures** table tails new requests via SSE as they arrive.
+5. When satisfied, **Download NDJSON** for offline reverse-eng, or **Pause**
+   to stop recording.
 
-## Endpoint
+## Manual (env-var) workflow
 
-The proxy exposes `/api/oauth-capture/*` as a passthrough/recorder.
-It is disabled by default. Enable via settings / env:
-
-```
-OAUTH_CAPTURE_ENABLED=true
-OAUTH_CAPTURE_UPSTREAM=https://console.anthropic.com
-OAUTH_CAPTURE_SECRET=<long-random-string>   # optional but recommended
-```
-
-`OAUTH_CAPTURE_SECRET`, when set, must appear as a `?cap=<secret>`
-query parameter OR an `X-Capture-Secret: <secret>` header on every
-inbound request, or the call is 403'd without forwarding. This prevents
-drive-by abuse of the open relay.
-
-## Workstation-side setup (typical)
-
-The `claude-code` CLI respects a handful of base-URL env vars. Which
-one matters depends on the CLI version; set all of them to be safe:
+If you'd rather skip the UI:
 
 ```bash
-export ANTHROPIC_BASE_URL="https://your-proxy/llm-proxy2/api/oauth-capture"
-export ANTHROPIC_AUTH_URL="https://your-proxy/llm-proxy2/api/oauth-capture"
-export ANTHROPIC_API_URL="https://your-proxy/llm-proxy2/api/oauth-capture"
-# If OAUTH_CAPTURE_SECRET is set:
-#   the CLI will send these URLs as-is, so append ?cap=... via a
-#   wrapper script or put the secret in the upstream config instead.
+# Create a profile
+curl -X POST https://proxy/api/oauth-capture/_profiles \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"claude-2026-04","preset":"claude-code","enabled":true}'
+# → returns {..., "secret": "abc…"}
+
+# On the workstation, route the CLI through us
+export ANTHROPIC_BASE_URL="https://proxy/api/oauth-capture/claude-2026-04?cap=abc..."
+export ANTHROPIC_AUTH_URL="$ANTHROPIC_BASE_URL"
+export ANTHROPIC_API_URL="$ANTHROPIC_BASE_URL"
+claude login
+claude "ping"
+
+# Inspect via admin API
+curl 'https://proxy/api/oauth-capture/_log?profile=claude-2026-04' \
+  -H 'Cookie: ...admin-session...'
 ```
 
-Then run `claude login` or whichever subcommand triggers the OAuth dance.
+## What to look for in the capture
 
-## Admin endpoints for inspecting captures
+1. **Authorization endpoint** — usually `/v1/oauth/authorize` or similar;
+   records `client_id`, `redirect_uri`, `scope`, `code_challenge` (PKCE).
+2. **Token endpoint** — `grant_type=authorization_code`; response has
+   `access_token`, `refresh_token`, `expires_in`, `scope`.
+3. **Refresh endpoint** — same token endpoint with `grant_type=refresh_token`.
+4. **API bearer format** — `Authorization: Bearer <token>`, or a custom
+   header? Any workspace/org ID piggy-backing?
+5. **Scopes** — what does Pro Max vs Team vs free-tier ask for?
+6. **Token lifetime** — access-token `expires_in`, refresh-token TTL if
+   visible.
 
-All require admin auth.
+## Security notes
 
-- `GET  /api/oauth-capture/_log`              — list recent (default 100) captures with body previews
-- `GET  /api/oauth-capture/_log/{id}`         — full record (headers + bodies)
-- `GET  /api/oauth-capture/_export`           — NDJSON dump for offline analysis
-- `DELETE /api/oauth-capture/_log`            — wipe before a new recording run
+- Profiles are disabled by default. An enabled profile without a secret
+  is an open relay — the profile create endpoint always generates a
+  secret, so you'd have to actively clear it to get into that state.
+- Captured request+response bodies can contain authorization codes and
+  bearer tokens. Treat the `oauth_capture_log` table like a secret
+  store (don't export / share the NDJSON casually).
+- Each profile has its own secret. Rotating one via **Rotate** does not
+  affect other profiles.
+- Delete a profile via the UI (or `DELETE /api/oauth-capture/_profiles/{name}`)
+  to wipe both the profile and its captured logs in one shot.
 
-## What we're looking for in the capture
+## After capture
 
-1. The **authorization endpoint** — where the CLI redirects the user to
-   log in. Usually something like `/v1/oauth/authorize` with client_id,
-   redirect_uri, scope, code_challenge (PKCE).
-2. The **token endpoint** — where the CLI exchanges the auth code for
-   an access_token + refresh_token. Look for `grant_type=authorization_code`.
-3. The **refresh endpoint** — how the CLI refreshes an expired token.
-   Usually the same token endpoint with `grant_type=refresh_token`.
-4. The **API bearer format** — `Authorization: Bearer <token>` or a
-   custom header? Does it include a workspace/organization identifier?
-5. **Scope claims** — what scopes does the CLI request? Does Pro Max
-   vs Team make a difference?
-6. **Session lifetime** — access_token and refresh_token expiry windows.
+Once the captures cover login + first API call + a refresh cycle:
 
-## Next step after capture
-
-Once we have 20-50 captured requests covering the full flow, implement:
-
-- `app/auth/claude_oauth.py` — device-code / authorization-code flow
-  client.
-- `app/providers/claude_oauth_provider.py` — new `provider_type=
-  claude-oauth` that stores encrypted tokens and refreshes on demand.
-- UI: Admin → Providers → "Add Claude OAuth provider" with a "Login"
-  button that kicks off the flow inline.
-
-## Safety note
-
-Do **not** enable capture on a publicly-reachable URL without the
-secret set. A malicious client with the URL could use our proxy as a
-free HTTPS amplifier pointed at Anthropic's servers. The secret +
-feature-flag + single-upstream whitelist are all that prevent this.
+1. Export NDJSON.
+2. Ship a new provider in `app/providers/<vendor>_oauth_provider.py` and
+   a `<vendor>-oauth` `provider_type` in `app/models/db.py`.
+3. Encrypted token storage uses the existing Fernet key (same as API
+   key encryption).
+4. Add a **Login** button to the provider create-edit modal that kicks
+   off the real OAuth flow inline.

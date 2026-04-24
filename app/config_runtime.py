@@ -138,29 +138,9 @@ SCHEMA: dict[str, dict] = {
         "label": "SSO Assertion Consumer Service URL",
         "group": "SSO",
     },
-    # ── OAuth capture (research tool for Claude Pro Max provider) ────────────
-    "oauth_capture_enabled": {
-        "type": "bool", "default": settings.oauth_capture_enabled,
-        "label": "OAuth capture recorder — enable /api/oauth-capture passthrough",
-        "group": "OAuth capture",
-        "help": (
-            "Research tool for reverse-engineering the claude-code CLI's OAuth flow. "
-            "When enabled, /api/oauth-capture/{path} records requests and forwards "
-            "them to the configured upstream. See docs/claude-pro-max-oauth-capture.md."
-        ),
-    },
-    "oauth_capture_upstream": {
-        "type": "str", "default": settings.oauth_capture_upstream or "https://console.anthropic.com",
-        "label": "OAuth capture upstream URL (no trailing slash)",
-        "group": "OAuth capture",
-    },
-    "oauth_capture_secret": {
-        "type": "str", "default": settings.oauth_capture_secret or "",
-        "label": "OAuth capture shared secret (required via ?cap=... or X-Capture-Secret header)",
-        "group": "OAuth capture",
-        "secret": True,
-        "help": "Leave blank to disable the secret check (NOT recommended on public proxies).",
-    },
+    # OAuth capture moved to a proper table in v2.5.0 — see Admin → Providers →
+    # "Add OAuth capture" for the multi-profile UI. The legacy global
+    # oauth_capture_* settings on `settings` are ignored since v2.5.0.
 }
 
 

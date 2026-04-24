@@ -161,17 +161,36 @@ class ModelAlias(Base):
     created_at = Column(DateTime, server_default=func.now())
 
 
+class OAuthCaptureProfile(Base):
+    """A named OAuth capture configuration. Each profile has its own upstream
+    host(s), secret, and enabled flag so multiple CLIs (claude-code, codex,
+    gh copilot, …) can be captured concurrently without interference.
+
+    Added in v2.5.0 — replaces the former single-upstream settings model.
+    """
+    __tablename__ = "oauth_capture_profiles"
+
+    name = Column(String, primary_key=True)  # "claude-code", "codex", "gh-copilot", etc.
+    preset = Column(String, nullable=True)   # matches PRESETS key in oauth_capture.py
+    upstream_urls = Column(JSON, default=list)  # list[str], typically 1-2 hosts
+    secret = Column(String, nullable=True)   # per-profile capture secret
+    enabled = Column(Boolean, default=False)
+    notes = Column(Text, nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
+
+
 class OAuthCaptureLog(Base):
     """Recorded request+response pairs from the OAuth-passthrough endpoint.
-    Backlog: Claude Pro Max OAuth provider. Used to reverse-engineer the
-    claude-code CLI's OAuth flow before implementing a direct provider.
+    Used to reverse-engineer vendor OAuth flows (claude-code, codex, gh copilot,
+    etc.) before implementing a direct `*-oauth` provider.
     """
     __tablename__ = "oauth_capture_log"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    capture_session = Column(String, nullable=True, index=True)  # optional group tag
+    profile_name = Column(String, nullable=True, index=True)  # v2.5.0: which capture profile
+    capture_session = Column(String, nullable=True, index=True)  # optional client-tag
     method = Column(String, nullable=False)
-    path = Column(String, nullable=False)         # the subpath of /api/oauth-capture/
+    path = Column(String, nullable=False)          # the subpath of /api/oauth-capture/<profile>/
     upstream_url = Column(String, nullable=False)  # where we actually sent it
     req_headers = Column(JSON, default=dict)
     req_body = Column(Text, nullable=True)         # raw body; may be JSON or form-urlencoded

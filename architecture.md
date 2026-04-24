@@ -26,6 +26,8 @@ app/
 │   │                              build_hint_with_auto_task (parse + classify),
 │   │                              apply_context_compression (truncate/mapreduce),
 │   │                              build_base_response_headers
+│   ├── oauth_capture.py         Multi-vendor OAuth capture platform (v2.5.0) — profiles,
+│   │                              SSE tail, NDJSON export, 7 CLI presets
 │   ├── models.py                GET /v1/models — OpenAI-compatible model listing
 │   ├── image_utils.py           Image detection + stripping for both wire formats (deduped 2026-04-23)
 │   ├── apikeys.py               CRUD + spending-cap/rate-limit for API keys
