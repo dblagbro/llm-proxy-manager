@@ -56,12 +56,12 @@ async def capture_passthrough(profile_name: str, path: str, request: Request):
         provided = request.query_params.get("cap") or request.headers.get("x-capture-secret")
         if provided != profile.secret:
             raise HTTPException(403, "Capture secret required")
-        query = {k: v for k, v in request.query_params.multi_items() if k != "cap"}
-        query_string = "&".join(f"{k}={v}" for k, v in query)
+        query_pairs = [(k, v) for k, v in request.query_params.multi_items() if k != "cap"]
+        query_string = "&".join(f"{k}={v}" for k, v in query_pairs)
     else:
         # Strip cap= if it snuck in anyway (e.g. legacy sidecar builds).
-        query = {k: v for k, v in request.query_params.multi_items() if k != "cap"}
-        query_string = "&".join(f"{k}={v}" for k, v in query)
+        query_pairs = [(k, v) for k, v in request.query_params.multi_items() if k != "cap"]
+        query_string = "&".join(f"{k}={v}" for k, v in query_pairs)
 
     session_tag = request.headers.get("x-capture-session") or None
 
