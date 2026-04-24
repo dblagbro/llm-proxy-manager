@@ -246,7 +246,15 @@ async def exchange_code(
 
 
 async def refresh_access_token(refresh_token: str) -> ExchangeResult:
-    """Use a stored refresh_token to mint a new access_token."""
+    """Use a stored refresh_token to mint a new access_token.
+
+    Anthropic rotates refresh tokens on use, so the returned
+    ``ExchangeResult.refresh_token`` is different from the one passed in
+    and MUST be persisted to the Provider row — otherwise the next refresh
+    call will fail with ``invalid_grant`` (the old token is consumed).
+    Callers that have a DB session should prefer
+    ``refresh_and_persist()`` below which handles persistence in one shot.
+    """
     form = {
         "grant_type": "refresh_token",
         "client_id": CLIENT_ID,
@@ -272,3 +280,26 @@ async def refresh_access_token(refresh_token: str) -> ExchangeResult:
     return ExchangeResult(
         access_token=access, refresh_token=new_refresh, expires_at=expires_at, raw=data,
     )
+
+
+async def refresh_and_persist(provider, db) -> ExchangeResult:
+    """Refresh a claude-oauth Provider's access_token and write the rotated
+    refresh_token + new expiry back to the DB in the same transaction.
+
+    This is what production code paths (messages dispatch, scanner) should
+    call when they see a 401 Unauthorized from platform.claude.com — never
+    ``refresh_access_token()`` directly, because that drops the rotated
+    token on the floor.
+    """
+    if not provider.oauth_refresh_token:
+        raise OAuthFlowError(
+            f"Provider {provider.id} ({provider.name!r}) has no refresh_token — "
+            "admin must re-run the Generate Auth URL flow."
+        )
+    result = await refresh_access_token(provider.oauth_refresh_token)
+    provider.api_key = result.access_token
+    if result.refresh_token:
+        provider.oauth_refresh_token = result.refresh_token
+    provider.oauth_expires_at = result.expires_at
+    await db.commit()
+    return result

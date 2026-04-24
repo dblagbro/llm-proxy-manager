@@ -236,7 +236,7 @@ async def _test_claude_oauth(provider: Provider) -> dict:
             "hint": "missing_api_key",
         }
 
-    headers = {**build_headers(provider.api_key), "Content-Type": "application/json"}
+    headers = {**build_headers(provider.api_key, model=model), "Content-Type": "application/json"}
     body = _inject_claude_code_system({
         "model": model,
         "max_tokens": 8,

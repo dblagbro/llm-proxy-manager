@@ -298,7 +298,10 @@ async def _complete_claude_oauth(
 ) -> dict:
     """Non-streaming ``/v1/messages`` call against platform.claude.com."""
     url = f"{PLATFORM_BASE_URL}/v1/messages?beta=true"
-    headers = {**_claude_oauth_headers(access_token), "Content-Type": "application/json"}
+    headers = {
+        **_claude_oauth_headers(access_token, model=body.get("model")),
+        "Content-Type": "application/json",
+    }
     body = _inject_claude_code_system(body)
     try:
         async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
@@ -343,7 +346,10 @@ async def _stream_claude_oauth(
     Anthropic SSE, so we can forward chunks as-is and just sniff usage
     events for metrics + cache storage."""
     url = f"{PLATFORM_BASE_URL}/v1/messages?beta=true"
-    headers = {**_claude_oauth_headers(access_token), "Content-Type": "application/json"}
+    headers = {
+        **_claude_oauth_headers(access_token, model=body.get("model")),
+        "Content-Type": "application/json",
+    }
     # Ensure stream=true is set and the CC marker is present on the body
     # the upstream sees (Anthropic rejects OAuth-auth'd requests without it).
     body = _inject_claude_code_system({**body, "stream": True})

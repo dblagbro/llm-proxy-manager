@@ -338,6 +338,67 @@ class TestRefresh:
             await refresh_access_token("dead-refresh")
 
 
+class TestRefreshAndPersist:
+    """Verifies that rotated refresh tokens are written back to the Provider row.
+
+    Without this, the next refresh call uses the consumed token and fails
+    with ``invalid_grant`` — a real bug we hit in manual testing.
+    """
+
+    class _FakeProvider:
+        def __init__(self, refresh):
+            self.id = "p_fake"
+            self.name = "FakeProv"
+            self.api_key = "old-access"
+            self.oauth_refresh_token = refresh
+            self.oauth_expires_at = None
+
+    class _FakeDB:
+        def __init__(self):
+            self.committed = False
+        async def commit(self):
+            self.committed = True
+
+    @pytest.mark.asyncio
+    async def test_persists_rotated_tokens(self, fake_http):
+        from app.providers.claude_oauth_flow import refresh_and_persist
+        fake_http.next_data = {
+            "access_token": "sk-ant-oat01-NEW",
+            "refresh_token": "rotated-refresh",
+            "expires_in": 3600,
+        }
+        p = self._FakeProvider("old-refresh")
+        db = self._FakeDB()
+        result = await refresh_and_persist(p, db)
+        # Returned result uses the new tokens
+        assert result.access_token == "sk-ant-oat01-NEW"
+        assert result.refresh_token == "rotated-refresh"
+        # Provider row mutated to the new tokens
+        assert p.api_key == "sk-ant-oat01-NEW"
+        assert p.oauth_refresh_token == "rotated-refresh"
+        assert p.oauth_expires_at is not None
+        # And the DB transaction was committed
+        assert db.committed
+
+    @pytest.mark.asyncio
+    async def test_keeps_old_refresh_when_server_omits_rotation(self, fake_http):
+        """If the server returns no refresh_token, keep the old one (non-rotating server)."""
+        from app.providers.claude_oauth_flow import refresh_and_persist
+        fake_http.next_data = {"access_token": "sk-ant-oat01-NEW"}  # no refresh_token
+        p = self._FakeProvider("keep-me")
+        db = self._FakeDB()
+        await refresh_and_persist(p, db)
+        assert p.oauth_refresh_token == "keep-me"
+
+    @pytest.mark.asyncio
+    async def test_no_refresh_token_raises(self, fake_http):
+        from app.providers.claude_oauth_flow import refresh_and_persist
+        p = self._FakeProvider(None)
+        db = self._FakeDB()
+        with pytest.raises(OAuthFlowError, match="no refresh_token"):
+            await refresh_and_persist(p, db)
+
+
 # ── TTL sweep ───────────────────────────────────────────────────────────────
 class TestTTLSweep:
     def test_old_entries_swept(self):

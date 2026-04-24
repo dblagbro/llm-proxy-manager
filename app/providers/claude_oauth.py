@@ -53,6 +53,21 @@ OAUTH_BETA_FLAGS = (
     "effort-2025-11-24"
 )
 
+# Beta flags that the Claude Pro Max subscription doesn't grant for lower
+# tiers. Haiku in particular rejects requests with context-1m-2025-08-07
+# as ``"The long context beta is not yet available for this subscription."``.
+# We strip those dynamically per-model rather than dropping them from the
+# default set — Sonnet/Opus still get the full 1M context window.
+_HAIKU_DISALLOWED_BETAS = ("context-1m-2025-08-07",)
+
+
+def _beta_flags_for_model(model: str) -> str:
+    model_lc = (model or "").lower()
+    if "haiku" in model_lc:
+        parts = [f.strip() for f in OAUTH_BETA_FLAGS.split(",")]
+        return ",".join(p for p in parts if p not in _HAIKU_DISALLOWED_BETAS)
+    return OAUTH_BETA_FLAGS
+
 ANTHROPIC_API_VERSION = "2023-06-01"
 
 TOKEN_PREFIX = "sk-ant-oat"  # covers sk-ant-oat01-... and any future variant
@@ -173,14 +188,18 @@ def _to_unix_ts(v) -> Optional[float]:
 # ── Request-side helpers ─────────────────────────────────────────────────────
 
 
-def build_headers(access_token: str) -> dict[str, str]:
+def build_headers(access_token: str, model: Optional[str] = None) -> dict[str, str]:
     """Return the exact header set Claude Code uses for OAuth-authenticated
     ``/v1/messages`` requests. Mirroring the CLI's headers avoids subtle
-    400s from the beta-flag server-side enforcement."""
+    400s from the beta-flag server-side enforcement.
+
+    ``model`` is optional; when provided, we prune beta flags the model's
+    tier doesn't grant (e.g. strip ``context-1m-2025-08-07`` for Haiku).
+    """
     return {
         "Authorization": f"Bearer {access_token}",
         "anthropic-version": ANTHROPIC_API_VERSION,
-        "anthropic-beta": OAUTH_BETA_FLAGS,
+        "anthropic-beta": _beta_flags_for_model(model or ""),
         "anthropic-dangerous-direct-browser-access": "true",
         "x-app": "cli",
     }
