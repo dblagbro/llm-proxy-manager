@@ -62,7 +62,7 @@ curl -H "x-api-key: llmp2-your-key" \
 
 ```bash
 curl https://www.voipguru.org/llm-proxy2/health
-# {"status":"healthy","version":"2.0.0","nodeId":"...","totalProviders":N,"healthyProviders":N,...}
+# {"status":"healthy","version":"2.7.5","nodeId":"...","totalProviders":N,"healthyProviders":N,...}
 ```
 
 ### LLM Endpoints (same paths as v1)
@@ -152,6 +152,35 @@ sudo docker compose up -d --force-recreate --no-deps llm-proxy2
 # Verify
 curl -s https://www.voipguru.org/llm-proxy2/health | jq
 ```
+
+## Provider Types
+
+| Type | Auth | Notes |
+|------|------|-------|
+| `anthropic` | `x-api-key` (sk-ant-api03-…) | Standard Anthropic API keys |
+| `openai` | `Authorization: Bearer` | OpenAI platform + any OpenAI-compatible endpoint |
+| `google` | API key | Gemini / Vertex |
+| `vertex` | Service account | Google Cloud Vertex AI |
+| `grok` | `Authorization: Bearer` | xAI |
+| `ollama` | none (local) | Self-hosted Ollama |
+| `compatible` | varies | Generic OpenAI-compatible (LM Studio, LocalAI, etc.) |
+| `claude-oauth` | OAuth `Bearer sk-ant-oat…` | **Claude Pro Max subscription** — see below |
+
+### Claude Pro Max subscription (`claude-oauth`) — v2.7.1+
+
+Add a Claude Pro Max account as a provider without needing an Anthropic API key.
+In the Providers UI, pick `provider_type: claude-oauth` and click **Generate
+Auth URL**. Open the URL in a browser where you're signed in to claude.ai,
+approve, and paste the `CODE#STATE` string from the success page back into the
+form. The proxy handles the PKCE token exchange and stores access + refresh
+tokens (Fernet-encrypted at rest).
+
+Traffic to `claude-oauth` providers bypasses litellm and hits
+`platform.claude.com/v1/messages` directly with the exact Claude Code header
+bundle (Bearer auth + beta flags + required system-prompt marker). Haiku models
+automatically drop the `context-1m` beta flag that the Pro Max tier doesn't
+grant. Scan Models, Test Provider, tool_use, streaming, vision, and prompt
+caching all work end-to-end — see `scripts/test_claude_oauth_live.py`.
 
 ## Key Differences from v1
 
