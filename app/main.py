@@ -59,8 +59,8 @@ async def lifespan(app: FastAPI):
             observe_circuit_breaker_state(p.id, "closed")  # seed Prometheus gauge
 
     # Observability — Prometheus service info + OTEL tracer (graceful no-op when unset)
-    set_service_info(version="2.5.0", node_id=settings.cluster_node_id or "")
-    init_tracer(service_name="llm-proxy", version="2.5.0")
+    set_service_info(version="2.6.0", node_id=settings.cluster_node_id or "")
+    init_tracer(service_name="llm-proxy", version="2.6.0")
 
     # Start background tasks
     start_monitor(notify_fn=_notify_provider_degraded)
@@ -81,7 +81,7 @@ async def _notify_provider_degraded(severity: str, message: str, provider_id: st
 
 app = FastAPI(
     title="llm-proxy",
-    version="2.5.0",
+    version="2.6.0",
     description="Self-hosted LLM routing gateway — LMRH protocol + CoT-E augmentation",
     lifespan=lifespan,
     docs_url="/docs",
@@ -148,12 +148,12 @@ app.include_router(oauth_capture_router)
 # ── Utility endpoints ────────────────────────────────────────────────────────
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": "2.5.0"}
+    return {"status": "ok", "version": "2.6.0"}
 
 
 @app.get("/version")
 async def version():
-    return {"service": "llm-proxy", "version": "2.5.0", "docs": "/docs"}
+    return {"service": "llm-proxy", "version": "2.6.0", "docs": "/docs"}
 
 
 @app.get("/metrics", include_in_schema=False)
