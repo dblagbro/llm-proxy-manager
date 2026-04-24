@@ -238,6 +238,55 @@ async def _webhook_completion_anthropic(
 # and (b) the response is already in Anthropic's native format, so we can
 # forward the stream/body verbatim without going through any adapter.
 
+# v2.7.2: Anthropic's OAuth-auth'd /v1/messages endpoint requires the system
+# prompt to START with the Claude Code marker. Without it the API returns a
+# masked ``rate_limit_error`` with message ``"Error"`` regardless of the real
+# rejection reason, making it impossible to debug. The CLI hardcodes these
+# same three variants — we always prepend the base variant; if the caller's
+# own system block already starts with any allowed marker we leave it alone.
+_CLAUDE_CODE_SYS_MARKER = "You are Claude Code, Anthropic's official CLI for Claude."
+_ALLOWED_SYS_MARKERS = (
+    _CLAUDE_CODE_SYS_MARKER,
+    _CLAUDE_CODE_SYS_MARKER + ", running within the Claude Agent SDK.",
+    "You are a Claude agent, built on Anthropic's Claude Agent SDK.",
+)
+
+
+def _inject_claude_code_system(body: dict) -> dict:
+    """Ensure the outgoing body's ``system`` starts with the CC marker.
+
+    Returns a shallow-copied body; callers pass the result to httpx.
+    """
+    sys_field = body.get("system")
+
+    def _first_text(v) -> str:
+        if isinstance(v, str):
+            return v
+        if isinstance(v, list) and v:
+            first = v[0]
+            if isinstance(first, dict) and first.get("type") == "text":
+                return str(first.get("text") or "")
+        return ""
+
+    head = _first_text(sys_field).lstrip()
+    if head and any(head.startswith(m) for m in _ALLOWED_SYS_MARKERS):
+        return body  # caller already identifying as Claude Code
+
+    marker_block = {"type": "text", "text": _CLAUDE_CODE_SYS_MARKER}
+
+    if sys_field is None:
+        new_system: list | str = [marker_block]
+    elif isinstance(sys_field, str):
+        # Preserve caller's system as a second block rather than prefix-joining
+        # so the marker stays isolated (CC's real format).
+        new_system = [marker_block, {"type": "text", "text": sys_field}]
+    elif isinstance(sys_field, list):
+        new_system = [marker_block, *sys_field]
+    else:
+        new_system = [marker_block]
+
+    return {**body, "system": new_system}
+
 
 async def _complete_claude_oauth(
     access_token: str,
@@ -250,6 +299,7 @@ async def _complete_claude_oauth(
     """Non-streaming ``/v1/messages`` call against platform.claude.com."""
     url = f"{PLATFORM_BASE_URL}/v1/messages?beta=true"
     headers = {**_claude_oauth_headers(access_token), "Content-Type": "application/json"}
+    body = _inject_claude_code_system(body)
     try:
         async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
             r = await client.post(url, json=body, headers=headers)
@@ -294,8 +344,9 @@ async def _stream_claude_oauth(
     events for metrics + cache storage."""
     url = f"{PLATFORM_BASE_URL}/v1/messages?beta=true"
     headers = {**_claude_oauth_headers(access_token), "Content-Type": "application/json"}
-    # Ensure stream=true is set on the body the upstream sees
-    body = {**body, "stream": True}
+    # Ensure stream=true is set and the CC marker is present on the body
+    # the upstream sees (Anthropic rejects OAuth-auth'd requests without it).
+    body = _inject_claude_code_system({**body, "stream": True})
 
     in_tok = out_tok = 0
     cache_creation = cache_read = 0
