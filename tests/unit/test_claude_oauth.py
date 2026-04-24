@@ -166,6 +166,23 @@ class TestBuildHeaders:
         assert "x-api-key" not in h
         assert "X-Api-Key" not in h
 
+    def test_haiku_strips_long_context_beta(self):
+        """Haiku doesn't grant context-1m-2025-08-07 at the Pro Max tier —
+        keeping it in the header returns 400 'long context beta not yet available'."""
+        h = build_headers(SAMPLE_TOKEN, model="claude-haiku-4-5-20251001")
+        assert "context-1m-2025-08-07" not in h["anthropic-beta"]
+        # Other flags still present
+        assert "oauth-2025-04-20" in h["anthropic-beta"]
+        assert "claude-code-20250219" in h["anthropic-beta"]
+
+    def test_sonnet_keeps_long_context_beta(self):
+        h = build_headers(SAMPLE_TOKEN, model="claude-sonnet-4-6")
+        assert "context-1m-2025-08-07" in h["anthropic-beta"]
+
+    def test_no_model_keeps_full_flag_set(self):
+        h = build_headers(SAMPLE_TOKEN)
+        assert "context-1m-2025-08-07" in h["anthropic-beta"]
+
 
 class TestIsTokenExpired:
     def test_none_returns_false(self):
