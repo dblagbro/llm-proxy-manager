@@ -194,9 +194,17 @@ async def chat_completions(
     budget_total = body.get("max_tokens", 0) or 0
     resp_headers = {
         "X-Provider": route.provider.name,
+        "X-Resolved-Provider": route.provider.provider_type,  # Wave 5 #28: honest disclosure
         "LLM-Capability": route.capability_header,
         "X-Resolved-Model": route.litellm_model,
     }
+    # Wave 5 #28 — advertise emulation level
+    _emul_level = "minimal"
+    if route.tool_emulation_engaged or route.vision_stripped:
+        _emul_level = "standard"
+    if route.cot_engaged:
+        _emul_level = "enhanced"
+    resp_headers["X-Emulation-Level"] = _emul_level
     if auto_task:
         resp_headers["X-Task-Auto-Detected"] = auto_task
     if vision_routed_count:
