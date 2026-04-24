@@ -37,7 +37,7 @@ async def health():
 
     return {
         "status": "healthy" if healthy > 0 else "degraded",
-        "version": "2.6.1",
+        "version": "2.6.2",
         "nodeId": settings.cluster_node_id,
         "totalProviders": total,
         "healthyProviders": healthy,

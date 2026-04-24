@@ -45,15 +45,23 @@ async def capture_passthrough(profile_name: str, path: str, request: Request):
     if not profile.upstream_urls:
         raise HTTPException(500, "Profile has no upstream URLs configured")
 
-    # Secret check
-    if profile.secret:
+    # Secret check — v2.6.2:
+    # Trust direct docker-internal requests (sidecar → llm-proxy2 on the
+    # internal network, no nginx in the loop, so no X-Forwarded-For).
+    # Public workstation traffic flows through nginx which always sets
+    # X-Forwarded-For, so those requests still need ?cap=SECRET or the
+    # X-Capture-Secret header.
+    internal = not request.headers.get("x-forwarded-for")
+    if profile.secret and not internal:
         provided = request.query_params.get("cap") or request.headers.get("x-capture-secret")
         if provided != profile.secret:
             raise HTTPException(403, "Capture secret required")
         query = {k: v for k, v in request.query_params.multi_items() if k != "cap"}
         query_string = "&".join(f"{k}={v}" for k, v in query)
     else:
-        query_string = request.url.query
+        # Strip cap= if it snuck in anyway (e.g. legacy sidecar builds).
+        query = {k: v for k, v in request.query_params.multi_items() if k != "cap"}
+        query_string = "&".join(f"{k}={v}" for k, v in query)
 
     session_tag = request.headers.get("x-capture-session") or None
 
