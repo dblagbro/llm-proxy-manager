@@ -28,12 +28,13 @@ app/
 │   │                              build_base_response_headers
 │   ├── oauth_capture/           Multi-vendor OAuth capture package (v2.5.0; packaged 2026-04-24):
 │   │   ├── __init__.py          merges sub-routers; re-exports test helpers
-│   │   ├── presets.py           CapturePreset + 8-entry PRESETS table (login_cmd in v2.6.0)
+│   │   ├── presets.py           CapturePreset + 8-entry PRESETS table
 │   │   ├── profiles.py          /_presets + /_profiles/… CRUD endpoints
 │   │   ├── logs.py              /_log + SSE tail + NDJSON export
 │   │   ├── passthrough.py       /{profile}/{path} forwarding catch-all
-│   │   ├── terminal.py          v2.6.0: /login + /_terminal WS relay to sidecar
 │   │   └── serializers.py       header filters + row→dict + _safe_text
+│   │                            (sidecar/terminal.py deleted in v2.7.0 —
+│   │                             replaced by claude-oauth provider flow)
 │   ├── models.py                GET /v1/models — OpenAI-compatible model listing
 │   ├── image_utils.py           Image detection + stripping for both wire formats (deduped 2026-04-23)
 │   ├── apikeys.py               CRUD + spending-cap/rate-limit for API keys
@@ -128,31 +129,73 @@ app/
 - **New wire format**: add endpoint file in `api/`, add image utils to `image_utils.py`, add SSE generators to `cot/sse.py`
 - **New metric**: update `record_outcome()` in `monitoring/helpers.py` — propagates to all 6 call-sites automatically
 
-## Sidecar: `llm-proxy2-capture` (v2.6.0)
+## Claude Pro Max OAuth (`claude-oauth` provider type, v2.7.1+)
 
-Separate container that runs vendor CLI tools (`claude login`, etc.) in a PTY and
-relays them to the browser via WebSocket. Lives in `sidecar/` at the repo root,
-built from its own `Dockerfile`, and runs next to `llm-proxy2` on the default
-docker network.
+Instead of managing an Anthropic API key, admins can attach their Claude
+Pro Max subscription as a provider. The flow is entirely in-browser —
+no CLI install, no paste-a-token step.
 
 ```
-sidecar/
-├── Dockerfile          python:3.11-slim + npm + @anthropic-ai/claude-code
-│                         + aiohttp + ptyprocess
-├── capture-runner.py   POST /spawn → fork a PTY for a whitelisted CLI
-│                       WS   /term/{sid} → bidirectional stdin/stdout relay
-│                       POST /kill/{sid} → terminate
-│                       GET  /health
-└── README.md
+app/providers/
+├── claude_oauth.py           Credential parser, build_headers(model=),
+│                              _beta_flags_for_model (strips 1M-context
+│                              flag for Haiku which Pro Max doesn't grant).
+└── claude_oauth_flow.py      PKCE authorize URL builder, code exchange,
+                              refresh_access_token, refresh_and_persist.
+
+app/api/_messages_streaming.py
+  _complete_claude_oauth /    Bypass litellm — POST directly to
+  _stream_claude_oauth          platform.claude.com with Bearer auth.
+  _inject_claude_code_system  Prepend "You are Claude Code..." marker
+                                required by the OAuth endpoint (otherwise
+                                returns masked rate_limit_error).
 ```
 
-**Trust boundary**: the sidecar has no auth of its own. It only accepts traffic
-from the main `llm-proxy2` container on the internal docker network. All
-externally-facing admin auth is enforced by the main proxy in
-`app/api/oauth_capture/terminal.py` before the WebSocket is relayed.
+**OAuth wire flow** (v2.7.2 endpoints extracted from
+`@anthropic-ai/claude-code` v2.1.119 binary):
 
-**Adding a new CLI** (e.g. `codex`, `gh`): install it in the Dockerfile, add
-its binary name to `CLI_WHITELIST` in `capture-runner.py`, set `login_cmd` on
-the matching preset in `app/api/oauth_capture/presets.py`. No UI changes
-required — a new preset with a non-empty `login_cmd` automatically lights up
-the **Login** button in the OAuth Capture wizard.
+```
+Admin clicks "Generate Auth URL"
+  → POST /api/providers/claude-oauth/authorize
+  → Proxy builds PKCE + state and returns
+      https://claude.com/cai/oauth/authorize
+        ?code=true&client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e
+        &response_type=code
+        &redirect_uri=https://platform.claude.com/oauth/code/callback
+        &scope=org:create_api_key user:profile user:inference
+               user:sessions:claude_code user:mcp_servers user:file_upload
+        &code_challenge=<S256>&code_challenge_method=S256&state=<state>
+  → Admin opens URL, approves on claude.ai
+  → Anthropic success page displays "CODE#STATE" with a Copy button
+Admin pastes CODE#STATE back into the form
+  → POST /api/providers/claude-oauth/exchange
+  → Proxy POSTs JSON to platform.claude.com/v1/oauth/token
+      {grant_type: "authorization_code", code, state, client_id,
+       redirect_uri, code_verifier}
+  → Token response → stored on Provider row
+      (api_key = access_token, oauth_refresh_token, oauth_expires_at)
+```
+
+**Request-side quirks** (all handled in `_complete_claude_oauth` /
+`_stream_claude_oauth`):
+
+- `Authorization: Bearer sk-ant-oat01-…` (not `x-api-key`)
+- `anthropic-beta: claude-code-20250219, oauth-2025-04-20,
+  context-1m-2025-08-07, interleaved-thinking-…, …`
+  — the full CC beta bundle; `context-1m-2025-08-07` is stripped for Haiku.
+- `x-app: cli`, `anthropic-dangerous-direct-browser-access: true`
+- `system` must start with one of three allowed Claude Code markers or
+  the API returns a masked `rate_limit_error`. `_inject_claude_code_system`
+  prepends the base marker (`"You are Claude Code, Anthropic's official
+  CLI for Claude."`) unless caller already identifies as CC.
+
+**Token rotation**: Anthropic rotates the refresh_token on each use.
+`refresh_and_persist(provider, db)` is the canonical helper — it refreshes
+AND writes the rotated token back to the DB. Never call
+`refresh_access_token()` directly from production paths; the rotated token
+would be dropped and the next refresh would fail with `invalid_grant`.
+
+**Live test**: `scripts/test_claude_oauth_live.py` exercises 17 code paths
+(basic, streaming, multi-turn, tool_use, vision, caching, concurrent,
+multiple models, scan, test button, refresh, invalid-model errors,
+metrics) against a real provider. Not run in CI — opt-in via docker exec.
