@@ -149,6 +149,13 @@ async def test_provider(provider: Provider) -> dict:
     from app.routing.router import build_litellm_model, build_litellm_kwargs
     from app.routing.circuit_breaker import record_failure, record_success, is_billing_error
 
+    # v2.7.2: claude-oauth bypasses litellm entirely — OAuth tokens need
+    # Bearer auth + specific beta flags + the CC system-prompt marker that
+    # litellm doesn't know about. Use the same direct httpx path
+    # /v1/messages uses in production.
+    if provider.provider_type == "claude-oauth":
+        return await _test_claude_oauth(provider)
+
     model = build_litellm_model(provider)
     kwargs = build_litellm_kwargs(provider)
 
@@ -189,4 +196,64 @@ async def test_provider(provider: Provider) -> dict:
             "error_detail": err_str,  # full trace still available to power-users
             "model": model,
             "billing_error": billing,
+        }
+
+
+async def _test_claude_oauth(provider: Provider) -> dict:
+    """Smoke-test a claude-oauth provider against platform.claude.com directly.
+
+    Mirrors what ``_complete_claude_oauth`` does in the real messages path —
+    Bearer auth, CC beta flags, and the required system-prompt marker.
+    """
+    import httpx
+    from app.providers.claude_oauth import build_headers, PLATFORM_BASE_URL
+    from app.api._messages_streaming import _inject_claude_code_system
+    from app.routing.circuit_breaker import record_failure, record_success, is_billing_error
+
+    model = provider.default_model or "claude-sonnet-4-6"
+
+    if not provider.api_key:
+        return {
+            "success": False,
+            "error": "No OAuth access_token stored. Re-run the authorize flow.",
+            "model": model,
+            "billing_error": False,
+            "hint": "missing_api_key",
+        }
+
+    headers = {**build_headers(provider.api_key), "Content-Type": "application/json"}
+    body = _inject_claude_code_system({
+        "model": model,
+        "max_tokens": 8,
+        "messages": [{"role": "user", "content": "Reply with: OK"}],
+    })
+    url = f"{PLATFORM_BASE_URL}/v1/messages?beta=true"
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as c:
+            r = await c.post(url, json=body, headers=headers)
+        if r.status_code >= 400:
+            err = f"{r.status_code}: {r.text[:400]}"
+            billing = is_billing_error(err)
+            await record_failure(provider.id, billing_error=billing)
+            return {
+                "success": False,
+                "error": err,
+                "error_detail": err,
+                "model": model,
+                "billing_error": billing,
+            }
+        data = r.json()
+        text = "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
+        await record_success(provider.id)
+        return {"success": True, "response": text, "model": model}
+    except httpx.HTTPError as e:
+        err_str = str(e)
+        await record_failure(provider.id, billing_error=False)
+        return {
+            "success": False,
+            "error": err_str,
+            "error_detail": err_str,
+            "model": model,
+            "billing_error": False,
         }
