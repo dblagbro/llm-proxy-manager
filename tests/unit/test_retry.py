@@ -111,7 +111,7 @@ class TestAcompletionWithRetry:
 
         async def _always_rate_limit(model, messages, **kwargs):
             call_count["n"] += 1
-            raise RateLimitError("upstream throttled - try later")
+            raise RateLimitError("429 Too Many Requests")
 
         async def _fake_sleep(s):
             pass
@@ -131,7 +131,7 @@ class TestAcompletionWithRetry:
         async def _flaky(model, messages, **kwargs):
             call_count["n"] += 1
             if call_count["n"] < 2:
-                raise RateLimitError("upstream throttled")
+                raise RateLimitError("rate_limit_error: please back off")
             return {"content": "recovered"}
 
         async def _fake_sleep(s):
