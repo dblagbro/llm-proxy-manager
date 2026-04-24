@@ -1,38 +1,46 @@
 """
 Interactive OAuth Authorization-Code flow for Claude Pro Max (v2.7.1).
 
-Anthropic publishes a public OAuth client-metadata JSON at
-``https://claude.ai/oauth/claude-code-client-metadata`` that declares
-Claude Code as an RFC 7591 dynamically-registered public client:
+Claude Code's CLI uses an OAuth 2.0 authorization-code + PKCE flow against
+a pre-registered public client. Values extracted from the
+``@anthropic-ai/claude-code`` binary (v2.1.119):
 
-    client_id (URL):    https://claude.ai/oauth/claude-code-client-metadata
-    authorize endpoint: https://platform.claude.com/oauth/authorize
+    client_id:          9d1c250a-e61b-44d9-88ed-5944d1962f5e
+    authorize endpoint: https://claude.com/cai/oauth/authorize
+                        (redirects to https://claude.ai/oauth/authorize)
     token endpoint:     https://platform.claude.com/v1/oauth/token
-    redirect_uris:      http://localhost/callback, http://127.0.0.1/callback
+    redirect_uri:       https://platform.claude.com/oauth/code/callback
     auth method:        none  (public client, no client_secret; PKCE S256)
     grant_types:        authorization_code, refresh_token
 
-Because the only whitelisted redirect URIs are localhost, we can't host
-the redirect ourselves. Instead:
-    1. Admin clicks "Generate Auth URL" — our backend builds the PKCE
-       authorize URL with ``redirect_uri=http://localhost/callback`` and
-       stores the ``code_verifier`` keyed on a random ``state``.
-    2. Admin opens the URL in their browser, approves on claude.ai, and
-       gets redirected to ``http://localhost/callback?code=XXX&state=YYY``.
-       That URL fails to load (nothing on localhost), but the admin can
-       copy it from the address bar.
-    3. Admin pastes the full URL (or just ``code=XXX``) back into the UI.
-       Our backend looks up the state, exchanges the code + verifier for
-       tokens, and returns the access_token / refresh_token / expires_at
-       to wire into a new Provider row.
+The callback URL is a real Anthropic-hosted page that, after the user
+approves on claude.ai, displays the authorization code for copy-paste
+(this is how CC's ``claude /login`` web mode works when no local
+callback listener is available). That's exactly the UX we want:
 
-Scope list observed from Claude Code's binary: ``user:profile
-user:inference user:sessions:claude_code user:mcp_servers``.
+    1. Admin clicks "Generate Auth URL" — our backend builds the PKCE
+       authorize URL with ``redirect_uri=https://platform.claude.com/oauth/code/callback``
+       and stores the ``code_verifier`` keyed on a random ``state``.
+    2. Admin opens the URL in a browser where they're signed in to
+       claude.ai, approves access, and is redirected to Anthropic's
+       success page which displays the code.
+    3. Admin copies the code (or the full callback URL) and pastes it
+       back into the UI. Our backend matches the state, exchanges code +
+       verifier for tokens, and returns access/refresh/expires_at to
+       wire into a new Provider row.
 
 Pending-state store is in-memory; a pending flow is dropped after
 ``PENDING_TTL_SEC`` (default 10 min) or after a successful exchange.
 If the process restarts mid-flow, the admin just clicks "Generate
 Auth URL" again.
+
+Historical note: v2.7.1's first draft used the RFC 7591 dynamic-client
+metadata URL (``https://claude.ai/oauth/claude-code-client-metadata``)
+as the client_id and ``http://localhost/callback`` as the redirect_uri.
+That combination **was not accepted** by claude.ai's SSO gateway —
+users got a generic "error logging you in" page after approving.
+Switching to the pre-registered UUID + platform.claude.com redirect
+(the same pair the CLI uses) is what actually works.
 """
 from __future__ import annotations
 
@@ -48,11 +56,14 @@ import httpx
 
 
 # ── Endpoints (extracted from the @anthropic-ai/claude-code binary, v2.1.119) ─
-AUTHORIZE_URL = "https://platform.claude.com/oauth/authorize"
+AUTHORIZE_URL = "https://claude.com/cai/oauth/authorize"
 TOKEN_URL = "https://platform.claude.com/v1/oauth/token"
-CLIENT_ID = "https://claude.ai/oauth/claude-code-client-metadata"
-REDIRECT_URI = "http://localhost/callback"
-DEFAULT_SCOPE = "user:profile user:inference user:sessions:claude_code user:mcp_servers"
+CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+REDIRECT_URI = "https://platform.claude.com/oauth/code/callback"
+DEFAULT_SCOPE = (
+    "org:create_api_key user:profile user:inference "
+    "user:sessions:claude_code user:mcp_servers user:file_upload"
+)
 
 PENDING_TTL_SEC = 600
 
@@ -101,22 +112,32 @@ def start_authorize(scope: str = DEFAULT_SCOPE) -> AuthorizeStart:
     verifier = _gen_code_verifier()
     _PENDING[state] = _PendingFlow(code_verifier=verifier, created_at=time.time())
     params = {
-        "response_type": "code",
+        # ``code=true`` is the extra flag Anthropic's authorize endpoint
+        # requires to display the code on the redirect page. Without it,
+        # the flow still completes but the success page doesn't surface the
+        # code for copy-paste.
+        "code": "true",
         "client_id": CLIENT_ID,
+        "response_type": "code",
         "redirect_uri": REDIRECT_URI,
         "scope": scope,
-        "state": state,
         "code_challenge": _code_challenge(verifier),
         "code_challenge_method": "S256",
+        "state": state,
     }
     return AuthorizeStart(state=state, authorize_url=f"{AUTHORIZE_URL}?{urlencode(params)}")
 
 
 def extract_code_from_callback(raw: str) -> tuple[str, Optional[str]]:
-    """Accept either:
-       - the full callback URL (``http://localhost/callback?code=XXX&state=YYY``)
-       - a bare ``code=XXX&state=YYY`` query fragment
-       - just the code value (``XXX``)
+    """Accept any of the paste formats Anthropic's success page surfaces:
+
+    - ``CODE#STATE`` — the single-token format CC's success page shows in
+      a "Copy" button (this is the dominant case in practice).
+    - Full callback URL:
+      ``https://platform.claude.com/oauth/code/callback?code=XXX&state=YYY``
+    - A bare ``code=XXX&state=YYY`` query fragment.
+    - Just the code value (no state) — only useful when the caller already
+      knows the state out-of-band.
 
     Returns ``(code, state_or_None)``.
     """
@@ -138,6 +159,15 @@ def extract_code_from_callback(raw: str) -> tuple[str, Optional[str]]:
         state = (q.get("state") or [None])[0]
         if not code:
             raise ValueError("No `code` parameter found")
+        return code, state
+    # CODE#STATE (the single-token copy-paste format)
+    if "#" in raw:
+        code, state = raw.split("#", 1)
+        if not code or not state:
+            raise ValueError(
+                "Code looks truncated — expected format 'CODE#STATE'. "
+                "Please copy the full string from the success page."
+            )
         return code, state
     # Bare code
     return raw, None
@@ -178,15 +208,19 @@ async def exchange_code(
             "flow expires after 10 minutes."
         )
 
+    # Note: Anthropic's /v1/oauth/token requires ``state`` in the form —
+    # non-standard for OAuth2, but the CC CLI sends it and the server 400s
+    # without it. POST as JSON (CC uses application/json, not form-urlencoded).
     form = {
         "grant_type": "authorization_code",
         "client_id": CLIENT_ID,
         "code": code,
         "redirect_uri": REDIRECT_URI,
         "code_verifier": pending.code_verifier,
+        "state": state,
     }
     async with httpx.AsyncClient(timeout=30.0) as c:
-        resp = await c.post(TOKEN_URL, data=form)
+        resp = await c.post(TOKEN_URL, json=form)
     if resp.status_code >= 400:
         # Put the pending back so the admin can retry with a fresh code
         # without re-clicking the authorize URL (Anthropic usually allows
@@ -219,7 +253,7 @@ async def refresh_access_token(refresh_token: str) -> ExchangeResult:
         "refresh_token": refresh_token,
     }
     async with httpx.AsyncClient(timeout=30.0) as c:
-        resp = await c.post(TOKEN_URL, data=form)
+        resp = await c.post(TOKEN_URL, json=form)
     if resp.status_code >= 400:
         raise OAuthFlowError(
             f"Refresh failed ({resp.status_code}): {resp.text[:400]}"
