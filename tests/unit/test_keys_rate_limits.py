@@ -13,6 +13,7 @@ if not hasattr(sys.modules["litellm"], "RateLimitError"):
 from fastapi import HTTPException
 
 import app.auth.keys as keys_mod
+import app.auth.rate_limit_state as rl_state  # monkeypatch target after 2026-04-23 refactor
 from app.auth.keys import (
     _check_rpd, _check_burst, begin_in_flight, end_in_flight,
 )
@@ -30,7 +31,7 @@ def reset_state():
 @pytest.fixture
 def single_node(monkeypatch):
     """Force active_node_count=1 so per-node share == full limit."""
-    monkeypatch.setattr(keys_mod, "active_node_count", lambda: 1)
+    monkeypatch.setattr(rl_state, "active_node_count", lambda: 1)
 
 
 class TestCheckRpd:
@@ -77,7 +78,7 @@ class TestCheckRpd:
 
     def test_per_node_share_splits_limit(self, monkeypatch):
         """With 3 nodes, limit=300 => per-node limit=100."""
-        monkeypatch.setattr(keys_mod, "active_node_count", lambda: 3)
+        monkeypatch.setattr(rl_state, "active_node_count", lambda: 3)
         for _ in range(100):
             _check_rpd("k1", 300)
         with pytest.raises(HTTPException):

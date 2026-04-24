@@ -17,7 +17,9 @@ def clear_windows():
 
 
 def _patch_nodes(n: int):
-    return patch("app.auth.keys.active_node_count", return_value=n)
+    # Patches the function actually called by _check_rate_limit (moved to
+    # app/auth/rate_limit_state.py in 2026-04-23 refactor).
+    return patch("app.auth.rate_limit_state.active_node_count", return_value=n)
 
 
 # ── basic behaviour ───────────────────────────────────────────────────────────

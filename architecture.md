@@ -15,23 +15,37 @@ app/
 ├── config_runtime.py        Hot-reloadable settings (editable via Admin UI / cluster sync)
 │
 ├── api/
-│   ├── messages.py          POST /v1/messages — Anthropic wire format handler
-│   ├── completions.py       POST /v1/chat/completions — OpenAI wire format handler
-│   ├── models.py            GET /v1/models — OpenAI-compatible model listing
-│   ├── image_utils.py       Image detection + stripping for both wire formats
-│   ├── apikeys.py           CRUD + spending-cap/rate-limit for API keys
-│   ├── providers.py         CRUD + model capability management for providers
-│   └── admin.py             Admin auth, user management, settings UI API
+│   ├── messages.py              POST /v1/messages — Anthropic wire format handler (routing + cache only)
+│   ├── _messages_streaming.py   Tail: _stream_cot_anthropic / _stream_anthropic /
+│   │                              _webhook_completion_anthropic (extracted 2026-04-23)
+│   ├── completions.py           POST /v1/chat/completions — OpenAI wire format handler
+│   ├── _completions_streaming.py Tail: _stream_cot_openai / _stream_openai /
+│   │                              _webhook_completion_openai (extracted 2026-04-23)
+│   ├── _request_pipeline.py     Shared preflight helpers (2026-04-23):
+│   │                              apply_privacy_filters (guard+PII),
+│   │                              build_hint_with_auto_task (parse + classify),
+│   │                              apply_context_compression (truncate/mapreduce),
+│   │                              build_base_response_headers
+│   ├── models.py                GET /v1/models — OpenAI-compatible model listing
+│   ├── image_utils.py           Image detection + stripping for both wire formats (deduped 2026-04-23)
+│   ├── apikeys.py               CRUD + spending-cap/rate-limit for API keys
+│   ├── providers.py             CRUD + model capability management for providers
+│   └── admin.py                 Admin auth, user management, settings UI API
 │
 ├── auth/
-│   ├── keys.py              API key verification, sliding-window rate limiting
+│   ├── keys.py              API key verification (rate-limit state re-exported from rate_limit_state)
+│   ├── rate_limit_state.py  In-process RPM / RPD / burst state + check primitives (extracted 2026-04-23)
 │   └── admin.py             bcrypt password hashing, admin session handling
 │
 ├── routing/
 │   ├── router.py                  Provider selection — returns RouteResult;
 │   │                                build_litellm_model, build_litellm_kwargs (public helpers)
-│   ├── lmrh.py                    LMRH protocol: parse_hint, score_candidate, rank_candidates,
-│   │                                build_capability_header, CapabilityProfile dataclass
+│   ├── lmrh/                      LMRH protocol package (split from lmrh.py on 2026-04-23):
+│   │   ├── __init__.py            re-exports everything below
+│   │   ├── types.py               HintDimension / LMRHHint / CapabilityProfile + weight tables
+│   │   ├── parse.py               parse_hint: RFC 8941 parser w/ legacy fallback
+│   │   ├── score.py               score_candidate / rank_candidates / rank_candidates_with_scores
+│   │   └── headers.py             build_hint_set_header / build_capability_header
 │   ├── capability_inference.py    Heuristic fallback: infer_capability_profile from model name
 │   └── circuit_breaker.py         Per-provider open/half-open/closed state + hold-down
 │
