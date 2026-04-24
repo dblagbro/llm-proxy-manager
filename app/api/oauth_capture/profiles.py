@@ -29,6 +29,7 @@ async def list_presets(_: AdminUser = Depends(require_admin)):
             "extra_upstreams": list(p.extra_upstreams),
             "env_var_names": list(p.env_var_names),
             "setup_hint": p.setup_hint,
+            "login_cmd": p.login_cmd,  # v2.6.0: empty = no in-browser terminal
         }
         for p in PRESETS.values()
     ]
