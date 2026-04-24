@@ -1,5 +1,97 @@
 # Refactor Log
 
+## 2026-04-23 — Large maintainability pass: shared pipeline + streaming splits + lmrh package
+
+### Motivation
+Six refactor targets queued on top of the CoT split earlier today. The goal
+was to reduce duplication between the two endpoint handlers, reduce file
+sizes where multiple responsibilities were sharing a file, and establish
+an obvious "where does this logic live?" mental model for future editing.
+
+### Changes
+
+1. **Shared request-pipeline helpers** (`app/api/_request_pipeline.py`, +221 lines)
+   - `apply_privacy_filters(messages_list, body) → (messages_list, pii_count)`
+     Runs prompt guard then PII mask. Raises 400 on guard match.
+   - `build_hint_with_auto_task(llm_hint, messages_list) → (hint, auto_task)`
+     LLM-Hint parse + opt-in classify of the last user turn.
+   - `apply_context_compression(messages_list, *, route, x_context_strategy,
+     extra, system="") → (messages_list, strategy_applied)` — truncate /
+     mapreduce / 413.
+   - `build_base_response_headers(*, route, auto_task, vision_routed_count,
+     context_strategy_applied, pii_masked_count, hint, max_tokens=None)` —
+     common set both endpoints emit.
+   - 19 new tests in `test_request_pipeline.py`.
+   - `api/messages.py`: 829 → 539 (-290, -35%)
+   - `api/completions.py`: 698 → 446 (-252, -36%)
+
+2. **messages.py streaming tail** (`app/api/_messages_streaming.py`, +228 lines)
+   - Pure move of `_stream_cot_anthropic`, `_stream_anthropic`, and
+     `_webhook_completion_anthropic`. The POST handler imports them.
+   - No behavior change.
+
+3. **completions.py streaming tail** (`app/api/_completions_streaming.py`, +201 lines)
+   - Pure move of `_stream_cot_openai`, `_stream_openai`, and
+     `_webhook_completion_openai`. Mirrors #2.
+
+4. **Image utils cleanup** (`app/api/image_utils.py`)
+   - Added `_has_blocks_of_type` and `_strip_blocks_of_type` helpers.
+   - `has_images_openai` and `strip_images_openai` now delegate; the
+     Anthropic equivalents still inline because they preserve per-image
+     `media_type` in the placeholder (can't be parameterized cleanly).
+
+5. **Rate-limit state extraction** (`app/auth/rate_limit_state.py`, +106 lines)
+   - Moved `_rpm_windows`, `_rpd_buckets`, `_burst_counters`, plus
+     `_check_rate_limit`, `_check_rpd`, `_check_burst`,
+     `begin_in_flight`, `end_in_flight` out of `auth/keys.py`.
+   - `auth/keys.py` re-exports all of them so any `from app.auth.keys
+     import _check_rate_limit` (and the tests that reach into the state
+     dicts) keep working.
+   - Updated two test files to patch `app.auth.rate_limit_state.active_node_count`
+     (the actual call target) instead of `app.auth.keys.active_node_count`
+     (which was the old implementation-coupled target).
+
+6. **`routing/lmrh.py` → `routing/lmrh/` package**
+   - Split the 438-line monolith into four submodules:
+     - `types.py` (90 lines) — dataclasses + weights/rank tables
+     - `parse.py` (99 lines) — RFC 8941 + legacy fallback
+     - `score.py` (204 lines) — scoring + ranking (where most LMRH
+       feature changes land; isolating it from parser/headers cuts
+       navigation cost)
+     - `headers.py` (62 lines) — response-header builders
+     - `__init__.py` (47 lines) — re-exports the full public surface
+   - Every `from app.routing.lmrh import X` import keeps working
+     unchanged.
+
+### Verification
+- **555/555 unit tests pass** after every step (was 536 pre-refactor;
+  added 19 tests for the new shared pipeline helpers).
+- No behavior change. No version bump. Public import surface
+  preserved for all affected modules.
+
+### Net line-count deltas (python/app/)
+
+    app/api/messages.py            829 → 539  (-290)
+    app/api/completions.py         698 → 446  (-252)
+    app/api/image_utils.py          65 →  89  (+24  helpers added)
+    app/auth/keys.py               168 →  94  (-74)
+    app/routing/lmrh.py            438 →   0  (deleted)
+
+    NEW app/api/_request_pipeline.py        221
+    NEW app/api/_messages_streaming.py      228
+    NEW app/api/_completions_streaming.py   201
+    NEW app/auth/rate_limit_state.py        106
+    NEW app/routing/lmrh/__init__.py         47
+    NEW app/routing/lmrh/types.py            90
+    NEW app/routing/lmrh/parse.py            99
+    NEW app/routing/lmrh/score.py           204
+    NEW app/routing/lmrh/headers.py          62
+
+    Net change: -616 deleted, +1258 added = +642 lines, but every file
+    now has a single clear responsibility and sub-300 line count.
+
+---
+
 ## 2026-04-23 — Split cot/pipeline.py into orchestrator + sibling modules
 
 ### Motivation
