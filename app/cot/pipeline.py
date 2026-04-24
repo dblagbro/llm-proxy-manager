@@ -23,6 +23,24 @@ from app.cot.sse import (
     sse_message_delta, sse_done,
 )
 
+# Critique parsing + verify heuristic extracted to a sibling module.
+# Aliased to their previous private names so internal call sites don't change.
+from app.cot.critique import (
+    parse_score as _parse_score,
+    parse_gaps as _parse_gaps,
+    parse_critique as _parse_critique,
+    should_verify as _should_verify,
+    INFRA_TOOLS as _INFRA_TOOLS,
+    SHELL_CODE_BLOCK as _SHELL_CODE_BLOCK,
+)
+
+# Task-adaptive branches extracted to a sibling module.
+from app.cot.branches import (
+    run_summarize_branch as _run_summarize_branch,
+    run_math_branch as _run_math_branch,
+    run_code_branch as _run_code_branch,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -130,23 +148,6 @@ VERIFY_SYSTEM = (
     "  ## Verification Steps\n  (not applicable — no executable steps in answer)"
 )
 
-# Infrastructure CLI tools whose presence signals a verifiable answer
-_INFRA_TOOLS: frozenset[str] = frozenset({
-    "docker", "kubectl", "systemctl", "journalctl", "service ",
-    "rabbitmqctl", "rabbitmq-plugins", "rabbitmq-diagnostics",
-    "asterisk", "fs_cli", "opensips", "osipsctl",
-    "nginx", "apache2ctl", "httpd",
-    "certbot", "acme.sh",
-    "iptables", "ufw", "firewall-cmd",
-    "ip route", "ip addr", "ip link", "nmcli", "netstat", "ss -",
-    "mysql", "mysqladmin", "psql", "redis-cli", "mongosh",
-    "curl -", "wget ", "ssh ", "scp ", "rsync ",
-    "supervisorctl", "pm2 ", "gunicorn", "uwsgi",
-})
-
-_SHELL_CODE_BLOCK = re.compile(r"```(?:bash|sh|shell|zsh|fish|powershell)", re.IGNORECASE)
-
-
 # ── Core helpers ──────────────────────────────────────────────────────────────
 
 async def _call(model: str, messages: list[dict], system: str, max_tokens: int, **kwargs) -> str:
@@ -178,69 +179,6 @@ def _last_user_text(messages: list[dict]) -> str:
                     if isinstance(block, dict) and block.get("type") == "text":
                         return block.get("text", "")
     return ""
-
-
-def _parse_score(critique: str) -> int:
-    m = re.search(r"SCORE:\s*(\d+)", critique, re.IGNORECASE)
-    return int(m.group(1)) if m else 5
-
-
-def _parse_gaps(critique: str) -> str:
-    m = re.search(r"GAPS:\s*(.+)", critique, re.IGNORECASE)
-    return m.group(1).strip() if m else ""
-
-
-def _parse_critique(critique: str) -> dict:
-    """Parse the JSON rubric from a critique response.
-
-    Returns a dict with keys: factual_issues (list), missing_coverage (list),
-    sufficient_for_user (bool). Falls back to safe defaults if JSON parsing
-    fails or the legacy SCORE:/GAPS: format is returned instead.
-    """
-    import json as _json
-    # Strip markdown code fences if the model couldn't resist
-    cleaned = critique.strip()
-    if cleaned.startswith("```"):
-        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
-        cleaned = re.sub(r"\s*```\s*$", "", cleaned)
-    # Find the first { ... } block
-    start = cleaned.find("{")
-    end = cleaned.rfind("}")
-    if start >= 0 and end > start:
-        try:
-            obj = _json.loads(cleaned[start:end + 1])
-            return {
-                "factual_issues": list(obj.get("factual_issues") or []),
-                "missing_coverage": list(obj.get("missing_coverage") or []),
-                "sufficient_for_user": bool(obj.get("sufficient_for_user", False)),
-            }
-        except (ValueError, TypeError):
-            pass
-    # Legacy fallback: parse SCORE:/GAPS: style
-    score = _parse_score(critique)
-    gaps_line = _parse_gaps(critique)
-    gaps_empty = gaps_line.lower() in ("", "none", "n/a")
-    return {
-        "factual_issues": [],
-        "missing_coverage": [] if gaps_empty else [gaps_line],
-        "sufficient_for_user": score >= 8 or gaps_empty,
-    }
-
-
-def _should_verify(answer: str) -> bool:
-    """
-    Heuristic: return True if the answer likely contains infrastructure
-    commands worth verifying.
-
-    Two independent signals — either is sufficient:
-      1. A fenced code block with a shell language marker (bash/sh/shell/zsh/…)
-      2. Two or more distinct infra CLI tool names present in the answer
-    """
-    if _SHELL_CODE_BLOCK.search(answer):
-        return True
-    text_lower = answer.lower()
-    hits = sum(1 for tool in _INFRA_TOOLS if tool in text_lower)
-    return hits >= 2
 
 
 # ── Pipeline ──────────────────────────────────────────────────────────────────
@@ -617,197 +555,3 @@ async def _run_verify_pass(
         logger.warning("cot_verify_pass_failed error=%s", str(e))
         return f"(verification pass failed: {e})"
 
-
-# ── Task-adaptive branches (Wave 2 #11) ──────────────────────────────────────
-
-async def _run_summarize_branch(
-    model: str, messages: list[dict], user_text: str, extra_kwargs: dict,
-) -> AsyncIterator[bytes]:
-    """task=summarize — single pass, no plan, no critique."""
-    from app.cot.task_adaptive import SUMMARIZE_SYSTEM
-    draft_kwargs = {k: v for k, v in extra_kwargs.items() if k not in ("max_tokens", "system")}
-    resp = await acompletion_with_retry(
-        model=model,
-        messages=[{"role": "system", "content": SUMMARIZE_SYSTEM}] + messages,
-        stream=False,
-        **draft_kwargs,
-    )
-    answer = resp.choices[0].message.content or ""
-
-    yield sse_thinking_start(0)
-    yield sse_thinking_delta(0, "## Task: Summarize (single-pass)\nSkipping plan/critique/refine for summarization tasks.")
-    yield sse_thinking_stop(0)
-
-    yield sse_text_start(1)
-    chunk_size = 50
-    for i in range(0, len(answer), chunk_size):
-        yield sse_text_delta(1, answer[i:i + chunk_size])
-        await asyncio.sleep(0)
-    yield sse_text_stop(1)
-    input_tokens = sum(len(m.get("content", "")) for m in messages) // 4
-    yield sse_message_delta("end_turn", input_tokens, len(answer) // 4)
-    yield sse_done()
-
-
-async def _run_math_branch(
-    model: str, messages: list[dict], user_text: str, extra_kwargs: dict,
-) -> AsyncIterator[bytes]:
-    """task=math — Program-of-Thought: generate Python, run it, report."""
-    from app.cot.task_adaptive import (
-        POT_SYSTEM, POT_REPORT_SYSTEM, extract_python, run_python_sandbox,
-    )
-    draft_kwargs = {k: v for k, v in extra_kwargs.items() if k not in ("max_tokens", "system")}
-
-    gen = await acompletion_with_retry(
-        model=model,
-        messages=[{"role": "system", "content": POT_SYSTEM}] + messages,
-        stream=False,
-        **draft_kwargs,
-    )
-    gen_text = gen.choices[0].message.content or ""
-    code = extract_python(gen_text)
-
-    yield sse_thinking_start(0)
-    yield sse_thinking_delta(
-        0,
-        "## Task: Math (Program-of-Thought)\n"
-        + (f"```python\n{code}\n```" if code else f"(no code block found)\n{gen_text[:500]}"),
-    )
-    yield sse_thinking_stop(0)
-
-    exec_result_text = ""
-    if code:
-        result = await asyncio.get_event_loop().run_in_executor(None, run_python_sandbox, code)
-        status = "✓ success" if result.ok else ("⚠ timed out" if result.timed_out else f"✗ exit {result.returncode}")
-        exec_result_text = f"```\n{result.stdout[:1000]}\n```"
-        if result.stderr:
-            exec_result_text += f"\n\nstderr:\n```\n{result.stderr[:500]}\n```"
-        yield sse_thinking_start(1)
-        yield sse_thinking_delta(1, f"## Execution ({status}, {result.duration_ms:.0f}ms)\n{exec_result_text}")
-        yield sse_thinking_stop(1)
-
-        report = await acompletion_with_retry(
-            model=model,
-            messages=[
-                {"role": "system", "content": POT_REPORT_SYSTEM},
-                {"role": "user", "content": user_text},
-                {"role": "assistant", "content": f"Computed output:\n{result.stdout}"},
-                {"role": "user", "content": "Produce the final user-facing answer."},
-            ],
-            stream=False,
-            **draft_kwargs,
-        )
-        answer = report.choices[0].message.content or gen_text
-    else:
-        # Couldn't extract code; just return what the model produced
-        answer = gen_text
-
-    yield sse_text_start(2)
-    chunk_size = 50
-    for i in range(0, len(answer), chunk_size):
-        yield sse_text_delta(2, answer[i:i + chunk_size])
-        await asyncio.sleep(0)
-    yield sse_text_stop(2)
-    input_tokens = sum(len(m.get("content", "")) for m in messages) // 4
-    yield sse_message_delta("end_turn", input_tokens, len(answer) // 4)
-    yield sse_done()
-
-
-async def _run_code_branch(
-    model: str, messages: list[dict], user_text: str, extra_kwargs: dict,
-) -> AsyncIterator[bytes]:
-    """task=code — generate implementation + tests, run tests, refine on failure."""
-    from app.cot.task_adaptive import (
-        CODEGEN_TESTS_SYSTEM, extract_python, run_python_sandbox,
-    )
-    import re as _re
-    draft_kwargs = {k: v for k, v in extra_kwargs.items() if k not in ("max_tokens", "system")}
-
-    gen = await acompletion_with_retry(
-        model=model,
-        messages=[{"role": "system", "content": CODEGEN_TESTS_SYSTEM}] + messages,
-        stream=False,
-        **draft_kwargs,
-    )
-    gen_text = gen.choices[0].message.content or ""
-
-    # Extract BOTH python blocks (implementation + tests)
-    blocks = _re.findall(r"```(?:python|py)\s*\n(.*?)\n```", gen_text, flags=_re.DOTALL)
-    impl_code = blocks[0] if len(blocks) >= 1 else None
-    test_code = blocks[1] if len(blocks) >= 2 else None
-
-    yield sse_thinking_start(0)
-    yield sse_thinking_delta(
-        0,
-        "## Task: Code (generate + test)\n"
-        + (f"Implementation found: {bool(impl_code)} · Tests found: {bool(test_code)}"),
-    )
-    yield sse_thinking_stop(0)
-
-    if impl_code and test_code:
-        # Drop both into same temp dir and run pytest
-        import tempfile, os
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with open(os.path.join(tmpdir, "impl.py"), "w") as f:
-                # Strip user-provided `from impl import` anchors; we name the file impl.py
-                f.write(impl_code)
-            with open(os.path.join(tmpdir, "test_impl.py"), "w") as f:
-                # Replace "from <anything> import" with "from impl import" if model guessed
-                test_rewritten = _re.sub(r"from\s+\w+\s+import", "from impl import", test_code)
-                f.write(test_rewritten)
-            # Combined runner
-            runner = (
-                f"import sys, subprocess\n"
-                f"sys.path.insert(0, {tmpdir!r})\n"
-                f"r = subprocess.run([sys.executable, '-m', 'pytest', '-x', '--tb=short', {os.path.join(tmpdir, 'test_impl.py')!r}],"
-                f" capture_output=True, timeout=5)\n"
-                f"print(r.stdout.decode()); print('---STDERR---'); print(r.stderr.decode())\n"
-                f"sys.exit(r.returncode)\n"
-            )
-            result = await asyncio.get_event_loop().run_in_executor(None, run_python_sandbox, runner)
-
-        status = "✓ tests pass" if result.ok else ("⚠ timed out" if result.timed_out else "✗ tests failed")
-        yield sse_thinking_start(1)
-        yield sse_thinking_delta(
-            1,
-            f"## Test Execution ({status}, {result.duration_ms:.0f}ms)\n"
-            f"```\n{result.stdout[:800]}\n```"
-            + (f"\nstderr:\n```\n{result.stderr[:400]}\n```" if result.stderr else ""),
-        )
-        yield sse_thinking_stop(1)
-
-        if not result.ok and not result.timed_out:
-            # One refinement pass with actual test output
-            refined = await acompletion_with_retry(
-                model=model,
-                messages=[
-                    {"role": "system", "content": REFINE_SYSTEM},
-                    {"role": "user", "content": user_text},
-                    {"role": "assistant", "content": gen_text},
-                    {"role": "user", "content": (
-                        f"The generated tests FAILED when executed. Output below — fix the "
-                        f"implementation or the tests, whichever is wrong.\n\n{result.stdout[:1500]}\n"
-                        f"{result.stderr[:500]}"
-                    )},
-                ],
-                stream=False,
-                **draft_kwargs,
-            )
-            answer = refined.choices[0].message.content or gen_text
-            yield sse_thinking_start(2)
-            yield sse_thinking_delta(2, "## Refinement (post-test-failure)\nAnswer revised based on actual pytest output.")
-            yield sse_thinking_stop(2)
-        else:
-            answer = gen_text
-    else:
-        answer = gen_text
-
-    yield sse_text_start(3)
-    chunk_size = 50
-    for i in range(0, len(answer), chunk_size):
-        yield sse_text_delta(3, answer[i:i + chunk_size])
-        await asyncio.sleep(0)
-    yield sse_text_stop(3)
-    input_tokens = sum(len(m.get("content", "")) for m in messages) // 4
-    yield sse_message_delta("end_turn", input_tokens, len(answer) // 4)
-    yield sse_done()
