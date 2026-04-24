@@ -65,8 +65,12 @@ class _FakeClient:
     async def __aexit__(self, *args):
         pass
 
-    async def post(self, url, data=None, headers=None):
-        _FakeClient.captured.append({"url": url, "data": data, "headers": headers})
+    async def post(self, url, data=None, json=None, headers=None):
+        # The flow POSTs application/json; older code used form-urlencoded.
+        # We capture whichever kwarg was used so tests can assert on it.
+        _FakeClient.captured.append({
+            "url": url, "data": data, "json": json, "headers": headers,
+        })
         return _FakeResp(_FakeClient.next_status, _FakeClient.next_data, _FakeClient.next_text)
 
 
@@ -170,6 +174,23 @@ class TestExtractCode:
         assert code == "abc123"
         assert state is None
 
+    def test_code_hash_state(self):
+        """The 'CODE#STATE' format is what Anthropic's success page shows."""
+        code, state = extract_code_from_callback("abc123#xyz789")
+        assert code == "abc123"
+        assert state == "xyz789"
+
+    def test_code_hash_state_whitespace_trimmed(self):
+        code, state = extract_code_from_callback("  abc123#xyz789\n")
+        assert code == "abc123"
+        assert state == "xyz789"
+
+    def test_code_hash_state_truncated_rejected(self):
+        with pytest.raises(ValueError, match="truncated"):
+            extract_code_from_callback("abc123#")
+        with pytest.raises(ValueError, match="truncated"):
+            extract_code_from_callback("#xyz789")
+
     def test_strips_whitespace(self):
         code, state = extract_code_from_callback("   abc123\n")
         assert code == "abc123"
@@ -214,11 +235,14 @@ class TestExchangeCode:
         await exchange_code(r.state, "the-code")
         sent = fake_http.captured[0]
         assert sent["url"] == flow.TOKEN_URL
-        assert sent["data"]["grant_type"] == "authorization_code"
-        assert sent["data"]["client_id"] == CLIENT_ID
-        assert sent["data"]["code"] == "the-code"
-        assert sent["data"]["redirect_uri"] == REDIRECT_URI
-        assert sent["data"]["code_verifier"] == pending.code_verifier
+        body = sent["json"]  # POSTed as JSON, not form-urlencoded
+        assert body["grant_type"] == "authorization_code"
+        assert body["client_id"] == CLIENT_ID
+        assert body["code"] == "the-code"
+        assert body["redirect_uri"] == REDIRECT_URI
+        assert body["code_verifier"] == pending.code_verifier
+        # Anthropic's /v1/oauth/token requires state in the form (non-standard)
+        assert body["state"] == r.state
 
     @pytest.mark.asyncio
     async def test_pending_cleared_on_success(self, fake_http):
@@ -294,9 +318,10 @@ class TestRefresh:
         fake_http.next_data = {"access_token": "sk-ant-oat01-x"}
         await refresh_access_token("my-refresh")
         sent = fake_http.captured[0]
-        assert sent["data"]["grant_type"] == "refresh_token"
-        assert sent["data"]["refresh_token"] == "my-refresh"
-        assert sent["data"]["client_id"] == CLIENT_ID
+        body = sent["json"]
+        assert body["grant_type"] == "refresh_token"
+        assert body["refresh_token"] == "my-refresh"
+        assert body["client_id"] == CLIENT_ID
 
     @pytest.mark.asyncio
     async def test_keeps_old_refresh_when_not_rotated(self, fake_http):
