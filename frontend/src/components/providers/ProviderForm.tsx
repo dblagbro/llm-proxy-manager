@@ -131,8 +131,8 @@ export function ProviderForm({ form, onChange, editing }: Props) {
               <ol className="list-decimal list-inside text-xs text-gray-600 dark:text-gray-300 space-y-1">
                 <li>Click <strong>Generate Auth URL</strong> below.</li>
                 <li>Open the URL in a tab where you're signed in to claude.ai and approve access.</li>
-                <li>You'll be redirected to <code className="px-1 font-mono bg-gray-100 dark:bg-gray-800 rounded">http://localhost/callback?code=…&amp;state=…</code> — that page fails to load, but the URL is still in your address bar.</li>
-                <li>Copy the full URL (or just the <code className="font-mono">?code=…</code>) and paste it below. We'll trade it for a token automatically.</li>
+                <li>You'll land on an Anthropic success page at <code className="px-1 font-mono bg-gray-100 dark:bg-gray-800 rounded">platform.claude.com/oauth/code/callback</code> that displays an authorization code.</li>
+                <li>Copy that code (or the full URL from your address bar) and paste it below. We'll trade it for a token automatically.</li>
               </ol>
 
               <div className="flex items-center gap-2">
@@ -160,13 +160,13 @@ export function ProviderForm({ form, onChange, editing }: Props) {
               {form.oauth_authorize_url && (
                 <>
                   <label className="block text-xs font-medium text-gray-700 dark:text-gray-300">
-                    Paste the callback URL (or just the <code className="font-mono">?code=…</code>)
+                    Paste the authorization code (or the full callback URL)
                   </label>
                   <textarea
                     value={form.oauth_callback}
                     onChange={e => set({ oauth_callback: e.target.value })}
                     rows={3}
-                    placeholder={'http://localhost/callback?code=abc123…&state=…'}
+                    placeholder={'abc123…#state\n— or —\nhttps://platform.claude.com/oauth/code/callback?code=abc123…&state=…'}
                     className="w-full px-3 py-2 text-xs font-mono bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 border border-gray-300 dark:border-gray-700 rounded focus:outline-none focus:ring-2 focus:ring-indigo-500"
                     required
                   />
