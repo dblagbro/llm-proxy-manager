@@ -168,6 +168,7 @@ async def select_provider(
     model_override: Optional[str] = None,
     exclude_provider_id: Optional[str] = None,
     prefer_cheapest: bool = False,
+    sort_mode: Optional[str] = None,
 ) -> RouteResult:
     """
     Select the best available provider+model for this request.
@@ -178,7 +179,15 @@ async def select_provider(
                          hard constraints (used by cascade routing as the
                          "cheap first" step). cost_tier ordering: economy <
                          standard < premium. Ties broken by priority.
+    sort_mode:           v2.8.0 model-slug shortcut override. One of
+                         ``"floor"`` (alias for prefer_cheapest=True),
+                         ``"nitro"`` (lowest-TTFT provider via PeakEWMA),
+                         ``"exacto"`` (default capability-score ranking,
+                         tie-break by priority — opposite of P2C random
+                         sample). ``None`` keeps default LMRH behavior.
     """
+    if sort_mode == "floor":
+        prefer_cheapest = True  # collapse onto the existing cheapest path
     result = await db.execute(
         select(Provider).where(Provider.enabled == True).order_by(Provider.priority)
     )
@@ -245,30 +254,53 @@ async def select_provider(
             native_thinking_params={},
         )
 
-    # Wave 3 #13 — PeakEWMA + P2C intra-tier selection.
-    # Identify candidates within 1.0 score of the top (a loose equality band
-    # that catches "essentially tied" profiles). If ≥2 qualify, sample two
-    # and pick the one with lower PeakEWMA TTFT (falling back to priority
-    # when neither has samples yet).
-    from app.routing.hedging import peak_ewma
-    import random as _random
-    top_score = ranked_scored[0][2]
-    top_tier = [t for t in ranked_scored if top_score - t[2] < 1.0]
-    if len(top_tier) >= 2:
-        c1, c2 = _random.sample(top_tier, 2)
-        e1 = peak_ewma(c1[0].provider_id)
-        e2 = peak_ewma(c2[0].provider_id)
-        if e1 is None and e2 is None:
-            winner = c1 if c1[0].priority <= c2[0].priority else c2
-        elif e1 is None:
-            winner = c2
-        elif e2 is None:
-            winner = c1
-        else:
-            winner = c1 if e1 <= e2 else c2
+    # v2.8.0 — model-slug sort-mode overrides bypass P2C/PeakEWMA selection
+    # because they have explicit semantics:
+    #   :nitro  → fastest provider (lowest PeakEWMA TTFT). Falls back to
+    #             priority when no samples exist yet.
+    #   :exacto → highest capability score, ties broken by priority. No
+    #             randomized sample (deterministic given a request).
+    if sort_mode == "nitro":
+        from app.routing.hedging import peak_ewma
+        def _nitro_key(t):
+            ewma = peak_ewma(t[0].provider_id)
+            # Providers with no telemetry sort AFTER providers with samples
+            # (we don't know if they're fast). Within each bucket, lower
+            # priority number wins.
+            return (0 if ewma is not None else 1, ewma if ewma is not None else 0.0, t[0].priority)
+        winner = min(ranked_scored, key=_nitro_key)
+        best_profile, unmet, _ = winner
+    elif sort_mode == "exacto":
+        # Top score; ties broken by priority. Deterministic — no random sample.
+        top_score = ranked_scored[0][2]
+        top_tier = [t for t in ranked_scored if top_score - t[2] < 1.0]
+        winner = min(top_tier, key=lambda t: t[0].priority)
         best_profile, unmet, _ = winner
     else:
-        best_profile, unmet, _ = ranked_scored[0]
+        # Wave 3 #13 — PeakEWMA + P2C intra-tier selection (default).
+        # Identify candidates within 1.0 score of the top (a loose equality band
+        # that catches "essentially tied" profiles). If ≥2 qualify, sample two
+        # and pick the one with lower PeakEWMA TTFT (falling back to priority
+        # when neither has samples yet).
+        from app.routing.hedging import peak_ewma
+        import random as _random
+        top_score = ranked_scored[0][2]
+        top_tier = [t for t in ranked_scored if top_score - t[2] < 1.0]
+        if len(top_tier) >= 2:
+            c1, c2 = _random.sample(top_tier, 2)
+            e1 = peak_ewma(c1[0].provider_id)
+            e2 = peak_ewma(c2[0].provider_id)
+            if e1 is None and e2 is None:
+                winner = c1 if c1[0].priority <= c2[0].priority else c2
+            elif e1 is None:
+                winner = c2
+            elif e2 is None:
+                winner = c1
+            else:
+                winner = c1 if e1 <= e2 else c2
+            best_profile, unmet, _ = winner
+        else:
+            best_profile, unmet, _ = ranked_scored[0]
     provider = provider_map[best_profile.provider_id]
 
     # CoT-E auto-engagement:
