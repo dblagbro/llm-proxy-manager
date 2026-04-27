@@ -27,6 +27,9 @@ export interface Provider {
   // v2.7.0: surfaced only for claude-oauth providers. null otherwise.
   oauth_expires_at?: number | null
   has_oauth_refresh_token?: boolean
+  // v2.7.8: when set, the provider's auth failed and admin must re-key
+  // (or re-OAuth). UI renders a red "Needs re-auth" badge.
+  auth_failed?: { since: number; last_error: string } | null
 }
 
 export interface ProviderFormData {

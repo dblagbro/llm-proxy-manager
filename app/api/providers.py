@@ -119,6 +119,9 @@ async def create_provider(
     await db.commit()
     await db.refresh(provider)
     register_provider(provider.id, provider.provider_type, provider.hold_down_sec, provider.failure_threshold)
+    # New provider — clear any stale auth-failure flag carried by id collision (defensive)
+    from app.routing.circuit_breaker import clear_auth_failure as _clear_af
+    _clear_af(provider.id)
     return _serialize(provider)
 
 
@@ -205,6 +208,10 @@ async def claude_oauth_rotate(
     await db.commit()
     await db.refresh(p)
     register_provider(p.id, p.provider_type, p.hold_down_sec, p.failure_threshold)
+    # v2.7.8 BUG-002: fresh tokens — clear stale auth-failure + close breaker
+    from app.routing.circuit_breaker import clear_auth_failure as _clear_af, force_close
+    _clear_af(p.id)
+    await force_close(p.id)
     return _serialize(p)
 
 
@@ -289,11 +296,22 @@ async def update_provider(
     if p.provider_type == "claude-oauth" and not blob:
         data.pop("api_key", None)
 
+    # v2.7.8 BUG-002: if admin pasted a new api_key OR blob, clear the
+    # auth-failure flag so the provider gets a fresh chance.
+    new_key_provided = (
+        ("api_key" in data and data["api_key"])  # non-empty api_key on the update
+        or blob  # claude-oauth re-paste
+    )
+
     for field, value in data.items():
         setattr(p, field, value)
     await db.commit()
     await db.refresh(p)
     register_provider(p.id, p.provider_type, p.hold_down_sec, p.failure_threshold)
+    if new_key_provided:
+        from app.routing.circuit_breaker import clear_auth_failure as _clear_af, force_close
+        _clear_af(p.id)
+        await force_close(p.id)
     return _serialize(p)
 
 
@@ -306,6 +324,25 @@ async def delete_provider(
     p = await _get_or_404(db, provider_id)
     await db.delete(p)
     await db.commit()
+    return {"ok": True}
+
+
+@router.post("/{provider_id}/clear-auth-failure")
+async def clear_provider_auth_failure(
+    provider_id: str,
+    db: AsyncSession = Depends(get_db),
+    _: AdminUser = Depends(require_admin),
+):
+    """v2.7.8 BUG-002: clear the 'needs re-auth' flag for a provider.
+
+    Called by the UI's "Mark Re-Authed" button, by save-with-new-key
+    handlers, and by the OAuth rotate endpoint. Does NOT close the
+    circuit breaker on its own — admin must hit Test for that, or the
+    next successful call will close it via record_outcome.
+    """
+    from app.routing.circuit_breaker import clear_auth_failure
+    await _get_or_404(db, provider_id)
+    clear_auth_failure(provider_id)
     return {"ok": True}
 
 
@@ -433,6 +470,11 @@ async def _get_or_404(db: AsyncSession, provider_id: str) -> Provider:
 
 
 def _serialize(p: Provider) -> dict:
+    # v2.7.8 BUG-002: surface a "needs re-auth" flag the UI can render as a
+    # red badge. Reads from the in-process auth-failure map maintained by
+    # circuit_breaker.record_auth_failure. None when the provider is healthy.
+    from app.routing.circuit_breaker import get_auth_failure
+    auth_fail = get_auth_failure(p.id)
     return {
         "id": p.id,
         "name": p.name,
@@ -453,6 +495,10 @@ def _serialize(p: Provider) -> dict:
         # for claude-oauth providers. Never expose refresh_token.
         "oauth_expires_at": p.oauth_expires_at,
         "has_oauth_refresh_token": bool(p.oauth_refresh_token),
+        # v2.7.8: auth-failure state. Frontend renders a red "Needs re-auth"
+        # badge when this is non-null; admin clears via re-key save or
+        # POST /api/providers/{id}/clear-auth-failure.
+        "auth_failed": auth_fail,
     }
 
 

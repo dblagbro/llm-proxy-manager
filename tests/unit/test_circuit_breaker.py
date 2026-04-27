@@ -20,8 +20,72 @@ def _run(coro):
 @pytest.fixture(autouse=True)
 def reset_state():
     cb._local_states.clear()
+    cb._auth_failed.clear()
     yield
     cb._local_states.clear()
+    cb._auth_failed.clear()
+
+
+class TestAuthErrorClassifier:
+    """v2.7.8 BUG-002: is_auth_error classifies errors as permanent
+    (admin must re-key) vs transient."""
+
+    def test_invalid_api_key(self):
+        assert cb.is_auth_error("litellm.AuthenticationError: invalid x-api-key") is True
+
+    def test_oauth_invalid_credentials(self):
+        assert cb.is_auth_error('{"type":"authentication_error","message":"Invalid authentication credentials"}') is True
+
+    def test_403_permission_denied(self):
+        assert cb.is_auth_error("HTTP 403: permission_denied") is True
+
+    def test_invalid_grant(self):
+        assert cb.is_auth_error('{"error":"invalid_grant"}') is True
+
+    def test_missing_gemini_key(self):
+        assert cb.is_auth_error("litellm.APIConnectionError: Missing Gemini API key. Set the GEMINI_API_KEY...") is True
+
+    def test_missing_openai_key(self):
+        assert cb.is_auth_error("OpenAIException - The api_key client option must be set...") is True
+
+    def test_rate_limit_not_auth(self):
+        # 429 / rate limit is transient, NOT an auth error
+        assert cb.is_auth_error("litellm.RateLimitError: 429 Too Many Requests") is False
+
+    def test_network_error_not_auth(self):
+        assert cb.is_auth_error("litellm.APIConnectionError: connection refused") is False
+
+    def test_empty_returns_false(self):
+        assert cb.is_auth_error("") is False
+        assert cb.is_auth_error(None) is False  # type: ignore
+
+
+class TestAuthFailureLifecycle:
+    """Auth failures open the breaker for 24h and persist in a separate map."""
+
+    def test_record_auth_failure_marks_provider(self):
+        _run(cb.record_auth_failure("p1", "401 invalid_token"))
+        info = cb.get_auth_failure("p1")
+        assert info is not None
+        assert "401 invalid_token" in info["last_error"]
+        assert info["since"] > 0
+
+    def test_record_auth_failure_opens_breaker(self):
+        _run(cb.record_auth_failure("p2", "401"))
+        assert cb._get_local("p2").state == cb.CBState.OPEN
+
+    def test_clear_auth_failure(self):
+        _run(cb.record_auth_failure("p3", "401"))
+        assert cb.get_auth_failure("p3") is not None
+        cb.clear_auth_failure("p3")
+        assert cb.get_auth_failure("p3") is None
+
+    def test_get_all_auth_failures(self):
+        _run(cb.record_auth_failure("pA", "401"))
+        _run(cb.record_auth_failure("pB", "403"))
+        all_fails = cb.get_all_auth_failures()
+        assert "pA" in all_fails and "pB" in all_fails
+        assert len(all_fails) == 2
 
 
 def test_initial_state_closed():
