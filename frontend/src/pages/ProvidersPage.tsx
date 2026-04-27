@@ -79,6 +79,15 @@ export function ProvidersPage() {
     onError: (e: Error) => toast.error(e.message),
   })
 
+  const clearAuthFailMutation = useMutation({
+    mutationFn: (id: string) => providersApi.clearAuthFailure(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['providers'] })
+      toast.success('Auth-failure flag cleared')
+    },
+    onError: (e: Error) => toast.error(e.message),
+  })
+
   const deleteMutation = useMutation({
     mutationFn: (id: string) => providersApi.delete(id),
     onSuccess: () => {
@@ -191,10 +200,18 @@ export function ProvidersPage() {
                     <p className="text-xs text-gray-500">{p.provider_type} · {p.default_model ?? 'no default model'} · priority {p.priority}</p>
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
-                    {/* v2.7.8 BUG-002: needs re-auth (admin must re-key) */}
+                    {/* v2.7.8 BUG-002: needs re-auth (admin must re-key).
+                        Click expands the panel where the "Mark Re-Authed"
+                        button + last-error detail live. */}
                     {p.auth_failed && (
                       <span title={p.auth_failed.last_error || 'auth failure'}>
-                        <Badge variant="danger">Needs re-auth</Badge>
+                        <Badge
+                          variant="danger"
+                          onClick={(e) => { e.stopPropagation(); setExpanded(p.id) }}
+                          className="cursor-pointer"
+                        >
+                          Needs re-auth
+                        </Badge>
                       </span>
                     )}
                     {/* v2.7.8 BUG-010: priority tie warning */}
@@ -223,6 +240,44 @@ export function ProvidersPage() {
 
                 {open && (
                   <div className="border-t border-gray-100 dark:border-gray-700 px-5 py-4 space-y-4">
+                    {/* v2.8.0: re-auth drill-in panel — only when auth_failed is set */}
+                    {p.auth_failed && (
+                      <div className="rounded-md border border-red-200 dark:border-red-900/50 bg-red-50/60 dark:bg-red-950/30 p-3">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0 flex-1">
+                            <p className="text-sm font-medium text-red-700 dark:text-red-300">
+                              Provider failed authentication — needs re-auth
+                            </p>
+                            <p className="text-xs text-gray-600 dark:text-gray-400 mt-0.5">
+                              Failed since {new Date(p.auth_failed.since * 1000).toLocaleString()}
+                              {' · '}
+                              {p.provider_type === 'claude-oauth'
+                                ? 'Open Edit and click Generate New Auth URL to re-authorize.'
+                                : 'Open Edit and paste a fresh API key.'}
+                            </p>
+                            <pre className="mt-2 text-[11px] font-mono text-red-700 dark:text-red-400 whitespace-pre-wrap break-all">{p.auth_failed.last_error}</pre>
+                          </div>
+                          <div className="flex flex-col gap-1.5 shrink-0">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => openEdit(p)}
+                            >
+                              <Edit2 className="h-3.5 w-3.5 mr-1" />Edit / Re-auth
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => clearAuthFailMutation.mutate(p.id)}
+                              loading={clearAuthFailMutation.isPending}
+                              title="Clear the failed flag without changing the key. Useful when admin re-keyed externally."
+                            >
+                              Mark re-authed
+                            </Button>
+                          </div>
+                        </div>
+                      </div>
+                    )}
                     <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
                       <div><p className="text-xs text-gray-400 mb-1">Base URL</p><p className="truncate text-gray-700 dark:text-gray-300">{p.base_url || '—'}</p></div>
                       <div><p className="text-xs text-gray-400 mb-1">Timeout</p><p className="text-gray-700 dark:text-gray-300">{p.timeout_sec}s</p></div>

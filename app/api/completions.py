@@ -93,12 +93,28 @@ async def chat_completions(
     has_tools = bool(tools)
     has_images = has_images_openai(messages_list)
 
-    alias = await resolve_alias(db, body.get("model"))
+    # v2.8.0: parse :floor / :nitro / :exacto suffix + auto-routing alias.
+    from app.routing.model_slug import parse_model_slug, is_auto_model
+    parsed_slug = parse_model_slug(body.get("model"))
+    if parsed_slug.sort_mode is not None:
+        body = {**body, "model": parsed_slug.bare_model}
+
+    is_auto = is_auto_model(parsed_slug.bare_model)
+    alias = await resolve_alias(db, body.get("model")) if not is_auto else None
     route = await select_provider(
         db, hint, has_tools=has_tools, has_images=has_images, key_type=key_record.key_type,
         pinned_provider_id=alias.provider_id if alias else None,
         model_override=alias.model_id if alias else None,
+        sort_mode=parsed_slug.sort_mode,
     )
+    if is_auto:
+        resolved_model = route.profile.model_id or route.provider.default_model
+        if not resolved_model:
+            raise HTTPException(
+                502,
+                f"auto-routing chose {route.provider.name!r} but it has no default_model set",
+            )
+        body = {**body, "model": resolved_model}
 
     # OTEL GenAI span: routing-decision metadata (no-op if OTLP endpoint unset)
     with llm_span(
@@ -155,6 +171,11 @@ async def chat_completions(
     )
     if budget_total:
         resp_headers["X-Token-Budget-Remaining"] = str(budget_total)
+    # v2.8.0 — slug-shortcut + auto-routing decision visibility
+    if parsed_slug.sort_mode:
+        resp_headers["X-Sort-Mode"] = parsed_slug.sort_mode
+    if is_auto:
+        resp_headers["X-Auto-Routed"] = f"{route.provider.name}:{route.profile.model_id}"
     # Budget visibility headers (soft-cap warning, remaining $ today/this hour)
     if key_record.budget_status is not None:
         from app.budget.tracker import warnings_for

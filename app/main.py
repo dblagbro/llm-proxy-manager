@@ -108,6 +108,7 @@ app.add_middleware(
         "X-Vision-Routed", "X-Context-Strategy-Applied",
         "X-Resolved-Provider", "X-Emulation-Level", "X-Unsupported-Feature",
         "X-PII-Masked",
+        "X-Sort-Mode", "X-Auto-Routed", "X-Fallback-From",
     ],
 )
 
