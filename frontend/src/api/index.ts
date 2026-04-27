@@ -45,6 +45,9 @@ export const providersApi = {
     failure_threshold: number | null
     extra_config: Record<string, unknown>
   }) => api.post<Provider>('/api/providers/claude-oauth/exchange', data),
+  // v2.7.7: re-auth an existing claude-oauth provider in-place
+  oauthRotate: (id: string, data: { state: string; callback: string }) =>
+    api.post<Provider>(`/api/providers/${id}/oauth-rotate`, data),
 }
 
 // ── API Keys ──────────────────────────────────────────────────────────────────

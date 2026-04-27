@@ -164,6 +164,50 @@ async def claude_oauth_authorize(
     return OAuthAuthorizeResponse(state=start.state, authorize_url=start.authorize_url)
 
 
+class OAuthRotateRequest(BaseModel):
+    state: str
+    callback: str
+
+
+@router.post("/{provider_id}/oauth-rotate")
+async def claude_oauth_rotate(
+    provider_id: str,
+    body: OAuthRotateRequest,
+    db: AsyncSession = Depends(get_db),
+    _: AdminUser = Depends(require_admin),
+):
+    """Re-auth an existing claude-oauth provider in-place.
+
+    v2.7.7: when a claude-oauth provider's tokens have been revoked
+    server-side or the refresh_token chain breaks, the admin can hit
+    "Re-auth" in the edit form, complete the browser flow, and paste
+    back the CODE#STATE — this endpoint exchanges the code and updates
+    the existing Provider row without creating a duplicate."""
+    from app.providers.claude_oauth_flow import (
+        exchange_code, extract_code_from_callback, OAuthFlowError,
+    )
+    p = await _get_or_404(db, provider_id)
+    if p.provider_type != "claude-oauth":
+        raise HTTPException(400, f"Provider {p.name!r} is not a claude-oauth provider")
+
+    try:
+        code, callback_state = extract_code_from_callback(body.callback)
+    except ValueError as e:
+        raise HTTPException(400, f"Couldn't parse callback: {e}")
+    try:
+        result = await exchange_code(body.state, code, expected_state=callback_state)
+    except OAuthFlowError as e:
+        raise HTTPException(400, str(e))
+
+    p.api_key = result.access_token
+    p.oauth_refresh_token = result.refresh_token
+    p.oauth_expires_at = result.expires_at
+    await db.commit()
+    await db.refresh(p)
+    register_provider(p.id, p.provider_type, p.hold_down_sec, p.failure_threshold)
+    return _serialize(p)
+
+
 @router.post("/claude-oauth/exchange")
 async def claude_oauth_exchange(
     body: OAuthExchangeRequest,
