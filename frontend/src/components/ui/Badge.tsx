@@ -1,14 +1,17 @@
 import { clsx } from 'clsx'
-import type { ReactNode } from 'react'
+import type { ReactNode, MouseEventHandler } from 'react'
 
 interface BadgeProps {
   variant?: 'default' | 'success' | 'warning' | 'danger' | 'info' | 'muted'
   size?: 'sm' | 'md'
   children: ReactNode
   className?: string
+  // v2.8.0: optional click handler — used by the "Needs re-auth" badge to
+  // jump the user into the expanded provider panel.
+  onClick?: MouseEventHandler<HTMLSpanElement>
 }
 
-export function Badge({ variant = 'default', size = 'sm', children, className }: BadgeProps) {
+export function Badge({ variant = 'default', size = 'sm', children, className, onClick }: BadgeProps) {
   const variants = {
     default: 'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300',
     success: 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-400',
@@ -19,7 +22,10 @@ export function Badge({ variant = 'default', size = 'sm', children, className }:
   }
   const sizes = { sm: 'px-2 py-0.5 text-xs', md: 'px-2.5 py-1 text-sm' }
   return (
-    <span className={clsx('inline-flex items-center rounded-full font-medium', variants[variant], sizes[size], className)}>
+    <span
+      onClick={onClick}
+      className={clsx('inline-flex items-center rounded-full font-medium', variants[variant], sizes[size], className)}
+    >
       {children}
     </span>
   )
