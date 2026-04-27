@@ -7,7 +7,10 @@ import time
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.routing.circuit_breaker import record_success, record_failure, is_billing_error
+from app.routing.circuit_breaker import (
+    record_success, record_failure, is_billing_error,
+    is_auth_error, record_auth_failure, clear_auth_failure,
+)
 from app.monitoring.metrics import record_request
 from app.monitoring.pricing import estimate_cost
 from app.monitoring.activity import log_event
@@ -48,6 +51,9 @@ async def record_outcome(
             record_ttft_sample(provider_id, ttft_ms)
         if cache_creation or cache_read:
             observe_cache_tokens(provider_id, model, cache_creation, cache_read)
+        # v2.7.8 BUG-002: a successful call clears any prior auth_failed flag —
+        # whatever revoked the key is fixed (admin re-keyed, OAuth refreshed, etc.)
+        clear_auth_failure(provider_id)
         await log_event(
             db,
             event_type="llm_request",
@@ -64,7 +70,13 @@ async def record_outcome(
             },
         )
     else:
-        await record_failure(provider_id, billing_error=is_billing_error(error_str))
+        # v2.7.8 BUG-002: classify the error. Auth errors are PERMANENT
+        # (admin must re-key) — record them in a separate map and open the
+        # breaker for 24h so we stop re-trying the broken provider.
+        if is_auth_error(error_str):
+            await record_auth_failure(provider_id, error_str)
+        else:
+            await record_failure(provider_id, billing_error=is_billing_error(error_str))
         await record_request(db, provider_id, False, 0, 0, 0, 0, key_record_id)
         observe_request(
             provider=provider_id, model=model, endpoint=endpoint,

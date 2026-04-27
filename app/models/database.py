@@ -50,6 +50,27 @@ async def init_db():
                 await conn.exec_driver_sql(stmt)
             except Exception:
                 pass  # column already exists
+
+        # v2.7.8 BUG-017: indexes for hot lookup paths.
+        # These are CREATE INDEX IF NOT EXISTS so reapplying is a no-op.
+        # Without these, every authenticated request did a full scan of
+        # api_keys, and activity-log queries scanned the full table.
+        for index_stmt in [
+            # Authenticated requests look up api_keys by key_hash on every call
+            "CREATE INDEX IF NOT EXISTS ix_api_keys_key_hash ON api_keys(key_hash)",
+            # Activity log: most queries are "recent events" or "recent events for provider X"
+            "CREATE INDEX IF NOT EXISTS ix_activity_log_created_at ON activity_log(created_at DESC)",
+            "CREATE INDEX IF NOT EXISTS ix_activity_log_provider_id ON activity_log(provider_id)",
+            "CREATE INDEX IF NOT EXISTS ix_activity_log_severity ON activity_log(severity)",
+            # Provider metrics rollup queries are always (provider_id, bucket_ts)
+            "CREATE INDEX IF NOT EXISTS ix_provider_metrics_provider_bucket ON provider_metrics(provider_id, bucket_ts DESC)",
+            # api_keys.last_used_at — used by activity rollup + key-usage UI
+            "CREATE INDEX IF NOT EXISTS ix_api_keys_last_used_at ON api_keys(last_used_at DESC)",
+        ]:
+            try:
+                await conn.exec_driver_sql(index_stmt)
+            except Exception as e:
+                logger.warning(f"index create failed (likely missing column): {index_stmt[:60]}... — {e}")
     logger.info("Database initialized")
 
 
