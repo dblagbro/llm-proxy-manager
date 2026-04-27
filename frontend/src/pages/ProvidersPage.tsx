@@ -137,6 +137,18 @@ export function ProvidersPage() {
     p.provider_type.toLowerCase().includes(search.toLowerCase())
   )
 
+  // v2.7.8 BUG-010: identify priorities shared by ≥2 enabled providers so the
+  // UI can surface a yellow warning ("ties broken by created_at order").
+  const priorityTies = new Set<number>()
+  {
+    const counts = new Map<number, number>()
+    for (const p of (providers ?? [])) {
+      if (!p.enabled) continue
+      counts.set(p.priority, (counts.get(p.priority) ?? 0) + 1)
+    }
+    for (const [pri, n] of counts) if (n > 1) priorityTies.add(pri)
+  }
+
   return (
     <div className="p-6 space-y-6 max-w-6xl">
       <div className="flex items-center justify-between">
@@ -179,6 +191,18 @@ export function ProvidersPage() {
                     <p className="text-xs text-gray-500">{p.provider_type} · {p.default_model ?? 'no default model'} · priority {p.priority}</p>
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
+                    {/* v2.7.8 BUG-002: needs re-auth (admin must re-key) */}
+                    {p.auth_failed && (
+                      <span title={p.auth_failed.last_error || 'auth failure'}>
+                        <Badge variant="danger">Needs re-auth</Badge>
+                      </span>
+                    )}
+                    {/* v2.7.8 BUG-010: priority tie warning */}
+                    {p.enabled && priorityTies.has(p.priority) && (
+                      <span title={`Multiple enabled providers share priority ${p.priority}; tiebreaker is creation order.`}>
+                        <Badge variant="warning">Priority tie</Badge>
+                      </span>
+                    )}
                     {/*
                       Single status badge, most-specific-wins:
                       1. Last test result (if run this session)

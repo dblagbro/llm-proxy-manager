@@ -41,17 +41,32 @@ def cot_headers(cot_api_key):
 @pytest.fixture
 def only_mock_routing(admin_session, all_non_mock_providers, mock_server):
     """
-    Force-open circuit breakers on ALL non-mock providers so the mock is the only
-    available route.  Uses all_non_mock_providers (includes unconfigured ones) so
-    providers without API keys don't bypass the mock.  Resets all CBs in teardown.
+    Force-open circuit breakers AND temporarily disable ALL non-mock providers so
+    the mock is the only available route. Belt-and-suspenders: CB-open alone
+    didn't always keep traffic off broken anthropic providers in claude-oauth
+    dispatch (which short-circuits CB checks). Restores enabled state and CB
+    state on teardown.
+
+    v2.7.8 BUG-005: previously CB-open only — broken real providers leaked into
+    streaming tests, causing 7 spurious failures.
     """
-    tripped = []
+    tripped: list[str] = []
+    disabled: list[str] = []  # (id, was_originally_enabled) — only restore if it was enabled
     for p in all_non_mock_providers:
+        # CB open
         r = admin_session.post(f"{BASE_URL}/cluster/circuit-breaker/{p['id']}/open")
         if r.status_code == 200:
             tripped.append(p["id"])
+        # Disable if currently enabled
+        if p.get("enabled"):
+            r = admin_session.patch(f"{BASE_URL}/api/providers/{p['id']}/toggle")
+            if r.status_code == 200 and r.json().get("enabled") is False:
+                disabled.append(p["id"])
     time.sleep(0.5)  # let state propagate
     yield mock_server
+    # Restore: re-toggle enabled providers, then reset CBs
+    for pid in disabled:
+        admin_session.patch(f"{BASE_URL}/api/providers/{pid}/toggle")
     for pid in tripped:
         admin_session.post(f"{BASE_URL}/cluster/circuit-breaker/{pid}/reset")
     time.sleep(0.3)
