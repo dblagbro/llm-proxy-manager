@@ -34,7 +34,7 @@ export function ProvidersPage() {
   const { data: health } = useQuery({ queryKey: ['health'], queryFn: clusterApi.health, refetchInterval: 15_000 })
 
   const saveMutation = useMutation({
-    mutationFn: (data: ProviderFormState) => {
+    mutationFn: async (data: ProviderFormState) => {
       // v2.7.1: claude-oauth new-create with an authorize_url + callback goes
       // through the browser-OAuth exchange endpoint instead of the plain POST.
       if (!editing && data.provider_type === 'claude-oauth' && data.oauth_state && data.oauth_callback) {
@@ -52,6 +52,16 @@ export function ProvidersPage() {
           failure_threshold: data.failure_threshold,
           extra_config: data.extra_config,
         })
+      }
+      // v2.7.7: claude-oauth re-auth — when editing with state+callback, rotate
+      // tokens in-place via /oauth-rotate, then PUT the rest of the form.
+      if (editing && data.provider_type === 'claude-oauth' && data.oauth_state && data.oauth_callback) {
+        await providersApi.oauthRotate(editing.id, {
+          state: data.oauth_state,
+          callback: data.oauth_callback,
+        })
+        // Continue with the standard PUT for non-token field updates
+        return providersApi.update(editing.id, data)
       }
       return editing ? providersApi.update(editing.id, data) : providersApi.create(data)
     },
