@@ -12,7 +12,7 @@ Self-hosted LLM routing gateway — Python/FastAPI rewrite of llm-proxy v1.
 | tmrwww02 | https://www.voipguru.org/llm-proxy2/ |
 | c1conversations-avaya-01-s23 | https://\<c1-domain\>/llm-proxy2/ |
 
-**Default login**: `admin` / `admin` — change immediately after first boot.
+**Default login on first boot**: `admin` / `admin` — change immediately after first login via the Users page. The integration test fixtures expect the production cluster's existing admin password (see `tests/conftest.py::ADMIN_PASS`).
 
 ## Stack
 

@@ -12,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse, FileResponse
 import os
 
+from app.__version__ import __version__
 from app.config import settings
 from app.models.database import init_db, AsyncSessionLocal
 from app.auth.admin import ensure_default_admin
@@ -59,8 +60,8 @@ async def lifespan(app: FastAPI):
             observe_circuit_breaker_state(p.id, "closed")  # seed Prometheus gauge
 
     # Observability — Prometheus service info + OTEL tracer (graceful no-op when unset)
-    set_service_info(version="2.7.5", node_id=settings.cluster_node_id or "")
-    init_tracer(service_name="llm-proxy", version="2.7.5")
+    set_service_info(version=__version__, node_id=settings.cluster_node_id or "")
+    init_tracer(service_name="llm-proxy", version=__version__)
 
     # Start background tasks
     start_monitor(notify_fn=_notify_provider_degraded)
@@ -81,7 +82,7 @@ async def _notify_provider_degraded(severity: str, message: str, provider_id: st
 
 app = FastAPI(
     title="llm-proxy",
-    version="2.7.5",
+    version=__version__,
     description="Self-hosted LLM routing gateway — LMRH protocol + CoT-E augmentation",
     lifespan=lifespan,
     docs_url="/docs",
@@ -148,12 +149,12 @@ app.include_router(oauth_capture_router)
 # ── Utility endpoints ────────────────────────────────────────────────────────
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": "2.7.5"}
+    return {"status": "ok", "version": __version__}
 
 
 @app.get("/version")
 async def version():
-    return {"service": "llm-proxy", "version": "2.7.5", "docs": "/docs"}
+    return {"service": "llm-proxy", "version": __version__, "docs": "/docs"}
 
 
 @app.get("/metrics", include_in_schema=False)
@@ -188,5 +189,12 @@ if os.path.isdir(_static_dir):
     async def spa_catch_all(full_path: str):
         index = os.path.join(_static_dir, "index.html")
         if os.path.isfile(index):
-            return FileResponse(index)
+            # v2.7.6 BUG-015: prevent browsers from caching the SPA shell so
+            # they always pick up the latest fingerprinted asset bundle after
+            # a deploy. Bundles themselves are content-hashed and immutable,
+            # so they're safe to cache long.
+            return FileResponse(
+                index,
+                headers={"Cache-Control": "no-cache, must-revalidate"},
+            )
         raise HTTPException(404, "Not found")
