@@ -126,10 +126,11 @@ export function ProviderForm({ form, onChange, editing }: Props) {
             Claude Pro Max — sign in with your subscription
           </div>
 
-          {!editing && !showPasteFallback && (
+          {!showPasteFallback && (
             <div className="space-y-3">
               <ol className="list-decimal list-inside text-xs text-gray-600 dark:text-gray-300 space-y-1">
-                <li>Click <strong>Generate Auth URL</strong> below.</li>
+                {editing && <li className="text-amber-600 dark:text-amber-400 font-medium">Re-authorize this provider — replaces the stored access &amp; refresh tokens.</li>}
+                <li>Click <strong>{editing ? 'Generate New Auth URL' : 'Generate Auth URL'}</strong> below.</li>
                 <li>Open the URL in a tab where you're signed in to claude.ai and approve access.</li>
                 <li>You'll land on an Anthropic success page at <code className="px-1 font-mono bg-gray-100 dark:bg-gray-800 rounded">platform.claude.com/oauth/code/callback</code> that displays an authorization code.</li>
                 <li>Copy that code (or the full URL from your address bar) and paste it below. We'll trade it for a token automatically.</li>
@@ -143,7 +144,7 @@ export function ProviderForm({ form, onChange, editing }: Props) {
                   onClick={handleGenerateAuthUrl}
                   loading={generating}
                 >
-                  {form.oauth_authorize_url ? 'Regenerate Auth URL' : 'Generate Auth URL'}
+                  {form.oauth_authorize_url ? 'Regenerate Auth URL' : (editing ? 'Generate New Auth URL' : 'Generate Auth URL')}
                 </Button>
                 {form.oauth_authorize_url && (
                   <a
@@ -168,13 +169,14 @@ export function ProviderForm({ form, onChange, editing }: Props) {
                     rows={3}
                     placeholder={'abc123…#state\n— or —\nhttps://platform.claude.com/oauth/code/callback?code=abc123…&state=…'}
                     className="w-full px-3 py-2 text-xs font-mono bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 border border-gray-300 dark:border-gray-700 rounded focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                    required
+                    required={!editing}
                   />
                 </>
               )}
 
               <div className="text-[11px] text-gray-500 dark:text-gray-400">
-                Already have a token from <code className="font-mono">claude login</code>?{' '}
+                {editing ? 'Or ' : 'Already have a token from '}
+                <code className="font-mono">claude login</code>?{' '}
                 <button
                   type="button"
                   className="underline hover:text-gray-700 dark:hover:text-gray-200"
@@ -186,7 +188,7 @@ export function ProviderForm({ form, onChange, editing }: Props) {
             </div>
           )}
 
-          {(editing || showPasteFallback) && (
+          {showPasteFallback && (
             <div className="space-y-2">
               <ol className="list-decimal list-inside text-xs text-gray-600 dark:text-gray-300 space-y-1">
                 <li>On any machine with Claude Code installed, run <code className="px-1 font-mono bg-gray-100 dark:bg-gray-800 rounded">claude login</code></li>
@@ -205,17 +207,15 @@ export function ProviderForm({ form, onChange, editing }: Props) {
                 className="w-full px-3 py-2 text-xs font-mono bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 border border-gray-300 dark:border-gray-700 rounded focus:outline-none focus:ring-2 focus:ring-indigo-500"
                 required={!editing}
               />
-              {!editing && (
-                <div className="text-[11px] text-gray-500 dark:text-gray-400">
-                  <button
-                    type="button"
-                    className="underline hover:text-gray-700 dark:hover:text-gray-200"
-                    onClick={() => setShowPasteFallback(false)}
-                  >
-                    ← Back to browser sign-in
-                  </button>
-                </div>
-              )}
+              <div className="text-[11px] text-gray-500 dark:text-gray-400">
+                <button
+                  type="button"
+                  className="underline hover:text-gray-700 dark:hover:text-gray-200"
+                  onClick={() => setShowPasteFallback(false)}
+                >
+                  ← Back to browser sign-in
+                </button>
+              </div>
             </div>
           )}
         </div>
