@@ -319,8 +319,9 @@ class TestProviderActions:
             "() => !Array.from(document.querySelectorAll('button')).some(b => b.disabled && b.textContent.includes('Test'))",
             timeout=30_000,
         )
-        # Result badge should appear in the card header (OK or Error)
-        result_badge = page.locator("span:text-matches('^OK$|^Error$')").first
+        # Result badge in the card header. The actual copy is
+        # "Test OK" / "Test failed" (see ProvidersPage.tsx).
+        result_badge = page.locator("span:has-text('Test OK'), span:has-text('Test failed')").first
         expect(result_badge).to_be_visible(timeout=5_000)
 
     def test_scan_models_button_shows_toast(self, page: Page):

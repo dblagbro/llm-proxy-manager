@@ -67,6 +67,12 @@ async def list_providers(
     return [_serialize(p) for p in providers]
 
 
+_TYPES_REQUIRING_API_KEY = {
+    "anthropic", "openai", "google", "vertex", "grok",
+    "cohere", "mistral", "groq", "together", "fireworks",
+}
+
+
 @router.post("")
 async def create_provider(
     body: ProviderCreate,
@@ -75,6 +81,14 @@ async def create_provider(
 ):
     data = body.model_dump()
     blob = data.pop("oauth_credentials_blob", None)
+
+    # v2.7.6 BUG-019: reject providers that require auth but have no key.
+    # Without this, the provider is enabled but every routed request 502s.
+    if body.provider_type in _TYPES_REQUIRING_API_KEY and not (data.get("api_key") or "").strip():
+        raise HTTPException(
+            400,
+            f"{body.provider_type} providers require an api_key — paste a key in the form.",
+        )
 
     if body.provider_type == "claude-oauth":
         if not blob:

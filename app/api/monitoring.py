@@ -26,7 +26,12 @@ async def activity_log(
 ):
     query = select(ActivityLog).order_by(desc(ActivityLog.created_at)).limit(limit)
     if severity:
-        query = query.where(ActivityLog.severity == severity)
+        # Comma-separated list, e.g. ?severity=warning,error → IN (...)
+        sev_list = [s.strip() for s in severity.split(",") if s.strip()]
+        if len(sev_list) == 1:
+            query = query.where(ActivityLog.severity == sev_list[0])
+        elif sev_list:
+            query = query.where(ActivityLog.severity.in_(sev_list))
     result = await db.execute(query)
     rows = result.scalars().all()
     return [

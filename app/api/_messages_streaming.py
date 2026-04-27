@@ -272,7 +272,14 @@ def _inject_claude_code_system(body: dict) -> dict:
     if head and any(head.startswith(m) for m in _ALLOWED_SYS_MARKERS):
         return body  # caller already identifying as Claude Code
 
-    marker_block = {"type": "text", "text": _CLAUDE_CODE_SYS_MARKER}
+    # v2.7.6 BUG-006: marker block carries cache_control so the prefix stays
+    # in Anthropic's prompt cache across calls. Without this, a non-cacheable
+    # block at index 0 would shift the cache key on every request.
+    marker_block = {
+        "type": "text",
+        "text": _CLAUDE_CODE_SYS_MARKER,
+        "cache_control": {"type": "ephemeral"},
+    }
 
     if sys_field is None:
         new_system: list | str = [marker_block]
@@ -288,6 +295,28 @@ def _inject_claude_code_system(body: dict) -> dict:
     return {**body, "system": new_system}
 
 
+async def _refresh_oauth_token(provider_id: str, db: AsyncSession) -> Optional[str]:
+    """Fetch the provider, run refresh_and_persist, return new access_token.
+    Returns None if refresh fails (e.g. invalid_grant — admin must re-auth)."""
+    from sqlalchemy import select
+    from app.models.db import Provider
+    from app.providers.claude_oauth_flow import refresh_and_persist, OAuthFlowError
+    try:
+        r = await db.execute(select(Provider).where(Provider.id == provider_id))
+        provider = r.scalar_one_or_none()
+        if provider is None or not provider.oauth_refresh_token:
+            return None
+        result = await refresh_and_persist(provider, db)
+        logger.info(f"claude-oauth provider {provider_id}: token refreshed via 401-retry")
+        return result.access_token
+    except OAuthFlowError as e:
+        logger.warning(f"claude-oauth provider {provider_id}: refresh failed: {e}")
+        return None
+    except Exception as e:
+        logger.exception(f"claude-oauth provider {provider_id}: refresh raised: {e}")
+        return None
+
+
 async def _complete_claude_oauth(
     access_token: str,
     body: dict,
@@ -296,40 +325,58 @@ async def _complete_claude_oauth(
     key_record_id: str,
     t0: float,
 ) -> dict:
-    """Non-streaming ``/v1/messages`` call against platform.claude.com."""
+    """Non-streaming ``/v1/messages`` call against platform.claude.com.
+
+    Auto-refreshes the access_token on 401 and retries once. If the second
+    attempt also fails or refresh fails (e.g. revoked refresh_token), the
+    underlying httpx.HTTPStatusError propagates so the dispatch in
+    messages.py converts it to an HTTP error response.
+    """
     url = f"{PLATFORM_BASE_URL}/v1/messages?beta=true"
-    headers = {
-        **_claude_oauth_headers(access_token, model=body.get("model")),
-        "Content-Type": "application/json",
-    }
     body = _inject_claude_code_system(body)
-    try:
-        async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
-            r = await client.post(url, json=body, headers=headers)
-        if r.status_code >= 400:
+    current_token = access_token
+    refreshed = False
+
+    while True:
+        headers = {
+            **_claude_oauth_headers(current_token, model=body.get("model")),
+            "Content-Type": "application/json",
+        }
+        try:
+            async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+                r = await client.post(url, json=body, headers=headers)
+            if r.status_code == 401 and not refreshed:
+                # One-shot refresh-and-retry
+                new_token = await _refresh_oauth_token(provider_id, db)
+                if new_token:
+                    current_token = new_token
+                    refreshed = True
+                    continue
+                # Fall through to error path
+            if r.status_code >= 400:
+                await record_outcome(
+                    db, provider_id, "claude-oauth", success=False,
+                    key_record_id=key_record_id, error_str=f"{r.status_code}: {r.text[:200]}",
+                )
+                r.raise_for_status()
+            data = r.json()
+            usage = data.get("usage") or {}
+            in_tok = int(usage.get("input_tokens") or 0)
+            out_tok = int(usage.get("output_tokens") or 0)
+            cache_creation = int(usage.get("cache_creation_input_tokens") or 0)
+            cache_read = int(usage.get("cache_read_input_tokens") or 0)
+            await record_outcome(
+                db, provider_id, "claude-oauth", success=True,
+                in_tok=in_tok, out_tok=out_tok, t0=t0, key_record_id=key_record_id,
+                cache_creation=cache_creation, cache_read=cache_read,
+            )
+            return data
+        except httpx.HTTPError as e:
             await record_outcome(
                 db, provider_id, "claude-oauth", success=False,
-                key_record_id=key_record_id, error_str=f"{r.status_code}: {r.text[:200]}",
+                key_record_id=key_record_id, error_str=str(e),
             )
-            r.raise_for_status()
-        data = r.json()
-        usage = data.get("usage") or {}
-        in_tok = int(usage.get("input_tokens") or 0)
-        out_tok = int(usage.get("output_tokens") or 0)
-        cache_creation = int(usage.get("cache_creation_input_tokens") or 0)
-        cache_read = int(usage.get("cache_read_input_tokens") or 0)
-        await record_outcome(
-            db, provider_id, "claude-oauth", success=True,
-            in_tok=in_tok, out_tok=out_tok, t0=t0, key_record_id=key_record_id,
-            cache_creation=cache_creation, cache_read=cache_read,
-        )
-        return data
-    except httpx.HTTPError as e:
-        await record_outcome(
-            db, provider_id, "claude-oauth", success=False,
-            key_record_id=key_record_id, error_str=str(e),
-        )
-        raise
+            raise
 
 
 async def _stream_claude_oauth(
@@ -344,14 +391,19 @@ async def _stream_claude_oauth(
 ) -> AsyncIterator[bytes]:
     """Streaming ``/v1/messages`` — platform.claude.com already emits
     Anthropic SSE, so we can forward chunks as-is and just sniff usage
-    events for metrics + cache storage."""
+    events for metrics + cache storage.
+
+    Pre-stream errors (401, 4xx, network failure before the first byte) raise
+    ``httpx.HTTPStatusError`` so the dispatch in messages.py can convert to a
+    proper HTTP error response — never yields a fake ``message_stop``. On 401
+    we run ``refresh_and_persist`` and retry the connection once before
+    surfacing the error.
+
+    Mid-stream errors (after the first byte) emit an SSE ``error`` event +
+    ``[DONE]`` but do NOT synthesize ``message_stop``: the stream is broken,
+    not complete, and clients must distinguish the two.
+    """
     url = f"{PLATFORM_BASE_URL}/v1/messages?beta=true"
-    headers = {
-        **_claude_oauth_headers(access_token, model=body.get("model")),
-        "Content-Type": "application/json",
-    }
-    # Ensure stream=true is set and the CC marker is present on the body
-    # the upstream sees (Anthropic rejects OAuth-auth'd requests without it).
     body = _inject_claude_code_system({**body, "stream": True})
 
     in_tok = out_tok = 0
@@ -359,69 +411,107 @@ async def _stream_claude_oauth(
     ttft_ms: float = 0.0
     full_text_buf: list[str] = []
 
-    try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(300.0), follow_redirects=True) as client:
-            async with client.stream("POST", url, json=body, headers=headers) as r:
-                if r.status_code >= 400:
-                    err_body = (await r.aread()).decode(errors="replace")[:400]
-                    raise httpx.HTTPStatusError(
-                        f"{r.status_code}: {err_body}", request=r.request, response=r,
-                    )
-                first_chunk = True
-                async for chunk in r.aiter_bytes():
-                    if not chunk:
-                        continue
-                    if first_chunk:
-                        ttft_ms = (time.monotonic() - t0) * 1000
-                        first_chunk = False
-                    # Forward verbatim
-                    yield chunk
-                    # Parse SSE events to extract usage + full text for cache/metrics
-                    for line in chunk.decode(errors="replace").splitlines():
-                        if not line.startswith("data: "):
-                            continue
-                        payload = line[6:].strip()
-                        if not payload or payload == "[DONE]":
-                            continue
-                        try:
-                            evt = json.loads(payload)
-                        except ValueError:
-                            continue
-                        t = evt.get("type")
-                        if t == "message_start":
-                            usage = (evt.get("message") or {}).get("usage") or {}
-                            in_tok = int(usage.get("input_tokens") or in_tok)
-                            cache_creation = int(usage.get("cache_creation_input_tokens") or cache_creation)
-                            cache_read = int(usage.get("cache_read_input_tokens") or cache_read)
-                        elif t == "message_delta":
-                            usage = evt.get("usage") or {}
-                            out_tok = int(usage.get("output_tokens") or out_tok)
-                        elif t == "content_block_delta":
-                            delta = evt.get("delta") or {}
-                            if delta.get("type") == "text_delta":
-                                full_text_buf.append(delta.get("text") or "")
+    current_token = access_token
+    refreshed = False
+    yielded_first_chunk = False
 
-        if budget_total > 0:
-            remaining = max(0, budget_total - out_tok)
+    while True:
+        headers = {
+            **_claude_oauth_headers(current_token, model=body.get("model")),
+            "Content-Type": "application/json",
+        }
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(300.0), follow_redirects=True) as client:
+                async with client.stream("POST", url, json=body, headers=headers) as r:
+                    # Pre-stream error handling (no bytes yielded yet)
+                    if r.status_code == 401 and not refreshed:
+                        await r.aread()  # drain
+                        new_token = await _refresh_oauth_token(provider_id, db)
+                        if new_token:
+                            current_token = new_token
+                            refreshed = True
+                            # Restart the loop with the new token
+                            continue
+                        # Fall through to generic error path below
+                    if r.status_code >= 400:
+                        err_body = (await r.aread()).decode(errors="replace")[:400]
+                        await record_outcome(
+                            db, provider_id, "claude-oauth", success=False,
+                            key_record_id=key_record_id,
+                            error_str=f"{r.status_code}: {err_body}",
+                        )
+                        # RAISE — dispatch will convert to HTTP error response.
+                        # Do NOT yield SSE error frames; status hasn't been sent.
+                        raise httpx.HTTPStatusError(
+                            f"{r.status_code}: {err_body}", request=r.request, response=r,
+                        )
+
+                    # 2xx — start streaming bytes
+                    async for chunk in r.aiter_bytes():
+                        if not chunk:
+                            continue
+                        if not yielded_first_chunk:
+                            ttft_ms = (time.monotonic() - t0) * 1000
+                            yielded_first_chunk = True
+                        yield chunk
+                        # Parse SSE events for usage + full text
+                        for line in chunk.decode(errors="replace").splitlines():
+                            if not line.startswith("data: "):
+                                continue
+                            payload = line[6:].strip()
+                            if not payload or payload == "[DONE]":
+                                continue
+                            try:
+                                evt = json.loads(payload)
+                            except ValueError:
+                                continue
+                            t = evt.get("type")
+                            if t == "message_start":
+                                usage = (evt.get("message") or {}).get("usage") or {}
+                                in_tok = int(usage.get("input_tokens") or in_tok)
+                                cache_creation = int(usage.get("cache_creation_input_tokens") or cache_creation)
+                                cache_read = int(usage.get("cache_read_input_tokens") or cache_read)
+                            elif t == "message_delta":
+                                usage = evt.get("usage") or {}
+                                out_tok = int(usage.get("output_tokens") or out_tok)
+                            elif t == "content_block_delta":
+                                delta = evt.get("delta") or {}
+                                if delta.get("type") == "text_delta":
+                                    full_text_buf.append(delta.get("text") or "")
+
+            # Successful end of stream
+            if budget_total > 0:
+                remaining = max(0, budget_total - out_tok)
+                yield (
+                    f'event: budget\ndata: {{"remaining":{remaining},'
+                    f'"used":{out_tok},"total":{budget_total}}}\n\n'
+                ).encode()
+            await record_outcome(
+                db, provider_id, "claude-oauth", success=True,
+                in_tok=in_tok, out_tok=out_tok, t0=t0, key_record_id=key_record_id,
+                ttft_ms=ttft_ms, cache_creation=cache_creation, cache_read=cache_read,
+            )
+            if cache_decision is not None and cache_decision.eligible:
+                try:
+                    await maybe_store(cache_decision, "".join(full_text_buf))
+                except Exception:
+                    pass
+            return
+        except httpx.HTTPStatusError:
+            # Pre-stream — propagate to dispatch (will become HTTP error)
+            raise
+        except httpx.HTTPError as e:
+            await record_outcome(
+                db, provider_id, "claude-oauth", success=False,
+                key_record_id=key_record_id, error_str=str(e),
+            )
+            if not yielded_first_chunk:
+                # Pre-stream connection error — surface as HTTP error
+                raise
+            # Mid-stream — emit SSE error event + [DONE], NOT message_stop
             yield (
-                f'event: budget\ndata: {{"remaining":{remaining},'
-                f'"used":{out_tok},"total":{budget_total}}}\n\n'
-            ).encode()
-
-        await record_outcome(
-            db, provider_id, "claude-oauth", success=True,
-            in_tok=in_tok, out_tok=out_tok, t0=t0, key_record_id=key_record_id,
-            ttft_ms=ttft_ms, cache_creation=cache_creation, cache_read=cache_read,
-        )
-        if cache_decision is not None and cache_decision.eligible:
-            try:
-                await maybe_store(cache_decision, "".join(full_text_buf))
-            except Exception:
-                pass
-    except httpx.HTTPError as e:
-        await record_outcome(
-            db, provider_id, "claude-oauth", success=False,
-            key_record_id=key_record_id, error_str=str(e),
-        )
-        yield (b'data: ' + json.dumps({"type": "error", "error": {"message": str(e)}}).encode() + b'\n\n')
-        yield b'data: {"type":"message_stop"}\n\ndata: [DONE]\n\n'
+                b'event: error\ndata: '
+                + json.dumps({"type": "error", "error": {"message": str(e)}}).encode()
+                + b'\n\ndata: [DONE]\n\n'
+            )
+            return

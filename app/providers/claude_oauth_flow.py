@@ -246,14 +246,16 @@ async def exchange_code(
 
 
 async def refresh_access_token(refresh_token: str) -> ExchangeResult:
-    """Use a stored refresh_token to mint a new access_token.
+    """Low-level token refresh — DO NOT call from production code paths.
 
-    Anthropic rotates refresh tokens on use, so the returned
-    ``ExchangeResult.refresh_token`` is different from the one passed in
-    and MUST be persisted to the Provider row — otherwise the next refresh
-    call will fail with ``invalid_grant`` (the old token is consumed).
-    Callers that have a DB session should prefer
-    ``refresh_and_persist()`` below which handles persistence in one shot.
+    Use ``refresh_and_persist(provider, db)`` instead. Anthropic rotates
+    refresh tokens on use, so the returned ``ExchangeResult.refresh_token``
+    is different from the one passed in and MUST be persisted to the
+    Provider row. Calling this directly without persisting drops the
+    rotated token and the next refresh fails with ``invalid_grant``.
+
+    This function exists for unit tests and the one-shot exchange in
+    ``refresh_and_persist`` itself.
     """
     form = {
         "grant_type": "refresh_token",
