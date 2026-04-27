@@ -60,11 +60,14 @@ class TestUnauthorized:
 
     def test_health_is_public(self):
         """Health endpoint must be reachable without auth (used by cluster peers)."""
+        import re
         r = requests.get(f"{BASE_URL}/health", verify=False)
         assert r.status_code == 200
         d = r.json()
         assert "status" in d
-        assert d["version"] == "2.0.0"
+        # Don't pin to a specific version — it changes every release.
+        # Just confirm it's a semver-ish string.
+        assert re.match(r"^\d+\.\d+\.\d+", d["version"]), f"unexpected version: {d['version']!r}"
 
 
 class TestLogout:

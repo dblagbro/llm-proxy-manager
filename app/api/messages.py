@@ -179,33 +179,92 @@ async def messages(
         )
         access_token = route.provider.api_key or ""
         t0 = time.monotonic()
-        # Build the upstream body: reuse the incoming body but let the upstream
-        # default max_tokens if the client didn't specify one.
         upstream_body = dict(body)
+        oauth_provider_id = route.provider.id
         if stream:
+            # v2.7.6: pre-flight the streaming connection so 401/4xx errors
+            # become proper HTTP responses instead of SSE-error-then-200.
+            # _stream_claude_oauth raises HTTPStatusError on pre-stream
+            # failure (after one auto-refresh retry on 401).
+            stream_gen = _stream_claude_oauth(
+                access_token, upstream_body,
+                provider_id=oauth_provider_id, db=db,
+                key_record_id=key_record.id, t0=t0,
+                budget_total=max_tokens,
+            )
+            try:
+                first_chunk = await stream_gen.__anext__()
+            except httpx.HTTPStatusError as e:
+                # v2.7.6 BUG-018: streaming has no failover (would break SSE
+                # contract); surface the upstream error as HTTP status.
+                raise HTTPException(
+                    e.response.status_code,
+                    f"Claude OAuth upstream: {e.response.text[:200] if e.response else str(e)}",
+                )
+            except httpx.HTTPError as e:
+                raise HTTPException(502, f"Claude OAuth upstream: {e}")
+            except StopAsyncIteration:
+                raise HTTPException(502, "Claude OAuth upstream: empty stream")
+
+            async def _replay():
+                yield first_chunk
+                async for c in stream_gen:
+                    yield c
+
             resp_headers["X-Cache-Status"] = "bypass"
             return StreamingResponse(
-                _stream_claude_oauth(
-                    access_token, upstream_body,
-                    provider_id=route.provider.id, db=db,
-                    key_record_id=key_record.id, t0=t0,
-                    budget_total=max_tokens,
-                ),
+                _replay(),
                 media_type="text/event-stream",
                 headers=resp_headers,
             )
         try:
             result = await _complete_claude_oauth(
                 access_token, upstream_body,
-                provider_id=route.provider.id, db=db,
+                provider_id=oauth_provider_id, db=db,
                 key_record_id=key_record.id, t0=t0,
             )
         except httpx.HTTPStatusError as e:
-            raise HTTPException(e.response.status_code, f"Claude OAuth upstream: {e.response.text[:200]}")
+            # v2.7.6 BUG-018: claude-oauth was tried + auto-refresh attempted;
+            # both failed. If fallback is enabled, re-route through the standard
+            # ranked-fallback chain with this OAuth provider excluded so we try
+            # an api-key-based anthropic next.
+            status = e.response.status_code if e.response is not None else 502
+            if settings.fallback_enabled and status in (401, 403):
+                logger.info(
+                    f"claude-oauth provider {oauth_provider_id} returned {status} after refresh; "
+                    "falling through to ranked-fallback chain"
+                )
+                # Pick a fresh route excluding the failed OAuth provider
+                try:
+                    route = await select_provider(
+                        db, hint, has_tools=has_tools, has_images=has_images,
+                        key_type=key_record.key_type,
+                        exclude_provider_id=oauth_provider_id,
+                    )
+                except Exception as sel_exc:
+                    logger.warning(f"no fallback provider available: {sel_exc}")
+                    raise HTTPException(status, f"Claude OAuth upstream: {e.response.text[:200]}")
+                # Fall through to the regular non-streaming path below
+                resp_headers["X-Fallback-From"] = "claude-oauth"
+            else:
+                raise HTTPException(status, f"Claude OAuth upstream: {e.response.text[:200]}")
         except httpx.HTTPError as e:
-            raise HTTPException(502, f"Claude OAuth upstream: {e}")
-        resp_headers["X-Cache-Status"] = "bypass"
-        return JSONResponse(content=result, headers=resp_headers)
+            if settings.fallback_enabled:
+                logger.info(f"claude-oauth provider {oauth_provider_id} network error; falling through to ranked-fallback")
+                try:
+                    route = await select_provider(
+                        db, hint, has_tools=has_tools, has_images=has_images,
+                        key_type=key_record.key_type,
+                        exclude_provider_id=oauth_provider_id,
+                    )
+                except Exception:
+                    raise HTTPException(502, f"Claude OAuth upstream: {e}")
+                resp_headers["X-Fallback-From"] = "claude-oauth"
+            else:
+                raise HTTPException(502, f"Claude OAuth upstream: {e}")
+        else:
+            resp_headers["X-Cache-Status"] = "bypass"
+            return JSONResponse(content=result, headers=resp_headers)
 
     # Semantic cache — check before anything LLM-ish runs
     cache_decision = decide_cacheable(

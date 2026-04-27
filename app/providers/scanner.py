@@ -100,13 +100,34 @@ async def _fetch_anthropic_models(provider: Provider) -> list[str]:
 
 
 async def _fetch_claude_oauth_models(provider: Provider) -> list[str]:
-    """Claude Pro Max tokens can't use x-api-key; Bearer + CC beta flags only."""
+    """Claude Pro Max tokens can't use x-api-key; Bearer + CC beta flags only.
+
+    v2.7.6: on 401, attempt one refresh-and-retry via refresh_and_persist.
+    Caller (scan_provider_models) provides a DB session that we use to
+    persist the rotated tokens. Falls back gracefully if the refresh fails."""
     from app.providers.claude_oauth import build_headers, PLATFORM_BASE_URL
-    async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
-        resp = await client.get(
-            f"{PLATFORM_BASE_URL}/v1/models",
-            headers=build_headers(provider.api_key or ""),
-        )
+    from app.providers.claude_oauth_flow import refresh_and_persist, OAuthFlowError
+    from app.models.database import AsyncSessionLocal
+
+    current_token = provider.api_key or ""
+    refreshed = False
+    while True:
+        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+            resp = await client.get(
+                f"{PLATFORM_BASE_URL}/v1/models",
+                headers=build_headers(current_token),
+            )
+        if resp.status_code == 401 and not refreshed and provider.oauth_refresh_token:
+            try:
+                async with AsyncSessionLocal() as db:
+                    from sqlalchemy import select
+                    p = (await db.execute(select(Provider).where(Provider.id == provider.id))).scalar_one()
+                    result = await refresh_and_persist(p, db)
+                    current_token = result.access_token
+                    refreshed = True
+                    continue
+            except OAuthFlowError:
+                pass
         resp.raise_for_status()
         data = resp.json()
         return [m["id"] for m in data.get("data", [])]
@@ -236,7 +257,6 @@ async def _test_claude_oauth(provider: Provider) -> dict:
             "hint": "missing_api_key",
         }
 
-    headers = {**build_headers(provider.api_key, model=model), "Content-Type": "application/json"}
     body = _inject_claude_code_system({
         "model": model,
         "max_tokens": 8,
@@ -244,24 +264,45 @@ async def _test_claude_oauth(provider: Provider) -> dict:
     })
     url = f"{PLATFORM_BASE_URL}/v1/messages?beta=true"
 
+    # v2.7.6: refresh-and-retry once on 401 so admins see the real status
+    from app.providers.claude_oauth_flow import refresh_and_persist, OAuthFlowError
+    from app.models.database import AsyncSessionLocal
+    current_token = provider.api_key
+    refreshed = False
     try:
-        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as c:
-            r = await c.post(url, json=body, headers=headers)
-        if r.status_code >= 400:
-            err = f"{r.status_code}: {r.text[:400]}"
-            billing = is_billing_error(err)
-            await record_failure(provider.id, billing_error=billing)
-            return {
-                "success": False,
-                "error": err,
-                "error_detail": err,
-                "model": model,
-                "billing_error": billing,
+        while True:
+            headers = {
+                **build_headers(current_token, model=model),
+                "Content-Type": "application/json",
             }
-        data = r.json()
-        text = "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
-        await record_success(provider.id)
-        return {"success": True, "response": text, "model": model}
+            async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as c:
+                r = await c.post(url, json=body, headers=headers)
+            if r.status_code == 401 and not refreshed and provider.oauth_refresh_token:
+                try:
+                    async with AsyncSessionLocal() as db:
+                        from sqlalchemy import select
+                        p = (await db.execute(select(Provider).where(Provider.id == provider.id))).scalar_one()
+                        result = await refresh_and_persist(p, db)
+                        current_token = result.access_token
+                        refreshed = True
+                        continue
+                except OAuthFlowError:
+                    pass  # fall through to normal error path
+            if r.status_code >= 400:
+                err = f"{r.status_code}: {r.text[:400]}"
+                billing = is_billing_error(err)
+                await record_failure(provider.id, billing_error=billing)
+                return {
+                    "success": False,
+                    "error": err,
+                    "error_detail": err,
+                    "model": model,
+                    "billing_error": billing,
+                }
+            data = r.json()
+            text = "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
+            await record_success(provider.id)
+            return {"success": True, "response": text, "model": model}
     except httpx.HTTPError as e:
         err_str = str(e)
         await record_failure(provider.id, billing_error=False)

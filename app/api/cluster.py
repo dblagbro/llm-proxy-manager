@@ -12,6 +12,7 @@ from app.cluster.auth import verify_cluster_request, sign_payload, verify_payloa
 from app.routing.circuit_breaker import get_all_states
 from app.config import settings
 from app import config_runtime
+from app.__version__ import __version__
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["cluster"])
@@ -37,7 +38,7 @@ async def health():
 
     return {
         "status": "healthy" if healthy > 0 else "degraded",
-        "version": "2.7.5",
+        "version": __version__,
         "nodeId": settings.cluster_node_id,
         "totalProviders": total,
         "healthyProviders": healthy,
