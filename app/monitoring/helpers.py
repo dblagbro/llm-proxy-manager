@@ -3,10 +3,14 @@
 Centralises the record_success/record_failure + estimate_cost + record_request
 pattern that appears in every streaming and non-streaming handler.
 """
+import json
+import re
 import time
+from typing import Any, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.routing.circuit_breaker import (
     record_success, record_failure, is_billing_error,
     is_auth_error, record_auth_failure, clear_auth_failure,
@@ -17,6 +21,56 @@ from app.monitoring.activity import log_event
 from app.observability.prometheus import observe_request, observe_ttft, observe_cache_tokens
 from app.routing.hedging import record_ttft_sample
 from app.budget.tracker import record_cost
+
+
+# v2.8.4: redact known secret patterns in case they leak into logged bodies.
+# Anyone providing an api_key in the request body, or a system prompt with a
+# leaked token, gets it scrubbed before persisting.
+_SECRET_PATTERNS = [
+    (re.compile(r"sk-ant-(?:api|oat|ort)\d*-[\w-]+", re.I), "sk-ant-***REDACTED***"),
+    (re.compile(r"sk-[A-Za-z0-9]{20,}", re.I), "sk-***REDACTED***"),
+    (re.compile(r"AIza[A-Za-z0-9_-]{35}", re.I), "AIza***REDACTED***"),
+    (re.compile(r'"api_key"\s*:\s*"[^"]+"', re.I), '"api_key": "***REDACTED***"'),
+    (re.compile(r'(Authorization|x-api-key)\s*:\s*[^\s",]+', re.I),
+     r'\1: ***REDACTED***'),
+]
+
+
+def _redact(text: str) -> str:
+    for pat, repl in _SECRET_PATTERNS:
+        text = pat.sub(repl, text)
+    return text
+
+
+def _serialize_body(body: Any, max_chars: int) -> Optional[str]:
+    """Compact-JSON serialize + redact + truncate. Returns None on failure."""
+    if body is None:
+        return None
+    try:
+        if isinstance(body, (dict, list)):
+            text = json.dumps(body, ensure_ascii=False, default=str)
+        else:
+            text = str(body)
+    except Exception:
+        return None
+    text = _redact(text)
+    if len(text) > max_chars:
+        text = text[: max_chars - 20] + "…[TRUNCATED]"
+    return text
+
+
+def _attach_bodies(metadata: dict, request_body: Any, response_body: Any) -> dict:
+    """Attach captured request/response bodies to metadata when enabled."""
+    if not getattr(settings, "activity_log_capture_bodies", False):
+        return metadata
+    cap = max(1000, int(getattr(settings, "activity_log_max_body_chars", 50000) or 50000))
+    req = _serialize_body(request_body, cap)
+    resp = _serialize_body(response_body, cap)
+    if req is not None:
+        metadata["request_body"] = req
+    if resp is not None:
+        metadata["response_body"] = resp
+    return metadata
 
 
 async def record_outcome(
@@ -34,6 +88,8 @@ async def record_outcome(
     endpoint: str = "messages",
     cache_creation: int = 0,
     cache_read: int = 0,
+    request_body: Any = None,
+    response_body: Any = None,
 ) -> None:
     if success:
         latency_ms = (time.monotonic() - t0) * 1000
@@ -54,6 +110,14 @@ async def record_outcome(
         # v2.7.8 BUG-002: a successful call clears any prior auth_failed flag —
         # whatever revoked the key is fixed (admin re-keyed, OAuth refreshed, etc.)
         clear_auth_failure(provider_id)
+        meta = {
+            "model": model,
+            "in_tok": in_tok,
+            "out_tok": out_tok,
+            "cost_usd": round(cost, 6),
+            "latency_ms": round(latency_ms, 1),
+        }
+        meta = _attach_bodies(meta, request_body, response_body)
         await log_event(
             db,
             event_type="llm_request",
@@ -61,13 +125,7 @@ async def record_outcome(
             severity="info",
             provider_id=provider_id,
             api_key_id=key_record_id,
-            metadata={
-                "model": model,
-                "in_tok": in_tok,
-                "out_tok": out_tok,
-                "cost_usd": round(cost, 6),
-                "latency_ms": round(latency_ms, 1),
-            },
+            metadata=meta,
         )
     else:
         # v2.7.8 BUG-002: classify the error. Auth errors are PERMANENT
@@ -83,6 +141,8 @@ async def record_outcome(
             success=False, duration_sec=0.0,
             in_tokens=0, out_tokens=0, cost_usd=0.0,
         )
+        meta = {"model": model, "error": error_str[:2000] if error_str else None}
+        meta = _attach_bodies(meta, request_body, response_body)
         await log_event(
             db,
             event_type="llm_request",
@@ -90,5 +150,5 @@ async def record_outcome(
             severity="warning",
             provider_id=provider_id,
             api_key_id=key_record_id,
-            metadata={"model": model, "error": error_str[:200] if error_str else None},
+            metadata=meta,
         )
