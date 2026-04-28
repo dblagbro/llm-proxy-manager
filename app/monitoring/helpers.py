@@ -90,6 +90,7 @@ async def record_outcome(
     cache_read: int = 0,
     request_body: Any = None,
     response_body: Any = None,
+    provider_name: Optional[str] = None,
 ) -> None:
     if success:
         latency_ms = (time.monotonic() - t0) * 1000
@@ -110,8 +111,12 @@ async def record_outcome(
         # v2.7.8 BUG-002: a successful call clears any prior auth_failed flag —
         # whatever revoked the key is fixed (admin re-keyed, OAuth refreshed, etc.)
         clear_auth_failure(provider_id)
+        # v2.8.5: human-friendly message — use provider_name when given.
+        # Reads e.g. "Devin-VG · claude-sonnet-4-6" instead of just "claude-oauth".
+        msg = f"{provider_name} · {model}" if provider_name else f"{model}"
         meta = {
             "model": model,
+            "provider_name": provider_name,
             "in_tok": in_tok,
             "out_tok": out_tok,
             "cost_usd": round(cost, 6),
@@ -121,7 +126,7 @@ async def record_outcome(
         await log_event(
             db,
             event_type="llm_request",
-            message=f"{model}",
+            message=msg,
             severity="info",
             provider_id=provider_id,
             api_key_id=key_record_id,
@@ -141,12 +146,17 @@ async def record_outcome(
             success=False, duration_sec=0.0,
             in_tokens=0, out_tokens=0, cost_usd=0.0,
         )
-        meta = {"model": model, "error": error_str[:2000] if error_str else None}
+        msg = f"{provider_name} · {model} — error" if provider_name else f"{model} — error"
+        meta = {
+            "model": model,
+            "provider_name": provider_name,
+            "error": error_str[:2000] if error_str else None,
+        }
         meta = _attach_bodies(meta, request_body, response_body)
         await log_event(
             db,
             event_type="llm_request",
-            message=f"{model} — error",
+            message=msg,
             severity="warning",
             provider_id=provider_id,
             api_key_id=key_record_id,

@@ -75,9 +75,30 @@ export const usersApi = {
 }
 
 // ── Monitoring ────────────────────────────────────────────────────────────────
+export interface ActivityQuery {
+  limit?: number
+  before_id?: number | null
+  provider_id?: string | null
+  severity?: string | null
+  search?: string | null
+}
+
+function _activityQs(q: ActivityQuery): string {
+  const sp = new URLSearchParams()
+  if (q.limit != null)       sp.set('limit', String(q.limit))
+  if (q.before_id != null)   sp.set('before_id', String(q.before_id))
+  if (q.provider_id)         sp.set('provider_id', q.provider_id)
+  if (q.severity)            sp.set('severity', q.severity)
+  if (q.search)              sp.set('search', q.search)
+  return sp.toString()
+}
+
 export const monitoringApi = {
-  activity:   (limit = 100) => api.get<ActivityEvent[]>(`/api/monitoring/activity?limit=${limit}`),
-  metrics:    (hours = 24)  => api.get<MetricsSummary>(`/api/monitoring/metrics?hours=${hours}`),
+  activity:        (q: ActivityQuery = {}) =>
+    api.get<ActivityEvent[]>(`/api/monitoring/activity?${_activityQs({ limit: 200, ...q })}`),
+  activityCount:   (q: Omit<ActivityQuery, 'limit' | 'before_id'> = {}) =>
+    api.get<{ total: number }>(`/api/monitoring/activity/count?${_activityQs(q)}`),
+  metrics:         (hours = 24) => api.get<MetricsSummary>(`/api/monitoring/metrics?hours=${hours}`),
   providerMetrics: (id: string, hours = 24) =>
     api.get<{ provider_id: string; hours: number; buckets: MetricBucket[] }>(
       `/api/monitoring/metrics/${id}?hours=${hours}`
