@@ -53,20 +53,36 @@ OAUTH_BETA_FLAGS = (
     "effort-2025-11-24"
 )
 
-# Beta flags that the Claude Pro Max subscription doesn't grant for lower
-# tiers. Haiku in particular rejects requests with context-1m-2025-08-07
-# as ``"The long context beta is not yet available for this subscription."``.
-# We strip those dynamically per-model rather than dropping them from the
-# default set — Sonnet/Opus still get the full 1M context window.
-_HAIKU_DISALLOWED_BETAS = ("context-1m-2025-08-07",)
+# v2.8.7: which models get the 1M-context beta on the Claude Pro Max
+# subscription. Sending ``context-1m-2025-08-07`` to a model the
+# subscription doesn't grant 1M for produces a 400:
+#   ``"The long context beta is not yet available for this subscription."``
+# This errored for haiku originally (v2.7.5 fix) and now for older Sonnet
+# snapshots like ``claude-sonnet-4-5-20250929``. Switch to a whitelist —
+# only the latest-tier Sonnet 4-6 and Opus 4-7 (and their dated variants)
+# get the 1M flag; everything else falls back to the model's native
+# context window (~200K). Short prompts continue to work; over-long ones
+# get a normal context_length_exceeded error from upstream instead of
+# the misleading "subscription" 400.
+_LONG_CONTEXT_MODEL_PATTERNS = (
+    "sonnet-4-6",   # claude-sonnet-4-6, claude-sonnet-4-6-YYYYMMDD
+    "opus-4-7",     # claude-opus-4-7, claude-opus-4-7-YYYYMMDD
+)
 
 
 def _beta_flags_for_model(model: str) -> str:
+    """Return the anthropic-beta flag bundle suitable for ``model``.
+
+    Strips ``context-1m-2025-08-07`` for every model that isn't on the
+    short whitelist of Pro-Max-1M-eligible families. Keeps every other
+    flag (oauth, claude-code, interleaved-thinking, prompt-caching, …).
+    """
     model_lc = (model or "").lower()
-    if "haiku" in model_lc:
-        parts = [f.strip() for f in OAUTH_BETA_FLAGS.split(",")]
-        return ",".join(p for p in parts if p not in _HAIKU_DISALLOWED_BETAS)
-    return OAUTH_BETA_FLAGS
+    grants_1m = any(p in model_lc for p in _LONG_CONTEXT_MODEL_PATTERNS)
+    if grants_1m:
+        return OAUTH_BETA_FLAGS
+    parts = [f.strip() for f in OAUTH_BETA_FLAGS.split(",")]
+    return ",".join(p for p in parts if p != "context-1m-2025-08-07")
 
 ANTHROPIC_API_VERSION = "2023-06-01"
 
