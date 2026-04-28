@@ -101,11 +101,17 @@ async def chat_completions(
 
     is_auto = is_auto_model(parsed_slug.bare_model)
     alias = await resolve_alias(db, body.get("model")) if not is_auto else None
+    # v2.8.11: /v1/chat/completions has no claude-oauth dispatch — those
+    # providers require the dedicated handler in messages.py (OAuth Bearer +
+    # CC beta flags + Anthropic body shape). Sending one through litellm here
+    # leaks the OAuth token as an x-api-key and produces a confusing 401 or
+    # "Connection error" upstream. Filter them out at route selection.
     route = await select_provider(
         db, hint, has_tools=has_tools, has_images=has_images, key_type=key_record.key_type,
         pinned_provider_id=alias.provider_id if alias else None,
         model_override=alias.model_id if alias else None,
         sort_mode=parsed_slug.sort_mode,
+        excluded_provider_types={"claude-oauth"},
     )
     if is_auto:
         resolved_model = route.profile.model_id or route.provider.default_model
