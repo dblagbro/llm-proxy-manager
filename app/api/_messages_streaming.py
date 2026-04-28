@@ -32,6 +32,16 @@ from app.providers.claude_oauth import build_headers as _claude_oauth_headers, P
 logger = logging.getLogger(__name__)
 
 
+def _exc_str(e: BaseException) -> str:
+    """v2.8.10: produce a non-empty error string. ``str(httpx.ReadTimeout())``
+    returns ``""`` when no message is attached, which made activity_log show
+    ``error: null`` for every upstream timeout — losing the most important
+    diagnostic signal. Fall back to the exception class name when str(e)
+    is blank."""
+    s = str(e) if e else ""
+    return s if s else f"{type(e).__name__} (no message)"
+
+
 async def _stream_cot_anthropic(
     model: str,
     messages: list,
@@ -76,8 +86,8 @@ async def _stream_cot_anthropic(
                              cache_creation=cache_creation, cache_read=cache_read)
     except Exception as e:
         await record_outcome(db, provider_id, model, success=False,
-                             key_record_id=key_record_id, error_str=str(e))
-        yield (b'data: ' + json.dumps({"type": "error", "error": {"message": str(e)}}).encode() + b'\n\n')
+                             key_record_id=key_record_id, error_str=_exc_str(e))
+        yield (b'data: ' + json.dumps({"type": "error", "error": {"message": _exc_str(e)}}).encode() + b'\n\n')
         yield b'data: {"type":"message_stop"}\n\ndata: [DONE]\n\n'
 
 
@@ -197,8 +207,8 @@ async def _stream_anthropic(
                 pass
     except Exception as e:
         await record_outcome(db, provider_id, model, success=False,
-                             key_record_id=key_record_id, error_str=str(e))
-        yield (b'data: ' + json.dumps({"type": "error", "error": {"message": str(e)}}).encode() + b'\n\n')
+                             key_record_id=key_record_id, error_str=_exc_str(e))
+        yield (b'data: ' + json.dumps({"type": "error", "error": {"message": _exc_str(e)}}).encode() + b'\n\n')
         yield b'data: {"type":"message_stop"}\n\ndata: [DONE]\n\n'
 
 
@@ -228,8 +238,8 @@ async def _webhook_completion_anthropic(
         })
     except Exception as exc:
         await record_outcome(db, provider_id, model, success=False,
-                             key_record_id=key_record_id, error_str=str(exc))
-        await post_webhook(webhook_url, {"error": str(exc), "model": model})
+                             key_record_id=key_record_id, error_str=_exc_str(exc))
+        await post_webhook(webhook_url, {"error": _exc_str(exc), "model": model})
 
 
 # ── Claude OAuth (v2.7.0) ────────────────────────────────────────────────────
@@ -372,7 +382,10 @@ async def _complete_claude_oauth(
             "Content-Type": "application/json",
         }
         try:
-            async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+            # v2.8.10: 60s was too short for ~50KB user-message bodies the
+            # bot daemon sends. Match streaming timeout (300s — bumped via
+            # the same release for parity).
+            async with httpx.AsyncClient(timeout=300.0, follow_redirects=True) as client:
                 r = await client.post(url, json=body, headers=headers)
             if r.status_code == 401 and not refreshed:
                 # One-shot refresh-and-retry
@@ -406,7 +419,7 @@ async def _complete_claude_oauth(
         except httpx.HTTPError as e:
             await record_outcome(
                 db, provider_id, body.get("model") or "claude-oauth", success=False,
-                key_record_id=key_record_id, error_str=str(e),
+                key_record_id=key_record_id, error_str=_exc_str(e),
                 provider_name=provider_name, request_body=body,
             )
             raise
@@ -610,7 +623,7 @@ async def _stream_claude_oauth(
         except httpx.HTTPError as e:
             await record_outcome(
                 db, provider_id, body.get("model") or "claude-oauth", success=False,
-                key_record_id=key_record_id, error_str=str(e),
+                key_record_id=key_record_id, error_str=_exc_str(e),
                 provider_name=provider_name, request_body=body,
             )
             if not yielded_first_chunk:
@@ -619,7 +632,7 @@ async def _stream_claude_oauth(
             # Mid-stream — emit SSE error event + [DONE], NOT message_stop
             yield (
                 b'event: error\ndata: '
-                + json.dumps({"type": "error", "error": {"message": str(e)}}).encode()
+                + json.dumps({"type": "error", "error": {"message": _exc_str(e)}}).encode()
                 + b'\n\ndata: [DONE]\n\n'
             )
             return
