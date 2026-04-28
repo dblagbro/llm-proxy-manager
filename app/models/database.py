@@ -45,6 +45,8 @@ async def init_db():
             # v2.7.0 — claude-oauth provider type
             "ALTER TABLE providers ADD COLUMN oauth_refresh_token TEXT",
             "ALTER TABLE providers ADD COLUMN oauth_expires_at REAL",
+            # v2.8.2 — soft-delete tombstone for cluster-sync resurrection bug
+            "ALTER TABLE providers ADD COLUMN deleted_at DATETIME",
         ]:
             try:
                 await conn.exec_driver_sql(stmt)

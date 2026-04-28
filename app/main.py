@@ -52,6 +52,14 @@ async def lifespan(app: FastAPI):
         from app import config_runtime
         await config_runtime.load(db)
 
+        # v2.8.2: one-shot resolve any pre-existing priority ties so we
+        # start each boot with a strict total order. Idempotent.
+        from app.api.providers import normalize_priority_ties
+        bumped = await normalize_priority_ties(db)
+        if bumped:
+            await db.commit()
+            logger.info(f"normalized {bumped} priority tie(s) on startup")
+
         # Register all providers with status monitor + per-provider CB config
         result = await db.execute(select(Provider))
         providers = result.scalars().all()

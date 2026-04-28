@@ -124,6 +124,7 @@ async def _build_sync_payload(db) -> dict:
          "total_cost_usd": k.total_cost_usd or 0.0}
         for k in keys_result.scalars().all()
     ]
+    # v2.8.2: include tombstoned (soft-deleted) rows so peers learn about deletes.
     providers_result = await db.execute(select(Provider))
     providers = [
         {"id": p.id, "name": p.name, "provider_type": p.provider_type, "api_key": p.api_key,
@@ -131,7 +132,9 @@ async def _build_sync_payload(db) -> dict:
          "enabled": p.enabled, "timeout_sec": p.timeout_sec,
          "exclude_from_tool_requests": p.exclude_from_tool_requests,
          "hold_down_sec": p.hold_down_sec, "failure_threshold": p.failure_threshold,
-         "extra_config": p.extra_config or {}}
+         "extra_config": p.extra_config or {},
+         "deleted_at": p.deleted_at.isoformat() if p.deleted_at else None,
+         "updated_at": p.updated_at.isoformat() if p.updated_at else None}
         for p in providers_result.scalars().all()
     ]
     # Only push settings that were explicitly saved (have a DB row) — not env-var defaults

@@ -62,7 +62,12 @@ async def list_providers(
     db: AsyncSession = Depends(get_db),
     _: AdminUser = Depends(require_admin),
 ):
-    result = await db.execute(select(Provider).order_by(Provider.priority))
+    # v2.8.2: hide soft-deleted (tombstoned) providers from the UI.
+    result = await db.execute(
+        select(Provider)
+        .where(Provider.deleted_at.is_(None))
+        .order_by(Provider.priority)
+    )
     providers = result.scalars().all()
     return [_serialize(p) for p in providers]
 
@@ -71,6 +76,87 @@ _TYPES_REQUIRING_API_KEY = {
     "anthropic", "openai", "google", "vertex", "grok",
     "cohere", "mistral", "groq", "together", "fireworks",
 }
+
+
+async def normalize_priority_ties(db: AsyncSession) -> int:
+    """v2.8.2: one-shot sweep that resolves any existing ties by bumping
+    the younger duplicates +1 in created_at order. Idempotent — runs at
+    startup. Returns count of providers bumped (0 means already normalized).
+
+    Example before: [a@1, b@2, c@2, d@3, e@3] (b created before c, d before e)
+    After: [a@1, b@2, c@3, d@4, e@5] — younger row at each tie shifts up,
+    and the cascade from c=3 collides with d=3, so d→4, then d=4 collides
+    with previously-shifted nothing → no further cascade. The net effect is
+    a strict total order by (priority, created_at).
+    """
+    from sqlalchemy import select as _select
+    rows = (await db.execute(
+        _select(Provider).order_by(Provider.priority.asc(), Provider.created_at.asc(), Provider.id.asc())
+    )).scalars().all()
+    bumped = 0
+    seen_priorities: set[int] = set()
+    for row in rows:
+        if row.priority not in seen_priorities:
+            seen_priorities.add(row.priority)
+            continue
+        # Tie — find the next free slot at or above row.priority
+        new_pri = row.priority
+        while new_pri in seen_priorities:
+            new_pri += 1
+        row.priority = new_pri
+        seen_priorities.add(new_pri)
+        bumped += 1
+    if bumped:
+        await db.flush()
+    return bumped
+
+
+async def _bump_priority_conflicts(
+    db: AsyncSession,
+    target_priority: int,
+    *,
+    exclude_id: Optional[str] = None,
+) -> int:
+    """v2.8.2: when a provider takes priority P, bump every other provider
+    already at P (and any chain-reaction conflicts) by +1 so the new/updated
+    row gets the slot it asked for.
+
+    Example: providers at 1,2,3,4,5,6. New provider asks for 2 →
+    existing-2 → 3, existing-3 → 4, existing-4 → 5, existing-5 → 6,
+    existing-6 → 7. Final order: 1, NEW@2, 3, 4, 5, 6, 7.
+
+    ``exclude_id`` is the row that's TAKING the slot — exclude it from the
+    conflict lookup so we don't bump our own row in the create-then-bump
+    or PUT flow.
+
+    Returns the number of rows bumped (for logging / response telemetry).
+    """
+    bumped = 0
+    # Snapshot all candidates upfront so the iteration doesn't re-query inside
+    # an open transaction (avoids autoflush quirks with in-memory SQLite).
+    snap = (await db.execute(
+        select(Provider).where(
+            (Provider.id != exclude_id) if exclude_id is not None else (Provider.id != "")
+        ).order_by(Provider.priority.asc(), Provider.created_at.asc(), Provider.id.asc())
+    )).scalars().all()
+
+    # Group by ORIGINAL priority — chain-reactions only fire when an original
+    # row sits at the next priority. Already-bumped rows don't re-bump.
+    by_priority: dict[int, list] = {}
+    for row in snap:
+        by_priority.setdefault(row.priority, []).append(row)
+
+    current_priority = target_priority
+    while current_priority in by_priority:
+        for row in by_priority[current_priority]:
+            row.priority = current_priority + 1
+            bumped += 1
+        # Done with this bucket — don't re-process the bumped rows on the
+        # next iteration. Chain-reaction continues only if ORIGINAL rows
+        # already sat at current_priority+1.
+        del by_priority[current_priority]
+        current_priority += 1
+    return bumped
 
 
 @router.post("")
@@ -113,6 +199,10 @@ async def create_provider(
             f"oauth_credentials_blob is only valid when provider_type='claude-oauth' "
             f"(got {body.provider_type!r})",
         )
+
+    # v2.8.2: bump any existing provider already at this priority +1 (chained)
+    # BEFORE inserting so the new row gets the requested slot cleanly.
+    await _bump_priority_conflicts(db, data["priority"])
 
     provider = Provider(id=secrets.token_hex(8), **data)
     db.add(provider)
@@ -303,6 +393,12 @@ async def update_provider(
         or blob  # claude-oauth re-paste
     )
 
+    # v2.8.2: if priority changed, bump any other provider already at the new
+    # priority +1 (chain-reaction) so this update takes the slot it asked for.
+    new_priority = data.get("priority")
+    if new_priority is not None and new_priority != p.priority:
+        await _bump_priority_conflicts(db, new_priority, exclude_id=p.id)
+
     for field, value in data.items():
         setattr(p, field, value)
     await db.commit()
@@ -321,8 +417,20 @@ async def delete_provider(
     db: AsyncSession = Depends(get_db),
     _: AdminUser = Depends(require_admin),
 ):
+    """v2.8.2: soft-delete via tombstone.
+
+    Hard DELETE used to be reversed by cluster sync — peers still had the
+    row and apply_sync re-inserted it. Now we set deleted_at = now() and
+    flip enabled=False; sync compares updated_at on the tombstone too, so
+    the delete propagates to peers. Garbage collection of old tombstones
+    is a separate background sweep (TODO: 7-day retention).
+    """
+    from datetime import datetime, timezone
     p = await _get_or_404(db, provider_id)
-    await db.delete(p)
+    p.deleted_at = datetime.now(timezone.utc)
+    p.enabled = False
+    # Bump updated_at so cluster sync recognizes this as the freshest write
+    p.updated_at = datetime.now(timezone.utc)
     await db.commit()
     return {"ok": True}
 

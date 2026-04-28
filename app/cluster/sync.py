@@ -64,10 +64,53 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
     _peer_key_costs[source_node] = peer_costs
 
     from app.monitoring.status import register_provider
+    from datetime import datetime
+    def _parse_iso(v):
+        if not v:
+            return None
+        if isinstance(v, str):
+            try:
+                return datetime.fromisoformat(v.replace("Z", "+00:00"))
+            except ValueError:
+                return None
+        return v
+
     for p_data in payload.get("providers", []):
+        peer_deleted_at = _parse_iso(p_data.get("deleted_at"))
+        peer_updated_at = _parse_iso(p_data.get("updated_at"))
+
         result = await db.execute(select(Provider).where(Provider.id == p_data["id"]))
         existing = result.scalar_one_or_none()
-        if existing:
+        if existing is None:
+            # Match by name as a fallback (legacy rows synced pre-v2.8.2 may
+            # have different ids on each node).
+            result2 = await db.execute(select(Provider).where(Provider.name == p_data["name"]))
+            existing = result2.scalar_one_or_none()
+
+        if existing is not None:
+            # v2.8.2: tombstone-aware merge.
+            local_updated = existing.updated_at
+            local_deleted = existing.deleted_at
+
+            # If peer has a tombstone and it's newer than our local state,
+            # propagate the soft-delete locally.
+            if peer_deleted_at and (
+                local_updated is None or peer_deleted_at >= local_updated
+            ):
+                existing.deleted_at = peer_deleted_at
+                existing.enabled = False
+                if peer_updated_at:
+                    existing.updated_at = peer_updated_at
+                continue
+
+            # If WE have a tombstone newer than the peer's update, do nothing
+            # — local delete wins until peer sees our tombstone next sync.
+            if local_deleted and (
+                peer_updated_at is None or local_deleted >= peer_updated_at
+            ):
+                continue
+
+            # Standard last-write-wins merge for active rows.
             existing.api_key = p_data.get("api_key", existing.api_key)
             existing.base_url = p_data.get("base_url", existing.base_url)
             existing.default_model = p_data.get("default_model", existing.default_model)
@@ -79,19 +122,10 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
             existing.failure_threshold = p_data.get("failure_threshold", existing.failure_threshold)
             existing.extra_config = p_data.get("extra_config", existing.extra_config)
             continue
-        result2 = await db.execute(select(Provider).where(Provider.name == p_data["name"]))
-        existing_by_name = result2.scalar_one_or_none()
-        if existing_by_name:
-            existing_by_name.api_key = p_data.get("api_key", existing_by_name.api_key)
-            existing_by_name.base_url = p_data.get("base_url", existing_by_name.base_url)
-            existing_by_name.default_model = p_data.get("default_model", existing_by_name.default_model)
-            existing_by_name.priority = p_data.get("priority", existing_by_name.priority)
-            existing_by_name.enabled = p_data.get("enabled", existing_by_name.enabled)
-            existing_by_name.timeout_sec = p_data.get("timeout_sec", existing_by_name.timeout_sec)
-            existing_by_name.exclude_from_tool_requests = p_data.get("exclude_from_tool_requests", existing_by_name.exclude_from_tool_requests)
-            existing_by_name.hold_down_sec = p_data.get("hold_down_sec", existing_by_name.hold_down_sec)
-            existing_by_name.failure_threshold = p_data.get("failure_threshold", existing_by_name.failure_threshold)
-            existing_by_name.extra_config = p_data.get("extra_config", existing_by_name.extra_config)
+
+        # No local row — create unless peer is sending a tombstone (no point
+        # materializing a deleted row).
+        if peer_deleted_at is not None:
             continue
         p = Provider(
             id=p_data["id"],
@@ -135,6 +169,17 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
                 updated_at=incoming_ts,
             ))
         settings_to_apply[key] = config_runtime._coerce(s_data["value"], s_data.get("value_type", "str"))
+
+    # v2.8.2: normalize any priority ties introduced by the merge so every
+    # node converges on the same strict total order. Deterministic by
+    # (priority, created_at, id) — all peers arrive at the same answer.
+    try:
+        from app.api.providers import normalize_priority_ties
+        bumped = await normalize_priority_ties(db)
+        if bumped:
+            logger.info("cluster_sync_normalized_ties count=%s", bumped)
+    except Exception:
+        logger.exception("priority-tie normalization failed during sync apply")
 
     await db.commit()
 
