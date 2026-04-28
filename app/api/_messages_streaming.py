@@ -252,6 +252,28 @@ _ALLOWED_SYS_MARKERS = (
 )
 
 
+def _count_cache_control_markers(body: dict) -> int:
+    """v2.8.9: count cache_control markers across system, messages, and tools.
+    Anthropic caps the total at 4 — when the caller already has 4, we must
+    inject the CC marker WITHOUT cache_control to avoid a 400."""
+    n = 0
+    sys_field = body.get("system")
+    if isinstance(sys_field, list):
+        for b in sys_field:
+            if isinstance(b, dict) and b.get("cache_control"):
+                n += 1
+    for msg in (body.get("messages") or []):
+        c = msg.get("content") if isinstance(msg, dict) else None
+        if isinstance(c, list):
+            for b in c:
+                if isinstance(b, dict) and b.get("cache_control"):
+                    n += 1
+    for tool in (body.get("tools") or []):
+        if isinstance(tool, dict) and tool.get("cache_control"):
+            n += 1
+    return n
+
+
 def _inject_claude_code_system(body: dict) -> dict:
     """Ensure the outgoing body's ``system`` starts with the CC marker.
 
@@ -275,11 +297,12 @@ def _inject_claude_code_system(body: dict) -> dict:
     # v2.7.6 BUG-006: marker block carries cache_control so the prefix stays
     # in Anthropic's prompt cache across calls. Without this, a non-cacheable
     # block at index 0 would shift the cache key on every request.
-    marker_block = {
-        "type": "text",
-        "text": _CLAUDE_CODE_SYS_MARKER,
-        "cache_control": {"type": "ephemeral"},
-    }
+    # v2.8.9: Anthropic caps cache_control markers at 4 per request. If the
+    # caller already has 4, omit ours to avoid a 400 ("A maximum of 4 blocks
+    # with cache_control may be provided. Found 5.").
+    marker_block: dict = {"type": "text", "text": _CLAUDE_CODE_SYS_MARKER}
+    if _count_cache_control_markers(body) < 4:
+        marker_block["cache_control"] = {"type": "ephemeral"}
 
     if sys_field is None:
         new_system: list | str = [marker_block]
@@ -332,8 +355,13 @@ async def _complete_claude_oauth(
     attempt also fails or refresh fails (e.g. revoked refresh_token), the
     underlying httpx.HTTPStatusError propagates so the dispatch in
     messages.py converts it to an HTTP error response.
+
+    v2.8.9: defaults ``max_tokens`` to 4096 if absent — Anthropic's API
+    requires it and otherwise returns a confusing 400.
     """
     url = f"{PLATFORM_BASE_URL}/v1/messages?beta=true"
+    body = {**body}
+    body.setdefault("max_tokens", 4096)
     body = _inject_claude_code_system(body)
     current_token = access_token
     refreshed = False
@@ -410,7 +438,9 @@ async def _stream_claude_oauth(
     not complete, and clients must distinguish the two.
     """
     url = f"{PLATFORM_BASE_URL}/v1/messages?beta=true"
-    body = _inject_claude_code_system({**body, "stream": True})
+    body = {**body, "stream": True}
+    body.setdefault("max_tokens", 4096)  # v2.8.9: Anthropic requires it
+    body = _inject_claude_code_system(body)
 
     in_tok = out_tok = 0
     cache_creation = cache_read = 0

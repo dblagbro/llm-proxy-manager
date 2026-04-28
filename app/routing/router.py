@@ -169,6 +169,7 @@ async def select_provider(
     exclude_provider_id: Optional[str] = None,
     prefer_cheapest: bool = False,
     sort_mode: Optional[str] = None,
+    excluded_provider_types: Optional[set[str]] = None,
 ) -> RouteResult:
     """
     Select the best available provider+model for this request.
@@ -219,6 +220,17 @@ async def select_provider(
         available = [p for p in available if not p.exclude_from_tool_requests]
     if has_tools and not available:
         raise RuntimeError("No providers available for tool requests (all excluded)")
+
+    # v2.8.9: filter out provider types the caller can't use. Internal pipeline
+    # callers (cascade cheap-route, CoT cross-provider critique, vision-route,
+    # hedging backup) pass ``{"claude-oauth"}`` here because they call litellm
+    # directly which can't authenticate with OAuth tokens.
+    if excluded_provider_types:
+        available = [p for p in available if p.provider_type not in excluded_provider_types]
+    if not available:
+        raise RuntimeError(
+            f"No providers available after excluding types {excluded_provider_types}"
+        )
 
     # Load capability profiles
     profiles = [await _load_profile(db, p) for p in available]
