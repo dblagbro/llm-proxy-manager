@@ -324,6 +324,7 @@ async def _complete_claude_oauth(
     db: AsyncSession,
     key_record_id: str,
     t0: float,
+    provider_name: Optional[str] = None,
 ) -> dict:
     """Non-streaming ``/v1/messages`` call against platform.claude.com.
 
@@ -355,8 +356,9 @@ async def _complete_claude_oauth(
                 # Fall through to error path
             if r.status_code >= 400:
                 await record_outcome(
-                    db, provider_id, "claude-oauth", success=False,
+                    db, provider_id, body.get("model") or "claude-oauth", success=False,
                     key_record_id=key_record_id, error_str=f"{r.status_code}: {r.text[:200]}",
+                    provider_name=provider_name, request_body=body,
                 )
                 r.raise_for_status()
             data = r.json()
@@ -366,17 +368,18 @@ async def _complete_claude_oauth(
             cache_creation = int(usage.get("cache_creation_input_tokens") or 0)
             cache_read = int(usage.get("cache_read_input_tokens") or 0)
             await record_outcome(
-                db, provider_id, "claude-oauth", success=True,
+                db, provider_id, body.get("model") or "claude-oauth", success=True,
                 in_tok=in_tok, out_tok=out_tok, t0=t0, key_record_id=key_record_id,
                 cache_creation=cache_creation, cache_read=cache_read,
+                provider_name=provider_name,
                 request_body=body, response_body=data,
             )
             return data
         except httpx.HTTPError as e:
             await record_outcome(
-                db, provider_id, "claude-oauth", success=False,
+                db, provider_id, body.get("model") or "claude-oauth", success=False,
                 key_record_id=key_record_id, error_str=str(e),
-                request_body=body,
+                provider_name=provider_name, request_body=body,
             )
             raise
 
@@ -390,6 +393,7 @@ async def _stream_claude_oauth(
     t0: float,
     budget_total: int = 0,
     cache_decision=None,
+    provider_name: Optional[str] = None,
 ) -> AsyncIterator[bytes]:
     """Streaming ``/v1/messages`` — platform.claude.com already emits
     Anthropic SSE, so we can forward chunks as-is and just sniff usage
@@ -442,9 +446,10 @@ async def _stream_claude_oauth(
                     if r.status_code >= 400:
                         err_body = (await r.aread()).decode(errors="replace")[:400]
                         await record_outcome(
-                            db, provider_id, "claude-oauth", success=False,
+                            db, provider_id, body.get("model") or "claude-oauth", success=False,
                             key_record_id=key_record_id,
                             error_str=f"{r.status_code}: {err_body}",
+                            provider_name=provider_name, request_body=body,
                         )
                         # RAISE — dispatch will convert to HTTP error response.
                         # Do NOT yield SSE error frames; status hasn't been sent.
@@ -557,9 +562,10 @@ async def _stream_claude_oauth(
                     f'"used":{out_tok},"total":{budget_total}}}\n\n'
                 ).encode()
             await record_outcome(
-                db, provider_id, "claude-oauth", success=True,
+                db, provider_id, body.get("model") or "claude-oauth", success=True,
                 in_tok=in_tok, out_tok=out_tok, t0=t0, key_record_id=key_record_id,
                 ttft_ms=ttft_ms, cache_creation=cache_creation, cache_read=cache_read,
+                provider_name=provider_name,
                 request_body=body, response_body=assembled_response,
             )
             if cache_decision is not None and cache_decision.eligible:
@@ -573,9 +579,9 @@ async def _stream_claude_oauth(
             raise
         except httpx.HTTPError as e:
             await record_outcome(
-                db, provider_id, "claude-oauth", success=False,
+                db, provider_id, body.get("model") or "claude-oauth", success=False,
                 key_record_id=key_record_id, error_str=str(e),
-                request_body=body,
+                provider_name=provider_name, request_body=body,
             )
             if not yielded_first_chunk:
                 # Pre-stream connection error — surface as HTTP error

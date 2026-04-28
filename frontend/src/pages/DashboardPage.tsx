@@ -25,7 +25,7 @@ export function DashboardPage() {
   const { data: health } = useQuery({ queryKey: ['health'], queryFn: clusterApi.health, refetchInterval: 15_000 })
   const { data: metrics } = useQuery({ queryKey: ['metrics', 24], queryFn: () => monitoringApi.metrics(24), refetchInterval: 60_000 })
   const { data: providers } = useQuery({ queryKey: ['providers'], queryFn: providersApi.list, refetchInterval: 30_000 })
-  const { data: activity } = useQuery({ queryKey: ['activity'], queryFn: () => monitoringApi.activity(20), refetchInterval: 10_000 })
+  const { data: activity } = useQuery({ queryKey: ['activity'], queryFn: () => monitoringApi.activity({ limit: 20 }), refetchInterval: 10_000 })
   const { data: extStatus } = useQuery({ queryKey: ['status-pages'], queryFn: monitoringApi.statusPages, refetchInterval: 300_000 })
 
   const totalRequests = metrics?.providers.reduce((s, p) => s + p.requests, 0) ?? 0

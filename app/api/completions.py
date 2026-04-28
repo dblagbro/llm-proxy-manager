@@ -383,7 +383,7 @@ async def chat_completions(
                     final_text = json.dumps(parsed) if parsed is not None else raw_text
                     await record_outcome(
                         db, route.provider.id, route.litellm_model, endpoint="completions",
-                        success=True, t0=t0, key_record_id=key_record.id,
+                        success=True, t0=t0, key_record_id=key_record.id, provider_name=route.provider.name
                     )
                     try:
                         await maybe_store(cache_decision, final_text)
@@ -453,7 +453,7 @@ async def chat_completions(
             except Exception:
                 pass
             await record_outcome(db, route.provider.id, route.litellm_model, endpoint="completions", success=True,
-                                 in_tok=in_tok, out_tok=out_tok, t0=t0, key_record_id=key_record.id)
+                                 in_tok=in_tok, out_tok=out_tok, t0=t0, key_record_id=key_record.id, provider_name=route.provider.name)
             if budget_total:
                 resp_headers["X-Token-Budget-Remaining"] = str(max(0, budget_total - out_tok))
             return JSONResponse(content=result.model_dump(), headers=resp_headers)
@@ -461,7 +461,7 @@ async def chat_completions(
     except Exception as e:
         err_str = str(e)
         await record_outcome(db, route.provider.id, route.litellm_model, endpoint="completions", success=False,
-                             key_record_id=key_record.id, error_str=err_str)
+                             key_record_id=key_record.id, error_str=err_str, provider_name=route.provider.name)
         raise HTTPException(502, f"Upstream provider error: {err_str}")
 
 
