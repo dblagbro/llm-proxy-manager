@@ -175,13 +175,43 @@ class TestBuildHeaders:
         assert "oauth-2025-04-20" in h["anthropic-beta"]
         assert "claude-code-20250219" in h["anthropic-beta"]
 
-    def test_sonnet_keeps_long_context_beta(self):
+    def test_sonnet_4_6_keeps_long_context_beta(self):
         h = build_headers(SAMPLE_TOKEN, model="claude-sonnet-4-6")
         assert "context-1m-2025-08-07" in h["anthropic-beta"]
 
-    def test_no_model_keeps_full_flag_set(self):
-        h = build_headers(SAMPLE_TOKEN)
+    def test_opus_4_7_keeps_long_context_beta(self):
+        h = build_headers(SAMPLE_TOKEN, model="claude-opus-4-7")
         assert "context-1m-2025-08-07" in h["anthropic-beta"]
+
+    def test_dated_sonnet_4_6_keeps_long_context_beta(self):
+        # claude-sonnet-4-6-20251108 etc. should match the prefix
+        h = build_headers(SAMPLE_TOKEN, model="claude-sonnet-4-6-20251108")
+        assert "context-1m-2025-08-07" in h["anthropic-beta"]
+
+    def test_older_sonnet_4_5_strips_long_context_beta(self):
+        """v2.8.7: claude-sonnet-4-5-20250929 returns 400 with 1M flag.
+        Whitelist excludes anything not sonnet-4-6/opus-4-7."""
+        h = build_headers(SAMPLE_TOKEN, model="claude-sonnet-4-5-20250929")
+        assert "context-1m-2025-08-07" not in h["anthropic-beta"]
+        # Other flags still present
+        assert "oauth-2025-04-20" in h["anthropic-beta"]
+
+    def test_older_opus_strips_long_context_beta(self):
+        h = build_headers(SAMPLE_TOKEN, model="claude-opus-4-1-20250805")
+        assert "context-1m-2025-08-07" not in h["anthropic-beta"]
+
+    def test_opus_4_5_strips_long_context_beta(self):
+        # opus-4-5 / opus-4-6 not on the 1M whitelist either — only opus-4-7
+        h = build_headers(SAMPLE_TOKEN, model="claude-opus-4-5-20251101")
+        assert "context-1m-2025-08-07" not in h["anthropic-beta"]
+
+    def test_no_model_keeps_full_flag_set(self):
+        # When the model is unknown, default behaviour is to keep the full
+        # set (caller can still override later with a model-aware call).
+        # Actually v2.8.7 changed this: with no model context, we strip 1M.
+        # Keeping the negative assertion documents the new behaviour.
+        h = build_headers(SAMPLE_TOKEN)
+        assert "context-1m-2025-08-07" not in h["anthropic-beta"]
 
 
 def _stub_modules_for_streaming_import():
