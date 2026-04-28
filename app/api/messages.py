@@ -222,6 +222,7 @@ async def messages(
                 provider_id=oauth_provider_id, db=db,
                 key_record_id=key_record.id, t0=t0,
                 budget_total=max_tokens,
+                provider_name=route.provider.name,
             )
             try:
                 first_chunk = await stream_gen.__anext__()
@@ -253,6 +254,7 @@ async def messages(
                 access_token, upstream_body,
                 provider_id=oauth_provider_id, db=db,
                 key_record_id=key_record.id, t0=t0,
+                provider_name=route.provider.name,
             )
         except httpx.HTTPStatusError as e:
             # v2.7.6 BUG-018: claude-oauth was tried + auto-refresh attempted;
@@ -573,7 +575,7 @@ async def messages(
                         cache_creation, cache_read = extract_cache_tokens(result.usage)
                         await record_outcome(db, route.provider.id, route.litellm_model, success=True,
                                              in_tok=in_tok, out_tok=out_tok, t0=t0, key_record_id=key_record.id,
-                                             cache_creation=cache_creation, cache_read=cache_read)
+                                             cache_creation=cache_creation, cache_read=cache_read, provider_name=route.provider.name)
                         try:
                             await maybe_store(cache_decision, cheap_answer)
                         except Exception:
@@ -621,7 +623,7 @@ async def messages(
             cache_creation, cache_read = extract_cache_tokens(result.usage)
             await record_outcome(db, route.provider.id, route.litellm_model, success=True,
                                  in_tok=in_tok, out_tok=out_tok, t0=t0, key_record_id=key_record.id,
-                                 cache_creation=cache_creation, cache_read=cache_read)
+                                 cache_creation=cache_creation, cache_read=cache_read, provider_name=route.provider.name)
             # Store in semantic cache (fire-and-forget; won't affect response latency)
             try:
                 answer_text = result.choices[0].message.content or ""
@@ -662,7 +664,7 @@ async def messages(
     except Exception as e:
         err_str = str(e)
         await record_outcome(db, route.provider.id, route.litellm_model, success=False,
-                             key_record_id=key_record.id, error_str=err_str)
+                             key_record_id=key_record.id, error_str=err_str, provider_name=route.provider.name)
         logger.error(f"Provider {route.provider.id} failed: {err_str}")
         raise HTTPException(502, f"Upstream provider error: {err_str}")
 
