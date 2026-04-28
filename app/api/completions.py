@@ -288,6 +288,7 @@ async def chat_completions(
                         db, hint, has_tools=False, has_images=False,
                         key_type=key_record.key_type,
                         exclude_provider_id=route.provider.id,
+                        excluded_provider_types={"claude-oauth"},
                     )
                     critique_model = critique_route.litellm_model
                     critique_kwargs = critique_route.litellm_kwargs
@@ -319,6 +320,7 @@ async def chat_completions(
                         db, hint, has_tools=has_tools, has_images=has_images,
                         key_type=key_record.key_type,
                         exclude_provider_id=route.provider.id,
+                        excluded_provider_types={"claude-oauth"},
                     )
                 except Exception:
                     backup_route = None
