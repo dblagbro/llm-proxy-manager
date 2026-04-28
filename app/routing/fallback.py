@@ -79,9 +79,25 @@ async def try_ranked_non_streaming(
         settings, "fallback_max_providers", 3
     )
 
+    # v2.8.8: refuse to run a claude-oauth provider through the litellm chain.
+    # If the primary route IS oauth, skip directly to the next eligible
+    # provider — the dispatch layer was supposed to handle this and clearly
+    # didn't, but the chain isn't the place to recover from auth-mismatch.
     current = primary_route
     tried: set[str] = set()
     last_exc: Optional[Exception] = None
+
+    if current is not None and current.provider.provider_type == "claude-oauth":
+        tried.add(current.provider.id)
+        chain.add(current.provider.name, "skip:oauth-not-via-litellm")
+        try:
+            current = await _next_route(
+                db, hint, has_tools=has_tools, has_images=has_images,
+                key_type=key_type, pinned_provider_id=pinned_provider_id,
+                model_override=model_override, tried_ids=tried,
+            )
+        except Exception:
+            current = None
 
     while current is not None:
         tried.add(current.provider.id)
@@ -129,21 +145,38 @@ async def _next_route(
     tried_ids: set[str],
 ) -> RouteResult:
     """select_provider supports one exclude at a time; chain it by calling
-    once per already-tried provider until a new one is returned."""
+    once per already-tried provider until a new one is returned.
+
+    v2.8.8: skips claude-oauth providers — those use a different auth
+    method (Bearer + CC beta flags) and aren't reachable through the
+    litellm-based call_fn the fallback chain uses. They're handled by the
+    OAuth dispatch in messages.py / completions.py BEFORE the chain runs.
+    """
     # Pinned routes have no fallback — one provider only
     if pinned_provider_id:
         raise RuntimeError("pinned provider has no fallback candidates")
 
-    # Keep excluding most-recent tried until select_provider returns a fresh one
-    for tried_id in tried_ids:
+    # Keep excluding most-recent tried until select_provider returns a fresh
+    # NON-claude-oauth candidate.
+    extended_excluded = set(tried_ids)
+    while True:
+        seed = next(iter(extended_excluded), None)
+        if seed is None:
+            raise RuntimeError("no untried candidate remains")
         try:
             candidate = await select_provider(
                 db, hint, has_tools=has_tools, has_images=has_images,
                 key_type=key_type, pinned_provider_id=None,
-                model_override=model_override, exclude_provider_id=tried_id,
+                model_override=model_override, exclude_provider_id=seed,
             )
-            if candidate.provider.id not in tried_ids:
-                return candidate
         except RuntimeError:
+            raise RuntimeError("no untried candidate remains")
+        if candidate.provider.id in extended_excluded:
+            extended_excluded.add(candidate.provider.id)
             continue
-    raise RuntimeError("no untried candidate remains")
+        if candidate.provider.provider_type == "claude-oauth":
+            # claude-oauth providers can't go through litellm; skip them in
+            # the fallback chain. Add to excluded so the next pick is fresh.
+            extended_excluded.add(candidate.provider.id)
+            continue
+        return candidate
