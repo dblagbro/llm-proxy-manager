@@ -110,17 +110,23 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
             ):
                 continue
 
-            # Standard last-write-wins merge for active rows.
-            existing.api_key = p_data.get("api_key", existing.api_key)
-            existing.base_url = p_data.get("base_url", existing.base_url)
-            existing.default_model = p_data.get("default_model", existing.default_model)
-            existing.priority = p_data.get("priority", existing.priority)
-            existing.enabled = p_data.get("enabled", existing.enabled)
-            existing.timeout_sec = p_data.get("timeout_sec", existing.timeout_sec)
-            existing.exclude_from_tool_requests = p_data.get("exclude_from_tool_requests", existing.exclude_from_tool_requests)
-            existing.hold_down_sec = p_data.get("hold_down_sec", existing.hold_down_sec)
-            existing.failure_threshold = p_data.get("failure_threshold", existing.failure_threshold)
-            existing.extra_config = p_data.get("extra_config", existing.extra_config)
+            # v2.8.3: last-write-wins by updated_at for active rows.
+            # If local was modified after the peer's payload was built,
+            # ignore the peer push to avoid clobbering newer local state.
+            if (peer_updated_at is None or local_updated is None
+                    or peer_updated_at >= local_updated):
+                existing.api_key = p_data.get("api_key", existing.api_key)
+                existing.base_url = p_data.get("base_url", existing.base_url)
+                existing.default_model = p_data.get("default_model", existing.default_model)
+                existing.priority = p_data.get("priority", existing.priority)
+                existing.enabled = p_data.get("enabled", existing.enabled)
+                existing.timeout_sec = p_data.get("timeout_sec", existing.timeout_sec)
+                existing.exclude_from_tool_requests = p_data.get("exclude_from_tool_requests", existing.exclude_from_tool_requests)
+                existing.hold_down_sec = p_data.get("hold_down_sec", existing.hold_down_sec)
+                existing.failure_threshold = p_data.get("failure_threshold", existing.failure_threshold)
+                existing.extra_config = p_data.get("extra_config", existing.extra_config)
+                if peer_updated_at:
+                    existing.updated_at = peer_updated_at
             continue
 
         # No local row — create unless peer is sending a tombstone (no point
