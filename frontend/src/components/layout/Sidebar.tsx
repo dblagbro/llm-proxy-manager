@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 import {
   LayoutDashboard, Server, GitBranch, Key, Users,
   Network, BarChart2, Activity, Settings, ChevronLeft, ChevronRight,
-  Zap, Fingerprint,
+  Zap,
 } from 'lucide-react'
 import { clusterApi } from '@/api'
 
@@ -46,7 +46,6 @@ export function Sidebar({ collapsed, onToggle, openCircuitBreakers = 0, liveActi
     { to: '/activity', icon: Activity,         label: 'Activity',
       badge: liveActivity ? '●' : undefined },
     'divider',
-    { to: '/oauth-capture', icon: Fingerprint, label: 'OAuth Capture' },
     { to: '/settings', icon: Settings,         label: 'Settings' },
   ]
 
