@@ -57,6 +57,39 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+async def _select_excluding(db, hint, has_tools, has_images, key_type, excluded: set[str]):
+    """v2.8.6: select_provider only accepts a single exclude_id. To walk
+    through a chain of OAuth providers we need to call it repeatedly,
+    excluding one id per pass and discarding any pick already in the
+    tried set. Once we land on a never-tried provider, return its route."""
+    from app.routing.router import select_provider as _select
+    last_exc = None
+    # Cap iterations conservatively so we never spin if every provider was tried.
+    for _ in range(20):
+        # Pass any excluded id (select_provider only accepts one) and check
+        # the chosen route. If it's still in `excluded`, expand the exclusion
+        # set and retry.
+        seed = next(iter(excluded), None) if excluded else None
+        try:
+            r = await _select(
+                db, hint, has_tools=has_tools, has_images=has_images,
+                key_type=key_type, exclude_provider_id=seed,
+            )
+        except Exception as e:
+            last_exc = e
+            break
+        if r.provider.id in excluded:
+            # The single-excluded select picked another tried provider —
+            # add it to excluded and re-pick. This loop terminates because
+            # `excluded` strictly grows and there are finitely many providers.
+            excluded.add(r.provider.id)
+            continue
+        return r
+    if last_exc:
+        raise last_exc
+    raise RuntimeError("All providers tried")
+
+
 @router.post("/v1/messages")
 async def messages(
     request: Request,
@@ -204,7 +237,14 @@ async def messages(
     # fallback chains, no cascade) — Claude Pro Max subscriptions already run
     # through Claude Code's server-side routing, so we just forward the raw
     # /v1/messages body to platform.claude.com with the OAuth header bundle.
-    if route.provider.provider_type == "claude-oauth":
+    # v2.8.6: when claude-oauth fails over, the next-priority provider may
+    # ALSO be claude-oauth (e.g. Devin-VG → Devin-Gmail). The old single-shot
+    # dispatch below would fall through to the litellm path and try to send
+    # an OAuth token as an x-api-key header — wrong auth method, weird errors.
+    # We now walk down the OAuth chain first; only after all OAuth options
+    # are exhausted does the request fall into the regular litellm path.
+    tried_oauth_ids: set[str] = set()
+    while route.provider.provider_type == "claude-oauth":
         from app.api._messages_streaming import (
             _stream_claude_oauth, _complete_claude_oauth,
         )
@@ -212,6 +252,7 @@ async def messages(
         t0 = time.monotonic()
         upstream_body = dict(body)
         oauth_provider_id = route.provider.id
+        tried_oauth_ids.add(oauth_provider_id)
         if stream:
             # v2.7.6: pre-flight the streaming connection so 401/4xx errors
             # become proper HTTP responses instead of SSE-error-then-200.
@@ -257,47 +298,46 @@ async def messages(
                 provider_name=route.provider.name,
             )
         except httpx.HTTPStatusError as e:
-            # v2.7.6 BUG-018: claude-oauth was tried + auto-refresh attempted;
-            # both failed. If fallback is enabled, re-route through the standard
-            # ranked-fallback chain with this OAuth provider excluded so we try
-            # an api-key-based anthropic next.
             status = e.response.status_code if e.response is not None else 502
             if settings.fallback_enabled and status in (401, 403):
                 logger.info(
                     f"claude-oauth provider {oauth_provider_id} returned {status} after refresh; "
-                    "falling through to ranked-fallback chain"
+                    f"trying next provider (already tried oauth ids: {tried_oauth_ids})"
                 )
-                # Pick a fresh route excluding the failed OAuth provider
                 try:
-                    route = await select_provider(
-                        db, hint, has_tools=has_tools, has_images=has_images,
-                        key_type=key_record.key_type,
-                        exclude_provider_id=oauth_provider_id,
+                    # v2.8.6: exclude EVERY already-tried OAuth provider so we
+                    # walk through the OAuth chain instead of bouncing back to
+                    # the same one. select_provider only takes one exclude_id;
+                    # repeat-call until we get one we haven't tried.
+                    route = await _select_excluding(
+                        db, hint, has_tools, has_images, key_record.key_type, tried_oauth_ids,
                     )
                 except Exception as sel_exc:
                     logger.warning(f"no fallback provider available: {sel_exc}")
                     raise HTTPException(status, f"Claude OAuth upstream: {e.response.text[:200]}")
-                # Fall through to the regular non-streaming path below
                 resp_headers["X-Fallback-From"] = "claude-oauth"
-            else:
-                raise HTTPException(status, f"Claude OAuth upstream: {e.response.text[:200]}")
+                # Continue the while-loop: if the new route is also claude-oauth,
+                # we re-enter the OAuth dispatch; otherwise fall out into litellm.
+                continue
+            raise HTTPException(status, f"Claude OAuth upstream: {e.response.text[:200]}")
         except httpx.HTTPError as e:
             if settings.fallback_enabled:
-                logger.info(f"claude-oauth provider {oauth_provider_id} network error; falling through to ranked-fallback")
+                logger.info(f"claude-oauth provider {oauth_provider_id} network error; trying next provider")
                 try:
-                    route = await select_provider(
-                        db, hint, has_tools=has_tools, has_images=has_images,
-                        key_type=key_record.key_type,
-                        exclude_provider_id=oauth_provider_id,
+                    route = await _select_excluding(
+                        db, hint, has_tools, has_images, key_record.key_type, tried_oauth_ids,
                     )
                 except Exception:
                     raise HTTPException(502, f"Claude OAuth upstream: {e}")
                 resp_headers["X-Fallback-From"] = "claude-oauth"
-            else:
-                raise HTTPException(502, f"Claude OAuth upstream: {e}")
+                continue
+            raise HTTPException(502, f"Claude OAuth upstream: {e}")
         else:
             resp_headers["X-Cache-Status"] = "bypass"
             return JSONResponse(content=result, headers=resp_headers)
+        # Defensive: should be unreachable — every branch above either returned,
+        # raised, or continued. Break to avoid an accidental infinite loop.
+        break
 
     # Semantic cache — check before anything LLM-ish runs
     cache_decision = decide_cacheable(
@@ -322,7 +362,11 @@ async def messages(
         if cache_hit:
             resp_headers["X-Cache-Status"] = "hit"
             resp_headers["X-Cache-Similarity"] = f"{cache_hit.similarity:.3f}"
-            from app.cot.sse import anthropic_text_sse, anthropic_text_response
+            # v2.8.6 — DO NOT re-import anthropic_text_sse / anthropic_text_response
+            # locally here. They're imported at module scope; a function-local
+            # ``from … import …`` makes Python flag the name as local, and if
+            # this branch doesn't fire on a particular request, downstream
+            # references at line 379/387 raise UnboundLocalError.
             if stream:
                 return StreamingResponse(
                     anthropic_text_sse(cache_hit.response_text),
