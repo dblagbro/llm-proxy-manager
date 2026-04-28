@@ -126,6 +126,10 @@ class Settings(BaseSettings):
     audit_export_s3_secret_key: Optional[str] = Field(None, alias="AUDIT_EXPORT_S3_SECRET_KEY")
     audit_export_retention_days: int = Field(90, alias="AUDIT_EXPORT_RETENTION_DAYS")
 
+    # v2.8.4 — activity-log payload capture
+    activity_log_capture_bodies: bool = Field(True, alias="ACTIVITY_LOG_CAPTURE_BODIES")
+    activity_log_max_body_chars: int = Field(50000, alias="ACTIVITY_LOG_MAX_BODY_CHARS")
+
     # Wave 6 — PII masking
     pii_masking_enabled: bool = Field(False, alias="PII_MASKING_ENABLED")
 

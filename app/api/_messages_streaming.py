@@ -369,12 +369,14 @@ async def _complete_claude_oauth(
                 db, provider_id, "claude-oauth", success=True,
                 in_tok=in_tok, out_tok=out_tok, t0=t0, key_record_id=key_record_id,
                 cache_creation=cache_creation, cache_read=cache_read,
+                request_body=body, response_body=data,
             )
             return data
         except httpx.HTTPError as e:
             await record_outcome(
                 db, provider_id, "claude-oauth", success=False,
                 key_record_id=key_record_id, error_str=str(e),
+                request_body=body,
             )
             raise
 
@@ -410,6 +412,10 @@ async def _stream_claude_oauth(
     cache_creation = cache_read = 0
     ttft_ms: float = 0.0
     full_text_buf: list[str] = []
+    # v2.8.4: assemble a synthetic response_body matching the non-streaming
+    # shape so the activity log shows tool calls, content blocks, etc.
+    assembled_blocks: dict[int, dict] = {}  # index → {type, text|input, ...}
+    assembled_meta: dict = {}  # message_start metadata
 
     current_token = access_token
     refreshed = False
@@ -467,17 +473,81 @@ async def _stream_claude_oauth(
                                 continue
                             t = evt.get("type")
                             if t == "message_start":
-                                usage = (evt.get("message") or {}).get("usage") or {}
+                                msg = evt.get("message") or {}
+                                usage = msg.get("usage") or {}
                                 in_tok = int(usage.get("input_tokens") or in_tok)
                                 cache_creation = int(usage.get("cache_creation_input_tokens") or cache_creation)
                                 cache_read = int(usage.get("cache_read_input_tokens") or cache_read)
+                                # v2.8.4: capture top-level message metadata for synthesis
+                                assembled_meta = {
+                                    k: v for k, v in msg.items()
+                                    if k in ("id", "model", "role", "type", "stop_reason", "stop_sequence")
+                                }
                             elif t == "message_delta":
                                 usage = evt.get("usage") or {}
                                 out_tok = int(usage.get("output_tokens") or out_tok)
-                            elif t == "content_block_delta":
                                 delta = evt.get("delta") or {}
+                                if "stop_reason" in delta:
+                                    assembled_meta["stop_reason"] = delta["stop_reason"]
+                                if "stop_sequence" in delta:
+                                    assembled_meta["stop_sequence"] = delta["stop_sequence"]
+                            elif t == "content_block_start":
+                                idx = evt.get("index", 0)
+                                cb = evt.get("content_block") or {}
+                                # Initialize assembled block — text/tool_use/etc.
+                                if cb.get("type") == "tool_use":
+                                    assembled_blocks[idx] = {
+                                        "type": "tool_use",
+                                        "id": cb.get("id"),
+                                        "name": cb.get("name"),
+                                        "input": "",  # filled by input_json_delta
+                                    }
+                                elif cb.get("type") == "thinking":
+                                    assembled_blocks[idx] = {"type": "thinking", "thinking": ""}
+                                else:
+                                    assembled_blocks[idx] = {"type": cb.get("type", "text"), "text": ""}
+                            elif t == "content_block_delta":
+                                idx = evt.get("index", 0)
+                                delta = evt.get("delta") or {}
+                                blk = assembled_blocks.setdefault(idx, {"type": "text", "text": ""})
                                 if delta.get("type") == "text_delta":
-                                    full_text_buf.append(delta.get("text") or "")
+                                    txt = delta.get("text") or ""
+                                    full_text_buf.append(txt)
+                                    blk["text"] = (blk.get("text") or "") + txt
+                                elif delta.get("type") == "thinking_delta":
+                                    blk["thinking"] = (blk.get("thinking") or "") + (delta.get("thinking") or "")
+                                elif delta.get("type") == "input_json_delta":
+                                    # tool_use input streams as partial JSON
+                                    blk["input"] = (blk.get("input") or "") + (delta.get("partial_json") or "")
+
+            # v2.8.4: assemble final response body in non-streaming shape so
+            # the activity log shows the actual content + tool calls.
+            content_list = []
+            for idx in sorted(assembled_blocks.keys()):
+                blk = assembled_blocks[idx]
+                if blk.get("type") == "tool_use":
+                    raw_input = blk.get("input") or ""
+                    try:
+                        parsed_input = json.loads(raw_input) if raw_input else {}
+                    except ValueError:
+                        parsed_input = {"_raw": raw_input}
+                    content_list.append({
+                        "type": "tool_use", "id": blk.get("id"),
+                        "name": blk.get("name"), "input": parsed_input,
+                    })
+                elif blk.get("type") == "thinking":
+                    content_list.append({"type": "thinking", "thinking": blk.get("thinking", "")})
+                else:
+                    content_list.append({"type": blk.get("type", "text"), "text": blk.get("text", "")})
+            assembled_response = {
+                **assembled_meta,
+                "content": content_list,
+                "usage": {
+                    "input_tokens": in_tok, "output_tokens": out_tok,
+                    "cache_creation_input_tokens": cache_creation,
+                    "cache_read_input_tokens": cache_read,
+                },
+            }
 
             # Successful end of stream
             if budget_total > 0:
@@ -490,6 +560,7 @@ async def _stream_claude_oauth(
                 db, provider_id, "claude-oauth", success=True,
                 in_tok=in_tok, out_tok=out_tok, t0=t0, key_record_id=key_record_id,
                 ttft_ms=ttft_ms, cache_creation=cache_creation, cache_read=cache_read,
+                request_body=body, response_body=assembled_response,
             )
             if cache_decision is not None and cache_decision.eligible:
                 try:
@@ -504,6 +575,7 @@ async def _stream_claude_oauth(
             await record_outcome(
                 db, provider_id, "claude-oauth", success=False,
                 key_record_id=key_record_id, error_str=str(e),
+                request_body=body,
             )
             if not yielded_first_chunk:
                 # Pre-stream connection error — surface as HTTP error

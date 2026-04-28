@@ -55,6 +55,17 @@ SCHEMA: dict[str, dict] = {
     "native_thinking_budget_tokens": {"type": "int", "default": settings.native_thinking_budget_tokens, "label": "Thinking budget tokens (Gemini 2.5 / Anthropic)"},
     "native_reasoning_effort":       {"type": "str", "default": settings.native_reasoning_effort,       "label": "Reasoning effort (o-series: low / medium / high)"},
     # Circuit breaker
+    # v2.8.4 — activity-log payload capture
+    "activity_log_capture_bodies": {
+        "type": "bool", "default": settings.activity_log_capture_bodies,
+        "label": "Activity log: capture full request + response payloads (text + tool calls). Adds DB rows ~5-100KB each.",
+        "group": "Activity log",
+    },
+    "activity_log_max_body_chars": {
+        "type": "int", "default": settings.activity_log_max_body_chars,
+        "label": "Activity log: max characters to keep per body (truncated with ellipsis past this).",
+        "group": "Activity log",
+    },
     "circuit_breaker_threshold":    {"type": "int", "default": settings.circuit_breaker_threshold,    "label": "CB failure threshold"},
     "circuit_breaker_timeout_sec":  {"type": "int", "default": settings.circuit_breaker_timeout_sec,  "label": "CB timeout (seconds)"},
     "circuit_breaker_halfopen_sec": {"type": "int", "default": settings.circuit_breaker_halfopen_sec, "label": "CB half-open window (seconds)"},
