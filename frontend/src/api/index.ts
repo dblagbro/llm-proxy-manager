@@ -113,68 +113,11 @@ export const settingsApi = {
   }>('/api/settings/cluster-diff'),
 }
 
-// ── OAuth capture (v2.5.0) ────────────────────────────────────────────────────
-
-export type OAuthCapturePreset = {
-  key: string
-  label: string
-  cli_hint: string
-  primary_upstream: string
-  extra_upstreams: string[]
-  env_var_names: string[]
-  setup_hint: string
-}
-
-export type OAuthCaptureProfile = {
-  name: string
-  preset: string | null
-  upstream_urls: string[]
-  enabled: boolean
-  notes: string | null
-  created_at: string | null
-  has_secret: boolean
-  secret?: string  // only returned on create / rotate / reveal
-}
-
-export type OAuthCaptureLogEntry = {
-  id: number
-  profile_name: string | null
-  method: string
-  path: string
-  upstream_url: string
-  resp_status: number | null
-  latency_ms: number
-  error: string | null
-  req_body_preview: string
-  resp_body_preview: string
-  created_at: string | null
-}
-
-export const oauthCaptureApi = {
-  listPresets:  () => api.get<OAuthCapturePreset[]>('/api/oauth-capture/_presets'),
-  listProfiles: () => api.get<OAuthCaptureProfile[]>('/api/oauth-capture/_profiles'),
-  createProfile: (body: { name: string; preset?: string; upstream_urls?: string[]; notes?: string; enabled?: boolean }) =>
-    api.post<OAuthCaptureProfile>('/api/oauth-capture/_profiles', body),
-  updateProfile: (name: string, body: { upstream_urls?: string[]; enabled?: boolean; notes?: string | null; rotate_secret?: boolean }) =>
-    api.patch<OAuthCaptureProfile>(`/api/oauth-capture/_profiles/${encodeURIComponent(name)}`, body),
-  revealSecret: (name: string) =>
-    api.get<{ name: string; secret: string }>(`/api/oauth-capture/_profiles/${encodeURIComponent(name)}/secret`),
-  deleteProfile: (name: string) =>
-    api.delete<{ ok: boolean }>(`/api/oauth-capture/_profiles/${encodeURIComponent(name)}`),
-  listLog: (profile?: string, limit = 100) =>
-    api.get<OAuthCaptureLogEntry[]>(
-      `/api/oauth-capture/_log?limit=${limit}${profile ? `&profile=${encodeURIComponent(profile)}` : ''}`
-    ),
-  clearLog: (profile?: string) =>
-    api.delete<{ deleted: number; profile: string }>(
-      `/api/oauth-capture/_log${profile ? `?profile=${encodeURIComponent(profile)}` : ''}`
-    ),
-  // SSE stream URL — components open it with native EventSource
-  streamUrl: (profile: string) =>
-    `/api/oauth-capture/_log/stream/${encodeURIComponent(profile)}`,
-  exportUrl: (profile: string) =>
-    `/api/oauth-capture/_log/export/${encodeURIComponent(profile)}`,
-}
+// ── OAuth capture (v2.5.0) ──────────────────────────────────────────────────
+// Removed from the main UI in v2.8.1 — Claude Pro Max OAuth setup now lives
+// in the Providers page (claude-oauth provider type). Backend
+// /api/oauth-capture/* endpoints remain for ad-hoc reverse-engineering of
+// future vendor CLIs via curl; they're admin-only and not user-facing.
 
 
 // ── Cluster ───────────────────────────────────────────────────────────────────

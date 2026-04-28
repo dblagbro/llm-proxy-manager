@@ -11,7 +11,7 @@ const LMRH_DIMS = [
   { key: 'modality', label: 'modality', values: 'text, image, audio, video', weight: 5 },
   { key: 'region', label: 'region', values: 'us, eu, ap, …', weight: 6 },
   { key: 'latency', label: 'latency', values: 'low, medium, high', weight: 4 },
-  { key: 'cost', label: 'cost', values: 'low, medium, high', weight: 3 },
+  { key: 'cost', label: 'cost', values: 'economy, standard, premium', weight: 3 },
   { key: 'context-length', label: 'context-length', values: '4k, 8k, 16k, 32k, 128k, 200k', weight: 2 },
   { key: 'native-reasoning', label: 'native-reasoning', values: '?1, ?0', weight: 0 },
   { key: 'native-tools', label: 'native-tools', values: '?1, ?0', weight: 0 },
@@ -19,7 +19,7 @@ const LMRH_DIMS = [
 
 const EXAMPLES = [
   { label: 'Prefer reasoning model', header: 'LLM-Hint: task=reasoning;native-reasoning=?1' },
-  { label: 'Low-cost EU region', header: 'LLM-Hint: cost=low;region=eu' },
+  { label: 'Cheapest tier in EU', header: 'LLM-Hint: cost=economy;region=eu' },
   { label: 'Image analysis, strict safety', header: 'LLM-Hint: task=chat;modality=image;safety=strict' },
   { label: 'Long context (hard constraint)', header: 'LLM-Hint: context-length=128k;hard=context-length' },
   { label: 'Coding with tools required', header: 'LLM-Hint: task=coding;native-tools=?1;hard=native-tools' },
@@ -53,6 +53,64 @@ export function RoutingPage() {
             <p>LLM-Hint: task=reasoning;safety=strict;hard=safety</p>
             <p className="text-gray-400 mt-2"># Response capability</p>
             <p>LLM-Capability: provider=anthropic;model=claude-opus-4-7;native-reasoning=?1;safety=strict</p>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* v2.8.0: routing modes (auto + slug shortcuts) */}
+      <Card>
+        <CardHeader><CardTitle>Routing Modes (v2.8.0)</CardTitle></CardHeader>
+        <CardContent className="space-y-4 text-sm text-gray-700 dark:text-gray-300">
+          <div>
+            <p className="font-medium text-gray-800 dark:text-gray-100 mb-1">Auto-routing</p>
+            <p className="mb-2">
+              Send <code className="font-mono text-indigo-400">"model": "auto"</code> (or <code className="font-mono">"llmp-auto"</code>) and the
+              proxy classifies your prompt, synthesizes an LMRH hint, and picks the best available provider+model.
+              No header required. Response carries <code className="font-mono text-indigo-400">X-Auto-Routed: &lt;provider&gt;:&lt;model&gt;</code>.
+            </p>
+            <div className="bg-gray-50 dark:bg-gray-800 rounded-lg p-3 font-mono text-xs">
+              <p>{`{"model": "auto", "messages": [...]}`}</p>
+            </div>
+          </div>
+          <div>
+            <p className="font-medium text-gray-800 dark:text-gray-100 mb-1">Sort-mode shortcuts</p>
+            <p className="mb-2">
+              Append a suffix to the model name to override the default ranking. The suffix is stripped before forwarding
+              upstream. Composes with <code className="font-mono">auto</code> (e.g. <code className="font-mono">auto:floor</code>).
+            </p>
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="border-b border-gray-100 dark:border-gray-700">
+                  <th className="text-left px-3 py-1.5 text-gray-400 font-medium">Suffix</th>
+                  <th className="text-left px-3 py-1.5 text-gray-400 font-medium">Behavior</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-50 dark:divide-gray-800">
+                <tr>
+                  <td className="px-3 py-1.5 font-mono text-indigo-400">:floor</td>
+                  <td className="px-3 py-1.5">Cheapest cost tier among hint-satisfying providers (economy &lt; standard &lt; premium).</td>
+                </tr>
+                <tr>
+                  <td className="px-3 py-1.5 font-mono text-indigo-400">:nitro</td>
+                  <td className="px-3 py-1.5">Fastest provider by rolling PeakEWMA TTFT. Falls back to priority if no telemetry.</td>
+                </tr>
+                <tr>
+                  <td className="px-3 py-1.5 font-mono text-indigo-400">:exacto</td>
+                  <td className="px-3 py-1.5">Highest capability score, deterministic — no P2C random sample.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div className="pt-2">
+            <p className="font-medium text-gray-800 dark:text-gray-100 mb-1">Response headers</p>
+            <ul className="list-disc list-inside space-y-0.5 text-xs">
+              <li><code className="font-mono">X-Provider</code> — which provider served the request</li>
+              <li><code className="font-mono">X-Resolved-Model</code> — actual model used upstream</li>
+              <li><code className="font-mono">X-Sort-Mode</code> — when a slug shortcut was applied</li>
+              <li><code className="font-mono">X-Auto-Routed</code> — when auto picked the model+provider</li>
+              <li><code className="font-mono">X-Fallback-Chain</code> — comma-separated provider:outcome list when fallback fired</li>
+              <li><code className="font-mono">X-Cache-Status</code> — semantic-cache hit / miss / bypass</li>
+            </ul>
           </div>
         </CardContent>
       </Card>
