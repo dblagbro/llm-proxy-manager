@@ -47,6 +47,11 @@ class Provider(Base):
     oauth_expires_at = Column(Float, nullable=True)        # unix timestamp
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+    # v2.8.2: tombstone for soft-delete. When non-null, the provider has been
+    # deleted on this node but the row stays so cluster sync can propagate the
+    # delete to peers (last-write-wins on updated_at). Garbage-collected after
+    # all peers have replicated the tombstone.
+    deleted_at = Column(DateTime, nullable=True)
 
     capabilities = relationship("ModelCapability", back_populates="provider", cascade="all, delete-orphan")
 
