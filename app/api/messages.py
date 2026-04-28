@@ -454,6 +454,7 @@ async def messages(
                         db, hint, has_tools=False, has_images=False,
                         key_type=key_record.key_type,
                         exclude_provider_id=route.provider.id,
+                        excluded_provider_types={"claude-oauth"},
                     )
                     critique_model = critique_route.litellm_model
                     critique_kwargs = critique_route.litellm_kwargs
@@ -487,6 +488,7 @@ async def messages(
                         db, hint, has_tools=has_tools, has_images=has_images,
                         key_type=key_record.key_type,
                         exclude_provider_id=route.provider.id,
+                        excluded_provider_types={"claude-oauth"},
                     )
                 except Exception:
                     backup_route = None
@@ -563,6 +565,7 @@ async def messages(
                     cheap_route = await select_provider(
                         db, hint, has_tools=False, has_images=has_images,
                         key_type=key_record.key_type, prefer_cheapest=True,
+                        excluded_provider_types={"claude-oauth"},
                     )
                     # Grader: use the current top (route) if different from cheap
                     grader_route = route if route.provider.id != cheap_route.provider.id else None
@@ -573,6 +576,7 @@ async def messages(
                                 key_type=key_record.key_type,
                                 exclude_provider_id=cheap_route.provider.id,
                                 prefer_cheapest=True,
+                        excluded_provider_types={"claude-oauth"},
                             )
                         except Exception:
                             grader_route = None
