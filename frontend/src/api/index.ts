@@ -11,6 +11,8 @@ export const authApi = {
     api.post<AuthUser>('/api/auth/login', { username, password }),
   logout: () => api.post<void>('/api/auth/logout'),
   me:     () => api.get<AuthUser>('/api/auth/me'),
+  setPreferences: (prefs: { timezone?: string | null; time_format?: '12h' | '24h' | '' | null }) =>
+    api.patch<AuthUser>('/api/auth/preferences', prefs),
 }
 
 // ── Providers ─────────────────────────────────────────────────────────────────
