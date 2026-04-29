@@ -344,3 +344,78 @@ async def test_deadline_exceeded_during_run_expires(monkeypatch, fake_route_fact
     assert run.status == "expired", f"expected expired, got {run.status}"
     assert "expired" in kinds
     assert call_count["n"] == 0, "model should not have been called on a past-deadline run"
+
+
+# ── 5. Cancel mid-tool-wait — worker exits cleanly via wakeup ───────────────
+
+
+@pytest.mark.asyncio
+async def test_cancel_during_requires_tool_wait(monkeypatch, fake_route_factory):
+    """Worker is parked in REQUIRES_TOOL waiting for /tool_result. Cancel
+    fires (which sets run.status=CANCELLED + calls run_worker.wake()).
+    Worker should observe terminal status and return without hanging."""
+    from app.runs import worker as run_worker
+    from app.models.database import init_db, AsyncSessionLocal
+    from app.models.db import Run, RunMessage, RunEvent
+    from app.runs.ids import new_run_id
+    from app.runs.state import RunStatus, advance, EventKind, RunCtx
+    from sqlalchemy import select
+
+    await init_db()
+    run_id = new_run_id()
+    now = time.time()
+
+    # Seed the run already in REQUIRES_TOOL with a pending tool_use_id —
+    # mimics the state right after the worker emitted tool_use_requested
+    # and parked.
+    async with AsyncSessionLocal() as db:
+        db.add(Run(
+            id=run_id, api_key_id="test-key", owner_node_id="local",
+            status=RunStatus.REQUIRES_TOOL.value, deadline_ts=now + 60,
+            max_turns=10, model_preference=[], system_prompt=None,
+            tools_spec=[], metadata_json={},
+            current_tool_use_id="toolu_x", current_tool_name="Bash",
+            current_tool_input={"cmd": "ls"},
+            model_calls=1, tool_calls=0, tokens_in=10, tokens_out=5,
+            created_at=now, updated_at=now,
+        ))
+        db.add(RunMessage(run_id=run_id, seq=1, role="user", content="hi",
+                          tokens=0, created_at=now))
+        await db.commit()
+
+    # Concurrently: launch _drive, then a moment later flip the run to
+    # CANCELLED + call wake. The worker's wakeup.wait() should fire and
+    # the next loop iteration sees terminal status and returns.
+    async def trigger_cancel():
+        await asyncio.sleep(0.2)
+        async with AsyncSessionLocal() as db:
+            res = await db.execute(select(Run).where(Run.id == run_id))
+            run = res.scalar_one()
+            t = advance(
+                RunCtx(status=RunStatus.REQUIRES_TOOL,
+                       deadline_ts=run.deadline_ts,
+                       max_turns=run.max_turns,
+                       turns_used=run.model_calls or 0),
+                EventKind.CANCEL, time.time(),
+            )
+            run.status = t.status.value
+            run.updated_at = time.time()
+            run.completed_at = run.updated_at
+            await db.commit()
+        # Poke the worker out of its idle wait
+        run_worker.wake(run_id)
+
+    t0 = time.monotonic()
+    await asyncio.gather(
+        asyncio.wait_for(run_worker._drive(run_id), timeout=5.0),
+        trigger_cancel(),
+    )
+    elapsed = time.monotonic() - t0
+
+    # Wakeup must fire well before the 5s tick — the wait should resolve
+    # within ~250ms of cancel posting.
+    assert elapsed < 2.0, f"cancel→exit took {elapsed:.2f}s; wakeup not wired"
+
+    async with AsyncSessionLocal() as db:
+        run = (await db.execute(select(Run).where(Run.id == run_id))).scalar_one()
+    assert run.status == "cancelled"
