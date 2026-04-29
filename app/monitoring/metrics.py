@@ -125,6 +125,11 @@ async def get_provider_history(
 
 
 async def get_all_provider_summary(db: AsyncSession, hours: int = 24) -> list[dict]:
+    """Aggregate per-provider stats over the last N hours and join the live
+    provider name. v2.9.0 fixes a missing-column AttributeError that crashed
+    the endpoint (avg_ttft_ms was referenced but not selected) and returns
+    the human-readable name so the UI doesn't show bare provider IDs."""
+    from app.models.db import Provider
     since = datetime.utcnow() - timedelta(hours=hours)
     result = await db.execute(
         select(
@@ -135,15 +140,19 @@ async def get_all_provider_summary(db: AsyncSession, hours: int = 24) -> list[di
             func.sum(ProviderMetric.total_tokens).label("total_tokens"),
             func.sum(ProviderMetric.total_cost_usd).label("total_cost_usd"),
             func.avg(ProviderMetric.avg_latency_ms).label("avg_latency_ms"),
+            func.avg(ProviderMetric.avg_ttft_ms).label("avg_ttft_ms"),
         )
         .where(ProviderMetric.bucket_ts >= since)
         .group_by(ProviderMetric.provider_id)
     )
     rows = result.all()
     cb_states = get_all_states()
+    name_result = await db.execute(select(Provider.id, Provider.name))
+    name_map = {pid: pname for pid, pname in name_result.all()}
     return [
         {
             "provider_id": r.provider_id,
+            "provider_name": name_map.get(r.provider_id, r.provider_id),
             "requests": r.requests or 0,
             "successes": r.successes or 0,
             "failures": r.failures or 0,

@@ -1,15 +1,22 @@
 import { forwardRef, type InputHTMLAttributes } from 'react'
 import { clsx } from 'clsx'
+import { HelpHint } from './HelpHint'
 
 interface InputProps extends InputHTMLAttributes<HTMLInputElement> {
   label?: string
   error?: string
+  tooltip?: string
 }
 
 export const Input = forwardRef<HTMLInputElement, InputProps>(
-  ({ label, error, className, ...props }, ref) => (
+  ({ label, error, tooltip, className, ...props }, ref) => (
     <div className="flex flex-col gap-1">
-      {label && <label className="text-sm font-medium text-gray-700 dark:text-gray-300">{label}</label>}
+      {label && (
+        <label className="text-sm font-medium text-gray-700 dark:text-gray-300 flex items-center gap-1">
+          <span>{label}</span>
+          {tooltip && <HelpHint text={tooltip} />}
+        </label>
+      )}
       <input
         ref={ref}
         className={clsx(
