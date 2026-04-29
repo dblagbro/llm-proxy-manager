@@ -86,6 +86,17 @@ async def lifespan(app: FastAPI):
 
     # Start background tasks
     start_monitor(notify_fn=_notify_provider_degraded)
+
+    # v3.0.2: keep-alive probes — synthetic "Hi from <ProviderName>" call
+    # against each enabled non-claude-oauth provider every interval, so the
+    # activity log + provider_metrics + dashboards reflect liveness even
+    # without organic traffic. Skips providers that received real traffic
+    # in the last 2× interval.
+    try:
+        from app.monitoring.keepalive import start as start_keepalive
+        start_keepalive()
+    except Exception as e:
+        logger.warning(f"keepalive probe loop failed to start: {e}")
     start_cluster(
         db_factory=AsyncSessionLocal,
         notify_fn=alert_cluster_node_down,

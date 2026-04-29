@@ -113,7 +113,9 @@ async def record_outcome(
         clear_auth_failure(provider_id)
         # v2.8.5: human-friendly message — use provider_name when given.
         # Reads e.g. "Devin-VG · claude-sonnet-4-6" instead of just "claude-oauth".
-        msg = f"{provider_name} · {model}" if provider_name else f"{model}"
+        is_probe = key_record_id == "probe-keepalive"
+        msg_prefix = "[probe] " if is_probe else ""
+        msg = f"{msg_prefix}{provider_name} · {model}" if provider_name else f"{msg_prefix}{model}"
         meta = {
             "model": model,
             "provider_name": provider_name,
@@ -122,6 +124,8 @@ async def record_outcome(
             "cost_usd": round(cost, 6),
             "latency_ms": round(latency_ms, 1),
         }
+        if is_probe:
+            meta["probe"] = True
         meta = _attach_bodies(meta, request_body, response_body)
         await log_event(
             db,
@@ -146,12 +150,17 @@ async def record_outcome(
             success=False, duration_sec=0.0,
             in_tokens=0, out_tokens=0, cost_usd=0.0,
         )
-        msg = f"{provider_name} · {model} — error" if provider_name else f"{model} — error"
+        is_probe = key_record_id == "probe-keepalive"
+        msg_prefix = "[probe] " if is_probe else ""
+        msg = (f"{msg_prefix}{provider_name} · {model} — error"
+               if provider_name else f"{msg_prefix}{model} — error")
         meta = {
             "model": model,
             "provider_name": provider_name,
             "error": error_str[:2000] if error_str else None,
         }
+        if is_probe:
+            meta["probe"] = True
         meta = _attach_bodies(meta, request_body, response_body)
         await log_event(
             db,
