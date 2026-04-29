@@ -30,6 +30,7 @@ from app.runs.state import (
     EventKind, InvalidTransition, RunCtx, RunStatus,
     advance, clamp_max_turns,
 )
+from app.runs import worker as run_worker
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -238,6 +239,8 @@ async def create_run(
         })
 
     await db.commit()
+    # R2: spawn worker so the run actually progresses.
+    run_worker.spawn(run.id)
     return JSONResponse({"run_id": run.id, "status": run.status})
 
 
@@ -306,6 +309,8 @@ async def cancel_run(
     if transition.status is RunStatus.CANCELLED and not was_already_cancelled:
         await _emit_event(db, run.id, "cancelled", {})
     await db.commit()
+    # R2: wake the worker so it sees the cancel and exits its idle wait.
+    run_worker.wake(run.id)
     return JSONResponse(_serialize_run(run))
 
 
@@ -388,9 +393,13 @@ async def post_tool_result(
         "tool_use_id": tool_use_id,
         "exec_ms": body.get("exec_ms"),
     })
-    # NOTE R1: worker not implemented yet; status sits in 'running' but no
-    # next model call fires. R2 will pick this up via per-run asyncio.Event.
     await db.commit()
+    # R2: worker is parked waiting for tool_result. Poke it via the per-run
+    # wakeup Event so it picks up the new conversation tail without polling.
+    # If the worker isn't on this node (cluster handoff, R5), spawn one
+    # locally — the FSM is the source of truth, the task is just plumbing.
+    run_worker.wake(run.id)
+    run_worker.spawn(run.id)
     return JSONResponse(_serialize_run(run))
 
 
