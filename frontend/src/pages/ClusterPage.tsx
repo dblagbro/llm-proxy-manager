@@ -7,10 +7,13 @@ import { Badge } from '@/components/ui/Badge'
 import { Spinner } from '@/components/ui/Spinner'
 import { CircuitBreakerBadge } from '@/components/providers/CircuitBreakerBadge'
 import { useToast } from '@/components/ui/Toast'
+import { useAuth } from '@/context/AuthContext'
+import { formatTimeForUser } from '@/utils/time'
 
 export function ClusterPage() {
   const qc = useQueryClient()
   const toast = useToast()
+  const { user } = useAuth()
 
   const { data: health, isLoading: healthLoading } = useQuery({
     queryKey: ['health'],
@@ -105,7 +108,7 @@ export function ClusterPage() {
                     <Badge variant={online ? 'success' : 'danger'}>{online ? 'Online' : node.status}</Badge>
                     {'last_heartbeat' in node && node.last_heartbeat ? (
                       <span className="text-xs text-gray-400">
-                        {new Date(node.last_heartbeat * 1000).toLocaleTimeString()}
+                        {formatTimeForUser(node.last_heartbeat * 1000, user, 'time')}
                       </span>
                     ) : null}
                     {'latency_ms' in node && node.latency_ms ? (

@@ -9,6 +9,7 @@ import { useToast } from '@/components/ui/Toast'
 import { settingsApi, type SettingSchemaItem } from '@/api'
 import { ClusterDiffPanel } from '@/components/settings/ClusterDiffPanel'
 import { DynamicSettingsPanel } from '@/components/settings/DynamicSettingsPanel'
+import { UserPreferencesCard } from '@/components/settings/UserPreferencesCard'
 
 type SettingsMap = Record<string, unknown>
 
@@ -78,6 +79,9 @@ export function SettingsPage() {
           Changes apply live — no restart required. Environment variables remain the defaults.
         </p>
       </div>
+
+      {/* Per-user display prefs (timezone, time format) — saved per user, not cluster-global */}
+      <UserPreferencesCard />
 
       {/* CoT-E */}
       <Card>
