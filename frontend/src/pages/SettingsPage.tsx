@@ -93,15 +93,38 @@ export function SettingsPage() {
             <Switch {...boolField('cot_enabled')} />
           </div>
           <div className="grid grid-cols-2 gap-4">
-            <Input label="Max refinement passes" type="number" {...numField('cot_max_iterations')} min={0} max={5} />
-            <Input label="Quality threshold (1–10)" type="number" {...numField('cot_quality_threshold')} min={1} max={10} />
-            <Input label="Min draft tokens to skip refinement" type="number" {...numField('cot_min_tokens_skip')} min={0} />
-            <Input label="Critique max tokens" type="number" {...numField('cot_critique_max_tokens')} min={50} max={500} />
+            <Input
+              label="Max refinement passes"
+              type="number"
+              tooltip="Upper bound on critique→refine iterations per request. Each pass costs one extra LLM call. The loop also stops early when the critique scores the draft at or above the quality threshold. 0 disables refinement entirely (draft is returned as-is)."
+              {...numField('cot_max_iterations')}
+              min={0}
+              max={5}
+            />
+            <Input
+              label="Quality threshold (1–10)"
+              type="number"
+              tooltip="Score the critique pass must give the draft (on a 1–10 rubric) for refinement to stop early. Higher = stricter, more passes consumed. Typical: 7–8. At 10 the loop will almost always run to max passes."
+              {...numField('cot_quality_threshold')}
+              min={1}
+              max={10}
+            />
+            <Input
+              label="Min draft tokens to skip refinement"
+              type="number"
+              tooltip="If the initial draft is at least this many output tokens, the critique/refine cycle is skipped — long answers are assumed thorough. Set to 0 to always refine regardless of draft length."
+              {...numField('cot_min_tokens_skip')}
+              min={0}
+            />
+            <Input
+              label="Critique max tokens"
+              type="number"
+              tooltip="Token cap for each critique pass (the LLM grades the draft and proposes fixes). Lower = cheaper but may truncate detailed feedback. Range 50–500; 200 is a sensible default."
+              {...numField('cot_critique_max_tokens')}
+              min={50}
+              max={500}
+            />
           </div>
-          <p className="text-xs text-gray-400">
-            <strong>Min draft tokens:</strong> When the initial draft exceeds this count, critique/refinement is
-            skipped — the answer is already thorough. Set to 0 to always refine.
-          </p>
 
           <div className="border-t border-gray-200 dark:border-gray-700 pt-4 space-y-4">
             <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide">Verification Pass</p>
@@ -125,7 +148,14 @@ export function SettingsPage() {
               </div>
               <Switch {...boolField('cot_verify_auto_detect')} />
             </div>
-            <Input label="Verification max tokens" type="number" {...numField('cot_verify_max_tokens')} min={100} max={800} />
+            <Input
+              label="Verification max tokens"
+              type="number"
+              tooltip="Token cap for the verification pass that emits shell/API checks confirming the answer is correct. Higher = room for more checks; lower = cheaper. Range 100–800; 400 is a balanced default."
+              {...numField('cot_verify_max_tokens')}
+              min={100}
+              max={800}
+            />
           </div>
         </CardContent>
       </Card>
@@ -143,12 +173,14 @@ export function SettingsPage() {
             <Input
               label="Thinking budget tokens (Gemini 2.5)"
               type="number"
+              tooltip="Maximum tokens Gemini 2.5 may spend on internal thinking before producing the answer. Higher = better quality on hard reasoning, more cost/latency. Range 1024–32768; 8192 is a typical default."
               {...numField('native_thinking_budget_tokens')}
               min={1024}
               max={32768}
             />
             <Input
               label="Reasoning effort (o-series: low / medium / high)"
+              tooltip="Controls how much hidden reasoning OpenAI o-series models perform. 'low' is fastest/cheapest, 'high' is most thorough. Ignored for non-o-series providers."
               {...strField('native_reasoning_effort')}
               placeholder="medium"
             />
@@ -160,11 +192,41 @@ export function SettingsPage() {
       <Card>
         <CardHeader><CardTitle>Circuit Breaker</CardTitle></CardHeader>
         <CardContent className="grid grid-cols-2 gap-4">
-          <Input label="Failure threshold (opens CB)" type="number" {...numField('circuit_breaker_threshold')} min={1} />
-          <Input label="Successes to close CB" type="number" {...numField('circuit_breaker_success_needed')} min={1} />
-          <Input label="Open timeout (seconds)" type="number" {...numField('circuit_breaker_timeout_sec')} min={10} />
-          <Input label="Half-open window (seconds)" type="number" {...numField('circuit_breaker_halfopen_sec')} min={5} />
-          <Input label="Provider hold-down (seconds)" type="number" {...numField('hold_down_sec')} min={0} />
+          <Input
+            label="Failure threshold (opens CB)"
+            type="number"
+            tooltip="Consecutive failures on a provider that flip the circuit breaker to OPEN. While OPEN the provider is skipped by routing. Lower = more aggressive isolation; higher = more retries before giving up."
+            {...numField('circuit_breaker_threshold')}
+            min={1}
+          />
+          <Input
+            label="Successes to close CB"
+            type="number"
+            tooltip="Consecutive successes during the HALF-OPEN trial window required to close the breaker again. Higher = more conservative recovery."
+            {...numField('circuit_breaker_success_needed')}
+            min={1}
+          />
+          <Input
+            label="Open timeout (seconds)"
+            type="number"
+            tooltip="How long the breaker stays fully OPEN after tripping before transitioning to HALF-OPEN to test recovery. The provider is hard-skipped during this window."
+            {...numField('circuit_breaker_timeout_sec')}
+            min={10}
+          />
+          <Input
+            label="Half-open window (seconds)"
+            type="number"
+            tooltip="Length of the HALF-OPEN trial window during which a small number of probe requests are allowed to test if the provider has recovered."
+            {...numField('circuit_breaker_halfopen_sec')}
+            min={5}
+          />
+          <Input
+            label="Provider hold-down (seconds)"
+            type="number"
+            tooltip="Default cool-off (per provider) after a single non-fatal failure before it's eligible for routing again. Distinct from the breaker — this is a soft penalty on each failure. 0 disables hold-down."
+            {...numField('hold_down_sec')}
+            min={0}
+          />
         </CardContent>
       </Card>
 
@@ -177,10 +239,30 @@ export function SettingsPage() {
             <Switch {...boolField('smtp_enabled')} />
           </div>
           <div className="grid grid-cols-2 gap-4">
-            <Input label="SMTP host" placeholder="smtp.example.com" {...strField('smtp_host')} />
-            <Input label="SMTP port" type="number" {...numField('smtp_port')} />
-            <Input label="From address" type="email" {...strField('smtp_from')} />
-            <Input label="Alert recipient" type="email" {...strField('smtp_to')} />
+            <Input
+              label="SMTP host"
+              placeholder="smtp.example.com"
+              tooltip="Hostname of your outbound SMTP relay (e.g. smtp.gmail.com, smtp.sendgrid.net). The proxy connects here when alert conditions fire."
+              {...strField('smtp_host')}
+            />
+            <Input
+              label="SMTP port"
+              type="number"
+              tooltip="TCP port of the SMTP relay. Common values: 587 (STARTTLS), 465 (SMTPS), 25 (legacy/internal)."
+              {...numField('smtp_port')}
+            />
+            <Input
+              label="From address"
+              type="email"
+              tooltip="Sender address used in the email's From: header. Some relays require this to match an authenticated identity."
+              {...strField('smtp_from')}
+            />
+            <Input
+              label="Alert recipient"
+              type="email"
+              tooltip="Where alert emails are delivered (provider down, budget exceeded, etc.). One address; for multiple, use a distribution list."
+              {...strField('smtp_to')}
+            />
           </div>
         </CardContent>
       </Card>
