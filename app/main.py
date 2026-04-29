@@ -72,6 +72,18 @@ async def lifespan(app: FastAPI):
     set_service_info(version=__version__, node_id=settings.cluster_node_id or "")
     init_tracer(service_name="llm-proxy", version=__version__)
 
+    # R2: recover any in-flight runs this node owned before restart. Spawns
+    # a worker per recovered run; emits run_recovered events so the hub
+    # timeline can render the boundary cleanly.
+    try:
+        from app.runs.worker import recover_orphans
+        recovered = await recover_orphans()
+        if recovered:
+            logger.info(f"runs.recovered count={recovered}")
+    except Exception as e:
+        # Recovery failure must not block startup — log loud, keep going.
+        logger.warning(f"runs recovery sweep failed: {e}")
+
     # Start background tasks
     start_monitor(notify_fn=_notify_provider_degraded)
     start_cluster(

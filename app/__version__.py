@@ -9,4 +9,4 @@ Bump this and recomputed values flow through to:
 Older releases hardcoded the version in 5 places in ``app/main.py`` plus
 ``app/api/cluster.py``; v2.7.6 consolidates here.
 """
-__version__ = "3.0.0-r1"
+__version__ = "3.0.0-r2"
