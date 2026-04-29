@@ -12,6 +12,23 @@ engine = create_async_engine(
     pool_pre_ping=True,
 )
 
+
+# v3.0.3: every SQLite connection from the pool needs busy_timeout so it
+# waits instead of failing on write contention. WAL is db-file-level,
+# so a one-time PRAGMA in init_db sticks; busy_timeout is per-connection
+# and must be re-applied at checkout. Sync hook because SQLAlchemy fires
+# the event with a sync connection object.
+if "sqlite" in settings.database_url:
+    @event.listens_for(engine.sync_engine, "connect")
+    def _sqlite_pragmas(dbapi_conn, _conn_record):
+        try:
+            cur = dbapi_conn.cursor()
+            cur.execute("PRAGMA busy_timeout=10000")
+            cur.execute("PRAGMA synchronous=NORMAL")
+            cur.close()
+        except Exception as e:
+            logger.warning(f"SQLite PRAGMA setup failed: {e}")
+
 AsyncSessionLocal = async_sessionmaker(
     engine, class_=AsyncSession, expire_on_commit=False
 )
@@ -19,6 +36,15 @@ AsyncSessionLocal = async_sessionmaker(
 
 async def init_db():
     async with engine.begin() as conn:
+        # v3.0.3: enable WAL + busy_timeout for SQLite. Without these,
+        # concurrent writers (cluster /sync receivers + keep-alive probes
+        # + run worker events + activity log) hit "database is locked"
+        # under load. WAL lets readers and writers proceed concurrently;
+        # busy_timeout makes writers wait briefly instead of failing
+        # immediately. Idempotent — running on every startup is fine.
+        await conn.exec_driver_sql("PRAGMA journal_mode=WAL")
+        await conn.exec_driver_sql("PRAGMA busy_timeout=10000")  # 10s
+        await conn.exec_driver_sql("PRAGMA synchronous=NORMAL")  # safe with WAL
         await conn.run_sync(Base.metadata.create_all)
         # Add new columns to existing tables (SQLite doesn't support IF NOT EXISTS for columns)
         for stmt in [
