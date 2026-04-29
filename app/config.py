@@ -103,6 +103,9 @@ class Settings(BaseSettings):
     runs_max_turns_ceiling: int = Field(50, alias="RUNS_MAX_TURNS_CEILING")
     runs_max_model_calls_per_minute: int = Field(5, alias="RUNS_MAX_MODEL_CALLS_PER_MINUTE")
 
+    # v3.0.2: keep-alive probes — 0 disables
+    keepalive_probe_interval_sec: int = Field(300, alias="KEEPALIVE_PROBE_INTERVAL_SEC")
+
     # Cluster
     cluster_enabled: bool = Field(False, alias="CLUSTER_ENABLED")
     cluster_node_id: Optional[str] = Field(None, alias="CLUSTER_NODE_ID")

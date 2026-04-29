@@ -84,6 +84,12 @@ SCHEMA: dict[str, dict] = {
         "label": "Run runtime: per-Run model calls per minute (rate limit)",
         "group": "Run runtime",
     },
+    "keepalive_probe_interval_sec": {
+        "type": "int",
+        "default": getattr(settings, "keepalive_probe_interval_sec", 300),
+        "label": "Keep-alive probes: synthetic 'Hi from <ProviderName>' interval (seconds; 0 to disable)",
+        "group": "Run runtime",
+    },
     # SMTP
     "smtp_enabled": {"type": "bool",  "default": settings.smtp_enabled, "label": "Enable email alerts"},
     "smtp_host":    {"type": "str",   "default": settings.smtp_host or "",    "label": "SMTP host"},
