@@ -139,6 +139,18 @@ async def _persist_transition(db: AsyncSession, run: Run, transition) -> None:
         run.error_message = transition.error_message
     if transition.turns_used != (run.model_calls or 0):
         run.model_calls = transition.turns_used
+    # R5: schedule cluster replication. Non-terminal pushes debounce 250ms;
+    # terminal pushes sync-ack with 2s timeout + background retry. Fire after
+    # the row is fully mutated so the snapshot reflects the post-transition
+    # state. The replicate call is non-blocking (returns immediately for
+    # debounced; awaits ack window for terminal — caller already committed).
+    try:
+        from app.runs.replication import replicate
+        await replicate(run, terminal=transition.status.terminal)
+    except Exception as e:
+        # Replication failure must not break the run loop — peers reconcile
+        # via the periodic /cluster/sync push as a safety net.
+        logger.info("runs.replication.skip run=%s err=%s", run.id, e)
 
 
 async def _load_messages(db: AsyncSession, run_id: str) -> list[dict]:

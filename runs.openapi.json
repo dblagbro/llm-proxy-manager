@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "llm-proxy v2 — Run runtime API",
-    "version": "3.0.0-r1",
+    "version": "3.0.0-r5",
     "description": "Server-mediated agent loop. Joint contract between llm-proxy v2 and coordinator-hub v2.0.0+. R1 lands the FSM, persistence, idempotency replay, and stub event stream. Worker (real model calls + tool dispatch) arrives in R2.\n\nDecisions locked: per-API-key idempotency (24h TTL); sticky-with-handoff cluster; same-key tool_result; max_turns admin ceiling 50, hard ceiling 200; daemons execute tools, proxy never does.\n\nSSE wire format: every event is `event: <kind>\\nid: <monotonic-int>\\ndata: <single-line-json>\\n\\n`. Heartbeat `: keepalive\\n\\n` every 15s while idle. Last-Event-ID resume from a 1000-event ring buffer."
   },
   "servers": [
@@ -121,7 +121,8 @@
         "responses": {
           "200": {"description": "Current run state", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RunState"}}}},
           "403": {"description": "Run is owned by a different api key"},
-          "404": {"description": "Run not found"}
+          "404": {"description": "Run not found"},
+          "307": {"description": "R5: this node is not the run's owner. Body includes redirect target; clients should re-issue against the Location URL (same method + body)."}
         }
       }
     },
@@ -132,7 +133,8 @@
         "responses": {
           "200": {"description": "Final run state after cancel", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RunState"}}}},
           "403": {"description": "Run is owned by a different api key"},
-          "404": {"description": "Run not found"}
+          "404": {"description": "Run not found"},
+          "307": {"description": "R5: this node is not the run's owner. Body includes redirect target; clients should re-issue against the Location URL (same method + body)."}
         }
       }
     },
@@ -148,6 +150,19 @@
           "404": {"description": "Run not found"},
           "409": {"description": "Wrong state or mismatched tool_use_id"},
           "410": {"description": "Run was cancelled; tool result discarded"}
+        }
+      }
+    },
+    "/v1/runs/{run_id}/adopt": {
+      "post": {
+        "summary": "Peer takes ownership of a stranded Run (R5)",
+        "description": "When the original owner is unreachable for >30s, a peer can claim ownership and resume the run from the replicated state. Refuses if the owner is reachable, or if the grace period hasn't elapsed. Idempotent — re-calling on a run we already own returns its state.",
+        "parameters": [{"name": "run_id", "in": "path", "required": true, "schema": {"type": "string"}}],
+        "responses": {
+          "200": {"description": "Adopted (or already owned). Worker spawned locally; subsequent ops route here.", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RunState"}}}},
+          "403": {"description": "Run is owned by a different api key"},
+          "404": {"description": "Run not found"},
+          "409": {"description": "Already terminal, or owner appears reachable, or grace period not elapsed"}
         }
       }
     },
