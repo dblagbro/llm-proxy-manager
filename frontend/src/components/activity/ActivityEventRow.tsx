@@ -34,6 +34,52 @@ function summarize(meta: Record<string, unknown> | undefined): string {
   return parts.join(' · ')
 }
 
+/** Pull a short text preview from a request_body JSON string.
+ * Picks the last user message's content and clips it. Returns empty
+ * string if the body isn't parseable JSON or has no user message. */
+function previewRequest(body: string | undefined, max = 240): string {
+  if (!body) return ''
+  try {
+    const obj = JSON.parse(body)
+    const msgs = obj?.messages
+    if (Array.isArray(msgs) && msgs.length) {
+      // Walk backwards to find the last user message
+      for (let i = msgs.length - 1; i >= 0; i--) {
+        const m = msgs[i]
+        if (m?.role !== 'user') continue
+        const c = m.content
+        const txt = typeof c === 'string'
+          ? c
+          : Array.isArray(c)
+            ? c.map((b: { type?: string; text?: string }) => b?.type === 'text' ? (b.text ?? '') : '').filter(Boolean).join(' ')
+            : ''
+        if (txt) return txt.length > max ? txt.slice(0, max).trimEnd() + '…' : txt
+      }
+    }
+    if (typeof obj?.prompt === 'string') {
+      const t = obj.prompt
+      return t.length > max ? t.slice(0, max).trimEnd() + '…' : t
+    }
+  } catch { /* not JSON */ }
+  return body.length > max ? body.slice(0, max).trimEnd() + '…' : body
+}
+
+/** Pull a short text preview from a response_body JSON string.
+ * Anthropic shape (content[].text) and OpenAI shape (choices[0].message.content). */
+function previewResponse(body: string | undefined, max = 240): string {
+  if (!body) return ''
+  try {
+    const obj = JSON.parse(body)
+    if (Array.isArray(obj?.content)) {
+      const txt = obj.content.map((b: { type?: string; text?: string }) => b?.type === 'text' ? (b.text ?? '') : '').filter(Boolean).join(' ')
+      if (txt) return txt.length > max ? txt.slice(0, max).trimEnd() + '…' : txt
+    }
+    const ch = obj?.choices?.[0]?.message?.content
+    if (typeof ch === 'string' && ch) return ch.length > max ? ch.slice(0, max).trimEnd() + '…' : ch
+  } catch { /* not JSON */ }
+  return ''
+}
+
 interface Props {
   event: ActivityEvent
   compact?: boolean
@@ -48,9 +94,11 @@ export function ActivityEventRow({ event, compact }: Props) {
   const expandable = Boolean(reqBody || respBody || errorMsg)
   const [open, setOpen] = useState(false)
   const summary = summarize(meta)
+  const reqPreview = previewRequest(reqBody, compact ? 120 : 240)
+  const respPreview = previewResponse(respBody, compact ? 120 : 240)
 
   return (
-    <div className={clsx('px-4', compact ? 'py-1.5' : 'py-2.5')}>
+    <div className={clsx('px-4', compact ? 'py-1.5' : 'py-2')}>
       <div
         className={clsx(
           'flex items-start gap-2',
@@ -67,16 +115,34 @@ export function ActivityEventRow({ event, compact }: Props) {
         )}
         <span className={clsx('mt-1.5 h-2 w-2 rounded-full shrink-0', dot)} />
         <div className="flex-1 min-w-0">
-          <p className="text-sm text-gray-800 dark:text-gray-200 truncate">{event.message}</p>
-          {!compact && (event.provider_id || summary) && (
-            <p className="text-xs text-gray-400 mt-0.5">
-              {event.provider_id && <span>Provider: <span className="font-mono">{event.provider_id}</span></span>}
-              {event.provider_id && summary && <span>  ·  </span>}
-              {summary && <span className="font-mono">{summary}</span>}
-            </p>
+          <div className="flex items-baseline gap-2">
+            <p className="text-sm text-gray-800 dark:text-gray-200 truncate flex-1 min-w-0">{event.message}</p>
+            {summary && <span className="text-xs text-gray-400 font-mono shrink-0">{summary}</span>}
+            <span className="text-xs text-gray-400 shrink-0 tabular-nums">{fmt(event.timestamp)}</span>
+          </div>
+          {(reqPreview || respPreview || errorMsg) && (
+            <div className="mt-1 space-y-0.5 text-xs">
+              {reqPreview && (
+                <p className="truncate text-gray-600 dark:text-gray-400">
+                  <span className="text-indigo-500 dark:text-indigo-400 font-medium mr-1.5">→</span>
+                  <span className="text-gray-500 dark:text-gray-500">{reqPreview}</span>
+                </p>
+              )}
+              {respPreview && (
+                <p className="truncate text-gray-600 dark:text-gray-400">
+                  <span className="text-emerald-500 dark:text-emerald-400 font-medium mr-1.5">←</span>
+                  <span className="text-gray-500 dark:text-gray-500">{respPreview}</span>
+                </p>
+              )}
+              {errorMsg && !respPreview && (
+                <p className="truncate text-red-500 dark:text-red-400">
+                  <span className="font-medium mr-1.5">!</span>
+                  <span>{errorMsg.length > 240 ? errorMsg.slice(0, 240) + '…' : errorMsg}</span>
+                </p>
+              )}
+            </div>
           )}
         </div>
-        <span className="text-xs text-gray-400 shrink-0 tabular-nums">{fmt(event.timestamp)}</span>
       </div>
 
       {open && expandable && (
