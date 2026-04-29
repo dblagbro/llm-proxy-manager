@@ -167,8 +167,23 @@ async def create_run(
         requested_turns, _runs_max_turns_ceiling(), _HARD_TURNS_CEILING,
     )
 
-    # Idempotency replay
+    # Idempotency replay — R4: in-memory cache hot path, DB fallback
     if idempotency_key is not None:
+        from app.runs import idempotency
+        cached_run_id = idempotency.get(key_record.id, idempotency_key)
+        if cached_run_id is not None:
+            run_res = await db.execute(select(Run).where(Run.id == cached_run_id))
+            run = run_res.scalar_one_or_none()
+            if run is not None:
+                return JSONResponse({
+                    "run_id": run.id,
+                    "status": run.status,
+                    "idempotent": True,
+                })
+            # Cache hit but DB row gone (eviction race / manual delete) —
+            # fall through to DB lookup which will also miss + create fresh.
+            idempotency.invalidate(key_record.id, idempotency_key)
+
         res = await db.execute(
             select(RunIdempotency).where(
                 RunIdempotency.api_key_id == key_record.id,
@@ -180,6 +195,11 @@ async def create_run(
             run_res = await db.execute(select(Run).where(Run.id == existing.run_id))
             run = run_res.scalar_one_or_none()
             if run is not None:
+                # Warm the cache for next time
+                idempotency.put(
+                    key_record.id, idempotency_key,
+                    run.id, existing.created_at,
+                )
                 return JSONResponse({
                     "run_id": run.id,
                     "status": run.status,
@@ -230,6 +250,9 @@ async def create_run(
             run_id=run.id,
             created_at=now,
         ))
+        # Warm the in-process cache so the next duplicate-POST skips the DB
+        from app.runs import idempotency as idempotency_cache
+        idempotency_cache.put(key_record.id, idempotency_key, run.id, now)
 
     if was_clamped:
         await _emit_event(db, run.id, "max_turns_clamped", {
@@ -454,54 +477,60 @@ async def get_events(
 
     if is_sse:
         async def gen():
-            # Replay any events past resume_seq
+            """R4: SSE consumer goes through the in-memory broker.
+
+            Phase 1 — Catch-up replay: walk run_events for any rows with
+            seq > resume_seq. The broker's ring may not have these if
+            the proxy restarted between event-emit and consumer-connect.
+            We always read the DB first.
+
+            Phase 2 — Live: subscribe to the broker and stream events
+            until the run hits a terminal kind. Keepalive every 15s
+            while idle (broker emits a sentinel; we translate to the
+            spec's `: keepalive\\n\\n` line).
+            """
+            from app.runs import event_bus
+
+            # Phase 1: catch-up from DB
             ev_res = await db.execute(
                 select(RunEvent).where(
                     RunEvent.run_id == run.id, RunEvent.seq > resume_seq,
                 ).order_by(RunEvent.seq.asc())
             )
+            last_seen = resume_seq
             for ev in ev_res.scalars().all():
                 yield (
                     f"event: {ev.kind}\n"
                     f"id: {ev.seq}\n"
                     f"data: {json.dumps(ev.payload, ensure_ascii=True)}\n\n"
                 ).encode()
-            # R1: simple polling loop with 15s keepalive. R4 replaces this
-            # with an in-memory broker driven by the worker.
-            last_seen = resume_seq
-            idle_iters = 0
-            while not run.status in (
+                last_seen = ev.seq
+
+            # If the run is already terminal, we're done — no live stream.
+            if run.status in (
                 RunStatus.COMPLETED.value, RunStatus.FAILED.value,
                 RunStatus.EXPIRED.value, RunStatus.CANCELLED.value,
             ):
-                if await request.is_disconnected():
-                    return
-                await asyncio.sleep(1.0)
-                idle_iters += 1
-                # Re-read run + new events
-                fresh = await db.execute(select(Run).where(Run.id == run.id))
-                run_fresh = fresh.scalar_one_or_none()
-                if run_fresh is None:
-                    return
-                # Pylance: refresh into outer var so loop exit cond updates
-                run.status = run_fresh.status
-                run.completed_at = run_fresh.completed_at
-                ev_res2 = await db.execute(
-                    select(RunEvent).where(
-                        RunEvent.run_id == run.id, RunEvent.seq > last_seen,
-                    ).order_by(RunEvent.seq.asc())
-                )
-                for ev in ev_res2.scalars().all():
+                return
+
+            # Phase 2: subscribe to broker. Pass last_seen so the broker's
+            # own ring-replay path skips events we already sent from DB.
+            try:
+                async for ev in event_bus.stream_events(
+                    run.id, last_event_id=last_seen, keepalive_sec=15.0,
+                ):
+                    if await request.is_disconnected():
+                        return
+                    if ev.kind == "__keepalive__":
+                        yield b": keepalive\n\n"
+                        continue
                     yield (
                         f"event: {ev.kind}\n"
                         f"id: {ev.seq}\n"
                         f"data: {json.dumps(ev.payload, ensure_ascii=True)}\n\n"
                     ).encode()
-                    last_seen = ev.seq
-                    idle_iters = 0
-                if idle_iters >= 15:
-                    yield b": keepalive\n\n"
-                    idle_iters = 0
+            except asyncio.CancelledError:
+                return
         return StreamingResponse(gen(), media_type="text/event-stream")
 
     # Polling JSON path
