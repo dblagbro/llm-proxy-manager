@@ -64,12 +64,13 @@ async def verify_api_key(db: AsyncSession, raw_key: Optional[str]) -> ApiKeyReco
     if not key:
         raise HTTPException(401, "Invalid or disabled API key")
 
-    # v3.0.0-r5+ (hub-team smoke bug #2): treat any non-positive cap as
-    # "unlimited". Previously ``spending_cap_usd=-1`` was compared
-    # arithmetically and rejected the very first request with a "cap of
-    # $-1.0 reached" 429. The convention from API consumers is that -1
-    # means "no cap"; honour it here.
-    if key.spending_cap_usd is not None and key.spending_cap_usd > 0:
+    # v3.0.0-r5+ (hub-team smoke bug #2): treat NEGATIVE caps as unlimited.
+    # ``spending_cap_usd=-1`` is the conventional sentinel for "no cap"; we
+    # were comparing arithmetically and rejecting the first request with
+    # "cap of $-1.0 reached" 429. v3.0.1: preserve zero as a hard block —
+    # ``spending_cap_usd=0`` means $0 budget which the existing test
+    # contract treats as immediately blocked.
+    if key.spending_cap_usd is not None and key.spending_cap_usd >= 0:
         global_cost = (key.total_cost_usd or 0.0) + get_peer_total_cost(key.id)
         if global_cost >= key.spending_cap_usd:
             raise HTTPException(429, f"API key spending cap of ${key.spending_cap_usd:.4f} reached")

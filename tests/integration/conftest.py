@@ -14,17 +14,39 @@ def _llm_headers(api_key: str) -> dict:
 
 
 def collect_sse(resp: requests.Response) -> list[dict]:
-    """Parse SSE stream, return list of JSON event dicts (excluding [DONE])."""
+    """Parse SSE stream, return list of JSON event dicts.
+
+    Excludes:
+      - ``[DONE]`` sentinel
+      - Events from non-default ``event:`` channels (e.g. the proxy's
+        ``event: budget`` heartbeat) — those use a different payload
+        shape and Anthropic-Messages tests don't expect them.
+
+    The ``event: <kind>`` line precedes the ``data:`` line on a custom
+    channel; we track the most recent ``event:`` and skip its data.
+    """
     import json
     events = []
+    current_event_channel = None  # None = default Anthropic stream
     for line in resp.iter_lines():
         if isinstance(line, bytes):
             line = line.decode()
+        if line.startswith("event: "):
+            current_event_channel = line[7:].strip()
+            continue
+        if line == "":
+            current_event_channel = None  # blank line resets per SSE spec
+            continue
         if line.startswith("data: ") and line[6:] != "[DONE]":
+            if current_event_channel is not None:
+                # Skip non-default-channel data (budget, error, run_recovered, etc.)
+                continue
             try:
-                events.append(json.loads(line[6:]))
+                evt = json.loads(line[6:])
             except Exception:
-                pass
+                continue
+            if isinstance(evt, dict):
+                events.append(evt)
     return events
 
 

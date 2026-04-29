@@ -32,24 +32,32 @@ def _fake_key(cap):
 
 def test_negative_spending_cap_treated_as_unlimited():
     """The cap-check guard skips negative caps — ``-1`` is the conventional
-    "no cap" sentinel."""
+    "no cap" sentinel. v3.0.1 narrowed the guard to ``>= 0`` so zero stays
+    a hard block."""
     key = _fake_key(-1.0)
-    # Replicate the post-fix guard:
-    skipped = not (key.spending_cap_usd is not None and key.spending_cap_usd > 0)
+    skipped = not (key.spending_cap_usd is not None and key.spending_cap_usd >= 0)
     assert skipped is True
 
 
-def test_zero_spending_cap_also_treated_as_unlimited():
-    """0 is degenerate but the same guard applies — ``> 0`` means strictly
-    positive caps trigger enforcement."""
+def test_zero_spending_cap_blocks_immediately():
+    """0 is a $0 budget — should block (existing test contract). v3.0.1:
+    ``>= 0`` includes zero in the enforcement path."""
     key = _fake_key(0.0)
-    skipped = not (key.spending_cap_usd is not None and key.spending_cap_usd > 0)
+    enforced = key.spending_cap_usd is not None and key.spending_cap_usd >= 0
+    assert enforced is True
+
+
+def test_negative_one_treated_as_unlimited():
+    """``-1`` is the conventional sentinel for unlimited; the ``>= 0``
+    guard short-circuits."""
+    key = _fake_key(-1.0)
+    skipped = not (key.spending_cap_usd is not None and key.spending_cap_usd >= 0)
     assert skipped is True
 
 
 def test_positive_spending_cap_still_enforced():
     key = _fake_key(100.0)
-    enforced = key.spending_cap_usd is not None and key.spending_cap_usd > 0
+    enforced = key.spending_cap_usd is not None and key.spending_cap_usd >= 0
     assert enforced is True
 
 
@@ -57,5 +65,5 @@ def test_none_spending_cap_unlimited():
     """``None`` (no cap configured) is the original unlimited path —
     same guard short-circuits."""
     key = _fake_key(None)
-    skipped = not (key.spending_cap_usd is not None and key.spending_cap_usd > 0)
+    skipped = not (key.spending_cap_usd is not None and key.spending_cap_usd >= 0)
     assert skipped is True
