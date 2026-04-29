@@ -4,6 +4,7 @@ Handles the insert-if-missing / update-if-changed strategy for users, API keys,
 providers, and settings received from peer nodes during cluster synchronisation.
 """
 import logging
+import time
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -186,6 +187,66 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
             logger.info("cluster_sync_normalized_ties count=%s", bumped)
     except Exception:
         logger.exception("priority-tie normalization failed during sync apply")
+
+    # R5: ingest replicated Run state. Last-write-wins by updated_at.
+    # Workers do NOT spawn here — only the owner_node_id node spawns; if
+    # ownership changes via /v1/runs/<id>/adopt that endpoint handles
+    # the spawn explicitly.
+    from app.models.db import Run
+    for r_data in payload.get("runs", []):
+        rid = r_data.get("id")
+        if not rid:
+            continue
+        result = await db.execute(select(Run).where(Run.id == rid))
+        existing = result.scalar_one_or_none()
+        incoming_ts = float(r_data.get("updated_at") or 0)
+        if existing is not None:
+            if (existing.updated_at or 0) >= incoming_ts:
+                continue  # ours is newer — keep it
+            for col in (
+                "api_key_id", "owner_node_id", "status", "current_step",
+                "deadline_ts", "max_turns", "model_preference",
+                "compaction_model", "system_prompt", "tools_spec",
+                "metadata_json", "trace_id", "model_calls", "tool_calls",
+                "tokens_in", "tokens_out", "last_provider_id",
+                "context_summarized_at_turn", "current_tool_use_id",
+                "current_tool_name", "current_tool_input",
+                "result_text", "error_kind", "error_message",
+                "created_at", "updated_at", "completed_at",
+            ):
+                if col in r_data:
+                    setattr(existing, col, r_data[col])
+        else:
+            db.add(Run(
+                id=rid,
+                api_key_id=r_data.get("api_key_id", ""),
+                owner_node_id=r_data.get("owner_node_id", ""),
+                status=r_data.get("status", "queued"),
+                current_step=r_data.get("current_step"),
+                deadline_ts=r_data.get("deadline_ts", 0.0),
+                max_turns=r_data.get("max_turns", 30),
+                model_preference=r_data.get("model_preference") or [],
+                compaction_model=r_data.get("compaction_model"),
+                system_prompt=r_data.get("system_prompt"),
+                tools_spec=r_data.get("tools_spec") or [],
+                metadata_json=r_data.get("metadata_json") or {},
+                trace_id=r_data.get("trace_id"),
+                model_calls=r_data.get("model_calls", 0),
+                tool_calls=r_data.get("tool_calls", 0),
+                tokens_in=r_data.get("tokens_in", 0),
+                tokens_out=r_data.get("tokens_out", 0),
+                last_provider_id=r_data.get("last_provider_id"),
+                context_summarized_at_turn=r_data.get("context_summarized_at_turn"),
+                current_tool_use_id=r_data.get("current_tool_use_id"),
+                current_tool_name=r_data.get("current_tool_name"),
+                current_tool_input=r_data.get("current_tool_input"),
+                result_text=r_data.get("result_text"),
+                error_kind=r_data.get("error_kind"),
+                error_message=r_data.get("error_message"),
+                created_at=r_data.get("created_at", time.time()),
+                updated_at=incoming_ts or time.time(),
+                completed_at=r_data.get("completed_at"),
+            ))
 
     await db.commit()
 

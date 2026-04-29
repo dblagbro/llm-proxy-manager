@@ -47,6 +47,9 @@ async def init_db():
             "ALTER TABLE providers ADD COLUMN oauth_expires_at REAL",
             # v2.8.2 — soft-delete tombstone for cluster-sync resurrection bug
             "ALTER TABLE providers ADD COLUMN deleted_at DATETIME",
+            # v3.0 R1 — per-user UTC/timezone preferences (Q7 interleave)
+            "ALTER TABLE users ADD COLUMN timezone TEXT",
+            "ALTER TABLE users ADD COLUMN time_format TEXT",
         ]:
             try:
                 await conn.exec_driver_sql(stmt)
@@ -68,6 +71,21 @@ async def init_db():
             "CREATE INDEX IF NOT EXISTS ix_provider_metrics_provider_bucket ON provider_metrics(provider_id, bucket_ts DESC)",
             # api_keys.last_used_at — used by activity rollup + key-usage UI
             "CREATE INDEX IF NOT EXISTS ix_api_keys_last_used_at ON api_keys(last_used_at DESC)",
+            # v3.0 R1 — Run runtime hot paths
+            "CREATE INDEX IF NOT EXISTS ix_runs_status ON runs(status)",
+            "CREATE INDEX IF NOT EXISTS ix_runs_owner_node ON runs(owner_node_id)",
+            "CREATE INDEX IF NOT EXISTS ix_runs_deadline ON runs(deadline_ts)",
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_run_messages_seq ON run_messages(run_id, seq)",
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_run_events_seq ON run_events(run_id, seq)",
+            "CREATE INDEX IF NOT EXISTS ix_run_events_ts ON run_events(run_id, ts)",
+            "CREATE INDEX IF NOT EXISTS ix_run_idempotency_created_at ON run_idempotency(created_at)",
+            # Hub team flag A: secondary index for the 24h-TTL prune sweep.
+            # Composite PK is (api_key_id, idempotency_key); prune walks by
+            # created_at across all api_keys, so an index on (created_at)
+            # alone (above) is the cheap right shape. Adding the leading-key
+            # variant here so a future "purge keys for tenant X" lookup is
+            # also indexed without a scan.
+            "CREATE INDEX IF NOT EXISTS ix_run_idempotency_key_created ON run_idempotency(idempotency_key, created_at)",
         ]:
             try:
                 await conn.exec_driver_sql(index_stmt)

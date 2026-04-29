@@ -71,6 +71,19 @@ SCHEMA: dict[str, dict] = {
     "circuit_breaker_halfopen_sec": {"type": "int", "default": settings.circuit_breaker_halfopen_sec, "label": "CB half-open window (seconds)"},
     "circuit_breaker_success_needed":{"type":"int", "default": settings.circuit_breaker_success_needed,"label": "CB successes needed to close"},
     "hold_down_sec":                {"type": "int", "default": settings.hold_down_sec,                "label": "Provider hold-down (seconds)"},
+    # ── Run runtime (v3.0 / R6 lock-in) ──────────────────────────────────────
+    "runs_max_turns_ceiling": {
+        "type": "int",
+        "default": getattr(settings, "runs_max_turns_ceiling", 50),
+        "label": "Run runtime: max-turns admin ceiling (default 50, hard 200)",
+        "group": "Run runtime",
+    },
+    "runs_max_model_calls_per_minute": {
+        "type": "int",
+        "default": getattr(settings, "runs_max_model_calls_per_minute", 5),
+        "label": "Run runtime: per-Run model calls per minute (rate limit)",
+        "group": "Run runtime",
+    },
     # SMTP
     "smtp_enabled": {"type": "bool",  "default": settings.smtp_enabled, "label": "Enable email alerts"},
     "smtp_host":    {"type": "str",   "default": settings.smtp_host or "",    "label": "SMTP host"},

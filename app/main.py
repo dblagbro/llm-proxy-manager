@@ -36,6 +36,7 @@ from app.api.monitoring import router as monitoring_router
 from app.api.settings_api import router as settings_router
 from app.api.audit import router as audit_router
 from app.api.oauth_capture import router as oauth_capture_router
+from app.api.runs import router as runs_router
 from app.observability.otel import init_tracer
 from app.observability.prometheus import metrics_response, set_service_info, observe_circuit_breaker_state
 
@@ -70,6 +71,18 @@ async def lifespan(app: FastAPI):
     # Observability — Prometheus service info + OTEL tracer (graceful no-op when unset)
     set_service_info(version=__version__, node_id=settings.cluster_node_id or "")
     init_tracer(service_name="llm-proxy", version=__version__)
+
+    # R2: recover any in-flight runs this node owned before restart. Spawns
+    # a worker per recovered run; emits run_recovered events so the hub
+    # timeline can render the boundary cleanly.
+    try:
+        from app.runs.worker import recover_orphans
+        recovered = await recover_orphans()
+        if recovered:
+            logger.info(f"runs.recovered count={recovered}")
+    except Exception as e:
+        # Recovery failure must not block startup — log loud, keep going.
+        logger.warning(f"runs recovery sweep failed: {e}")
 
     # Start background tasks
     start_monitor(notify_fn=_notify_provider_degraded)
@@ -154,6 +167,7 @@ app.include_router(settings_router)
 app.include_router(aliases_router)
 app.include_router(audit_router)
 app.include_router(oauth_capture_router)
+app.include_router(runs_router)
 
 # ── Utility endpoints ────────────────────────────────────────────────────────
 @app.get("/health")
