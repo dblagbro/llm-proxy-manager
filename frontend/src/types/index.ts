@@ -1,7 +1,10 @@
 // ── Auth ─────────────────────────────────────────────────────────────────────
+export type TimeFormatPref = '12h' | '24h' | null
 export interface AuthUser {
   username: string
   role: 'admin' | 'user'
+  timezone?: string | null     // IANA name, null = browser default
+  time_format?: TimeFormatPref // 12h | 24h | null = locale default
 }
 
 // ── Providers ─────────────────────────────────────────────────────────────────

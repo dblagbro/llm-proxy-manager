@@ -1,0 +1,197 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "llm-proxy v2 — Run runtime API",
+    "version": "3.0.0-r1",
+    "description": "Server-mediated agent loop. Joint contract between llm-proxy v2 and coordinator-hub v2.0.0+. R1 lands the FSM, persistence, idempotency replay, and stub event stream. Worker (real model calls + tool dispatch) arrives in R2.\n\nDecisions locked: per-API-key idempotency (24h TTL); sticky-with-handoff cluster; same-key tool_result; max_turns admin ceiling 50, hard ceiling 200; daemons execute tools, proxy never does.\n\nSSE wire format: every event is `event: <kind>\\nid: <monotonic-int>\\ndata: <single-line-json>\\n\\n`. Heartbeat `: keepalive\\n\\n` every 15s while idle. Last-Event-ID resume from a 1000-event ring buffer."
+  },
+  "servers": [
+    {"url": "https://www.voipguru.org/llm-proxy2", "description": "tmrwww01"},
+    {"url": "https://www2.voipguru.org/llm-proxy2", "description": "tmrwww02"},
+    {"url": "https://www.c1cx.com/llm-proxy2",     "description": "GCP avaya-01-s23"}
+  ],
+  "components": {
+    "securitySchemes": {
+      "ApiKeyHeader": {"type": "apiKey", "in": "header", "name": "x-api-key"},
+      "BearerAuth":   {"type": "http",   "scheme": "bearer"}
+    },
+    "schemas": {
+      "Message": {
+        "type": "object",
+        "required": ["role", "content"],
+        "properties": {
+          "role":    {"type": "string", "enum": ["user", "assistant"]},
+          "content": {"oneOf": [{"type": "string"}, {"type": "array"}]}
+        },
+        "description": "Anthropic Messages format. Assistant messages may contain text and/or tool_use blocks; user messages may contain text or tool_result blocks."
+      },
+      "Tool": {
+        "type": "object",
+        "required": ["name", "description", "input_schema"],
+        "properties": {
+          "name":         {"type": "string"},
+          "description":  {"type": "string"},
+          "input_schema": {"type": "object", "description": "JSON Schema (Anthropic Messages tools subset = MCP-compatible)"}
+        }
+      },
+      "RunCreate": {
+        "type": "object",
+        "required": ["deadline_ts", "messages"],
+        "properties": {
+          "idempotency_key":  {"type": "string", "maxLength": 256, "description": "Per-API-key 24h TTL. Duplicate POST returns the existing run regardless of state. Hub builds these as sha256(hub_origin + room_id + origin_message_id + bot_label) + ':r' + retry_count."},
+          "deadline_ts":      {"type": "number", "description": "Absolute unix-second wall clock. The proxy aborts and emits expired if exceeded mid-run."},
+          "max_turns":        {"type": "integer", "minimum": 1, "default": 30, "description": "Server clamps to admin ceiling (default 50, hard 200). When clamped, max_turns_clamped event is emitted."},
+          "model_preference": {"type": "array", "items": {"type": "string"}},
+          "compaction_model": {"type": "string", "description": "Optional. Default: cheapest available claude-haiku-* in the chain. Used for context compaction."},
+          "system":           {"type": "string"},
+          "messages":         {"type": "array", "items": {"$ref": "#/components/schemas/Message"}},
+          "tools":            {"type": "array", "items": {"$ref": "#/components/schemas/Tool"}},
+          "metadata":         {"type": "object", "additionalProperties": true},
+          "trace_id":         {"type": "string", "description": "OTEL parent span id. Propagated to all child spans (run, run.turn, model_call, tool_call)."}
+        }
+      },
+      "RunCreated": {
+        "type": "object",
+        "required": ["run_id", "status"],
+        "properties": {
+          "run_id":     {"type": "string"},
+          "status":     {"type": "string", "enum": ["queued", "running", "requires_tool", "completed", "failed", "expired", "cancelled"]},
+          "idempotent": {"type": "boolean", "description": "true when the response is a replay of an earlier idempotent create"}
+        }
+      },
+      "RunState": {
+        "type": "object",
+        "required": ["run_id", "status", "deadline_ts", "owner_node_id"],
+        "properties": {
+          "run_id":                        {"type": "string"},
+          "status":                        {"type": "string", "enum": ["queued","running","requires_tool","completed","failed","expired","cancelled"]},
+          "current_step":                  {"type": ["string","null"], "enum": [null,"model_call","tool_dispatch","tool_wait","complete","fail"]},
+          "model_calls":                   {"type": "integer"},
+          "tool_calls":                    {"type": "integer"},
+          "tokens_in":                     {"type": "integer"},
+          "tokens_out":                    {"type": "integer"},
+          "context_summarized_at_turn":    {"type": ["integer","null"]},
+          "last_provider_used":            {"type": ["string","null"]},
+          "deadline_ts":                   {"type": "number"},
+          "owner_node_id":                 {"type": "string"},
+          "result":                        {"type": ["string","null"]},
+          "error":                         {"type": ["object","null"], "properties": {"kind": {"type": "string"}, "message": {"type": "string"}}},
+          "current_tool_use":              {"type": ["object","null"], "properties": {"tool_use_id": {"type": "string"}, "name": {"type": "string"}, "input": {"type": "object"}}}
+        }
+      },
+      "ToolResult": {
+        "type": "object",
+        "required": ["tool_use_id"],
+        "properties": {
+          "tool_use_id": {"type": "string"},
+          "output_text": {"type": "string"},
+          "is_error":    {"type": "boolean", "default": false},
+          "exec_ms":     {"type": "integer", "description": "Optional client-reported execution time."}
+        }
+      },
+      "ProblemDetails": {
+        "type": "object",
+        "properties": {
+          "detail": {"type": "string"}
+        }
+      }
+    }
+  },
+  "security": [
+    {"ApiKeyHeader": []},
+    {"BearerAuth": []}
+  ],
+  "paths": {
+    "/v1/runs": {
+      "post": {
+        "summary": "Create a Run",
+        "description": "Idempotent on (api_key_id, idempotency_key) within 24h.",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RunCreate"}}}},
+        "responses": {
+          "200": {"description": "Run created or replayed", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RunCreated"}}}},
+          "400": {"description": "Validation failure", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ProblemDetails"}}}},
+          "401": {"description": "Missing or invalid api key"}
+        }
+      }
+    },
+    "/v1/runs/{run_id}": {
+      "get": {
+        "summary": "Get Run state",
+        "parameters": [{"name": "run_id", "in": "path", "required": true, "schema": {"type": "string"}}],
+        "responses": {
+          "200": {"description": "Current run state", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RunState"}}}},
+          "403": {"description": "Run is owned by a different api key"},
+          "404": {"description": "Run not found"}
+        }
+      }
+    },
+    "/v1/runs/{run_id}/cancel": {
+      "post": {
+        "summary": "Cancel a Run (idempotent)",
+        "parameters": [{"name": "run_id", "in": "path", "required": true, "schema": {"type": "string"}}],
+        "responses": {
+          "200": {"description": "Final run state after cancel", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RunState"}}}},
+          "403": {"description": "Run is owned by a different api key"},
+          "404": {"description": "Run not found"}
+        }
+      }
+    },
+    "/v1/runs/{run_id}/tool_result": {
+      "post": {
+        "summary": "Post a tool result back into a Run",
+        "description": "Required state: requires_tool with matching tool_use_id. Same-key required (Q5 lock-in).",
+        "parameters": [{"name": "run_id", "in": "path", "required": true, "schema": {"type": "string"}}],
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ToolResult"}}}},
+        "responses": {
+          "200": {"description": "Result accepted; run resumed", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/RunState"}}}},
+          "403": {"description": "Run is owned by a different api key"},
+          "404": {"description": "Run not found"},
+          "409": {"description": "Wrong state or mismatched tool_use_id"},
+          "410": {"description": "Run was cancelled; tool result discarded"}
+        }
+      }
+    },
+    "/v1/runs/{run_id}/events": {
+      "get": {
+        "summary": "Run event stream (SSE) or polling",
+        "description": "Use `Accept: text/event-stream` for SSE; otherwise returns JSON. SSE clients can resume via `Last-Event-ID` header (1000-event ring buffer per run).",
+        "parameters": [
+          {"name": "run_id", "in": "path", "required": true, "schema": {"type": "string"}},
+          {"name": "since_ms", "in": "query", "required": false, "schema": {"type": "integer"}, "description": "Polling cursor (epoch ms). Returns events with ts > since_ms."},
+          {"name": "limit",    "in": "query", "required": false, "schema": {"type": "integer", "default": 100, "maximum": 1000}}
+        ],
+        "responses": {
+          "200": {
+            "description": "Event list (polling) or SSE stream",
+            "content": {
+              "application/json":   {"schema": {"type": "object", "properties": {"events": {"type": "array"}}}},
+              "text/event-stream":  {"schema": {"type": "string", "description": "Each event: `event: <kind>\\nid: <seq>\\ndata: <single-line-json>\\n\\n`. Heartbeat `: keepalive\\n\\n` every 15s while idle."}}
+            }
+          },
+          "403": {"description": "Run is owned by a different api key"},
+          "404": {"description": "Run not found"}
+        }
+      }
+    }
+  },
+  "x-event-kinds": {
+    "description": "Wire kinds emitted on the SSE channel. Unknown kinds in future minor versions are non-breaking by contract; consumers MUST treat unknowns as informational.",
+    "events": {
+      "run_started":         {"payload": {}},
+      "model_call_start":    {"payload": {"provider_id": "string", "model": "string", "attempt": "int", "tokens_in_estimate": "int"}},
+      "model_call_end":      {"payload": {"provider_id": "string", "latency_ms": "int", "status": "string", "tokens_in": "int", "tokens_out": "int", "content_preview": "string", "bytes_in": "int", "bytes_out": "int"}},
+      "tool_use_requested":  {"payload": {"tool_use_id": "string", "name": "string", "input": "object"}},
+      "tool_use_received":   {"payload": {"tool_use_id": "string", "exec_ms": "int|null"}},
+      "model_token":         {"payload": {"delta_text": "string"}, "deferred_until": "post-3.0"},
+      "provider_skipped":    {"payload": {"provider_id": "string", "reason": "string", "held_until": "number"}},
+      "provider_failed":     {"payload": {"provider_id": "string", "error": "string", "will_retry": "bool"}},
+      "context_compacted":   {"payload": {"messages_summarized": "int", "original_tokens": "int", "summary_tokens": "int", "model_used": "string", "tokens_in": "int", "tokens_out": "int"}},
+      "max_turns_clamped":   {"payload": {"requested": "int", "clamped_to": "int", "ceiling": "int", "hard_ceiling": "int"}},
+      "rate_limited":        {"payload": {"retry_after_ms": "int", "attempt": "int", "current_rpm": "int", "limit_rpm": "int"}},
+      "completed":           {"payload": {"result_text": "string", "total_ms": "int"}},
+      "failed":              {"payload": {"error": "string", "kind": "string", "last_provider_used": "string"}},
+      "expired":             {"payload": {"deadline_ts": "number", "total_ms": "int"}},
+      "cancelled":           {"payload": {}}
+    }
+  }
+}

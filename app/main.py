@@ -36,6 +36,7 @@ from app.api.monitoring import router as monitoring_router
 from app.api.settings_api import router as settings_router
 from app.api.audit import router as audit_router
 from app.api.oauth_capture import router as oauth_capture_router
+from app.api.runs import router as runs_router
 from app.observability.otel import init_tracer
 from app.observability.prometheus import metrics_response, set_service_info, observe_circuit_breaker_state
 
@@ -154,6 +155,7 @@ app.include_router(settings_router)
 app.include_router(aliases_router)
 app.include_router(audit_router)
 app.include_router(oauth_capture_router)
+app.include_router(runs_router)
 
 # ── Utility endpoints ────────────────────────────────────────────────────────
 @app.get("/health")
