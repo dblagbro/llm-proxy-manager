@@ -69,6 +69,19 @@ def wake(run_id: str) -> None:
         ev.set()
 
 
+def _rl_reset(run_id: str) -> None:
+    """R6 helper: drop the per-run rate-limit bucket on terminal cleanup.
+
+    Bound to all _WAKEUPS.pop() sites in _drive() so the bucket dict
+    stays the same size as the active-run set. Defensive against the
+    rate_limit module being importable but mid-reload."""
+    try:
+        from app.runs.rate_limit import reset as _rl_reset_inner
+        _rl_reset_inner(run_id)
+    except Exception:
+        pass
+
+
 def _now() -> float:
     return time.time()
 
@@ -424,7 +437,7 @@ async def _drive(run_id: str) -> None:
             run = res.scalar_one_or_none()
             if run is None:
                 logger.info("runs.worker.run_gone", extra={"run_id": run_id})
-                _WAKEUPS.pop(run_id, None)
+                _WAKEUPS.pop(run_id, None); _rl_reset(run_id)
                 return
 
             ctx = _ctx_from_row(run)
@@ -439,7 +452,7 @@ async def _drive(run_id: str) -> None:
                     "total_ms": int((run.completed_at - run.created_at) * 1000),
                 })
                 await db.commit()
-                _WAKEUPS.pop(run_id, None)
+                _WAKEUPS.pop(run_id, None); _rl_reset(run_id)
                 return
 
             # State-machine dispatch
@@ -495,6 +508,21 @@ async def _drive(run_id: str) -> None:
                     # compacted message list
                     messages = await _load_messages(db, run_id)
 
+                # R6: per-Run rate limiter — guards against tight tool-loops
+                # burning budget. acquire() blocks until a slot is free;
+                # emits rate_limited event on first throttled attempt so
+                # observability dashboards can see the throttle without
+                # waiting for failure.
+                try:
+                    from app.runs import rate_limit as _rl
+                    async def _emit_rl(payload):
+                        async with AsyncSessionLocal() as _rl_db:
+                            await _emit(_rl_db, run.id, "rate_limited", payload)
+                            await _rl_db.commit()
+                    await _rl.acquire(run.id, emit_callback=_emit_rl)
+                except Exception as e:
+                    logger.info("runs.rate_limit.skip run=%s err=%s", run.id, e)
+
                 try:
                     resp, _pid, _model, _lat = await _call_model_once(
                         db, run, messages,
@@ -510,7 +538,7 @@ async def _drive(run_id: str) -> None:
                         "last_provider_used": run.last_provider_id,
                     })
                     await db.commit()
-                    _WAKEUPS.pop(run_id, None)
+                    _WAKEUPS.pop(run_id, None); _rl_reset(run_id)
                     return
                 except BillingHardStop as e:
                     t = advance(ctx, EventKind.INTERNAL_ERROR, _now(),
@@ -522,7 +550,7 @@ async def _drive(run_id: str) -> None:
                         "last_provider_used": run.last_provider_id,
                     })
                     await db.commit()
-                    _WAKEUPS.pop(run_id, None)
+                    _WAKEUPS.pop(run_id, None); _rl_reset(run_id)
                     return
                 except Exception as e:
                     t = advance(ctx, EventKind.INTERNAL_ERROR, _now(),
@@ -533,7 +561,7 @@ async def _drive(run_id: str) -> None:
                         "last_provider_used": run.last_provider_id,
                     })
                     await db.commit()
-                    _WAKEUPS.pop(run_id, None)
+                    _WAKEUPS.pop(run_id, None); _rl_reset(run_id)
                     return
 
                 blocks = _extract_assistant_content(resp)
@@ -562,7 +590,7 @@ async def _drive(run_id: str) -> None:
                             "last_provider_used": run.last_provider_id,
                         })
                         await db.commit()
-                        _WAKEUPS.pop(run_id, None)
+                        _WAKEUPS.pop(run_id, None); _rl_reset(run_id)
                         return
                     elif t.status is RunStatus.EXPIRED:
                         await _emit(db, run.id, "expired", {
@@ -570,7 +598,7 @@ async def _drive(run_id: str) -> None:
                             "total_ms": int((run.completed_at - run.created_at) * 1000),
                         })
                         await db.commit()
-                        _WAKEUPS.pop(run_id, None)
+                        _WAKEUPS.pop(run_id, None); _rl_reset(run_id)
                         return
                     await db.commit()
                     # Fall through; outer loop will pick up REQUIRES_TOOL and wait.
@@ -591,7 +619,7 @@ async def _drive(run_id: str) -> None:
                             "total_ms": int((run.completed_at - run.created_at) * 1000),
                         })
                     await db.commit()
-                    _WAKEUPS.pop(run_id, None)
+                    _WAKEUPS.pop(run_id, None); _rl_reset(run_id)
                     return
 
             if ctx.status is RunStatus.REQUIRES_TOOL:
@@ -600,7 +628,7 @@ async def _drive(run_id: str) -> None:
                 pass
 
             if ctx.status.terminal:
-                _WAKEUPS.pop(run_id, None)
+                _WAKEUPS.pop(run_id, None); _rl_reset(run_id)
                 return
 
         # Wait outside of the DB session so we don't pin a connection.
@@ -625,7 +653,7 @@ def spawn(run_id: str) -> asyncio.Task:
 
     def _cleanup(_t: asyncio.Task) -> None:
         _TASKS.pop(run_id, None)
-        _WAKEUPS.pop(run_id, None)
+        _WAKEUPS.pop(run_id, None); _rl_reset(run_id)
 
     task.add_done_callback(_cleanup)
     return task
