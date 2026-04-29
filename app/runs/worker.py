@@ -218,20 +218,38 @@ async def _call_model_once(
 
         deadline = _per_call_deadline_sec(route.provider.timeout_sec, run.deadline_ts)
         kwargs = dict(route.litellm_kwargs or {})
+        # R3: translate Anthropic-format tools to the provider's native shape
+        # (or fall back to PBTC emulation if native_tools=false on this
+        # provider's capability profile). The worker keeps the canonical
+        # Anthropic-format tools_spec on the Run row; per-call we adapt.
+        emulation_prompt: Optional[str] = None
         if run.tools_spec:
-            # Tools pass through to litellm — Anthropic-format here, we'll
-            # translate per-provider in R3 alongside compaction.
-            kwargs["tools"] = run.tools_spec
+            from app.runs.tools import adapt_tools_for_route
+            native_tools = bool(getattr(route.profile, "native_tools", True)) if hasattr(route, "profile") else True
+            tools_arg, emulation_prompt = adapt_tools_for_route(
+                run.tools_spec,
+                litellm_model=route.litellm_model,
+                native_tools=native_tools,
+            )
+            if tools_arg is not None:
+                kwargs["tools"] = tools_arg
         kwargs["api_key"] = route.provider.api_key
         if route.provider.base_url:
             kwargs["api_base"] = route.provider.base_url
+
+        # If emulating tool-use, prepend the PBTC system prompt to the
+        # message stream for THIS call only. The Run's stored conversation
+        # stays canonical Anthropic shape.
+        call_messages = messages
+        if emulation_prompt:
+            call_messages = [{"role": "system", "content": emulation_prompt}] + messages
 
         t0 = time.monotonic()
         try:
             resp = await asyncio.wait_for(
                 acompletion_with_retry(
                     model=route.litellm_model,
-                    messages=messages,
+                    messages=call_messages,
                     **kwargs,
                 ),
                 timeout=deadline,
@@ -414,6 +432,48 @@ async def _drive(run_id: str) -> None:
 
             if ctx.status is RunStatus.RUNNING:
                 messages = await _load_messages(db, run_id)
+                # R3: compaction trigger — if the conversation is at ≥80%
+                # of the next call's model context, summarise the older
+                # body before proceeding. We need a model id to estimate
+                # against; use the highest-priority candidate's model.
+                try:
+                    from app.runs.compaction import maybe_compact, apply_compaction_to_db
+                    # Peek the next route just to get the model id; the actual
+                    # call goes through _call_model_once and may re-route.
+                    peek_route = await select_provider(
+                        db, hint=None,
+                        has_tools=bool(run.tools_spec),
+                        has_images=False,
+                        key_type="standard",
+                        excluded_provider_types={"claude-oauth"},
+                    )
+                    next_model = peek_route.litellm_model
+                except Exception:
+                    next_model = "gpt-4o"
+
+                try:
+                    compaction = await maybe_compact(
+                        db, run_id=run.id,
+                        run_compaction_model=run.compaction_model,
+                        next_call_model=next_model,
+                        messages=messages,
+                    )
+                except Exception as ce:
+                    logger.warning("runs.compaction.failed run=%s err=%s",
+                                   run.id, ce)
+                    compaction = None
+
+                if compaction is not None:
+                    await apply_compaction_to_db(
+                        db, run_id=run.id, new_messages=compaction["new_messages"],
+                    )
+                    run.context_summarized_at_turn = run.model_calls or 0
+                    await _emit(db, run.id, "context_compacted", compaction["event"])
+                    await db.commit()
+                    # Reload after compaction so the next call sees the
+                    # compacted message list
+                    messages = await _load_messages(db, run_id)
+
                 try:
                     resp, _pid, _model, _lat = await _call_model_once(
                         db, run, messages,
