@@ -294,9 +294,16 @@ async def cancel_run(
     if run.api_key_id != key_record.id:
         raise HTTPException(403, "run is owned by a different api key")
 
+    # Hub team flag B: cancel is idempotent at the FSM level (advance returns
+    # CANCELLED again on a duplicate call), but we MUST NOT re-emit a
+    # `cancelled` event — both sides observed the first one and a duplicate
+    # would surface as a noisy double `task_terminate` mirror op. Snapshot
+    # the prior status so we know whether this call is the one that actually
+    # did the work.
+    was_already_cancelled = run.status == RunStatus.CANCELLED.value
     transition = advance(_ctx_from_row(run), EventKind.CANCEL, time.time())
     await _persist_transition(db, run, transition)
-    if transition.status is RunStatus.CANCELLED:
+    if transition.status is RunStatus.CANCELLED and not was_already_cancelled:
         await _emit_event(db, run.id, "cancelled", {})
     await db.commit()
     return JSONResponse(_serialize_run(run))
