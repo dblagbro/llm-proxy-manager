@@ -103,12 +103,21 @@ def _is_timeout_err(exc: BaseException) -> bool:
 
 
 async def _emit(db: AsyncSession, run_id: str, kind: str, payload: dict) -> None:
+    """R4: emit through the in-memory broker (sub-100ms to live SSE
+    consumers) AND persist to RunEvent (durability + Last-Event-ID
+    replay across worker restart). The DB row's seq is the canonical
+    one — we read it back so the broker stays consistent."""
     from sqlalchemy import func
+    from app.runs import event_bus
     res = await db.execute(
         select(func.max(RunEvent.seq)).where(RunEvent.run_id == run_id)
     )
     seq = (res.scalar() or 0) + 1
-    db.add(RunEvent(run_id=run_id, seq=seq, kind=kind, payload=payload, ts=_now()))
+    ts = _now()
+    db.add(RunEvent(run_id=run_id, seq=seq, kind=kind, payload=payload, ts=ts))
+    # Publish to live subscribers immediately. The DB commit happens at
+    # the worker's natural commit point; live consumers don't wait for it.
+    event_bus.publish(run_id, seq=seq, kind=kind, payload=payload or {}, ts=ts)
 
 
 def _ctx_from_row(r: Run) -> RunCtx:
