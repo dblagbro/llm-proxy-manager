@@ -55,6 +55,55 @@ def _runs_max_turns_ceiling() -> int:
     return max(1, min(v, _HARD_TURNS_CEILING))
 
 
+def _peer_url(node_id: str) -> Optional[str]:
+    """Look up a peer's external URL by node_id from the cluster manager.
+
+    Returns ``None`` if we don't know about that node — the caller should
+    handle locally rather than 307 to nowhere.
+    """
+    if not node_id:
+        return None
+    if node_id == (settings.cluster_node_id or "local"):
+        return None  # we ARE the owner
+    try:
+        from app.cluster.manager import peers as _peer_registry
+        peer = _peer_registry.get(node_id)
+        if peer is not None and peer.url:
+            return peer.url.rstrip("/")
+    except Exception:
+        pass
+    return None
+
+
+def _maybe_redirect_to_owner(run: Run, request: Request) -> Optional[JSONResponse]:
+    """R5: if this node isn't the run's owner, return a 307 + Location to
+    the owner. Same-key auth was already verified above; the redirect
+    preserves method + body + headers (HTTP 307 semantics).
+
+    Returns None when this node IS the owner (caller proceeds normally),
+    or when we don't know how to reach the owner (caller falls back to
+    a local read — the run's persisted state is replicated, so reads are
+    safe; writes hitting a peer-side cache will be reconciled on next
+    cluster/sync push).
+    """
+    owner = run.owner_node_id
+    if not owner or owner == (settings.cluster_node_id or "local"):
+        return None
+    peer_url = _peer_url(owner)
+    if peer_url is None:
+        # Don't fail the request — fall back to local handling. The
+        # cluster sync will reconcile state on next push.
+        return None
+    # Build the canonical owner-side URL by reusing the request's path
+    # (so this works for /cancel, /tool_result, /events, plain GET).
+    target = f"{peer_url}{request.url.path}"
+    if request.url.query:
+        target = f"{target}?{request.url.query}"
+    headers = {"Location": target, "X-Run-Owner": owner}
+    return JSONResponse({"redirect": target, "owner_node_id": owner},
+                        status_code=307, headers=headers)
+
+
 def _ctx_from_row(r: Run) -> RunCtx:
     return RunCtx(
         status=RunStatus(r.status),
@@ -301,6 +350,7 @@ async def get_run(
 @router.post("/v1/runs/{run_id}/cancel")
 async def cancel_run(
     run_id: str,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     x_api_key: Optional[str] = Header(None, alias="x-api-key"),
     authorization: Optional[str] = Header(None, alias="authorization"),
@@ -319,6 +369,9 @@ async def cancel_run(
         raise HTTPException(404, "run not found")
     if run.api_key_id != key_record.id:
         raise HTTPException(403, "run is owned by a different api key")
+    redirect = _maybe_redirect_to_owner(run, request)
+    if redirect is not None:
+        return redirect
 
     # Hub team flag B: cancel is idempotent at the FSM level (advance returns
     # CANCELLED again on a duplicate call), but we MUST NOT re-emit a
@@ -376,6 +429,9 @@ async def post_tool_result(
         raise HTTPException(404, "run not found")
     if run.api_key_id != key_record.id:
         raise HTTPException(403, "run is owned by a different api key")
+    redirect = _maybe_redirect_to_owner(run, request)
+    if redirect is not None:
+        return redirect
 
     if run.status == RunStatus.CANCELLED.value:
         raise HTTPException(410, "run was cancelled; tool result discarded")
@@ -466,6 +522,12 @@ async def get_events(
         raise HTTPException(404, "run not found")
     if run.api_key_id != key_record.id:
         raise HTTPException(403, "run is owned by a different api key")
+    # R5: SSE specifically benefits from redirecting to owner — that's
+    # where the live broker channel lives. Polling can answer locally
+    # (DB is replicated) but redirecting is cheap and consistent.
+    redirect = _maybe_redirect_to_owner(run, request)
+    if redirect is not None:
+        return redirect
 
     is_sse = "text/event-stream" in (accept or "").lower()
     resume_seq = 0
@@ -545,3 +607,99 @@ async def get_events(
         for ev in ev_res.scalars().all()
     ]
     return JSONResponse({"events": events})
+
+
+# ── POST /v1/runs/{run_id}/adopt — peer takeover after owner failure ────────
+
+
+_ADOPT_OWNER_GRACE_SEC = 30.0   # don't adopt unless owner unreachable >30s
+
+
+@router.post("/v1/runs/{run_id}/adopt")
+async def adopt_run(
+    run_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    x_api_key: Optional[str] = Header(None, alias="x-api-key"),
+    authorization: Optional[str] = Header(None, alias="authorization"),
+):
+    """A peer can claim ownership when the original owner is unreachable.
+
+    Used by the hub UI / operator tooling when a node is known dead and a
+    run is stuck in ``running`` / ``requires_tool``. The replicated state
+    on this peer becomes the new authoritative copy; the worker is spawned
+    locally; subsequent /cancel + /tool_result + /events all redirect here.
+
+    Safety: refuse to adopt unless the prior owner has been marked
+    unreachable in this node's peer registry for at least
+    _ADOPT_OWNER_GRACE_SEC. That grace stops a flap on owner-side
+    heartbeat from triggering a takeover that the owner immediately
+    contests.
+    """
+    raw_key = x_api_key or (
+        authorization[7:].strip() if authorization
+        and authorization.lower().startswith("bearer ") else None
+    )
+    if not raw_key:
+        raise HTTPException(401, "missing api key")
+    key_record = await verify_api_key(db, raw_key)
+
+    res = await db.execute(select(Run).where(Run.id == run_id))
+    run = res.scalar_one_or_none()
+    if run is None:
+        raise HTTPException(404, "run not found")
+    if run.api_key_id != key_record.id:
+        raise HTTPException(403, "run is owned by a different api key")
+
+    self_id = settings.cluster_node_id or "local"
+    if run.owner_node_id == self_id:
+        # Already ours — return state, idempotent.
+        return JSONResponse(_serialize_run(run))
+
+    if run.status in (
+        RunStatus.COMPLETED.value, RunStatus.FAILED.value,
+        RunStatus.EXPIRED.value, RunStatus.CANCELLED.value,
+    ):
+        raise HTTPException(
+            409, f"run already terminal ({run.status}); nothing to adopt",
+        )
+
+    # Owner-grace check: only allow adopt if peer registry shows the
+    # current owner unreachable for >grace seconds. This is a coordination
+    # hint, not a hard guarantee — split-brain is theoretically possible
+    # but the periodic /cluster/sync push reconciles within ~30s.
+    try:
+        from app.cluster.manager import peers as _peer_registry
+        owner_peer = _peer_registry.get(run.owner_node_id)
+    except Exception:
+        owner_peer = None
+    now = time.time()
+    if owner_peer is not None and owner_peer.status != "unreachable":
+        raise HTTPException(
+            409,
+            f"owner node {run.owner_node_id!r} appears reachable; refusing to adopt. "
+            f"Wait for cluster heartbeat to mark it unreachable, or stop the owner first.",
+        )
+    if owner_peer is not None and owner_peer.last_heartbeat:
+        unreachable_for = now - owner_peer.last_heartbeat
+        if unreachable_for < _ADOPT_OWNER_GRACE_SEC:
+            raise HTTPException(
+                409,
+                f"owner node was last heartbeat {unreachable_for:.0f}s ago; "
+                f"grace is {_ADOPT_OWNER_GRACE_SEC:.0f}s. Wait or use ?force=true.",
+            )
+
+    # Take ownership
+    prior_owner = run.owner_node_id
+    run.owner_node_id = self_id
+    run.updated_at = time.time()
+    await _emit_event(db, run.id, "run_recovered", {
+        "prior_status": run.status,
+        "recovered_from_node_id": prior_owner,
+        "downtime_ms": 0,    # we don't have a precise downtime here
+        "via": "adopt",
+    })
+    await db.commit()
+    # Spawn a worker locally to drive the run from the replicated state.
+    run_worker.spawn(run.id)
+    return JSONResponse(_serialize_run(run))
