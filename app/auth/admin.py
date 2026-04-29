@@ -24,9 +24,14 @@ SESSION_IDLE_SEC = 86400      # Extend last_seen on each /me call
 
 # v2.6.1: unique cookie name + path scoped to this app. The old values
 # (name="session", path="/") collided with other apps on the same domain
-# causing clobber-and-logout every ~minute.
+# causing clobber-and-logout every ~minute. Now that the cookie name is
+# unique to this app (``llmproxy_session``), there's no collision risk
+# from a wider path; v3.0.0-r5+ scopes Path=/ so the same code can serve
+# at any URL prefix (production /llm-proxy2/, smoke /llm-proxy2-smoke/,
+# future ports/subdomains) without dropping the cookie. Hub-team smoke
+# bug #1 — cookie didn't follow the smoke prefix.
 SESSION_COOKIE_NAME = "llmproxy_session"
-SESSION_COOKIE_PATH = "/llm-proxy2/"
+SESSION_COOKIE_PATH = "/"
 _LEGACY_COOKIE_NAME = "session"  # accepted during migration window
 
 
