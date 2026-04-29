@@ -143,6 +143,7 @@ export interface MetricBucket {
 
 export interface ProviderSummary {
   provider_id: string
+  provider_name?: string
   requests: number
   successes: number
   failures: number
@@ -150,6 +151,7 @@ export interface ProviderSummary {
   total_tokens: number
   total_cost_usd: number
   avg_latency_ms: number
+  avg_ttft_ms?: number
   circuit_state: CBState
 }
 

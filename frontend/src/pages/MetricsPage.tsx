@@ -37,7 +37,7 @@ export function MetricsPage() {
 
   // Bar chart data — one bar per provider
   const barData = providers.map(p => ({
-    name: p.provider_id.slice(0, 12),
+    name: p.provider_name || p.provider_id.slice(0, 12),
     requests: p.requests,
     cost: +p.total_cost_usd.toFixed(4),
     success: +p.success_rate.toFixed(1),
@@ -124,7 +124,7 @@ export function MetricsPage() {
                   <tbody className="divide-y divide-gray-50 dark:divide-gray-800">
                     {providers.map(p => (
                       <tr key={p.provider_id} className="hover:bg-gray-50 dark:hover:bg-gray-800/50">
-                        <td className="px-5 py-3 font-medium text-gray-900 dark:text-gray-100">{p.provider_id}</td>
+                        <td className="px-5 py-3 font-medium text-gray-900 dark:text-gray-100" title={p.provider_id}>{p.provider_name || p.provider_id}</td>
                         <td className="px-5 py-3 text-gray-600 dark:text-gray-400">{p.requests.toLocaleString()}</td>
                         <td className="px-5 py-3">
                           <span className={p.success_rate >= 95 ? 'text-green-600' : p.success_rate >= 80 ? 'text-amber-500' : 'text-red-500'}>
