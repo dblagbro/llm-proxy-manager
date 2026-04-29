@@ -288,3 +288,16 @@ def test_clamp_max_turns_admin_raised_default_obeys_hard():
 def test_clamp_max_turns_zero_or_negative_clamped_to_one():
     val, clamped = clamp_max_turns(0, default_ceiling=50, hard_ceiling=200)
     assert (val, clamped) == (1, True)
+
+
+# ── Cancel idempotency at the FSM layer (hub team flag B) ────────────────────
+
+
+def test_cancel_on_already_cancelled_run_returns_same_state():
+    """The cancel endpoint snapshots the prior status before calling
+    ``advance`` so it can suppress duplicate ``cancelled`` event emission.
+    The FSM itself is happy to be re-called — verify."""
+    t = advance(ctx(RunStatus.CANCELLED), EventKind.CANCEL, T0)
+    assert t.status is RunStatus.CANCELLED
+    # No error_kind set — duplicate cancel is not an error
+    assert t.error_kind is None

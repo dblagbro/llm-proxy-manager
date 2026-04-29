@@ -188,6 +188,7 @@
       "context_compacted":   {"payload": {"messages_summarized": "int", "original_tokens": "int", "summary_tokens": "int", "model_used": "string", "tokens_in": "int", "tokens_out": "int"}},
       "max_turns_clamped":   {"payload": {"requested": "int", "clamped_to": "int", "ceiling": "int", "hard_ceiling": "int"}},
       "rate_limited":        {"payload": {"retry_after_ms": "int", "attempt": "int", "current_rpm": "int", "limit_rpm": "int"}},
+      "run_recovered":       {"payload": {"prior_status": "string", "recovered_from_node_id": "string", "downtime_ms": "int"}, "deferred_until": "R2 (recovery sweep)"},
       "completed":           {"payload": {"result_text": "string", "total_ms": "int"}},
       "failed":              {"payload": {"error": "string", "kind": "string", "last_provider_used": "string"}},
       "expired":             {"payload": {"deadline_ts": "number", "total_ms": "int"}},

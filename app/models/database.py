@@ -79,6 +79,13 @@ async def init_db():
             "CREATE UNIQUE INDEX IF NOT EXISTS ux_run_events_seq ON run_events(run_id, seq)",
             "CREATE INDEX IF NOT EXISTS ix_run_events_ts ON run_events(run_id, ts)",
             "CREATE INDEX IF NOT EXISTS ix_run_idempotency_created_at ON run_idempotency(created_at)",
+            # Hub team flag A: secondary index for the 24h-TTL prune sweep.
+            # Composite PK is (api_key_id, idempotency_key); prune walks by
+            # created_at across all api_keys, so an index on (created_at)
+            # alone (above) is the cheap right shape. Adding the leading-key
+            # variant here so a future "purge keys for tenant X" lookup is
+            # also indexed without a scan.
+            "CREATE INDEX IF NOT EXISTS ix_run_idempotency_key_created ON run_idempotency(idempotency_key, created_at)",
         ]:
             try:
                 await conn.exec_driver_sql(index_stmt)
