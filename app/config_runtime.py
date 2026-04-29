@@ -33,24 +33,24 @@ SCHEMA: dict[str, dict] = {
     "cot_verify_auto_detect": {"type": "bool",  "default": settings.cot_verify_auto_detect, "label": "Auto-detect shell/infra commands"},
     "cot_cross_provider_critique": {"type": "bool", "default": settings.cot_cross_provider_critique, "label": "Route critique to a different provider than the draft (eliminates self-preference bias)"},
     "cot_verify_execute": {"type": "bool", "default": settings.cot_verify_execute, "label": "Actually execute the network-safe subset of verify steps (HTTP/DNS/TCP only)"},
-    "cot_verify_step_timeout_sec": {"type": "str", "default": str(settings.cot_verify_step_timeout_sec), "label": "Per-step verify execution timeout (seconds)"},
+    "cot_verify_step_timeout_sec": {"type": "float", "default": settings.cot_verify_step_timeout_sec, "label": "Per-step verify execution timeout (seconds)"},
     "cot_plan_compact": {"type": "bool", "default": settings.cot_plan_compact, "label": "Chain-of-Draft plan: ~5-word mini-steps (-78% plan tokens, faster TTFT)"},
     "fallback_enabled": {"type": "bool", "default": settings.fallback_enabled, "label": "Ordered fallback: on provider failure, try next-ranked candidate"},
     "fallback_max_providers": {"type": "int", "default": settings.fallback_max_providers, "label": "Max providers to try per request before giving up"},
     "task_auto_detect_enabled": {"type": "bool", "default": settings.task_auto_detect_enabled, "label": "Auto-classify LMRH task= hint via embedding cosine (~40ms overhead)"},
-    "shadow_traffic_rate": {"type": "str", "default": str(settings.shadow_traffic_rate), "label": "Shadow-traffic fraction (0.0–1.0); 0.01 = mirror 1% of requests"},
+    "shadow_traffic_rate": {"type": "float", "default": settings.shadow_traffic_rate, "label": "Shadow-traffic fraction (0.0–1.0); 0.01 = mirror 1% of requests"},
     "shadow_candidate_provider_id": {"type": "str", "default": settings.shadow_candidate_provider_id, "label": "Provider ID to shadow-test"},
     "structured_output_enabled": {"type": "bool", "default": settings.structured_output_enabled, "label": "Enforce JSON-Schema response_format via repair loop"},
     "structured_output_max_repairs": {"type": "int", "default": settings.structured_output_max_repairs, "label": "Max structured-output repair attempts (default 2)"},
     "vision_route_enabled": {"type": "bool", "default": settings.vision_route_enabled, "label": "Vision-to-text: route images through VLM instead of stripping"},
     # Semantic cache (Wave 1 #3)
     "semantic_cache_enabled":          {"type": "bool", "default": settings.semantic_cache_enabled,         "label": "Enable semantic cache globally"},
-    "semantic_cache_threshold":        {"type": "str",  "default": str(settings.semantic_cache_threshold),  "label": "Cosine threshold (0.0–1.0)"},
+    "semantic_cache_threshold":        {"type": "float",  "default": settings.semantic_cache_threshold,  "label": "Cosine threshold (0.0–1.0)"},
     "semantic_cache_ttl_sec":          {"type": "int",  "default": settings.semantic_cache_ttl_sec,         "label": "TTL (seconds)"},
     "semantic_cache_min_response_chars":{"type":"int",  "default": settings.semantic_cache_min_response_chars,"label":"Min response chars to cache"},
     # Hedged requests (Wave 1 #4)
     "hedge_enabled":     {"type": "bool", "default": settings.hedge_enabled,     "label": "Enable hedged requests globally"},
-    "hedge_max_per_sec": {"type": "str",  "default": str(settings.hedge_max_per_sec), "label": "Max hedge requests per second (global bucket)"},
+    "hedge_max_per_sec": {"type": "float",  "default": settings.hedge_max_per_sec, "label": "Max hedge requests per second (global bucket)"},
     # Native reasoning
     "native_thinking_budget_tokens": {"type": "int", "default": settings.native_thinking_budget_tokens, "label": "Thinking budget tokens (Gemini 2.5 / Anthropic)"},
     "native_reasoning_effort":       {"type": "str", "default": settings.native_reasoning_effort,       "label": "Reasoning effort (o-series: low / medium / high)"},
@@ -200,7 +200,12 @@ async def load(db: AsyncSession) -> None:
     for row in rows:
         schema = SCHEMA.get(row.key)
         if schema:
-            overrides[row.key] = _coerce(row.value, row.value_type)
+            # v3.0.1: SCHEMA is authoritative for the type. Older rows may
+            # have value_type='str' for fields the schema now declares as
+            # 'float'/'int'. Use the schema type so the coerced value
+            # matches the pydantic settings type — otherwise comparisons
+            # like `settings.shadow_traffic_rate > 0` raise TypeError.
+            overrides[row.key] = _coerce(row.value, schema["type"])
     if overrides:
         apply(overrides)
         logger.info("runtime_settings_loaded count=%s", len(overrides))
