@@ -116,7 +116,7 @@ export function ActivityEventRow({ event, compact }: Props) {
           <div className="flex items-baseline gap-2">
             <p className="text-sm text-gray-800 dark:text-gray-200 truncate flex-1 min-w-0">{event.message}</p>
             {summary && <span className="text-xs text-gray-400 font-mono shrink-0">{summary}</span>}
-            <span className="text-xs text-gray-400 shrink-0 tabular-nums">{formatTimeForUser(event.timestamp, user, 'time')}</span>
+            <span className="text-xs text-gray-400 shrink-0 tabular-nums" title={formatTimeForUser(event.timestamp, user, 'datetime')}>{formatTimeForUser(event.timestamp, user, 'datetime-compact')}</span>
           </div>
           {(reqPreview || respPreview || errorMsg) && (
             <div className="mt-1 space-y-0.5 text-xs">

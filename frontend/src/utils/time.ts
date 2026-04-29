@@ -21,7 +21,7 @@
  */
 import type { AuthUser } from '@/types'
 
-export type TimeMode = 'datetime' | 'time' | 'date'
+export type TimeMode = 'datetime' | 'datetime-compact' | 'time' | 'date'
 
 export interface TimePrefs {
   timezone?: string | null
@@ -52,7 +52,12 @@ function intlOpts(prefs: TimePrefs, mode: TimeMode): Intl.DateTimeFormatOptions 
     opts.month = 'short'
     opts.day = '2-digit'
   }
-  if (mode === 'time' || mode === 'datetime') {
+  if (mode === 'datetime-compact') {
+    // Short month + 2-digit day, no year — fits in an activity row
+    opts.month = 'short'
+    opts.day = '2-digit'
+  }
+  if (mode === 'time' || mode === 'datetime' || mode === 'datetime-compact') {
     opts.hour = '2-digit'
     opts.minute = '2-digit'
     opts.second = '2-digit'
