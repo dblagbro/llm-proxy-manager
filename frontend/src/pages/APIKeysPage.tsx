@@ -12,6 +12,8 @@ import { CopyButton } from '@/components/ui/CopyButton'
 import { Spinner } from '@/components/ui/Spinner'
 import { useToast } from '@/components/ui/Toast'
 import type { ApiKey, KeyType } from '@/types'
+import { useAuth } from '@/context/AuthContext'
+import { formatTimeForUser } from '@/utils/time'
 
 const KEY_TYPES: KeyType[] = ['standard', 'claude-code']
 
@@ -37,6 +39,7 @@ function sortKeys(rows: ApiKey[], key: SortKey, dir: 'asc' | 'desc'): ApiKey[] {
 export function APIKeysPage() {
   const qc = useQueryClient()
   const toast = useToast()
+  const { user } = useAuth()
   const [showCreate, setShowCreate] = useState(false)
   const [newKey, setNewKey] = useState<{ raw: string; prefix: string } | null>(null)
   const [deleteId, setDeleteId] = useState<string | null>(null)
@@ -198,7 +201,7 @@ export function APIKeysPage() {
   }
 
   function fmtDate(ts: string) {
-    return new Date(ts).toLocaleDateString()
+    return formatTimeForUser(ts, user, 'date')
   }
 
   function capLabel(k: ApiKey) {
@@ -509,9 +512,9 @@ export function APIKeysPage() {
               <dt className="text-gray-500">Enabled</dt>
               <dd className="text-gray-900 dark:text-gray-100">{viewDetails.enabled ? 'Yes' : 'No'}</dd>
               <dt className="text-gray-500">Created</dt>
-              <dd className="text-gray-900 dark:text-gray-100">{viewDetails.created_at ? new Date(viewDetails.created_at).toLocaleString() : '—'}</dd>
+              <dd className="text-gray-900 dark:text-gray-100">{formatTimeForUser(viewDetails.created_at, user)}</dd>
               <dt className="text-gray-500">Last used</dt>
-              <dd className="text-gray-900 dark:text-gray-100">{viewDetails.last_used_at ? new Date(viewDetails.last_used_at).toLocaleString() : '—'}</dd>
+              <dd className="text-gray-900 dark:text-gray-100">{formatTimeForUser(viewDetails.last_used_at, user)}</dd>
               <dt className="text-gray-500 border-t border-gray-100 dark:border-gray-700 pt-3">Total requests</dt>
               <dd className="text-gray-900 dark:text-gray-100 border-t border-gray-100 dark:border-gray-700 pt-3">{viewDetails.total_requests.toLocaleString()}</dd>
               <dt className="text-gray-500">Total tokens</dt>
