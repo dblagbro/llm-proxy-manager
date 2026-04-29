@@ -13,6 +13,8 @@ import { CircuitBreakerBadge } from '@/components/providers/CircuitBreakerBadge'
 import { useToast } from '@/components/ui/Toast'
 import type { Provider } from '@/types'
 import { ProviderModels } from '@/components/providers/ProviderModels'
+import { useAuth } from '@/context/AuthContext'
+import { formatTimeForUser } from '@/utils/time'
 import { ProviderForm, type ProviderFormState, emptyProviderForm, providerToForm } from '@/components/providers/ProviderForm'
 import { clsx } from 'clsx'
 
@@ -21,6 +23,7 @@ export function ProvidersPage() {
   const qc = useQueryClient()
   const toast = useToast()
   const navigate = useNavigate()
+  const { user } = useAuth()
   const [search, setSearch] = useState('')
   const [expanded, setExpanded] = useState<string | null>(null)
   const [showModal, setShowModal] = useState(false)
@@ -249,7 +252,7 @@ export function ProvidersPage() {
                               Provider failed authentication — needs re-auth
                             </p>
                             <p className="text-xs text-gray-600 dark:text-gray-400 mt-0.5">
-                              Failed since {new Date(p.auth_failed.since * 1000).toLocaleString()}
+                              Failed since {formatTimeForUser(p.auth_failed.since * 1000, user)}
                               {' · '}
                               {p.provider_type === 'claude-oauth'
                                 ? 'Open Edit and click Generate New Auth URL to re-authorize.'

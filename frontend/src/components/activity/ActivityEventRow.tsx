@@ -2,17 +2,14 @@ import { useState } from 'react'
 import { clsx } from 'clsx'
 import { ChevronRight, ChevronDown } from 'lucide-react'
 import type { ActivityEvent } from '@/types'
+import { useAuth } from '@/context/AuthContext'
+import { formatTimeForUser } from '@/utils/time'
 
 const SEVERITY_DOT: Record<string, string> = {
   info: 'bg-blue-400',
   warning: 'bg-amber-400',
   error: 'bg-red-500',
   critical: 'bg-red-700',
-}
-
-function fmt(ts: string) {
-  const d = new Date(ts)
-  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 }
 
 function tryPretty(s: unknown): string {
@@ -86,6 +83,7 @@ interface Props {
 }
 
 export function ActivityEventRow({ event, compact }: Props) {
+  const { user } = useAuth()
   const dot = SEVERITY_DOT[event.severity] ?? 'bg-gray-400'
   const meta = (event.metadata || {}) as Record<string, unknown>
   const reqBody = meta.request_body as string | undefined
@@ -118,7 +116,7 @@ export function ActivityEventRow({ event, compact }: Props) {
           <div className="flex items-baseline gap-2">
             <p className="text-sm text-gray-800 dark:text-gray-200 truncate flex-1 min-w-0">{event.message}</p>
             {summary && <span className="text-xs text-gray-400 font-mono shrink-0">{summary}</span>}
-            <span className="text-xs text-gray-400 shrink-0 tabular-nums">{fmt(event.timestamp)}</span>
+            <span className="text-xs text-gray-400 shrink-0 tabular-nums">{formatTimeForUser(event.timestamp, user, 'time')}</span>
           </div>
           {(reqPreview || respPreview || errorMsg) && (
             <div className="mt-1 space-y-0.5 text-xs">

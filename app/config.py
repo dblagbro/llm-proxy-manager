@@ -99,6 +99,10 @@ class Settings(BaseSettings):
     hedge_enabled: bool = Field(True, alias="HEDGE_ENABLED")
     hedge_max_per_sec: float = Field(5.0, alias="HEDGE_MAX_PER_SEC")
 
+    # Run runtime (v3.0)
+    runs_max_turns_ceiling: int = Field(50, alias="RUNS_MAX_TURNS_CEILING")
+    runs_max_model_calls_per_minute: int = Field(5, alias="RUNS_MAX_MODEL_CALLS_PER_MINUTE")
+
     # Cluster
     cluster_enabled: bool = Field(False, alias="CLUSTER_ENABLED")
     cluster_node_id: Optional[str] = Field(None, alias="CLUSTER_NODE_ID")
