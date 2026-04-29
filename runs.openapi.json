@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "llm-proxy v2 — Run runtime API",
-    "version": "3.0.0-r5",
+    "version": "3.0.0",
     "description": "Server-mediated agent loop. Joint contract between llm-proxy v2 and coordinator-hub v2.0.0+. R1 lands the FSM, persistence, idempotency replay, and stub event stream. Worker (real model calls + tool dispatch) arrives in R2.\n\nDecisions locked: per-API-key idempotency (24h TTL); sticky-with-handoff cluster; same-key tool_result; max_turns admin ceiling 50, hard ceiling 200; daemons execute tools, proxy never does.\n\nSSE wire format: every event is `event: <kind>\\nid: <monotonic-int>\\ndata: <single-line-json>\\n\\n`. Heartbeat `: keepalive\\n\\n` every 15s while idle. Last-Event-ID resume from a 1000-event ring buffer."
   },
   "servers": [
