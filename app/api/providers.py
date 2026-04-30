@@ -474,6 +474,18 @@ async def test_provider_endpoint(
 ):
     p = await _get_or_404(db, provider_id)
     result = await test_provider(p)
+    # v3.0.9: surface model-deprecation warning so operators see the
+    # actionable fix BEFORE the upstream 404s on real traffic.
+    from app.providers.deprecations import check_model_deprecation
+    replacement = check_model_deprecation(p.default_model)
+    if replacement:
+        result = dict(result)
+        result["deprecation_warning"] = (
+            f"Provider's default_model {p.default_model!r} is deprecated by "
+            f"the upstream vendor. Recommended replacement: {replacement!r}. "
+            f"Update via Edit Provider or wait for the next startup migration."
+        )
+        result["recommended_default_model"] = replacement
     return result
 
 
@@ -486,9 +498,20 @@ async def scan_models(
     p = await _get_or_404(db, provider_id)
     try:
         models = await scan_provider_models(db, p)
+        # v3.0.9: also flag deprecated models in the scan result so the
+        # UI can render them with a warning + suggested replacement.
+        from app.providers.deprecations import MODEL_DEPRECATIONS
+        deprecated_models = [
+            {"id": m, "replacement": MODEL_DEPRECATIONS[m]}
+            for m in (models or [])
+            if m in MODEL_DEPRECATIONS
+        ]
+        out = {"scanned": len(models), "models": models}
         if not models:
-            return {"scanned": 0, "models": [], "warning": "No models discovered — check API key and provider type"}
-        return {"scanned": len(models), "models": models}
+            out["warning"] = "No models discovered — check API key and provider type"
+        if deprecated_models:
+            out["deprecated_models"] = deprecated_models
+        return out
     except Exception as e:
         raise HTTPException(500, f"Model scan failed: {e}")
 
