@@ -6,11 +6,26 @@ Keys, types, and human-readable labels for every tunable setting.
 `apply(overrides)` patches the shared `settings` singleton in-place so
 all existing code that reads `from app.config import settings` picks up
 the change without modification.
+
+v3.0.8 (item 4): the canonical type for each setting is the pydantic
+field's annotation on ``app.config.Settings``. SCHEMA's ``type`` field
+is an *input hint* for the UI (text vs number vs checkbox) and is only
+trusted when no matching pydantic field exists. ``_coerce`` for a
+recognised field always uses the pydantic type so coercion never drifts
+from what the rest of the app reads. This prevents the v3.0.1 class of
+bug where SCHEMA said ``"str"`` for a float field, ``_coerce`` returned
+the raw string, and ``settings.shadow_traffic_rate > 0`` raised
+TypeError on every successful non-streaming /v1/messages call.
+
+A boot-time consistency check logs a WARNING for any SCHEMA entry whose
+declared ``type`` disagrees with the pydantic field's type. Operators
+see the discrepancy in logs and can fix the SCHEMA entry without
+needing a production incident first.
 """
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -18,6 +33,75 @@ from sqlalchemy import select
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+# ── pydantic-type derivation (canonical) ────────────────────────────────────
+
+
+def _pydantic_field_type(key: str) -> Optional[str]:
+    """Return the pydantic field's type as one of {bool,int,float,str},
+    or None if no field with that name exists. Pulls from the model's
+    field-info — ``Settings`` is a Pydantic v2 BaseSettings.
+    """
+    fields = getattr(type(settings), "model_fields", None)
+    if not fields:
+        return None
+    field = fields.get(key)
+    if field is None:
+        return None
+    # Pydantic v2: field.annotation is the actual type
+    ann = field.annotation
+    # Unwrap Optional[X] (Union[X, None])
+    origin = getattr(ann, "__origin__", None)
+    if origin is not None:
+        args = getattr(ann, "__args__", ())
+        non_none = [a for a in args if a is not type(None)]  # noqa: E721
+        if len(non_none) == 1:
+            ann = non_none[0]
+    if ann is bool:
+        return "bool"
+    if ann is int:
+        return "int"
+    if ann is float:
+        return "float"
+    if ann is str:
+        return "str"
+    return None
+
+
+def canonical_type(key: str, schema_meta: dict) -> str:
+    """Return the type to use for ``_coerce`` on this key.
+
+    Priority:
+      1. Pydantic field's annotation (canonical — what the rest of the
+         app reads via ``settings.<key>``).
+      2. ``schema_meta["type"]`` (fallback — for keys without a matching
+         pydantic field, which are rare but possible).
+      3. ``"str"`` (last resort — leaves the value unchanged).
+    """
+    pyd = _pydantic_field_type(key)
+    if pyd is not None:
+        return pyd
+    return schema_meta.get("type", "str")
+
+
+def validate_schema_consistency() -> list[str]:
+    """Boot-time audit: warn for any SCHEMA entry whose declared type
+    disagrees with the pydantic field type. Returns the list of
+    mismatch descriptions (also logged as warnings)."""
+    mismatches: list[str] = []
+    for key, meta in SCHEMA.items():
+        declared = meta.get("type", "str")
+        pyd = _pydantic_field_type(key)
+        if pyd is None:
+            continue  # No pydantic field — schema is the only source
+        if declared != pyd:
+            msg = (f"config_runtime.SCHEMA['{key}'].type='{declared}' but "
+                   f"pydantic settings.{key} is '{pyd}' — using pydantic "
+                   "for coercion (canonical). Update SCHEMA to match.")
+            mismatches.append(msg)
+            logger.warning(msg)
+    return mismatches
 
 
 SCHEMA: dict[str, dict] = {
@@ -212,12 +296,13 @@ async def load(db: AsyncSession) -> None:
     for row in rows:
         schema = SCHEMA.get(row.key)
         if schema:
-            # v3.0.1: SCHEMA is authoritative for the type. Older rows may
-            # have value_type='str' for fields the schema now declares as
-            # 'float'/'int'. Use the schema type so the coerced value
-            # matches the pydantic settings type — otherwise comparisons
-            # like `settings.shadow_traffic_rate > 0` raise TypeError.
-            overrides[row.key] = _coerce(row.value, schema["type"])
+            # v3.0.8 (item 4): canonical_type() prefers the pydantic field's
+            # annotation over SCHEMA's declared type, with SCHEMA as a
+            # fallback for keys without a matching pydantic field. v3.0.1's
+            # bug class (SCHEMA says str, pydantic says float) cannot
+            # recur — coercion always matches what the rest of the app
+            # reads via ``settings.<key>``.
+            overrides[row.key] = _coerce(row.value, canonical_type(row.key, schema))
     if overrides:
         apply(overrides)
         logger.info("runtime_settings_loaded count=%s", len(overrides))
@@ -231,7 +316,9 @@ async def save(db: AsyncSession, updates: dict[str, Any], timestamp: float | Non
         schema = SCHEMA.get(key)
         if not schema:
             continue
-        typ = schema["type"]
+        # v3.0.8 (item 4): use canonical_type so the row's stored value_type
+        # matches what the pydantic field expects on next load.
+        typ = canonical_type(key, schema)
         raw = str(val)
         result = await db.execute(select(SystemSetting).where(SystemSetting.key == key))
         row = result.scalar_one_or_none()
