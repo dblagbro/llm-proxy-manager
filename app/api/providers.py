@@ -213,11 +213,39 @@ async def create_provider(
         data["oauth_expires_at"] = creds.expires_at
         if not data.get("default_model"):
             data["default_model"] = "claude-sonnet-4-6"
+    elif body.provider_type == "codex-oauth":
+        # v3.0.15: OpenAI Codex CLI / ChatGPT subscription OAuth.
+        if not blob:
+            raise HTTPException(
+                400,
+                "codex-oauth providers require 'oauth_credentials_blob' — paste your "
+                "`~/.codex/auth.json` contents or a bare access_token JWT.",
+            )
+        from app.providers.codex_oauth import (
+            parse_credentials as _parse_codex, CredentialParseError as _CodexParseErr,
+        )
+        try:
+            creds = _parse_codex(blob)
+        except _CodexParseErr as e:
+            raise HTTPException(400, f"Credential parse failed: {e}")
+        data["api_key"] = creds.access_token
+        data["oauth_refresh_token"] = creds.refresh_token
+        data["oauth_expires_at"] = creds.expires_at
+        # Stash workspace + plan-tier in extra_config so the dispatcher can
+        # stamp ChatGPT-Account-ID without re-decoding the JWT every call.
+        cfg = dict(data.get("extra_config") or {})
+        if creds.chatgpt_account_id:
+            cfg["chatgpt_account_id"] = creds.chatgpt_account_id
+        if creds.chatgpt_plan_type:
+            cfg["chatgpt_plan_type"] = creds.chatgpt_plan_type
+        data["extra_config"] = cfg
+        if not data.get("default_model"):
+            data["default_model"] = "gpt-5.5"
     elif blob:
         raise HTTPException(
             400,
-            f"oauth_credentials_blob is only valid when provider_type='claude-oauth' "
-            f"(got {body.provider_type!r})",
+            f"oauth_credentials_blob is only valid when provider_type is 'claude-oauth' "
+            f"or 'codex-oauth' (got {body.provider_type!r})",
         )
 
     # v2.8.2: bump any existing provider already at this priority +1 (chained)
@@ -373,6 +401,131 @@ async def claude_oauth_exchange(
     return _serialize(provider)
 
 
+# ── v3.0.15: codex-oauth (OpenAI Codex CLI / ChatGPT subscription) ──────────
+# Mirrors the claude-oauth admin flow. The browser redirect_uri is
+# ``http://localhost:1455/auth/callback`` (Codex CLI's pre-registered
+# callback at OpenAI), so the admin's browser will dead-end at that
+# unreachable URL — they paste the URL back here and we extract the code.
+
+
+@router.post("/codex-oauth/authorize", response_model=OAuthAuthorizeResponse)
+async def codex_oauth_authorize(
+    _: AdminUser = Depends(require_admin),
+):
+    """Start an OpenAI Codex / ChatGPT subscription OAuth flow.
+
+    Returns the URL the admin opens in their browser. After approving,
+    OpenAI redirects to ``http://localhost:1455/auth/callback?code=...&state=...``
+    which won't load (the CLI's local listener isn't running on the
+    admin's machine), but the URL bar carries the code. The admin
+    pastes that URL back into ``/codex-oauth/exchange``.
+    """
+    from app.providers.codex_oauth_flow import start_authorize
+    start = start_authorize()
+    return OAuthAuthorizeResponse(state=start.state, authorize_url=start.authorize_url)
+
+
+@router.post("/codex-oauth/exchange")
+async def codex_oauth_exchange(
+    body: OAuthExchangeRequest,
+    db: AsyncSession = Depends(get_db),
+    _: AdminUser = Depends(require_admin),
+):
+    """Exchange the callback code for tokens and create the Provider row."""
+    from app.providers.codex_oauth_flow import (
+        exchange_code as _codex_exchange,
+        extract_code_from_callback as _codex_extract,
+        OAuthFlowError as _CodexOAuthFlowError,
+    )
+    try:
+        code, callback_state = _codex_extract(body.callback)
+    except ValueError as e:
+        raise HTTPException(400, f"Couldn't parse callback: {e}")
+    try:
+        result = await _codex_exchange(body.state, code, expected_state=callback_state)
+    except _CodexOAuthFlowError as e:
+        raise HTTPException(400, str(e))
+
+    from app.providers.dedup import name_is_taken
+    if await name_is_taken(db, body.name):
+        raise HTTPException(
+            409, f"A provider named {body.name!r} already exists.",
+        )
+
+    data = body.model_dump(exclude={"state", "callback"})
+    data["provider_type"] = "codex-oauth"
+    data["api_key"] = result.access_token
+    data["oauth_refresh_token"] = result.refresh_token
+    data["oauth_expires_at"] = result.expires_at
+    # Stash workspace + plan-tier in extra_config so the dispatcher can
+    # stamp ChatGPT-Account-ID without re-decoding the JWT every call.
+    cfg = dict(data.get("extra_config") or {})
+    if result.chatgpt_account_id:
+        cfg["chatgpt_account_id"] = result.chatgpt_account_id
+    if result.chatgpt_plan_type:
+        cfg["chatgpt_plan_type"] = result.chatgpt_plan_type
+    data["extra_config"] = cfg
+    if not data.get("default_model"):
+        data["default_model"] = "gpt-5.5"
+
+    provider = Provider(id=secrets.token_hex(8), **data)
+    _stamp_user_edit(provider)
+    db.add(provider)
+    await db.commit()
+    await db.refresh(provider)
+    register_provider(
+        provider.id, provider.provider_type, provider.hold_down_sec, provider.failure_threshold,
+    )
+    return _serialize(provider)
+
+
+@router.post("/{provider_id}/codex-oauth-rotate")
+async def codex_oauth_rotate(
+    provider_id: str,
+    body: OAuthRotateRequest,
+    db: AsyncSession = Depends(get_db),
+    _: AdminUser = Depends(require_admin),
+):
+    """Re-auth an existing codex-oauth provider in-place. Mirrors the
+    claude-oauth ``/oauth-rotate`` endpoint — separate URL so the UI
+    can call the right exchange + know the right provider type."""
+    from app.providers.codex_oauth_flow import (
+        exchange_code as _codex_exchange,
+        extract_code_from_callback as _codex_extract,
+        OAuthFlowError as _CodexOAuthFlowError,
+    )
+    p = await _get_or_404(db, provider_id)
+    if p.provider_type != "codex-oauth":
+        raise HTTPException(400, f"Provider {p.name!r} is not a codex-oauth provider")
+
+    try:
+        code, callback_state = _codex_extract(body.callback)
+    except ValueError as e:
+        raise HTTPException(400, f"Couldn't parse callback: {e}")
+    try:
+        result = await _codex_exchange(body.state, code, expected_state=callback_state)
+    except _CodexOAuthFlowError as e:
+        raise HTTPException(400, str(e))
+
+    p.api_key = result.access_token
+    p.oauth_refresh_token = result.refresh_token
+    p.oauth_expires_at = result.expires_at
+    cfg = dict(p.extra_config or {})
+    if result.chatgpt_account_id:
+        cfg["chatgpt_account_id"] = result.chatgpt_account_id
+    if result.chatgpt_plan_type:
+        cfg["chatgpt_plan_type"] = result.chatgpt_plan_type
+    p.extra_config = cfg
+    _stamp_user_edit(p)
+    await db.commit()
+    await db.refresh(p)
+    register_provider(p.id, p.provider_type, p.hold_down_sec, p.failure_threshold)
+    from app.routing.circuit_breaker import clear_auth_failure as _clear_af, force_close
+    _clear_af(p.id)
+    await force_close(p.id)
+    return _serialize(p)
+
+
 @router.get("/{provider_id}")
 async def get_provider(
     provider_id: str,
@@ -381,6 +534,57 @@ async def get_provider(
 ):
     p = await _get_or_404(db, provider_id)
     return _serialize(p)
+
+
+@router.get("/{provider_id}/rate-limit")
+async def get_rate_limit_state(
+    provider_id: str,
+    db: AsyncSession = Depends(get_db),
+    _: AdminUser = Depends(require_admin),
+):
+    """v3.0.16: subscription-quota window state for OAuth-based providers.
+
+    Codex returns x-codex-* headers on every response with how much of the
+    primary (5h) and secondary (weekly) quotas have been used and when each
+    resets. We track these in-memory per provider. Admin UI uses this for
+    the "X% used, resets in Y" display + ops dashboards.
+
+    Returns ``{"observed": false}`` if no Codex response has been seen on
+    this node yet (cold cache / never-used provider).
+    """
+    p = await _get_or_404(db, provider_id)
+    if p.provider_type != "codex-oauth":
+        raise HTTPException(
+            400,
+            f"Provider {p.name!r} is type {p.provider_type!r}; rate-limit "
+            "state is only tracked for codex-oauth.",
+        )
+    from app.providers.codex_ratelimit import get_state
+    state = get_state(provider_id)
+    if state is None:
+        return {"provider_id": provider_id, "observed": False}
+    import time as _t
+    now = _t.time()
+    return {
+        "provider_id": provider_id,
+        "observed": True,
+        "plan_type": state.plan_type,
+        "active_limit": state.active_limit,
+        "primary": {
+            "used_percent": state.primary_used_percent,
+            "window_minutes": state.primary_window_minutes,
+            "reset_at": state.primary_reset_at,
+            "reset_in_sec": (state.primary_reset_at - now) if state.primary_reset_at else None,
+        },
+        "secondary": {
+            "used_percent": state.secondary_used_percent,
+            "window_minutes": state.secondary_window_minutes,
+            "reset_at": state.secondary_reset_at,
+            "reset_in_sec": (state.secondary_reset_at - now) if state.secondary_reset_at else None,
+        },
+        "last_observed_at": state.last_observed_at,
+        "last_observed_age_sec": now - state.last_observed_at,
+    }
 
 
 @router.put("/{provider_id}")
@@ -411,11 +615,26 @@ async def update_provider(
             f"(this one is {p.provider_type!r})",
         )
 
-    # For claude-oauth without a re-paste, keep existing api_key + oauth_* fields.
-    # If admin sent api_key="" on a claude-oauth update, ignore (they didn't mean
-    # to wipe it).
-    if p.provider_type == "claude-oauth" and not blob:
+    # For OAuth-based providers without a re-paste, keep the existing api_key +
+    # oauth_* fields. If admin sent api_key="" on the update, ignore — they
+    # didn't mean to wipe it (the OAuth UI hides the api_key field entirely,
+    # so an empty value here is just the form default, not an admin choice).
+    # v3.0.15: extended from claude-oauth to also cover codex-oauth.
+    # v3.0.16 (#129): also merge extra_config instead of replacing. The
+    # rotate endpoint stashes chatgpt_account_id / chatgpt_plan_type into
+    # extra_config; the edit form takes its snapshot of extra_config at
+    # modal-open, BEFORE rotate runs. If we let the PUT overwrite, the
+    # rotate's freshly-stashed keys get clobbered by the stale snapshot.
+    # Solution: layer the incoming form values OVER the current row's
+    # extra_config so OAuth-stashed keys survive while admin-added keys
+    # still win.
+    if p.provider_type in ("claude-oauth", "codex-oauth") and not blob:
         data.pop("api_key", None)
+        incoming_extra = data.pop("extra_config", None)
+        if incoming_extra is not None:
+            merged = dict(p.extra_config or {})
+            merged.update(incoming_extra)
+            data["extra_config"] = merged
 
     # v2.7.8 BUG-002: if admin pasted a new api_key OR blob, clear the
     # auth-failure flag so the provider gets a fresh chance.
@@ -545,11 +764,15 @@ async def scan_models(
         models = await scan_provider_models(db, p)
         # v3.0.9: also flag deprecated models in the scan result so the
         # UI can render them with a warning + suggested replacement.
+        # v3.0.16 fix: scan_provider_models returns list[dict] (each entry
+        # has ``model_id``), not list[str] — the original comprehension
+        # was treating each dict as a key, which raised "unhashable type:
+        # 'dict'" the first time a non-empty scan landed.
         from app.providers.deprecations import MODEL_DEPRECATIONS
         deprecated_models = [
-            {"id": m, "replacement": MODEL_DEPRECATIONS[m]}
+            {"id": m["model_id"], "replacement": MODEL_DEPRECATIONS[m["model_id"]]}
             for m in (models or [])
-            if m in MODEL_DEPRECATIONS
+            if isinstance(m, dict) and m.get("model_id") in MODEL_DEPRECATIONS
         ]
         out = {"scanned": len(models), "models": models}
         if not models:

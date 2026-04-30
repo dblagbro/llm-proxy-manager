@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useSearchParams } from 'react-router-dom'
 import { RefreshCw, Search, X } from 'lucide-react'
 import { monitoringApi } from '@/api'
+import { getBasePath } from '@/lib/basePath'
 import { Card, CardContent } from '@/components/ui/Card'
 import { Badge } from '@/components/ui/Badge'
 import { Spinner } from '@/components/ui/Spinner'
@@ -81,7 +82,8 @@ export function ActivityPage() {
       setConnected(false)
       return
     }
-    const base = import.meta.env.BASE_URL.replace(/\/$/, '')
+    // v3.0.16: runtime base-path detection (mount-point agnostic).
+    const base = getBasePath()
     const es = new EventSource(`${base}/api/monitoring/activity/stream`, { withCredentials: true })
     esRef.current = es
     es.addEventListener('open', () => setConnected(true))

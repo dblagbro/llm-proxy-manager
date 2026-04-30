@@ -203,6 +203,18 @@ async def chat_completions(
         from app.budget.tracker import warnings_for
         resp_headers.update(warnings_for(key_record.budget_status))
 
+    # v3.0.15: codex-oauth providers bypass the rest of the litellm pipeline
+    # (no semantic cache, no CoT, no tool emulation, no fallback chain — same
+    # short-circuit pattern as claude-oauth). Translate Chat Completions ↔
+    # Responses API and forward to chatgpt.com/backend-api/codex/responses
+    # with the OAuth bearer + ChatGPT-Account-ID workspace header.
+    if route.provider.provider_type == "codex-oauth":
+        from app.api._codex_oauth_dispatch import dispatch_codex_oauth
+        return await dispatch_codex_oauth(
+            provider=route.provider, body=body, stream=stream, db=db,
+            resp_headers=resp_headers,
+        )
+
     # Semantic cache — check before anything LLM-ish runs
     cache_decision = decide_cacheable(
         x_cache_header=x_cache,

@@ -58,7 +58,7 @@ def infer_capability_profile(
     # Provider-specific region defaults
     if provider_type == "google":
         profile.regions = ["us", "eu", "asia"]
-    elif provider_type in ("anthropic", "openai", "grok", "claude-oauth"):
+    elif provider_type in ("anthropic", "openai", "grok", "claude-oauth", "codex-oauth"):
         profile.regions = ["us"]
     elif provider_type == "ollama":
         profile.regions = ["local"]
