@@ -47,7 +47,13 @@ async def list_keys(
     db: AsyncSession = Depends(get_db),
     _: AdminUser = Depends(require_admin),
 ):
-    result = await db.execute(select(ApiKey).order_by(ApiKey.created_at.desc()))
+    # v3.0.20: hide tombstoned rows from the admin list — kept in DB only
+    # for cluster-sync to propagate the delete to peers.
+    result = await db.execute(
+        select(ApiKey)
+        .where(ApiKey.deleted_at.is_(None))
+        .order_by(ApiKey.created_at.desc())
+    )
     keys = result.scalars().all()
     return [_serialize(k) for k in keys]
 
@@ -143,14 +149,24 @@ async def bulk_delete_keys(
     db: AsyncSession = Depends(get_db),
     _: AdminUser = Depends(require_admin),
 ):
-    """Delete multiple API keys in one call. Returns count deleted."""
+    """Delete multiple API keys in one call. Returns count deleted.
+
+    v3.0.20: soft-delete via tombstone (``deleted_at`` + ``enabled=False``).
+    Hard DELETE was reversed by the next cluster-sync push from a peer that
+    still had the row — same shape as the v2.8.2 Provider resurrection bug.
+    """
     if not body.ids:
         return {"deleted": 0}
-    result = await db.execute(select(ApiKey).where(ApiKey.id.in_(body.ids)))
+    result = await db.execute(
+        select(ApiKey).where(ApiKey.id.in_(body.ids), ApiKey.deleted_at.is_(None))
+    )
     keys = result.scalars().all()
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
     count = 0
     for k in keys:
-        await db.delete(k)
+        k.deleted_at = now
+        k.enabled = False
         count += 1
     await db.commit()
     return {"deleted": count, "requested": len(body.ids)}
@@ -162,8 +178,11 @@ async def delete_key(
     db: AsyncSession = Depends(get_db),
     _: AdminUser = Depends(require_admin),
 ):
+    """v3.0.20: soft-delete via tombstone — see bulk_delete_keys for context."""
+    from datetime import datetime, timezone
     k = await _get_or_404(db, key_id)
-    await db.delete(k)
+    k.deleted_at = datetime.now(timezone.utc)
+    k.enabled = False
     await db.commit()
     return {"ok": True}
 

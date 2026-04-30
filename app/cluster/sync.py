@@ -39,15 +39,46 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
     source_node = payload.get("source_node", "unknown")
     peer_costs: dict[str, float] = {}
 
+    # v3.0.20: tombstone-aware api-key merge. Without this, hard-DELETE on
+    # one node was reversed by the next sync push from a peer that still
+    # had the row. Peer's ``deleted_at`` propagates the soft-delete; our
+    # local tombstone is preserved if peer's payload doesn't carry one.
+    from datetime import datetime as _dt
+    def _parse_iso_kt(v):
+        if not v:
+            return None
+        if isinstance(v, str):
+            try:
+                return _dt.fromisoformat(v.replace("Z", "+00:00"))
+            except ValueError:
+                return None
+        return v
+
     for k_data in payload.get("api_keys", []):
+        peer_deleted_at = _parse_iso_kt(k_data.get("deleted_at"))
         result = await db.execute(select(ApiKey).where(ApiKey.key_hash == k_data["key_hash"]))
         existing = result.scalar_one_or_none()
         if existing:
+            # Peer reports a tombstone — propagate it locally if we don't
+            # already have one (or if peer's stamp is newer).
+            if peer_deleted_at and (
+                existing.deleted_at is None or peer_deleted_at >= existing.deleted_at
+            ):
+                existing.deleted_at = peer_deleted_at
+                existing.enabled = False
+                continue
+            # Local tombstone outranks any peer state when peer is not also
+            # tombstoned — the delete was authoritative on this node.
+            if existing.deleted_at is not None and peer_deleted_at is None:
+                continue
             if "spending_cap_usd" in k_data:
                 existing.spending_cap_usd = k_data["spending_cap_usd"]
             if "rate_limit_rpm" in k_data:
                 existing.rate_limit_rpm = k_data["rate_limit_rpm"]
         else:
+            # No local row. Don't materialize a peer's tombstone — just skip.
+            if peer_deleted_at is not None:
+                continue
             db.add(ApiKey(
                 id=k_data["id"],
                 name=k_data["name"],

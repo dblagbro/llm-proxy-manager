@@ -28,7 +28,7 @@ from sqlalchemy import delete, func, select
 
 from app.config import settings
 from app.models.database import AsyncSessionLocal
-from app.models.db import ActivityLog, Provider, RunEvent
+from app.models.db import ActivityLog, ApiKey, Provider, RunEvent
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +98,35 @@ async def _prune_provider_tombstones(keep_days: int) -> int:
             return deleted
 
 
+async def _prune_apikey_tombstones(keep_days: int) -> int:
+    """v3.0.20: hard-delete ApiKey rows whose tombstone is older than
+    ``keep_days``. Same pattern as the provider tombstone GC — keeps the
+    table from growing unbounded with deleted-but-still-replicated rows.
+    """
+    deleted = 0
+    while True:
+        async with AsyncSessionLocal() as db:
+            cutoff_expr = func.datetime("now", f"-{keep_days} days")
+            id_res = await db.execute(
+                select(ApiKey.id)
+                .where(ApiKey.deleted_at.is_not(None))
+                .where(ApiKey.deleted_at < cutoff_expr)
+                .limit(_BATCH_SIZE)
+            )
+            ids = [r[0] for r in id_res.all()]
+            if not ids:
+                return deleted
+            await db.execute(
+                delete(ApiKey).where(ApiKey.id.in_(ids))
+            )
+            await db.commit()
+            deleted += len(ids)
+        if len(ids) >= _BATCH_SIZE:
+            await asyncio.sleep(0.5)
+        else:
+            return deleted
+
+
 async def _prune_table(table_class, ts_column, keep_days: int) -> int:
     """Delete rows from ``table_class`` where ``ts_column < cutoff``.
 
@@ -137,6 +166,7 @@ async def _sweep_once() -> dict:
     out = {"keep_days": keep_days, "activity_log": 0,
            "provider_metrics": 0, "run_events": 0,
            "provider_tombstones": 0,
+           "apikey_tombstones": 0,
            "tombstone_keep_days": tombstone_days}
 
     try:
@@ -182,6 +212,11 @@ async def _sweep_once() -> dict:
         out["provider_tombstones"] = await _prune_provider_tombstones(tombstone_days)
     except Exception as e:
         logger.warning("prune.provider_tombstones_failed err=%s", e)
+
+    try:
+        out["apikey_tombstones"] = await _prune_apikey_tombstones(tombstone_days)
+    except Exception as e:
+        logger.warning("prune.apikey_tombstones_failed err=%s", e)
 
     return out
 

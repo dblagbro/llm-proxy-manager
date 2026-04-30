@@ -78,6 +78,8 @@ async def init_db():
             "ALTER TABLE users ADD COLUMN time_format TEXT",
             # v3.0.11 — sync LWW now prefers user-edit timestamp over updated_at
             "ALTER TABLE providers ADD COLUMN last_user_edit_at REAL",
+            # v3.0.20 — ApiKey soft-delete tombstone for cluster-sync resurrection bug
+            "ALTER TABLE api_keys ADD COLUMN deleted_at DATETIME",
         ]:
             try:
                 await conn.exec_driver_sql(stmt)

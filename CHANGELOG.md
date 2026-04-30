@@ -9,6 +9,12 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.0.x — Run runtime, cluster ops, observability
 
+### v3.0.20 — ApiKey tombstone-aware delete (resurrection bug)
+
+Same shape as v2.8.2's Provider tombstone fix. Previously, hard-DELETE'ing an API key on one node was reversed by the next cluster sync push from a peer that still had the row — `apply_sync` saw `existing is None` and re-INSERTed it. Test/regression keys couldn't be cleaned up; admin-deleted keys reappeared within ~60s.
+
+Now `ApiKey` has a `deleted_at` column. The DELETE handler soft-deletes (`deleted_at = now`, `enabled = False`). Sync push includes tombstoned rows; `apply_sync` propagates peer tombstones locally and preserves local tombstones against non-tombstoned peer rows. Lookups filter `deleted_at IS NULL` (the auth path already filtered `enabled=True` so unauthorized requests were already blocked, but the admin list now hides them too). Tombstones older than `provider_tombstone_retention_days` (default 7) are hard-deleted by the daily prune sweep.
+
 ### v3.0.19 — fix codex-oauth keep-alive probe path
 
 Same shape as v2.7.2's claude-oauth probe fix that I forgot to extend when v3.0.16 landed: the keep-alive probe was sending codex-oauth providers through `litellm.acompletion(model="openai/gpt-5.5")`, which routes to `api.openai.com` — that endpoint rejects Codex CLI bearer tokens with `"Missing scopes: model.request"`. Every 5-min probe cycle was failing → CB tripped after 3 failures → real traffic hit CB-open during the hold-down windows. Now uses the same direct dispatch path as real traffic (`chatgpt.com/backend-api/codex/responses` with the right headers + Responses API body shape), draining a streaming POST until `response.completed`.
