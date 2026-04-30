@@ -9,6 +9,10 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.0.x — Run runtime, cluster ops, observability
 
+### v3.0.17 — chain-bump priority on OAuth /exchange paths
+
+`POST /api/providers/claude-oauth/exchange` and `POST /api/providers/codex-oauth/exchange` now call `_bump_priority_conflicts(...)` before inserting the new row, matching the standard `POST /api/providers` behavior. Without this, adding an OAuth provider at a priority already in use produced a momentary tie until the next cluster sync's `normalize_priority_ties` resolved it (60s window). Tie no longer occurs at insert time.
+
 ### v3.0.16 — codex-oauth provider + path-relative frontend
 
 - **`codex-oauth` provider type** — OpenAI Codex CLI / ChatGPT subscription OAuth, billed to Plus/Pro/Team/Enterprise quota instead of API tokens. Mirrors the claude-oauth admin UX (Generate Auth URL → browser approval → paste callback). Full pipeline: PKCE flow → token exchange → refresh-token rotation → Chat Completions ↔ Responses API translator → request dispatch via `chatgpt.com/backend-api/codex/responses`.
