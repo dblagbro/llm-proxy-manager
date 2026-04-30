@@ -9,6 +9,10 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.0.x — Run runtime, cluster ops, observability
 
+### v3.0.19 — fix codex-oauth keep-alive probe path
+
+Same shape as v2.7.2's claude-oauth probe fix that I forgot to extend when v3.0.16 landed: the keep-alive probe was sending codex-oauth providers through `litellm.acompletion(model="openai/gpt-5.5")`, which routes to `api.openai.com` — that endpoint rejects Codex CLI bearer tokens with `"Missing scopes: model.request"`. Every 5-min probe cycle was failing → CB tripped after 3 failures → real traffic hit CB-open during the hold-down windows. Now uses the same direct dispatch path as real traffic (`chatgpt.com/backend-api/codex/responses` with the right headers + Responses API body shape), draining a streaming POST until `response.completed`.
+
 ### v3.0.18 — OAuth refresh-token race recovery
 
 When two cluster nodes independently refresh the same OAuth provider's access_token within the 60s sync window, Anthropic and OpenAI both rotate the refresh_token on every call — whichever node loses the race gets back `invalid_grant` and would previously trip the 24h auth-failure CB until an admin manually re-pasted credentials. Now the loser fans out a signed `GET /cluster/oauth-pull/{provider_id}` to each peer; whichever peer has the freshest non-expired tokens responds, the loser adopts them locally, and the original chat call retries seamlessly. Only raises (back to the existing CB path) if no peer has fresher tokens — i.e. real upstream revocation.
