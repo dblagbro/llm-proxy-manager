@@ -310,16 +310,9 @@ def _inject_claude_code_system(body: dict) -> dict:
     # v2.8.9: Anthropic caps cache_control markers at 4 per request. If the
     # caller already has 4, omit ours to avoid a 400 ("A maximum of 4 blocks
     # with cache_control may be provided. Found 5.").
-    # v3.0.9: hub-team audit confirmed v1.7 daemons stamp 0 cache_control
-    # markers. The cap-check is now a defensive safety net for third-party
-    # callers; we log when it actually fires so we can verify dead-status
-    # before removing the helper entirely in a future release.
     marker_block: dict = {"type": "text", "text": _CLAUDE_CODE_SYS_MARKER}
-    cc_count = _count_cache_control_markers(body)
-    if cc_count < 4:
+    if _count_cache_control_markers(body) < 4:
         marker_block["cache_control"] = {"type": "ephemeral"}
-    else:
-        logger.info("oauth.cc_marker_omitted reason=cap-saturated count=%d", cc_count)
 
     if sys_field is None:
         new_system: list | str = [marker_block]
@@ -378,12 +371,7 @@ async def _complete_claude_oauth(
     """
     url = f"{PLATFORM_BASE_URL}/v1/messages?beta=true"
     body = {**body}
-    # v3.0.9: hub-team audit confirmed v1.7 daemons set max_tokens explicitly
-    # on every call. Backstop kept for third-party callers; instrumented so
-    # we can verify dead-status before removing entirely.
-    if "max_tokens" not in body:
-        logger.info("oauth.max_tokens_default_applied (caller did not set max_tokens)")
-        body["max_tokens"] = 4096
+    body.setdefault("max_tokens", 4096)
     body = _inject_claude_code_system(body)
     current_token = access_token
     refreshed = False
@@ -464,11 +452,7 @@ async def _stream_claude_oauth(
     """
     url = f"{PLATFORM_BASE_URL}/v1/messages?beta=true"
     body = {**body, "stream": True}
-    # v3.0.9: same instrumentation as the non-streaming path — backstop for
-    # third-party callers; logs when applied so we can confirm dead-status.
-    if "max_tokens" not in body:
-        logger.info("oauth.max_tokens_default_applied stream=True")
-        body["max_tokens"] = 4096
+    body.setdefault("max_tokens", 4096)
     body = _inject_claude_code_system(body)
 
     in_tok = out_tok = 0
