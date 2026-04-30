@@ -115,13 +115,16 @@ async def _build_sync_payload(db) -> dict:
          "role": u.role, "created_at": str(u.created_at)}
         for u in users_result.scalars().all()
     ]
+    # v3.0.20: include tombstoned (soft-deleted) keys so peers learn about
+    # deletes; mirrors the v2.8.2 provider-tombstone replication path.
     keys_result = await db.execute(select(ApiKey))
     keys = [
         {"id": k.id, "name": k.name, "key_hash": k.key_hash, "key_prefix": k.key_prefix,
          "key_type": k.key_type, "enabled": k.enabled,
          "spending_cap_usd": k.spending_cap_usd,
          "rate_limit_rpm": k.rate_limit_rpm,
-         "total_cost_usd": k.total_cost_usd or 0.0}
+         "total_cost_usd": k.total_cost_usd or 0.0,
+         "deleted_at": k.deleted_at.isoformat() if k.deleted_at else None}
         for k in keys_result.scalars().all()
     ]
     # v2.8.2: include tombstoned (soft-deleted) rows so peers learn about deletes.
