@@ -9,6 +9,11 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.0.x — Run runtime, cluster ops, observability
 
+### v3.0.13 — tombstone garbage collection + rolling-deploy caveat
+
+- **Tombstone GC** — daily prune sweep now hard-deletes `Provider` rows whose `deleted_at` is older than `provider_tombstone_retention_days` (default 7, env `PROVIDER_TOMBSTONE_RETENTION_DAYS`). Closes the long-standing TODO from v2.8.2's soft-delete design. Cluster sync converges in seconds, so 7 days is a comfortable safety margin before hard-delete.
+- **README** — adds the v3.0.11 mixed-version rolling-deploy caveat to the deploy section so future operators don't lose an edit during the brief upgrade window.
+
 ### v3.0.12 — provider name dedup + drop v3.0.9 backstop instrumentation
 
 - **Boot-time dedup:** `dedup_providers_by_name` collapses duplicate-name active provider rows (cluster-sync legacy) into one survivor — keeps the highest-priority row (lowest `priority` value; ties broken by oldest `created_at`, then lowest `id`), tombstones the rest. Idempotent. Tombstone stamps `last_user_edit_at` so the dedup decision propagates as an authoritative cluster-sync edit.

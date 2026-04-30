@@ -108,6 +108,10 @@ class Settings(BaseSettings):
 
     # v3.0.7: activity_log + provider_metrics + run_events retention (days)
     activity_log_retention_days: int = Field(30, alias="ACTIVITY_LOG_RETENTION_DAYS")
+    # v3.0.13: how long a provider tombstone (deleted_at non-null) is kept
+    # before hard-delete. Cluster sync converges in seconds, so 7d is a
+    # comfortable safety margin.
+    provider_tombstone_retention_days: int = Field(7, alias="PROVIDER_TOMBSTONE_RETENTION_DAYS")
 
     # Cluster
     cluster_enabled: bool = Field(False, alias="CLUSTER_ENABLED")
