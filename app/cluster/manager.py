@@ -133,6 +133,12 @@ async def _build_sync_payload(db) -> dict:
          "exclude_from_tool_requests": p.exclude_from_tool_requests,
          "hold_down_sec": p.hold_down_sec, "failure_threshold": p.failure_threshold,
          "extra_config": p.extra_config or {},
+         # v3.0.10: previously-missing fields. Without these, daily-budget /
+         # OAuth-token rotations on one node never reach peers. User-flagged
+         # symptom: provider edits on www1 don't show up on www2.
+         "daily_budget_usd": p.daily_budget_usd,
+         "oauth_refresh_token": p.oauth_refresh_token,
+         "oauth_expires_at": p.oauth_expires_at,
          "deleted_at": p.deleted_at.isoformat() if p.deleted_at else None,
          "updated_at": p.updated_at.isoformat() if p.updated_at else None}
         for p in providers_result.scalars().all()

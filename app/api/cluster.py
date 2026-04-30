@@ -105,3 +105,27 @@ async def open_circuit_breaker(
     from app.routing.circuit_breaker import force_open
     await force_open(provider_id)
     return {"ok": True, "provider_id": provider_id}
+
+
+@router.post("/cluster/sync-now")
+async def force_sync_now(
+    _: AdminUser = Depends(require_admin),
+):
+    """v3.0.10: trigger an immediate cluster sync push to every peer.
+    Normal cadence is 60s — this endpoint lets operators force
+    convergence after a config change without waiting.
+
+    Returns ``{peer_id: ok_bool, ...}`` for each reachable peer."""
+    from app.cluster.manager import peers as _peers, push_sync
+    from app.models.database import AsyncSessionLocal
+    results = {}
+    for peer_id, peer in list(_peers.items()):
+        if peer.status == "unreachable":
+            results[peer_id] = False
+            continue
+        try:
+            await push_sync(peer, AsyncSessionLocal)
+            results[peer_id] = True
+        except Exception:
+            results[peer_id] = False
+    return {"pushed_to": results, "peer_count": len(_peers)}
