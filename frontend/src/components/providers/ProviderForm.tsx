@@ -8,7 +8,53 @@ import type { ProviderType, Provider } from '@/types'
 const PROVIDER_TYPES: ProviderType[] = [
   'anthropic', 'openai', 'google', 'vertex', 'grok', 'ollama', 'compatible',
   'claude-oauth',  // v2.7.0 — Claude Pro Max subscription via pasted credentials
+  'codex-oauth',   // v3.0.15 — OpenAI Codex CLI / ChatGPT subscription
 ]
+
+// v3.0.15: per-OAuth-flavor copy + API method bindings, keyed by ProviderType.
+// Lets the OAuth panel render correctly for either claude-oauth or codex-oauth
+// without duplicating the markup.
+type OAuthFlavor = {
+  label: string
+  callbackHostHint: string
+  defaultModel: string
+  pasteFallbackInstructions: { cmd: string; catFile: string; tokenShape: string }
+  pasteFallbackPlaceholder: string
+  authorize: () => Promise<{ state: string; authorize_url: string }>
+  exchange: (data: Parameters<typeof providersApi.oauthExchange>[0]) => Promise<Provider>
+  rotate: (id: string, data: { state: string; callback: string }) => Promise<Provider>
+}
+
+const OAUTH_FLAVORS: Record<string, OAuthFlavor> = {
+  'claude-oauth': {
+    label: 'Claude Pro Max — sign in with your subscription',
+    callbackHostHint: 'platform.claude.com/oauth/code/callback',
+    defaultModel: 'claude-sonnet-4-6',
+    pasteFallbackInstructions: {
+      cmd: 'claude login',
+      catFile: '~/.claude/credentials.json',
+      tokenShape: 'sk-ant-oat…',
+    },
+    pasteFallbackPlaceholder: '{\n  "access_token": "sk-ant-oat01-…",\n  "refresh_token": "…",\n  "expires_at": "2026-05-24T00:00:00Z"\n}\n\n— or just —\n\nsk-ant-oat01-…',
+    authorize: () => providersApi.oauthAuthorize(),
+    exchange: (data) => providersApi.oauthExchange(data),
+    rotate: (id, data) => providersApi.oauthRotate(id, data),
+  },
+  'codex-oauth': {
+    label: 'ChatGPT subscription (Plus/Team/Enterprise) — sign in via Codex',
+    callbackHostHint: 'localhost:1455/auth/callback (browser will dead-end here — copy the URL anyway)',
+    defaultModel: 'gpt-5.5',
+    pasteFallbackInstructions: {
+      cmd: 'codex auth',
+      catFile: '~/.codex/auth.json',
+      tokenShape: 'JWT (three dot-separated base64 segments)',
+    },
+    pasteFallbackPlaceholder: '{\n  "tokens": {\n    "id_token": "eyJhbGciOi…",\n    "access_token": "eyJhbGciOi…",\n    "refresh_token": "…"\n  }\n}\n\n— or just —\n\neyJhbGciOi…',
+    authorize: () => providersApi.codexOauthAuthorize(),
+    exchange: (data) => providersApi.codexOauthExchange(data),
+    rotate: (id, data) => providersApi.codexOauthRotate(id, data),
+  },
+}
 
 export type ProviderFormState = {
   name: string
@@ -82,15 +128,17 @@ interface Props {
 
 export function ProviderForm({ form, onChange, editing }: Props) {
   const set = (patch: Partial<ProviderFormState>) => onChange({ ...form, ...patch })
-  const isOAuth = form.provider_type === 'claude-oauth'
+  const flavor = OAUTH_FLAVORS[form.provider_type]
+  const isOAuth = !!flavor
   const [generating, setGenerating] = useState(false)
   const [showPasteFallback, setShowPasteFallback] = useState(false)
   const toast = useToast()
 
   async function handleGenerateAuthUrl() {
+    if (!flavor) return
     setGenerating(true)
     try {
-      const r = await providersApi.oauthAuthorize()
+      const r = await flavor.authorize()
       set({ oauth_state: r.state, oauth_authorize_url: r.authorize_url, oauth_callback: '' })
     } catch (e: unknown) {
       toast.error((e as Error).message || 'Failed to generate auth URL')
@@ -118,12 +166,14 @@ export function ProviderForm({ form, onChange, editing }: Props) {
         </select>
       </div>
 
-      {/* v2.7.1: claude-oauth new-create gets the browser-initiated flow.
-          Editing or "I already have a token" falls back to paste-credentials. */}
+      {/* v2.7.1: OAuth new-create gets the browser-initiated flow.
+          v3.0.15: same flow now drives both claude-oauth and codex-oauth via the
+          OAUTH_FLAVORS lookup. Editing or "I already have a token" falls back to
+          paste-credentials. */}
       {isOAuth ? (
         <div className="md:col-span-2 space-y-4 rounded-lg border border-indigo-200 dark:border-indigo-800 bg-indigo-50/40 dark:bg-indigo-950/30 p-4">
           <div className="text-sm font-medium text-gray-800 dark:text-gray-100">
-            Claude Pro Max — sign in with your subscription
+            {flavor.label}
           </div>
 
           {!showPasteFallback && (
@@ -131,8 +181,8 @@ export function ProviderForm({ form, onChange, editing }: Props) {
               <ol className="list-decimal list-inside text-xs text-gray-600 dark:text-gray-300 space-y-1">
                 {editing && <li className="text-amber-600 dark:text-amber-400 font-medium">Re-authorize this provider — replaces the stored access &amp; refresh tokens.</li>}
                 <li>Click <strong>{editing ? 'Generate New Auth URL' : 'Generate Auth URL'}</strong> below.</li>
-                <li>Open the URL in a tab where you're signed in to claude.ai and approve access.</li>
-                <li>You'll land on an Anthropic success page at <code className="px-1 font-mono bg-gray-100 dark:bg-gray-800 rounded">platform.claude.com/oauth/code/callback</code> that displays an authorization code.</li>
+                <li>Open the URL in a tab where you're signed in to your {form.provider_type === 'codex-oauth' ? 'ChatGPT' : 'Claude'} account and approve access.</li>
+                <li>You'll be redirected to <code className="px-1 font-mono bg-gray-100 dark:bg-gray-800 rounded">{flavor.callbackHostHint}</code>.</li>
                 <li>Copy that code (or the full URL from your address bar) and paste it below. We'll trade it for a token automatically.</li>
               </ol>
 
@@ -167,7 +217,7 @@ export function ProviderForm({ form, onChange, editing }: Props) {
                     value={form.oauth_callback}
                     onChange={e => set({ oauth_callback: e.target.value })}
                     rows={3}
-                    placeholder={'abc123…#state\n— or —\nhttps://platform.claude.com/oauth/code/callback?code=abc123…&state=…'}
+                    placeholder={`code=…&state=…\n— or —\nhttp(s)://${flavor.callbackHostHint.split(' ')[0]}?code=…&state=…`}
                     className="w-full px-3 py-2 text-xs font-mono bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 border border-gray-300 dark:border-gray-700 rounded focus:outline-none focus:ring-2 focus:ring-indigo-500"
                     required={!editing}
                   />
@@ -176,7 +226,7 @@ export function ProviderForm({ form, onChange, editing }: Props) {
 
               <div className="text-[11px] text-gray-500 dark:text-gray-400">
                 {editing ? 'Or ' : 'Already have a token from '}
-                <code className="font-mono">claude login</code>?{' '}
+                <code className="font-mono">{flavor.pasteFallbackInstructions.cmd}</code>?{' '}
                 <button
                   type="button"
                   className="underline hover:text-gray-700 dark:hover:text-gray-200"
@@ -191,8 +241,8 @@ export function ProviderForm({ form, onChange, editing }: Props) {
           {showPasteFallback && (
             <div className="space-y-2">
               <ol className="list-decimal list-inside text-xs text-gray-600 dark:text-gray-300 space-y-1">
-                <li>On any machine with Claude Code installed, run <code className="px-1 font-mono bg-gray-100 dark:bg-gray-800 rounded">claude login</code></li>
-                <li>Run <code className="px-1 font-mono bg-gray-100 dark:bg-gray-800 rounded">cat ~/.claude/credentials.json</code> (or paste your <code className="font-mono">sk-ant-oat…</code> token directly)</li>
+                <li>On any machine with the CLI installed, run <code className="px-1 font-mono bg-gray-100 dark:bg-gray-800 rounded">{flavor.pasteFallbackInstructions.cmd}</code></li>
+                <li>Run <code className="px-1 font-mono bg-gray-100 dark:bg-gray-800 rounded">cat {flavor.pasteFallbackInstructions.catFile}</code> (or paste your bare <code className="font-mono">{flavor.pasteFallbackInstructions.tokenShape}</code> directly)</li>
                 <li>Paste the entire output below and save. We parse, encrypt, and store — the blob itself is never persisted.</li>
               </ol>
               <label className="block text-xs font-medium text-gray-700 dark:text-gray-300">
@@ -203,7 +253,7 @@ export function ProviderForm({ form, onChange, editing }: Props) {
                 value={form.oauth_credentials_blob}
                 onChange={e => set({ oauth_credentials_blob: e.target.value })}
                 rows={6}
-                placeholder={`{\n  "access_token": "sk-ant-oat01-…",\n  "refresh_token": "…",\n  "expires_at": "2026-05-24T00:00:00Z"\n}\n\n— or just —\n\nsk-ant-oat01-…`}
+                placeholder={flavor.pasteFallbackPlaceholder}
                 className="w-full px-3 py-2 text-xs font-mono bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 border border-gray-300 dark:border-gray-700 rounded focus:outline-none focus:ring-2 focus:ring-indigo-500"
                 required={!editing}
               />

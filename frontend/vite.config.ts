@@ -4,7 +4,12 @@ import tailwindcss from '@tailwindcss/vite'
 import path from 'path'
 
 export default defineConfig({
-  base: '/llm-proxy2/',
+  // v3.0.16: use relative asset paths so a single built bundle can be
+  // served from any URL prefix (e.g. /llm-proxy2/ for prod and
+  // /llm-proxy2-smoke/ for the pre-prod canary). Companion runtime
+  // detection lives in src/lib/basePath.ts; consumers are App.tsx
+  // (BrowserRouter basename) and api/client.ts (request prefix).
+  base: './',
   plugins: [react(), tailwindcss()],
   resolve: {
     alias: { '@': path.resolve(__dirname, './src') },

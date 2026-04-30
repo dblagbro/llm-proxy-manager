@@ -9,6 +9,15 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.0.x — Run runtime, cluster ops, observability
 
+### v3.0.16 — codex-oauth provider + path-relative frontend
+
+- **`codex-oauth` provider type** — OpenAI Codex CLI / ChatGPT subscription OAuth, billed to Plus/Pro/Team/Enterprise quota instead of API tokens. Mirrors the claude-oauth admin UX (Generate Auth URL → browser approval → paste callback). Full pipeline: PKCE flow → token exchange → refresh-token rotation → Chat Completions ↔ Responses API translator → request dispatch via `chatgpt.com/backend-api/codex/responses`.
+- **Path-relative frontend** — `base: './'` in `vite.config.ts` plus runtime `getBasePath()` detection so a single built bundle deploys at any URL prefix. Smoke node now actually serves the SPA correctly at `/llm-proxy2-smoke/` (was previously broken — only `/health` worked).
+- **Rate-limit awareness for codex-oauth** — reads `x-codex-*` headers on every successful response (plan tier, used %, reset-at, window minutes); force-opens the CB on 429 / limit-exceeded with hold-down equal to upstream's reset-after seconds. New `/api/providers/{id}/rate-limit` admin endpoint surfaces state for monitoring.
+- **`scan_models` endpoint fix** — comprehension expected `list[str]` from `scan_provider_models` but it returns `list[dict]`. Latent for all provider types since v3.0.9; surfaced when codex-oauth scan returned 6 real models. `unhashable type: 'dict'` fixed.
+- **OAuth edit-rotate clobber fix** — extends the v2.7.x `api_key` preservation to also cover `extra_config` (preserves the rotate endpoint's freshly-stashed `chatgpt_account_id`/`chatgpt_plan_type` against the form snapshot's PUT). Applies to both claude-oauth and codex-oauth.
+- **Tests** — +10 translator + +10 ratelimit; 822 unit tests green.
+
 ### v3.0.14 — runtime model-deprecation auto-bump
 
 When upstream returns a `NotFoundError` for a model in our `MODEL_DEPRECATIONS` registry, `acompletion_with_retry` now persists the replacement to every active provider's `default_model` and retries the same call once with the new model id. Closes the boot-time-only gap from v3.0.9 — if a vendor retires a model live mid-day, we self-heal on the first failure instead of bleeding errors until the next deploy. The bump is one retry per call (no infinite loop); if the replacement also fails, the existing CB / next-provider fallback path takes over.

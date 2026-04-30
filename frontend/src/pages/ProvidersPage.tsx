@@ -56,10 +56,14 @@ export function ProvidersPage() {
 
   const saveMutation = useMutation({
     mutationFn: async (data: ProviderFormState) => {
-      // v2.7.1: claude-oauth new-create with an authorize_url + callback goes
-      // through the browser-OAuth exchange endpoint instead of the plain POST.
-      if (!editing && data.provider_type === 'claude-oauth' && data.oauth_state && data.oauth_callback) {
-        return providersApi.oauthExchange({
+      // v2.7.1 / v3.0.15: OAuth providers (claude-oauth or codex-oauth) with an
+      // authorize_url + callback go through their type-specific exchange/rotate
+      // endpoints instead of the plain POST/PUT.
+      const isOAuthExchange =
+        data.oauth_state && data.oauth_callback &&
+        (data.provider_type === 'claude-oauth' || data.provider_type === 'codex-oauth')
+      if (!editing && isOAuthExchange) {
+        const payload = {
           state: data.oauth_state,
           callback: data.oauth_callback,
           name: data.name,
@@ -72,16 +76,19 @@ export function ProvidersPage() {
           hold_down_sec: data.hold_down_sec,
           failure_threshold: data.failure_threshold,
           extra_config: data.extra_config,
-        })
+        }
+        return data.provider_type === 'codex-oauth'
+          ? providersApi.codexOauthExchange(payload)
+          : providersApi.oauthExchange(payload)
       }
-      // v2.7.7: claude-oauth re-auth — when editing with state+callback, rotate
-      // tokens in-place via /oauth-rotate, then PUT the rest of the form.
-      if (editing && data.provider_type === 'claude-oauth' && data.oauth_state && data.oauth_callback) {
-        await providersApi.oauthRotate(editing.id, {
-          state: data.oauth_state,
-          callback: data.oauth_callback,
-        })
-        // Continue with the standard PUT for non-token field updates
+      // v2.7.7 / v3.0.15: re-auth in place when editing with state+callback.
+      if (editing && isOAuthExchange) {
+        const rotatePayload = { state: data.oauth_state, callback: data.oauth_callback }
+        if (data.provider_type === 'codex-oauth') {
+          await providersApi.codexOauthRotate(editing.id, rotatePayload)
+        } else {
+          await providersApi.oauthRotate(editing.id, rotatePayload)
+        }
         return providersApi.update(editing.id, data)
       }
       return editing ? providersApi.update(editing.id, data) : providersApi.create(data)
@@ -337,7 +344,7 @@ export function ProvidersPage() {
                             <p className="text-xs text-gray-600 dark:text-gray-400 mt-0.5">
                               Failed since {formatTimeForUser(p.auth_failed.since * 1000, user)}
                               {' · '}
-                              {p.provider_type === 'claude-oauth'
+                              {(p.provider_type === 'claude-oauth' || p.provider_type === 'codex-oauth')
                                 ? 'Open Edit and click Generate New Auth URL to re-authorize.'
                                 : 'Open Edit and paste a fresh API key.'}
                             </p>
