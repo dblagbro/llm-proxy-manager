@@ -4,7 +4,7 @@ Self-hosted LLM routing gateway — Python/FastAPI rewrite of llm-proxy v1.
 
 **LMRH semantic routing · circuit breaker failover · CoT-E augmentation · cluster sync · Run runtime · per-provider keep-alive probes · React dashboard**
 
-Current version: **v3.0.7** (see [CHANGELOG.md](CHANGELOG.md))
+Current version: **v3.0.19** (see [CHANGELOG.md](CHANGELOG.md))
 
 ## Access
 
@@ -144,6 +144,7 @@ Send `model: "auto"` (or `"llmp-auto"`) and let LMRH ranking pick provider AND m
 | `ollama` | none (local) | Self-hosted Ollama |
 | `compatible` | varies | Generic OpenAI-compatible (LM Studio, LocalAI, etc.) |
 | `claude-oauth` | OAuth `Bearer sk-ant-oat…` | **Claude Pro Max subscription** — see below |
+| `codex-oauth` | OAuth bearer (JWT) + `ChatGPT-Account-ID` | **OpenAI Codex CLI / ChatGPT subscription** — see below |
 
 ### Claude Pro Max subscription (`claude-oauth`)
 
@@ -151,11 +152,21 @@ Add a Claude Pro Max account as a provider without needing an Anthropic API key.
 
 Traffic to `claude-oauth` providers bypasses litellm and hits `platform.claude.com/v1/messages` directly with the Claude Code header bundle. Excluded from `/v1/chat/completions` routing (the OpenAI-format endpoint can't dispatch Anthropic-format upstream). Excluded from cascade / critique / hedging internal pipelines (those use litellm; OAuth needs the dedicated handler).
 
+### OpenAI Codex CLI / ChatGPT subscription (`codex-oauth`, v3.0.16+)
+
+Add a ChatGPT Plus / Pro / Team / Enterprise subscription as a provider without an `sk-…` API key. In the Providers UI, pick `provider_type: codex-oauth` and click **Generate Auth URL**. Open the URL in a browser where you're signed in to ChatGPT, approve, and paste the resulting `http://localhost:1455/auth/callback?code=…&state=…` URL from your browser's address bar back into the form. The browser will dead-end at that URL — that's expected; we just need the URL string for the code+state extraction.
+
+Traffic to `codex-oauth` providers bypasses litellm and is dispatched to `chatgpt.com/backend-api/codex/responses` (OpenAI Responses API, **not** Chat Completions). The proxy translates Chat Completions ↔ Responses in both directions, including SSE streaming, so existing OpenAI-compatible clients (Cursor, aider, OpenAI Python/JS SDK with custom `base_url`, your bots) work unchanged. Always upstreams `stream: true` (the Codex backend rejects non-streaming) and accumulates if the caller asked for non-streaming.
+
+Available models depend on subscription tier — fetch `GET /api/providers/{id}/scan-models` after creating the provider; Plus typically sees `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.3-codex`, `gpt-5.2`, `codex-auto-review`. **Rate-limit awareness (v3.0.16+):** the proxy reads `x-codex-*` headers on every successful response (plan tier, primary 5h window % used, secondary weekly window % used, reset-at), and force-opens the CB on a 429 / limit-exceeded with a hold-down equal to the upstream's reset-after value. So when you hit the cap, traffic transparently fails over to the next provider until the subscription window resets — no manual intervention.
+
+Both OAuth provider types share **cluster refresh-race recovery (v3.0.18)**: when two nodes refresh the same OAuth provider's access_token within the 60s sync window, the loser used to get `invalid_grant` (Anthropic and OpenAI both rotate the refresh_token on every call) and tripped a 24h auth-failure breaker. Now the loser fans out a signed `GET /cluster/oauth-pull/{provider_id}` to peers, adopts the freshest non-expired tokens it finds, and continues serving traffic. Only raises (back to the existing CB path) if no peer has fresher tokens — i.e. real upstream revocation.
+
 ## Observability
 
 - **Activity log** — every request → `activity_log` table; bodies captured (request + response, up to 50KB each, scrubbed of secrets); searchable, paginated, SSE-streamable. Auto-pruned daily (default 30 days).
 - **Per-provider metrics** — 5-min bucketed `provider_metrics` table; surface on Metrics page (sortable columns) and inline on the Providers page (24h chips on each row).
-- **Keep-alive probes** — every enabled provider gets a `Hi from <ProviderName>` synthetic call every 5 min (configurable). Tagged `[probe]` in activity log. Includes claude-oauth via the OAuth dispatch path.
+- **Keep-alive probes** — every enabled provider gets a `Hi from <ProviderName>` synthetic call every 5 min (configurable). Tagged `[probe]` in activity log. Includes `claude-oauth` and `codex-oauth` (v3.0.19+) via dedicated OAuth dispatch paths — neither speaks litellm-via-OpenAI-API, so probes go to the right upstream with the right headers.
 - **OTEL spans** — GenAI semantic conventions (`gen_ai.operation.name`, `gen_ai.provider.name`, etc.) plus gateway extensions (`gen_ai.routing.lmrh_hint`, `gen_ai.run.id`, etc.). OTLP HTTP exporter when `OTEL_EXPORTER_OTLP_ENDPOINT` is set; no-op otherwise.
 - **Prometheus** — `/metrics` exposes per-provider request duration, token counts, TTFT, hedge attempts/wins, circuit-breaker state gauge.
 
