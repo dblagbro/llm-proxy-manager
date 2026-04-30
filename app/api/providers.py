@@ -464,8 +464,9 @@ async def delete_provider(
     Hard DELETE used to be reversed by cluster sync — peers still had the
     row and apply_sync re-inserted it. Now we set deleted_at = now() and
     flip enabled=False; sync compares updated_at on the tombstone too, so
-    the delete propagates to peers. Garbage collection of old tombstones
-    is a separate background sweep (TODO: 7-day retention).
+    the delete propagates to peers. v3.0.13: tombstones older than
+    ``provider_tombstone_retention_days`` are hard-deleted by the daily
+    prune worker (default 7 days).
     """
     from datetime import datetime, timezone
     p = await _get_or_404(db, provider_id)

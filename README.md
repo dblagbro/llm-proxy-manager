@@ -197,6 +197,10 @@ sudo docker compose up -d --force-recreate --no-deps llm-proxy2
 curl -s https://www.voipguru.org/llm-proxy2/health | jq
 ```
 
+### Rolling-deploy caveat (v3.0.11+)
+
+Provider rows now carry a `last_user_edit_at` timestamp set only by admin-facing edits. During a rolling deploy from a pre-v3.0.11 release, a v3.0.11+ node will **reject** edits replicated from a still-old peer when the local row has a `last_user_edit_at` and the peer's payload doesn't. This is intentional — without the stamp we can't tell a real edit on the peer apart from an OAuth auto-refresh or other background mutation, so we keep the local edit. Convergence resumes once both nodes are on v3.0.11+; if a real edit is lost during the window, re-do it on the upgraded node.
+
 ## Key differences from v1
 
 | Feature | v1 (Node.js) | v2 (Python) |

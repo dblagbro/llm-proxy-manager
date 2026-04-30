@@ -28,7 +28,7 @@ from sqlalchemy import delete, func, select
 
 from app.config import settings
 from app.models.database import AsyncSessionLocal
-from app.models.db import ActivityLog, RunEvent
+from app.models.db import ActivityLog, Provider, RunEvent
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +37,12 @@ _DEFAULT_RETENTION_DAYS = 30
 _BATCH_SIZE = 5000
 _SWEEP_INTERVAL_SEC = 24 * 60 * 60      # daily
 _INITIAL_DELAY_SEC = 60 * 60            # 1h after startup — lets boot settle
+
+# v3.0.13: provider tombstones (deleted_at non-null) hang around so cluster
+# sync propagates the soft-delete to peers. Cluster sync runs every 60s, so
+# any tombstone older than a few minutes has already converged across the
+# fleet — 7 days is a comfortable safety margin before we hard-delete.
+_DEFAULT_TOMBSTONE_RETENTION_DAYS = 7
 
 
 def _retention_days() -> int:
@@ -47,6 +53,49 @@ def _retention_days() -> int:
         return max(1, v)
     except Exception:
         return _DEFAULT_RETENTION_DAYS
+
+
+def _tombstone_retention_days() -> int:
+    """Admin-tunable tombstone retention; default 7 days, minimum 1 day.
+
+    Lower bound prevents an operator from accidentally hard-deleting
+    tombstones before they've had a chance to propagate to peers.
+    """
+    try:
+        v = int(getattr(settings, "provider_tombstone_retention_days",
+                        _DEFAULT_TOMBSTONE_RETENTION_DAYS))
+        return max(1, v)
+    except Exception:
+        return _DEFAULT_TOMBSTONE_RETENTION_DAYS
+
+
+async def _prune_provider_tombstones(keep_days: int) -> int:
+    """Hard-delete provider rows whose tombstone (``deleted_at``) is older
+    than ``keep_days``. Cascades to model_capabilities + model_aliases via
+    the existing ON DELETE rules. Returns rows removed.
+    """
+    deleted = 0
+    while True:
+        async with AsyncSessionLocal() as db:
+            cutoff_expr = func.datetime("now", f"-{keep_days} days")
+            id_res = await db.execute(
+                select(Provider.id)
+                .where(Provider.deleted_at.is_not(None))
+                .where(Provider.deleted_at < cutoff_expr)
+                .limit(_BATCH_SIZE)
+            )
+            ids = [r[0] for r in id_res.all()]
+            if not ids:
+                return deleted
+            await db.execute(
+                delete(Provider).where(Provider.id.in_(ids))
+            )
+            await db.commit()
+            deleted += len(ids)
+        if len(ids) >= _BATCH_SIZE:
+            await asyncio.sleep(0.5)
+        else:
+            return deleted
 
 
 async def _prune_table(table_class, ts_column, keep_days: int) -> int:
@@ -84,8 +133,11 @@ async def _sweep_once() -> dict:
     """One full prune pass across activity_log + provider_metrics +
     run_events. Returns counts so the log line is interpretable."""
     keep_days = _retention_days()
+    tombstone_days = _tombstone_retention_days()
     out = {"keep_days": keep_days, "activity_log": 0,
-           "provider_metrics": 0, "run_events": 0}
+           "provider_metrics": 0, "run_events": 0,
+           "provider_tombstones": 0,
+           "tombstone_keep_days": tombstone_days}
 
     try:
         out["activity_log"] = await _prune_table(
@@ -126,6 +178,11 @@ async def _sweep_once() -> dict:
     except Exception as e:
         logger.warning("prune.run_events_failed err=%s", e)
 
+    try:
+        out["provider_tombstones"] = await _prune_provider_tombstones(tombstone_days)
+    except Exception as e:
+        logger.warning("prune.provider_tombstones_failed err=%s", e)
+
     return out
 
 
@@ -135,9 +192,13 @@ async def _prune_loop() -> None:
     while True:
         try:
             counts = await _sweep_once()
-            logger.info("prune.swept activity_log=%d provider_metrics=%d run_events=%d keep_days=%d",
-                        counts["activity_log"], counts["provider_metrics"],
-                        counts["run_events"], counts["keep_days"])
+            logger.info(
+                "prune.swept activity_log=%d provider_metrics=%d run_events=%d "
+                "provider_tombstones=%d keep_days=%d tombstone_keep_days=%d",
+                counts["activity_log"], counts["provider_metrics"],
+                counts["run_events"], counts["provider_tombstones"],
+                counts["keep_days"], counts["tombstone_keep_days"],
+            )
         except Exception as e:
             logger.warning("prune.sweep_failed err=%s", e)
         await asyncio.sleep(_SWEEP_INTERVAL_SEC)
