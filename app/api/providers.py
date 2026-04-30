@@ -390,6 +390,12 @@ async def claude_oauth_exchange(
     if not data.get("default_model"):
         data["default_model"] = "claude-sonnet-4-6"
 
+    # v3.0.17: chain-bump existing providers at this priority so the new
+    # OAuth provider takes the slot it asked for. Standard ``create_provider``
+    # already does this; the OAuth-exchange path was missing it, leaving
+    # ties unresolved at insertion time.
+    await _bump_priority_conflicts(db, data["priority"])
+
     provider = Provider(id=secrets.token_hex(8), **data)
     _stamp_user_edit(provider)
     db.add(provider)
@@ -467,6 +473,10 @@ async def codex_oauth_exchange(
     data["extra_config"] = cfg
     if not data.get("default_model"):
         data["default_model"] = "gpt-5.5"
+
+    # v3.0.17: chain-bump existing providers at this priority — same fix as
+    # the claude-oauth/exchange path above.
+    await _bump_priority_conflicts(db, data["priority"])
 
     provider = Provider(id=secrets.token_hex(8), **data)
     _stamp_user_edit(provider)
