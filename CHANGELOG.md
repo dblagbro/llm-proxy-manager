@@ -9,6 +9,21 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.0.x — Run runtime, cluster ops, observability
 
+### v3.0.12 — provider name dedup + drop v3.0.9 backstop instrumentation
+
+- **Boot-time dedup:** `dedup_providers_by_name` collapses duplicate-name active provider rows (cluster-sync legacy) into one survivor — keeps the highest-priority row (lowest `priority` value; ties broken by oldest `created_at`, then lowest `id`), tombstones the rest. Idempotent. Tombstone stamps `last_user_edit_at` so the dedup decision propagates as an authoritative cluster-sync edit.
+- **Create/update guard:** POST `/api/providers` and PUT `/api/providers/{id}` now 409 on duplicate names. The OAuth-flow `/api/providers/claude-oauth/exchange` shares the same guard.
+- **Removed v3.0.9 backstops' `logger.info` lines** for `oauth.max_tokens_default_applied` and `oauth.cc_marker_omitted` — fleet-wide scan showed zero triggers; defaults stay in place but quietly.
+- **Smoke node graduation:** `/llm-proxy2-smoke/` on www01 is now a permanent pre-prod stage.
+
+### v3.0.11 — last_user_edit_at gates cluster-sync LWW
+
+Provider rows now carry a separate `last_user_edit_at` Unix timestamp set only by admin-facing endpoints (create / update / delete / toggle / OAuth rotate / OAuth exchange). Cluster sync prefers it over `updated_at` when both sides have one, so a peer's OAuth auto-refresh, deprecation auto-bump, or priority tie-break can't make the row look fresher than a real rename or config edit. Local edits beat peer rows that have no stamp (conservative during mixed-version rollout windows).
+
+### v3.0.10 — cluster sync covers name + daily_budget + OAuth fields; force-sync-now endpoint
+
+Provider sync payload was missing the `name`, `daily_budget_usd`, `oauth_refresh_token`, and `oauth_expires_at` fields — renames and budget changes on one node never reached peers. Plus an admin-only `POST /cluster/sync-now` endpoint to force convergence after a config change without waiting for the 60s loop.
+
 ### v3.0.7 — daily prune worker for activity_log + provider_metrics + run_events
 
 Daily background sweep prunes rows older than `activity_log_retention_days` (default 30 days, admin-tunable). Batched DELETEs (5000 rows/batch) keep individual transactions short under WAL mode. Initial sweep delayed 1h post-boot.

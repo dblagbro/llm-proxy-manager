@@ -81,6 +81,21 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"deprecation migration failed: {e}")
 
+        # v3.0.12: collapse same-name duplicate providers — cluster-sync
+        # legacy occasionally materialized two active rows with the same
+        # name. Keeps the highest-priority (lowest priority value) row,
+        # tombstones the rest. Idempotent.
+        try:
+            from app.providers.dedup import dedup_providers_by_name
+            deduped = await dedup_providers_by_name(db)
+            if deduped:
+                logger.warning(
+                    "providers.dedup_summary count=%d actions=%s",
+                    len(deduped), deduped,
+                )
+        except Exception as e:
+            logger.warning(f"provider dedup migration failed: {e}")
+
         # Register all providers with status monitor + per-provider CB config
         result = await db.execute(select(Provider))
         providers = result.scalars().all()
