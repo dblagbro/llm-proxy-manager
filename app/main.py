@@ -97,6 +97,15 @@ async def lifespan(app: FastAPI):
         start_keepalive()
     except Exception as e:
         logger.warning(f"keepalive probe loop failed to start: {e}")
+
+    # v3.0.7: daily prune worker for activity_log + provider_metrics +
+    # run_events. Default 30-day retention (admin-tunable). Boot-delayed
+    # 1h so startup isn't slowed by a first-sweep race.
+    try:
+        from app.monitoring.prune import start as start_prune
+        start_prune()
+    except Exception as e:
+        logger.warning(f"prune loop failed to start: {e}")
     start_cluster(
         db_factory=AsyncSessionLocal,
         notify_fn=alert_cluster_node_down,
