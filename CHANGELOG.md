@@ -9,6 +9,12 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.0.x — Run runtime, cluster ops, observability
 
+### v3.0.18 — OAuth refresh-token race recovery
+
+When two cluster nodes independently refresh the same OAuth provider's access_token within the 60s sync window, Anthropic and OpenAI both rotate the refresh_token on every call — whichever node loses the race gets back `invalid_grant` and would previously trip the 24h auth-failure CB until an admin manually re-pasted credentials. Now the loser fans out a signed `GET /cluster/oauth-pull/{provider_id}` to each peer; whichever peer has the freshest non-expired tokens responds, the loser adopts them locally, and the original chat call retries seamlessly. Only raises (back to the existing CB path) if no peer has fresher tokens — i.e. real upstream revocation.
+
+Applies to both `claude-oauth` and `codex-oauth` provider types. Same HMAC-of-(node_id) auth as `/cluster/settings` for the new endpoint. +7 unit tests for the recovery paths (cluster-disabled / no-peers / picks-freshest / skips-expired / skips-unreachable).
+
 ### v3.0.17 — chain-bump priority on OAuth /exchange paths
 
 `POST /api/providers/claude-oauth/exchange` and `POST /api/providers/codex-oauth/exchange` now call `_bump_priority_conflicts(...)` before inserting the new row, matching the standard `POST /api/providers` behavior. Without this, adding an OAuth provider at a priority already in use produced a momentary tie until the next cluster sync's `normalize_priority_ties` resolved it (60s window). Tie no longer occurs at insert time.

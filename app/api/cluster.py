@@ -66,6 +66,48 @@ async def cluster_sync(request: Request, db: AsyncSession = Depends(get_db)):
     return {"ok": True}
 
 
+@router.get("/cluster/oauth-pull/{provider_id}")
+async def cluster_oauth_pull(
+    provider_id: str, request: Request, db: AsyncSession = Depends(get_db),
+):
+    """v3.0.18: peer-pull endpoint for OAuth refresh-token race recovery.
+
+    When a node loses an Anthropic/OpenAI refresh-token rotation race and
+    gets ``invalid_grant``, it can fan out to peers asking "do you have
+    fresher tokens for this provider?" — peers respond with their current
+    OAuth state and the loser adopts the freshest one. Avoids the 24h
+    auth-failure CB trip that manual re-paste used to require.
+
+    Same HMAC-of-(node_id) auth as /cluster/settings.
+    """
+    if not settings.cluster_enabled:
+        raise HTTPException(403, "Cluster mode not enabled")
+    node_id = request.headers.get("X-Cluster-Node", "")
+    sig = request.headers.get("X-Cluster-Sig", "")
+    if not node_id or not verify_payload(node_id.encode(), sig):
+        raise HTTPException(403, "Invalid cluster signature")
+
+    from sqlalchemy import select
+    from app.models.db import Provider
+    result = await db.execute(select(Provider).where(Provider.id == provider_id))
+    p = result.scalar_one_or_none()
+    if p is None:
+        raise HTTPException(404, "Provider not found")
+    if p.provider_type not in ("claude-oauth", "codex-oauth"):
+        raise HTTPException(400, f"{p.provider_type!r} is not an OAuth provider")
+    if not p.api_key:
+        raise HTTPException(404, "Provider has no access_token")
+    return {
+        "provider_id": p.id,
+        "api_key": p.api_key,
+        "oauth_refresh_token": p.oauth_refresh_token,
+        "oauth_expires_at": p.oauth_expires_at,
+        "last_user_edit_at": p.last_user_edit_at,
+        "updated_at": p.updated_at.isoformat() if p.updated_at else None,
+        "extra_config": p.extra_config or {},
+    }
+
+
 @router.get("/cluster/settings")
 async def cluster_settings(request: Request):
     """

@@ -292,13 +292,38 @@ async def refresh_and_persist(provider, db) -> ExchangeResult:
     call when they see a 401 Unauthorized from platform.claude.com — never
     ``refresh_access_token()`` directly, because that drops the rotated
     token on the floor.
+
+    v3.0.18: on ``invalid_grant`` (peer rotated the refresh_token first in
+    a cluster-race), fan out to peers via /cluster/oauth-pull and adopt
+    the freshest valid state. Only raises if no peer has fresher tokens.
     """
     if not provider.oauth_refresh_token:
         raise OAuthFlowError(
             f"Provider {provider.id} ({provider.name!r}) has no refresh_token — "
             "admin must re-run the Generate Auth URL flow."
         )
-    result = await refresh_access_token(provider.oauth_refresh_token)
+    try:
+        result = await refresh_access_token(provider.oauth_refresh_token)
+    except OAuthFlowError as e:
+        # v3.0.18: invalid_grant means a peer beat us to the rotation. Try
+        # to recover by adopting the peer's fresher state instead of
+        # tripping the 24h auth-failure breaker.
+        if "invalid_grant" in str(e).lower():
+            from app.cluster.oauth_recovery import (
+                pull_oauth_state_from_peers, adopt_peer_state,
+            )
+            peer_state = await pull_oauth_state_from_peers(provider.id)
+            if peer_state is not None:
+                await adopt_peer_state(provider, db, peer_state)
+                # Synthesize an ExchangeResult from the adopted state so the
+                # caller's "refresh succeeded" path runs unchanged.
+                return ExchangeResult(
+                    access_token=peer_state.api_key,
+                    refresh_token=peer_state.oauth_refresh_token,
+                    expires_at=peer_state.oauth_expires_at,
+                    raw={"recovered_from_peer": peer_state.source_peer_id},
+                )
+        raise
     provider.api_key = result.access_token
     if result.refresh_token:
         provider.oauth_refresh_token = result.refresh_token
