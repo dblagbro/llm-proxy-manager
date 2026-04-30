@@ -319,7 +319,29 @@ async def refresh_and_persist(provider, db) -> ExchangeResult:
             f"Provider {provider.id} ({provider.name!r}) has no refresh_token — "
             "admin must re-run the Generate Auth URL flow."
         )
-    result = await refresh_access_token(provider.oauth_refresh_token)
+    try:
+        result = await refresh_access_token(provider.oauth_refresh_token)
+    except OAuthFlowError as e:
+        # v3.0.18: same recovery as claude-oauth — on invalid_grant, ask
+        # peers if any of them refreshed first and adopt their fresh state.
+        msg = str(e).lower()
+        if "invalid_grant" in msg or "refresh_token_expired" in msg or "refresh_token_reused" in msg or "refresh_token_invalidated" in msg:
+            from app.cluster.oauth_recovery import (
+                pull_oauth_state_from_peers, adopt_peer_state,
+            )
+            peer_state = await pull_oauth_state_from_peers(provider.id)
+            if peer_state is not None:
+                await adopt_peer_state(provider, db, peer_state)
+                return ExchangeResult(
+                    access_token=peer_state.api_key,
+                    refresh_token=peer_state.oauth_refresh_token,
+                    expires_at=peer_state.oauth_expires_at,
+                    id_token=None,
+                    chatgpt_account_id=(peer_state.extra_config or {}).get("chatgpt_account_id"),
+                    chatgpt_plan_type=(peer_state.extra_config or {}).get("chatgpt_plan_type"),
+                    raw={"recovered_from_peer": peer_state.source_peer_id},
+                )
+        raise
     provider.api_key = result.access_token
     if result.refresh_token:
         provider.oauth_refresh_token = result.refresh_token
