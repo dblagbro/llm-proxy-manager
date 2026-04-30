@@ -108,3 +108,55 @@ async def verify_api_key(db: AsyncSession, raw_key: Optional[str]) -> ApiKeyReco
         budget_status=budget_status,
         rate_limit_tier=getattr(key, "rate_limit_tier", None),
     )
+
+
+# ── v3.0.8 (item 5): single Depends() for x-api-key OR Bearer auth ─────────
+
+
+async def get_api_key_record(
+    x_api_key: Optional[str] = None,
+    authorization: Optional[str] = None,
+    db: Optional[AsyncSession] = None,
+) -> ApiKeyRecord:
+    """FastAPI dependency that accepts an api key from either the
+    ``x-api-key`` header or an ``Authorization: Bearer`` header, then
+    delegates to ``verify_api_key`` for hash-check + budget + rate
+    limits. Replaces the 5+ duplicated extraction blocks in
+    ``app/api/runs.py``.
+
+    Use as:
+        from fastapi import Depends, Header
+        from app.auth.keys import resolve_api_key_dep
+
+        @router.post("/some-path")
+        async def handler(key: ApiKeyRecord = Depends(resolve_api_key_dep), ...):
+            ...
+    """
+    raw_key = x_api_key
+    if not raw_key and authorization:
+        if authorization.lower().startswith("bearer "):
+            raw_key = authorization[7:].strip()
+    if not raw_key:
+        raise HTTPException(401, "missing api key")
+    return await verify_api_key(db, raw_key)
+
+
+def resolve_api_key_dep():
+    """Dependency factory — returns a closure FastAPI will resolve via
+    its dependency-injection (Header for the two header names, Depends
+    for the db session). Wrapping in a factory keeps the import-time
+    surface light (no FastAPI types pulled in until first use)."""
+    from fastapi import Depends, Header
+    from app.models.database import get_db
+
+    async def _resolver(
+        x_api_key: Optional[str] = Header(None, alias="x-api-key"),
+        authorization: Optional[str] = Header(None, alias="authorization"),
+        db: AsyncSession = Depends(get_db),
+    ) -> ApiKeyRecord:
+        return await get_api_key_record(
+            x_api_key=x_api_key,
+            authorization=authorization,
+            db=db,
+        )
+    return _resolver

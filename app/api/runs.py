@@ -21,7 +21,12 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.keys import verify_api_key
+from app.auth.keys import verify_api_key, resolve_api_key_dep, ApiKeyRecord
+
+# v3.0.8 (item 5): single dependency for the 5 sites that previously
+# reproduced the x-api-key OR Bearer block. Closure captured at module
+# load so each handler reuses the same resolver.
+_AUTH = resolve_api_key_dep()
 from app.config import settings
 from app.models.database import get_db
 from app.models.db import Run, RunEvent, RunIdempotency, RunMessage
@@ -182,23 +187,13 @@ async def _persist_transition(db: AsyncSession, run: Run, transition) -> None:
 async def create_run(
     request: Request,
     db: AsyncSession = Depends(get_db),
-    x_api_key: Optional[str] = Header(None, alias="x-api-key"),
-    authorization: Optional[str] = Header(None, alias="authorization"),
+    key_record: ApiKeyRecord = Depends(_AUTH),
 ):
     """Create a Run.
 
     Idempotency: ``(api_key_id, idempotency_key)`` returns the existing run
     on duplicate within 24h, regardless of state. Q1 lock-in.
     """
-    # Accept either x-api-key or Authorization: Bearer ...
-    raw_key = x_api_key
-    if not raw_key and authorization:
-        if authorization.lower().startswith("bearer "):
-            raw_key = authorization[7:].strip()
-    if not raw_key:
-        raise HTTPException(401, "missing api key")
-    key_record = await verify_api_key(db, raw_key)
-
     body = await request.json()
     idempotency_key = body.get("idempotency_key")
     if idempotency_key is not None:
@@ -323,17 +318,8 @@ async def create_run(
 async def get_run(
     run_id: str,
     db: AsyncSession = Depends(get_db),
-    x_api_key: Optional[str] = Header(None, alias="x-api-key"),
-    authorization: Optional[str] = Header(None, alias="authorization"),
+    key_record: ApiKeyRecord = Depends(_AUTH),
 ):
-    raw_key = x_api_key or (
-        authorization[7:].strip() if authorization
-        and authorization.lower().startswith("bearer ") else None
-    )
-    if not raw_key:
-        raise HTTPException(401, "missing api key")
-    key_record = await verify_api_key(db, raw_key)
-
     res = await db.execute(select(Run).where(Run.id == run_id))
     run = res.scalar_one_or_none()
     if run is None:
@@ -352,17 +338,8 @@ async def cancel_run(
     run_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    x_api_key: Optional[str] = Header(None, alias="x-api-key"),
-    authorization: Optional[str] = Header(None, alias="authorization"),
+    key_record: ApiKeyRecord = Depends(_AUTH),
 ):
-    raw_key = x_api_key or (
-        authorization[7:].strip() if authorization
-        and authorization.lower().startswith("bearer ") else None
-    )
-    if not raw_key:
-        raise HTTPException(401, "missing api key")
-    key_record = await verify_api_key(db, raw_key)
-
     res = await db.execute(select(Run).where(Run.id == run_id))
     run = res.scalar_one_or_none()
     if run is None:
@@ -398,8 +375,7 @@ async def post_tool_result(
     run_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    x_api_key: Optional[str] = Header(None, alias="x-api-key"),
-    authorization: Optional[str] = Header(None, alias="authorization"),
+    key_record: ApiKeyRecord = Depends(_AUTH),
 ):
     """Spec B.4. R1 accepts and validates the message; R2's worker
     consumes the tool_result and resumes the agent loop.
@@ -410,14 +386,6 @@ async def post_tool_result(
       - run already cancelled → 410 (tool_result post-cancel is gone)
       - mismatched bearer → 403
     """
-    raw_key = x_api_key or (
-        authorization[7:].strip() if authorization
-        and authorization.lower().startswith("bearer ") else None
-    )
-    if not raw_key:
-        raise HTTPException(401, "missing api key")
-    key_record = await verify_api_key(db, raw_key)
-
     body = await request.json()
     tool_use_id = body.get("tool_use_id")
     if not isinstance(tool_use_id, str) or not tool_use_id:
@@ -492,10 +460,9 @@ async def get_events(
     db: AsyncSession = Depends(get_db),
     since_ms: int = 0,
     limit: int = 100,
-    x_api_key: Optional[str] = Header(None, alias="x-api-key"),
-    authorization: Optional[str] = Header(None, alias="authorization"),
     last_event_id: Optional[str] = Header(None, alias="last-event-id"),
     accept: Optional[str] = Header(None, alias="accept"),
+    key_record: ApiKeyRecord = Depends(_AUTH),
 ):
     """Spec B.6. Two modes:
       - SSE: ``Accept: text/event-stream`` returns a live stream until the
@@ -508,14 +475,6 @@ async def get_events(
     new events arrive within ~50ms; for now polling is the canonical
     path until R4 lands the in-memory ring-buffer broker.
     """
-    raw_key = x_api_key or (
-        authorization[7:].strip() if authorization
-        and authorization.lower().startswith("bearer ") else None
-    )
-    if not raw_key:
-        raise HTTPException(401, "missing api key")
-    key_record = await verify_api_key(db, raw_key)
-
     res = await db.execute(select(Run).where(Run.id == run_id))
     run = res.scalar_one_or_none()
     if run is None:
@@ -620,8 +579,7 @@ async def adopt_run(
     run_id: str,
     request: Request,
     db: AsyncSession = Depends(get_db),
-    x_api_key: Optional[str] = Header(None, alias="x-api-key"),
-    authorization: Optional[str] = Header(None, alias="authorization"),
+    key_record: ApiKeyRecord = Depends(_AUTH),
 ):
     """A peer can claim ownership when the original owner is unreachable.
 
@@ -636,14 +594,6 @@ async def adopt_run(
     heartbeat from triggering a takeover that the owner immediately
     contests.
     """
-    raw_key = x_api_key or (
-        authorization[7:].strip() if authorization
-        and authorization.lower().startswith("bearer ") else None
-    )
-    if not raw_key:
-        raise HTTPException(401, "missing api key")
-    key_record = await verify_api_key(db, raw_key)
-
     res = await db.execute(select(Run).where(Run.id == run_id))
     run = res.scalar_one_or_none()
     if run is None:
