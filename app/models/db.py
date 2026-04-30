@@ -114,6 +114,12 @@ class ApiKey(Base):
     hour_cost_usd = Column(Float, default=0.0)
     last_used_at = Column(DateTime)
     created_at = Column(DateTime, server_default=func.now())
+    # v3.0.20: tombstone for soft-delete. Same shape as Provider.deleted_at —
+    # without this, hard-DELETE on one node was reversed by the next cluster
+    # sync push from a peer that still had the row, indistinguishable from
+    # a fresh insert. Soft-delete + sync-aware merge fixes the resurrection.
+    # Garbage collection of old tombstones is handled by the daily prune sweep.
+    deleted_at = Column(DateTime, nullable=True)
 
 
 class User(Base):
