@@ -79,6 +79,15 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
     for p_data in payload.get("providers", []):
         peer_deleted_at = _parse_iso(p_data.get("deleted_at"))
         peer_updated_at = _parse_iso(p_data.get("updated_at"))
+        # v3.0.11: per-row admin-edit timestamp (Unix float). When both sides
+        # have one, this gates LWW — auto-refresh / migration writes that
+        # only bump updated_at can't revert real edits on a peer.
+        peer_user_edit_at = p_data.get("last_user_edit_at")
+        if peer_user_edit_at is not None:
+            try:
+                peer_user_edit_at = float(peer_user_edit_at)
+            except (TypeError, ValueError):
+                peer_user_edit_at = None
 
         result = await db.execute(select(Provider).where(Provider.id == p_data["id"]))
         existing = result.scalar_one_or_none()
@@ -114,8 +123,26 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
             # v2.8.3: last-write-wins by updated_at for active rows.
             # If local was modified after the peer's payload was built,
             # ignore the peer push to avoid clobbering newer local state.
-            if (peer_updated_at is None or local_updated is None
-                    or peer_updated_at >= local_updated):
+            # v3.0.11: when BOTH sides carry a last_user_edit_at, gate on
+            # it instead of updated_at — that way background mutations
+            # (OAuth refresh, deprecation auto-bump, priority tie-break)
+            # on a peer can't revert a real admin edit on this node.
+            local_user_edit = existing.last_user_edit_at
+            if peer_user_edit_at is not None and local_user_edit is not None:
+                accept = peer_user_edit_at >= local_user_edit
+            elif local_user_edit is not None and peer_user_edit_at is None:
+                # Local row was admin-edited (v3.0.11+); peer's payload
+                # carries no admin-edit stamp — could be a legacy v3.0.10
+                # peer or a peer where only background mutations bumped
+                # updated_at. Conservative: keep local edit. The peer
+                # will receive our payload on the return sync and
+                # converge once it upgrades.
+                accept = False
+            else:
+                # Neither side has a user-edit stamp — legacy LWW path.
+                accept = (peer_updated_at is None or local_updated is None
+                          or peer_updated_at >= local_updated)
+            if accept:
                 # v3.0.10: previously, ``name`` was sent but never applied
                 # — so renames on one node never propagated. Add it.
                 # Also pick up the new daily_budget_usd + OAuth fields the
@@ -140,6 +167,10 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
                     existing.oauth_expires_at = p_data["oauth_expires_at"]
                 if peer_updated_at:
                     existing.updated_at = peer_updated_at
+                # v3.0.11: preserve peer's user-edit timestamp so further
+                # syncs use the originating node's stamp, not "now".
+                if peer_user_edit_at is not None:
+                    existing.last_user_edit_at = peer_user_edit_at
             continue
 
         # No local row — create unless peer is sending a tombstone (no point
@@ -165,6 +196,7 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
             daily_budget_usd=p_data.get("daily_budget_usd"),
             oauth_refresh_token=p_data.get("oauth_refresh_token"),
             oauth_expires_at=p_data.get("oauth_expires_at"),
+            last_user_edit_at=peer_user_edit_at,
         )
         db.add(p)
         register_provider(p.id, p.provider_type, p.hold_down_sec, p.failure_threshold)

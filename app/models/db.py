@@ -47,6 +47,13 @@ class Provider(Base):
     oauth_expires_at = Column(Float, nullable=True)        # unix timestamp
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+    # v3.0.11: Unix timestamp set ONLY by user-facing admin edits. Cluster
+    # sync LWW compares this in preference to ``updated_at`` so that
+    # auto-refresh of OAuth tokens, deprecation auto-migrations, priority
+    # tie-break bumps, etc. on one node cannot clobber a real rename or
+    # config edit made on another node. updated_at still bumps on every
+    # write — it just no longer gates which write wins across the cluster.
+    last_user_edit_at = Column(Float, nullable=True)
     # v2.8.2: tombstone for soft-delete. When non-null, the provider has been
     # deleted on this node but the row stays so cluster sync can propagate the
     # delete to peers (last-write-wins on updated_at). Garbage-collected after
