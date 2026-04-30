@@ -143,12 +143,37 @@ async def messages(
     # capability scoring has signal even without an explicit hint header.
     is_auto = is_auto_model(parsed_slug.bare_model)
     alias = await resolve_alias(db, body.get("model")) if not is_auto else None
-    route = await select_provider(
-        db, hint, has_tools=has_tools, has_images=has_images, key_type=key_record.key_type,
-        pinned_provider_id=alias.provider_id if alias else None,
-        model_override=alias.model_id if alias else None,
-        sort_mode=parsed_slug.sort_mode,
-    )
+    # v3.0.5: convert provider-selection RuntimeError into a clean 503 with
+    # an actionable message. Hits when (a) all providers' CBs are open
+    # (typical: Anthropic server-side OAuth token revocation triggers the
+    # 24h auth-failure breaker on every claude-oauth provider on a node)
+    # or (b) no providers configured at all. Same shape as the v3.0.4 fix
+    # for /v1/chat/completions; previously bubbled to a 500 + ASGI trace.
+    try:
+        route = await select_provider(
+            db, hint, has_tools=has_tools, has_images=has_images, key_type=key_record.key_type,
+            pinned_provider_id=alias.provider_id if alias else None,
+            model_override=alias.model_id if alias else None,
+            sort_mode=parsed_slug.sort_mode,
+        )
+    except RuntimeError as e:
+        msg = str(e)
+        if "circuit breakers open" in msg:
+            raise HTTPException(
+                503,
+                "All providers are currently unavailable (circuit breakers open). "
+                "Most common cause: Anthropic server-side OAuth token revocation "
+                "trips the 24h auth-failure breaker on every claude-oauth provider. "
+                "Operator action: re-auth the affected provider(s) via the OAuth UI, "
+                "or wait for the hold-down to expire.",
+            )
+        if "No providers configured" in msg:
+            raise HTTPException(
+                503,
+                "No providers configured. Operator action: enable at least one "
+                "provider via the Providers page or POST /api/providers.",
+            )
+        raise HTTPException(503, f"Provider selection failed: {msg}")
     if is_auto:
         # Substitute the resolved model into the body so claude-oauth /
         # litellm dispatch sees a real model name. Prefer the capability
