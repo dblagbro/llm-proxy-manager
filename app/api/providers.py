@@ -185,6 +185,17 @@ async def create_provider(
             f"{body.provider_type} providers require an api_key — paste a key in the form.",
         )
 
+    # v3.0.12: prevent duplicate-name providers (cluster-sync history made
+    # this easy to do by accident). Boot-time dedup migration cleans up
+    # legacy dups; this guard prevents new ones.
+    from app.providers.dedup import name_is_taken
+    if await name_is_taken(db, body.name):
+        raise HTTPException(
+            409,
+            f"A provider named {body.name!r} already exists. "
+            "Pick a unique name (or rename / delete the existing one first).",
+        )
+
     if body.provider_type == "claude-oauth":
         if not blob:
             raise HTTPException(
@@ -335,6 +346,14 @@ async def claude_oauth_exchange(
     except OAuthFlowError as e:
         raise HTTPException(400, str(e))
 
+    # v3.0.12: same dedup guard as the standard create path.
+    from app.providers.dedup import name_is_taken
+    if await name_is_taken(db, body.name):
+        raise HTTPException(
+            409,
+            f"A provider named {body.name!r} already exists.",
+        )
+
     data = body.model_dump(exclude={"state", "callback"})
     data["provider_type"] = "claude-oauth"
     data["api_key"] = result.access_token
@@ -410,6 +429,16 @@ async def update_provider(
     new_priority = data.get("priority")
     if new_priority is not None and new_priority != p.priority:
         await _bump_priority_conflicts(db, new_priority, exclude_id=p.id)
+
+    # v3.0.12: reject renames that would collide with another active row.
+    new_name = data.get("name")
+    if new_name and new_name != p.name:
+        from app.providers.dedup import name_is_taken
+        if await name_is_taken(db, new_name, exclude_id=p.id):
+            raise HTTPException(
+                409,
+                f"Another provider already uses the name {new_name!r}.",
+            )
 
     for field, value in data.items():
         setattr(p, field, value)
