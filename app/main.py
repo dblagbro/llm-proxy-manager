@@ -66,6 +66,21 @@ async def lifespan(app: FastAPI):
             await db.commit()
             logger.info(f"normalized {bumped} priority tie(s) on startup")
 
+        # v3.0.9: bump every provider's default_model from a known-
+        # deprecated upstream id to its registered replacement.
+        # Idempotent — running on every startup is safe. Single source
+        # of truth: app/providers/deprecations.py::MODEL_DEPRECATIONS.
+        try:
+            from app.providers.deprecations import migrate_deprecated_default_models
+            migrated = await migrate_deprecated_default_models(db)
+            if migrated:
+                logger.info(
+                    "providers.deprecation_migration_summary count=%d details=%s",
+                    len(migrated), migrated,
+                )
+        except Exception as e:
+            logger.warning(f"deprecation migration failed: {e}")
+
         # Register all providers with status monitor + per-provider CB config
         result = await db.execute(select(Provider))
         providers = result.scalars().all()
