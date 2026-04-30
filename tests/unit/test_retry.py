@@ -143,3 +143,65 @@ class TestAcompletionWithRetry:
         result = await acompletion_with_retry("gpt-4o", [{"role": "user", "content": "hi"}], max_retries=3)
         assert result == {"content": "recovered"}
         assert call_count["n"] == 2
+
+
+# v3.0.14 — runtime model-deprecation auto-bump
+class TestDeprecationAutoBump:
+    def test_replacement_for_with_prefix(self):
+        from app.routing.retry import _replacement_for
+        assert _replacement_for("gemini/gemini-2.0-flash") == "gemini/gemini-2.5-flash"
+        assert _replacement_for("anthropic/claude-3-opus-20240229") == "anthropic/claude-opus-4-7"
+        assert _replacement_for("totally-fictional-model") is None
+
+    @pytest.mark.asyncio
+    async def test_not_found_triggers_bump_and_retry(self, monkeypatch):
+        import litellm
+        import app.routing.retry as _r
+        calls = []
+
+        class _NF(Exception):
+            pass
+        monkeypatch.setattr(litellm, "NotFoundError", _NF, raising=False)
+        monkeypatch.setattr(_r, "NotFoundError", _NF)
+
+        async def _fake_completion(model, messages, **kwargs):
+            calls.append(model)
+            if model == "gemini/gemini-2.0-flash":
+                raise _NF("404 model not found")
+            return {"ok": True, "model": model}
+
+        async def _fake_persist(old, new):
+            return 1
+
+        monkeypatch.setattr(litellm, "acompletion", _fake_completion)
+        monkeypatch.setattr(_r, "_persist_default_model_bump", _fake_persist)
+
+        result = await _r.acompletion_with_retry(
+            "gemini/gemini-2.0-flash",
+            [{"role": "user", "content": "hi"}],
+            max_retries=2,
+        )
+        assert result == {"ok": True, "model": "gemini/gemini-2.5-flash"}
+        assert calls == ["gemini/gemini-2.0-flash", "gemini/gemini-2.5-flash"]
+
+    @pytest.mark.asyncio
+    async def test_not_found_without_replacement_reraises(self, monkeypatch):
+        import litellm
+        import app.routing.retry as _r
+
+        class _NF(Exception):
+            pass
+        monkeypatch.setattr(litellm, "NotFoundError", _NF, raising=False)
+        monkeypatch.setattr(_r, "NotFoundError", _NF)
+
+        async def _fake_completion(model, messages, **kwargs):
+            raise _NF("404 totally-fake-model not found")
+
+        monkeypatch.setattr(litellm, "acompletion", _fake_completion)
+
+        with pytest.raises(_NF):
+            await _r.acompletion_with_retry(
+                "totally-fake-model",
+                [{"role": "user", "content": "hi"}],
+                max_retries=2,
+            )

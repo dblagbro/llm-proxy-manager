@@ -9,6 +9,10 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.0.x — Run runtime, cluster ops, observability
 
+### v3.0.14 — runtime model-deprecation auto-bump
+
+When upstream returns a `NotFoundError` for a model in our `MODEL_DEPRECATIONS` registry, `acompletion_with_retry` now persists the replacement to every active provider's `default_model` and retries the same call once with the new model id. Closes the boot-time-only gap from v3.0.9 — if a vendor retires a model live mid-day, we self-heal on the first failure instead of bleeding errors until the next deploy. The bump is one retry per call (no infinite loop); if the replacement also fails, the existing CB / next-provider fallback path takes over.
+
 ### v3.0.13 — tombstone garbage collection + rolling-deploy caveat
 
 - **Tombstone GC** — daily prune sweep now hard-deletes `Provider` rows whose `deleted_at` is older than `provider_tombstone_retention_days` (default 7, env `PROVIDER_TOMBSTONE_RETENTION_DAYS`). Closes the long-standing TODO from v2.8.2's soft-delete design. Cluster sync converges in seconds, so 7 days is a comfortable safety margin before hard-delete.
