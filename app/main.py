@@ -52,6 +52,11 @@ async def lifespan(app: FastAPI):
         await ensure_default_admin(db)
         from app import config_runtime
         await config_runtime.load(db)
+        # v3.0.8: warn loud at boot for any SCHEMA/pydantic type drift —
+        # the v3.0.1 bug class is now structurally impossible (load()
+        # uses pydantic-canonical type for coercion) but mismatches
+        # still indicate dev-side errors worth fixing.
+        config_runtime.validate_schema_consistency()
 
         # v2.8.2: one-shot resolve any pre-existing priority ties so we
         # start each boot with a strict total order. Idempotent.

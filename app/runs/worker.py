@@ -419,6 +419,213 @@ def _terminal_text(blocks: list[dict]) -> str:
 
 
 # ── Worker driver ───────────────────────────────────────────────────────────
+#
+# v3.0.8 (item 6): the original ``_drive`` was a 250-line nested-branch
+# loop. Split into per-state handlers, each doing one transition's worth
+# of work and returning a small ``_StepResult`` that tells the outer loop
+# what to do next. Behavior is unchanged; readability is much improved
+# and the per-state logic is now individually testable.
+#
+# Sentinel values returned from a handler:
+#   _STEP_CONTINUE — keep looping (re-read run, re-dispatch)
+#   _STEP_RETURN   — terminal; outer loop should clean up and return
+#   _STEP_WAIT     — idle wait on the wakeup event with deadline-bounded timeout
+
+
+_STEP_CONTINUE = "continue"
+_STEP_RETURN = "return"
+_STEP_WAIT = "wait"
+
+
+async def _step_check_deadline(db, run, ctx) -> Optional[str]:
+    """If the deadline has passed, transition to EXPIRED + emit + return.
+    Otherwise None (caller proceeds)."""
+    if ctx.status.terminal or _now() < run.deadline_ts:
+        return None
+    t = advance(ctx, EventKind.DEADLINE_EXCEEDED, _now())
+    await _persist_transition(db, run, t)
+    await _emit(db, run.id, "expired", {
+        "deadline_ts": run.deadline_ts,
+        "total_ms": int((run.completed_at - run.created_at) * 1000),
+    })
+    await db.commit()
+    return _STEP_RETURN
+
+
+async def _step_queued(db, run, ctx) -> str:
+    """QUEUED → RUNNING; emit run_started; loop."""
+    t = advance(ctx, EventKind.START, _now())
+    await _persist_transition(db, run, t)
+    await _emit(db, run.id, "run_started", {})
+    await db.commit()
+    return _STEP_CONTINUE
+
+
+async def _peek_next_model(db, run) -> str:
+    """Best-effort model id for compaction trigger. The actual call goes
+    through _call_model_once which may re-route; this is just for the
+    80%-context threshold check."""
+    try:
+        peek_route = await select_provider(
+            db, hint=None,
+            has_tools=bool(run.tools_spec),
+            has_images=False,
+            key_type="standard",
+            excluded_provider_types={"claude-oauth"},
+        )
+        return peek_route.litellm_model
+    except Exception:
+        return "gpt-4o"
+
+
+async def _maybe_compact_run(db, run, run_id, messages):
+    """Run compaction if the conversation is at ≥80% of next-call model
+    context. Returns (possibly-rewritten-messages, did_compact)."""
+    next_model = await _peek_next_model(db, run)
+    try:
+        from app.runs.compaction import maybe_compact, apply_compaction_to_db
+        compaction = await maybe_compact(
+            db, run_id=run.id,
+            run_compaction_model=run.compaction_model,
+            next_call_model=next_model,
+            messages=messages,
+        )
+    except Exception as ce:
+        logger.warning("runs.compaction.failed run=%s err=%s", run.id, ce)
+        compaction = None
+
+    if compaction is None:
+        return messages, False
+    await apply_compaction_to_db(
+        db, run_id=run.id, new_messages=compaction["new_messages"],
+    )
+    run.context_summarized_at_turn = run.model_calls or 0
+    await _emit(db, run.id, "context_compacted", compaction["event"])
+    await db.commit()
+    # Reload after compaction so next call sees compacted message list
+    return await _load_messages(db, run_id), True
+
+
+async def _wait_for_rate_limit_slot(run):
+    """Block until acquire() returns a slot; emit ``rate_limited`` event
+    on first throttled attempt (R6 lock-in)."""
+    try:
+        from app.runs import rate_limit as _rl
+        async def _emit_rl(payload):
+            async with AsyncSessionLocal() as _rl_db:
+                await _emit(_rl_db, run.id, "rate_limited", payload)
+                await _rl_db.commit()
+        await _rl.acquire(run.id, emit_callback=_emit_rl)
+    except Exception as e:
+        logger.info("runs.rate_limit.skip run=%s err=%s", run.id, e)
+
+
+async def _fail_run(db, run, ctx, exc, kind):
+    """Common failure path used by all 3 model-call exception classes.
+    Advances FSM to FAILED with the right error_kind, emits ``failed``."""
+    t = advance(ctx, EventKind.PROVIDER_EXHAUSTED if kind is ErrorKind.PROVIDER
+                else EventKind.INTERNAL_ERROR, _now(),
+                {"detail": str(exc) or repr(exc)})
+    await _persist_transition(db, run, t)
+    await _emit(db, run.id, "failed", {
+        "error": str(exc),
+        "kind": kind.value,
+        "last_provider_used": run.last_provider_id,
+    })
+    await db.commit()
+
+
+async def _step_running(db, run, run_id, ctx, excluded_provider_ids) -> str:
+    """RUNNING: load conversation → maybe compact → rate-limit gate →
+    call model → handle response (text completes; tool_use parks)."""
+    messages = await _load_messages(db, run_id)
+    messages, _did_compact = await _maybe_compact_run(db, run, run_id, messages)
+    await _wait_for_rate_limit_slot(run)
+
+    try:
+        resp, _pid, _model, _lat = await _call_model_once(
+            db, run, messages,
+            excluded_provider_ids=excluded_provider_ids,
+        )
+    except ProviderExhausted as e:
+        await _fail_run(db, run, ctx, e, ErrorKind.PROVIDER)
+        return _STEP_RETURN
+    except BillingHardStop as e:
+        await _fail_run(db, run, ctx, f"billing: {e}", ErrorKind.INTERNAL)
+        return _STEP_RETURN
+    except Exception as e:
+        detail = f"{type(e).__name__}: {str(e) or 'no message'}"
+        await _fail_run(db, run, ctx, detail, ErrorKind.INTERNAL)
+        return _STEP_RETURN
+
+    blocks = _extract_assistant_content(resp)
+    await _append_assistant_message(db, run_id, blocks)
+    # Reset failover exclusions on a successful call
+    excluded_provider_ids.clear()
+
+    tool_use = _first_tool_use(blocks)
+    if tool_use is not None:
+        return await _handle_tool_use(db, run, tool_use)
+    return await _handle_terminal_text(db, run, blocks)
+
+
+async def _handle_tool_use(db, run, tool_use) -> str:
+    """Model returned a tool_use block → REQUIRES_TOOL or terminal-fail
+    if max_turns hit / deadline already past."""
+    t = advance(_ctx_from_row(run), EventKind.MODEL_RETURNED_TOOL, _now())
+    await _persist_transition(db, run, t)
+
+    if t.status is RunStatus.REQUIRES_TOOL:
+        run.current_tool_use_id = tool_use["id"]
+        run.current_tool_name = tool_use["name"]
+        run.current_tool_input = tool_use["input"]
+        await _emit(db, run.id, "tool_use_requested", {
+            "tool_use_id": tool_use["id"],
+            "name": tool_use["name"],
+            "input": tool_use["input"],
+        })
+        await db.commit()
+        return _STEP_CONTINUE  # outer loop sees REQUIRES_TOOL → waits
+
+    if t.status is RunStatus.FAILED and t.error_kind is ErrorKind.TOOL_LOOP_EXCEEDED:
+        await _emit(db, run.id, "failed", {
+            "error": t.error_message,
+            "kind": ErrorKind.TOOL_LOOP_EXCEEDED.value,
+            "last_provider_used": run.last_provider_id,
+        })
+        await db.commit()
+        return _STEP_RETURN
+
+    if t.status is RunStatus.EXPIRED:
+        await _emit(db, run.id, "expired", {
+            "deadline_ts": run.deadline_ts,
+            "total_ms": int((run.completed_at - run.created_at) * 1000),
+        })
+        await db.commit()
+        return _STEP_RETURN
+
+    # Defensive: any other terminal kind, just commit + exit
+    await db.commit()
+    return _STEP_RETURN
+
+
+async def _handle_terminal_text(db, run, blocks) -> str:
+    """Model returned text-only → COMPLETED (or EXPIRED if deadline hit)."""
+    t = advance(_ctx_from_row(run), EventKind.MODEL_RETURNED_TEXT, _now())
+    await _persist_transition(db, run, t)
+    if t.status is RunStatus.COMPLETED:
+        run.result_text = _terminal_text(blocks)
+        await _emit(db, run.id, "completed", {
+            "result_text": run.result_text,
+            "total_ms": int((run.completed_at - run.created_at) * 1000),
+        })
+    elif t.status is RunStatus.EXPIRED:
+        await _emit(db, run.id, "expired", {
+            "deadline_ts": run.deadline_ts,
+            "total_ms": int((run.completed_at - run.created_at) * 1000),
+        })
+    await db.commit()
+    return _STEP_RETURN
 
 
 async def _drive(run_id: str) -> None:
@@ -427,9 +634,19 @@ async def _drive(run_id: str) -> None:
     The worker re-opens its DB session at every checkpoint so a slow
     upstream call doesn't pin a connection for 60s. The wakeup Event lets
     /tool_result + /cancel poke us out of an idle wait.
+
+    Loop: read run + ctx → check deadline → dispatch by status → either
+    continue (re-read), return (terminal), or fall through to wait().
+    Each per-state handler is its own function — see _step_* helpers
+    above.
     """
     wakeup = _WAKEUPS.setdefault(run_id, asyncio.Event())
     excluded_provider_ids: set[str] = set()
+    run = None  # for the wait() block at the bottom
+
+    def _cleanup():
+        _WAKEUPS.pop(run_id, None)
+        _rl_reset(run_id)
 
     while True:
         async with AsyncSessionLocal() as db:
@@ -437,198 +654,37 @@ async def _drive(run_id: str) -> None:
             run = res.scalar_one_or_none()
             if run is None:
                 logger.info("runs.worker.run_gone", extra={"run_id": run_id})
-                _WAKEUPS.pop(run_id, None); _rl_reset(run_id)
+                _cleanup()
                 return
 
             ctx = _ctx_from_row(run)
 
-            # Deadline check at every iteration boundary — the spec demands
-            # mid-run expiry never strands the client.
-            if not ctx.status.terminal and _now() >= run.deadline_ts:
-                t = advance(ctx, EventKind.DEADLINE_EXCEEDED, _now())
-                await _persist_transition(db, run, t)
-                await _emit(db, run.id, "expired", {
-                    "deadline_ts": run.deadline_ts,
-                    "total_ms": int((run.completed_at - run.created_at) * 1000),
-                })
-                await db.commit()
-                _WAKEUPS.pop(run_id, None); _rl_reset(run_id)
+            # Deadline check at every iteration boundary
+            if (await _step_check_deadline(db, run, ctx)) == _STEP_RETURN:
+                _cleanup()
                 return
 
             # State-machine dispatch
             if ctx.status is RunStatus.QUEUED:
-                t = advance(ctx, EventKind.START, _now())
-                await _persist_transition(db, run, t)
-                await _emit(db, run.id, "run_started", {})
-                await db.commit()
-                # fall through to next iteration which sees RUNNING
-                continue
-
-            if ctx.status is RunStatus.RUNNING:
-                messages = await _load_messages(db, run_id)
-                # R3: compaction trigger — if the conversation is at ≥80%
-                # of the next call's model context, summarise the older
-                # body before proceeding. We need a model id to estimate
-                # against; use the highest-priority candidate's model.
-                try:
-                    from app.runs.compaction import maybe_compact, apply_compaction_to_db
-                    # Peek the next route just to get the model id; the actual
-                    # call goes through _call_model_once and may re-route.
-                    peek_route = await select_provider(
-                        db, hint=None,
-                        has_tools=bool(run.tools_spec),
-                        has_images=False,
-                        key_type="standard",
-                        excluded_provider_types={"claude-oauth"},
-                    )
-                    next_model = peek_route.litellm_model
-                except Exception:
-                    next_model = "gpt-4o"
-
-                try:
-                    compaction = await maybe_compact(
-                        db, run_id=run.id,
-                        run_compaction_model=run.compaction_model,
-                        next_call_model=next_model,
-                        messages=messages,
-                    )
-                except Exception as ce:
-                    logger.warning("runs.compaction.failed run=%s err=%s",
-                                   run.id, ce)
-                    compaction = None
-
-                if compaction is not None:
-                    await apply_compaction_to_db(
-                        db, run_id=run.id, new_messages=compaction["new_messages"],
-                    )
-                    run.context_summarized_at_turn = run.model_calls or 0
-                    await _emit(db, run.id, "context_compacted", compaction["event"])
-                    await db.commit()
-                    # Reload after compaction so the next call sees the
-                    # compacted message list
-                    messages = await _load_messages(db, run_id)
-
-                # R6: per-Run rate limiter — guards against tight tool-loops
-                # burning budget. acquire() blocks until a slot is free;
-                # emits rate_limited event on first throttled attempt so
-                # observability dashboards can see the throttle without
-                # waiting for failure.
-                try:
-                    from app.runs import rate_limit as _rl
-                    async def _emit_rl(payload):
-                        async with AsyncSessionLocal() as _rl_db:
-                            await _emit(_rl_db, run.id, "rate_limited", payload)
-                            await _rl_db.commit()
-                    await _rl.acquire(run.id, emit_callback=_emit_rl)
-                except Exception as e:
-                    logger.info("runs.rate_limit.skip run=%s err=%s", run.id, e)
-
-                try:
-                    resp, _pid, _model, _lat = await _call_model_once(
-                        db, run, messages,
-                        excluded_provider_ids=excluded_provider_ids,
-                    )
-                except ProviderExhausted as e:
-                    t = advance(ctx, EventKind.PROVIDER_EXHAUSTED, _now(),
-                                {"detail": str(e)})
-                    await _persist_transition(db, run, t)
-                    await _emit(db, run.id, "failed", {
-                        "error": str(e),
-                        "kind": ErrorKind.PROVIDER.value,
-                        "last_provider_used": run.last_provider_id,
-                    })
-                    await db.commit()
-                    _WAKEUPS.pop(run_id, None); _rl_reset(run_id)
-                    return
-                except BillingHardStop as e:
-                    t = advance(ctx, EventKind.INTERNAL_ERROR, _now(),
-                                {"detail": f"billing: {e}"})
-                    await _persist_transition(db, run, t)
-                    await _emit(db, run.id, "failed", {
-                        "error": str(e),
-                        "kind": ErrorKind.INTERNAL.value,
-                        "last_provider_used": run.last_provider_id,
-                    })
-                    await db.commit()
-                    _WAKEUPS.pop(run_id, None); _rl_reset(run_id)
-                    return
-                except Exception as e:
-                    t = advance(ctx, EventKind.INTERNAL_ERROR, _now(),
-                                {"detail": f"{type(e).__name__}: {str(e) or 'no message'}"})
-                    await _persist_transition(db, run, t)
-                    await _emit(db, run.id, "failed", {
-                        "error": str(e), "kind": ErrorKind.INTERNAL.value,
-                        "last_provider_used": run.last_provider_id,
-                    })
-                    await db.commit()
-                    _WAKEUPS.pop(run_id, None); _rl_reset(run_id)
-                    return
-
-                blocks = _extract_assistant_content(resp)
-                await _append_assistant_message(db, run_id, blocks)
-                # Reset failover exclusions on a successful call
-                excluded_provider_ids = set()
-
-                tool_use = _first_tool_use(blocks)
-                if tool_use is not None:
-                    # MODEL_RETURNED_TOOL — transition + park
-                    t = advance(_ctx_from_row(run), EventKind.MODEL_RETURNED_TOOL, _now())
-                    await _persist_transition(db, run, t)
-                    if t.status is RunStatus.REQUIRES_TOOL:
-                        run.current_tool_use_id = tool_use["id"]
-                        run.current_tool_name = tool_use["name"]
-                        run.current_tool_input = tool_use["input"]
-                        await _emit(db, run.id, "tool_use_requested", {
-                            "tool_use_id": tool_use["id"],
-                            "name": tool_use["name"],
-                            "input": tool_use["input"],
-                        })
-                    elif t.status is RunStatus.FAILED and t.error_kind is ErrorKind.TOOL_LOOP_EXCEEDED:
-                        await _emit(db, run.id, "failed", {
-                            "error": t.error_message,
-                            "kind": ErrorKind.TOOL_LOOP_EXCEEDED.value,
-                            "last_provider_used": run.last_provider_id,
-                        })
-                        await db.commit()
-                        _WAKEUPS.pop(run_id, None); _rl_reset(run_id)
-                        return
-                    elif t.status is RunStatus.EXPIRED:
-                        await _emit(db, run.id, "expired", {
-                            "deadline_ts": run.deadline_ts,
-                            "total_ms": int((run.completed_at - run.created_at) * 1000),
-                        })
-                        await db.commit()
-                        _WAKEUPS.pop(run_id, None); _rl_reset(run_id)
-                        return
-                    await db.commit()
-                    # Fall through; outer loop will pick up REQUIRES_TOOL and wait.
+                if (await _step_queued(db, run, ctx)) == _STEP_CONTINUE:
                     continue
-                else:
-                    # MODEL_RETURNED_TEXT → completed
-                    t = advance(_ctx_from_row(run), EventKind.MODEL_RETURNED_TEXT, _now())
-                    await _persist_transition(db, run, t)
-                    if t.status is RunStatus.COMPLETED:
-                        run.result_text = _terminal_text(blocks)
-                        await _emit(db, run.id, "completed", {
-                            "result_text": run.result_text,
-                            "total_ms": int((run.completed_at - run.created_at) * 1000),
-                        })
-                    elif t.status is RunStatus.EXPIRED:
-                        await _emit(db, run.id, "expired", {
-                            "deadline_ts": run.deadline_ts,
-                            "total_ms": int((run.completed_at - run.created_at) * 1000),
-                        })
-                    await db.commit()
-                    _WAKEUPS.pop(run_id, None); _rl_reset(run_id)
-                    return
 
-            if ctx.status is RunStatus.REQUIRES_TOOL:
-                # Idle wait. Wakeup event is set by /tool_result, /cancel, or
-                # by a periodic deadline-check tick.
+            elif ctx.status is RunStatus.RUNNING:
+                step = await _step_running(db, run, run_id, ctx, excluded_provider_ids)
+                if step == _STEP_RETURN:
+                    _cleanup()
+                    return
+                if step == _STEP_CONTINUE:
+                    continue
+                # else fall through to wait
+
+            elif ctx.status is RunStatus.REQUIRES_TOOL:
+                # Idle wait. Wakeup event is set by /tool_result, /cancel,
+                # or by the periodic deadline-check tick below.
                 pass
 
             if ctx.status.terminal:
-                _WAKEUPS.pop(run_id, None); _rl_reset(run_id)
+                _cleanup()
                 return
 
         # Wait outside of the DB session so we don't pin a connection.
