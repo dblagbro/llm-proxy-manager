@@ -24,6 +24,21 @@ Provider rows now carry a separate `last_user_edit_at` Unix timestamp set only b
 
 Provider sync payload was missing the `name`, `daily_budget_usd`, `oauth_refresh_token`, and `oauth_expires_at` fields — renames and budget changes on one node never reached peers. Plus an admin-only `POST /cluster/sync-now` endpoint to force convergence after a config change without waiting for the 60s loop.
 
+### v3.0.9 — deprecation auto-bump + stale-bundle banner + dead-code instrumentation
+
+- **`app/providers/deprecations.py`** — `MODEL_DEPRECATIONS` registry (deprecated → replacement) with current Google / Anthropic / OpenAI retirements. `migrate_deprecated_default_models(db)` runs at boot (idempotent) and bumps every provider row's `default_model` to the registered replacement. `check_model_deprecation(model)` used by `/test` and `/scan-models` response builders to surface deprecation warnings in the UI before the upstream 404s on real traffic.
+- **Stale-bundle banner** — `Layout.tsx` watches first-observed `/health` version and shows a "Reload now" banner when the served app diverges (browser cache after deploy).
+- **Backstop instrumentation** added to `_messages_streaming.py` for the `max_tokens` default + cache_control marker cap-check (later removed in v3.0.12 after a week of zero triggers).
+- **Smoke node roll-forward** to v3.0.9 alongside the production fleet.
+
+### v3.0.8 — refactor: SCHEMA-type fix + auth dedup + worker split
+
+Three pure refactors — no behavior change, 799 unit tests still green.
+
+- **SCHEMA-type structural fix** — pydantic field annotations on `app.config.Settings` are now the canonical source of setting types; `config_runtime.SCHEMA`'s `type` is a UI hint and a fallback. `_pydantic_field_type` + `canonical_type` + `validate_schema_consistency` (boot-time WARN). Closes the v3.0.1 bug class where SCHEMA said `"str"` for a float field and `_coerce` returned a string into a numeric comparison.
+- **Auth dedup** — new `get_api_key_record` + `resolve_api_key_dep` factory in `app/auth/keys.py`; `app/api/runs.py` collapsed 5 raw_key extraction blocks into `Depends(_AUTH)`.
+- **Worker split** — `app/runs/worker.py::_drive()` (was 250 lines) split into per-state handlers (`_step_check_deadline`, `_step_queued`, `_step_running`, `_handle_tool_use`, `_handle_terminal_text`, `_peek_next_model`, `_maybe_compact_run`, `_wait_for_rate_limit_slot`, `_fail_run`).
+
 ### v3.0.7 — daily prune worker for activity_log + provider_metrics + run_events
 
 Daily background sweep prunes rows older than `activity_log_retention_days` (default 30 days, admin-tunable). Batched DELETEs (5000 rows/batch) keep individual transactions short under WAL mode. Initial sweep delayed 1h post-boot.
