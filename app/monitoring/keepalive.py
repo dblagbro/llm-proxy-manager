@@ -28,6 +28,7 @@ Skip rules:
 from __future__ import annotations
 
 import asyncio
+import httpx
 import logging
 import time
 from typing import Optional
@@ -127,6 +128,49 @@ async def _probe_one(provider: Provider) -> None:
             err_str = f"{type(e).__name__}: {str(e) or 'no message'}"
             # Fall through to the generic record_outcome path below so the
             # error gets logged with probe markers.
+    elif provider.provider_type == "codex-oauth":
+        # v3.0.19: codex-oauth probes were going through litellm.acompletion
+        # (openai/gpt-5.5), which routes to api.openai.com — that endpoint
+        # rejects Codex CLI bearer tokens with "Missing scopes: model.request".
+        # Use the direct dispatch path with the right headers + body shape.
+        # Minimal inline call (rather than calling _test_codex_oauth) so the
+        # standard record_outcome path below logs the activity_log entry
+        # with the right probe markers without double-recording.
+        from app.providers.codex_oauth import (
+            CODEX_RESPONSES_URL, build_headers,
+        )
+        cfg = provider.extra_config or {}
+        account_id = cfg.get("chatgpt_account_id") if isinstance(cfg, dict) else None
+        codex_body = {
+            "model": model,
+            "instructions": "Reply briefly.",
+            "input": [{
+                "type": "message", "role": "user",
+                "content": [{"type": "input_text", "text": prompt}],
+            }],
+            "stream": True,
+            "store": False,
+        }
+        try:
+            headers = build_headers(provider.api_key, chatgpt_account_id=account_id)
+            async with httpx.AsyncClient(timeout=_PROBE_TIMEOUT_SEC) as _c:
+                async with _c.stream(
+                    "POST", CODEX_RESPONSES_URL, headers=headers, json=codex_body,
+                ) as _r:
+                    if _r.status_code >= 400:
+                        body = await _r.aread()
+                        err_str = f"{_r.status_code}: {body[:300].decode(errors='replace')}"
+                    else:
+                        # Drain enough events to confirm response.completed.
+                        async for line in _r.aiter_lines():
+                            if line.startswith("data:") and "response.completed" in line:
+                                success = True
+                                break
+                        if not success:
+                            err_str = "stream ended without response.completed"
+        except Exception as e:
+            err_str = f"{type(e).__name__}: {str(e) or 'no message'}"
+        litellm_model = model  # for the activity_log message string below
     else:
         kwargs = {"api_key": provider.api_key, "max_tokens": _PROBE_MAX_TOKENS}
         if provider.base_url:
