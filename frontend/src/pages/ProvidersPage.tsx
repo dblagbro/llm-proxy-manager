@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { Plus, RefreshCw, Search, ChevronDown, ChevronUp, Trash2, Edit2, ToggleLeft, ToggleRight, Play, FileText } from 'lucide-react'
-import { providersApi, clusterApi } from '@/api'
+import { providersApi, clusterApi, monitoringApi } from '@/api'
 import { Card, CardContent } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
 import { Badge } from '@/components/ui/Badge'
@@ -35,6 +35,24 @@ export function ProvidersPage() {
 
   const { data: providers, isLoading } = useQuery({ queryKey: ['providers'], queryFn: providersApi.list, refetchInterval: 30_000 })
   const { data: health } = useQuery({ queryKey: ['health'], queryFn: clusterApi.health, refetchInterval: 15_000 })
+  // v3.0.6: per-provider metrics (24h window) shown inline on each card.
+  // Lookup by provider_id; fall back to zeros when no data yet.
+  const { data: metrics } = useQuery({
+    queryKey: ['metrics', 24],
+    queryFn: () => monitoringApi.metrics(24),
+    refetchInterval: 60_000,
+  })
+  const metricsByProvider: Record<string, {
+    requests: number; success_rate: number; avg_latency_ms: number; total_cost_usd: number; total_tokens: number;
+  }> = {}
+  for (const m of metrics?.providers ?? []) {
+    metricsByProvider[m.provider_id] = m
+  }
+
+  // Sort dropdown for the providers list — cards aren't column-clickable so
+  // we expose the sort dimension as a small select. Default: priority asc
+  // (matches routing precedence).
+  const [sortBy, setSortBy] = useState<'priority' | 'name' | 'requests' | 'success_rate' | 'avg_latency_ms' | 'total_cost_usd'>('priority')
 
   const saveMutation = useMutation({
     mutationFn: async (data: ProviderFormState) => {
@@ -148,6 +166,21 @@ export function ProvidersPage() {
     p.name.toLowerCase().includes(search.toLowerCase()) ||
     p.provider_type.toLowerCase().includes(search.toLowerCase())
   )
+  // v3.0.6: sort by metrics dimension. Priority is asc (lower priority
+  // number = higher routing precedence); name is alpha asc; everything
+  // else is desc (more interesting first).
+  filtered.sort((a, b) => {
+    const ma = metricsByProvider[a.id]
+    const mb = metricsByProvider[b.id]
+    switch (sortBy) {
+      case 'priority': return (a.priority ?? 0) - (b.priority ?? 0)
+      case 'name':     return a.name.localeCompare(b.name)
+      case 'requests': return (mb?.requests ?? 0) - (ma?.requests ?? 0)
+      case 'success_rate': return (mb?.success_rate ?? 0) - (ma?.success_rate ?? 0)
+      case 'avg_latency_ms': return (mb?.avg_latency_ms ?? 0) - (ma?.avg_latency_ms ?? 0)
+      case 'total_cost_usd': return (mb?.total_cost_usd ?? 0) - (ma?.total_cost_usd ?? 0)
+    }
+  })
 
   // v2.7.8 BUG-010: identify priorities shared by ≥2 enabled providers so the
   // UI can surface a yellow warning ("ties broken by created_at order").
@@ -171,14 +204,31 @@ export function ProvidersPage() {
         <Button onClick={openCreate} size="sm"><Plus className="h-4 w-4 mr-1.5" />Add Provider</Button>
       </div>
 
-      <div className="relative max-w-sm">
-        <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
-        <input
-          value={search}
-          onChange={e => setSearch(e.target.value)}
-          placeholder="Filter providers…"
-          className="w-full pl-9 pr-3 py-2 text-sm bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
-        />
+      <div className="flex items-center gap-3 flex-wrap">
+        <div className="relative max-w-sm flex-1 min-w-[14rem]">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
+          <input
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Filter providers…"
+            className="w-full pl-9 pr-3 py-2 text-sm bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+          />
+        </div>
+        <label className="text-xs text-gray-500 dark:text-gray-400 flex items-center gap-2 shrink-0">
+          Sort by
+          <select
+            value={sortBy}
+            onChange={e => setSortBy(e.target.value as typeof sortBy)}
+            className="text-sm bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-md px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+          >
+            <option value="priority">Priority</option>
+            <option value="name">Name</option>
+            <option value="requests">Requests (24h)</option>
+            <option value="success_rate">Success rate (24h)</option>
+            <option value="avg_latency_ms">Avg latency (24h)</option>
+            <option value="total_cost_usd">Cost (24h)</option>
+          </select>
+        </label>
       </div>
 
       {isLoading ? (
@@ -201,6 +251,39 @@ export function ProvidersPage() {
                   <div className="flex-1 min-w-0">
                     <p className="font-medium text-gray-900 dark:text-gray-100">{p.name}</p>
                     <p className="text-xs text-gray-500">{p.provider_type} · {p.default_model ?? 'no default model'} · priority {p.priority}</p>
+                    {/* v3.0.6: per-provider 24h metrics inline. Hidden when no
+                        traffic to that provider, so configured-but-unused
+                        providers stay clean. */}
+                    {(() => {
+                      const m = metricsByProvider[p.id]
+                      if (!m || m.requests === 0) return null
+                      const latency = m.avg_latency_ms > 1000
+                        ? `${(m.avg_latency_ms / 1000).toFixed(1)}s`
+                        : `${Math.round(m.avg_latency_ms)}ms`
+                      const cost = m.total_cost_usd === 0
+                        ? '$0.00'
+                        : m.total_cost_usd < 0.01
+                          ? `$${m.total_cost_usd.toFixed(5)}`
+                          : `$${m.total_cost_usd.toFixed(3)}`
+                      const successColor = m.success_rate >= 95
+                        ? 'text-green-600 dark:text-green-400'
+                        : m.success_rate >= 80
+                          ? 'text-amber-500'
+                          : 'text-red-500'
+                      return (
+                        <p className="text-xs text-gray-500 mt-1 font-mono">
+                          24h: {m.requests.toLocaleString()} req
+                          <span className="mx-1.5">·</span>
+                          <span className={successColor}>{m.success_rate.toFixed(1)}%</span>
+                          <span className="mx-1.5">·</span>
+                          {latency}
+                          <span className="mx-1.5">·</span>
+                          {m.total_tokens.toLocaleString()} tok
+                          <span className="mx-1.5">·</span>
+                          {cost}
+                        </p>
+                      )
+                    })()}
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
                     {/* v2.7.8 BUG-002: needs re-auth (admin must re-key).
