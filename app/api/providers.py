@@ -1,5 +1,6 @@
 """Provider CRUD, test, model scan, and capability management."""
 import secrets
+import time
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Body
@@ -15,6 +16,14 @@ from app.monitoring.status import register_provider
 from app.routing.capability_inference import infer_capability_profile
 
 router = APIRouter(prefix="/api/providers", tags=["providers"])
+
+
+def _stamp_user_edit(p: Provider) -> None:
+    """v3.0.11: mark this row as having been touched by a real admin edit.
+    Cluster sync prefers this timestamp over ``updated_at`` for LWW so that
+    OAuth auto-refresh, deprecation auto-bump, or priority tie-breaks on
+    a peer node can't revert a rename/config edit made on this node."""
+    p.last_user_edit_at = time.time()
 
 
 class ProviderCreate(BaseModel):
@@ -205,6 +214,7 @@ async def create_provider(
     await _bump_priority_conflicts(db, data["priority"])
 
     provider = Provider(id=secrets.token_hex(8), **data)
+    _stamp_user_edit(provider)
     db.add(provider)
     await db.commit()
     await db.refresh(provider)
@@ -295,6 +305,7 @@ async def claude_oauth_rotate(
     p.api_key = result.access_token
     p.oauth_refresh_token = result.refresh_token
     p.oauth_expires_at = result.expires_at
+    _stamp_user_edit(p)
     await db.commit()
     await db.refresh(p)
     register_provider(p.id, p.provider_type, p.hold_down_sec, p.failure_threshold)
@@ -333,6 +344,7 @@ async def claude_oauth_exchange(
         data["default_model"] = "claude-sonnet-4-6"
 
     provider = Provider(id=secrets.token_hex(8), **data)
+    _stamp_user_edit(provider)
     db.add(provider)
     await db.commit()
     await db.refresh(provider)
@@ -401,6 +413,7 @@ async def update_provider(
 
     for field, value in data.items():
         setattr(p, field, value)
+    _stamp_user_edit(p)
     await db.commit()
     await db.refresh(p)
     register_provider(p.id, p.provider_type, p.hold_down_sec, p.failure_threshold)
@@ -431,6 +444,7 @@ async def delete_provider(
     p.enabled = False
     # Bump updated_at so cluster sync recognizes this as the freshest write
     p.updated_at = datetime.now(timezone.utc)
+    _stamp_user_edit(p)
     await db.commit()
     return {"ok": True}
 
@@ -462,6 +476,7 @@ async def toggle_provider(
 ):
     p = await _get_or_404(db, provider_id)
     p.enabled = not p.enabled
+    _stamp_user_edit(p)
     await db.commit()
     return {"enabled": p.enabled}
 

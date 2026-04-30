@@ -140,7 +140,11 @@ async def _build_sync_payload(db) -> dict:
          "oauth_refresh_token": p.oauth_refresh_token,
          "oauth_expires_at": p.oauth_expires_at,
          "deleted_at": p.deleted_at.isoformat() if p.deleted_at else None,
-         "updated_at": p.updated_at.isoformat() if p.updated_at else None}
+         "updated_at": p.updated_at.isoformat() if p.updated_at else None,
+         # v3.0.11: per-row "last admin-edit" timestamp. Cluster sync LWW
+         # prefers this over updated_at so OAuth auto-refresh and other
+         # background mutations can't revert a real config edit.
+         "last_user_edit_at": p.last_user_edit_at}
         for p in providers_result.scalars().all()
     ]
     # Only push settings that were explicitly saved (have a DB row) — not env-var defaults

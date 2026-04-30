@@ -76,6 +76,8 @@ async def init_db():
             # v3.0 R1 — per-user UTC/timezone preferences (Q7 interleave)
             "ALTER TABLE users ADD COLUMN timezone TEXT",
             "ALTER TABLE users ADD COLUMN time_format TEXT",
+            # v3.0.11 — sync LWW now prefers user-edit timestamp over updated_at
+            "ALTER TABLE providers ADD COLUMN last_user_edit_at REAL",
         ]:
             try:
                 await conn.exec_driver_sql(stmt)
