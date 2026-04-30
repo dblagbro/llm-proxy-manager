@@ -1,12 +1,16 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip,
   ResponsiveContainer, CartesianGrid,
 } from 'recharts'
+import { ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react'
 import { monitoringApi } from '@/api'
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/Card'
 import { Spinner } from '@/components/ui/Spinner'
+
+type SortKey = 'name' | 'requests' | 'success_rate' | 'avg_latency_ms' | 'total_tokens' | 'total_cost_usd'
+type SortDir = 'asc' | 'desc'
 
 const WINDOWS = [6, 24, 72] as const
 type Window = typeof WINDOWS[number]
@@ -19,6 +23,18 @@ function fmtCost(v: number) {
 
 export function MetricsPage() {
   const [window, setWindow] = useState<Window>(24)
+  const [sortKey, setSortKey] = useState<SortKey>('requests')
+  const [sortDir, setSortDir] = useState<SortDir>('desc')
+
+  function toggleSort(col: SortKey) {
+    if (col === sortKey) {
+      setSortDir(d => d === 'asc' ? 'desc' : 'asc')
+    } else {
+      setSortKey(col)
+      // Default direction: numbers desc (more interesting first), strings asc
+      setSortDir(col === 'name' ? 'asc' : 'desc')
+    }
+  }
 
   const { data: metrics, isLoading } = useQuery({
     queryKey: ['metrics', window],
@@ -26,7 +42,26 @@ export function MetricsPage() {
     refetchInterval: 60_000,
   })
 
-  const providers = metrics?.providers ?? []
+  const providersRaw = metrics?.providers ?? []
+  const providers = useMemo(() => {
+    const sorted = [...providersRaw]
+    const mult = sortDir === 'asc' ? 1 : -1
+    sorted.sort((a, b) => {
+      let av: string | number
+      let bv: string | number
+      if (sortKey === 'name') {
+        av = (a.provider_name || a.provider_id).toLowerCase()
+        bv = (b.provider_name || b.provider_id).toLowerCase()
+      } else {
+        av = (a as unknown as Record<string, number>)[sortKey] ?? 0
+        bv = (b as unknown as Record<string, number>)[sortKey] ?? 0
+      }
+      if (av < bv) return -1 * mult
+      if (av > bv) return 1 * mult
+      return 0
+    })
+    return sorted
+  }, [providersRaw, sortKey, sortDir])
 
   // Aggregate summary
   const totalRequests = providers.reduce((s, p) => s + p.requests, 0)
@@ -116,9 +151,29 @@ export function MetricsPage() {
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b border-gray-100 dark:border-gray-700">
-                      {['Provider', 'Requests', 'Success %', 'Avg Latency', 'Tokens', 'Cost'].map(h => (
-                        <th key={h} className="text-left px-5 py-3 text-xs text-gray-400 font-medium">{h}</th>
-                      ))}
+                      {([
+                        ['name', 'Provider'],
+                        ['requests', 'Requests'],
+                        ['success_rate', 'Success %'],
+                        ['avg_latency_ms', 'Avg Latency'],
+                        ['total_tokens', 'Tokens'],
+                        ['total_cost_usd', 'Cost'],
+                      ] as [SortKey, string][]).map(([key, label]) => {
+                        const active = sortKey === key
+                        const Icon = !active ? ArrowUpDown : (sortDir === 'asc' ? ArrowUp : ArrowDown)
+                        return (
+                          <th
+                            key={key}
+                            onClick={() => toggleSort(key)}
+                            className="text-left px-5 py-3 text-xs text-gray-400 font-medium cursor-pointer select-none hover:text-gray-700 dark:hover:text-gray-200"
+                          >
+                            <span className="inline-flex items-center gap-1">
+                              {label}
+                              <Icon className={`h-3 w-3 ${active ? 'text-indigo-500' : 'opacity-40'}`} />
+                            </span>
+                          </th>
+                        )
+                      })}
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-50 dark:divide-gray-800">
