@@ -90,6 +90,12 @@ SCHEMA: dict[str, dict] = {
         "label": "Keep-alive probes: synthetic 'Hi from <ProviderName>' interval (seconds; 0 to disable)",
         "group": "Run runtime",
     },
+    "activity_log_retention_days": {
+        "type": "int",
+        "default": getattr(settings, "activity_log_retention_days", 30),
+        "label": "Activity log + provider_metrics + run_events retention (days)",
+        "group": "Activity log",
+    },
     # SMTP
     "smtp_enabled": {"type": "bool",  "default": settings.smtp_enabled, "label": "Enable email alerts"},
     "smtp_host":    {"type": "str",   "default": settings.smtp_host or "",    "label": "SMTP host"},

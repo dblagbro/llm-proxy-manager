@@ -2,90 +2,85 @@
 
 Self-hosted LLM routing gateway — Python/FastAPI rewrite of llm-proxy v1.
 
-**LMRH semantic routing · circuit breaker failover · CoT-E augmentation · cluster sync · React dashboard**
+**LMRH semantic routing · circuit breaker failover · CoT-E augmentation · cluster sync · Run runtime · per-provider keep-alive probes · React dashboard**
+
+Current version: **v3.0.7** (see [CHANGELOG.md](CHANGELOG.md))
 
 ## Access
 
 | Node | URL |
 |------|-----|
 | tmrwww01 | https://www.voipguru.org/llm-proxy2/ |
-| tmrwww02 | https://www.voipguru.org/llm-proxy2/ |
-| c1conversations-avaya-01-s23 | https://\<c1-domain\>/llm-proxy2/ |
+| tmrwww02 | https://www2.voipguru.org/llm-proxy2/ |
+| c1conversations-avaya-01-s23 | https://www.c1cx.com/llm-proxy2/ |
+| Joint-smoke target | https://www.voipguru.org/llm-proxy2-smoke/ (pinned version, hub-team test target) |
 
-**Default login on first boot**: `admin` / `admin` — change immediately after first login via the Users page. The integration test fixtures expect the production cluster's existing admin password (see `tests/conftest.py::ADMIN_PASS`).
+**Default login on first boot**: `admin` / `admin` — change immediately after first login via the Users page.
 
 ## Stack
 
-- **Backend**: Python 3.13, FastAPI, SQLite (aiosqlite), uvicorn
+- **Backend**: Python 3.13, FastAPI, SQLite (aiosqlite, WAL mode), uvicorn
 - **Frontend**: React 19, TypeScript, Vite, TailwindCSS v4, TanStack Query v5
-- **Auth**: bcrypt passwords, HTTP-only session cookies, API key auth (`x-api-key`)
+- **Auth**: bcrypt passwords, HTTP-only session cookies, API key auth (`x-api-key` or `Authorization: Bearer`)
 - **Deployment**: Docker, served at `/llm-proxy2/` via nginx reverse proxy
 
 ## Quick Start (Docker)
 
-The service is already added to the main `docker-compose.yml` on all 3 nodes.
-Build and start from `/home/dblagbro/docker/`:
+The service is in the main `docker-compose.yml` on all 3 nodes:
 
 ```bash
 sudo docker compose build llm-proxy2
-sudo docker compose up -d --no-deps llm-proxy2
+sudo docker compose up -d --force-recreate --no-deps llm-proxy2
 ```
 
-## nginx
+## API surface
 
-Location config: `/home/dblagbro/docker/config/nginx/projects-locations.d/llm-proxy2.conf`
-
-Three locations:
-- `~ ^/llm-proxy2/(api/monitoring/activity/stream)` — SSE, unbuffered, 86400s timeout
-- `~ ^/llm-proxy2/(v1/messages|v1/chat/completions)` — streaming LLM API, unbuffered
-- `/llm-proxy2/` — all other traffic (UI, admin API, health)
-
-After any nginx config change: `sudo docker exec nginx nginx -s reload`
-
-## API
-
-### Authentication
-
-```bash
-# Admin session login (sets session cookie)
-curl -c cookies.txt -X POST https://www.voipguru.org/llm-proxy2/api/auth/login \
-  -d "username=admin&password=admin"
-
-# LLM API call with API key
-curl -H "x-api-key: llmp2-your-key" \
-  https://www.voipguru.org/llm-proxy2/v1/messages \
-  -H "Content-Type: application/json" \
-  -d '{"model": "claude-sonnet-4-6", "max_tokens": 1024, "messages": [{"role":"user","content":"Hello"}]}'
-```
-
-### Health
-
-```bash
-curl https://www.voipguru.org/llm-proxy2/health
-# {"status":"healthy","version":"2.7.5","nodeId":"...","totalProviders":N,"healthyProviders":N,...}
-```
-
-### LLM Endpoints (same paths as v1)
+### Existing endpoints (v1-shape, frozen indefinitely)
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/v1/messages` | Anthropic-format completions |
-| POST | `/v1/chat/completions` | OpenAI-format completions |
+| POST   | `/v1/messages`              | Anthropic-format completions (streaming + non-streaming) |
+| POST   | `/v1/chat/completions`      | OpenAI-format completions (streaming + non-streaming) |
+| GET    | `/v1/models`                | OpenAI-shape model list |
+| GET    | `/health`                   | Public health probe (no auth) |
+| GET    | `/metrics`                  | Prometheus metrics |
 
-### Admin API
+### Run runtime endpoints (v3.0.0+, joint contract with coordinator-hub)
+
+Server-mediated agent loop. Replaces black-box `claude --print` invocations with state-machine-driven, observable, recoverable execution. Full operator reference in [`docs/runs-runbook.md`](docs/runs-runbook.md); wire spec in [`runs.openapi.json`](runs.openapi.json).
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET/POST | `/api/providers` | List / add providers |
-| GET/POST | `/api/keys` | List / create API keys |
-| GET/POST | `/api/users` | List / create users |
-| GET | `/api/monitoring/status` | Provider health + circuit breaker states |
-| GET | `/api/monitoring/activity` | Activity log (paginated) |
-| GET | `/api/monitoring/activity/stream` | SSE live activity stream |
-| GET | `/cluster/status` | Cluster node status |
-| POST | `/cluster/circuit-breaker/{id}/reset` | Force-close a circuit breaker |
+| POST | `/v1/runs` | Create a Run (idempotent on `idempotency_key`, 24h TTL) |
+| GET | `/v1/runs/{id}` | Get current state (status, tokens, current tool_use, etc.) |
+| POST | `/v1/runs/{id}/cancel` | Cancel (idempotent; broker fans `cancelled` to live SSE consumers within ~10ms) |
+| POST | `/v1/runs/{id}/tool_result` | Post a tool result back into a run |
+| GET | `/v1/runs/{id}/events` | SSE event stream OR `?since_ms=` polling |
+| POST | `/v1/runs/{id}/adopt` | Peer takeover after owner-node failure (R5) |
 
-## Environment Variables
+State machine: `queued → running → requires_tool → running → … → completed | failed | expired | cancelled`
+
+### Admin / observability
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET/POST | `/api/providers` | List / add / edit / soft-delete providers |
+| GET/POST | `/api/keys`      | List / create API keys (with bulk-delete) |
+| GET/POST | `/api/users`     | List / create users; per-user timezone + 24h preference |
+| PATCH    | `/api/auth/preferences` | Update logged-in user's display prefs |
+| GET      | `/api/monitoring/status`   | Provider health + circuit breaker states |
+| GET      | `/api/monitoring/activity` | Activity log (paginated, searchable) |
+| GET      | `/api/monitoring/activity/stream` | SSE live activity stream |
+| GET      | `/api/monitoring/metrics?hours=24` | Per-provider rollup (request count, success rate, latency, cost, tokens) |
+| GET      | `/cluster/status`          | Cluster node status |
+| POST     | `/cluster/circuit-breaker/{id}/reset` | Force-close a circuit breaker |
+| POST     | `/cluster/sync`            | Receive sync push from peer (HMAC) |
+
+## Configuration
+
+All settings can be edited live on the Settings page; environment variables are the defaults.
+
+### Selected env vars
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -95,31 +90,78 @@ curl https://www.voipguru.org/llm-proxy2/health
 | `CIRCUIT_BREAKER_THRESHOLD` | `3` | Failures before opening circuit |
 | `CIRCUIT_BREAKER_TIMEOUT_SEC` | `60` | Seconds circuit stays open |
 | `HOLD_DOWN_SEC` | `120` | Post-failure provider hold-down |
+| `RUNS_MAX_TURNS_CEILING` | `50` | Run runtime: max-turns admin ceiling (hard cap 200) |
+| `RUNS_MAX_MODEL_CALLS_PER_MINUTE` | `5` | Per-Run rate limit |
+| `KEEPALIVE_PROBE_INTERVAL_SEC` | `300` | Keep-alive probe interval (0 disables) |
+| `ACTIVITY_LOG_RETENTION_DAYS` | `30` | Daily prune of activity_log + run_events + provider_metrics |
 | `CLUSTER_ENABLED` | `false` | Enable cluster mode |
-| `CLUSTER_NODE_ID` | — | Unique node identifier |
-| `CLUSTER_NODE_URL` | — | This node's public URL |
-| `CLUSTER_PEERS` | — | `id:url,id:url` comma-separated peers |
-| `CLUSTER_SYNC_SECRET` | — | HMAC shared secret for cluster sync |
+| `CLUSTER_NODE_ID` / `CLUSTER_NODE_URL` / `CLUSTER_PEERS` | — | Cluster identity + peers |
+| `CLUSTER_SYNC_SECRET` | — | HMAC shared secret |
 | `SMTP_ENABLED` | `false` | Enable email alerts |
 
-## LMRH Protocol
+## Routing
 
-Route requests by task type, cost, latency, region, or modality:
+### LMRH protocol — semantic routing by task / cost / latency / modality
 
-```bash
-curl -X POST .../v1/messages \
-  -H "LLM-Hint: task=reasoning, cost=economy, region=us" \
-  -H "x-api-key: your-key" \
-  -d '{"model": "claude-sonnet-4-6", ...}'
-# Response includes: LLM-Capability: v=1, provider=google, model=gemini-2.5-flash, ...
+```
+LLM-Hint: task=reasoning, cost=economy, region=us
 ```
 
-Append `;require` to any affinity to make it a hard constraint (returns 503 if unmet).
+Append `;require` to any affinity to make it a hard constraint (returns 503 with the specific unmet dimension if it can't be satisfied). Response carries `LLM-Capability` with the chosen provider and model.
 
-## Cluster Mode
+### Sort modes — OpenRouter-parity model slug suffixes
 
-All 3 nodes sync users and API keys via HMAC-authenticated `/cluster/sync` POST calls.
-Each node maintains independent provider configurations and priorities.
+| Suffix | Meaning |
+|---|---|
+| `:floor` | Cheapest provider that meets the request shape |
+| `:nitro` | Lowest-latency provider |
+| `:exacto` | Strict-precision provider (highest safety tier) |
+
+### Auto-routing
+
+Send `model: "auto"` (or `"llmp-auto"`) and let LMRH ranking pick provider AND model. Auto-task classifier infers a task dimension from the prompt before scoring.
+
+## Failover + reliability
+
+| Feature | Behavior |
+|---|---|
+| **Per-call hard deadline** | `asyncio.wait_for(connect=10s, read=60s)` wraps every upstream call. `ConnectTimeout` / `ReadTimeout` / `asyncio.TimeoutError` → immediate fail-over to next provider. |
+| **Circuit breaker** | Three states (closed / open / half-open); auth-failure breaker has 24h hold (Anthropic OAuth-revocation pattern); billing breaker 1h. |
+| **Provider failover** | Reuses ranked candidate list; `try_ranked_non_streaming` walks the chain on non-retriable failures. claude-oauth providers excluded from non-OAuth dispatch paths. |
+| **Hedged requests** | Tail-at-scale pattern — fires backup on primary TTFT > 1.2× provider's p95. Token-bucket rate-limited (`HEDGE_MAX_PER_SEC`). |
+| **Cluster stickiness (R5)** | Run-targeted endpoints redirect (307) to the run's `owner_node_id`. Debounced state replication via `/cluster/sync`; terminal pushes sync-acked. `POST /v1/runs/{id}/adopt` for owner-failure handoff. |
+| **Recovery sweep** | On startup, scan for in-flight runs owned by this node + spawn workers from persisted message history. Emits `run_recovered` event. |
+
+## Provider types
+
+| Type | Auth | Notes |
+|------|------|-------|
+| `anthropic` | `x-api-key` (sk-ant-api03-…) | Standard Anthropic API keys |
+| `openai` | `Authorization: Bearer` | OpenAI platform + any OpenAI-compatible endpoint |
+| `google` | API key | Gemini / Vertex |
+| `vertex` | Service account | Google Cloud Vertex AI |
+| `grok` | `Authorization: Bearer` | xAI |
+| `ollama` | none (local) | Self-hosted Ollama |
+| `compatible` | varies | Generic OpenAI-compatible (LM Studio, LocalAI, etc.) |
+| `claude-oauth` | OAuth `Bearer sk-ant-oat…` | **Claude Pro Max subscription** — see below |
+
+### Claude Pro Max subscription (`claude-oauth`)
+
+Add a Claude Pro Max account as a provider without needing an Anthropic API key. In the Providers UI, pick `provider_type: claude-oauth` and click **Generate Auth URL**. Open the URL in a browser where you're signed in to claude.ai, approve, and paste the `CODE#STATE` string from the success page back into the form. The proxy handles the PKCE token exchange and stores access + refresh tokens (Fernet-encrypted at rest). Auto-refresh on 401 (one-shot, then surface).
+
+Traffic to `claude-oauth` providers bypasses litellm and hits `platform.claude.com/v1/messages` directly with the Claude Code header bundle. Excluded from `/v1/chat/completions` routing (the OpenAI-format endpoint can't dispatch Anthropic-format upstream). Excluded from cascade / critique / hedging internal pipelines (those use litellm; OAuth needs the dedicated handler).
+
+## Observability
+
+- **Activity log** — every request → `activity_log` table; bodies captured (request + response, up to 50KB each, scrubbed of secrets); searchable, paginated, SSE-streamable. Auto-pruned daily (default 30 days).
+- **Per-provider metrics** — 5-min bucketed `provider_metrics` table; surface on Metrics page (sortable columns) and inline on the Providers page (24h chips on each row).
+- **Keep-alive probes** — every enabled provider gets a `Hi from <ProviderName>` synthetic call every 5 min (configurable). Tagged `[probe]` in activity log. Includes claude-oauth via the OAuth dispatch path.
+- **OTEL spans** — GenAI semantic conventions (`gen_ai.operation.name`, `gen_ai.provider.name`, etc.) plus gateway extensions (`gen_ai.routing.lmrh_hint`, `gen_ai.run.id`, etc.). OTLP HTTP exporter when `OTEL_EXPORTER_OTLP_ENDPOINT` is set; no-op otherwise.
+- **Prometheus** — `/metrics` exposes per-provider request duration, token counts, TTFT, hedge attempts/wins, circuit-breaker state gauge.
+
+## Cluster mode
+
+All 3 nodes sync users + API keys + providers + system settings + run state via HMAC-authenticated `/cluster/sync` POST calls. SQLite uses **WAL mode** (v3.0.3) so concurrent writers don't lock the DB. Each node maintains independent provider configurations; spending caps are enforced cluster-wide via per-peer cost tracking.
 
 ```bash
 curl -b cookies.txt https://www.voipguru.org/llm-proxy2/cluster/status
@@ -137,58 +179,40 @@ uvicorn app.main:app --reload --port 3000
 # Frontend (dev server)
 cd frontend && npm install && npm run dev
 
-# Integration tests (Playwright)
+# Tests
+python -m pytest tests/unit -q                      # 800+ unit tests
+python -m pytest tests/integration -q               # ~60 integration tests against live deployment
+playwright install chromium                         # for the playwright UI suite
 python -m pytest tests/integration/test_playwright_ui.py -v
 ```
 
-## Rebuild All 3 Nodes
+## Rebuild + deploy (single node)
+
+Per the project's docker rules — single container, never `down`:
 
 ```bash
-# On each node — build new image, recreate only llm-proxy2
 cd /home/dblagbro/docker
 sudo docker compose build llm-proxy2
 sudo docker compose up -d --force-recreate --no-deps llm-proxy2
-
-# Verify
 curl -s https://www.voipguru.org/llm-proxy2/health | jq
 ```
 
-## Provider Types
-
-| Type | Auth | Notes |
-|------|------|-------|
-| `anthropic` | `x-api-key` (sk-ant-api03-…) | Standard Anthropic API keys |
-| `openai` | `Authorization: Bearer` | OpenAI platform + any OpenAI-compatible endpoint |
-| `google` | API key | Gemini / Vertex |
-| `vertex` | Service account | Google Cloud Vertex AI |
-| `grok` | `Authorization: Bearer` | xAI |
-| `ollama` | none (local) | Self-hosted Ollama |
-| `compatible` | varies | Generic OpenAI-compatible (LM Studio, LocalAI, etc.) |
-| `claude-oauth` | OAuth `Bearer sk-ant-oat…` | **Claude Pro Max subscription** — see below |
-
-### Claude Pro Max subscription (`claude-oauth`) — v2.7.1+
-
-Add a Claude Pro Max account as a provider without needing an Anthropic API key.
-In the Providers UI, pick `provider_type: claude-oauth` and click **Generate
-Auth URL**. Open the URL in a browser where you're signed in to claude.ai,
-approve, and paste the `CODE#STATE` string from the success page back into the
-form. The proxy handles the PKCE token exchange and stores access + refresh
-tokens (Fernet-encrypted at rest).
-
-Traffic to `claude-oauth` providers bypasses litellm and hits
-`platform.claude.com/v1/messages` directly with the exact Claude Code header
-bundle (Bearer auth + beta flags + required system-prompt marker). Haiku models
-automatically drop the `context-1m` beta flag that the Pro Max tier doesn't
-grant. Scan Models, Test Provider, tool_use, streaming, vision, and prompt
-caching all work end-to-end — see `scripts/test_claude_oauth_live.py`.
-
-## Key Differences from v1
+## Key differences from v1
 
 | Feature | v1 (Node.js) | v2 (Python) |
-|---------|-------------|-------------|
+|---|---|---|
 | Runtime | Node.js + Express | Python 3.13 + FastAPI |
-| DB | JSON files | SQLite (async) |
+| DB | JSON files | SQLite (async, WAL) |
 | Frontend | Server-rendered EJS | React 19 SPA |
 | Auth | express-session | HTTP-only cookies + bcrypt |
 | URL path | `/llmProxy/` | `/llm-proxy2/` |
 | Port (internal) | 3000 | 3000 |
+| Routing | priority + retry | LMRH semantic + circuit breaker + hedging + Run runtime |
+
+## Documentation
+
+- [`docs/runs-runbook.md`](docs/runs-runbook.md) — operator runbook for the Run runtime
+- [`runs.openapi.json`](runs.openapi.json) — OpenAPI spec for `/v1/runs/*` endpoints (joint contract with coordinator-hub)
+- [`docs/claude-pro-max-oauth-capture.md`](docs/claude-pro-max-oauth-capture.md) — OAuth capture flow notes
+- [`docs/draft-blagbrough-lmrh-00.md`](docs/draft-blagbrough-lmrh-00.md) — LMRH 1.0 IETF draft
+- [`CHANGELOG.md`](CHANGELOG.md) — version history
