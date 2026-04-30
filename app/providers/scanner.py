@@ -73,6 +73,8 @@ async def _fetch_model_list(provider: Provider) -> list[str]:
                 return await _fetch_anthropic_models(provider)
             case "claude-oauth":
                 return await _fetch_claude_oauth_models(provider)
+            case "codex-oauth":
+                return await _fetch_codex_oauth_models(provider)
             case "openai" | "compatible" | "grok":
                 return await _fetch_openai_models(provider)
             case "google":
@@ -133,6 +135,54 @@ async def _fetch_claude_oauth_models(provider: Provider) -> list[str]:
         return [m["id"] for m in data.get("data", [])]
 
 
+async def _fetch_codex_oauth_models(provider: Provider) -> list[str]:
+    """Codex CLI / ChatGPT subscription model list.
+
+    Hits ``chatgpt.com/backend-api/codex/models?client_version=...`` with
+    the OAuth bearer + ``ChatGPT-Account-ID`` workspace header. The list
+    is per-account-tier — Plus, Pro, Team and Enterprise see different
+    slugs. ``client_version`` is required as a query parameter; the
+    backend rejects requests without it.
+
+    Mirrors the auto-refresh-on-401 retry from claude-oauth.
+    """
+    from app.providers.codex_oauth import (
+        CODEX_MODELS_URL, CODEX_CLIENT_VERSION, build_headers,
+    )
+    from app.providers.codex_oauth_flow import refresh_and_persist, OAuthFlowError
+    from app.models.database import AsyncSessionLocal
+
+    cfg = provider.extra_config or {}
+    account_id = cfg.get("chatgpt_account_id") if isinstance(cfg, dict) else None
+    current_token = provider.api_key or ""
+    refreshed = False
+    while True:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(
+                f"{CODEX_MODELS_URL}?client_version={CODEX_CLIENT_VERSION}",
+                # /models is plain JSON, NOT SSE — override the default Accept
+                # that build_headers sets for the streaming /responses path.
+                headers=build_headers(
+                    current_token, chatgpt_account_id=account_id,
+                    extra={"Accept": "application/json"},
+                ),
+            )
+        if resp.status_code == 401 and not refreshed and provider.oauth_refresh_token:
+            try:
+                async with AsyncSessionLocal() as db:
+                    from sqlalchemy import select
+                    p = (await db.execute(select(Provider).where(Provider.id == provider.id))).scalar_one()
+                    result = await refresh_and_persist(p, db)
+                    current_token = result.access_token
+                    refreshed = True
+                    continue
+            except OAuthFlowError:
+                pass
+        resp.raise_for_status()
+        data = resp.json()
+        return [m["slug"] for m in data.get("models", []) if m.get("slug")]
+
+
 async def _fetch_openai_models(provider: Provider) -> list[str]:
     base = provider.base_url or "https://api.openai.com"
     if provider.provider_type == "grok":
@@ -191,6 +241,8 @@ async def test_provider(provider: Provider) -> dict:
     # /v1/messages uses in production.
     if provider.provider_type == "claude-oauth":
         return await _test_claude_oauth(provider)
+    if provider.provider_type == "codex-oauth":
+        return await _test_codex_oauth(provider)
 
     model = build_litellm_model(provider)
     kwargs = build_litellm_kwargs(provider)
@@ -312,4 +364,111 @@ async def _test_claude_oauth(provider: Provider) -> dict:
             "error_detail": err_str,
             "model": model,
             "billing_error": False,
+        }
+
+
+async def _test_codex_oauth(provider: Provider) -> dict:
+    """Smoke-test a codex-oauth provider against
+    ``chatgpt.com/backend-api/codex/responses`` directly.
+
+    The Codex backend requires ``stream: true`` (rejects non-stream calls
+    with a 400), so we open a streaming POST and consume just enough
+    events to confirm a clean ``response.completed`` arrives. Refreshes
+    once on 401 via the rotated tokens, mirroring the claude-oauth path.
+    """
+    import httpx
+    import json as _json
+    from app.providers.codex_oauth import (
+        CODEX_RESPONSES_URL, build_headers,
+    )
+    from app.providers.codex_oauth_flow import refresh_and_persist, OAuthFlowError
+    from app.routing.circuit_breaker import (
+        record_failure, record_success, is_billing_error,
+    )
+    from app.models.database import AsyncSessionLocal
+    from sqlalchemy import select
+
+    model = provider.default_model or "gpt-5.5"
+    if not provider.api_key:
+        return {
+            "success": False,
+            "error": "No OAuth access_token stored. Re-run the authorize flow.",
+            "model": model,
+            "billing_error": False,
+            "hint": "missing_api_key",
+        }
+
+    cfg = provider.extra_config or {}
+    account_id = cfg.get("chatgpt_account_id") if isinstance(cfg, dict) else None
+
+    body = {
+        "model": model,
+        "instructions": "Reply briefly.",
+        "input": [{
+            "type": "message", "role": "user",
+            "content": [{"type": "input_text", "text": "Reply with: OK"}],
+        }],
+        "stream": True,
+        "store": False,
+    }
+
+    current_token = provider.api_key
+    refreshed = False
+    try:
+        while True:
+            headers = build_headers(current_token, chatgpt_account_id=account_id)
+            async with httpx.AsyncClient(timeout=30.0) as c:
+                async with c.stream("POST", CODEX_RESPONSES_URL, headers=headers, json=body) as r:
+                    if r.status_code == 401 and not refreshed and provider.oauth_refresh_token:
+                        try:
+                            async with AsyncSessionLocal() as db:
+                                p = (await db.execute(select(Provider).where(Provider.id == provider.id))).scalar_one()
+                                result = await refresh_and_persist(p, db)
+                                current_token = result.access_token
+                                refreshed = True
+                                continue
+                        except OAuthFlowError:
+                            pass
+                    if r.status_code >= 400:
+                        err_body = (await r.aread()).decode(errors="replace")
+                        err = f"{r.status_code}: {err_body[:400]}"
+                        billing = is_billing_error(err)
+                        await record_failure(provider.id, billing_error=billing)
+                        return {
+                            "success": False,
+                            "error": err, "error_detail": err,
+                            "model": model, "billing_error": billing,
+                        }
+                    text_parts: list[str] = []
+                    async for line in r.aiter_lines():
+                        if not line or line.startswith("event:") or not line.startswith("data:"):
+                            continue
+                        try:
+                            evt = _json.loads(line[5:].strip())
+                        except ValueError:
+                            continue
+                        if evt.get("type") == "response.output_text.delta":
+                            d = evt.get("delta")
+                            if isinstance(d, str):
+                                text_parts.append(d)
+                        elif evt.get("type") == "response.completed":
+                            await record_success(provider.id)
+                            return {
+                                "success": True,
+                                "response": "".join(text_parts),
+                                "model": model,
+                            }
+                    await record_failure(provider.id, billing_error=False)
+                    return {
+                        "success": False,
+                        "error": "stream ended without response.completed",
+                        "model": model, "billing_error": False,
+                    }
+    except httpx.HTTPError as e:
+        err_str = str(e)
+        await record_failure(provider.id, billing_error=False)
+        return {
+            "success": False,
+            "error": err_str, "error_detail": err_str,
+            "model": model, "billing_error": False,
         }

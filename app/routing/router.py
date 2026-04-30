@@ -63,6 +63,10 @@ PROVIDER_TYPE_TO_LITELLM = {
     # dispatches a direct httpx call to platform.claude.com. The "anthropic"
     # prefix here is only used for the `X-Resolved-Model` response header.
     "claude-oauth": "anthropic",
+    # v3.0.15: codex-oauth never routes through litellm either —
+    # _codex_oauth_dispatch handles it via direct httpx to chatgpt.com.
+    # The "openai" prefix is only used for the X-Resolved-Model header.
+    "codex-oauth": "openai",
 }
 
 
@@ -76,6 +80,9 @@ PROVIDER_DEFAULT_MODELS = {
     "compatible": "gpt-4o",
     # Claude Pro Max subscription — caller chooses model at request time.
     "claude-oauth": "claude-sonnet-4-6",
+    # ChatGPT Plus/Team/Enterprise subscription via Codex CLI.
+    # gpt-5.5 is the Plus default; Pro/Team see different slugs.
+    "codex-oauth": "gpt-5.5",
 }
 
 

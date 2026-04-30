@@ -1,6 +1,8 @@
-// Vite sets import.meta.env.BASE_URL to the configured base (e.g. '/llm-proxy2/').
-// Strip the trailing slash so we can prefix '/api/...' cleanly.
-const BASE = import.meta.env.BASE_URL.replace(/\/$/, '')
+// v3.0.16: detect the SPA's URL prefix at runtime (e.g. /llm-proxy2 or
+// /llm-proxy2-smoke) so a single built bundle works at any mount point.
+// See src/lib/basePath.ts for the detection logic.
+import { getBasePath } from '@/lib/basePath'
+const BASE = getBasePath()
 
 async function req<T>(
   method: string,

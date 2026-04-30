@@ -50,6 +50,25 @@ export const providersApi = {
   // v2.7.7: re-auth an existing claude-oauth provider in-place
   oauthRotate: (id: string, data: { state: string; callback: string }) =>
     api.post<Provider>(`/api/providers/${id}/oauth-rotate`, data),
+  // v3.0.15: browser-initiated Codex CLI / ChatGPT-subscription OAuth flow
+  codexOauthAuthorize: () =>
+    api.post<{ state: string; authorize_url: string }>('/api/providers/codex-oauth/authorize', {}),
+  codexOauthExchange: (data: {
+    state: string
+    callback: string
+    name: string
+    default_model?: string
+    base_url?: string
+    priority: number
+    enabled: boolean
+    timeout_sec: number
+    exclude_from_tool_requests: boolean
+    hold_down_sec: number | null
+    failure_threshold: number | null
+    extra_config: Record<string, unknown>
+  }) => api.post<Provider>('/api/providers/codex-oauth/exchange', data),
+  codexOauthRotate: (id: string, data: { state: string; callback: string }) =>
+    api.post<Provider>(`/api/providers/${id}/codex-oauth-rotate`, data),
   // v2.8.0: clear the BUG-002 "needs re-auth" flag (admin asserts they fixed it)
   clearAuthFailure: (id: string) =>
     api.post<{ ok: boolean }>(`/api/providers/${id}/clear-auth-failure`, {}),
