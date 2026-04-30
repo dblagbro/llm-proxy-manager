@@ -116,6 +116,12 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
             # ignore the peer push to avoid clobbering newer local state.
             if (peer_updated_at is None or local_updated is None
                     or peer_updated_at >= local_updated):
+                # v3.0.10: previously, ``name`` was sent but never applied
+                # — so renames on one node never propagated. Add it.
+                # Also pick up the new daily_budget_usd + OAuth fields the
+                # payload now includes (v3.0.10 manager.py change).
+                if "name" in p_data:
+                    existing.name = p_data["name"]
                 existing.api_key = p_data.get("api_key", existing.api_key)
                 existing.base_url = p_data.get("base_url", existing.base_url)
                 existing.default_model = p_data.get("default_model", existing.default_model)
@@ -126,6 +132,12 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
                 existing.hold_down_sec = p_data.get("hold_down_sec", existing.hold_down_sec)
                 existing.failure_threshold = p_data.get("failure_threshold", existing.failure_threshold)
                 existing.extra_config = p_data.get("extra_config", existing.extra_config)
+                if "daily_budget_usd" in p_data:
+                    existing.daily_budget_usd = p_data["daily_budget_usd"]
+                if "oauth_refresh_token" in p_data:
+                    existing.oauth_refresh_token = p_data["oauth_refresh_token"]
+                if "oauth_expires_at" in p_data:
+                    existing.oauth_expires_at = p_data["oauth_expires_at"]
                 if peer_updated_at:
                     existing.updated_at = peer_updated_at
             continue
@@ -134,6 +146,8 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
         # materializing a deleted row).
         if peer_deleted_at is not None:
             continue
+        # v3.0.10: include all replicated fields (daily_budget_usd + OAuth)
+        # so a fresh peer-imported row matches the source-of-truth shape.
         p = Provider(
             id=p_data["id"],
             name=p_data["name"],
@@ -148,6 +162,9 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
             hold_down_sec=p_data.get("hold_down_sec"),
             failure_threshold=p_data.get("failure_threshold"),
             extra_config=p_data.get("extra_config", {}),
+            daily_budget_usd=p_data.get("daily_budget_usd"),
+            oauth_refresh_token=p_data.get("oauth_refresh_token"),
+            oauth_expires_at=p_data.get("oauth_expires_at"),
         )
         db.add(p)
         register_provider(p.id, p.provider_type, p.hold_down_sec, p.failure_threshold)
