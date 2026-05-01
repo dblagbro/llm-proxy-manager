@@ -223,6 +223,13 @@ async def chat_completions(
         from app.budget.tracker import warnings_for
         resp_headers.update(warnings_for(key_record.budget_status))
 
+    # v3.0.36: cross-family fallback — rewrite body['model'] to the resolved
+    # served model so dispatchers that read body['model'] (codex-oauth,
+    # claude-oauth) send the right slug upstream. The original requested
+    # model is reflected in the LLM-Capability response header.
+    if route.cross_family_fallback and route.served_model_native:
+        body = {**body, "model": route.served_model_native}
+
     # v3.0.15: codex-oauth providers bypass the rest of the litellm pipeline
     # (no semantic cache, no CoT, no tool emulation, no fallback chain — same
     # short-circuit pattern as claude-oauth). Translate Chat Completions ↔
