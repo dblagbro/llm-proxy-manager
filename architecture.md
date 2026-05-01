@@ -19,8 +19,17 @@ app/
 │   ├── _messages_streaming.py   Tail: _stream_cot_anthropic / _stream_anthropic /
 │   │                              _webhook_completion_anthropic (extracted 2026-04-23)
 │   ├── completions.py           POST /v1/chat/completions — OpenAI wire format handler
+│   │                              v3.0.38: claude-oauth providers reachable here via
+│   │                              the wire-format translator (was excluded by v2.8.11)
 │   ├── _completions_streaming.py Tail: _stream_cot_openai / _stream_openai /
 │   │                              _webhook_completion_openai (extracted 2026-04-23)
+│   ├── _oauth_chat_translate.py OpenAI Chat Completions ↔ Anthropic Messages
+│   │                              format translation (v3.0.38). Lets
+│   │                              /v1/chat/completions reach claude-oauth
+│   │                              providers without client-side rewrites.
+│   │                              openai_request_to_anthropic /
+│   │                              anthropic_response_to_openai /
+│   │                              stream_anthropic_to_openai_sse
 │   ├── _request_pipeline.py     Shared preflight helpers (2026-04-23):
 │   │                              apply_privacy_filters (guard+PII),
 │   │                              build_hint_with_auto_task (parse + classify),
@@ -93,9 +102,15 @@ app/
 │   ├── activity.py          activity feed / recent-request log
 │   └── notifications.py     alert hooks (Slack, webhook)
 │
-└── models/
-    ├── db.py                SQLAlchemy ORM models
-    └── database.py          Async engine, session factory, migration runner
+├── models/
+│   ├── db.py                SQLAlchemy ORM models
+│   └── database.py          Async engine, session factory, migration runner
+│
+└── utils/                   Shared cross-cutting helpers (added v3.0.33)
+    └── timefmt.py           utc_iso(dt) — appends Z to ISO output so JS
+                              `new Date(...)` correctly converts UTC →
+                              user's tz preference. Used by every
+                              user-facing isoformat() callsite (v3.0.33).
 ```
 
 ## Key Data Flows
@@ -131,6 +146,10 @@ app/
 - **New wire format**: add endpoint file in `api/`, add image utils to `image_utils.py`, add SSE generators to `cot/sse.py`
 - **New metric**: update `record_outcome()` in `monitoring/helpers.py` — propagates to all 6 call-sites automatically
 - **New chat-style probe path** (test button, smoke job, etc.): call `resolve_chat_model_for_provider()` instead of reading `provider.default_model` directly — keeps embedding-defaulted providers (Cohere) from misrouting (see v3.0.27/30/31 bug history → v3.0.32 extraction)
+- **New user-facing endpoint that returns timestamps**: import `utc_iso` from `app.utils.timefmt` instead of bare `dt.isoformat()` — the `Z` suffix tells JavaScript to convert from UTC instead of treating as local time (v3.0.33)
+- **New LMRH built-in dim**: add a case branch in `app/routing/lmrh/score.py`, the dim name to `_builtin_dim_names()` in `app/api/lmrh.py`, and document in `docs/draft-blagbrough-lmrh-00.md`. The middleware + cluster sync need no changes
+- **New rolling-window aggregate**: extend `get_provider_rolling_windows()` in `app/monitoring/metrics.py` with another conditional sum — single SQL pass covers all windows
+- **Wire-format translator for a new provider type**: pattern is `app/api/_oauth_chat_translate.py` (v3.0.38) — request shape inversion + non-streaming response inversion + SSE delta-chunk re-emission. Hook into the chat handler's provider-type branch alongside `codex-oauth` / `claude-oauth`
 
 ## Design contract
 
