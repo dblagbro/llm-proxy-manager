@@ -121,8 +121,15 @@ async def record_failure(provider_id: str, billing_error: bool = False):
             s.state = CBState.OPEN
             s.opened_at = now
             s.hold_down_until = now + _hold_down_sec(provider_id)
+            # v3.0.30: include provider + failure count + hold-down in the
+            # message string itself. The structlog ``extra`` was correct but
+            # the std-logger formatter dropped them, so the log line was bare
+            # "circuit_breaker.opened" with no provider context. Useless when
+            # several providers misbehave and you're trying to find the
+            # culprit by tail -f.
             logger.warning(
-                "circuit_breaker.opened",
+                "circuit_breaker.opened provider=%s failures=%d hold_down_sec=%d",
+                provider_id, s.failures, _hold_down_sec(provider_id),
                 extra={"provider": provider_id, "failures": s.failures},
             )
             _export_gauge(provider_id, s.state)

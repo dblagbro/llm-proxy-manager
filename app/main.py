@@ -67,6 +67,17 @@ try:
     import litellm as _litellm
     _litellm.set_verbose = False
     logging.getLogger("LiteLLM").setLevel(logging.WARNING)
+    # v3.0.30: silence the colored "Give Feedback / Get Help" print() spam
+    # litellm emits on every exception. The official knob is
+    # ``litellm.suppress_debug_info = True`` — guards both the colored
+    # banner and the "If you need to debug this error" line. Both go
+    # straight to stderr via print(), so the existing logger-level knob
+    # didn't catch them. Discovered during the v3.0.30 log-mining audit:
+    # 35 "Give Feedback" prints in 3h on www01 — exactly matching the 35
+    # CB openings on the cohere-keepalive bug being fixed in this same
+    # version. Belt-and-suspenders: even after the keepalive fix, real
+    # upstream errors during normal traffic shouldn't decorate stderr.
+    _litellm.suppress_debug_info = True
 except Exception:
     pass
 
