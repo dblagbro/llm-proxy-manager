@@ -12,6 +12,7 @@ from sqlalchemy import select, update, func
 
 from app.models.db import ProviderMetric, ApiKey
 from app.routing.circuit_breaker import get_all_states
+from app.utils.timefmt import utc_iso
 
 logger = logging.getLogger(__name__)
 
@@ -110,7 +111,7 @@ async def get_provider_history(
     rows = result.scalars().all()
     return [
         {
-            "ts": r.bucket_ts.isoformat(),
+            "ts": utc_iso(r.bucket_ts),
             "requests": r.requests,
             "successes": r.successes,
             "failures": r.failures,

@@ -13,6 +13,7 @@ from app.auth.admin import require_admin, AdminUser
 from app.auth.keys import generate_api_key
 from app.auth.key_encryption import encrypt_key, decrypt_key
 from app.auth.rate_limit_tiers import get_tier, list_tiers, tier_names
+from app.utils.timefmt import utc_iso
 
 router = APIRouter(prefix="/api/keys", tags=["api-keys"])
 
@@ -243,6 +244,6 @@ def _serialize(k: ApiKey) -> dict:
         "day_cost_usd": float(k.day_cost_usd or 0.0),
         "hour_cost_usd": float(k.hour_cost_usd or 0.0),
         "can_reveal": bool(k.encrypted_key),
-        "last_used_at": k.last_used_at.isoformat() if k.last_used_at else None,
-        "created_at": k.created_at.isoformat() if k.created_at else None,
+        "last_used_at": utc_iso(k.last_used_at),
+        "created_at": utc_iso(k.created_at),
     }

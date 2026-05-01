@@ -59,17 +59,101 @@ def _serialize_body(body: Any, max_chars: int) -> Optional[str]:
     return text
 
 
+def _extract_preview(body: Any, max_chars: int = 240) -> Optional[str]:
+    """v3.0.34: extract a short text preview from a request/response body
+    BEFORE truncation. Frontend was falling through to raw JSON when the
+    serialized body exceeded the truncation cap (50k default) — JSON.parse
+    on a `…[TRUNCATED]` string throws. Storing the preview separately
+    sidesteps that whole class of issue.
+
+    For Anthropic-shape requests: last user message text (or tool_result
+    summary). For Anthropic responses: content[].text. For OpenAI: choices
+    [0].message.content. Falls back to a system-prompt snippet, then to the
+    repr of a small body."""
+    if body is None:
+        return None
+    try:
+        d = body if isinstance(body, dict) else None
+        if d is None:
+            return str(body)[:max_chars]
+        # Anthropic / OpenAI request: walk messages backward for last user content
+        msgs = d.get("messages")
+        if isinstance(msgs, list) and msgs:
+            for m in reversed(msgs):
+                if not isinstance(m, dict) or m.get("role") != "user":
+                    continue
+                c = m.get("content")
+                if isinstance(c, str) and c.strip():
+                    return c[:max_chars]
+                if isinstance(c, list):
+                    parts = []
+                    for blk in c:
+                        if not isinstance(blk, dict):
+                            continue
+                        t = blk.get("type")
+                        if t == "text" and isinstance(blk.get("text"), str):
+                            parts.append(blk["text"])
+                        elif t == "tool_result":
+                            tc = blk.get("content")
+                            if isinstance(tc, str):
+                                parts.append(f"[tool_result] {tc}")
+                            elif isinstance(tc, list):
+                                inner = " ".join(
+                                    b.get("text", "") for b in tc
+                                    if isinstance(b, dict) and b.get("type") == "text"
+                                )
+                                if inner:
+                                    parts.append(f"[tool_result] {inner}")
+                    txt = " ".join(p for p in parts if p).strip()
+                    if txt:
+                        return txt[:max_chars]
+        # Anthropic-shape response: content[]
+        cont = d.get("content")
+        if isinstance(cont, list) and cont:
+            txt = " ".join(b.get("text", "") for b in cont
+                           if isinstance(b, dict) and b.get("type") == "text").strip()
+            if txt:
+                return txt[:max_chars]
+        # OpenAI-shape response: choices[0].message.content
+        ch = d.get("choices")
+        if isinstance(ch, list) and ch:
+            mc = (ch[0] or {}).get("message", {}).get("content")
+            if isinstance(mc, str) and mc.strip():
+                return mc[:max_chars]
+        # Last-ditch: system prompt snippet (request side).
+        sysp = d.get("system")
+        if isinstance(sysp, str) and sysp.strip():
+            return f"[system] {sysp[:max_chars - 9]}"
+        if isinstance(sysp, list):
+            txt = " ".join(b.get("text", "") for b in sysp
+                           if isinstance(b, dict) and b.get("type") == "text").strip()
+            if txt:
+                return f"[system] {txt[:max_chars - 9]}"
+    except Exception:
+        return None
+    return None
+
+
 def _attach_bodies(metadata: dict, request_body: Any, response_body: Any) -> dict:
-    """Attach captured request/response bodies to metadata when enabled."""
+    """Attach captured request/response bodies + previews to metadata when enabled."""
     if not getattr(settings, "activity_log_capture_bodies", False):
         return metadata
     cap = max(1000, int(getattr(settings, "activity_log_max_body_chars", 50000) or 50000))
+    # v3.0.34: extract previews FROM THE LIVE OBJECTS (pre-serialization), so
+    # truncation can't break the preview's JSON parse. Frontend prefers these
+    # when present and falls back to parsing the body otherwise.
+    req_preview = _extract_preview(request_body)
+    resp_preview = _extract_preview(response_body)
     req = _serialize_body(request_body, cap)
     resp = _serialize_body(response_body, cap)
     if req is not None:
         metadata["request_body"] = req
     if resp is not None:
         metadata["response_body"] = resp
+    if req_preview:
+        metadata["request_preview"] = req_preview
+    if resp_preview:
+        metadata["response_preview"] = resp_preview
     return metadata
 
 
