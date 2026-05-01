@@ -67,6 +67,8 @@ PROVIDER_TYPE_TO_LITELLM = {
     # _codex_oauth_dispatch handles it via direct httpx to chatgpt.com.
     # The "openai" prefix is only used for the X-Resolved-Model header.
     "codex-oauth": "openai",
+    # v3.0.23 (Q2): Cohere via litellm (cohere/embed-english-v3.0 etc).
+    "cohere": "cohere",
 }
 
 
@@ -83,6 +85,10 @@ PROVIDER_DEFAULT_MODELS = {
     # ChatGPT Plus/Team/Enterprise subscription via Codex CLI.
     # gpt-5.5 is the Plus default; Pro/Team see different slugs.
     "codex-oauth": "gpt-5.5",
+    # v3.0.23 (Q2): Cohere — primarily an embeddings provider but also
+    # has rerank/chat surfaces. embed-english-v3.0 is the recommended
+    # general-purpose default.
+    "cohere": "embed-english-v3.0",
 }
 
 

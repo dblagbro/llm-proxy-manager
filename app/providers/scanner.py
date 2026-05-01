@@ -75,6 +75,8 @@ async def _fetch_model_list(provider: Provider) -> list[str]:
                 return await _fetch_claude_oauth_models(provider)
             case "codex-oauth":
                 return await _fetch_codex_oauth_models(provider)
+            case "cohere":
+                return await _fetch_cohere_models(provider)
             case "openai" | "compatible" | "grok":
                 return await _fetch_openai_models(provider)
             case "google":
@@ -181,6 +183,25 @@ async def _fetch_codex_oauth_models(provider: Provider) -> list[str]:
         resp.raise_for_status()
         data = resp.json()
         return [m["slug"] for m in data.get("models", []) if m.get("slug")]
+
+
+async def _fetch_cohere_models(provider: Provider) -> list[str]:
+    """Cohere model list. Their /v1/models endpoint returns chat + embed +
+    rerank models with an ``endpoints`` array indicating which surfaces
+    each supports. We return all model ids; downstream routing filters
+    by /v1/embeddings vs /v1/chat/completions surface based on
+    model_capabilities.
+    """
+    base = provider.base_url or "https://api.cohere.com"
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(
+            f"{base.rstrip('/')}/v1/models",
+            headers={"Authorization": f"Bearer {provider.api_key}"},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        # Cohere shape: {"models": [{"name": "embed-english-v3.0", "endpoints": [...]}]}
+        return [m["name"] for m in data.get("models", []) if m.get("name")]
 
 
 async def _fetch_openai_models(provider: Provider) -> list[str]:

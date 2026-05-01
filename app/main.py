@@ -25,6 +25,7 @@ from sqlalchemy import select
 # ── Routers ──────────────────────────────────────────────────────────────────
 from app.api.messages import router as messages_router
 from app.api.completions import router as completions_router
+from app.api.embeddings import router as embeddings_router
 from app.api.models import router as models_router
 from app.api.aliases import router as aliases_router
 from app.api.auth import router as auth_router
@@ -209,6 +210,7 @@ async def log_requests(request: Request, call_next):
 # ── Core LLM endpoints (same paths as v1) ────────────────────────────────────
 app.include_router(messages_router)
 app.include_router(completions_router)
+app.include_router(embeddings_router)
 app.include_router(models_router)
 
 # ── Admin API ────────────────────────────────────────────────────────────────
@@ -256,6 +258,19 @@ if os.path.isdir(_static_dir):
     async def favicon():
         p = os.path.join(_static_dir, "favicon.svg")
         return FileResponse(p) if os.path.isfile(p) else JSONResponse({"detail": "Not Found"}, 404)
+
+    # v3.0.23 (Q12): public no-auth route for the LMRH RFC draft so other
+    # apps and humans can link to it as documentation. Cross-app integration
+    # docs (DevinGPT, coordinator-hub, future LMRH adopters) reference this URL.
+    _docs_dir = os.path.join(os.path.dirname(__file__), "..", "docs")
+
+    @app.get("/lmrh", include_in_schema=False)
+    @app.get("/lmrh.md", include_in_schema=False)
+    async def lmrh_doc():
+        p = os.path.join(_docs_dir, "draft-blagbrough-lmrh-00.md")
+        if not os.path.isfile(p):
+            return JSONResponse({"detail": "LMRH draft not found in this build"}, 404)
+        return FileResponse(p, media_type="text/markdown; charset=utf-8")
 
     @app.get("/icons.svg", include_in_schema=False)
     async def icons_svg():

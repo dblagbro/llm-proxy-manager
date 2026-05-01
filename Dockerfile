@@ -26,6 +26,9 @@ FROM deps AS runtime
 COPY app/ ./app/
 COPY alembic.ini .
 COPY alembic/ ./alembic/
+# v3.0.23: docs/ ships with the image so /lmrh.md (public, no-auth) can serve
+# the LMRH RFC draft for cross-app integration. Single source of truth.
+COPY docs/ ./docs/
 COPY --from=frontend-build /ui/dist ./frontend/dist
 
 RUN addgroup --gid 1001 appgroup && \
