@@ -9,6 +9,16 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.0.x — Run runtime, cluster ops, observability
 
+### v3.0.24 — log-mining batch: normalize-ties scope + /health noise + litellm verbosity
+
+Three improvements found in a 3h log review (no errors — just abnormalities worth fixing):
+
+1. **`normalize_priority_ties` now scopes to active providers only** (`deleted_at IS NULL AND enabled=True`). Tombstoned + disabled rows no longer participate in tie detection — they don't route, so ties between them or with active rows don't matter for selection. Diagnostic clue: www01 was firing `cluster_sync_normalized_ties count=2` 45 times in 3h while www02/GCP fired 0; old logic was tripping on tombstoned-vs-active priority collisions during sync apply. Also enriched the log line to record which provider IDs got bumped (`details=[{id, from, to}, ...]`).
+
+2. **`/health` endpoint cached for 3 seconds + silenced from access logs.** Docker healthcheck (every 30s) + cluster peer heartbeat (every 30s, 2 peers) hit /health ~270 times/hour per node. Each call ran a `SELECT * FROM providers WHERE enabled=True` + per-provider `is_available()`. Cache the body for 3s (well under heartbeat cadence); circuit-breaker state still computed live. Access log filter drops `/health` from `uvicorn.access` so real signals aren't buried.
+
+3. **`litellm.set_verbose = False` + `LiteLLM` logger at WARNING** in lifespan. Was emitting per-call `LiteLLM completion() model=…` INFO lines (~109 per 3h on www01). Errors and warnings still surface; routine call chatter doesn't.
+
 ### v3.0.23 — embeddings + cohere + model kind tag + LMRH doc + codex reasoning_effort
 
 Batch from the DevinGPT integration Q&A. Four asks shipped together:

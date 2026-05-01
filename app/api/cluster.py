@@ -18,9 +18,31 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["cluster"])
 
 
+# v3.0.24 (#136): /health is hit by docker healthcheck every 30s + cluster
+# peers' heartbeat every 30s. On a 3-node cluster with both sources active,
+# that's ~270 hits/hour per node — every one previously hit the DB (SELECT
+# providers + per-provider is_available) just to compute the same answer.
+# Cache the response for 3s; well under the 30s heartbeat cadence so peer
+# state is still fresh, and CB state still reads from in-memory.
+import time as _time
+_HEALTH_CACHE: dict = {"ts": 0.0, "body": None}
+_HEALTH_CACHE_TTL_SEC = 3.0
+
+
 @router.get("/health")
 async def health():
-    """Public health endpoint — also used by cluster peers for heartbeat."""
+    """Public health endpoint — also used by cluster peers for heartbeat.
+    DB lookup result is cached for 3 seconds; CB state is always live.
+    """
+    now = _time.time()
+    if _HEALTH_CACHE["body"] is not None and now - _HEALTH_CACHE["ts"] < _HEALTH_CACHE_TTL_SEC:
+        # Re-evaluate CB state on every call; only the provider count is cached.
+        cached = _HEALTH_CACHE["body"]
+        return {
+            **cached,
+            "circuitBreakers": get_all_states(),
+        }
+
     from app.models.database import AsyncSessionLocal
     from app.models.db import Provider
     from sqlalchemy import select
@@ -36,7 +58,7 @@ async def health():
         if await is_available(p.id):
             healthy += 1
 
-    return {
+    body = {
         "status": "healthy" if healthy > 0 else "degraded",
         "version": __version__,
         "nodeId": settings.cluster_node_id,
@@ -44,6 +66,9 @@ async def health():
         "healthyProviders": healthy,
         "circuitBreakers": get_all_states(),
     }
+    _HEALTH_CACHE["ts"] = now
+    _HEALTH_CACHE["body"] = {k: v for k, v in body.items() if k != "circuitBreakers"}
+    return body
 
 
 @router.get("/cluster/status")

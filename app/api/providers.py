@@ -88,36 +88,53 @@ _TYPES_REQUIRING_API_KEY = {
 
 
 async def normalize_priority_ties(db: AsyncSession) -> int:
-    """v2.8.2: one-shot sweep that resolves any existing ties by bumping
-    the younger duplicates +1 in created_at order. Idempotent — runs at
-    startup. Returns count of providers bumped (0 means already normalized).
+    """v2.8.2 / v3.0.24: resolve any priority ties among ROUTABLE providers
+    by bumping the younger duplicates +1 in created_at order. Idempotent.
+    Returns count of providers bumped (0 means already normalized).
+
+    v3.0.24 (#136): scope changed to ``deleted_at IS NULL AND enabled=True``.
+    Tombstoned and disabled rows don't participate in routing — letting them
+    contribute to tie detection caused observed ping-pong on www01 (45 fires
+    in 3h with count=2 each, while peers fired 0). Logs the bumped row IDs
+    so future debugging knows what moved.
 
     Example before: [a@1, b@2, c@2, d@3, e@3] (b created before c, d before e)
     After: [a@1, b@2, c@3, d@4, e@5] — younger row at each tie shifts up,
-    and the cascade from c=3 collides with d=3, so d→4, then d=4 collides
-    with previously-shifted nothing → no further cascade. The net effect is
-    a strict total order by (priority, created_at).
+    and the cascade from c=3 collides with d=3, so d→4. The net effect is
+    a strict total order by (priority, created_at) within the active set.
     """
     from sqlalchemy import select as _select
     rows = (await db.execute(
-        _select(Provider).order_by(Provider.priority.asc(), Provider.created_at.asc(), Provider.id.asc())
+        _select(Provider)
+        .where(Provider.deleted_at.is_(None), Provider.enabled == True)
+        .order_by(Provider.priority.asc(), Provider.created_at.asc(), Provider.id.asc())
     )).scalars().all()
-    bumped = 0
+    bumped: list[tuple[str, int, int]] = []   # (id, old, new)
     seen_priorities: set[int] = set()
     for row in rows:
         if row.priority not in seen_priorities:
             seen_priorities.add(row.priority)
             continue
         # Tie — find the next free slot at or above row.priority
-        new_pri = row.priority
+        old_pri = row.priority
+        new_pri = old_pri
         while new_pri in seen_priorities:
             new_pri += 1
         row.priority = new_pri
         seen_priorities.add(new_pri)
-        bumped += 1
+        bumped.append((row.id, old_pri, new_pri))
     if bumped:
         await db.flush()
-    return bumped
+        try:
+            import logging as _logging
+            _logging.getLogger(__name__).info(
+                "providers.normalize_priority_ties bumped=%d details=%s",
+                len(bumped),
+                [{"id": pid, "from": o, "to": n} for (pid, o, n) in bumped],
+            )
+        except Exception:
+            pass
+    return len(bumped)
 
 
 async def _bump_priority_conflicts(
