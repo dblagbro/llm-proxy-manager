@@ -328,6 +328,82 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
                 completed_at=r_data.get("completed_at"),
             ))
 
+    # v3.0.25: replicate the LMRH dim registry + proposals queue.
+    # Dims are immutable once registered (the canonical name space is the
+    # whole point), so the merge is "insert if missing by name" with a
+    # tie-break on registered_at for the corner case where two nodes raced
+    # the same name through their suffix-resolver. Proposals are mutable
+    # (status changes during operator review) and merge LWW on proposed_at
+    # plus operator-touched columns.
+    from app.models.db import LmrhDim, LmrhProposal
+    for d_data in payload.get("lmrh_dims", []):
+        name = d_data.get("name")
+        if not name:
+            continue
+        result = await db.execute(select(LmrhDim).where(LmrhDim.name == name))
+        existing = result.scalar_one_or_none()
+        if existing is None:
+            db.add(LmrhDim(
+                name=name,
+                owner_app=d_data.get("owner_app"),
+                owner_key_id=d_data.get("owner_key_id"),
+                semantics=d_data.get("semantics"),
+                value_type=d_data.get("value_type"),
+                kind=d_data.get("kind", "advisory"),
+                examples=d_data.get("examples") or [],
+                requested_name=d_data.get("requested_name"),
+                registered_at=float(d_data.get("registered_at") or time.time()),
+                registered_by_node=d_data.get("registered_by_node"),
+            ))
+        else:
+            # Earlier registered_at wins — preserves the originating node's
+            # claim if a peer somehow allocated the same name independently.
+            peer_ts = float(d_data.get("registered_at") or 0)
+            local_ts = float(existing.registered_at or 0)
+            if peer_ts and local_ts and peer_ts < local_ts:
+                existing.owner_app = d_data.get("owner_app")
+                existing.owner_key_id = d_data.get("owner_key_id")
+                existing.semantics = d_data.get("semantics")
+                existing.value_type = d_data.get("value_type")
+                existing.kind = d_data.get("kind", existing.kind)
+                existing.examples = d_data.get("examples") or []
+                existing.requested_name = d_data.get("requested_name")
+                existing.registered_at = peer_ts
+                existing.registered_by_node = d_data.get("registered_by_node")
+
+    for pr_data in payload.get("lmrh_proposals", []):
+        proposed_name = pr_data.get("proposed_name")
+        proposed_at = pr_data.get("proposed_at")
+        if not proposed_name or proposed_at is None:
+            continue
+        # Identity = (proposed_name, proposed_at) — a proposer creating two
+        # proposals for the same dim at exactly the same float second is
+        # not a real concern.
+        result = await db.execute(
+            select(LmrhProposal).where(
+                LmrhProposal.proposed_name == proposed_name,
+                LmrhProposal.proposed_at == float(proposed_at),
+            )
+        )
+        existing = result.scalar_one_or_none()
+        if existing is None:
+            db.add(LmrhProposal(
+                proposed_name=proposed_name,
+                rationale=pr_data.get("rationale"),
+                proposer_app=pr_data.get("proposer_app"),
+                proposer_key_id=pr_data.get("proposer_key_id"),
+                proposed_at=float(proposed_at),
+                status=pr_data.get("status", "pending"),
+                review_note=pr_data.get("review_note"),
+            ))
+        else:
+            # Operator review is the only thing that mutates an existing
+            # proposal. Accept peer's status/review_note unconditionally —
+            # whoever wrote last wins, and the review fields don't have a
+            # separate timestamp.
+            existing.status = pr_data.get("status", existing.status)
+            existing.review_note = pr_data.get("review_note", existing.review_note)
+
     await db.commit()
 
     if settings_to_apply:

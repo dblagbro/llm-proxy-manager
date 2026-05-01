@@ -21,6 +21,10 @@ WEIGHTS: dict[str, int] = {
     "latency": 4,
     "cost": 3,
     "context-length": 2,
+    # v3.0.25 — provider-hint = positive selection bias (soft);
+    # exclude = negative selection bias (soft). Both go hard with ;require.
+    "provider-hint": 5,
+    "exclude": 5,
 }
 
 TASK_ALIASES: dict[str, list[str]] = {
@@ -75,6 +79,10 @@ class CapabilityProfile:
     provider_id: str
     provider_type: str
     model_id: str
+    # v3.0.25: surface the provider's display name on the profile so the
+    # LMRH scorer can match exclude= / provider-hint= dims against either
+    # provider_type ("anthropic") or display name ("Devin-Cohere").
+    provider_name: str = ""
     tasks: list[str] = field(default_factory=lambda: ["chat"])
     latency: str = "medium"
     cost_tier: str = "standard"

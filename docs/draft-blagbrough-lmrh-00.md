@@ -1,7 +1,7 @@
 ---
-title: "LLM Model Routing Hints (LMRH) 1.0"
+title: "LLM Model Routing Hints (LMRH) 1.1"
 abbrev: LMRH
-docname: draft-blagbrough-lmrh-00
+docname: draft-blagbrough-lmrh-01
 category: std
 ipr: trust200902
 
@@ -223,6 +223,42 @@ Positive decimal in USD. Maximum acceptable unit cost per 1,000 tokens
 (input + output). When `;require` is present, a candidate whose declared
 per-1k cost exceeds this value MUST NOT be chosen.
 
+### exclude
+
+Comma-separated list of provider names or provider types that the caller
+explicitly does NOT want this request routed to. Soft form is a strong
+negative bias; with `;require`, matching providers MUST NOT be chosen.
+
+Example:
+
+~~~ http
+LLM-Hint: exclude=anthropic-direct;require
+~~~
+
+This is the inverse of `provider-hint`. It is intended for callers who have
+out-of-band knowledge that a particular upstream is misbehaving for their
+workload (e.g. a tenant-specific quota, a known refusal regression, or an
+ongoing incident) and want to steer around it without touching intermediary
+configuration.
+
+### provider-hint
+
+Comma-separated list of provider names or provider types the caller
+prefers. Soft form is a positive bias; with `;require`, only matching
+providers MAY be chosen.
+
+Example:
+
+~~~ http
+LLM-Hint: provider-hint=anthropic-oauth, anthropic-direct
+~~~
+
+Names are matched against both the provider's display name and its
+provider type. Matching is case-insensitive.
+
+`exclude` and `provider-hint` MAY appear in the same request; intermediaries
+MUST treat the intersection as the candidate pool.
+
 ### effort, cascade, hedge, tenant, freshness (pass-through)
 
 These dimensions are defined for pass-through to the underlying Provider.
@@ -286,6 +322,99 @@ Example: `unmet=(cost region)`
 
 Optional introspection: the intermediary MAY echo the declared values for
 the selected candidate.
+
+# The X-LMRH-Warnings Response Header
+
+The `X-LMRH-Warnings` response header is an optional diagnostic the
+intermediary returns when an incoming request contains a dimension the
+intermediary does not recognize. It is a Structured Field List
+{{RFC8941, Section 3.1}} of Items, each Item a token whose value follows
+the form `unknown-dim:NAME`.
+
+~~~ http
+X-LMRH-Warnings: unknown-dim:retry-policy, unknown-dim:tenant-tier
+~~~
+
+Clients SHOULD treat this header as a discovery signal: an unknown dimension
+is silently ignored by the routing pipeline (per the "Implementations MUST
+ignore unknown dimensions" rule), but the warning header lets the caller
+notice the typo or learn that the chosen dimension name is not yet part of
+the canonical name space, so they can either correct it or open a
+registration request via the registry endpoints (see {{registration}}).
+
+# Extension via Registration {#registration}
+
+LMRH deployments are encouraged to expose two endpoints that allow callers
+to extend the canonical dimension name space at runtime without coordinated
+specification updates. This is a deployment-side feature; intermediaries
+that do not implement these endpoints MUST still ignore unknown dimensions
+per the rule in {{registered-dimensions}}.
+
+## POST /lmrh/register — Allocation Handshake
+
+Authenticated callers may register a new dimension name. The server
+allocates a free name (preferring the requested name; suffixing `-2`,
+`-3`, ... on collision) and returns the canonical allocation:
+
+~~~ http
+POST /lmrh/register HTTP/1.1
+Authorization: Bearer <api-key>
+Content-Type: application/json
+
+{
+  "name":         "audit-mode",
+  "owner_app":    "ai-analyzer",
+  "semantics":    "Caller wants the proxy to record an audit trail",
+  "value_type":   "token",
+  "kind":         "advisory",
+  "examples":     ["audit-mode=on", "audit-mode=off"]
+}
+~~~
+
+Response:
+
+~~~ http
+HTTP/1.1 200 OK
+Content-Type: application/json
+
+{
+  "accepted":         true,
+  "canonical_name":   "audit-mode",
+  "requested_name":   "audit-mode",
+  "suffix_applied":   false,
+  "note":             null
+}
+~~~
+
+If the requested name is already registered to a different owner, the
+intermediary MUST allocate a new name by suffixing `-2`, `-3`, etc. The
+caller learns the canonical name from the response and uses it in
+subsequent requests.
+
+The handshake is idempotent for the same `(requested_name, owner_app,
+owner_key_id)` triple — repeated registration returns the existing record
+unchanged.
+
+The intermediary MUST replicate registered dimensions across cluster nodes
+so all peers converge on a single canonical name space.
+
+## POST /lmrh/propose — Free-Form Review Queue
+
+For dimensions that the caller believes belong in a future revision of this
+specification (or in the deployment's curated registry), a `POST
+/lmrh/propose` endpoint accepts a rationale and queues the proposal for
+operator review. Status transitions (`pending` → `accepted` | `rejected`)
+are operator-driven and MAY be replicated across cluster nodes.
+
+## GET /lmrh/registry — Discovery
+
+A `GET /lmrh/registry` endpoint returns the current set of built-in plus
+runtime-registered dimensions. Callers SHOULD prefer this endpoint over
+hard-coding the list when interoperability with multiple deployments is
+required.
+
+`GET /lmrh/registry/{name}` returns a single dimension's metadata, useful
+for verifying that a name is in fact registered before relying on it.
 
 # The LLM-Hint-Set Response Header
 
