@@ -77,6 +77,33 @@ async def _probe_one(provider: Provider) -> None:
     """Send one synthetic call to a provider. All errors swallowed —
     keep-alive is best-effort, doesn't block routing."""
     model = provider.default_model or "gpt-4o-mini"
+    # v3.0.30: don't dispatch a chat probe with an embedding model. Cohere's
+    # chat API returns 400 on `embed-*` slugs; the resulting CB-open every
+    # 5 min was producing 35+ openings and matching litellm noise per 3h
+    # window before the fix. If the provider's default is embedding-only,
+    # try to pick a chat-capable model from scanned capabilities; if there
+    # isn't one, skip the probe entirely (best-effort).
+    from app.routing.router import _is_embedding_model
+    if _is_embedding_model(model):
+        from app.models.db import ModelCapability
+        async with AsyncSessionLocal() as _cap_db:
+            caps = (await _cap_db.execute(
+                select(ModelCapability.model_id).where(
+                    ModelCapability.provider_id == provider.id
+                )
+            )).scalars().all()
+        chat_candidates = [c for c in caps if not _is_embedding_model(c)]
+        if not chat_candidates:
+            logger.debug(
+                "keepalive.skipped_embedding_only provider=%s default=%r",
+                provider.id, model,
+            )
+            return
+        # Prefer a `command-*` (Cohere chat) or `gpt-*` over the alphabetical
+        # default — those are the most reliable chat surfaces for a probe.
+        preferred = [c for c in chat_candidates
+                     if c.startswith("command-") or c.startswith("gpt-")]
+        model = (preferred or sorted(chat_candidates))[0]
     # Build litellm-shape model id from provider_type if no slash
     if "/" not in model:
         if provider.provider_type in ("anthropic",):

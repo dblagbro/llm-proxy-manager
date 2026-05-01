@@ -469,8 +469,14 @@ async def select_provider(
 
     cap_header = build_capability_header(best_profile, unmet, cot_engaged, tool_emulation)
 
-    logger.info(
-        "router.selected",
+    # v3.0.30: was INFO; demoted to DEBUG. This fired on every routing
+    # decision — 2728 lines in a 3h sample on www01, ~99% redundant with
+    # the structlog "request" line + the activity_log llm_request entry.
+    # Operators who need it can flip the app.routing.router level to DEBUG
+    # via /api/settings.
+    logger.debug(
+        "router.selected provider=%s model=%s cot=%s unmet=%s",
+        provider.id, litellm_model, cot_engaged, unmet,
         extra={
             "provider": provider.id,
             "model": litellm_model,
