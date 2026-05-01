@@ -268,6 +268,13 @@ _REGISTRY_CACHE: dict = {"ts": 0.0, "names": frozenset()}
 _REGISTRY_CACHE_TTL_SEC = 60.0
 
 
+def invalidate_registry_cache() -> None:
+    """v3.0.29: callable from app/api/lmrh.py register/delete handlers so a
+    just-registered dim doesn't trigger an unknown-dim warning for the
+    next 60s while the TTL cache catches up. Cheap — just resets the ts."""
+    _REGISTRY_CACHE["ts"] = 0.0
+
+
 async def _registry_names_cached() -> frozenset[str]:
     import time as _t
     now = _t.time()

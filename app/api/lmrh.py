@@ -143,9 +143,12 @@ async def register_dim(
             note="This dim is built into the proxy and is already canonical.",
         )
 
-    # Idempotent re-register: same name, same owner+key → return existing entry
+    # Idempotent re-register: same name, same owner+key → return existing entry.
+    # Tombstoned rows do NOT block re-registration (the operator deleted it
+    # so the name is free again — re-registering revives the row by clearing
+    # the tombstone in place to preserve registered_at + replication identity).
     existing = (await db.execute(
-        select(LmrhDim).where(LmrhDim.name == requested)
+        select(LmrhDim).where(LmrhDim.name == requested, LmrhDim.deleted_at.is_(None))
     )).scalar_one_or_none()
     if existing is not None:
         same_owner = (
@@ -183,6 +186,13 @@ async def register_dim(
     )
     db.add(dim)
     await db.commit()
+    # v3.0.29: bust the warning-middleware's registry cache so the just-
+    # registered dim is recognized on the next request, not 60s from now.
+    try:
+        from app.main import invalidate_registry_cache
+        invalidate_registry_cache()
+    except Exception:
+        pass
     logger.warning(
         "lmrh.dim_registered name=%r requested=%r owner_app=%r owner_key=%s",
         canonical, requested, body.owner_app, key_record.id,
@@ -226,7 +236,9 @@ async def list_registry(db: AsyncSession = Depends(get_db)):
     """Public discovery endpoint. Lists ALL dims (built-in + registered)
     so clients can self-document without hitting the spec markdown."""
     rows = (await db.execute(
-        select(LmrhDim).order_by(LmrhDim.registered_at.asc())
+        select(LmrhDim)
+        .where(LmrhDim.deleted_at.is_(None))
+        .order_by(LmrhDim.registered_at.asc())
     )).scalars().all()
     builtins = [
         {"name": n, "kind": "builtin",
@@ -262,7 +274,7 @@ async def get_dim(name: str, db: AsyncSession = Depends(get_db)):
             "semantics": "See /lmrh.md for full normative semantics.",
         }
     d = (await db.execute(
-        select(LmrhDim).where(LmrhDim.name == nm)
+        select(LmrhDim).where(LmrhDim.name == nm, LmrhDim.deleted_at.is_(None))
     )).scalar_one_or_none()
     if d is None:
         raise HTTPException(404, f"Dim {nm!r} not registered.")
@@ -284,7 +296,9 @@ async def list_proposals(
 ):
     """Admin-only review queue."""
     rows = (await db.execute(
-        select(LmrhProposal).order_by(LmrhProposal.proposed_at.desc())
+        select(LmrhProposal)
+        .where(LmrhProposal.deleted_at.is_(None))
+        .order_by(LmrhProposal.proposed_at.desc())
     )).scalars().all()
     return [
         {"id": p.id, "name": p.proposed_name, "rationale": p.rationale,
@@ -293,6 +307,50 @@ async def list_proposals(
          "proposed_at": p.proposed_at}
         for p in rows
     ]
+
+
+@router.delete("/registry/{name}")
+async def delete_dim(
+    name: str,
+    db: AsyncSession = Depends(get_db),
+    _: AdminUser = Depends(require_admin),
+):
+    """v3.0.29: admin-only soft-delete of a registered dim. Sets ``deleted_at``
+    so the tombstone replicates across cluster peers (insert-if-missing
+    merge would otherwise resurrect the row from a peer that still had it).
+    Built-in dims cannot be deleted."""
+    nm = _norm(name)
+    if nm in _builtin_dim_names():
+        raise HTTPException(400, f"Cannot delete built-in dim {nm!r}.")
+    d = (await db.execute(select(LmrhDim).where(LmrhDim.name == nm))).scalar_one_or_none()
+    if d is None or d.deleted_at is not None:
+        raise HTTPException(404, f"Dim {nm!r} not registered.")
+    d.deleted_at = time.time()
+    await db.commit()
+    try:
+        from app.main import invalidate_registry_cache
+        invalidate_registry_cache()
+    except Exception:
+        pass
+    logger.warning("lmrh.dim_deleted name=%r", nm)
+    return {"deleted": nm}
+
+
+@router.delete("/proposals/{proposal_id}")
+async def delete_proposal(
+    proposal_id: int,
+    db: AsyncSession = Depends(get_db),
+    _: AdminUser = Depends(require_admin),
+):
+    """v3.0.29: admin-only soft-delete of a proposal. Tombstone replicates
+    across cluster peers."""
+    p = (await db.execute(select(LmrhProposal).where(LmrhProposal.id == proposal_id))).scalar_one_or_none()
+    if p is None or p.deleted_at is not None:
+        raise HTTPException(404, f"Proposal {proposal_id!r} not found.")
+    p.deleted_at = time.time()
+    await db.commit()
+    logger.warning("lmrh.proposal_deleted id=%d name=%r", proposal_id, p.proposed_name)
+    return {"deleted": proposal_id}
 
 
 # ── Internal helpers ────────────────────────────────────────────────────────
@@ -308,7 +366,7 @@ async def _find_free_suffix(db: AsyncSession, base: str) -> str:
         if candidate in builtins:
             continue
         existing = (await db.execute(
-            select(LmrhDim.name).where(LmrhDim.name == candidate)
+            select(LmrhDim.name).where(LmrhDim.name == candidate, LmrhDim.deleted_at.is_(None))
         )).first()
         if existing is None:
             return candidate
@@ -321,6 +379,10 @@ async def _find_free_suffix(db: AsyncSession, base: str) -> str:
 
 async def known_dim_names(db: AsyncSession) -> set[str]:
     """Returns the union of built-in and registered dim names. Used by
-    the unknown-dim warning middleware."""
-    rows = (await db.execute(select(LmrhDim.name))).scalars().all()
+    the unknown-dim warning middleware. Excludes tombstoned rows so a
+    deleted dim resurfaces in X-LMRH-Warnings (signals the caller it's
+    no longer canonical)."""
+    rows = (await db.execute(
+        select(LmrhDim.name).where(LmrhDim.deleted_at.is_(None))
+    )).scalars().all()
     return _builtin_dim_names() | set(rows)

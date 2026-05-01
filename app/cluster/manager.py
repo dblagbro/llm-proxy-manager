@@ -165,14 +165,17 @@ async def _build_sync_payload(db) -> dict:
         {"name": d.name, "owner_app": d.owner_app, "owner_key_id": d.owner_key_id,
          "semantics": d.semantics, "value_type": d.value_type, "kind": d.kind,
          "examples": d.examples or [], "requested_name": d.requested_name,
-         "registered_at": d.registered_at, "registered_by_node": d.registered_by_node}
+         "registered_at": d.registered_at, "registered_by_node": d.registered_by_node,
+         # v3.0.29: tombstone replication so soft-deletes propagate.
+         "deleted_at": d.deleted_at}
         for d in dims_result.scalars().all()
     ]
     proposals_result = await db.execute(select(LmrhProposal))
     lmrh_proposals = [
         {"id": p.id, "proposed_name": p.proposed_name, "rationale": p.rationale,
          "proposer_app": p.proposer_app, "proposer_key_id": p.proposer_key_id,
-         "proposed_at": p.proposed_at, "status": p.status, "review_note": p.review_note}
+         "proposed_at": p.proposed_at, "status": p.status, "review_note": p.review_note,
+         "deleted_at": p.deleted_at}
         for p in proposals_result.scalars().all()
     ]
     return {
