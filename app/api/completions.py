@@ -100,6 +100,19 @@ async def chat_completions(
         body = {**body, "model": parsed_slug.bare_model}
 
     is_auto = is_auto_model(parsed_slug.bare_model)
+    # v3.0.27: reject embedding-only model names at chat entry. Cohere's
+    # chat API returns 400 on `embed-*` slugs; OpenAI does the same on
+    # `text-embedding-*`. Misroute discovered when Devin-Cohere's
+    # default_model (embed-english-v3.0) was reached via the
+    # default-fallthrough path on a chat call. Better to 400 here with
+    # a clear pointer than let it fail upstream.
+    from app.routing.router import _is_embedding_model
+    if _is_embedding_model(parsed_slug.bare_model):
+        raise HTTPException(
+            400,
+            f"Model {parsed_slug.bare_model!r} is an embeddings model. "
+            f"Use POST /v1/embeddings instead of /v1/chat/completions.",
+        )
     alias = await resolve_alias(db, body.get("model")) if not is_auto else None
     # v2.8.11: /v1/chat/completions has no claude-oauth dispatch — those
     # providers require the dedicated handler in messages.py (OAuth Bearer +

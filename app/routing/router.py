@@ -41,6 +41,18 @@ class RouteResult:
     native_thinking_params: dict = field(default_factory=dict)
 
 
+def _is_embedding_model(model: str) -> bool:
+    """v3.0.27: detect embedding-only model names. Used to keep embedding
+    models off chat dispatch paths — Cohere's chat API explicitly rejects
+    `embed-*` slugs with HTTP 400, OpenAI's chat API does the same with
+    `text-embedding-*`. Caller's job to route those to /v1/embeddings."""
+    if not model:
+        return False
+    m = model.lower()
+    return (m.startswith("embed-") or m.startswith("text-embedding-")
+            or m.startswith("embedding-"))
+
+
 def _model_family_provider_types(model: str) -> Optional[set[str]]:
     """v3.0.26: map a requested model name to the set of provider types that
     can physically serve it. Returns None when no family is detected (caller
@@ -285,6 +297,25 @@ async def select_provider(
         raise RuntimeError(
             f"No providers available after excluding types {excluded_provider_types}"
         )
+
+    # v3.0.27: when the caller didn't pin a model, drop providers whose
+    # default_model is an embedding-only slug. Otherwise build_litellm_model
+    # falls back to provider.default_model and we end up dispatching e.g.
+    # cohere/embed-english-v3.0 to a chat call → upstream 400. Real-world
+    # trip happened on Devin-Cohere (default_model=embed-english-v3.0)
+    # 2026-04-30. Embedding callers go through /v1/embeddings, which does
+    # its own provider selection via select_embedding_provider.
+    if not model_override:
+        available = [
+            p for p in available
+            if not _is_embedding_model(p.default_model or "")
+        ]
+        if not available:
+            raise RuntimeError(
+                "No chat-capable providers available — every reachable provider "
+                "has an embeddings-only default model. Specify ``model`` in the "
+                "request body, or use POST /v1/embeddings for embedding calls."
+            )
 
     # v3.0.26: hard model-family vs provider-type compatibility filter.
     # The v3.0.22 capability filter has a fall-through that lets unscanned
