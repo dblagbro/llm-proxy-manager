@@ -137,6 +137,16 @@ async def messages(
     if parsed_slug.sort_mode is not None:
         body = {**body, "model": parsed_slug.bare_model}
 
+    # v3.0.27: same embedding-on-chat guard as completions.py — embedding
+    # models can't dispatch through /v1/messages either.
+    from app.routing.router import _is_embedding_model
+    if _is_embedding_model(parsed_slug.bare_model):
+        raise HTTPException(
+            400,
+            f"Model {parsed_slug.bare_model!r} is an embeddings model. "
+            f"Use POST /v1/embeddings instead of /v1/messages.",
+        )
+
     # v2.8.0: ``model: "auto"`` (and ``"llmp-auto"``) — let LMRH ranking pick
     # the provider AND the model. The auto-task classifier in
     # build_hint_with_auto_task already inferred a task dimension above, so
