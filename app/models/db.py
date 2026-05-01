@@ -211,6 +211,12 @@ class LmrhDim(Base):
     requested_name = Column(String, nullable=True)    # what was originally requested
     registered_at = Column(Float, nullable=False)
     registered_by_node = Column(String, nullable=True)
+    # v3.0.29: tombstone for cluster-replicated soft delete. Without this,
+    # hard-DELETE on one node was reversed by the next sync push from a peer
+    # that still had the row. Mirrors the same pattern used for Provider
+    # (v2.8.2) and ApiKey (v3.0.20). Stores Unix-epoch float for parity
+    # with registered_at.
+    deleted_at = Column(Float, nullable=True)
 
 
 class LmrhProposal(Base):
@@ -229,6 +235,8 @@ class LmrhProposal(Base):
     proposed_at = Column(Float, nullable=False)
     status = Column(String, default="pending")        # pending|accepted|rejected
     review_note = Column(Text, nullable=True)
+    # v3.0.29: tombstone for cluster-replicated soft delete (see LmrhDim).
+    deleted_at = Column(Float, nullable=True)
 
 
 class OAuthCaptureProfile(Base):

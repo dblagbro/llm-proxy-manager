@@ -4,7 +4,7 @@ Self-hosted LLM routing gateway — Python/FastAPI rewrite of llm-proxy v1.
 
 **LMRH semantic routing · circuit breaker failover · CoT-E augmentation · cluster sync · Run runtime · per-provider keep-alive probes · React dashboard**
 
-Current version: **v3.0.19** (see [CHANGELOG.md](CHANGELOG.md))
+Current version: **v3.0.29** (see [CHANGELOG.md](CHANGELOG.md))
 
 ## Access
 
@@ -41,9 +41,16 @@ sudo docker compose up -d --force-recreate --no-deps llm-proxy2
 |--------|------|-------------|
 | POST   | `/v1/messages`              | Anthropic-format completions (streaming + non-streaming) |
 | POST   | `/v1/chat/completions`      | OpenAI-format completions (streaming + non-streaming) |
-| GET    | `/v1/models`                | OpenAI-shape model list |
+| POST   | `/v1/embeddings`            | OpenAI-format embeddings (v3.0.23+) |
+| GET    | `/v1/models`                | OpenAI-shape model list (with `kind` tag — chat/embedding/image/audio, v3.0.23+) |
 | GET    | `/health`                   | Public health probe (no auth) |
 | GET    | `/metrics`                  | Prometheus metrics |
+| GET    | `/lmrh.md`                  | LMRH 1.1 spec (public, served from `docs/draft-blagbrough-lmrh-00.md`) |
+| GET    | `/lmrh/registry`            | Public list of built-in + runtime-registered LMRH dims (v3.0.25+) |
+| GET    | `/lmrh/registry/{name}`     | Public single-dim lookup |
+| POST   | `/lmrh/register`            | Auth-required, register a new LMRH dim (collision-resolved -2/-3 suffix) |
+| POST   | `/lmrh/propose`             | Auth-required, queue a free-form proposal for operator review |
+| DELETE | `/lmrh/registry/{name}`     | Admin-only, soft-delete a registered dim (cluster-replicated tombstone, v3.0.29+) |
 
 ### Run runtime endpoints (v3.0.0+, joint contract with coordinator-hub)
 
@@ -104,10 +111,16 @@ All settings can be edited live on the Settings page; environment variables are 
 ### LMRH protocol — semantic routing by task / cost / latency / modality
 
 ```
-LLM-Hint: task=reasoning, cost=economy, region=us
+LLM-Hint: task=reasoning, cost=economy, region=us, exclude=codex-oauth;require
 ```
 
-Append `;require` to any affinity to make it a hard constraint (returns 503 with the specific unmet dimension if it can't be satisfied). Response carries `LLM-Capability` with the chosen provider and model.
+Append `;require` to any affinity to make it a hard constraint (returns 503 with the specific unmet dimension if it can't be satisfied). Response carries `LLM-Capability` with the chosen provider and model. Unknown dimensions surface in the `X-LMRH-Warnings` response header (v3.0.25+) with `register-at:/lmrh/register spec:/lmrh.md` discovery hints.
+
+**Built-in dims:** `task`, `safety-min`, `safety-max`, `refusal-rate`, `region`, `latency`, `cost`, `context-length`, `modality`, `max-ttft`, `max-cost-per-1k`, `effort`, `cascade`, `hedge`, `tenant`, `freshness`, `exclude`, `provider-hint`. Runtime registration via `POST /lmrh/register` extends the canonical name space with collision-resolved `-2`/`-3` suffixes; the registry replicates across cluster peers.
+
+**Hard model-family vs provider-type filter (v3.0.26+):** when a request pins a specific model (`claude-*`, `gpt-*`, `gemini-*`, etc.), the proxy filters candidates to provider types that can physically serve that family. Empty intersection → clean 503 instead of silent substitution.
+
+**Embedding-on-chat rejection (v3.0.27+):** requests for embedding model names (`embed-*`, `text-embedding-*`) on `/v1/chat/completions` or `/v1/messages` return HTTP 400 pointing to `POST /v1/embeddings`.
 
 ### Sort modes — OpenRouter-parity model slug suffixes
 
@@ -229,5 +242,6 @@ Provider rows now carry a `last_user_edit_at` timestamp set only by admin-facing
 - [`docs/runs-runbook.md`](docs/runs-runbook.md) — operator runbook for the Run runtime
 - [`runs.openapi.json`](runs.openapi.json) — OpenAPI spec for `/v1/runs/*` endpoints (joint contract with coordinator-hub)
 - [`docs/claude-pro-max-oauth-capture.md`](docs/claude-pro-max-oauth-capture.md) — OAuth capture flow notes
-- [`docs/draft-blagbrough-lmrh-00.md`](docs/draft-blagbrough-lmrh-00.md) — LMRH 1.0 IETF draft
+- [`docs/draft-blagbrough-lmrh-00.md`](docs/draft-blagbrough-lmrh-00.md) — LMRH 1.1 IETF draft (self-extension protocol)
+- [`docs/lmrh-1.1-announcement.md`](docs/lmrh-1.1-announcement.md) — cross-project announcement of LMRH 1.1 features for consumer teams
 - [`CHANGELOG.md`](CHANGELOG.md) — version history
