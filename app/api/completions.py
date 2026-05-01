@@ -256,8 +256,12 @@ async def chat_completions(
         if route.cross_family_fallback and route.served_model_native:
             anthropic_body["model"] = route.served_model_native
         # Override stream flag from the request body so `stream=True` propagates.
+        # v3.0.40: removed the inline imports — they triggered Python's
+        # "import binds the name as local in the enclosing function" rule,
+        # which made the module-level JSONResponse/StreamingResponse refs
+        # in the OpenAI fallthrough path raise UnboundLocalError. Surfaced
+        # in the v3.0.39 24h audit as 41+1 errors on the OpenAI provider.
         if stream:
-            from fastapi.responses import StreamingResponse
             anthropic_sse = _stream_claude_oauth(
                 access_token=route.provider.api_key,
                 body=anthropic_body,
@@ -282,7 +286,6 @@ async def chat_completions(
                 t0=t0,
                 provider_name=route.provider.name,
             )
-            from fastapi.responses import JSONResponse
             return JSONResponse(
                 content=anthropic_response_to_openai(anth_resp, requested_model=body.get("model") or ""),
                 headers=resp_headers,
