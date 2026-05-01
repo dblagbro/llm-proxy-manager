@@ -139,6 +139,34 @@ def score_candidate(profile: CapabilityProfile, hint: LMRHHint) -> tuple[float, 
             case "effort" | "cascade" | "hedge" | "tenant" | "freshness":
                 pass
 
+            # v3.0.25 — exclude=name1,name2 — negative provider selection.
+            # Soft: drops score by exclude weight if profile.provider matches.
+            # Hard (;require): handled in select_provider (filters out the
+            # candidate entirely BEFORE this loop runs). Here we just
+            # apply the soft penalty for unrequired exclude.
+            case "exclude":
+                excluded = {n.strip().lower() for n in dim.value.split(",") if n.strip()}
+                pname = (profile.provider_name or "").lower()
+                ptype = (profile.provider_type or "").lower()
+                if pname in excluded or ptype in excluded:
+                    if dim.required:
+                        return float("-inf"), [dim.key]
+                    score -= WEIGHTS.get("exclude", 5)
+                    unmet.append(dim.key)
+
+            # v3.0.25 — provider-hint=name (positive selection; existing).
+            # Score-only here — endpoint's pinned_provider_id handles hard.
+            case "provider-hint":
+                wanted = {n.strip().lower() for n in dim.value.split(",") if n.strip()}
+                pname = (profile.provider_name or "").lower()
+                ptype = (profile.provider_type or "").lower()
+                if pname in wanted or ptype in wanted:
+                    score += WEIGHTS.get("provider-hint", 5)
+                else:
+                    if dim.required:
+                        return float("-inf"), [dim.key]
+                    unmet.append(dim.key)
+
             # Wave 4 #21 — refusal-rate human-readable alias for safety
             case "refusal-rate":
                 ceil_ = _REFUSAL_RATE_TO_SAFETY_CEIL.get(dim.value.lower())

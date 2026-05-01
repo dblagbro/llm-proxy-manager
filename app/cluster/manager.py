@@ -156,6 +156,25 @@ async def _build_sync_payload(db) -> dict:
         {"key": s.key, "value": s.value, "value_type": s.value_type, "updated_at": s.updated_at or 0.0}
         for s in settings_result.scalars().all()
     ]
+    # v3.0.25: replicate the LMRH dim registry + proposals queue so all
+    # nodes see the same canonical name space. Last-write-wins by
+    # registered_at / proposed_at.
+    from app.models.db import LmrhDim, LmrhProposal
+    dims_result = await db.execute(select(LmrhDim))
+    lmrh_dims = [
+        {"name": d.name, "owner_app": d.owner_app, "owner_key_id": d.owner_key_id,
+         "semantics": d.semantics, "value_type": d.value_type, "kind": d.kind,
+         "examples": d.examples or [], "requested_name": d.requested_name,
+         "registered_at": d.registered_at, "registered_by_node": d.registered_by_node}
+        for d in dims_result.scalars().all()
+    ]
+    proposals_result = await db.execute(select(LmrhProposal))
+    lmrh_proposals = [
+        {"id": p.id, "proposed_name": p.proposed_name, "rationale": p.rationale,
+         "proposer_app": p.proposer_app, "proposer_key_id": p.proposer_key_id,
+         "proposed_at": p.proposed_at, "status": p.status, "review_note": p.review_note}
+        for p in proposals_result.scalars().all()
+    ]
     return {
         "source_node": settings.cluster_node_id,
         "timestamp": time.time(),
@@ -163,6 +182,8 @@ async def _build_sync_payload(db) -> dict:
         "api_keys": keys,
         "providers": providers,
         "settings": node_settings,
+        "lmrh_dims": lmrh_dims,
+        "lmrh_proposals": lmrh_proposals,
     }
 
 
