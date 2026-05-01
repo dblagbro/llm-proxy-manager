@@ -45,6 +45,31 @@ logging.basicConfig(level=settings.log_level.upper())
 logger = structlog.get_logger()
 
 
+# v3.0.24 (#136): silence /health from uvicorn access logs. Docker healthcheck
+# + cluster peer heartbeat hit /health every ~30s; logging each one buries the
+# real signals. Apply as a filter on uvicorn.access (other status lines stay).
+class _HealthAccessLogFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            msg = record.getMessage()
+        except Exception:
+            return True
+        # uvicorn access log format: '%(client_addr)s - "%(request_line)s" %(status_code)s'
+        return " /health " not in msg and " /health\"" not in msg
+
+
+logging.getLogger("uvicorn.access").addFilter(_HealthAccessLogFilter())
+
+# v3.0.24 (#136): tone down litellm's INFO-level chatter (per-call
+# "LiteLLM completion() model=..." lines). Errors / warnings still flow.
+try:
+    import litellm as _litellm
+    _litellm.set_verbose = False
+    logging.getLogger("LiteLLM").setLevel(logging.WARNING)
+except Exception:
+    pass
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # DB init + default admin + runtime settings
