@@ -340,9 +340,15 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
         name = d_data.get("name")
         if not name:
             continue
+        # v3.0.29: peer's tombstone — propagate the soft delete.
+        peer_deleted = d_data.get("deleted_at")
+        peer_deleted_f = float(peer_deleted) if peer_deleted is not None else None
         result = await db.execute(select(LmrhDim).where(LmrhDim.name == name))
         existing = result.scalar_one_or_none()
         if existing is None:
+            # Don't materialize a peer's tombstone — just skip.
+            if peer_deleted_f is not None:
+                continue
             db.add(LmrhDim(
                 name=name,
                 owner_app=d_data.get("owner_app"),
@@ -356,6 +362,16 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
                 registered_by_node=d_data.get("registered_by_node"),
             ))
         else:
+            # Tombstone propagation: peer reports a delete and ours is newer
+            # OR we don't have one → adopt it.
+            if peer_deleted_f is not None and (
+                existing.deleted_at is None or peer_deleted_f >= existing.deleted_at
+            ):
+                existing.deleted_at = peer_deleted_f
+                continue
+            # Local tombstone newer than (or peer has none) → keep local delete
+            if existing.deleted_at is not None and peer_deleted_f is None:
+                continue
             # Earlier registered_at wins — preserves the originating node's
             # claim if a peer somehow allocated the same name independently.
             peer_ts = float(d_data.get("registered_at") or 0)
@@ -386,7 +402,12 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
             )
         )
         existing = result.scalar_one_or_none()
+        # v3.0.29: tombstone propagation for proposals (same shape as dims).
+        peer_deleted = pr_data.get("deleted_at")
+        peer_deleted_f = float(peer_deleted) if peer_deleted is not None else None
         if existing is None:
+            if peer_deleted_f is not None:
+                continue
             db.add(LmrhProposal(
                 proposed_name=proposed_name,
                 rationale=pr_data.get("rationale"),
@@ -397,6 +418,13 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
                 review_note=pr_data.get("review_note"),
             ))
         else:
+            if peer_deleted_f is not None and (
+                existing.deleted_at is None or peer_deleted_f >= existing.deleted_at
+            ):
+                existing.deleted_at = peer_deleted_f
+                continue
+            if existing.deleted_at is not None and peer_deleted_f is None:
+                continue
             # Operator review is the only thing that mutates an existing
             # proposal. Accept peer's status/review_note unconditionally —
             # whoever wrote last wins, and the review fields don't have a

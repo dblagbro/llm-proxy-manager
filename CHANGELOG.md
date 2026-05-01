@@ -9,6 +9,55 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.0.x — Run runtime, cluster ops, observability
 
+### v3.0.29 — LMRH dim/proposal tombstone replication + warning-cache invalidation
+
+Hard-DELETE on a registered LMRH dim was reversed by the next cluster-sync push from a peer that still had the row — the receive-side merge was strict "insert if missing." Same class of bug fixed for `Provider` (v2.8.2) and `ApiKey` (v3.0.20).
+
+- New `deleted_at REAL` column on `lmrh_dims` and `lmrh_proposals` (idempotent ALTER).
+- New admin-only `DELETE /lmrh/registry/{name}` and `DELETE /lmrh/proposals/{id}` endpoints — soft-delete via `deleted_at = time.time()`.
+- Cluster sync push payload now carries `deleted_at`. Receive-side merge: peer's tombstone propagates if newer than local; local tombstone preserved if peer has none. Insert-if-missing path skips materializing a peer's tombstone.
+- Read endpoints + `known_dim_names()` (used by the warning middleware) all filter tombstoned rows.
+- Re-registering a soft-deleted name resurrects the row in place to preserve `registered_at`.
+- Bonus: `invalidate_registry_cache()` callback wired into register + delete handlers so newly-registered/-deleted dims are recognized immediately instead of after the 60s TTL window.
+
+### v3.0.28 — Dark-mode invisible-text fix on activity + providers search inputs
+
+Operator-reported bug: "can't type into the activity log search box." Root cause: the raw `<input>` elements on `ActivityPage` and `ProvidersPage` had `dark:bg-gray-900`/`dark:bg-gray-800` for background but no explicit text color. Browser default `color: inherit` resolved to a dark color from a parent container — dark text on dark background. Typing worked but the value was invisible. Fix: add `text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500`.
+
+### v3.0.27 — Embedding-on-chat rejection
+
+AI Analyzer team report: Cohere upstream returned 400 "model 'embed-english-v3.0' is not supported by the chat API." Root cause: a chat call with no `model` field selected the Cohere provider, and `build_litellm_model` fell back to `provider.default_model` which is `embed-english-v3.0` (the recommended embeddings default). Two-layer fix:
+
+1. Reject `embed-*` / `text-embedding-*` / `embedding-*` model names at `/v1/chat/completions` and `/v1/messages` entry → HTTP 400 with pointer to `POST /v1/embeddings`.
+2. In `select_provider`, when `model_override` is None, drop providers whose `default_model` is an embedding-only slug.
+
+### v3.0.26 — Claude routing hard-fix + LLM-Hint header-name fix
+
+DevinGPT verification of v3.0.25 surfaced two ship-blocking bugs:
+
+- **Routing fall-through:** v3.0.22's capability filter had a fall-through that let codex-oauth eat `claude-*` requests on `/v1/chat/completions` (which excludes `claude-oauth` providers). Fixed with a hard model-family vs provider-type filter that runs BEFORE the capability filter:
+  - `claude-*` → `{anthropic, anthropic-direct, anthropic-oauth, claude-oauth}`
+  - `gpt-*`, `o1-*`, `o3-*` → `{openai, codex-oauth}`
+  - `codex-*` → `{codex-oauth}`
+  - `gemini-*` → `{google, vertex, vertex_ai}`
+  - `embed-*`, `command-*` → `{cohere}`
+
+  Empty list raises `RuntimeError` → propagates as 503 with an actionable message.
+
+- **`X-LMRH-Warnings` middleware silently missing:** read `x-llm-hint`, but the canonical LMRH request header is `LLM-Hint` (no X- prefix). Fixed.
+
+### v3.0.25 — LMRH self-extension protocol (registry, handshake, exclude=, warnings)
+
+LMRH 1.1 — runtime extension protocol so callers can adopt new dim names without a proxy code change.
+
+- `POST /lmrh/register` — auth-required, collision-resolved registration. Idempotent.
+- `POST /lmrh/propose` — auth-required, free-form proposal queue for operator review.
+- `GET /lmrh/registry` and `GET /lmrh/registry/{name}` — public discovery.
+- New built-in dims: `exclude=PROVIDER` and `provider-hint=PROVIDER` (both case-insensitive name OR provider-type match; `;require` = hard).
+- New header `X-LMRH-Warnings: unknown-dim:NAME register-at:/lmrh/register spec:/lmrh.md` on responses where the request carried unrecognized dims.
+- Cluster sync replicates the dim registry + proposals queue across peers.
+- LMRH RFC draft bumped to 1.1 with the extension-via-registration section.
+
 ### v3.0.24 — log-mining batch: normalize-ties scope + /health noise + litellm verbosity
 
 Three improvements found in a 3h log review (no errors — just abnormalities worth fixing):

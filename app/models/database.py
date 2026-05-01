@@ -82,6 +82,11 @@ async def init_db():
             "ALTER TABLE api_keys ADD COLUMN deleted_at DATETIME",
             # v3.0.25 — LMRH self-extension protocol tables
             # (idempotent ALTERs; CREATE handled by Base.metadata.create_all above)
+            # v3.0.29 — soft-delete tombstones on LMRH dim/proposal rows so
+            # cluster-sync's "insert if missing" merge doesn't resurrect a
+            # deleted entry from a peer that still has it.
+            "ALTER TABLE lmrh_dims ADD COLUMN deleted_at REAL",
+            "ALTER TABLE lmrh_proposals ADD COLUMN deleted_at REAL",
         ]:
             try:
                 await conn.exec_driver_sql(stmt)
