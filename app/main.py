@@ -288,7 +288,16 @@ async def _registry_names_cached() -> frozenset[str]:
 @app.middleware("http")
 async def _lmrh_warning_middleware(request: _LmrhRequest, call_next):
     response = await call_next(request)
-    hint_header = request.headers.get("x-llm-hint") or request.headers.get("X-LLM-Hint")
+    # v3.0.26: the canonical LMRH header is "LLM-Hint" (no X- prefix), per
+    # the spec and the FastAPI Header(alias="llm-hint") declarations on the
+    # actual route handlers. Starlette normalizes header lookups to
+    # lowercase, so "llm-hint" catches every case-variant. v3.0.25 was
+    # checking "x-llm-hint" only and silently missed every real LMRH
+    # request — DevinGPT verification turned this up on 2026-05-01.
+    hint_header = (
+        request.headers.get("llm-hint")
+        or request.headers.get("x-llm-hint")
+    )
     if not hint_header:
         return response
     parsed = _lmrh_parse(hint_header)
