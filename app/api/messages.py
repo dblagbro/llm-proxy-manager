@@ -704,9 +704,20 @@ async def messages(
             out_tok = getattr(result.usage, "completion_tokens", 0)
             from app.cot.sse import extract_cache_tokens
             cache_creation, cache_read = extract_cache_tokens(result.usage)
-            await record_outcome(db, route.provider.id, route.litellm_model, success=True,
-                                 in_tok=in_tok, out_tok=out_tok, t0=t0, key_record_id=key_record.id,
-                                 cache_creation=cache_creation, cache_read=cache_read, provider_name=route.provider.name)
+            await record_outcome(
+                db, route.provider.id, route.litellm_model, success=True,
+                in_tok=in_tok, out_tok=out_tok, t0=t0,
+                key_record_id=key_record.id,
+                cache_creation=cache_creation, cache_read=cache_read,
+                provider_name=route.provider.name,
+                # v3.0.35: body capture + diagnostic fields. Anthropic-shape
+                # response is converted via to_anthropic_response for activity
+                # log so the captured shape matches what the client received.
+                request_body=body,
+                response_body=to_anthropic_response(result),
+                requested_model=body.get("model") if isinstance(body, dict) else None,
+                had_lmrh_hint=bool(llm_hint),
+            )
             # Store in semantic cache (fire-and-forget; won't affect response latency)
             try:
                 answer_text = result.choices[0].message.content or ""
@@ -746,8 +757,14 @@ async def messages(
 
     except Exception as e:
         err_str = str(e)
-        await record_outcome(db, route.provider.id, route.litellm_model, success=False,
-                             key_record_id=key_record.id, error_str=err_str, provider_name=route.provider.name)
+        await record_outcome(
+            db, route.provider.id, route.litellm_model, success=False,
+            key_record_id=key_record.id, error_str=err_str,
+            provider_name=route.provider.name,
+            request_body=body,
+            requested_model=body.get("model") if isinstance(body, dict) else None,
+            had_lmrh_hint=bool(llm_hint),
+        )
         logger.error(f"Provider {route.provider.id} failed: {err_str}")
         raise HTTPException(502, f"Upstream provider error: {err_str}")
 

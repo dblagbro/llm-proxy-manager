@@ -175,6 +175,11 @@ async def record_outcome(
     request_body: Any = None,
     response_body: Any = None,
     provider_name: Optional[str] = None,
+    # v3.0.35: new self-serve diagnostic fields per DevinGPT 2026-05-01 ask.
+    # All optional + backwards-compat — older callers stay working.
+    requested_model: Optional[str] = None,
+    had_lmrh_hint: bool = False,
+    lmrh_warnings: Optional[list[str]] = None,
 ) -> None:
     if success:
         latency_ms = (time.monotonic() - t0) * 1000
@@ -201,13 +206,22 @@ async def record_outcome(
         msg_prefix = "[probe] " if is_probe else ""
         msg = f"{msg_prefix}{provider_name} · {model}" if provider_name else f"{msg_prefix}{model}"
         meta = {
-            "model": model,
+            "model": model,                 # served — what we dispatched
+            "served_model": model,          # v3.0.35: explicit alias for clarity
             "provider_name": provider_name,
             "in_tok": in_tok,
             "out_tok": out_tok,
             "cost_usd": round(cost, 6),
             "latency_ms": round(latency_ms, 1),
         }
+        if requested_model and requested_model != model:
+            meta["requested_model"] = requested_model  # caller-asked-for vs served
+        elif requested_model:
+            meta["requested_model"] = requested_model
+        if had_lmrh_hint:
+            meta["had_lmrh_hint"] = True
+        if lmrh_warnings:
+            meta["lmrh_warnings"] = list(lmrh_warnings)
         if is_probe:
             meta["probe"] = True
         meta = _attach_bodies(meta, request_body, response_body)
@@ -240,9 +254,16 @@ async def record_outcome(
                if provider_name else f"{msg_prefix}{model} — error")
         meta = {
             "model": model,
+            "served_model": model,
             "provider_name": provider_name,
             "error": error_str[:2000] if error_str else None,
         }
+        if requested_model:
+            meta["requested_model"] = requested_model
+        if had_lmrh_hint:
+            meta["had_lmrh_hint"] = True
+        if lmrh_warnings:
+            meta["lmrh_warnings"] = list(lmrh_warnings)
         if is_probe:
             meta["probe"] = True
         meta = _attach_bodies(meta, request_body, response_body)
