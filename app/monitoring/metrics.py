@@ -125,6 +125,66 @@ async def get_provider_history(
     ]
 
 
+async def get_provider_rolling_windows(db: AsyncSession) -> list[dict]:
+    """v3.0.39: per-provider request volume + success rate across four
+    rolling windows (1h, 24h, 7d, 30d) in a single query.
+
+    Operator ask 2026-05-01: provider list should show
+    'total requests last 1h/24h/7d/30d' + '% successful' for each window.
+
+    The provider_metrics table has 5-minute buckets; we sum requests +
+    successes per provider, conditionally on each window cutoff in a
+    single SQL pass. Cheap because the same indexed scan covers all four
+    sums.
+    """
+    from app.models.db import Provider
+    from sqlalchemy import case
+    now = datetime.utcnow()
+    cutoff_1h  = now - timedelta(hours=1)
+    cutoff_24h = now - timedelta(hours=24)
+    cutoff_7d  = now - timedelta(days=7)
+    cutoff_30d = now - timedelta(days=30)
+
+    def _sum_in(field, cutoff):
+        return func.sum(case((ProviderMetric.bucket_ts >= cutoff, field), else_=0))
+
+    result = await db.execute(
+        select(
+            ProviderMetric.provider_id,
+            _sum_in(ProviderMetric.requests,  cutoff_1h).label("req_1h"),
+            _sum_in(ProviderMetric.successes, cutoff_1h).label("succ_1h"),
+            _sum_in(ProviderMetric.requests,  cutoff_24h).label("req_24h"),
+            _sum_in(ProviderMetric.successes, cutoff_24h).label("succ_24h"),
+            _sum_in(ProviderMetric.requests,  cutoff_7d).label("req_7d"),
+            _sum_in(ProviderMetric.successes, cutoff_7d).label("succ_7d"),
+            _sum_in(ProviderMetric.requests,  cutoff_30d).label("req_30d"),
+            _sum_in(ProviderMetric.successes, cutoff_30d).label("succ_30d"),
+        )
+        .where(ProviderMetric.bucket_ts >= cutoff_30d)  # outermost filter for index efficiency
+        .group_by(ProviderMetric.provider_id)
+    )
+    rows = result.all()
+    name_result = await db.execute(select(Provider.id, Provider.name))
+    name_map = {pid: pname for pid, pname in name_result.all()}
+
+    def _pct(succ, req):
+        return round((succ or 0) / max(req or 1, 1) * 100, 1) if req else None
+
+    return [
+        {
+            "provider_id": r.provider_id,
+            "provider_name": name_map.get(r.provider_id, r.provider_id),
+            "windows": {
+                "1h":  {"requests": int(r.req_1h or 0),  "successes": int(r.succ_1h or 0),  "success_pct": _pct(r.succ_1h, r.req_1h)},
+                "24h": {"requests": int(r.req_24h or 0), "successes": int(r.succ_24h or 0), "success_pct": _pct(r.succ_24h, r.req_24h)},
+                "7d":  {"requests": int(r.req_7d or 0),  "successes": int(r.succ_7d or 0),  "success_pct": _pct(r.succ_7d, r.req_7d)},
+                "30d": {"requests": int(r.req_30d or 0), "successes": int(r.succ_30d or 0), "success_pct": _pct(r.succ_30d, r.req_30d)},
+            },
+        }
+        for r in rows
+    ]
+
+
 async def get_all_provider_summary(db: AsyncSession, hours: int = 24) -> list[dict]:
     """Aggregate per-provider stats over the last N hours and join the live
     provider name. v2.9.0 fixes a missing-column AttributeError that crashed
