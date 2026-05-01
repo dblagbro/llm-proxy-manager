@@ -18,6 +18,16 @@ export const authApi = {
 // ── Providers ─────────────────────────────────────────────────────────────────
 export const providersApi = {
   list:       ()                         => api.get<Provider[]>('/api/providers'),
+  rollingStats: ()                       => api.get<Array<{
+    provider_id: string
+    provider_name: string
+    windows: {
+      '1h':  { requests: number; successes: number; success_pct: number | null }
+      '24h': { requests: number; successes: number; success_pct: number | null }
+      '7d':  { requests: number; successes: number; success_pct: number | null }
+      '30d': { requests: number; successes: number; success_pct: number | null }
+    }
+  }>>('/api/providers/rolling-stats'),
   get:        (id: string)               => api.get<Provider>(`/api/providers/${id}`),
   create:     (data: ProviderFormData)   => api.post<Provider>('/api/providers', data),
   update:     (id: string, data: ProviderFormData) =>

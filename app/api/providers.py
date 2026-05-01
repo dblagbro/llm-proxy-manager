@@ -82,6 +82,24 @@ async def list_providers(
     return [_serialize(p) for p in providers]
 
 
+@router.get("/rolling-stats")
+async def provider_rolling_stats(
+    db: AsyncSession = Depends(get_db),
+    _: AdminUser = Depends(require_admin),
+):
+    """v3.0.39: per-provider request volume + success rate across rolling
+    1h / 24h / 7d / 30d windows. Backs the new columns on the provider list
+    page (operator ask 2026-05-01).
+
+    Returns: list of {provider_id, provider_name, windows: {1h, 24h, 7d, 30d}}
+    where each window has {requests, successes, success_pct}. Providers with
+    no traffic in the 30d window are omitted; the frontend treats absence as
+    'no data'.
+    """
+    from app.monitoring.metrics import get_provider_rolling_windows
+    return await get_provider_rolling_windows(db)
+
+
 _TYPES_REQUIRING_API_KEY = {
     "anthropic", "openai", "google", "vertex", "grok",
     "cohere", "mistral", "groq", "together", "fireworks",

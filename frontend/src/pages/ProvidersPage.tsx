@@ -49,6 +49,22 @@ export function ProvidersPage() {
     metricsByProvider[m.provider_id] = m
   }
 
+  // v3.0.39: rolling-window stats (1h / 24h / 7d / 30d) shown inline.
+  const { data: rollingStats } = useQuery({
+    queryKey: ['providers-rolling'],
+    queryFn: providersApi.rollingStats,
+    refetchInterval: 60_000,
+  })
+  const rollingByProvider: Record<string, {
+    '1h':  { requests: number; success_pct: number | null }
+    '24h': { requests: number; success_pct: number | null }
+    '7d':  { requests: number; success_pct: number | null }
+    '30d': { requests: number; success_pct: number | null }
+  }> = {}
+  for (const r of rollingStats ?? []) {
+    rollingByProvider[r.provider_id] = r.windows as never
+  }
+
   // Sort dropdown for the providers list — cards aren't column-clickable so
   // we expose the sort dimension as a small select. Default: priority asc
   // (matches routing precedence).
@@ -288,6 +304,45 @@ export function ProvidersPage() {
                           {m.total_tokens.toLocaleString()} tok
                           <span className="mx-1.5">·</span>
                           {cost}
+                        </p>
+                      )
+                    })()}
+                    {/* v3.0.39: rolling-window request volume + success-rate
+                        snapshot per operator ask. Compact — 4 windows in
+                        one row, only renders when there's traffic. */}
+                    {(() => {
+                      const w = rollingByProvider[p.id]
+                      if (!w) return null
+                      const fmt = (label: string, win: { requests: number; success_pct: number | null }) => {
+                        if (!win.requests) return null
+                        const pctColor = win.success_pct == null
+                          ? 'text-gray-400'
+                          : win.success_pct >= 95 ? 'text-green-600 dark:text-green-400'
+                          : win.success_pct >= 80 ? 'text-amber-500'
+                          : 'text-red-500'
+                        return (
+                          <span key={label}>
+                            <span className="text-gray-400 mr-0.5">{label}:</span>
+                            {win.requests.toLocaleString()}
+                            {win.success_pct != null && (
+                              <>
+                                <span className="text-gray-400">/</span>
+                                <span className={pctColor}>{win.success_pct.toFixed(0)}%</span>
+                              </>
+                            )}
+                          </span>
+                        )
+                      }
+                      const cells = [
+                        fmt('1h',  w['1h']),
+                        fmt('24h', w['24h']),
+                        fmt('7d',  w['7d']),
+                        fmt('30d', w['30d']),
+                      ].filter(Boolean)
+                      if (!cells.length) return null
+                      return (
+                        <p className="text-[11px] text-gray-500 mt-1 font-mono flex flex-wrap gap-x-3">
+                          {cells}
                         </p>
                       )
                     })()}
