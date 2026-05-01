@@ -239,6 +239,37 @@ async def select_provider(
             f"No providers available after excluding types {excluded_provider_types}"
         )
 
+    # v3.0.22: model-supports-by-provider filter. When a caller pins a specific
+    # model (e.g. ``gpt-4o-mini``), providers whose scanned model_capabilities
+    # don't include that model would 400 at dispatch time — clearest case is
+    # codex-oauth, which only serves its 6 Plus-tier slugs but has priority 3,
+    # so a request for gpt-4o-mini was being routed to it and rejected by the
+    # ChatGPT backend. Filter it out at selection time instead.
+    #
+    # Conservative behavior: providers with NO scanned capabilities still get
+    # a chance (we don't know what they support; let them try and fall through
+    # via the existing CB on upstream failure). Only providers that HAVE been
+    # scanned and don't list the requested model are filtered.
+    if model_override:
+        cap_q = await db.execute(
+            select(ModelCapability.provider_id, ModelCapability.model_id)
+            .where(ModelCapability.provider_id.in_([p.id for p in available]))
+        )
+        cap_by_provider: dict[str, set[str]] = {}
+        for pid, mid in cap_q.all():
+            cap_by_provider.setdefault(pid, set()).add(mid)
+        def _supports(p: Provider) -> bool:
+            caps = cap_by_provider.get(p.id)
+            if not caps:
+                return True   # never scanned — give it a try
+            return model_override in caps
+        filtered = [p for p in available if _supports(p)]
+        if filtered:
+            available = filtered
+        # If filter would empty the list (no scanned provider lists this
+        # model), fall through with the original list so the caller still
+        # gets SOME route attempt rather than a hard 503.
+
     # Load capability profiles
     profiles = [await _load_profile(db, p) for p in available]
     provider_map = {p.id: p for p in available}

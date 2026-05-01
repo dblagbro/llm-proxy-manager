@@ -110,11 +110,18 @@ async def chat_completions(
     # 503 with an actionable message instead of letting it bubble to a
     # raw 500 + ASGI traceback. Hits when the only enabled providers are
     # claude-oauth (cutover window state).
+    # v3.0.22: pass the requested model as ``model_override`` even when no
+    # alias is defined, so select_provider's model-supports-by-provider
+    # filter (also v3.0.22) can reject providers whose scanned capabilities
+    # don't list this model. Previously model_override was None when the
+    # caller's ``model`` had no ModelAlias row, which meant the filter
+    # never fired and codex-oauth providers happily ate every request.
+    requested_model = (alias.model_id if alias else parsed_slug.bare_model) or None
     try:
         route = await select_provider(
             db, hint, has_tools=has_tools, has_images=has_images, key_type=key_record.key_type,
             pinned_provider_id=alias.provider_id if alias else None,
-            model_override=alias.model_id if alias else None,
+            model_override=requested_model,
             sort_mode=parsed_slug.sort_mode,
             excluded_provider_types={"claude-oauth"},
         )

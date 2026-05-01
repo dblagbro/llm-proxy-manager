@@ -9,6 +9,21 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.0.x — Run runtime, cluster ops, observability
 
+### v3.0.22 — model-supports-by-provider routing filter
+
+DevinGPT dev team reported every `/v1/chat/completions` request being eaten by `codex-oauth` regardless of the requested model — the upstream then 400'd because Codex on ChatGPT Plus only serves `gpt-5.x` slugs. Two-part fix:
+
+1. `select_provider` now consults `model_capabilities` for the requested model. Providers whose scanned capabilities exist and don't list the requested model are filtered out at selection time. Providers without scanned caps still get a chance (we don't know what they support; let the existing CB catch failures). If the filter would empty the candidate list, fall through to the original list rather than hard-503.
+2. `/api/chat/completions` now passes the caller's `model` to `select_provider` as `model_override` even when no `ModelAlias` row exists. Previously the override was only set for aliased requests, which is why the new filter wasn't firing for the vast majority of calls.
+
+End-to-end verification: `gpt-4o-mini` now routes to the OpenAI provider (priority 6) instead of being eaten by codex-oauth (priority 3); `gpt-5.5` still routes to codex correctly.
+
+### v3.0.21 — API key reveal UI polish
+
+- Create-time message changed from the alarming "Copy this key now — it will NOT be shown again" to "you can come back later, every key has a 👁 reveal button". The reveal infrastructure (Fernet-encrypted at rest, admin-gated `/api/keys/{id}/reveal` endpoint, per-row toggle) has been in place since prior versions; the create-modal copy was scaring users away from a working feature.
+- Reveal row icon: swapped from `Key` to `Eye` so it visually reads as "view".
+- Added a tooltip+disabled-icon hint for legacy keys created before Fernet encryption — those genuinely can't be recovered, and now the UI explains why instead of just hiding the button.
+
 ### v3.0.20 — ApiKey tombstone-aware delete (resurrection bug)
 
 Same shape as v2.8.2's Provider tombstone fix. Previously, hard-DELETE'ing an API key on one node was reversed by the next cluster sync push from a peer that still had the row — `apply_sync` saw `existing is None` and re-INSERTed it. Test/regression keys couldn't be cleaned up; admin-deleted keys reappeared within ~60s.
