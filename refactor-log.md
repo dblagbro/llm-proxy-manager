@@ -552,3 +552,66 @@ two files to update. Pattern: `2.0.x` — each session's deploy batch gets the n
 - No new files; targeted edits across 8 files
 - 113/113 unit tests pass; 47/47 integration tests pass (3 pre-existing timing flakes on retry)
 - All 3 nodes healthy at v2.0.3; pushed to GitHub (v2 branch) + Docker Hub (2.0.3, v2-latest)
+
+---
+
+## v3.0.32 — Extract `resolve_chat_model_for_provider()` (2026-05-01)
+
+### What was improved
+Three call sites had nearly-identical 15-line blocks for "if `provider.default_model`
+is an embedding slug, find a chat-capable model from scanned `ModelCapability` rows;
+prefer `command-*` or `gpt-*`; otherwise skip with a reason." This bug class was
+re-fixed three times in three releases (v3.0.27 chat-completions entry, v3.0.30
+keepalive probe, v3.0.31 UI Test button) before extraction reached the 3-copies bar
+from `design.md`.
+
+Extracted to `app.routing.router.resolve_chat_model_for_provider(db, provider) →
+(chat_model, skip_reason)`. The next call site that needs this logic now gets it
+for free instead of being a fourth chance to copy a typo.
+
+### Files changed
+- `app/routing/router.py` — added `resolve_chat_model_for_provider()` (50 lines)
+- `app/monitoring/keepalive.py` — replaced 27-line inline block with 11-line
+  helper call
+- `app/providers/scanner.py` — replaced 26-line inline block with 18-line helper
+  call (includes the `model = build_litellm_model(provider, override=)` re-derive
+  that's specific to this caller)
+- `app/__version__.py` → `3.0.32`
+- `architecture.md` — added pointer in `routing/router.py` description + new
+  Extension Point entry
+- `design.md` — created (was missing per refactor brief)
+
+### Why it helps
+- **Bug-class containment**: the next "I forgot to handle Cohere here" never
+  happens again. The helper is the canonical answer; reviewers can grep for
+  `resolve_chat_model_for_provider` instead of grepping for `default_model` and
+  hoping to catch the misuse.
+- **Smaller diff for future provider-quirk additions**: if Voyage or Mistral ever
+  ship an embedding-only default, the fix is one line in the helper, not three.
+- **Behavior preserved**: cohere keepalive probes + Test button + chat completions
+  all green post-deploy. Verified by curl + UI test + activity-log inspection.
+
+### Skipped this cycle (with reason)
+- **Split `app/api/providers.py` (947 lines) into CRUD + scan/oauth + tie-normalize**.
+  Right next step on size grounds, but: every line is reachable from a routed
+  endpoint, the file is busy-but-coherent, and an incremental split would require
+  re-routing imports across the codebase. Risk/value worse than the helper
+  extraction this cycle.
+
+### Next recommended refactor targets
+
+1. **`app/api/providers.py` split (~947 lines)** — `providers_crud.py`
+   (CRUD endpoints + key reveal) + `providers_scan.py` (scan + test) +
+   `providers_oauth.py` (claude/codex OAuth flows) + `providers_metrics.py`
+   (`normalize_priority_ties`). Estimated 2–4h, medium risk. Block on landing
+   #138's activity-log expansion first since that touches the same area.
+2. **Parallel cascade/CoT/hedging dispatch loops in `messages.py` (754) and
+   `completions.py` (523)** — they walk the same state machine with mirrored
+   code per wire format. Worth a `_dispatch.py` module that owns the loop, with
+   a wire-format adapter passed in. High risk (every chat call), defer until
+   we have higher-confidence integration tests.
+3. **`app/runs/worker.py` (749) → split state machine from queue I/O.** The
+   worker mixes "what step runs next" with "how do we read/ack from the queue".
+   Both are stable, so risk is medium-low. Worth doing alongside the next Run
+   feature instead of as standalone work.
+
