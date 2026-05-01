@@ -280,6 +280,41 @@ async def test_provider(provider: Provider) -> dict:
             "hint": "missing_api_key",
         }
 
+    # v3.0.31: same embedding-on-chat guard as the keepalive probe (v3.0.30).
+    # `build_litellm_model(provider)` reads `provider.default_model`, and on
+    # Cohere that's `embed-english-v3.0` — Cohere's chat API rejects it with
+    # 400. The "Test" button on the providers admin tab kept producing this
+    # error even on healthy providers because the test is a chat-shaped call.
+    # Pick a chat-capable model from caps when available.
+    from app.routing.router import _is_embedding_model
+    if _is_embedding_model(provider.default_model or ""):
+        from sqlalchemy import select
+        from app.models.db import ModelCapability
+        from app.models.database import AsyncSessionLocal
+        async with AsyncSessionLocal() as _cap_db:
+            caps = (await _cap_db.execute(
+                select(ModelCapability.model_id).where(
+                    ModelCapability.provider_id == provider.id
+                )
+            )).scalars().all()
+        chat_candidates = [c for c in caps if not _is_embedding_model(c)]
+        if chat_candidates:
+            preferred = [c for c in chat_candidates
+                         if c.startswith("command-") or c.startswith("gpt-")]
+            chosen = (preferred or sorted(chat_candidates))[0]
+            # Re-derive litellm model id with the override
+            model = build_litellm_model(provider, model_override=chosen)
+        else:
+            return {
+                "success": True,
+                "response": (f"Skipped — provider's default model {provider.default_model!r} "
+                             "is embeddings-only and no chat models are scanned. "
+                             "Use POST /v1/embeddings to test the embeddings surface, "
+                             "or scan models first."),
+                "model": provider.default_model,
+                "embedding_only": True,
+            }
+
     try:
         result = await litellm.acompletion(
             model=model,
