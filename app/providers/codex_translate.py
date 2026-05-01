@@ -112,6 +112,17 @@ def chat_completions_to_responses(body: dict) -> dict:
         out["temperature"] = body["temperature"]
     if body.get("top_p") is not None:
         out["top_p"] = body["top_p"]
+    # v3.0.23 (Q4): map OpenAI Chat Completions ``reasoning_effort`` (the
+    # field DevinGPT's reasoning slider sends) to the Responses API's
+    # ``reasoning.effort`` so the slider isn't silently dropped on the
+    # codex-oauth path. Caller may pass it at top level OR inside
+    # extra_body — try both. Codex Responses accepts low/medium/high/xhigh
+    # depending on the slug; we pass through and let upstream reject if
+    # invalid.
+    eb = body.get("extra_body") if isinstance(body.get("extra_body"), dict) else {}
+    re = body.get("reasoning_effort") or eb.get("reasoning_effort")
+    if isinstance(re, str) and re.strip():
+        out["reasoning"] = {"effort": re.strip().lower()}
     return out
 
 
