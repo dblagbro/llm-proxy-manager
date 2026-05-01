@@ -9,6 +9,16 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.0.x — Run runtime, cluster ops, observability
 
+### v3.0.23 — embeddings + cohere + model kind tag + LMRH doc + codex reasoning_effort
+
+Batch from the DevinGPT integration Q&A. Four asks shipped together:
+
+- **`POST /v1/embeddings`** — OpenAI-compatible embeddings dispatch. Routes via the same `select_provider` machinery as chat (so the v3.0.22 model-supports filter automatically picks the right provider per requested model). Subscription OAuth providers (`claude-oauth`, `codex-oauth`) are excluded — neither exposes embeddings. Litellm-mediated, so any vendor litellm supports works (OpenAI, Cohere, Google text-embedding, Azure, Voyage, etc.).
+- **`cohere` provider type** — primarily an embeddings home (also rerank/chat). Default model `embed-english-v3.0`. Scan endpoint hits Cohere's `/v1/models`. Add via the standard "Add Provider" form; paste your Cohere API key.
+- **`/v1/models` now includes a `kind` field** per entry: one of `chat`/`embedding`/`image`/`audio`. Inferred from model name patterns. Lets clients filter their dropdowns to the right surface (e.g. `text-embedding-3-small` → embedding; `whisper-1` → audio). 176 models tagged, breakdown: 157 chat / 8 audio / 8 image / 3 embedding (will expand as cohere/voyage/etc. providers are added).
+- **`/lmrh.md` (and `/lmrh`)** — public, no-auth route serving the LMRH RFC draft (`docs/draft-blagbrough-lmrh-00.md`). For cross-app integration docs to link without secret-handling. The `docs/` dir now ships in the Docker image.
+- **codex-oauth `reasoning_effort` mapping** — DevinGPT's reasoning slider was being silently dropped on the codex-oauth path. Now `reasoning_effort: low|medium|high|xhigh` (top-level or in `extra_body`) maps to `reasoning.effort` in the Responses API request.
+
 ### v3.0.22 — model-supports-by-provider routing filter
 
 DevinGPT dev team reported every `/v1/chat/completions` request being eaten by `codex-oauth` regardless of the requested model — the upstream then 400'd because Codex on ChatGPT Plus only serves `gpt-5.x` slugs. Two-part fix:
