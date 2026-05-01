@@ -615,3 +615,64 @@ for free instead of being a fourth chance to copy a typo.
    Both are stable, so risk is medium-low. Worth doing alongside the next Run
    feature instead of as standalone work.
 
+
+---
+
+## v3.0.33–v3.0.39 — module additions noted (no refactor; new code) (2026-05-01)
+
+Logged here for completeness — these are *additions*, not extractions, but
+they touch module boundaries documented in architecture.md.
+
+### New modules
+
+- **`app/utils/timefmt.py`** (v3.0.33) — `utc_iso(dt)` helper. Tiny shared
+  helper that solves a 10-callsite duplication of `dt.isoformat() + "Z"`
+  for user-facing timestamps. Appears in 10 user-facing serializers
+  (api/monitoring, api/aliases, api/users, api/cluster, api/providers,
+  api/apikeys, api/oauth_capture/serializers, monitoring/metrics,
+  monitoring/activity, monitoring/audit_export). Cluster-sync paths
+  intentionally skip the helper because peer code parses both forms.
+
+- **`app/api/_oauth_chat_translate.py`** (v3.0.38) — OpenAI ↔ Anthropic
+  wire-format translator. Three responsibilities, all in one file because
+  they share the same ontology (translation tables + helpers):
+  request shape inversion (`openai_request_to_anthropic`), non-streaming
+  response shape inversion (`anthropic_response_to_openai`), and
+  streaming SSE delta-chunk re-emission (`stream_anthropic_to_openai_sse`).
+  Lives in `api/` because it's HTTP-shape concerns; matches
+  `app/providers/codex_translate.py` (v3.0.x) which serves the analogous
+  role for codex-oauth.
+
+### `event_meta` schema growth
+
+`monitoring/helpers.py:record_outcome()` now writes seven new fields
+(`served_model`, `requested_model`, `had_lmrh_hint`, `lmrh_warnings`,
+`request_preview`, `response_preview`, plus full `request_body` /
+`response_body` capture extended from claude-oauth-only to all chat
+paths). The `_extract_preview()` helper extracts text snippets from the
+LIVE request/response objects (pre-serialization, pre-truncation) so
+clients don't have to JSON.parse a possibly-truncated body. This is
+adjacent to a future refactor target — `helpers.py` is now ~310 lines and
+mixing "record outcome", "preview extract", and "body attach". Watch it;
+extract `preview.py` if it crosses 400 lines.
+
+### Wire-format translator pattern locked
+
+`_oauth_chat_translate.py` (v3.0.38) and `providers/codex_translate.py`
+(v3.0.x) now follow the same shape for translating OpenAI ChatCompletion
+to a different upstream wire format. If a third provider type ever needs
+this (e.g. Bedrock, Vertex AI generative endpoint), copy the structure
+rather than inventing a fourth pattern. Single helper module per
+translator; no shared base class — the inversions diverge enough that
+abstraction would obscure rather than help.
+
+### Refactor verdict (still valid 2026-05-01 evening)
+
+Top recommended targets (unchanged from v3.0.32 entry):
+1. Split `app/api/providers.py` (947 lines) when the next provider-CRUD
+   feature lands. Don't do it standalone.
+2. Dedup parallel cascade/CoT/hedging dispatch loops between `messages.py`
+   and `completions.py`. High risk; defer.
+3. Split `app/runs/worker.py` state machine from queue I/O alongside the
+   next Run feature.
+
