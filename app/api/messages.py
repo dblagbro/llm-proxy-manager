@@ -197,6 +197,13 @@ async def messages(
             )
         body = {**body, "model": resolved_model}
 
+    # v3.0.36: cross-family fallback — rewrite body['model'] to the resolved
+    # served model for the claude-oauth dispatcher (which reads body['model']
+    # not route.litellm_model). Original requested model surfaced in
+    # LLM-Capability response header.
+    if route.cross_family_fallback and route.served_model_native:
+        body = {**body, "model": route.served_model_native}
+
     # OTEL GenAI span: routing-decision metadata (no-op if OTLP endpoint unset)
     with llm_span(
         operation="chat",
