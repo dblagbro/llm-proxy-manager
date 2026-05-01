@@ -31,31 +31,62 @@ function summarize(meta: Record<string, unknown> | undefined): string {
   return parts.join(' · ')
 }
 
+/** Recursively extract any text content from an Anthropic content block —
+ * handles `text` (string), `tool_result` (string or nested content array),
+ * `tool_use` (input.command if present), and unknown shapes (returns '').
+ * v3.0.33: bot-daemon flows often have user messages whose latest content
+ * is a tool_result block, not raw text. The previous extractor only looked
+ * at `type:'text'` and gave up, so the preview fell through to raw JSON. */
+function extractText(block: unknown): string {
+  if (typeof block === 'string') return block
+  if (!block || typeof block !== 'object') return ''
+  const b = block as { type?: string; text?: string; content?: unknown; input?: { command?: string } }
+  if (b.type === 'text' && typeof b.text === 'string') return b.text
+  if (b.type === 'tool_result') {
+    if (typeof b.content === 'string') return `[tool_result] ${b.content}`
+    if (Array.isArray(b.content)) {
+      const parts = b.content.map(extractText).filter(Boolean)
+      if (parts.length) return `[tool_result] ${parts.join(' ')}`
+    }
+  }
+  if (b.type === 'tool_use' && b.input?.command) return `[tool_use: ${b.input.command}]`
+  return ''
+}
+
 /** Pull a short text preview from a request_body JSON string.
  * Picks the last user message's content and clips it. Returns empty
- * string if the body isn't parseable JSON or has no user message. */
+ * string if the body isn't parseable JSON. v3.0.33: handles nested
+ * tool_result content + falls back to system prompt's first text block
+ * if no usable user message text is found. */
 function previewRequest(body: string | undefined, max = 240): string {
   if (!body) return ''
   try {
     const obj = JSON.parse(body)
     const msgs = obj?.messages
     if (Array.isArray(msgs) && msgs.length) {
-      // Walk backwards to find the last user message
+      // Walk backwards to find the last user message with extractable text
       for (let i = msgs.length - 1; i >= 0; i--) {
         const m = msgs[i]
         if (m?.role !== 'user') continue
         const c = m.content
-        const txt = typeof c === 'string'
-          ? c
-          : Array.isArray(c)
-            ? c.map((b: { type?: string; text?: string }) => b?.type === 'text' ? (b.text ?? '') : '').filter(Boolean).join(' ')
-            : ''
+        const parts: string[] = []
+        if (typeof c === 'string') parts.push(c)
+        else if (Array.isArray(c)) parts.push(...c.map(extractText).filter(Boolean))
+        const txt = parts.join(' ').trim()
         if (txt) return txt.length > max ? txt.slice(0, max).trimEnd() + '…' : txt
       }
     }
     if (typeof obj?.prompt === 'string') {
       const t = obj.prompt
       return t.length > max ? t.slice(0, max).trimEnd() + '…' : t
+    }
+    // Last-ditch: a system prompt's first text block. Better than dumping raw JSON.
+    const sys = obj?.system
+    if (Array.isArray(sys) && sys.length) {
+      const txt = sys.map(extractText).filter(Boolean).join(' ').trim()
+      if (txt) return `[system] ${txt.length > max - 9 ? txt.slice(0, max - 9).trimEnd() + '…' : txt}`
+    } else if (typeof sys === 'string' && sys) {
+      return `[system] ${sys.length > max - 9 ? sys.slice(0, max - 9).trimEnd() + '…' : sys}`
     }
   } catch { /* not JSON */ }
   return body.length > max ? body.slice(0, max).trimEnd() + '…' : body
@@ -91,9 +122,23 @@ export function ActivityEventRow({ event, compact }: Props) {
   const errorMsg = meta.error as string | undefined
   const expandable = Boolean(reqBody || respBody || errorMsg)
   const [open, setOpen] = useState(false)
+  // v3.0.33: Pretty/Raw toggle on request + response. Default to pretty
+  // (existing behavior); some operators prefer raw for copy-paste into curl.
+  const [prettyReq, setPrettyReq] = useState(true)
+  const [prettyResp, setPrettyResp] = useState(true)
   const summary = summarize(meta)
-  const reqPreview = previewRequest(reqBody, compact ? 120 : 240)
-  const respPreview = previewResponse(respBody, compact ? 120 : 240)
+  // v3.0.34: prefer server-side previews when present — they're extracted
+  // from the live request/response objects before truncation, so they don't
+  // suffer from the "JSON.parse fails on …[TRUNCATED] body" failure mode.
+  const serverReqPrev = meta.request_preview as string | undefined
+  const serverRespPrev = meta.response_preview as string | undefined
+  const maxLen = compact ? 120 : 240
+  const reqPreview = serverReqPrev
+    ? (serverReqPrev.length > maxLen ? serverReqPrev.slice(0, maxLen).trimEnd() + '…' : serverReqPrev)
+    : previewRequest(reqBody, maxLen)
+  const respPreview = serverRespPrev
+    ? (serverRespPrev.length > maxLen ? serverRespPrev.slice(0, maxLen).trimEnd() + '…' : serverRespPrev)
+    : previewResponse(respBody, maxLen)
 
   return (
     <div className={clsx('px-4', compact ? 'py-1.5' : 'py-2')}>
@@ -153,14 +198,34 @@ export function ActivityEventRow({ event, compact }: Props) {
           )}
           {reqBody && (
             <div>
-              <p className="text-[11px] font-medium text-gray-500 dark:text-gray-400 mb-1">Request</p>
-              <pre className="font-mono whitespace-pre-wrap break-all bg-gray-50 dark:bg-gray-900 text-gray-700 dark:text-gray-200 rounded p-2 max-h-96 overflow-auto">{tryPretty(reqBody)}</pre>
+              <div className="flex items-center justify-between mb-1">
+                <p className="text-[11px] font-medium text-gray-500 dark:text-gray-400">Request</p>
+                <button
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); setPrettyReq(!prettyReq) }}
+                  className="text-[10px] uppercase tracking-wide font-medium text-gray-500 hover:text-indigo-500 dark:text-gray-400 dark:hover:text-indigo-400 px-2 py-0.5 rounded border border-gray-200 dark:border-gray-700 hover:border-indigo-300 dark:hover:border-indigo-600"
+                  title={prettyReq ? "Switch to raw text" : "Switch to pretty-printed JSON"}
+                >
+                  {prettyReq ? 'pretty' : 'raw'}
+                </button>
+              </div>
+              <pre className="font-mono whitespace-pre-wrap break-all bg-gray-50 dark:bg-gray-900 text-gray-700 dark:text-gray-200 rounded p-2 max-h-96 overflow-auto">{prettyReq ? tryPretty(reqBody) : reqBody}</pre>
             </div>
           )}
           {respBody && (
             <div>
-              <p className="text-[11px] font-medium text-gray-500 dark:text-gray-400 mb-1">Response</p>
-              <pre className="font-mono whitespace-pre-wrap break-all bg-gray-50 dark:bg-gray-900 text-gray-700 dark:text-gray-200 rounded p-2 max-h-96 overflow-auto">{tryPretty(respBody)}</pre>
+              <div className="flex items-center justify-between mb-1">
+                <p className="text-[11px] font-medium text-gray-500 dark:text-gray-400">Response</p>
+                <button
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); setPrettyResp(!prettyResp) }}
+                  className="text-[10px] uppercase tracking-wide font-medium text-gray-500 hover:text-indigo-500 dark:text-gray-400 dark:hover:text-indigo-400 px-2 py-0.5 rounded border border-gray-200 dark:border-gray-700 hover:border-indigo-300 dark:hover:border-indigo-600"
+                  title={prettyResp ? "Switch to raw text" : "Switch to pretty-printed JSON"}
+                >
+                  {prettyResp ? 'pretty' : 'raw'}
+                </button>
+              </div>
+              <pre className="font-mono whitespace-pre-wrap break-all bg-gray-50 dark:bg-gray-900 text-gray-700 dark:text-gray-200 rounded p-2 max-h-96 overflow-auto">{prettyResp ? tryPretty(respBody) : respBody}</pre>
             </div>
           )}
         </div>

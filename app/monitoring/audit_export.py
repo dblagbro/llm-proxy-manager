@@ -30,6 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.db import ActivityLog
 from app.config import settings
+from app.utils.timefmt import utc_iso
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +62,7 @@ def _serialize_row(r: ActivityLog) -> dict:
         "provider_id": r.provider_id,
         "api_key_id": r.api_key_id,
         "event_meta": r.event_meta or {},
-        "created_at": r.created_at.isoformat() if r.created_at else None,
+        "created_at": utc_iso(r.created_at),
     }
 
 

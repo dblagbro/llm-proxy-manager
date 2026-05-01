@@ -13,6 +13,7 @@ from app.monitoring.activity import get_recent, subscribe, unsubscribe
 from app.monitoring.metrics import get_provider_history, get_all_provider_summary
 from app.monitoring.status import get_status_summary
 from app.routing.circuit_breaker import get_all_states
+from app.utils.timefmt import utc_iso
 
 router = APIRouter(prefix="/api/monitoring", tags=["monitoring"])
 
@@ -76,7 +77,7 @@ async def activity_log(
             "severity": r.severity,
             "message": r.message,
             "provider_id": r.provider_id,
-            "timestamp": r.created_at.isoformat() if r.created_at else None,
+            "timestamp": utc_iso(r.created_at),
             "metadata": r.event_meta,
         }
         for r in rows

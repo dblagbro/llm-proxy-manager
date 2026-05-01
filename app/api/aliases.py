@@ -9,6 +9,7 @@ from sqlalchemy import select
 from app.models.database import get_db
 from app.models.db import ModelAlias
 from app.auth.admin import require_admin, AdminUser
+from app.utils.timefmt import utc_iso
 
 router = APIRouter(prefix="/api/aliases", tags=["aliases"])
 
@@ -82,5 +83,5 @@ def _ser(a: ModelAlias) -> dict:
         "provider_id": a.provider_id,
         "model_id": a.model_id,
         "description": a.description,
-        "created_at": a.created_at.isoformat() if a.created_at else None,
+        "created_at": utc_iso(a.created_at),
     }

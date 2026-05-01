@@ -13,6 +13,7 @@ from app.routing.circuit_breaker import get_all_states
 from app.config import settings
 from app import config_runtime
 from app.__version__ import __version__
+from app.utils.timefmt import utc_iso
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["cluster"])
@@ -128,7 +129,7 @@ async def cluster_oauth_pull(
         "oauth_refresh_token": p.oauth_refresh_token,
         "oauth_expires_at": p.oauth_expires_at,
         "last_user_edit_at": p.last_user_edit_at,
-        "updated_at": p.updated_at.isoformat() if p.updated_at else None,
+        "updated_at": utc_iso(p.updated_at),
         "extra_config": p.extra_config or {},
     }
 

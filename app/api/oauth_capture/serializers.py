@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Optional
 
 from app.models.db import OAuthCaptureLog, OAuthCaptureProfile
+from app.utils.timefmt import utc_iso
 
 
 # ── Header filtering ────────────────────────────────────────────────────────
@@ -46,7 +47,7 @@ def _serialize_profile(p: OAuthCaptureProfile, include_secret: bool = False) -> 
         "upstream_urls": list(p.upstream_urls or []),
         "enabled": bool(p.enabled),
         "notes": p.notes,
-        "created_at": p.created_at.isoformat() if p.created_at else None,
+        "created_at": utc_iso(p.created_at),
         "has_secret": bool(p.secret),
     }
     if include_secret:
@@ -66,7 +67,7 @@ def _serialize_log_summary(r: OAuthCaptureLog) -> dict:
         "error": r.error,
         "req_body_preview": (r.req_body or "")[:200],
         "resp_body_preview": (r.resp_body or "")[:200],
-        "created_at": r.created_at.isoformat() if r.created_at else None,
+        "created_at": utc_iso(r.created_at),
     }
 
 
