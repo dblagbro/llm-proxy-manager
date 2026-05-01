@@ -48,7 +48,9 @@ app/
 │
 ├── routing/
 │   ├── router.py                  Provider selection — returns RouteResult;
-│   │                                build_litellm_model, build_litellm_kwargs (public helpers)
+│   │                                build_litellm_model, build_litellm_kwargs (public helpers);
+│   │                                resolve_chat_model_for_provider (v3.0.32, shared
+│   │                                embedding→chat fallback used by keepalive + scanner)
 │   ├── lmrh/                      LMRH protocol package (split from lmrh.py on 2026-04-23):
 │   │   ├── __init__.py            re-exports everything below
 │   │   ├── types.py               HintDimension / LMRHHint / CapabilityProfile + weight tables
@@ -128,6 +130,11 @@ app/
 - **New routing criterion**: extend `RouteHint` in `lmrh.py`, filter in `select_provider()` in `router.py`
 - **New wire format**: add endpoint file in `api/`, add image utils to `image_utils.py`, add SSE generators to `cot/sse.py`
 - **New metric**: update `record_outcome()` in `monitoring/helpers.py` — propagates to all 6 call-sites automatically
+- **New chat-style probe path** (test button, smoke job, etc.): call `resolve_chat_model_for_provider()` instead of reading `provider.default_model` directly — keeps embedding-defaulted providers (Cohere) from misrouting (see v3.0.27/30/31 bug history → v3.0.32 extraction)
+
+## Design contract
+
+`design.md` is the contract for module boundaries, layering rules, when-to-refactor heuristics, and observability/cluster invariants. Read it before any non-trivial refactor or new module.
 
 ## Claude Pro Max OAuth (`claude-oauth` provider type, v2.7.1+)
 

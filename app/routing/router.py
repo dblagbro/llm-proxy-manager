@@ -53,6 +53,55 @@ def _is_embedding_model(model: str) -> bool:
             or m.startswith("embedding-"))
 
 
+async def resolve_chat_model_for_provider(
+    db: AsyncSession, provider: Provider
+) -> tuple[Optional[str], Optional[str]]:
+    """v3.0.32: shared helper for "what chat-capable model should we dispatch
+    to this provider with?".
+
+    Returns ``(chat_model, skip_reason)``:
+      - ``(model, None)`` when a chat-capable model is found. Either the
+        provider's ``default_model`` is already a chat slug, or one was
+        picked from scanned ``ModelCapability`` rows (preferring
+        ``command-*`` for cohere or ``gpt-*`` for OpenAI-shape).
+      - ``(None, reason)`` when the provider has only embedding-only
+        scanned models. Caller should skip the chat-style call.
+
+    Replaces three duplicate copies that landed across v3.0.27/30/31:
+      - ``scanner.test_provider`` (UI Test button)
+      - ``keepalive._probe_one`` (synthetic 5-min probe)
+      - the entry-time guard in ``completions.py`` + ``messages.py``
+        (this one stays — it rejects embedding-named caller requests
+        with a 400 before they reach select_provider; doesn't need the
+        cap-fallback logic).
+
+    The bug class this prevents: ``provider.default_model`` may be an
+    embedding-only slug (e.g. Cohere's ``embed-english-v3.0`` is the
+    recommended general-purpose default). Dispatching that to a chat
+    surface upstream returns 400 and trips the breaker. v3.0.27, 30, 31
+    each fixed one of the call sites in isolation; this helper makes
+    the next call site impossible to get wrong.
+    """
+    default = provider.default_model or ""
+    if not _is_embedding_model(default):
+        return (default or None, None)
+
+    from app.models.db import ModelCapability
+    caps = (await db.execute(
+        select(ModelCapability.model_id).where(
+            ModelCapability.provider_id == provider.id
+        )
+    )).scalars().all()
+    chat_candidates = [c for c in caps if not _is_embedding_model(c)]
+    if not chat_candidates:
+        return (None, f"provider {provider.id!r} has no chat-capable scanned models")
+    # Prefer `command-*` (Cohere chat) or `gpt-*` over the alphabetical
+    # default — those are the most reliable chat surfaces for a probe.
+    preferred = [c for c in chat_candidates
+                 if c.startswith("command-") or c.startswith("gpt-")]
+    return ((preferred or sorted(chat_candidates))[0], None)
+
+
 def _model_family_provider_types(model: str) -> Optional[set[str]]:
     """v3.0.26: map a requested model name to the set of provider types that
     can physically serve it. Returns None when no family is detected (caller
