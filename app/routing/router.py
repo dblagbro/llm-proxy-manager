@@ -41,6 +41,45 @@ class RouteResult:
     native_thinking_params: dict = field(default_factory=dict)
 
 
+def _model_family_provider_types(model: str) -> Optional[set[str]]:
+    """v3.0.26: map a requested model name to the set of provider types that
+    can physically serve it. Returns None when no family is detected (caller
+    falls through to the existing capability/scoring path).
+
+    The mapping is intentionally narrow — only well-known prefixes that
+    correspond to known SDK shapes. Unknown prefixes (custom finetunes, new
+    families) return None and skip the family filter entirely so we don't
+    over-restrict legitimate routes.
+
+    DevinGPT report 2026-05-01: claude-sonnet-4-6 was being routed to
+    codex-oauth via a v3.0.22 fall-through. This filter is the hard backstop.
+    """
+    if not model:
+        return None
+    m = model.lower()
+    # Anthropic family — claude-* + their variants. Vertex's claude-on-bedrock
+    # would also live here but we don't currently support that wire format.
+    if m.startswith("claude-") or m.startswith("claude/"):
+        return {"anthropic", "anthropic-direct", "anthropic-oauth", "claude-oauth"}
+    # OpenAI family — gpt-*, o1/o3/o4 reasoning series, text-embedding-*,
+    # whisper-*, dall-e-*, codex-*. codex-oauth speaks the same wire format
+    # but only for its 6 Plus-tier slugs (handled by the v3.0.22 cap filter
+    # which runs after this).
+    if (m.startswith("gpt-") or m.startswith("o1-") or m.startswith("o3-")
+            or m.startswith("o4-") or m.startswith("text-embedding-")
+            or m.startswith("whisper-") or m.startswith("dall-e-")
+            or m.startswith("codex-")):
+        return {"openai", "codex-oauth"}
+    # Google / Gemini family.
+    if m.startswith("gemini-") or m.startswith("text-bison") or m.startswith("chat-bison"):
+        return {"google", "vertex", "vertex_ai"}
+    # Cohere family — their embed-* + command-* slugs.
+    if m.startswith("embed-") or m.startswith("command-"):
+        return {"cohere"}
+    # Unknown family — don't constrain.
+    return None
+
+
 def _native_thinking_params(provider_type: str, model_id: str) -> dict:
     """Return provider-specific reasoning kwargs to inject when native_reasoning=True."""
     m = model_id.lower()
@@ -247,17 +286,34 @@ async def select_provider(
             f"No providers available after excluding types {excluded_provider_types}"
         )
 
-    # v3.0.22: model-supports-by-provider filter. When a caller pins a specific
-    # model (e.g. ``gpt-4o-mini``), providers whose scanned model_capabilities
-    # don't include that model would 400 at dispatch time — clearest case is
-    # codex-oauth, which only serves its 6 Plus-tier slugs but has priority 3,
-    # so a request for gpt-4o-mini was being routed to it and rejected by the
-    # ChatGPT backend. Filter it out at selection time instead.
+    # v3.0.26: hard model-family vs provider-type compatibility filter.
+    # The v3.0.22 capability filter has a fall-through that lets unscanned
+    # providers "still get a chance", but in practice this lets codex-oauth
+    # (whose caps DO scan but only cover gpt-5.x slugs) eat claude-* requests
+    # via the v3.0.22 fall-through path: when no scanned non-claude-oauth
+    # provider lists claude-sonnet-4-6 in its caps, the filter empties the
+    # list, falls through to the unfiltered set, and codex-oauth wins on
+    # priority. Then either 400s upstream or silently substitutes gpt-5.5.
     #
-    # Conservative behavior: providers with NO scanned capabilities still get
-    # a chance (we don't know what they support; let them try and fall through
-    # via the existing CB on upstream failure). Only providers that HAVE been
-    # scanned and don't list the requested model are filtered.
+    # The family→type mapping below is hard: an empty list raises 503 rather
+    # than falling through. Family detection is by model-name prefix.
+    if model_override:
+        family_types = _model_family_provider_types(model_override)
+        if family_types is not None:
+            family_filtered = [p for p in available if p.provider_type in family_types]
+            if not family_filtered:
+                raise RuntimeError(
+                    f"No compatible provider available for model {model_override!r} "
+                    f"(family expects provider_type in {sorted(family_types)})"
+                )
+            available = family_filtered
+
+    # v3.0.22: model-supports-by-provider filter. Refines the family filter
+    # above with scanned capability data. Conservative: providers with NO
+    # scanned capabilities still get a chance (we don't know what they
+    # support; let them try and fall through via the existing CB on upstream
+    # failure). The fall-through here is now safe because the family filter
+    # already excluded provider types that physically can't serve the model.
     if model_override:
         cap_q = await db.execute(
             select(ModelCapability.provider_id, ModelCapability.model_id)
@@ -274,9 +330,8 @@ async def select_provider(
         filtered = [p for p in available if _supports(p)]
         if filtered:
             available = filtered
-        # If filter would empty the list (no scanned provider lists this
-        # model), fall through with the original list so the caller still
-        # gets SOME route attempt rather than a hard 503.
+        # If filter would empty the list, fall through with the family-
+        # filtered list. Family filter already guarantees type-compatibility.
 
     # Load capability profiles
     profiles = [await _load_profile(db, p) for p in available]
