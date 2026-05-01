@@ -32,6 +32,7 @@ def build_capability_header(
     cot_engaged: bool = False,
     tool_emulation: bool = False,
     chosen_because: str = "score",
+    model_override: str = "",
 ) -> str:
     """Build the LLM-Capability response header.
 
@@ -41,11 +42,19 @@ def build_capability_header(
         "fallback"        — primary failed; this was an ordered-fallback pick
         "cheapest"        — cascade cheap-first step picked this
         "p2c"             — PeakEWMA + power-of-two-choices tie-break
+
+    v3.0.37: model_override (DevinGPT report 2026-05-01). The capability
+    profile carries the provider's canonical model id (e.g. ``gpt-4o``)
+    while the caller may have asked for a specific variant (e.g.
+    ``gpt-4o-mini``). The header used to report the canonical, leaving
+    DevinGPT's substitution detector with a header/body mismatch.
+    Passing the caller's model resolves to the correct value.
     """
+    model_str = model_override or profile.model_id
     parts = [
         "v=1",
         f"provider={profile.provider_id}",
-        f"model={profile.model_id}",
+        f"model={model_str}",
         f"task={','.join(profile.tasks)}",
         f"safety={profile.safety}",
         f"latency={profile.latency}",

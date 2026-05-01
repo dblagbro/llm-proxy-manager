@@ -454,7 +454,10 @@ async def select_provider(
         provider = provider_map[best_profile.provider_id]
         litellm_model = build_litellm_model(provider, model_override)
         litellm_kwargs = build_litellm_kwargs(provider)
-        cap_header = build_capability_header(best_profile, unmet, False, False)
+        cap_header = build_capability_header(
+            best_profile, unmet, False, False,
+            model_override=model_override or "",
+        )
         return RouteResult(
             provider=provider,
             profile=best_profile,
@@ -547,7 +550,10 @@ async def select_provider(
     tool_emulation = has_tools and not best_profile.native_tools and not cot_engaged
     vision_stripped = has_images and not best_profile.native_vision
 
-    cap_header = build_capability_header(best_profile, unmet, cot_engaged, tool_emulation)
+    cap_header = build_capability_header(
+        best_profile, unmet, cot_engaged, tool_emulation,
+        model_override=(effective_override or model_override or ""),
+    )
     if cross_family_fallback and cross_family_requested:
         # Append the cross-family-fallback markers + requested vs served.
         # The build_capability_header default emits chosen-because=score —
