@@ -205,19 +205,26 @@ async def record_outcome(
         is_probe = key_record_id == "probe-keepalive"
         msg_prefix = "[probe] " if is_probe else ""
         msg = f"{msg_prefix}{provider_name} · {model}" if provider_name else f"{msg_prefix}{model}"
+        # v3.0.41: normalize served_model. Internally `model` carries the
+        # litellm-prefixed slug (e.g. ``openai/gpt-4o-mini``) but
+        # ``requested_model`` is the caller's bare value (``gpt-4o-mini``).
+        # Comparing the two for substitution detection naively would
+        # always-mismatch on the prefix. Strip it for the activity-log
+        # field so client-side detectors compare apples-to-apples. Keep
+        # the legacy ``model`` field unchanged for back-compat with older
+        # readers (cluster sync, dashboards).
+        served_normalized = model.split("/", 1)[1] if "/" in model else model
         meta = {
-            "model": model,                 # served — what we dispatched
-            "served_model": model,          # v3.0.35: explicit alias for clarity
+            "model": model,                       # legacy — litellm-prefixed
+            "served_model": served_normalized,    # v3.0.41: bare slug for fair compare
             "provider_name": provider_name,
             "in_tok": in_tok,
             "out_tok": out_tok,
             "cost_usd": round(cost, 6),
             "latency_ms": round(latency_ms, 1),
         }
-        if requested_model and requested_model != model:
+        if requested_model:
             meta["requested_model"] = requested_model  # caller-asked-for vs served
-        elif requested_model:
-            meta["requested_model"] = requested_model
         if had_lmrh_hint:
             meta["had_lmrh_hint"] = True
         if lmrh_warnings:
@@ -252,9 +259,11 @@ async def record_outcome(
         msg_prefix = "[probe] " if is_probe else ""
         msg = (f"{msg_prefix}{provider_name} · {model} — error"
                if provider_name else f"{msg_prefix}{model} — error")
+        # v3.0.41: same normalization on the error path.
+        served_normalized = model.split("/", 1)[1] if "/" in model else model
         meta = {
             "model": model,
-            "served_model": model,
+            "served_model": served_normalized,
             "provider_name": provider_name,
             "error": error_str[:2000] if error_str else None,
         }
