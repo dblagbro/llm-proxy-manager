@@ -325,14 +325,21 @@ export function APIKeysPage() {
                       ) : (
                         <>
                           <p className="text-xs text-gray-500 font-mono">{k.key_prefix}…</p>
-                          {(k as any).can_reveal && (
+                          {(k as any).can_reveal ? (
                             <button
                               onClick={() => toggleReveal(k.id)}
                               className="text-gray-400 hover:text-indigo-500 transition-colors shrink-0"
-                              title="Reveal full key"
+                              title="Reveal full key (admin-only; obscured by default)"
+                            >
+                              <Eye className="h-3.5 w-3.5" />
+                            </button>
+                          ) : (
+                            <span
+                              className="text-gray-300 dark:text-gray-600 shrink-0 cursor-help"
+                              title="This key was created before Fernet encryption was added — its raw value is no longer recoverable. Delete and create a new one if you need to retrieve it."
                             >
                               <KeyIcon className="h-3 w-3" />
-                            </button>
+                            </span>
                           )}
                         </>
                       )}
@@ -395,15 +402,15 @@ export function APIKeysPage() {
         <ModalBody>
           {newKey ? (
             <div className="space-y-3">
-              <p className="text-sm text-amber-600 dark:text-amber-400 font-medium">
-                ⚠ Copy this key now — it will NOT be shown again. Losing it means generating a new one.
+              <p className="text-sm text-emerald-700 dark:text-emerald-400 font-medium">
+                ✓ Key created. You can copy it now or come back later — every key has a 👁 reveal button on its row.
               </p>
               <div className="flex items-center gap-2 bg-gray-100 dark:bg-gray-800 rounded-lg px-4 py-3">
                 <code className="flex-1 text-sm font-mono text-gray-900 dark:text-gray-100 break-all select-all">{newKey.raw}</code>
                 <CopyButton text={newKey.raw} />
               </div>
               <p className="text-xs text-gray-500 dark:text-gray-400">
-                Prefix: <code className="font-mono">{newKey.prefix}…</code> (used to identify the key in the UI and logs)
+                Prefix: <code className="font-mono">{newKey.prefix}…</code> (used to identify the key in the UI and logs). Keys are stored Fernet-encrypted at rest; the reveal button decrypts on demand for admins.
               </p>
             </div>
           ) : (
