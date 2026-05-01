@@ -131,23 +131,17 @@ async def chat_completions(
     # never fired and codex-oauth providers happily ate every request.
     requested_model = (alias.model_id if alias else parsed_slug.bare_model) or None
     try:
+        # v3.0.38: claude-oauth is now reachable from /v1/chat/completions via
+        # the OpenAI↔Anthropic wire-format translator (DevinGPT 2026-05-01
+        # ask). Removed v2.8.11's ``excluded_provider_types={"claude-oauth"}``.
         route = await select_provider(
             db, hint, has_tools=has_tools, has_images=has_images, key_type=key_record.key_type,
             pinned_provider_id=alias.provider_id if alias else None,
             model_override=requested_model,
             sort_mode=parsed_slug.sort_mode,
-            excluded_provider_types={"claude-oauth"},
         )
     except RuntimeError as e:
         msg = str(e)
-        if "claude-oauth" in msg:
-            raise HTTPException(
-                503,
-                "No OpenAI-compatible providers available — only claude-oauth "
-                "providers are currently enabled. /v1/chat/completions cannot "
-                "dispatch to claude-oauth (Anthropic-format only); use "
-                "/v1/messages or enable an openai/anthropic/google provider.",
-            )
         raise HTTPException(503, f"Provider selection failed: {msg}")
     if is_auto:
         resolved_model = route.profile.model_id or route.provider.default_model
@@ -241,6 +235,58 @@ async def chat_completions(
             provider=route.provider, body=body, stream=stream, db=db,
             resp_headers=resp_headers,
         )
+
+    # v3.0.38: claude-oauth on /v1/chat/completions via OpenAI↔Anthropic
+    # wire-format translation. DevinGPT ask 2026-05-01: their stack speaks
+    # OpenAI ChatCompletion only; this lets them reach Devin-Anthropic-Max-VG
+    # without a 600-LOC client-side branch for /v1/messages.
+    if route.provider.provider_type == "claude-oauth":
+        from app.api._oauth_chat_translate import (
+            openai_request_to_anthropic, anthropic_response_to_openai,
+            stream_anthropic_to_openai_sse,
+        )
+        from app.api._messages_streaming import (
+            _complete_claude_oauth, _stream_claude_oauth,
+        )
+        t0 = time.monotonic()
+        anthropic_body = openai_request_to_anthropic(body)
+        # Resolve the actual model the caller asked for; the routing layer
+        # may have substituted a default model on cross-family fallback,
+        # but for claude-oauth same-family we want the caller's value.
+        if route.cross_family_fallback and route.served_model_native:
+            anthropic_body["model"] = route.served_model_native
+        # Override stream flag from the request body so `stream=True` propagates.
+        if stream:
+            from fastapi.responses import StreamingResponse
+            anthropic_sse = _stream_claude_oauth(
+                access_token=route.provider.api_key,
+                body=anthropic_body,
+                provider_id=route.provider.id,
+                db=db,
+                key_record_id=key_record.id,
+                t0=t0,
+                provider_name=route.provider.name,
+            )
+            openai_sse = stream_anthropic_to_openai_sse(
+                anthropic_sse, requested_model=body.get("model") or "",
+            )
+            return StreamingResponse(openai_sse, media_type="text/event-stream",
+                                      headers=resp_headers)
+        else:
+            anth_resp = await _complete_claude_oauth(
+                access_token=route.provider.api_key,
+                body=anthropic_body,
+                provider_id=route.provider.id,
+                db=db,
+                key_record_id=key_record.id,
+                t0=t0,
+                provider_name=route.provider.name,
+            )
+            from fastapi.responses import JSONResponse
+            return JSONResponse(
+                content=anthropic_response_to_openai(anth_resp, requested_model=body.get("model") or ""),
+                headers=resp_headers,
+            )
 
     # Semantic cache — check before anything LLM-ish runs
     cache_decision = decide_cacheable(
