@@ -39,6 +39,15 @@ class RouteResult:
     vision_stripped: bool
     capability_header: str
     native_thinking_params: dict = field(default_factory=dict)
+    # v3.0.36: cross-family fallback signalling. When the caller asked for
+    # a model in family X but no family-X provider was available, we fell
+    # back to a different family. ``served_model_native`` is the native
+    # (un-prefixed) model id to send upstream — chat handlers rewrite
+    # body['model'] to this when the dispatcher (codex-oauth, claude-oauth)
+    # reads from body rather than from litellm_model.
+    cross_family_fallback: bool = False
+    requested_model: Optional[str] = None
+    served_model_native: Optional[str] = None
 
 
 def _is_embedding_model(model: str) -> bool:
@@ -366,27 +375,39 @@ async def select_provider(
                 "request body, or use POST /v1/embeddings for embedding calls."
             )
 
-    # v3.0.26: hard model-family vs provider-type compatibility filter.
-    # The v3.0.22 capability filter has a fall-through that lets unscanned
-    # providers "still get a chance", but in practice this lets codex-oauth
-    # (whose caps DO scan but only cover gpt-5.x slugs) eat claude-* requests
-    # via the v3.0.22 fall-through path: when no scanned non-claude-oauth
-    # provider lists claude-sonnet-4-6 in its caps, the filter empties the
-    # list, falls through to the unfiltered set, and codex-oauth wins on
-    # priority. Then either 400s upstream or silently substitutes gpt-5.5.
+    # v3.0.26: model-family vs provider-type compatibility filter.
+    # Original v3.0.26 raised 503 on empty intersection (DevinGPT silent-
+    # substitution bug) — see commit history.
     #
-    # The family→type mapping below is hard: an empty list raises 503 rather
-    # than falling through. Family detection is by model-name prefix.
+    # v3.0.36: cross-family fallback. When the family filter would empty
+    # the list, we now fall back to the broader pool but mark the route
+    # so build_litellm_model substitutes the chosen provider's default
+    # chat model (NOT the caller's claude-* string — that would 400
+    # upstream). Callers that want hard-403-no-substitution opt out via
+    # an explicit LMRH constraint:
+    #   LLM-Hint: provider-hint=anthropic-*,claude-oauth;require
+    # The LMRH scorer already eliminates non-matching candidates with
+    # ;require, so 503 still fires when explicit. The default behavior
+    # honors the operator's "cross-emulate, don't fail" preference.
+    #
+    # The cross-family route is signalled by:
+    #   - LLM-Capability response header: chosen-because=cross-family-fallback
+    #   - LLM-Capability.requested-model + .served-model both echoed
+    #   - LLM-Capability.unmet=(model) so callers see substitution
+    cross_family_fallback = False
+    cross_family_requested = None
     if model_override:
         family_types = _model_family_provider_types(model_override)
         if family_types is not None:
             family_filtered = [p for p in available if p.provider_type in family_types]
-            if not family_filtered:
-                raise RuntimeError(
-                    f"No compatible provider available for model {model_override!r} "
-                    f"(family expects provider_type in {sorted(family_types)})"
-                )
-            available = family_filtered
+            if family_filtered:
+                available = family_filtered
+            else:
+                # Empty family intersection → flag for downstream so the
+                # litellm model gets substituted to the chosen provider's
+                # default chat slug. ``available`` stays unfiltered.
+                cross_family_fallback = True
+                cross_family_requested = model_override
 
     # v3.0.22: model-supports-by-provider filter. Refines the family filter
     # above with scanned capability data. Conservative: providers with NO
@@ -506,7 +527,17 @@ async def select_provider(
         if key_type == "claude-code" or (task_hint and task_hint.value == "reasoning"):
             cot_engaged = True
 
-    litellm_model = build_litellm_model(provider, model_override)
+    # v3.0.36: when the family filter empty-fell-back, the chosen provider
+    # is from a different family than the caller asked for. Substitute the
+    # provider's default chat model rather than passing the wrong-family
+    # slug to litellm (which would 400 upstream). The original requested
+    # model is reflected in the LLM-Capability header so callers see the
+    # substitution.
+    effective_override = model_override
+    if cross_family_fallback:
+        effective_override = None  # build_litellm_model falls back to provider.default_model
+        unmet = list(unmet) + ["model"]
+    litellm_model = build_litellm_model(provider, effective_override)
     litellm_kwargs = build_litellm_kwargs(provider)
 
     native_params: dict = {}
@@ -517,6 +548,15 @@ async def select_provider(
     vision_stripped = has_images and not best_profile.native_vision
 
     cap_header = build_capability_header(best_profile, unmet, cot_engaged, tool_emulation)
+    if cross_family_fallback and cross_family_requested:
+        # Append the cross-family-fallback markers + requested vs served.
+        # The build_capability_header default emits chosen-because=score —
+        # override it here. Append rather than rebuild to preserve the
+        # other dim values.
+        cap_header = (
+            cap_header.replace("chosen-because=score", "chosen-because=cross-family-fallback")
+            + f', requested-model={cross_family_requested}, served-model={litellm_model}'
+        )
 
     # v3.0.30: was INFO; demoted to DEBUG. This fired on every routing
     # decision — 2728 lines in a 3h sample on www01, ~99% redundant with
@@ -545,4 +585,7 @@ async def select_provider(
         vision_stripped=vision_stripped,
         capability_header=cap_header,
         native_thinking_params=native_params,
+        cross_family_fallback=cross_family_fallback,
+        requested_model=cross_family_requested if cross_family_fallback else None,
+        served_model_native=(provider.default_model if cross_family_fallback else None),
     )
