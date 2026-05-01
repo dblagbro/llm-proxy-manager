@@ -23,31 +23,61 @@ async def activity_log(
     limit: int = Query(100, le=1000),
     severity: Optional[str] = None,
     provider_id: Optional[str] = None,
+    api_key_id: Optional[str] = Query(None, description="v3.0.35: filter to a single API key's events"),
+    event_type: Optional[str] = Query(None, description="v3.0.35: filter to a single event_type (e.g. llm_request)"),
+    since: Optional[str] = Query(None, description="v3.0.35: ISO 8601 timestamp lower bound (inclusive)"),
+    until: Optional[str] = Query(None, description="v3.0.35: ISO 8601 timestamp upper bound (exclusive)"),
+    sort: str = Query("desc", description="v3.0.35: 'desc' (default, newest first) or 'asc' (oldest first)"),
     before_id: Optional[int] = Query(None, description="Return events with id < this; cursor for paging back"),
     search: Optional[str] = Query(None, description="Substring match across message, provider_id, and metadata"),
     db: AsyncSession = Depends(get_db),
     _: AdminUser = Depends(require_admin),
 ):
-    """v2.8.5: paginated + searchable activity log.
+    """v2.8.5 paginated + searchable; v3.0.35 adds per-key + per-event-type
+    filters, ISO timestamp range, and asc/desc sort.
 
-    Returns events ordered newest-first. ``before_id`` is the standard
-    cursor — pass the smallest id from the prior page to keep walking
-    backwards. ``search`` does a case-insensitive substring match
-    against the message, provider_id, and the JSON-serialized metadata
-    (which now includes request_body, response_body, error since v2.8.4).
-    Indexes added in v2.7.8 keep this fast: ``ix_activity_log_created_at``
-    backs the order-by and ``ix_activity_log_provider_id`` /
-    ``ix_activity_log_severity`` back those filters.
+    ``before_id`` is the cursor for desc paging (pass the smallest id from
+    the prior page). For asc, ``since`` is the natural cursor.
     """
     from sqlalchemy import cast, String
+    from datetime import datetime as _dt
 
-    query = select(ActivityLog).order_by(desc(ActivityLog.created_at)).limit(limit)
+    if sort.lower() == "asc":
+        order_clause = ActivityLog.created_at.asc()
+    else:
+        order_clause = desc(ActivityLog.created_at)
+
+    query = select(ActivityLog).order_by(order_clause).limit(limit)
 
     if before_id is not None:
         query = query.where(ActivityLog.id < before_id)
 
     if provider_id:
         query = query.where(ActivityLog.provider_id == provider_id)
+
+    if api_key_id:
+        # v3.0.35: per-key filter — column already exists, just expose it.
+        # Operator + DevinGPT both asked for this on 2026-05-01.
+        query = query.where(ActivityLog.api_key_id == api_key_id)
+
+    if event_type:
+        query = query.where(ActivityLog.event_type == event_type)
+
+    def _parse_iso(s: str):
+        try:
+            return _dt.fromisoformat(s.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+
+    if since:
+        since_dt = _parse_iso(since)
+        if since_dt is not None:
+            query = query.where(ActivityLog.created_at >= since_dt)
+
+    if until:
+        until_dt = _parse_iso(until)
+        if until_dt is not None:
+            query = query.where(ActivityLog.created_at < until_dt)
 
     if severity:
         sev_list = [s.strip() for s in severity.split(",") if s.strip()]
@@ -77,6 +107,7 @@ async def activity_log(
             "severity": r.severity,
             "message": r.message,
             "provider_id": r.provider_id,
+            "api_key_id": r.api_key_id,  # v3.0.35: surface column for client-side correlation
             "timestamp": utc_iso(r.created_at),
             "metadata": r.event_meta,
         }

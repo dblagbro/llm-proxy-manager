@@ -508,16 +508,35 @@ async def chat_completions(
                 await maybe_store(cache_decision, answer_text)
             except Exception:
                 pass
-            await record_outcome(db, route.provider.id, route.litellm_model, endpoint="completions", success=True,
-                                 in_tok=in_tok, out_tok=out_tok, t0=t0, key_record_id=key_record.id, provider_name=route.provider.name)
+            await record_outcome(
+                db, route.provider.id, route.litellm_model,
+                endpoint="completions", success=True,
+                in_tok=in_tok, out_tok=out_tok, t0=t0,
+                key_record_id=key_record.id,
+                provider_name=route.provider.name,
+                # v3.0.35: body capture + diagnostic fields for self-serve
+                # activity-log queries. Backwards-compat: extras are skipped
+                # when capture is disabled and absent fields are absent.
+                request_body=body,
+                response_body=result.model_dump() if hasattr(result, "model_dump") else None,
+                requested_model=requested_model,
+                had_lmrh_hint=bool(llm_hint),
+            )
             if budget_total:
                 resp_headers["X-Token-Budget-Remaining"] = str(max(0, budget_total - out_tok))
             return JSONResponse(content=result.model_dump(), headers=resp_headers)
 
     except Exception as e:
         err_str = str(e)
-        await record_outcome(db, route.provider.id, route.litellm_model, endpoint="completions", success=False,
-                             key_record_id=key_record.id, error_str=err_str, provider_name=route.provider.name)
+        await record_outcome(
+            db, route.provider.id, route.litellm_model,
+            endpoint="completions", success=False,
+            key_record_id=key_record.id, error_str=err_str,
+            provider_name=route.provider.name,
+            request_body=body,
+            requested_model=requested_model,
+            had_lmrh_hint=bool(llm_hint),
+        )
         raise HTTPException(502, f"Upstream provider error: {err_str}")
 
 
