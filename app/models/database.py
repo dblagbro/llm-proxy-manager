@@ -104,6 +104,11 @@ async def init_db():
             "CREATE INDEX IF NOT EXISTS ix_activity_log_created_at ON activity_log(created_at DESC)",
             "CREATE INDEX IF NOT EXISTS ix_activity_log_provider_id ON activity_log(provider_id)",
             "CREATE INDEX IF NOT EXISTS ix_activity_log_severity ON activity_log(severity)",
+            # v3.0.35: per-key filter on /api/monitoring/activity (DevinGPT
+            # + operator ask 2026-05-01). Composite (api_key_id, created_at)
+            # covers the common "events for this key in last 1h" query.
+            "CREATE INDEX IF NOT EXISTS ix_activity_log_api_key_created ON activity_log(api_key_id, created_at DESC)",
+            "CREATE INDEX IF NOT EXISTS ix_activity_log_event_type ON activity_log(event_type)",
             # Provider metrics rollup queries are always (provider_id, bucket_ts)
             "CREATE INDEX IF NOT EXISTS ix_provider_metrics_provider_bucket ON provider_metrics(provider_id, bucket_ts DESC)",
             # api_keys.last_used_at — used by activity rollup + key-usage UI
