@@ -38,6 +38,7 @@ from app.api.settings_api import router as settings_router
 from app.api.audit import router as audit_router
 from app.api.oauth_capture import router as oauth_capture_router
 from app.api.runs import router as runs_router
+from app.api.lmrh import router as lmrh_router
 from app.observability.otel import init_tracer
 from app.observability.prometheus import metrics_response, set_service_info, observe_circuit_breaker_state
 
@@ -250,6 +251,57 @@ app.include_router(aliases_router)
 app.include_router(audit_router)
 app.include_router(oauth_capture_router)
 app.include_router(runs_router)
+app.include_router(lmrh_router)
+
+
+# v3.0.25: LMRH unknown-dim warning middleware. When a client sends an
+# LMRH header with a dim name that isn't in the built-in or registered
+# set, response gets ``X-LMRH-Warnings: unknown-dim:NAME register-at:/lmrh/register``
+# so the caller knows their hint was silently ignored. Backwards-compat
+# preserved — existing clients aren't broken; new clients can fix or
+# register the dim.
+from fastapi import Request as _LmrhRequest
+from app.routing.lmrh.parse import parse_hint as _lmrh_parse
+
+
+_REGISTRY_CACHE: dict = {"ts": 0.0, "names": frozenset()}
+_REGISTRY_CACHE_TTL_SEC = 60.0
+
+
+async def _registry_names_cached() -> frozenset[str]:
+    import time as _t
+    now = _t.time()
+    if now - _REGISTRY_CACHE["ts"] < _REGISTRY_CACHE_TTL_SEC and _REGISTRY_CACHE["names"]:
+        return _REGISTRY_CACHE["names"]
+    try:
+        from app.api.lmrh import known_dim_names
+        async with AsyncSessionLocal() as db:
+            names = await known_dim_names(db)
+        _REGISTRY_CACHE["names"] = frozenset(names)
+        _REGISTRY_CACHE["ts"] = now
+    except Exception:
+        # Don't break request handling on registry-cache failure
+        pass
+    return _REGISTRY_CACHE["names"]
+
+
+@app.middleware("http")
+async def _lmrh_warning_middleware(request: _LmrhRequest, call_next):
+    response = await call_next(request)
+    hint_header = request.headers.get("x-llm-hint") or request.headers.get("X-LLM-Hint")
+    if not hint_header:
+        return response
+    parsed = _lmrh_parse(hint_header)
+    if parsed is None or not parsed.dimensions:
+        return response
+    known = await _registry_names_cached()
+    unknowns = [d.key for d in parsed.dimensions if d.key not in known]
+    if unknowns:
+        warnings = ",".join(f"unknown-dim:{n}" for n in unknowns)
+        response.headers["X-LMRH-Warnings"] = (
+            f"{warnings} register-at:/lmrh/register spec:/lmrh.md"
+        )
+    return response
 
 # ── Utility endpoints ────────────────────────────────────────────────────────
 @app.get("/health")

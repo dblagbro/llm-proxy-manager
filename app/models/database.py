@@ -80,6 +80,8 @@ async def init_db():
             "ALTER TABLE providers ADD COLUMN last_user_edit_at REAL",
             # v3.0.20 — ApiKey soft-delete tombstone for cluster-sync resurrection bug
             "ALTER TABLE api_keys ADD COLUMN deleted_at DATETIME",
+            # v3.0.25 — LMRH self-extension protocol tables
+            # (idempotent ALTERs; CREATE handled by Base.metadata.create_all above)
         ]:
             try:
                 await conn.exec_driver_sql(stmt)

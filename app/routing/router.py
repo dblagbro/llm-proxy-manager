@@ -123,6 +123,7 @@ async def _load_profile(db: AsyncSession, provider: Provider) -> CapabilityProfi
         profile = CapabilityProfile(
             provider_id=provider.id,
             provider_type=provider.provider_type,
+            provider_name=provider.name or "",
             model_id=model_id,
             tasks=cap.tasks or ["chat"],
             latency=cap.latency or "medium",
@@ -138,6 +139,7 @@ async def _load_profile(db: AsyncSession, provider: Provider) -> CapabilityProfi
         )
     else:
         profile = infer_capability_profile(provider.id, provider.provider_type, model_id, provider.priority)
+        profile.provider_name = provider.name or ""
 
     # Populate avg_ttft_ms from the most recent metric bucket for LMRH scoring
     metric_res = await db.execute(
