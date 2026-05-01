@@ -14,6 +14,7 @@ from app.auth.admin import require_admin, AdminUser
 from app.providers.scanner import scan_provider_models, test_provider
 from app.monitoring.status import register_provider
 from app.routing.capability_inference import infer_capability_profile
+from app.utils.timefmt import utc_iso
 
 router = APIRouter(prefix="/api/providers", tags=["providers"])
 
@@ -916,7 +917,7 @@ def _serialize(p: Provider) -> dict:
         "failure_threshold": p.failure_threshold,
         "daily_budget_usd": p.daily_budget_usd,
         "extra_config": p.extra_config,
-        "created_at": p.created_at.isoformat() if p.created_at else None,
+        "created_at": utc_iso(p.created_at),
         # v2.7.0: expose expiry so the UI can show "Token expires in Nh"
         # for claude-oauth providers. Never expose refresh_token.
         "oauth_expires_at": p.oauth_expires_at,

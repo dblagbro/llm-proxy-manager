@@ -11,6 +11,7 @@ from typing import Any, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.db import ActivityLog
+from app.utils.timefmt import utc_iso
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +47,7 @@ async def log_event(
         "severity": severity,
         "message": message,
         "provider_id": provider_id,
-        "timestamp": entry.created_at.isoformat() if entry.created_at else datetime.utcnow().isoformat(),
+        "timestamp": utc_iso(entry.created_at) or (datetime.utcnow().isoformat() + "Z"),
         "metadata": metadata or {},
     }
     _ring.append(record)

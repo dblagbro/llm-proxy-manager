@@ -10,6 +10,7 @@ from sqlalchemy import select, func
 from app.models.database import get_db
 from app.models.db import User
 from app.auth.admin import require_admin, AdminUser, hash_password
+from app.utils.timefmt import utc_iso
 
 router = APIRouter(prefix="/api/users", tags=["users"])
 
@@ -106,5 +107,5 @@ def _serialize(u: User) -> dict:
         "id": u.id,
         "username": u.username,
         "role": u.role,
-        "created_at": u.created_at.isoformat() if u.created_at else None,
+        "created_at": utc_iso(u.created_at),
     }
