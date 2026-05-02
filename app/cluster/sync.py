@@ -190,6 +190,9 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
                 existing.hold_down_sec = p_data.get("hold_down_sec", existing.hold_down_sec)
                 existing.failure_threshold = p_data.get("failure_threshold", existing.failure_threshold)
                 existing.extra_config = p_data.get("extra_config", existing.extra_config)
+                # v3.0.45: tenant-scope ownership replicates with the row.
+                if "owned_by_key_id" in p_data:
+                    existing.owned_by_key_id = p_data["owned_by_key_id"]
                 if "daily_budget_usd" in p_data:
                     existing.daily_budget_usd = p_data["daily_budget_usd"]
                 if "oauth_refresh_token" in p_data:
@@ -224,6 +227,7 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
             hold_down_sec=p_data.get("hold_down_sec"),
             failure_threshold=p_data.get("failure_threshold"),
             extra_config=p_data.get("extra_config", {}),
+            owned_by_key_id=p_data.get("owned_by_key_id"),  # v3.0.45
             daily_budget_usd=p_data.get("daily_budget_usd"),
             oauth_refresh_token=p_data.get("oauth_refresh_token"),
             oauth_expires_at=p_data.get("oauth_expires_at"),

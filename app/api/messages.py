@@ -57,11 +57,12 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-async def _select_excluding(db, hint, has_tools, has_images, key_type, excluded: set[str]):
+async def _select_excluding(db, hint, has_tools, has_images, key_type, excluded: set[str], api_key_id=None):
     """v2.8.6: select_provider only accepts a single exclude_id. To walk
     through a chain of OAuth providers we need to call it repeatedly,
     excluding one id per pass and discarding any pick already in the
-    tried set. Once we land on a never-tried provider, return its route."""
+    tried set. Once we land on a never-tried provider, return its route.
+    v3.0.45: forwards api_key_id for tenant scoping."""
     from app.routing.router import select_provider as _select
     last_exc = None
     # Cap iterations conservatively so we never spin if every provider was tried.
@@ -74,6 +75,7 @@ async def _select_excluding(db, hint, has_tools, has_images, key_type, excluded:
             r = await _select(
                 db, hint, has_tools=has_tools, has_images=has_images,
                 key_type=key_type, exclude_provider_id=seed,
+                api_key_id=api_key_id,
             )
         except Exception as e:
             last_exc = e
@@ -111,6 +113,10 @@ async def messages(
     x_context_strategy: Optional[str] = Header(None, alias="x-context-strategy"),
 ):
     key_record = await verify_api_key(db, x_api_key)
+    # v3.0.45: set tenant context for select_provider's ownership filter
+    # so cascade/critique/hedge/grader paths inherit it without plumbing.
+    from app.routing.tenant import current_api_key_id
+    current_api_key_id.set(key_record.id)
 
     body = await request.json()
     messages_list = body.get("messages", [])
@@ -165,6 +171,7 @@ async def messages(
             pinned_provider_id=alias.provider_id if alias else None,
             model_override=alias.model_id if alias else None,
             sort_mode=parsed_slug.sort_mode,
+            api_key_id=key_record.id,  # v3.0.45 tenant scoping
         )
     except RuntimeError as e:
         msg = str(e)

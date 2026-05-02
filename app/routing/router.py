@@ -294,6 +294,7 @@ async def select_provider(
     prefer_cheapest: bool = False,
     sort_mode: Optional[str] = None,
     excluded_provider_types: Optional[set[str]] = None,
+    api_key_id: Optional[str] = None,
 ) -> RouteResult:
     """
     Select the best available provider+model for this request.
@@ -332,6 +333,28 @@ async def select_provider(
         providers = [p for p in providers if p.id != exclude_provider_id]
         if not providers:
             raise RuntimeError("No backup provider available (only one provider)")
+
+    # v3.0.45: tenant boundary on personal providers. When a provider has
+    # owned_by_key_id set, only that key may route to it. Closes the
+    # 2026-05-02 paperless-ai-analyzer leak (17k gpt-4o calls in 48h on
+    # the operator's personal ChatGPT account because there was no per-
+    # provider tenant scope). Null preserves shared-provider behavior.
+    #
+    # Resolution order: explicit api_key_id arg → contextvar set by chat
+    # entry handlers (covers cascade/critique/hedge/grader paths that
+    # would otherwise need individual plumbing).
+    from app.routing.tenant import current_api_key_id
+    effective_key = api_key_id or current_api_key_id.get()
+    providers = [
+        p for p in providers
+        if not p.owned_by_key_id or p.owned_by_key_id == effective_key
+    ]
+    if not providers:
+        raise RuntimeError(
+            "No accessible providers — every available provider is owned by "
+            "a different key. Provision your own provider records or ask the "
+            "operator to grant access."
+        )
 
     # Filter available (circuit breaker + hold-down)
     available = [p for p in providers if await is_available(p.id)]

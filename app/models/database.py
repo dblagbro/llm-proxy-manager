@@ -87,6 +87,12 @@ async def init_db():
             # deleted entry from a peer that still has it.
             "ALTER TABLE lmrh_dims ADD COLUMN deleted_at REAL",
             "ALTER TABLE lmrh_proposals ADD COLUMN deleted_at REAL",
+            # v3.0.45 — provider ownership scoping. owned_by_key_id is FK
+            # to api_keys.id; when set, only that key can route to this
+            # provider. Closes the 2026-05-02 paperless-ai-analyzer burn
+            # (17k gpt-4o calls in 48h on the operator's personal ChatGPT
+            # account because there was no tenant boundary on providers).
+            "ALTER TABLE providers ADD COLUMN owned_by_key_id TEXT",
         ]:
             try:
                 await conn.exec_driver_sql(stmt)
