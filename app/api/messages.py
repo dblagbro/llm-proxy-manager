@@ -518,6 +518,7 @@ async def messages(
                     cot_max, route.provider.id, db, key_record.id, force_verify,
                     critique_model=critique_model, critique_kwargs=critique_kwargs,
                     samples=samples, task_branch=task_branch,
+                    requested_model=body.get("model") if isinstance(body, dict) else "",
                 ),
                 media_type="text/event-stream",
                 headers=resp_headers,

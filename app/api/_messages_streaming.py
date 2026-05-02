@@ -56,6 +56,7 @@ async def _stream_cot_anthropic(
     critique_kwargs: dict | None = None,
     samples: int = 1,
     task_branch: str | None = None,
+    requested_model: str = "",  # v3.0.44: caller's bare model id for activity log
 ) -> AsyncIterator[bytes]:
     """Pass-through wrapper around run_cot_pipeline; records metrics after completion."""
     import json as _json
@@ -83,10 +84,12 @@ async def _stream_cot_anthropic(
                     pass
         await record_outcome(db, provider_id, model, success=True,
                              in_tok=in_tok, out_tok=out_tok, t0=t0, key_record_id=key_record_id,
-                             cache_creation=cache_creation, cache_read=cache_read)
+                             cache_creation=cache_creation, cache_read=cache_read,
+                             requested_model=requested_model or None)
     except Exception as e:
         await record_outcome(db, provider_id, model, success=False,
-                             key_record_id=key_record_id, error_str=_exc_str(e))
+                             key_record_id=key_record_id, error_str=_exc_str(e),
+                             requested_model=requested_model or None)
         yield (b'data: ' + json.dumps({"type": "error", "error": {"message": _exc_str(e)}}).encode() + b'\n\n')
         yield b'data: {"type":"message_stop"}\n\ndata: [DONE]\n\n'
 
