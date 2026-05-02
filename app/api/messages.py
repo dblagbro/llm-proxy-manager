@@ -290,9 +290,18 @@ async def messages(
         from app.api._messages_streaming import (
             _stream_claude_oauth, _complete_claude_oauth,
         )
+        from app.api._cache_inject import inject_cache_control, caller_opted_out
         access_token = route.provider.api_key or ""
         t0 = time.monotonic()
         upstream_body = dict(body)
+        # v3.0.42: auto-cache injection. Coordinator-hub bot daemons send
+        # large stable system prompts repeatedly; the v3.0.39 audit showed
+        # cache_control adoption at exactly 0% across 3,005 claude-oauth
+        # events in 24h. Wrap the last system block with cache_control:
+        # ephemeral when above threshold and the caller hasn't done so.
+        # Caller opts out via LLM-Hint: cache=none.
+        if not caller_opted_out(llm_hint):
+            upstream_body = inject_cache_control(upstream_body, "claude-oauth")
         oauth_provider_id = route.provider.id
         tried_oauth_ids.add(oauth_provider_id)
         if stream:
