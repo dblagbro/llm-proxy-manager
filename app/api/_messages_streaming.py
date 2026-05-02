@@ -395,11 +395,14 @@ async def _complete_claude_oauth(
                     refreshed = True
                     continue
                 # Fall through to error path
+            # v3.0.43: requested_model = body model (caller's value).
+            req_model = body.get("model") or "claude-oauth"
             if r.status_code >= 400:
                 await record_outcome(
-                    db, provider_id, body.get("model") or "claude-oauth", success=False,
+                    db, provider_id, req_model, success=False,
                     key_record_id=key_record_id, error_str=f"{r.status_code}: {r.text[:200]}",
                     provider_name=provider_name, request_body=body,
+                    requested_model=req_model,
                 )
                 r.raise_for_status()
             data = r.json()
@@ -408,12 +411,15 @@ async def _complete_claude_oauth(
             out_tok = int(usage.get("output_tokens") or 0)
             cache_creation = int(usage.get("cache_creation_input_tokens") or 0)
             cache_read = int(usage.get("cache_read_input_tokens") or 0)
+            # v3.0.43: also surface served_model from upstream's response.
+            served_actual = data.get("model") or req_model
             await record_outcome(
-                db, provider_id, body.get("model") or "claude-oauth", success=True,
+                db, provider_id, served_actual, success=True,
                 in_tok=in_tok, out_tok=out_tok, t0=t0, key_record_id=key_record_id,
                 cache_creation=cache_creation, cache_read=cache_read,
                 provider_name=provider_name,
                 request_body=body, response_body=data,
+                requested_model=req_model,
             )
             return data
         except httpx.HTTPError as e:
@@ -421,6 +427,7 @@ async def _complete_claude_oauth(
                 db, provider_id, body.get("model") or "claude-oauth", success=False,
                 key_record_id=key_record_id, error_str=_exc_str(e),
                 provider_name=provider_name, request_body=body,
+                requested_model=body.get("model") or "claude-oauth",
             )
             raise
 
@@ -604,12 +611,18 @@ async def _stream_claude_oauth(
                     f'event: budget\ndata: {{"remaining":{remaining},'
                     f'"used":{out_tok},"total":{budget_total}}}\n\n'
                 ).encode()
+            # v3.0.43: requested_model + served-from-upstream-when-available
+            req_model_str = body.get("model") or "claude-oauth"
+            served_str = (assembled_response.get("model")
+                          if isinstance(assembled_response, dict) and assembled_response.get("model")
+                          else req_model_str)
             await record_outcome(
-                db, provider_id, body.get("model") or "claude-oauth", success=True,
+                db, provider_id, served_str, success=True,
                 in_tok=in_tok, out_tok=out_tok, t0=t0, key_record_id=key_record_id,
                 ttft_ms=ttft_ms, cache_creation=cache_creation, cache_read=cache_read,
                 provider_name=provider_name,
                 request_body=body, response_body=assembled_response,
+                requested_model=req_model_str,
             )
             if cache_decision is not None and cache_decision.eligible:
                 try:
