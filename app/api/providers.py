@@ -41,6 +41,9 @@ class ProviderCreate(BaseModel):
     failure_threshold: Optional[int] = None   # None = use global setting
     daily_budget_usd: Optional[float] = None  # None = unlimited
     extra_config: dict = {}
+    # v3.0.45: tenant scoping. Null = shared across all keys (default).
+    # Set to an api_keys.id to restrict this provider to a single key.
+    owned_by_key_id: Optional[str] = None
     # v2.7.0: claude-oauth credential paste. The frontend sends either:
     #   - bare ``sk-ant-oat...`` access token, OR
     #   - the JSON contents of ``~/.claude/credentials.json``.
@@ -935,6 +938,9 @@ def _serialize(p: Provider) -> dict:
         "failure_threshold": p.failure_threshold,
         "daily_budget_usd": p.daily_budget_usd,
         "extra_config": p.extra_config,
+        # v3.0.45: provider tenant scoping. Null = shared (default behavior);
+        # set to an api_keys.id to restrict routing to that key only.
+        "owned_by_key_id": p.owned_by_key_id,
         "created_at": utc_iso(p.created_at),
         # v2.7.0: expose expiry so the UI can show "Token expires in Nh"
         # for claude-oauth providers. Never expose refresh_token.

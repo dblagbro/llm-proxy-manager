@@ -77,6 +77,9 @@ async def chat_completions(
     if not token and authorization and authorization.startswith("Bearer "):
         token = authorization[7:]
     key_record = await verify_api_key(db, token)
+    # v3.0.45: tenant context for ownership filter (covers internal call sites)
+    from app.routing.tenant import current_api_key_id
+    current_api_key_id.set(key_record.id)
 
     body = await request.json()
     messages_list = body.get("messages", [])
@@ -139,6 +142,7 @@ async def chat_completions(
             pinned_provider_id=alias.provider_id if alias else None,
             model_override=requested_model,
             sort_mode=parsed_slug.sort_mode,
+            api_key_id=key_record.id,  # v3.0.45 tenant scoping
         )
     except RuntimeError as e:
         msg = str(e)

@@ -147,7 +147,9 @@ async def _build_sync_payload(db) -> dict:
          # v3.0.11: per-row "last admin-edit" timestamp. Cluster sync LWW
          # prefers this over updated_at so OAuth auto-refresh and other
          # background mutations can't revert a real config edit.
-         "last_user_edit_at": p.last_user_edit_at}
+         "last_user_edit_at": p.last_user_edit_at,
+         # v3.0.45 — provider tenant scoping
+         "owned_by_key_id": p.owned_by_key_id}
         for p in providers_result.scalars().all()
     ]
     # Only push settings that were explicitly saved (have a DB row) — not env-var defaults

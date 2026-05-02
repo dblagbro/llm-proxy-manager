@@ -59,6 +59,16 @@ class Provider(Base):
     # delete to peers (last-write-wins on updated_at). Garbage-collected after
     # all peers have replicated the tombstone.
     deleted_at = Column(DateTime, nullable=True)
+    # v3.0.45: provider ownership scoping (root-cause fix for the
+    # 2026-05-02 paperless-ai-analyzer burn — paperless ran 17,000
+    # gpt-4o calls in 48h on the operator's personal ChatGPT account
+    # because there was no tenant boundary on which keys could route to
+    # which providers). When ``owned_by_key_id`` is non-null, only that
+    # api_key is allowed to route to this provider. Other keys are
+    # filtered out at select_provider time and fall back to a different
+    # compatible provider — or 503 if none. Null preserves the legacy
+    # "shared by all keys" behavior, so this is opt-in per provider.
+    owned_by_key_id = Column(String, ForeignKey("api_keys.id"), nullable=True)
 
     capabilities = relationship("ModelCapability", back_populates="provider", cascade="all, delete-orphan")
 
