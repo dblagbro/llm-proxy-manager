@@ -97,3 +97,54 @@ def test_parse_hint_missing_equals_skipped():
 
 def test_parse_hint_returns_none_when_no_valid_dims():
     assert parse_hint(",,,  ,,") is None
+
+
+# v3.0.51 — LMRH 1.2 §E3 region matching: comma-separated + hierarchy
+def _region_profile(regions):
+    return CapabilityProfile(
+        provider_id="p1", provider_type="vertex", model_id="test",
+        tasks=["chat"], regions=regions, priority=10,
+    )
+
+
+def test_region_exact_match_soft():
+    profile = _region_profile(["us"])
+    hint = parse_hint("region=us")
+    score, unmet = score_candidate(profile, hint)
+    assert score > 0 and "region" not in unmet
+
+
+def test_region_hierarchy_eu_matches_eu_west():
+    profile = _region_profile(["eu-west"])
+    hint = parse_hint("region=eu")
+    score, unmet = score_candidate(profile, hint)
+    assert score > 0 and "region" not in unmet
+
+
+def test_region_require_hard_filter_eliminates():
+    profile = _region_profile(["us"])
+    hint = parse_hint("region=eu;require")
+    score, _ = score_candidate(profile, hint)
+    assert score == float("-inf")
+
+
+def test_region_require_passes_via_hierarchy():
+    profile = _region_profile(["eu-central"])
+    hint = parse_hint("region=eu;require")
+    score, _ = score_candidate(profile, hint)
+    assert score > 0
+
+
+def test_region_unconfigured_profile_passes():
+    # Profile with empty regions list — backwards compat soft-pass
+    profile = _region_profile([])
+    hint = parse_hint("region=us;require")
+    score, _ = score_candidate(profile, hint)
+    assert score > 0
+
+
+def test_region_any_token_always_matches():
+    profile = _region_profile(["asia-east"])
+    hint = parse_hint("region=any")
+    score, _ = score_candidate(profile, hint)
+    assert score > 0
