@@ -50,7 +50,7 @@ A region value is one of:
 | `local`    | Caller-local infrastructure (self-hosted)     |
 | `any`      | No region preference (LMRH 1.0 default)       |
 
-Compound values: comma-separated list expresses "any-of" — `region=us,ca` matches US OR Canada.
+Compound values: comma-separated list expresses "any-of" — `region=us,ca` matches US OR Canada. The canonical wire form is the RFC 8941 InnerList: `region=(us ca)`. Bare-comma `region=us,ca` requires the 8941 parser path (proxy-side `http_sfv` available); the LMRH 1.0 legacy split-on-comma parser will treat the second value as an unkeyed dim and drop it. Implementations SHOULD accept both shapes.
 
 Granularity: `eu` matches any of `eu-west`, `eu-central`. The region taxonomy forms a hierarchy: `*` > `<continent>` > `<continent>-<area>`. Servers MUST honor hierarchy — a provider tagged `eu-west` matches a `region=eu` query.
 
@@ -178,7 +178,7 @@ Compliance-driven workloads (healthcare, finance, EU customer data) currently wo
 - Falling back to direct vendor APIs when proxies don't pin (loses cost/latency optimization).
 - Manually splitting traffic across proxy and direct based on data classification.
 
-LMRH §E3 lets these workloads use proxies as routers without losing the compliance guarantee. Reference implementation in llm-proxy-manager already has the dim wired (advisory) — promoting the existing `;require` to hard-constraint mode is a one-line filter change in `app/routing/lmrh/score.py`. The disclosure header changes are additive and won't break existing callers.
+LMRH §E3 lets these workloads use proxies as routers without losing the compliance guarantee. Reference implementation in llm-proxy-manager v3.0.x already enforced `;require` as a hard filter (line 81-87 of `score.py`); v3.0.51 extends this with hierarchy matching (`region=eu` satisfied by `eu-west`/`eu-central`) and any-of parsing (RFC 8941 InnerList values). `;sovereign` modifier and the `served-region`/`region-honored`/`cross-border-risk` disclosure headers remain spec-only at the time of this draft and require additional ref-impl work.
 
 ## References
 
