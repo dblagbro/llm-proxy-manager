@@ -7,8 +7,20 @@ from sqlalchemy import select
 
 from app.models.database import get_db
 from app.models.db import Provider, ModelCapability
+from app.auth.keys import resolve_api_key_dep
 
 router = APIRouter(tags=["models"])
+
+# v3.0.47: require a valid llmp-* key on /v1/models. Pre-v3.0.47 the
+# endpoint was public — anyone hitting the URL got 196 models across
+# all enabled providers, including operator-named provider labels
+# ('Devin Personal OpenAI ChatGPT', 'Devin-Anthropic-Max-VG', etc.)
+# which leak the billing topology. Operator's bar (2026-05-02): "with
+# an API key the caller is trusted; without one we shouldn't be giving
+# out the catalog." Apply the same auth dependency the chat endpoints
+# use. Auth'd callers still get the full list (no tenant scoping yet —
+# tenant-scoping is a separate enhancement, not requested).
+_AUTH = resolve_api_key_dep()
 
 
 # v3.0.23 (Q10): infer model "kind" from name patterns so callers can filter
@@ -32,7 +44,10 @@ def _infer_kind(model_id: str) -> str:
 
 
 @router.get("/v1/models")
-async def list_models(db: AsyncSession = Depends(get_db)):
+async def list_models(
+    db: AsyncSession = Depends(get_db),
+    _key=Depends(_AUTH),
+):
     result = await db.execute(
         select(Provider).where(Provider.enabled == True).order_by(Provider.priority)
     )
