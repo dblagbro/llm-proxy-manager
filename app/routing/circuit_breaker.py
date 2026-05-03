@@ -174,6 +174,14 @@ BILLING_ERROR_PATTERNS = [
     "insufficient_quota",
     "insufficient credit",
     "quota exceeded",
+    # v3.0.48: OpenAI's RateLimitError on a depleted account reads
+    # "You exceeded your current quota" (ALL CAPS-Y plain English).
+    # Word order doesn't match "quota exceeded", so the previous list
+    # missed it — keepalive probes kept hitting the dead provider every
+    # 5 min for hours instead of opening the breaker. Two flexible
+    # variants catch the OpenAI message + the plural form.
+    "exceeded your current quota",
+    "exceeded your quota",
     "billing",
     "payment required",
     "subscription",
