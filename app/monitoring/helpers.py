@@ -11,6 +11,7 @@ from typing import Any, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.models.db import Provider
 from app.routing.circuit_breaker import (
     record_success, record_failure, is_billing_error,
     is_auth_error, record_auth_failure, clear_auth_failure,
@@ -21,6 +22,20 @@ from app.monitoring.activity import log_event
 from app.observability.prometheus import observe_request, observe_ttft, observe_cache_tokens
 from app.routing.hedging import record_ttft_sample
 from app.budget.tracker import record_cost
+
+
+# v3.0.50: provider_types whose calls consume a flat-rate subscription
+# quota rather than per-call billing. estimate_cost() returns the
+# litellm-rate value for these calls (paperless ai-analyzer was reading
+# $7/hr inflated from cross-family-substituted gpt-4o → codex-oauth
+# routes that cost the operator $0 in real money). Surface the litellm
+# rate as ``quota_usd`` for visibility but record ``cost_usd=0`` so
+# spending-cap enforcement and per-key totals stay accurate.
+SUBSCRIPTION_TIER_PROVIDER_TYPES = frozenset({
+    "codex-oauth",      # operator's flat-rate ChatGPT Plus / Codex CLI
+    "claude-oauth",     # Anthropic Pro Max OAuth
+    "anthropic-oauth",  # legacy alias if ever introduced
+})
 
 
 # v2.8.4: redact known secret patterns in case they leak into logged bodies.
@@ -181,9 +196,20 @@ async def record_outcome(
     had_lmrh_hint: bool = False,
     lmrh_warnings: Optional[list[str]] = None,
 ) -> None:
+    # v3.0.50: classify provider as subscription vs per-call so paperless's
+    # cost ticker (and api_keys.total_cost_usd) doesn't inflate from
+    # cross-family substitutions that route to codex-oauth at $0 real cost.
+    try:
+        provider_obj = await db.get(Provider, provider_id)
+        provider_type = getattr(provider_obj, "provider_type", None) if provider_obj else None
+    except Exception:
+        provider_type = None
+    is_subscription = provider_type in SUBSCRIPTION_TIER_PROVIDER_TYPES
     if success:
         latency_ms = (time.monotonic() - t0) * 1000
-        cost = estimate_cost(model, in_tok, out_tok)
+        rated_cost = estimate_cost(model, in_tok, out_tok)
+        cost = 0.0 if is_subscription else rated_cost
+        quota_usd = rated_cost if is_subscription else 0.0
         await record_success(provider_id)
         await record_request(db, provider_id, True, in_tok, out_tok, latency_ms, cost, key_record_id, ttft_ms)
         await record_cost(db, key_record_id, cost)
@@ -222,7 +248,13 @@ async def record_outcome(
             "out_tok": out_tok,
             "cost_usd": round(cost, 6),
             "latency_ms": round(latency_ms, 1),
+            "cost_class": "subscription" if is_subscription else "per_call",
         }
+        if is_subscription:
+            # litellm-rate equivalent of the consumed subscription quota.
+            # Useful for "what would this have cost on per-call billing"
+            # reporting; not added to spending caps.
+            meta["quota_usd"] = round(quota_usd, 6)
         if requested_model:
             meta["requested_model"] = requested_model  # caller-asked-for vs served
         if had_lmrh_hint:
@@ -266,6 +298,7 @@ async def record_outcome(
             "served_model": served_normalized,
             "provider_name": provider_name,
             "error": error_str[:2000] if error_str else None,
+            "cost_class": "subscription" if is_subscription else "per_call",
         }
         if requested_model:
             meta["requested_model"] = requested_model
