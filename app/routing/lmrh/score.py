@@ -85,7 +85,13 @@ def score_candidate(profile: CapabilityProfile, hint: LMRHHint) -> tuple[float, 
                 # satisfied by either. Profiles with no regions configured
                 # are treated as compatible (the proxy hasn't classified
                 # the upstream yet — soft pass for backwards compat).
+                # v3.0.52: ``;sovereign`` rejects unconfigured profiles
+                # (uncertainty = reject) — compliance workloads can't
+                # accept "we don't know what region this provider serves
+                # from."
                 if not profile.regions:
+                    if dim.sovereign:
+                        return float("-inf"), [dim.key]
                     score += WEIGHTS["region"]
                 else:
                     wanted = {v.strip().lower() for v in dim.value.split(",") if v.strip()}

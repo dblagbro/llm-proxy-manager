@@ -496,6 +496,7 @@ async def select_provider(
         cap_header = build_capability_header(
             best_profile, unmet, False, False,
             model_override=model_override or "",
+            hint=hint,
         )
         return RouteResult(
             provider=provider,
@@ -592,6 +593,7 @@ async def select_provider(
     cap_header = build_capability_header(
         best_profile, unmet, cot_engaged, tool_emulation,
         model_override=(effective_override or model_override or ""),
+        hint=hint,
     )
     if cross_family_fallback and cross_family_requested:
         # Append the cross-family-fallback markers + requested vs served.

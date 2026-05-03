@@ -178,7 +178,7 @@ Compliance-driven workloads (healthcare, finance, EU customer data) currently wo
 - Falling back to direct vendor APIs when proxies don't pin (loses cost/latency optimization).
 - Manually splitting traffic across proxy and direct based on data classification.
 
-LMRH §E3 lets these workloads use proxies as routers without losing the compliance guarantee. Reference implementation in llm-proxy-manager v3.0.x already enforced `;require` as a hard filter (line 81-87 of `score.py`); v3.0.51 extends this with hierarchy matching (`region=eu` satisfied by `eu-west`/`eu-central`) and any-of parsing (RFC 8941 InnerList values). `;sovereign` modifier and the `served-region`/`region-honored`/`cross-border-risk` disclosure headers remain spec-only at the time of this draft and require additional ref-impl work.
+LMRH §E3 lets these workloads use proxies as routers without losing the compliance guarantee. Reference implementation in llm-proxy-manager v3.0.x already enforced `;require` as a hard filter (line 81-87 of `score.py`); v3.0.51 added hierarchy matching (`region=eu` satisfied by `eu-west`/`eu-central`) and any-of parsing (RFC 8941 InnerList values); v3.0.52 wires the `;sovereign` modifier (rejects providers with unconfigured `regions`) and emits the `served-region` + `region-honored` disclosure pair on every response that carried a `region=` hint. The `cross-border-risk` disclosure remains spec-only — implementing it requires per-provider-type metadata about upstream failover behavior (open question for vendor-side input).
 
 ## References
 

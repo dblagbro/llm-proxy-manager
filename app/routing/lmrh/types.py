@@ -59,6 +59,13 @@ class HintDimension:
     key: str
     value: str
     required: bool = False  # ``;require`` parameter
+    # v3.0.52 (LMRH 1.2 §E3): ``;sovereign`` strengthens ``;require`` for
+    # the region dim. Sovereign rejects providers with unconfigured regions
+    # (uncertainty = reject) and providers known to fail over across
+    # borders. Implies required=True. Currently meaningful only for
+    # ``region=`` hints; other dims accept the param but treat it the
+    # same as ``;require``.
+    sovereign: bool = False
 
 
 @dataclass

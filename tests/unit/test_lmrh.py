@@ -148,3 +148,50 @@ def test_region_any_token_always_matches():
     hint = parse_hint("region=any")
     score, _ = score_candidate(profile, hint)
     assert score > 0
+
+
+# v3.0.52 — LMRH 1.2 §E3 ;sovereign modifier + disclosure headers
+def test_sovereign_parsed_implies_required():
+    h = parse_hint("region=eu-central;sovereign")
+    d = h.get("region")
+    assert d.sovereign is True and d.required is True
+
+
+def test_sovereign_rejects_unconfigured_profile():
+    profile = _region_profile([])
+    hint = parse_hint("region=eu;sovereign")
+    score, _ = score_candidate(profile, hint)
+    assert score == float("-inf")
+
+
+def test_sovereign_passes_with_explicit_region():
+    profile = _region_profile(["eu-west"])
+    hint = parse_hint("region=eu;sovereign")
+    score, _ = score_candidate(profile, hint)
+    assert score > 0
+
+
+def test_capability_header_strict_region():
+    from app.routing.lmrh import build_capability_header
+    profile = _region_profile(["us"])
+    hint = parse_hint("region=us")
+    header = build_capability_header(profile, unmet=[], hint=hint)
+    assert "served-region=us" in header
+    assert "region-honored=strict" in header
+
+
+def test_capability_header_loose_region_via_hierarchy():
+    from app.routing.lmrh import build_capability_header
+    profile = _region_profile(["eu-west"])
+    hint = parse_hint("region=eu")
+    header = build_capability_header(profile, unmet=[], hint=hint)
+    assert "served-region=eu-west" in header
+    assert "region-honored=loose" in header
+
+
+def test_capability_header_omits_region_disclosure_when_no_hint():
+    from app.routing.lmrh import build_capability_header
+    profile = _region_profile(["us"])
+    header = build_capability_header(profile, unmet=[])
+    assert "served-region" not in header
+    assert "region-honored" not in header
