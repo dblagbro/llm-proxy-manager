@@ -79,12 +79,35 @@ def score_candidate(profile: CapabilityProfile, hint: LMRHHint) -> tuple[float, 
                     unmet.append(dim.key)
 
             case "region":
-                if not profile.regions or dim.value in profile.regions:
+                # v3.0.51 (LMRH 1.2 §E3): comma-separated any-of + hierarchy
+                # matching. ``region=eu`` is satisfied by a profile tagged
+                # ``eu-west`` or ``eu-central``; ``region=us,ca`` is
+                # satisfied by either. Profiles with no regions configured
+                # are treated as compatible (the proxy hasn't classified
+                # the upstream yet — soft pass for backwards compat).
+                if not profile.regions:
                     score += WEIGHTS["region"]
                 else:
-                    if dim.required:
-                        return float("-inf"), [dim.key]
-                    unmet.append(dim.key)
+                    wanted = {v.strip().lower() for v in dim.value.split(",") if v.strip()}
+                    wanted.discard("any")
+                    wanted.discard("*")
+                    if not wanted:
+                        score += WEIGHTS["region"]
+                    else:
+                        profile_regions_lower = {r.lower() for r in profile.regions}
+                        matched = (
+                            bool(wanted & profile_regions_lower)
+                            or any(
+                                pr.startswith(w + "-")
+                                for w in wanted for pr in profile_regions_lower
+                            )
+                        )
+                        if matched:
+                            score += WEIGHTS["region"]
+                        else:
+                            if dim.required:
+                                return float("-inf"), [dim.key]
+                            unmet.append(dim.key)
 
             case "context-length":
                 required_ctx = int(dim.value)
