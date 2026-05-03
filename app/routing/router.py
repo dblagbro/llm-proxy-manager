@@ -454,8 +454,24 @@ async def select_provider(
         filtered = [p for p in available if _supports(p)]
         if filtered:
             available = filtered
-        # If filter would empty the list, fall through with the family-
-        # filtered list. Family filter already guarantees type-compatibility.
+        else:
+            # v3.0.46: capability filter would empty the list — same
+            # semantic as family filter empty (v3.0.36): substitute the
+            # caller's model with the chosen provider's default rather
+            # than dispatching the wrong model name and getting an
+            # upstream 400.
+            #
+            # Concrete trigger (operator 2026-05-02): paperless asked
+            # for gpt-4o, ownership scope (v3.0.45) blocked Personal
+            # OpenAI, codex-oauth was the only openai-shape candidate
+            # left. Codex's caps don't include gpt-4o → empty filter →
+            # used to fall through with the wrong model → 400.
+            # Now: cross_family_fallback set → body['model'] rewritten
+            # to codex's default (gpt-5.5) at dispatch, response carries
+            # chosen-because=cross-family-fallback for disclosure.
+            if not cross_family_fallback:
+                cross_family_fallback = True
+                cross_family_requested = model_override
 
     # Load capability profiles
     profiles = [await _load_profile(db, p) for p in available]
