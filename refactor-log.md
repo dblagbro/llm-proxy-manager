@@ -676,3 +676,52 @@ Top recommended targets (unchanged from v3.0.32 entry):
 3. Split `app/runs/worker.py` state machine from queue I/O alongside the
    next Run feature.
 
+## 2026-05-03 — v3.0.50–53: subscription-tier accounting + LMRH 1.2 §E3 ref-impl
+
+### What shipped (additive only — no structural refactor)
+
+- **v3.0.50** — `monitoring/helpers.py:record_outcome` resolves provider_type
+  via a primary-key DB lookup and zeroes `cost_usd` for subscription-tier
+  providers (codex-oauth, claude-oauth, anthropic-oauth). New
+  `event_meta.cost_class` on every llm_request event; `event_meta.quota_usd`
+  exposes the would-be litellm-rate cost on subscription paths. Closed A7
+  cost-attribution overcount on cross-family-substituted calls.
+- **v3.0.51** — `routing/lmrh/score.py` region-dim scoring extended with
+  hierarchy matching (`region=eu` satisfied by `eu-west`/`eu-central`) and
+  RFC 8941 InnerList any-of.
+- **v3.0.52** — `routing/lmrh/types.py:HintDimension` gained `sovereign: bool`;
+  parser recognizes `;sovereign` (legacy + 8941); scorer rejects
+  unconfigured-region profiles when sovereign; `headers.py` accepts
+  `hint=` kwarg and emits `served-region` + `region-honored=strict|loose`.
+  Router callsites pass hint through.
+- **v3.0.53** — `routing/circuit_breaker.py` billing-error hold-down
+  extended 3600s → 21600s (1h → 6h). One-line change + regression test.
+
+### Helpers.py size watch
+
+helpers.py was 310 lines after v3.0.42; v3.0.50 added ~25 lines for
+subscription-tier classification. Now 320. Extract-`preview.py` threshold
+(per v3.0.42 entry above) is 400 — still well under.
+
+### Capability-header hint plumb-through (v3.0.52)
+
+`build_capability_header(hint=...)` is the first time the builder needs a
+request-side input. Two callsites in `router.py` pass it. If future dims
+need similar disclosure, `hint=` is the established channel — don't add
+per-dim kwargs.
+
+### Test count
+
+LMRH suite grew 12 → 24 (region 6 + sovereign 3 + capability-header 3).
+Circuit-breaker suite grew by 1 (six-hour hold-down regression). 43/43
+in `tests/unit/`.
+
+### Refactor verdict (still valid)
+
+Top recommended targets unchanged:
+1. Split `app/api/providers.py` (now 972 lines) when the next provider-
+   CRUD feature lands. Don't do it standalone.
+2. Dedup parallel cascade/CoT/hedging dispatch loops between
+   `messages.py` and `completions.py`. High risk; defer.
+3. Split `app/runs/worker.py` state machine alongside the next Run feature.
+
