@@ -252,13 +252,19 @@ async def _probe_all_once() -> int:
             )
         )
         providers = list(res.scalars().all())
+    # v3.0.49: skip probes on providers whose circuit breaker is open
+    # (billing-quota-exhausted, auth-revoked, or repeated transient
+    # failures). The previous behavior probed every interval regardless,
+    # which produced 12 RateLimitError events/hr on the depleted Personal
+    # OpenAI account — expensive in latency, useless as a liveness
+    # signal (the auth-failure / billing-failure UI badge already
+    # surfaces the dead state). When the breaker closes (hold-down
+    # expires or admin force-closes), probes resume automatically.
+    from app.routing.circuit_breaker import is_available
     for p in providers:
-        # v3.0.2 follow-up: claude-oauth providers ARE probed (via the
-        # OAuth dispatch path in _probe_one) so the activity log shows
-        # liveness for them too. Probes fire every interval regardless
-        # of organic traffic — the cost is small (8 max_tokens × N
-        # providers per interval) and the operator wants the at-a-glance
-        # liveness signal in the activity log either way.
+        if not await is_available(p.id):
+            logger.debug("keepalive.skipped_breaker_open provider=%s", p.id)
+            continue
         try:
             await _probe_one(p)
             count += 1
