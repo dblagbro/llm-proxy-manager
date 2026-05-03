@@ -108,11 +108,18 @@ async def record_failure(provider_id: str, billing_error: bool = False):
         s.failures += 1
         now = time.time()
 
-        # Billing errors immediately open the breaker and set a long hold-down
+        # Billing errors immediately open the breaker and set a long hold-down.
+        # v3.0.53: extended from 1h → 6h. Billing failures need operator
+        # intervention (refill credits, update payment method, escalate
+        # subscription tier) and won't self-resolve. The 1h hold-down meant
+        # each node fires a re-test probe ~24×/day per provider, contributing
+        # 1-3/hr cluster-wide noise on Personal OpenAI quota burn. 6h cuts
+        # that to 4 retests/day per node — still detects same-day recovery,
+        # 75% less log churn while operator triages.
         if billing_error:
             s.state = CBState.OPEN
             s.opened_at = now
-            s.hold_down_until = now + 3600  # 1-hour hold for billing errors
+            s.hold_down_until = now + 21600  # 6-hour hold for billing errors
             logger.warning("circuit_breaker.billing_error", extra={"provider": provider_id})
             _export_gauge(provider_id, s.state)
             return

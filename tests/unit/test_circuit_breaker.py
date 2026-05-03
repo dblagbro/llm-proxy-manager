@@ -111,6 +111,17 @@ def test_billing_error_opens_immediately():
     _run(_())
 
 
+def test_billing_error_uses_six_hour_hold_down():
+    # v3.0.53: billing errors need operator intervention; 6h hold avoids
+    # 24×/day probe-and-fail noise on quota-exhausted providers.
+    async def _():
+        await cb.record_failure("p1", billing_error=True)
+        states = cb.get_all_states()
+        # Within 5h: still in hold-down. After 6h+ would be 0.
+        assert states["p1"]["hold_down_remaining"] > 5 * 3600
+    _run(_())
+
+
 def test_force_close_resets():
     async def _():
         await cb.record_failure("p1")
@@ -123,7 +134,7 @@ def test_force_close_resets():
 
 
 def test_is_billing_error_detection():
-    # True billing / quota-exhausted signals → open breaker for 1h
+    # True billing / quota-exhausted signals → open breaker for 6h (v3.0.53)
     assert cb.is_billing_error("quota exceeded") is True
     assert cb.is_billing_error("insufficient credit") is True
     assert cb.is_billing_error("insufficient_quota") is True
