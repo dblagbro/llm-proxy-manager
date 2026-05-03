@@ -39,6 +39,9 @@ def parse_hint(header_value: Optional[str]) -> Optional[LMRHHint]:
 
 
 _REQUIRE_RE = re.compile(r"\s*;\s*require\s*", re.IGNORECASE)
+# v3.0.52 (LMRH 1.2 §E3): ``;sovereign`` modifier — implies ;require, plus
+# rejects providers with unconfigured / unknown regions on the region dim.
+_SOVEREIGN_RE = re.compile(r"\s*;\s*sovereign\s*", re.IGNORECASE)
 
 
 def _parse_hint_legacy(header_value: str) -> Optional[LMRHHint]:
@@ -47,13 +50,18 @@ def _parse_hint_legacy(header_value: str) -> Optional[LMRHHint]:
         part = part.strip()
         if not part:
             continue
-        required = bool(_REQUIRE_RE.search(part))
+        sovereign = bool(_SOVEREIGN_RE.search(part))
+        if sovereign:
+            part = _SOVEREIGN_RE.sub("", part).strip()
+        required = bool(_REQUIRE_RE.search(part)) or sovereign
         if required:
             part = _REQUIRE_RE.sub("", part).strip()
         if "=" not in part:
             continue
         key, _, value = part.partition("=")
-        hint.dimensions.append(HintDimension(key.strip(), value.strip(), required))
+        hint.dimensions.append(HintDimension(
+            key.strip(), value.strip(), required=required, sovereign=sovereign,
+        ))
     return hint if hint.dimensions else None
 
 
@@ -80,8 +88,11 @@ def _parse_hint_rfc8941(header_value: str) -> Optional[LMRHHint]:
         else:
             value_str = _coerce_sfv_value(value_part)
         params = getattr(item, "params", {}) or {}
-        required = bool(params.get("require", False))
-        hint.dimensions.append(HintDimension(key, value_str, required))
+        sovereign = bool(params.get("sovereign", False))
+        required = bool(params.get("require", False)) or sovereign
+        hint.dimensions.append(HintDimension(
+            key, value_str, required=required, sovereign=sovereign,
+        ))
     return hint if hint.dimensions else None
 
 

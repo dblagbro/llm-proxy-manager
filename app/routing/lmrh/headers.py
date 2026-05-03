@@ -33,6 +33,7 @@ def build_capability_header(
     tool_emulation: bool = False,
     chosen_because: str = "score",
     model_override: str = "",
+    hint: Optional[LMRHHint] = None,
 ) -> str:
     """Build the LLM-Capability response header.
 
@@ -64,6 +65,31 @@ def build_capability_header(
     ]
     if unmet:
         parts.append(f"unmet={' '.join(unmet)}")
+    # v3.0.52 (LMRH 1.2 §E3): served-region + region-honored when caller
+    # sent a region= dim. served-region echoes the most-specific region
+    # the profile claims; region-honored signals strict (exact match) vs
+    # loose (matched via hierarchy) so compliance auditors can verify.
+    if hint:
+        region_dim = hint.get("region")
+        if region_dim and "region" not in (unmet or []) and profile.regions:
+            wanted = {v.strip().lower() for v in region_dim.value.split(",") if v.strip()}
+            wanted.discard("any"); wanted.discard("*")
+            profile_regions_lower = [r.lower() for r in profile.regions]
+            served = profile_regions_lower[0]
+            if wanted:
+                exact = wanted & set(profile_regions_lower)
+                if exact:
+                    served = sorted(exact)[0]
+                    honored = "strict"
+                else:
+                    served = next(
+                        (pr for w in wanted for pr in profile_regions_lower
+                         if pr.startswith(w + "-")),
+                        served,
+                    )
+                    honored = "loose"
+                parts.append(f"served-region={served}")
+                parts.append(f"region-honored={honored}")
     if cot_engaged:
         parts.append("cot-engaged=?1")
     if tool_emulation:
