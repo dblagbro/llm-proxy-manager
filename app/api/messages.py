@@ -741,6 +741,7 @@ async def messages(
                 response_body=to_anthropic_response(result),
                 requested_model=body.get("model") if isinstance(body, dict) else None,
                 had_lmrh_hint=bool(llm_hint),
+                lmrh_hint_raw=llm_hint or None,
             )
             # Store in semantic cache (fire-and-forget; won't affect response latency)
             try:
@@ -788,6 +789,7 @@ async def messages(
             request_body=body,
             requested_model=body.get("model") if isinstance(body, dict) else None,
             had_lmrh_hint=bool(llm_hint),
+            lmrh_hint_raw=llm_hint or None,
         )
         logger.error(f"Provider {route.provider.id} failed: {err_str}")
         raise HTTPException(502, f"Upstream provider error: {err_str}")

@@ -586,6 +586,7 @@ async def chat_completions(
                 response_body=result.model_dump() if hasattr(result, "model_dump") else None,
                 requested_model=requested_model,
                 had_lmrh_hint=bool(llm_hint),
+                lmrh_hint_raw=llm_hint or None,
             )
             if budget_total:
                 resp_headers["X-Token-Budget-Remaining"] = str(max(0, budget_total - out_tok))
@@ -601,6 +602,7 @@ async def chat_completions(
             request_body=body,
             requested_model=requested_model,
             had_lmrh_hint=bool(llm_hint),
+            lmrh_hint_raw=llm_hint or None,
         )
         raise HTTPException(502, f"Upstream provider error: {err_str}")
 
