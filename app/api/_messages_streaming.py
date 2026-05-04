@@ -311,10 +311,21 @@ def _inject_claude_code_system(body: dict) -> dict:
     # in Anthropic's prompt cache across calls. Without this, a non-cacheable
     # block at index 0 would shift the cache key on every request.
     # v2.8.9: Anthropic caps cache_control markers at 4 per request. If the
-    # caller already has 4, omit ours to avoid a 400 ("A maximum of 4 blocks
-    # with cache_control may be provided. Found 5.").
+    # caller already has 4, omit ours to avoid a 400.
+    # v3.0.54: when the caller already attaches cache_control to a downstream
+    # system block, DON'T add a second breakpoint to the marker. Two
+    # breakpoints where breakpoint 1 is below the per-model token minimum
+    # (~14 marker tokens vs ~1024-4096 minimum) creates a sub-threshold
+    # cache attempt that returns cache_creation=cache_read=0 and may, in
+    # some upstream behaviors, suppress the second breakpoint's caching as
+    # well. Single-breakpoint mode is unambiguously cacheable: marker text
+    # stays anchored at the prefix start (so the cache key is stable) but
+    # only the caller's larger downstream block defines the breakpoint.
+    sys_already_cached = isinstance(sys_field, list) and any(
+        isinstance(b, dict) and "cache_control" in b for b in sys_field
+    )
     marker_block: dict = {"type": "text", "text": _CLAUDE_CODE_SYS_MARKER}
-    if _count_cache_control_markers(body) < 4:
+    if not sys_already_cached and _count_cache_control_markers(body) < 4:
         marker_block["cache_control"] = {"type": "ephemeral"}
 
     if sys_field is None:
