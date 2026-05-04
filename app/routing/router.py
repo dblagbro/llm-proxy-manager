@@ -477,6 +477,37 @@ async def select_provider(
     profiles = [await _load_profile(db, p) for p in available]
     provider_map = {p.id: p for p in available}
 
+    # v3.0.55: when caller specifies a model (model_override), re-derive
+    # cost_tier from THAT model name rather than the provider's default.
+    # Bug discovered 2026-05-04: paperless requested claude-haiku-4-5
+    # (economy) with cost=economy;require, but Devin-Anthropic-Max-VG's
+    # default_model is claude-sonnet-4-6 → profile.cost_tier="standard"
+    # → hard-filter excluded claude-oauth → cross-family substitution to
+    # Vertex Gemini ($1.59 real billing in one day instead of $0
+    # subscription). The provider's catalog supports the requested model;
+    # the inference was looking at the wrong slug.
+    if model_override:
+        m = model_override.lower()
+        if any(x in m for x in ["opus", "o1", "o3", "o4", "r1", "deepseek-r", "claude-3-7"]):
+            requested_tier = "premium"
+        elif any(x in m for x in ["sonnet", "gpt-4o", "gemini-2.0", "gpt-4-turbo", "grok-2"]):
+            requested_tier = "standard"
+        elif any(x in m for x in ["haiku", "flash", "mini", "gpt-3.5", "grok-beta"]):
+            requested_tier = "economy"
+        else:
+            requested_tier = None
+        if requested_tier is not None:
+            for prof in profiles:
+                # Only downshift to economy if we know the family supports
+                # the requested model (i.e. the provider could actually
+                # serve a Haiku request). Use family-type alignment as the
+                # gate — a Vertex provider should not get its tier
+                # rewritten just because the caller asked for "haiku".
+                provider = provider_map[prof.provider_id]
+                fam_types = _model_family_provider_types(model_override) or set()
+                if provider.provider_type in fam_types:
+                    prof.cost_tier = requested_tier
+
     # LMRH ranking (with scores so we can identify the top tier for P2C)
     ranked_scored = rank_candidates_with_scores(profiles, hint)
     if not ranked_scored:

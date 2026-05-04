@@ -195,6 +195,12 @@ async def record_outcome(
     requested_model: Optional[str] = None,
     had_lmrh_hint: bool = False,
     lmrh_warnings: Optional[list[str]] = None,
+    # v3.0.55: capture the raw LLM-Hint header value so post-hoc cost /
+    # routing diagnostics don't have to guess at what the caller sent.
+    # 2026-05-04 burn diagnosis hit a wall on this — paperless's hint was
+    # silently rerouting them off claude-oauth onto Vertex (economy-tier
+    # mismatch) and we couldn't see the hint to confirm.
+    lmrh_hint_raw: Optional[str] = None,
 ) -> None:
     # v3.0.50: classify provider as subscription vs per-call so paperless's
     # cost ticker (and api_keys.total_cost_usd) doesn't inflate from
@@ -259,6 +265,8 @@ async def record_outcome(
             meta["requested_model"] = requested_model  # caller-asked-for vs served
         if had_lmrh_hint:
             meta["had_lmrh_hint"] = True
+        if lmrh_hint_raw:
+            meta["lmrh_hint"] = lmrh_hint_raw[:500]
         if lmrh_warnings:
             meta["lmrh_warnings"] = list(lmrh_warnings)
         if is_probe:
@@ -304,6 +312,8 @@ async def record_outcome(
             meta["requested_model"] = requested_model
         if had_lmrh_hint:
             meta["had_lmrh_hint"] = True
+        if lmrh_hint_raw:
+            meta["lmrh_hint"] = lmrh_hint_raw[:500]
         if lmrh_warnings:
             meta["lmrh_warnings"] = list(lmrh_warnings)
         if is_probe:
