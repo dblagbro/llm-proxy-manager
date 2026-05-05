@@ -179,6 +179,16 @@ async def lifespan(app: FastAPI):
         start_prune()
     except Exception as e:
         logger.warning(f"prune loop failed to start: {e}")
+
+    # v3.0.62: per-provider usage-window tracking (rolling 5h session +
+    # weekly reset). Operator opts in per provider via
+    # ``providers.usage_tracking_enabled``. Updates ``provider_usage_windows``
+    # cache every 60s; ``GET /api/providers/{id}/usage`` reads from cache.
+    try:
+        from app.monitoring.usage_tracker import start as start_usage_tracker
+        start_usage_tracker()
+    except Exception as e:
+        logger.warning(f"usage tracker failed to start: {e}")
     start_cluster(
         db_factory=AsyncSessionLocal,
         notify_fn=alert_cluster_node_down,

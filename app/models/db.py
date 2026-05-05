@@ -79,8 +79,34 @@ class Provider(Base):
     # provider_type (claude-oauth/codex-oauth/anthropic-oauth = subscription,
     # everything else = per_call).
     cost_class = Column(String, nullable=True)  # "subscription" | "per_call" | NULL (auto)
+    # v3.0.62: per-provider usage-based rotation. Operator-tunable so any
+    # OAuth-style "session + weekly quota" provider (claude-oauth, codex-
+    # oauth, future grok/azure-oauth) can be tracked. NULL/False fields
+    # leave behavior unchanged.
+    usage_tracking_enabled = Column(Boolean, default=False)
+    usage_session_window_sec = Column(Integer, nullable=True)        # e.g. 18000 = 5h (claude.ai default)
+    usage_weekly_reset_dow = Column(Integer, nullable=True)          # 0=Mon … 6=Sun (claude.ai = 6)
+    usage_weekly_reset_hour = Column(Integer, nullable=True)         # 0..23 local hour (claude.ai = 16, 4pm)
+    usage_session_limit_tokens = Column(Integer, nullable=True)      # operator's estimate of plan ceiling
+    usage_weekly_limit_tokens = Column(Integer, nullable=True)
+    usage_rotation_threshold_pct = Column(Integer, nullable=True)    # rotate when max/min ratio exceeds this; default 30
 
     capabilities = relationship("ModelCapability", back_populates="provider", cascade="all, delete-orphan")
+
+
+class ProviderUsageWindow(Base):
+    """v3.0.62: cached per-provider rolling usage totals. Recomputed every
+    60s from ``activity_log`` by the usage_tracker task; serves
+    ``GET /api/providers/{id}/usage`` reads in O(1)."""
+    __tablename__ = "provider_usage_windows"
+    provider_id = Column(String, ForeignKey("providers.id"), primary_key=True)
+    session_tokens = Column(Integer, default=0)
+    session_window_start = Column(DateTime, nullable=True)
+    session_pct = Column(Float, nullable=True)        # session_tokens / usage_session_limit_tokens × 100; null if no limit set
+    weekly_tokens = Column(Integer, default=0)
+    weekly_reset_at = Column(DateTime, nullable=True)  # next reset (last reset + 7 days)
+    weekly_pct = Column(Float, nullable=True)
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
 
 class ModelCapability(Base):

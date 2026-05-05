@@ -103,6 +103,67 @@ async def provider_rolling_stats(
     return await get_provider_rolling_windows(db)
 
 
+@router.get("/{provider_id}/usage")
+async def provider_usage(
+    provider_id: str,
+    db: AsyncSession = Depends(get_db),
+    _: AdminUser = Depends(require_admin),
+):
+    """v3.0.62: per-provider rolling usage windows (Phase 1 of usage-based
+    rotation). Returns cached values from ``provider_usage_windows`` —
+    populated by the ``usage_tracker`` background task every 60s for
+    providers with ``usage_tracking_enabled=True``.
+
+    Response shape:
+      {
+        provider_id, provider_name, tracking_enabled,
+        session: {tokens, window_start, window_sec, limit_tokens, pct},
+        weekly:  {tokens, reset_at, reset_dow, reset_hour, limit_tokens, pct},
+        rotation_threshold_pct,
+        updated_at,
+      }
+
+    If tracking is disabled, returns the config + null totals so the UI
+    can show the "enable tracking" affordance.
+    """
+    from app.models.db import ProviderUsageWindow
+    from sqlalchemy import select as _sel
+    res = await db.execute(_sel(Provider).where(
+        Provider.id == provider_id, Provider.deleted_at.is_(None),
+    ))
+    p = res.scalar_one_or_none()
+    if p is None:
+        raise HTTPException(404, "provider not found")
+
+    res2 = await db.execute(_sel(ProviderUsageWindow).where(
+        ProviderUsageWindow.provider_id == provider_id,
+    ))
+    w = res2.scalar_one_or_none()
+
+    return {
+        "provider_id": p.id,
+        "provider_name": p.name,
+        "tracking_enabled": bool(p.usage_tracking_enabled),
+        "session": {
+            "tokens": (w.session_tokens if w else 0),
+            "window_start": (w.session_window_start.isoformat() + "Z" if w and w.session_window_start else None),
+            "window_sec": p.usage_session_window_sec,
+            "limit_tokens": p.usage_session_limit_tokens,
+            "pct": (w.session_pct if w else None),
+        },
+        "weekly": {
+            "tokens": (w.weekly_tokens if w else 0),
+            "reset_at": (w.weekly_reset_at.isoformat() + "Z" if w and w.weekly_reset_at else None),
+            "reset_dow": p.usage_weekly_reset_dow,
+            "reset_hour": p.usage_weekly_reset_hour,
+            "limit_tokens": p.usage_weekly_limit_tokens,
+            "pct": (w.weekly_pct if w else None),
+        },
+        "rotation_threshold_pct": p.usage_rotation_threshold_pct,
+        "updated_at": (w.updated_at.isoformat() + "Z" if w and w.updated_at else None),
+    }
+
+
 _TYPES_REQUIRING_API_KEY = {
     "anthropic", "openai", "google", "vertex", "grok",
     "cohere", "mistral", "groq", "together", "fireworks",
