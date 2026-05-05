@@ -254,14 +254,27 @@ async def _probe_all_once() -> int:
         providers = list(res.scalars().all())
     # v3.0.49: skip probes on providers whose circuit breaker is open
     # (billing-quota-exhausted, auth-revoked, or repeated transient
-    # failures). The previous behavior probed every interval regardless,
-    # which produced 12 RateLimitError events/hr on the depleted Personal
-    # OpenAI account — expensive in latency, useless as a liveness
-    # signal (the auth-failure / billing-failure UI badge already
-    # surfaces the dead state). When the breaker closes (hold-down
-    # expires or admin force-closes), probes resume automatically.
+    # failures). When the breaker closes, probes resume automatically.
     from app.routing.circuit_breaker import is_available
+    # v3.0.56: skip probes on PER-CALL provider types by default.
+    # Synthetic probes on Cohere / OpenAI / Vertex / Google etc. burn
+    # real $ every 5 min × 24h × 4 nodes = ~1152 probes/day per
+    # provider × ~$0.001/call → ~$120/year/provider in pure synthetic
+    # noise. Subscription-tier providers (claude-oauth, codex-oauth,
+    # anthropic-oauth) cost $0 per probe so we keep probing them.
+    # Operator can re-enable per-call probes globally via
+    # settings.keepalive_probe_per_call_providers=True if needed.
+    probe_per_call = getattr(
+        settings, "keepalive_probe_per_call_providers", False
+    )
+    SUBSCRIPTION_TYPES = {"claude-oauth", "codex-oauth", "anthropic-oauth"}
     for p in providers:
+        if not probe_per_call and p.provider_type not in SUBSCRIPTION_TYPES:
+            logger.debug(
+                "keepalive.skipped_per_call provider=%s type=%s",
+                p.id, p.provider_type,
+            )
+            continue
         if not await is_available(p.id):
             logger.debug("keepalive.skipped_breaker_open provider=%s", p.id)
             continue
