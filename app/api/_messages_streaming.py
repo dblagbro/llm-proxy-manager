@@ -413,7 +413,18 @@ async def _complete_claude_oauth(
             # v2.8.10: 60s was too short for ~50KB user-message bodies the
             # bot daemon sends. Match streaming timeout (300s — bumped via
             # the same release for parity).
-            async with httpx.AsyncClient(timeout=300.0, follow_redirects=True) as client:
+            # v3.0.60: split connect/read/write/pool. Single timeout=300
+            # meant a DNS / TCP-connect failure held the request for 300s
+            # while the upstream was confirmed dead. During the 2026-05-05
+            # internet outage this exhausted the SQLAlchemy DB connection
+            # pool (5 + 10 overflow) within seconds and locked up the
+            # whole proxy until container restart. Connect-phase failures
+            # now return in ~5s, freeing the DB connection back to the
+            # pool. Streaming read stays at 300s for slow upstreams.
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(connect=5.0, read=300.0, write=10.0, pool=5.0),
+                follow_redirects=True,
+            ) as client:
                 r = await client.post(url, json=body, headers=headers)
             if r.status_code == 401 and not refreshed:
                 # One-shot refresh-and-retry
@@ -513,7 +524,11 @@ async def _stream_claude_oauth(
             "Content-Type": "application/json",
         }
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(300.0), follow_redirects=True) as client:
+            # v3.0.60: split timeouts — see _complete_claude_oauth comment.
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(connect=5.0, read=300.0, write=10.0, pool=5.0),
+                follow_redirects=True,
+            ) as client:
                 async with client.stream("POST", url, json=body, headers=headers) as r:
                     # Pre-stream error handling (no bytes yielded yet)
                     if r.status_code == 401 and not refreshed:

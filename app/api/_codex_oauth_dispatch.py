@@ -76,7 +76,11 @@ async def _stream_codex_response_lines(
     refreshed_once = False
     while True:
         headers = build_headers(provider.api_key, chatgpt_account_id=_account_id_for(provider))
-        async with httpx.AsyncClient(timeout=120.0) as client:
+        # v3.0.60: split connect/read so DNS / TCP-connect failures fail
+        # in ~5s instead of 120s, preventing pool exhaustion during outages.
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(connect=5.0, read=120.0, write=10.0, pool=5.0),
+        ) as client:
             async with client.stream(
                 "POST", CODEX_RESPONSES_URL, headers=headers, json=upstream_body,
             ) as resp:
