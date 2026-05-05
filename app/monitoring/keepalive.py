@@ -166,7 +166,10 @@ async def _probe_one(provider: Provider) -> None:
         }
         try:
             headers = build_headers(provider.api_key, chatgpt_account_id=account_id)
-            async with httpx.AsyncClient(timeout=_PROBE_TIMEOUT_SEC) as _c:
+            # v3.0.60: split connect/read so probes fail fast on DNS outages.
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(connect=5.0, read=float(_PROBE_TIMEOUT_SEC), write=5.0, pool=5.0),
+            ) as _c:
                 async with _c.stream(
                     "POST", CODEX_RESPONSES_URL, headers=headers, json=codex_body,
                 ) as _r:
