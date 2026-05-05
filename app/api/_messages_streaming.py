@@ -57,6 +57,7 @@ async def _stream_cot_anthropic(
     samples: int = 1,
     task_branch: str | None = None,
     requested_model: str = "",  # v3.0.44: caller's bare model id for activity log
+    llm_hint: Optional[str] = None,  # v3.0.59: capture in event_meta.lmrh_hint
 ) -> AsyncIterator[bytes]:
     """Pass-through wrapper around run_cot_pipeline; records metrics after completion."""
     import json as _json
@@ -85,11 +86,13 @@ async def _stream_cot_anthropic(
         await record_outcome(db, provider_id, model, success=True,
                              in_tok=in_tok, out_tok=out_tok, t0=t0, key_record_id=key_record_id,
                              cache_creation=cache_creation, cache_read=cache_read,
-                             requested_model=requested_model or None)
+                             requested_model=requested_model or None,
+                             had_lmrh_hint=bool(llm_hint), lmrh_hint_raw=llm_hint or None)
     except Exception as e:
         await record_outcome(db, provider_id, model, success=False,
                              key_record_id=key_record_id, error_str=_exc_str(e),
-                             requested_model=requested_model or None)
+                             requested_model=requested_model or None,
+                             had_lmrh_hint=bool(llm_hint), lmrh_hint_raw=llm_hint or None)
         yield (b'data: ' + json.dumps({"type": "error", "error": {"message": _exc_str(e)}}).encode() + b'\n\n')
         yield b'data: {"type":"message_stop"}\n\ndata: [DONE]\n\n'
 
@@ -98,6 +101,7 @@ async def _stream_anthropic(
     model: str, messages: list, extra: dict, provider_id: str,
     db: AsyncSession, key_record_id: str, t0: float, budget_total: int = 0,
     cache_decision=None,
+    llm_hint: Optional[str] = None,  # v3.0.59
 ) -> AsyncIterator[bytes]:
     try:
         response = await acompletion_with_retry(model=model, messages=messages, stream=True, **extra)
@@ -202,7 +206,8 @@ async def _stream_anthropic(
         await record_outcome(db, provider_id, model, success=True,
                              in_tok=input_tokens, out_tok=output_tokens, t0=t0,
                              key_record_id=key_record_id, ttft_ms=ttft_ms,
-                             cache_creation=cache_creation, cache_read=cache_read)
+                             cache_creation=cache_creation, cache_read=cache_read,
+                             had_lmrh_hint=bool(llm_hint), lmrh_hint_raw=llm_hint or None)
         if cache_decision is not None and cache_decision.eligible:
             try:
                 await maybe_store(cache_decision, "".join(full_text_buf))
@@ -210,7 +215,8 @@ async def _stream_anthropic(
                 pass
     except Exception as e:
         await record_outcome(db, provider_id, model, success=False,
-                             key_record_id=key_record_id, error_str=_exc_str(e))
+                             key_record_id=key_record_id, error_str=_exc_str(e),
+                             had_lmrh_hint=bool(llm_hint), lmrh_hint_raw=llm_hint or None)
         yield (b'data: ' + json.dumps({"type": "error", "error": {"message": _exc_str(e)}}).encode() + b'\n\n')
         yield b'data: {"type":"message_stop"}\n\ndata: [DONE]\n\n'
 
@@ -223,6 +229,7 @@ async def _webhook_completion_anthropic(
     provider_id: str,
     db: AsyncSession,
     key_record_id: str,
+    llm_hint: Optional[str] = None,  # v3.0.59
 ) -> None:
     """Run a non-streaming completion and POST the result to webhook_url."""
     t0 = time.monotonic()
@@ -233,7 +240,8 @@ async def _webhook_completion_anthropic(
         cache_creation, cache_read = extract_cache_tokens(result.usage)
         await record_outcome(db, provider_id, model, success=True,
                              in_tok=in_tok, out_tok=out_tok, t0=t0, key_record_id=key_record_id,
-                             cache_creation=cache_creation, cache_read=cache_read)
+                             cache_creation=cache_creation, cache_read=cache_read,
+                             had_lmrh_hint=bool(llm_hint), lmrh_hint_raw=llm_hint or None)
         await post_webhook(webhook_url, {
             "provider": provider_id,
             "model": model,
@@ -241,7 +249,8 @@ async def _webhook_completion_anthropic(
         })
     except Exception as exc:
         await record_outcome(db, provider_id, model, success=False,
-                             key_record_id=key_record_id, error_str=_exc_str(exc))
+                             key_record_id=key_record_id, error_str=_exc_str(exc),
+                             had_lmrh_hint=bool(llm_hint), lmrh_hint_raw=llm_hint or None)
         await post_webhook(webhook_url, {"error": _exc_str(exc), "model": model})
 
 
