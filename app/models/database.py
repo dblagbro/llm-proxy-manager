@@ -109,6 +109,14 @@ async def init_db():
             # an admin needs to override (e.g. anthropic-direct on a
             # flat-rate enterprise contract → cost_class="subscription").
             "ALTER TABLE providers ADD COLUMN cost_class TEXT",
+            # v3.0.62 — per-provider usage tracking + rotation tuning.
+            "ALTER TABLE providers ADD COLUMN usage_tracking_enabled BOOLEAN DEFAULT 0",
+            "ALTER TABLE providers ADD COLUMN usage_session_window_sec INTEGER",
+            "ALTER TABLE providers ADD COLUMN usage_weekly_reset_dow INTEGER",
+            "ALTER TABLE providers ADD COLUMN usage_weekly_reset_hour INTEGER",
+            "ALTER TABLE providers ADD COLUMN usage_session_limit_tokens INTEGER",
+            "ALTER TABLE providers ADD COLUMN usage_weekly_limit_tokens INTEGER",
+            "ALTER TABLE providers ADD COLUMN usage_rotation_threshold_pct INTEGER",
         ]:
             try:
                 await conn.exec_driver_sql(stmt)
