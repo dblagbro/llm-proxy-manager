@@ -10,6 +10,16 @@ engine = create_async_engine(
     settings.database_url,
     echo=False,
     pool_pre_ping=True,
+    # v3.0.61: bump pool capacity + tighten checkout timeout. Default
+    # was 5+10=15 connections with 30s wait. During the 2026-05-05
+    # outage that drained in seconds while every connection was held
+    # by stuck upstream calls, leaving /health and DB-backed endpoints
+    # blocked for 30s+ waiting their turn. Larger pool (20+30=50)
+    # absorbs more bursts; 5s pool_timeout means callers fail fast
+    # rather than queueing if the pool ever exhausts again.
+    pool_size=20,
+    max_overflow=30,
+    pool_timeout=5.0,
 )
 
 

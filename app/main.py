@@ -288,23 +288,43 @@ def invalidate_registry_cache() -> None:
 
 async def _registry_names_cached() -> frozenset[str]:
     import time as _t
+    import asyncio as _aio
     now = _t.time()
     if now - _REGISTRY_CACHE["ts"] < _REGISTRY_CACHE_TTL_SEC and _REGISTRY_CACHE["names"]:
         return _REGISTRY_CACHE["names"]
     try:
         from app.api.lmrh import known_dim_names
-        async with AsyncSessionLocal() as db:
-            names = await known_dim_names(db)
+        # v3.0.61: 3s timeout on the DB refresh. If the pool is exhausted
+        # or the DB is slow, fall back to the stale cache rather than
+        # blocking the request. The unknown-dim warning header is best-
+        # effort; serving the request is more important than a fresh
+        # registry list.
+        async def _fetch():
+            async with AsyncSessionLocal() as db:
+                return await known_dim_names(db)
+        names = await _aio.wait_for(_fetch(), timeout=3.0)
         _REGISTRY_CACHE["names"] = frozenset(names)
         _REGISTRY_CACHE["ts"] = now
     except Exception:
-        # Don't break request handling on registry-cache failure
+        # Don't break request handling on registry-cache failure or timeout
         pass
     return _REGISTRY_CACHE["names"]
 
 
+_LMRH_MIDDLEWARE_SKIP_PATHS = frozenset({
+    "/health", "/version", "/metrics", "/favicon.ico",
+})
+
+
 @app.middleware("http")
 async def _lmrh_warning_middleware(request: _LmrhRequest, call_next):
+    # v3.0.61: skip liveness / observability paths entirely so they
+    # remain answerable even if the LMRH registry-cache refresh stalls
+    # on an exhausted DB pool. /health especially must never block —
+    # nginx + monitoring rely on it to distinguish "proxy alive" from
+    # "proxy down" during DB or upstream outages.
+    if request.url.path in _LMRH_MIDDLEWARE_SKIP_PATHS:
+        return await call_next(request)
     response = await call_next(request)
     # v3.0.26: the canonical LMRH header is "LLM-Hint" (no X- prefix), per
     # the spec and the FastAPI Header(alias="llm-hint") declarations on the
