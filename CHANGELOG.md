@@ -9,6 +9,73 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.0.x — Run runtime, cluster ops, observability
 
+### v3.0.57 — Explicit per-provider cost_class column
+
+Replaces the hardcoded `SUBSCRIPTION_TIER_PROVIDER_TYPES` set (introduced in v3.0.50) with a DB-backed `Provider.cost_class TEXT` column. NULL preserves the v3.0.50 default behavior (derive from `provider_type`: `claude-oauth`/`codex-oauth`/`anthropic-oauth` = `subscription`, all else = `per_call`). Admin-overridable when an `anthropic-direct` provider is on a flat-rate enterprise contract, or for any future per-call OAuth tier.
+
+Idempotent ALTER TABLE migration. `record_outcome` prefers the explicit column when set; otherwise falls back to the type-based derivation, so existing deployments keep working unchanged.
+
+### v3.0.56 — Skip keepalive probes on per-call providers
+
+Cost-burn audit on 2026-05-04 found probes burning ~$0.32/day on synthetic Cohere traffic, plus smaller amounts on Vertex/Google/Personal-OpenAI. Annualized: ~$120/year on Cohere alone, and growing.
+
+Subscription-tier providers (`claude-oauth`/`codex-oauth`/`anthropic-oauth`) keep probing — $0 per probe. Per-call providers are skipped by default. The auth-failure / billing-failure UI badge already surfaces dead state from real traffic.
+
+Override: `KEEPALIVE_PROBE_PER_CALL_PROVIDERS=true` (env) restores pre-v3.0.56 probe-everything behavior.
+
+### v3.0.55 — Cost-tier resolves against requested model + capture LLM-Hint header
+
+Two fixes from a 2026-05-04 cost burn diagnosis ($1.59 of real billing in one day on what should have been a $0 subscription path).
+
+**Root cause** — `capability_inference` derives `cost_tier` from the provider's `default_model`. Devin-Anthropic-Max-VG's default is `claude-sonnet-4-6` → tier `standard`. When a caller requests `claude-haiku-4-5` (which IS economy tier) with `cost=economy;require`, the hard filter excludes the claude-oauth provider despite the requested model being economy. Cross-family fallback fires → Vertex Gemini Flash → real per-call billing.
+
+**Fix 1** — In `select_provider`, when caller specifies `model_override`, re-derive `cost_tier` from THAT model name (`haiku`/`flash`/`mini`/`gpt-3.5` → economy; `sonnet`/`gpt-4o`/`gemini-2.0` → standard; `opus`/`o1`/`o3`/`r1` → premium) and apply to family-aligned candidates before LMRH scoring. Family-type gating keeps the rewrite scoped — a Vertex provider doesn't get its tier rewritten just because the caller asked for "haiku".
+
+**Fix 2** — `event_meta.lmrh_hint` (capped 500 chars) now captures the raw `LLM-Hint` header on every `llm_request` event. The 2026-05-04 diagnosis hit a wall because we couldn't see what hint the caller actually sent — only that they sent something (`had_lmrh_hint=true`). PII-free since LMRH dims are routing metadata, not content.
+
+### v3.0.54 — claude-oauth marker doesn't add cache_control when caller has it
+
+AI Analyzer reported v3.9.22 smoke test where two back-to-back identical-system-prompt calls (input=2059 tokens, claude-haiku-4-5, claude-oauth) returned `cache_creation=cache_read=0` despite the caller correctly attaching `cache_control: {type: "ephemeral"}` to the system block.
+
+Root cause: claude-oauth path's `_inject_claude_code_system` was unconditionally adding `cache_control` to the prepended ~14-token Claude Code marker block. With a caller-supplied cache_control downstream, this created two breakpoints — breakpoint 1 (marker, ~14 tokens) below every model's per-request minimum (Sonnet 1024 / Haiku 2048 / Opus 4096). Sub-threshold breakpoints normally silently no-op, but in some upstream behaviors they suppress caching for the whole request.
+
+Fix: when ANY caller-supplied system block carries cache_control, the marker block is emitted **without** cache_control. Single-breakpoint mode — caller's larger block is the only breakpoint. Marker text still anchors prefix start (cache key stability preserved). Original v2.7.6 case (caller didn't supply any cache_control) still wraps the marker.
+
+**Followup finding (8h sample post-deploy)**: Sonnet caches at 97.1% hit rate on Devin-Anthropic-Max-VG; Haiku at 0.0% even at 2410 tokens (above documented 2048 threshold). `cache_control` on `claude-haiku-4-5` over Pro Max OAuth tier appears unsupported despite the prompt-caching beta flag being accepted — upstream-side limitation, not a proxy bug.
+
+### v3.0.53 — Billing-error breaker hold-down 1h → 6h
+
+Billing errors (quota exhausted, payment_required, insufficient_credit) need operator intervention — they don't self-resolve in an hour. The 1h hold-down meant each node fired a re-test probe ~24×/day per provider, contributing 1-3/hr cluster-wide log noise on quota-exhausted providers.
+
+6h hold-down: 4 retests/day per node, still detects same-day recovery, ~75% less log churn while operator triages billing.
+
+### v3.0.52 — LMRH 1.2 §E3 ;sovereign modifier + region disclosure headers
+
+Completes the LMRH 1.2 §E3 region-pinning reference implementation:
+
+- `HintDimension.sovereign: bool` field; `;sovereign` modifier parsed in both legacy and RFC 8941 paths (implies `;require`)
+- Sovereign rejects providers with empty `regions` config (uncertainty = reject; differs from `;require` which soft-passes unconfigured profiles for backwards compat)
+- `LLM-Capability` emits `served-region=<most-specific>` and `region-honored=strict|loose` whenever the caller sent a `region=` hint and a candidate matched
+- 6 new unit tests (24/24 LMRH suite total)
+
+`cross-border-risk` disclosure remains spec-only — needs per-provider-type failover-behavior metadata.
+
+### v3.0.51 — LMRH region hierarchy + InnerList any-of matching
+
+Extends the existing region-dim scoring (which already enforced `;require` as a hard filter) with hierarchy matching and InnerList any-of values:
+
+- `region=eu` is now satisfied by a profile tagged `eu-west` / `eu-central` (and likewise `us` / `asia` / etc.)
+- RFC 8941 InnerList syntax `region=(us ca)` (any-of) honored by scorer
+- 6 new unit tests covering exact match, hierarchy, `;require` pass via hierarchy, `;require` fail, unconfigured-profile soft-pass, `any` token
+
+### v3.0.50 — Subscription-tier zero-cost accounting
+
+Closes A7 cost-attribution overcount on cross-family-substituted calls. When v3.0.46's cross-family fallback substitutes a request like paperless's `gpt-4o` to codex-oauth (operator's flat-rate ChatGPT Plus subscription), `record_outcome()` was still calling `estimate_cost()` with the substituted model + tokens and writing the litellm-rate value to `event_meta.cost_usd` and `api_keys.total_cost_usd`. Paperless's rolling cost ticker was reading ~$3-5/hr inflated.
+
+Fix: classify provider_types as subscription-tier vs per-call. For subscription tier (`codex-oauth`, `claude-oauth`, `anthropic-oauth`), record `cost_usd=0.0` and surface the litellm-rate value as `quota_usd` for "what would this have cost on per-call billing" reporting.
+
+Adds `event_meta.cost_class = "subscription"|"per_call"` on every `llm_request` event for consistent dashboard filtering. Mirrored on the error path. Provider lookup is one `db.get(Provider, id)` per record — primary-key indexed.
+
 ### v3.0.29 — LMRH dim/proposal tombstone replication + warning-cache invalidation
 
 Hard-DELETE on a registered LMRH dim was reversed by the next cluster-sync push from a peer that still had the row — the receive-side merge was strict "insert if missing." Same class of bug fixed for `Provider` (v2.8.2) and `ApiKey` (v3.0.20).
