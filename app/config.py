@@ -105,6 +105,14 @@ class Settings(BaseSettings):
 
     # v3.0.2: keep-alive probes — 0 disables
     keepalive_probe_interval_sec: int = Field(300, alias="KEEPALIVE_PROBE_INTERVAL_SEC")
+    # v3.0.56: by default skip probes on per-call providers (Cohere,
+    # OpenAI, Vertex, etc.) since they burn real $ on synthetic traffic.
+    # Subscription-tier providers (claude-oauth, codex-oauth) keep
+    # probing — cost is $0. Set True to restore the pre-v3.0.56
+    # behavior of probing everything.
+    keepalive_probe_per_call_providers: bool = Field(
+        False, alias="KEEPALIVE_PROBE_PER_CALL_PROVIDERS"
+    )
 
     # v3.0.7: activity_log + provider_metrics + run_events retention (days)
     activity_log_retention_days: int = Field(30, alias="ACTIVITY_LOG_RETENTION_DAYS")
