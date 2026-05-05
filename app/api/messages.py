@@ -322,6 +322,7 @@ async def messages(
                 key_record_id=key_record.id, t0=t0,
                 budget_total=max_tokens,
                 provider_name=route.provider.name,
+                llm_hint=llm_hint,
             )
             try:
                 first_chunk = await stream_gen.__anext__()
@@ -354,6 +355,7 @@ async def messages(
                 provider_id=oauth_provider_id, db=db,
                 key_record_id=key_record.id, t0=t0,
                 provider_name=route.provider.name,
+                llm_hint=llm_hint,
             )
         except httpx.HTTPStatusError as e:
             status = e.response.status_code if e.response is not None else 502

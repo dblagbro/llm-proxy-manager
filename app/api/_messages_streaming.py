@@ -372,6 +372,11 @@ async def _complete_claude_oauth(
     key_record_id: str,
     t0: float,
     provider_name: Optional[str] = None,
+    # v3.0.58: plumb the raw LLM-Hint header through claude-oauth so
+    # event_meta.lmrh_hint captures it (the claude-oauth dispatch path
+    # was uninstrumented in v3.0.55, leaving paperless's hint invisible
+    # in activity logs even though FastAPI parsed it correctly).
+    llm_hint: Optional[str] = None,
 ) -> dict:
     """Non-streaming ``/v1/messages`` call against platform.claude.com.
 
@@ -417,6 +422,7 @@ async def _complete_claude_oauth(
                     key_record_id=key_record_id, error_str=f"{r.status_code}: {r.text[:200]}",
                     provider_name=provider_name, request_body=body,
                     requested_model=req_model,
+                    had_lmrh_hint=bool(llm_hint), lmrh_hint_raw=llm_hint or None,
                 )
                 r.raise_for_status()
             data = r.json()
@@ -434,6 +440,7 @@ async def _complete_claude_oauth(
                 provider_name=provider_name,
                 request_body=body, response_body=data,
                 requested_model=req_model,
+                had_lmrh_hint=bool(llm_hint), lmrh_hint_raw=llm_hint or None,
             )
             return data
         except httpx.HTTPError as e:
@@ -442,6 +449,7 @@ async def _complete_claude_oauth(
                 key_record_id=key_record_id, error_str=_exc_str(e),
                 provider_name=provider_name, request_body=body,
                 requested_model=body.get("model") or "claude-oauth",
+                had_lmrh_hint=bool(llm_hint), lmrh_hint_raw=llm_hint or None,
             )
             raise
 
@@ -456,6 +464,7 @@ async def _stream_claude_oauth(
     budget_total: int = 0,
     cache_decision=None,
     provider_name: Optional[str] = None,
+    llm_hint: Optional[str] = None,  # v3.0.58: capture in event_meta.lmrh_hint
 ) -> AsyncIterator[bytes]:
     """Streaming ``/v1/messages`` — platform.claude.com already emits
     Anthropic SSE, so we can forward chunks as-is and just sniff usage
@@ -514,6 +523,7 @@ async def _stream_claude_oauth(
                             key_record_id=key_record_id,
                             error_str=f"{r.status_code}: {err_body}",
                             provider_name=provider_name, request_body=body,
+                            had_lmrh_hint=bool(llm_hint), lmrh_hint_raw=llm_hint or None,
                         )
                         # RAISE — dispatch will convert to HTTP error response.
                         # Do NOT yield SSE error frames; status hasn't been sent.
@@ -637,6 +647,7 @@ async def _stream_claude_oauth(
                 provider_name=provider_name,
                 request_body=body, response_body=assembled_response,
                 requested_model=req_model_str,
+                had_lmrh_hint=bool(llm_hint), lmrh_hint_raw=llm_hint or None,
             )
             if cache_decision is not None and cache_decision.eligible:
                 try:
@@ -652,6 +663,7 @@ async def _stream_claude_oauth(
                 db, provider_id, body.get("model") or "claude-oauth", success=False,
                 key_record_id=key_record_id, error_str=_exc_str(e),
                 provider_name=provider_name, request_body=body,
+                had_lmrh_hint=bool(llm_hint), lmrh_hint_raw=llm_hint or None,
             )
             if not yielded_first_chunk:
                 # Pre-stream connection error — surface as HTTP error

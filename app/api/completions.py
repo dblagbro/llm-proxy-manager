@@ -279,6 +279,7 @@ async def chat_completions(
                 key_record_id=key_record.id,
                 t0=t0,
                 provider_name=route.provider.name,
+                llm_hint=llm_hint,
             )
             openai_sse = stream_anthropic_to_openai_sse(
                 anthropic_sse, requested_model=body.get("model") or "",
@@ -294,6 +295,7 @@ async def chat_completions(
                 key_record_id=key_record.id,
                 t0=t0,
                 provider_name=route.provider.name,
+                llm_hint=llm_hint,
             )
             return JSONResponse(
                 content=anthropic_response_to_openai(anth_resp, requested_model=body.get("model") or ""),
