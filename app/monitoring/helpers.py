@@ -205,12 +205,19 @@ async def record_outcome(
     # v3.0.50: classify provider as subscription vs per-call so paperless's
     # cost ticker (and api_keys.total_cost_usd) doesn't inflate from
     # cross-family substitutions that route to codex-oauth at $0 real cost.
+    # v3.0.57: prefer the explicit Provider.cost_class column when set;
+    # fall back to provider_type-based derivation for backward compat.
     try:
         provider_obj = await db.get(Provider, provider_id)
         provider_type = getattr(provider_obj, "provider_type", None) if provider_obj else None
+        explicit_cost_class = getattr(provider_obj, "cost_class", None) if provider_obj else None
     except Exception:
         provider_type = None
-    is_subscription = provider_type in SUBSCRIPTION_TIER_PROVIDER_TYPES
+        explicit_cost_class = None
+    if explicit_cost_class in ("subscription", "per_call"):
+        is_subscription = (explicit_cost_class == "subscription")
+    else:
+        is_subscription = provider_type in SUBSCRIPTION_TIER_PROVIDER_TYPES
     if success:
         latency_ms = (time.monotonic() - t0) * 1000
         rated_cost = estimate_cost(model, in_tok, out_tok)

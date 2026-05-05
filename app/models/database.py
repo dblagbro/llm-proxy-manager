@@ -93,6 +93,12 @@ async def init_db():
             # (17k gpt-4o calls in 48h on the operator's personal ChatGPT
             # account because there was no tenant boundary on providers).
             "ALTER TABLE providers ADD COLUMN owned_by_key_id TEXT",
+            # v3.0.57 — explicit per-provider cost_class. NULL = derive
+            # from provider_type (claude-oauth/codex-oauth/anthropic-oauth
+            # = subscription, all else = per_call). Set explicitly when
+            # an admin needs to override (e.g. anthropic-direct on a
+            # flat-rate enterprise contract → cost_class="subscription").
+            "ALTER TABLE providers ADD COLUMN cost_class TEXT",
         ]:
             try:
                 await conn.exec_driver_sql(stmt)

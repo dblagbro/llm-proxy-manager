@@ -69,6 +69,16 @@ class Provider(Base):
     # compatible provider — or 503 if none. Null preserves the legacy
     # "shared by all keys" behavior, so this is opt-in per provider.
     owned_by_key_id = Column(String, ForeignKey("api_keys.id"), nullable=True)
+    # v3.0.57: cost_class — explicit per-provider billing model. Replaces
+    # the previously hardcoded SUBSCRIPTION_TIER_PROVIDER_TYPES set in
+    # monitoring/helpers.py. Supports the case where a non-OAuth provider
+    # is on a flat-rate enterprise contract (cost_class="subscription"
+    # even though provider_type="anthropic-direct"), and the inverse —
+    # an OAuth provider on per-call billing if Anthropic ever ships such
+    # a tier. NULL preserves the v3.0.50 default behavior: derive from
+    # provider_type (claude-oauth/codex-oauth/anthropic-oauth = subscription,
+    # everything else = per_call).
+    cost_class = Column(String, nullable=True)  # "subscription" | "per_call" | NULL (auto)
 
     capabilities = relationship("ModelCapability", back_populates="provider", cascade="all, delete-orphan")
 
