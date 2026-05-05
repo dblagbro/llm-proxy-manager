@@ -444,6 +444,7 @@ async def messages(
             _webhook_completion_anthropic,
             x_webhook_url, route.litellm_model, messages_list, extra,
             route.provider.id, db, key_record.id,
+            llm_hint=llm_hint,
         )
         return JSONResponse(
             {"status": "queued", "webhook_url": x_webhook_url},
@@ -528,6 +529,7 @@ async def messages(
                     critique_model=critique_model, critique_kwargs=critique_kwargs,
                     samples=samples, task_branch=task_branch,
                     requested_model=body.get("model") if isinstance(body, dict) else "",
+                    llm_hint=llm_hint,
                 ),
                 media_type="text/event-stream",
                 headers=resp_headers,
@@ -562,6 +564,7 @@ async def messages(
                             route.litellm_model, messages_list, extra, route.provider.id,
                             db, key_record.id, time.monotonic(), max_tokens,
                             cache_decision=cache_decision,
+                            llm_hint=llm_hint,
                         )
 
                     def _backup():
@@ -575,6 +578,7 @@ async def messages(
                             backup_route.provider.id,
                             db, key_record.id, time.monotonic(), max_tokens,
                             cache_decision=None,  # don't store backup output under primary's key
+                            llm_hint=llm_hint,
                         )
 
                     racer, winner = await race_streams(_primary, _backup, wait_ms)
@@ -589,7 +593,8 @@ async def messages(
             return StreamingResponse(
                 _stream_anthropic(route.litellm_model, messages_list, extra, route.provider.id,
                                   db, key_record.id, time.monotonic(), max_tokens,
-                                  cache_decision=cache_decision),
+                                  cache_decision=cache_decision,
+                                  llm_hint=llm_hint),
                 media_type="text/event-stream",
                 headers=resp_headers,
             )
