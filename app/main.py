@@ -189,6 +189,16 @@ async def lifespan(app: FastAPI):
         start_usage_tracker()
     except Exception as e:
         logger.warning(f"usage tracker failed to start: {e}")
+
+    # v3.0.65: usage-based auto-rotation (Phase 3). Reads cache populated
+    # by usage_tracker; swaps priority among same-type tracking-enabled
+    # providers when usage gap exceeds the configured threshold. 5-min
+    # interval, 30-min cooldown per pair, logged as usage_rotation events.
+    try:
+        from app.monitoring.usage_rotator import start as start_usage_rotator
+        start_usage_rotator()
+    except Exception as e:
+        logger.warning(f"usage rotator failed to start: {e}")
     start_cluster(
         db_factory=AsyncSessionLocal,
         notify_fn=alert_cluster_node_down,
