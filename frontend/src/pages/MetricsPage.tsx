@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip,
-  ResponsiveContainer, CartesianGrid,
+  ResponsiveContainer, CartesianGrid, Line, LineChart,
 } from 'recharts'
 import { ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react'
 import { monitoringApi } from '@/api'
@@ -49,12 +49,17 @@ export function MetricsPage() {
   // v3.0.73 — Cache savings rollup. Backend caps window at 1440 min (24h),
   // so 72h selector falls back to 24h for the cache card.
   // v3.0.74: groupBy toggle — pivot between provider and api-key breakdowns.
+  // v3.0.81: bucket the window into ~12 slices for the sparkline. 12 is
+  // a good visual default — granular enough to show trends, coarse
+  // enough that small fluctuations don't dominate.
   const cacheWindowMin = Math.min(window * 60, 1440)
+  const cacheBucketMin = Math.max(5, Math.round(cacheWindowMin / 12))
   const { data: cacheStats } = useQuery({
-    queryKey: ['cacheStats', cacheWindowMin, cacheGroupBy],
+    queryKey: ['cacheStats', cacheWindowMin, cacheGroupBy, cacheBucketMin],
     queryFn: () => monitoringApi.cacheStats({
       windowMinutes: cacheWindowMin,
       groupBy: cacheGroupBy,
+      bucketMinutes: cacheBucketMin,
     }),
     refetchInterval: 60_000,
   })
@@ -213,6 +218,37 @@ export function MetricsPage() {
                 </p>
               </div>
             </div>
+            {/* v3.0.81 — hit-rate sparkline. Hidden if the time-series is
+                empty (would happen on a fresh deploy before any window
+                data accumulates). Recharts LineChart at 80px height —
+                visible trend without dominating the card. */}
+            {cacheStats.time_series && cacheStats.time_series.length > 0 && (
+              <div className="mt-4 pt-4 border-t border-gray-100 dark:border-gray-700">
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-xs text-gray-400">
+                    Hit rate trend ({cacheStats.time_series.length} ×{' '}
+                    {cacheStats.bucket_minutes ?? 0}m buckets)
+                  </p>
+                </div>
+                <ResponsiveContainer width="100%" height={80}>
+                  <LineChart data={cacheStats.time_series.map(b => ({
+                    bucket: b.bucket_start.slice(11, 16),  // HH:MM in UTC
+                    hit_rate: b.cache_hit_rate_pct,
+                    cache_read_k: Math.round(b.cache_read_tokens / 1000),
+                  }))}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#374151" opacity={0.3} />
+                    <XAxis dataKey="bucket" tick={{ fontSize: 10, fill: '#9ca3af' }} />
+                    <YAxis tick={{ fontSize: 10, fill: '#9ca3af' }} domain={[0, 100]} unit="%" />
+                    <Tooltip
+                      contentStyle={{ background: '#1f2937', border: '1px solid #374151', borderRadius: 8, fontSize: 12 }}
+                      labelStyle={{ color: '#e5e7eb' }}
+                      formatter={(v) => `${Number(v).toFixed(1)}%`}
+                    />
+                    <Line type="monotone" dataKey="hit_rate" stroke="#10b981" strokeWidth={2} dot={false} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            )}
             {cacheStats.by_group.length > 0 && (
               <div className="mt-4 pt-4 border-t border-gray-100 dark:border-gray-700">
                 <p className="text-xs text-gray-400 mb-2">

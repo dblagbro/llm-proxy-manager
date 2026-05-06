@@ -145,12 +145,14 @@ export const monitoringApi = {
   cacheStats: (params: {
     windowMinutes?: number
     groupBy?: 'provider' | 'api_key' | 'none'
+    bucketMinutes?: number  // v3.0.80: when set, response includes time_series
     ratePerMillion?: number
     cacheDiscountPct?: number
   } = {}) => {
     const qs = new URLSearchParams()
     if (params.windowMinutes !== undefined) qs.set('window_minutes', String(params.windowMinutes))
     if (params.groupBy !== undefined) qs.set('group_by', params.groupBy)
+    if (params.bucketMinutes !== undefined) qs.set('bucket_minutes', String(params.bucketMinutes))
     if (params.ratePerMillion !== undefined) qs.set('rate_per_million', String(params.ratePerMillion))
     if (params.cacheDiscountPct !== undefined) qs.set('cache_discount_pct', String(params.cacheDiscountPct))
     const q = qs.toString()
