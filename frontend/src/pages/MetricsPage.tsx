@@ -42,6 +42,15 @@ export function MetricsPage() {
     refetchInterval: 60_000,
   })
 
+  // v3.0.73 — Cache savings rollup. Backend caps window at 1440 min (24h),
+  // so 72h selector falls back to 24h for the cache card.
+  const cacheWindowMin = Math.min(window * 60, 1440)
+  const { data: cacheStats } = useQuery({
+    queryKey: ['cacheStats', cacheWindowMin],
+    queryFn: () => monitoringApi.cacheStats({ windowMinutes: cacheWindowMin }),
+    refetchInterval: 60_000,
+  })
+
   const providersRaw = metrics?.providers ?? []
   const providers = useMemo(() => {
     const sorted = [...providersRaw]
@@ -117,6 +126,84 @@ export function MetricsPage() {
           </Card>
         ))}
       </div>
+
+      {/* v3.0.73 — Cache savings (Anthropic prompt caching). Hidden when no
+          cache_read events sampled — keeps the page clean for fleets that
+          don't use Anthropic-shape providers or where cache injection isn't
+          firing. */}
+      {cacheStats && cacheStats.overall.events_with_cache_read > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle>
+              Prompt Cache — last {cacheStats.window_minutes >= 60
+                ? `${Math.round(cacheStats.window_minutes / 60)}h`
+                : `${cacheStats.window_minutes}m`}
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-4 gap-4">
+              <div>
+                <p className="text-xs text-gray-400 mb-1">Hit Rate</p>
+                <p className="text-2xl font-bold text-gray-900 dark:text-gray-100">
+                  {cacheStats.overall.cache_hit_rate_pct.toFixed(1)}%
+                </p>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  {cacheStats.overall.events_with_cache_read.toLocaleString()} of{' '}
+                  {cacheStats.overall.events.toLocaleString()} events
+                </p>
+              </div>
+              <div>
+                <p className="text-xs text-gray-400 mb-1">Cache Read</p>
+                <p className="text-2xl font-bold text-gray-900 dark:text-gray-100">
+                  {(cacheStats.overall.cache_read_tokens / 1000).toLocaleString(undefined, { maximumFractionDigits: 0 })}K
+                </p>
+                <p className="text-xs text-gray-500 mt-0.5">tokens served from cache</p>
+              </div>
+              <div>
+                <p className="text-xs text-gray-400 mb-1">Input from Cache</p>
+                <p className="text-2xl font-bold text-gray-900 dark:text-gray-100">
+                  {cacheStats.overall.cache_share_of_input_pct.toFixed(0)}%
+                </p>
+                <p className="text-xs text-gray-500 mt-0.5">vs new input tokens</p>
+              </div>
+              <div>
+                <p className="text-xs text-gray-400 mb-1">Est. Savings</p>
+                <p className="text-2xl font-bold text-emerald-600 dark:text-emerald-400">
+                  {fmtCost(cacheStats.overall.estimated_savings_usd)}
+                </p>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  @ ${cacheStats.rate_per_million_usd.toFixed(2)}/M ×{' '}
+                  {(cacheStats.cache_discount_pct * 100).toFixed(0)}% disc
+                </p>
+              </div>
+            </div>
+            {cacheStats.by_group.length > 0 && (
+              <div className="mt-4 pt-4 border-t border-gray-100 dark:border-gray-700">
+                <p className="text-xs text-gray-400 mb-2">By provider</p>
+                <div className="space-y-1.5">
+                  {cacheStats.by_group
+                    .filter(g => g.events_with_cache_read > 0)
+                    .slice(0, 5)
+                    .map(g => (
+                      <div key={g.id} className="flex items-center justify-between text-sm">
+                        <span className="text-gray-700 dark:text-gray-300 truncate flex-1">{g.name}</span>
+                        <span className="text-gray-500 mx-3">
+                          {g.cache_hit_rate_pct.toFixed(0)}% hit
+                        </span>
+                        <span className="text-gray-500 mx-3">
+                          {(g.cache_read_tokens / 1000).toFixed(0)}K tok
+                        </span>
+                        <span className="text-emerald-600 dark:text-emerald-400 w-16 text-right">
+                          {fmtCost(g.estimated_savings_usd)}
+                        </span>
+                      </div>
+                    ))}
+                </div>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       {isLoading ? (
         <div className="flex justify-center py-16"><Spinner /></div>

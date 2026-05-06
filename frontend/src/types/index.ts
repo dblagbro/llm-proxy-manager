@@ -167,6 +167,33 @@ export interface MetricsSummary {
   circuit_breakers: Record<string, CircuitBreakerInfo>
 }
 
+// v3.0.73 — /api/monitoring/cache-stats response shape (rolling window).
+export interface CacheStatsBucket {
+  events: number
+  events_with_cache_read: number
+  events_with_cache_creation: number
+  cache_read_tokens: number
+  cache_creation_tokens: number
+  new_input_tokens: number
+  cache_hit_rate_pct: number
+  cache_share_of_input_pct: number
+  estimated_savings_usd: number
+}
+
+export interface CacheStatsGroup extends CacheStatsBucket {
+  id: string
+  name: string
+}
+
+export interface CacheStats {
+  window_minutes: number
+  rate_per_million_usd: number
+  cache_discount_pct: number
+  overall: CacheStatsBucket
+  by_group: CacheStatsGroup[]
+  group_by: 'provider' | 'api_key' | 'none'
+}
+
 // ── Cluster ───────────────────────────────────────────────────────────────────
 export interface ClusterNode {
   id: string

@@ -74,10 +74,14 @@ class TestSerializeRow:
         assert out["severity"] == "warning"
 
     def test_iso_timestamp(self):
+        # v3.0.73: utc_iso() canonicalizes UTC values with the ``Z`` suffix
+        # so JS Date parses them as UTC instead of local time. The
+        # ``+00:00`` form is stripped before ``Z`` is appended (was
+        # producing the malformed ``+00:00Z`` form pre-v3.0.73).
         ts = datetime(2026, 1, 15, 12, 30, 45, tzinfo=timezone.utc)
         r = _FakeRow(created_at=ts)
         out = _serialize_row(r)
-        assert out["created_at"] == ts.isoformat()
+        assert out["created_at"] == "2026-01-15T12:30:45Z"
 
     def test_none_timestamp(self):
         r = _FakeRow()
