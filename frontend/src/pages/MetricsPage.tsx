@@ -21,10 +21,13 @@ function fmtCost(v: number) {
   return `$${v.toFixed(3)}`
 }
 
+type CacheGroupBy = 'provider' | 'api_key'
+
 export function MetricsPage() {
   const [window, setWindow] = useState<Window>(24)
   const [sortKey, setSortKey] = useState<SortKey>('requests')
   const [sortDir, setSortDir] = useState<SortDir>('desc')
+  const [cacheGroupBy, setCacheGroupBy] = useState<CacheGroupBy>('provider')
 
   function toggleSort(col: SortKey) {
     if (col === sortKey) {
@@ -44,10 +47,14 @@ export function MetricsPage() {
 
   // v3.0.73 — Cache savings rollup. Backend caps window at 1440 min (24h),
   // so 72h selector falls back to 24h for the cache card.
+  // v3.0.74: groupBy toggle — pivot between provider and api-key breakdowns.
   const cacheWindowMin = Math.min(window * 60, 1440)
   const { data: cacheStats } = useQuery({
-    queryKey: ['cacheStats', cacheWindowMin],
-    queryFn: () => monitoringApi.cacheStats({ windowMinutes: cacheWindowMin }),
+    queryKey: ['cacheStats', cacheWindowMin, cacheGroupBy],
+    queryFn: () => monitoringApi.cacheStats({
+      windowMinutes: cacheWindowMin,
+      groupBy: cacheGroupBy,
+    }),
     refetchInterval: 60_000,
   })
 
@@ -133,12 +140,27 @@ export function MetricsPage() {
           firing. */}
       {cacheStats && cacheStats.overall.events_with_cache_read > 0 && (
         <Card>
-          <CardHeader>
+          <CardHeader className="flex flex-row items-center justify-between">
             <CardTitle>
               Prompt Cache — last {cacheStats.window_minutes >= 60
                 ? `${Math.round(cacheStats.window_minutes / 60)}h`
                 : `${cacheStats.window_minutes}m`}
             </CardTitle>
+            <div className="flex gap-1">
+              {(['provider', 'api_key'] as const).map(g => (
+                <button
+                  key={g}
+                  onClick={() => setCacheGroupBy(g)}
+                  className={`px-2 py-1 text-xs rounded transition-colors ${
+                    cacheGroupBy === g
+                      ? 'bg-indigo-600 text-white'
+                      : 'bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-300 border border-gray-200 dark:border-gray-700 hover:border-indigo-400'
+                  }`}
+                >
+                  {g === 'provider' ? 'By Provider' : 'By API Key'}
+                </button>
+              ))}
+            </div>
           </CardHeader>
           <CardContent>
             <div className="grid grid-cols-4 gap-4">
@@ -179,7 +201,9 @@ export function MetricsPage() {
             </div>
             {cacheStats.by_group.length > 0 && (
               <div className="mt-4 pt-4 border-t border-gray-100 dark:border-gray-700">
-                <p className="text-xs text-gray-400 mb-2">By provider</p>
+                <p className="text-xs text-gray-400 mb-2">
+                  By {cacheGroupBy === 'provider' ? 'provider' : 'API key'}
+                </p>
                 <div className="space-y-1.5">
                   {cacheStats.by_group
                     .filter(g => g.events_with_cache_read > 0)
