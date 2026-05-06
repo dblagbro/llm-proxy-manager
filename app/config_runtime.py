@@ -132,6 +132,9 @@ SCHEMA: dict[str, dict] = {
     "semantic_cache_threshold":        {"type": "float",  "default": settings.semantic_cache_threshold,  "label": "Cosine threshold (0.0–1.0)"},
     "semantic_cache_ttl_sec":          {"type": "int",  "default": settings.semantic_cache_ttl_sec,         "label": "TTL (seconds)"},
     "semantic_cache_min_response_chars":{"type":"int",  "default": settings.semantic_cache_min_response_chars,"label":"Min response chars to cache"},
+    # v3.0.67: route embeddings through a specific proxy provider (e.g. priority=1 Google)
+    "semantic_cache_embedding_model":  {"type": "string", "default": settings.semantic_cache_embedding_model, "label": "Embedding model (e.g. text-embedding-3-small, gemini-embedding-001)"},
+    "semantic_cache_provider_id":      {"type": "string", "default": settings.semantic_cache_provider_id,    "label": "Pin embeddings to this provider id (blank = let litellm pick from model name)"},
     # Hedged requests (Wave 1 #4)
     "hedge_enabled":     {"type": "bool", "default": settings.hedge_enabled,     "label": "Enable hedged requests globally"},
     "hedge_max_per_sec": {"type": "float",  "default": settings.hedge_max_per_sec, "label": "Max hedge requests per second (global bucket)"},

@@ -92,6 +92,12 @@ class Settings(BaseSettings):
     )
     # Matryoshka-truncated dimensions — 512 keeps ~98% quality at 33% size
     semantic_cache_embedding_dims: int = Field(512, alias="SEMANTIC_CACHE_EMBEDDING_DIMS")
+    # v3.0.67: when set, route semantic-cache embeddings through this
+    # specific proxy provider (using its api_key + base_url + litellm
+    # prefix) instead of letting litellm pick implicitly from the model
+    # name. Honors operator priority intent — e.g. set to a Google
+    # provider id to route embeddings to Gemini instead of OpenAI.
+    semantic_cache_provider_id: str = Field("", alias="SEMANTIC_CACHE_PROVIDER_ID")
     # Minimum response length (chars) to be worth caching — filters refusals, errors
     semantic_cache_min_response_chars: int = Field(200, alias="SEMANTIC_CACHE_MIN_RESPONSE_CHARS")
 
