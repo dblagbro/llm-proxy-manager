@@ -160,7 +160,19 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
             # on a peer can't revert a real admin edit on this node.
             local_user_edit = existing.last_user_edit_at
             if peer_user_edit_at is not None and local_user_edit is not None:
-                accept = peer_user_edit_at >= local_user_edit
+                # v3.0.63: STRICT-greater. Was `>=` which meant on ties
+                # (post-sync, both sides carry identical last_user_edit_at)
+                # peer always won — creating a ping-pong where any
+                # divergent state on either node would flip back and
+                # forth on each sync cycle. Symptom: operator changes
+                # provider priority on www01, sync replicates timestamp
+                # to www02 with www02's old state still attached, next
+                # sync www02 echoes that state back at the same
+                # timestamp and www01's recent change gets reverted.
+                # Strict-greater + tie → keep local means an admin edit
+                # only gets overwritten by an explicitly NEWER edit
+                # elsewhere.
+                accept = peer_user_edit_at > local_user_edit
             elif local_user_edit is not None and peer_user_edit_at is None:
                 # Local row was admin-edited (v3.0.11+); peer's payload
                 # carries no admin-edit stamp — could be a legacy v3.0.10
