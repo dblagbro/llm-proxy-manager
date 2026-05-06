@@ -77,6 +77,14 @@ export type ProviderFormState = {
   oauth_state: string
   oauth_authorize_url: string
   oauth_callback: string
+  // v3.0.64: per-provider usage tracking + rotation config (Phase 2)
+  usage_tracking_enabled: boolean
+  usage_session_window_sec: number | null
+  usage_weekly_reset_dow: number | null   // 0=Mon … 6=Sun
+  usage_weekly_reset_hour: number | null  // 0..23 local hour
+  usage_session_limit_tokens: number | null
+  usage_weekly_limit_tokens: number | null
+  usage_rotation_threshold_pct: number | null
 }
 
 export function emptyProviderForm(): ProviderFormState {
@@ -97,6 +105,13 @@ export function emptyProviderForm(): ProviderFormState {
     oauth_state: '',
     oauth_authorize_url: '',
     oauth_callback: '',
+    usage_tracking_enabled: false,
+    usage_session_window_sec: null,
+    usage_weekly_reset_dow: null,
+    usage_weekly_reset_hour: null,
+    usage_session_limit_tokens: null,
+    usage_weekly_limit_tokens: null,
+    usage_rotation_threshold_pct: null,
   }
 }
 
@@ -118,6 +133,13 @@ export function providerToForm(p: Provider): ProviderFormState {
     oauth_state: '',
     oauth_authorize_url: '',
     oauth_callback: '',
+    usage_tracking_enabled: (p as unknown as { usage_tracking_enabled?: boolean }).usage_tracking_enabled ?? false,
+    usage_session_window_sec: (p as unknown as { usage_session_window_sec?: number | null }).usage_session_window_sec ?? null,
+    usage_weekly_reset_dow: (p as unknown as { usage_weekly_reset_dow?: number | null }).usage_weekly_reset_dow ?? null,
+    usage_weekly_reset_hour: (p as unknown as { usage_weekly_reset_hour?: number | null }).usage_weekly_reset_hour ?? null,
+    usage_session_limit_tokens: (p as unknown as { usage_session_limit_tokens?: number | null }).usage_session_limit_tokens ?? null,
+    usage_weekly_limit_tokens: (p as unknown as { usage_weekly_limit_tokens?: number | null }).usage_weekly_limit_tokens ?? null,
+    usage_rotation_threshold_pct: (p as unknown as { usage_rotation_threshold_pct?: number | null }).usage_rotation_threshold_pct ?? null,
   }
 }
 
@@ -328,6 +350,91 @@ export function ProviderForm({ form, onChange, editing }: Props) {
           onChange={e => set({ exclude_from_tool_requests: e.target.checked })}
           className="h-4 w-4 accent-indigo-600"
         />
+      </div>
+
+      {/* v3.0.64: Per-provider usage-based rotation (Phase 2 — config UI).
+          Phase 3 will add the auto-rotate background task. */}
+      <div className="md:col-span-2 mt-6 border-t border-gray-200 dark:border-gray-700 pt-4">
+        <div className="flex items-center justify-between mb-3">
+          <div>
+            <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+              Usage-based rotation
+            </h4>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+              Track rolling token usage so the proxy can rotate priority between same-type
+              providers when one gets too far ahead. Suitable for OAuth subscriptions
+              (claude-oauth, codex-oauth) with session + weekly quotas.
+            </p>
+          </div>
+          <label className="flex items-center gap-2 shrink-0">
+            <input
+              type="checkbox"
+              checked={!!form.usage_tracking_enabled}
+              onChange={e => set({ usage_tracking_enabled: e.target.checked })}
+              className="h-4 w-4 accent-indigo-600"
+            />
+            <span className="text-sm text-gray-700 dark:text-gray-300">Enable tracking</span>
+          </label>
+        </div>
+
+        {form.usage_tracking_enabled && (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <Input
+              label="Session window (seconds)"
+              type="number"
+              value={form.usage_session_window_sec == null ? '' : String(form.usage_session_window_sec)}
+              onChange={e => set({ usage_session_window_sec: e.target.value === '' ? null : Number(e.target.value) })}
+              placeholder="18000 (5h, claude.ai default)"
+            />
+            <Input
+              label="Session token limit"
+              type="number"
+              value={form.usage_session_limit_tokens == null ? '' : String(form.usage_session_limit_tokens)}
+              onChange={e => set({ usage_session_limit_tokens: e.target.value === '' ? null : Number(e.target.value) })}
+              placeholder="2000000"
+            />
+            <div>
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                Weekly reset day
+              </label>
+              <select
+                value={form.usage_weekly_reset_dow == null ? '' : String(form.usage_weekly_reset_dow)}
+                onChange={e => set({ usage_weekly_reset_dow: e.target.value === '' ? null : Number(e.target.value) })}
+                className="w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 px-3 py-1.5 text-sm"
+              >
+                <option value="">— not set —</option>
+                <option value="0">Monday</option>
+                <option value="1">Tuesday</option>
+                <option value="2">Wednesday</option>
+                <option value="3">Thursday</option>
+                <option value="4">Friday</option>
+                <option value="5">Saturday</option>
+                <option value="6">Sunday (claude.ai default)</option>
+              </select>
+            </div>
+            <Input
+              label="Weekly reset hour (0-23 local)"
+              type="number"
+              value={form.usage_weekly_reset_hour == null ? '' : String(form.usage_weekly_reset_hour)}
+              onChange={e => set({ usage_weekly_reset_hour: e.target.value === '' ? null : Number(e.target.value) })}
+              placeholder="16 (4pm, claude.ai default)"
+            />
+            <Input
+              label="Weekly token limit"
+              type="number"
+              value={form.usage_weekly_limit_tokens == null ? '' : String(form.usage_weekly_limit_tokens)}
+              onChange={e => set({ usage_weekly_limit_tokens: e.target.value === '' ? null : Number(e.target.value) })}
+              placeholder="20000000"
+            />
+            <Input
+              label="Rotation threshold (% gap)"
+              type="number"
+              value={form.usage_rotation_threshold_pct == null ? '' : String(form.usage_rotation_threshold_pct)}
+              onChange={e => set({ usage_rotation_threshold_pct: e.target.value === '' ? null : Number(e.target.value) })}
+              placeholder="30 (rotate when usage % gap exceeds this)"
+            />
+          </div>
+        )}
       </div>
     </div>
   )

@@ -346,6 +346,42 @@ export function ProvidersPage() {
                         </p>
                       )
                     })()}
+                    {/* v3.0.64: per-provider usage % indicator. Only shown
+                        when usage tracking is enabled on this provider AND
+                        a session_pct or weekly_pct has been computed. */}
+                    {(() => {
+                      const ext = p as unknown as {
+                        usage_tracking_enabled?: boolean
+                        usage_session_pct?: number | null
+                        usage_weekly_pct?: number | null
+                        usage_session_tokens?: number | null
+                        usage_weekly_tokens?: number | null
+                      }
+                      if (!ext.usage_tracking_enabled) return null
+                      const sPct = ext.usage_session_pct
+                      const wPct = ext.usage_weekly_pct
+                      const colorFor = (v: number | null | undefined) =>
+                        v == null ? 'text-gray-400'
+                          : v >= 90 ? 'text-red-500'
+                          : v >= 70 ? 'text-amber-500'
+                          : v >= 40 ? 'text-yellow-500 dark:text-yellow-400'
+                          : 'text-emerald-600 dark:text-emerald-400'
+                      return (
+                        <p className="text-[11px] text-gray-500 mt-1 font-mono flex flex-wrap gap-x-3">
+                          <span className="text-gray-400 mr-0.5">usage:</span>
+                          <span>session{' '}
+                            <span className={colorFor(sPct)}>
+                              {sPct != null ? `${sPct.toFixed(1)}%` : (ext.usage_session_tokens != null ? `${(ext.usage_session_tokens/1000).toFixed(0)}k tok` : '—')}
+                            </span>
+                          </span>
+                          <span>weekly{' '}
+                            <span className={colorFor(wPct)}>
+                              {wPct != null ? `${wPct.toFixed(1)}%` : (ext.usage_weekly_tokens != null ? `${(ext.usage_weekly_tokens/1000).toFixed(0)}k tok` : '—')}
+                            </span>
+                          </span>
+                        </p>
+                      )
+                    })()}
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
                     {/* v2.7.8 BUG-002: needs re-auth (admin must re-key).
