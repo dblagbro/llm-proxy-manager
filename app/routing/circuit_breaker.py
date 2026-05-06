@@ -308,6 +308,16 @@ _BAD_REQUEST_PATTERNS = [
     "validation error",
     "malformed",
     "bad request",
+    # v3.0.89 — litellm/SDK exception names. The 7d historical scan
+    # found ``litellm.ContextWindowExceededError: ...BadRequestError...``
+    # falling through to unknown because the existing patterns expected
+    # space-separated words (``bad request``) but exception names are
+    # camelcase one-word (``BadRequestError`` → ``badrequesterror``
+    # after lowercase).
+    "badrequesterror",
+    "contextwindowexceeded",
+    "contentpolicyviolation",
+    "unsupportedparams",
 ]
 
 

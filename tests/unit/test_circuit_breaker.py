@@ -206,6 +206,21 @@ class TestClassifyError:
         assert cb.classify_error("400: invalid_request") == "bad_request"
         assert cb.classify_error("validation error: field x missing") == "bad_request"
 
+    def test_litellm_exception_names_classified_as_bad_request(self):
+        """v3.0.89: SDK exception names are camelcase one-word, not the
+        space-separated form earlier patterns expected. The 7d scan
+        found ``ContextWindowExceededError`` falling through to unknown."""
+        assert cb.classify_error(
+            "litellm.ContextWindowExceededError: Input tokens 200000 > 100000"
+        ) == "bad_request"
+        assert cb.classify_error(
+            "litellm.BadRequestError: invalid model"
+        ) == "bad_request"
+        assert cb.classify_error(
+            "ContentPolicyViolationError: blocked"
+        ) == "bad_request"
+        assert cb.classify_error("UnsupportedParamsError: bar") == "bad_request"
+
     def test_unknown_fallthrough(self):
         # Truly novel error string falls through to unknown rather than
         # accidentally bucketing into a more specific category.
