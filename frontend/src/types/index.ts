@@ -185,6 +185,11 @@ export interface CacheStatsGroup extends CacheStatsBucket {
   name: string
 }
 
+export interface CacheStatsTimeBucket extends CacheStatsBucket {
+  bucket_start: string  // ISO 8601 UTC
+  bucket_end: string
+}
+
 export interface CacheStats {
   window_minutes: number
   rate_per_million_usd: number
@@ -192,6 +197,9 @@ export interface CacheStats {
   overall: CacheStatsBucket
   by_group: CacheStatsGroup[]
   group_by: 'provider' | 'api_key' | 'none'
+  // v3.0.80+: present when caller passes bucket_minutes>0
+  bucket_minutes?: number
+  time_series?: CacheStatsTimeBucket[]
 }
 
 // ── Cluster ───────────────────────────────────────────────────────────────────
