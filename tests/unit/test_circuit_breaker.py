@@ -202,6 +202,17 @@ class TestClassifyError:
         assert cb.classify_error("503 Service Unavailable") == "upstream_5xx"
         assert cb.classify_error("Internal Server Error") == "upstream_5xx"
 
+    def test_anthropic_529_overloaded_classified_as_upstream_5xx(self):
+        """v3.0.90: 26-event Anthropic API overload incident on
+        2026-05-06 15:28-15:33 produced strings of the form
+        ``529: {"type":"error","error":{"type":"overloaded_error",...}}``.
+        Pre-fix these classified as ``unknown`` because 529 wasn't in
+        the 5xx pattern list (it's an Anthropic-specific status code)."""
+        msg = '529: {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"},"request_id":"req_xyz"}'
+        assert cb.classify_error(msg) == "upstream_5xx"
+        assert cb.classify_error("overloaded_error") == "upstream_5xx"
+        assert cb.classify_error("Anthropic API: Overloaded") == "upstream_5xx"
+
     def test_bad_request_classification(self):
         assert cb.classify_error("400: invalid_request") == "bad_request"
         assert cb.classify_error("validation error: field x missing") == "bad_request"

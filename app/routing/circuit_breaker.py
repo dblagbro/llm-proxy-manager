@@ -295,6 +295,15 @@ _UPSTREAM_5XX_PATTERNS = [
     "502",
     "503",
     "504",
+    # v3.0.90 — Anthropic-specific 529 ("Overloaded") plus the
+    # ``overloaded_error`` body type. 26 events of this shape during
+    # the 2026-05-06 15:28-15:33 Anthropic API overload incident; pre-
+    # fix they classified as ``unknown``. 529 isn't a standard HTTP
+    # code but it's in the 5xx transient-upstream range and the
+    # body shape is identical to other anthropic upstream errors.
+    "529",
+    "overloaded_error",
+    "overloaded",
     "internal server error",
     "bad gateway",
     "service unavailable",
