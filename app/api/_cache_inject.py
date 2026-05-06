@@ -70,7 +70,11 @@ def inject_cache_control(body: dict, provider_type: str, min_chars: int = 4000) 
         provider_type: e.g. ``claude-oauth``, ``anthropic``
         min_chars: byte threshold below which we don't bother (≈1000 tokens).
                    Anthropic's caching threshold is ~1024 tokens so anything
-                   smaller is a guaranteed cache miss.
+                   smaller is a guaranteed cache miss. Pass ``0`` to force
+                   wrap regardless of size — used for ``cache=ephemeral``
+                   per LMRH 1.2 §E2 to honor caller-explicit opt-in even
+                   on small prompts (where the cache_control is a no-op
+                   upstream but the dim is still honored).
 
     Returns:
         Body with cache_control wrapping applied to the last system block
@@ -133,12 +137,83 @@ def inject_cache_control(body: dict, provider_type: str, min_chars: int = 4000) 
 
 
 def caller_opted_out(lmrh_hint: str | None) -> bool:
-    """v3.0.42: parse LLM-Hint for `cache=none` (with or without `;require`).
-    True when caller explicitly asked us NOT to inject cache_control. Any
-    other value (cache=auto, cache=ephemeral, missing entirely) → False
-    → we inject by default."""
+    """Backward-compat shim — prefer ``parse_cache_mode`` directly.
+
+    True when caller explicitly asked us NOT to inject cache_control via
+    ``cache=none|off|disabled``. Any other value (cache=auto, cache=ephemeral,
+    missing entirely) → False → we inject by default per the auto-mode
+    threshold heuristic.
+    """
+    return parse_cache_mode(lmrh_hint).mode == "none"
+
+
+# v3.0.69: full LMRH 1.2 §E2 cache-mode dim. Spec at
+# docs/lmrh-1.2-cache-mode-dim.md. Replaces the v3.0.42 substring-only check.
+
+class CacheModeDecision:
+    """Resolved cache-mode intent from LLM-Hint.
+
+    Attributes:
+        mode: ``"auto"`` (default + threshold), ``"ephemeral"`` (force inject
+              regardless of size), or ``"none"`` (suppress proxy injection).
+        required: True if caller used ``;require`` modifier.
+        force_below_threshold: True when mode is ``ephemeral`` — inject
+              even on small prompts (no-op upstream below cache threshold,
+              but the dim was honored end-to-end).
+    """
+
+    __slots__ = ("mode", "required", "force_below_threshold")
+
+    def __init__(self, mode: str = "auto", required: bool = False) -> None:
+        self.mode = mode
+        self.required = required
+        self.force_below_threshold = (mode == "ephemeral")
+
+
+# Synonyms per LMRH 1.2 §E2 table. Anything outside this set falls back to
+# "auto" (the proxy's default heuristic) — surfaced as
+# X-LMRH-Warnings: unknown-dim-value:cache=<v> when wired in Phase 2.
+_CACHE_MODE_SYNONYMS = {
+    "auto": "auto",
+    "ephemeral": "ephemeral",
+    "none": "none",
+    "off": "none",
+    "disabled": "none",
+    # "persistent" is reserved (per spec) — Anthropic doesn't ship it. Fall
+    # through to auto so callers proposing the dim early get sane behavior.
+    "persistent": "auto",
+}
+
+
+def parse_cache_mode(lmrh_hint: str | None) -> CacheModeDecision:
+    """Parse LLM-Hint for the LMRH 1.2 §E2 ``cache=`` dim.
+
+    Uses the same legacy comma-tolerant parser as the rest of the LMRH
+    surface (v3.0.68 fix), so multi-value composite hints like
+    ``provider-hint=a,b, cache=ephemeral;require`` resolve correctly.
+
+    Returns ``CacheModeDecision(mode="auto", required=False)`` when the dim
+    is absent or unparseable — the same default as pre-v3.0.69 behavior.
+    """
     if not lmrh_hint:
-        return False
-    # Quick substring check first (cheap; full parse not needed for opt-out)
-    h = lmrh_hint.lower()
-    return "cache=none" in h or "cache=off" in h or "cache=disabled" in h
+        return CacheModeDecision()
+    try:
+        from app.routing.lmrh.parse import parse_hint
+    except ImportError:
+        return CacheModeDecision()
+    parsed = parse_hint(lmrh_hint)
+    if parsed is None:
+        return CacheModeDecision()
+    dim = parsed.get("cache")
+    if dim is None:
+        return CacheModeDecision()
+    raw = (dim.value or "").strip().lower()
+    mode = _CACHE_MODE_SYNONYMS.get(raw, "auto")
+    return CacheModeDecision(mode=mode, required=bool(dim.required))
+
+
+def resolve_min_chars(decision: CacheModeDecision, default: int = 4000) -> int:
+    """Pick the right ``min_chars`` for the auto-inject threshold based on
+    caller intent. ``cache=ephemeral`` → 0 (always wrap). Otherwise the
+    operator-supplied default."""
+    return 0 if decision.force_below_threshold else default
