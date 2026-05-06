@@ -62,7 +62,9 @@ def _string_to_text_block(s: str) -> dict:
     return {"type": "text", "text": s}
 
 
-def inject_cache_control(body: dict, provider_type: str, min_chars: int = 4000) -> dict:
+def inject_cache_control(
+    body: dict, provider_type: str, min_chars: int = 4000,
+) -> tuple[dict, bool]:
     """Auto-wrap stable prefix blocks with cache_control: ephemeral.
 
     Args:
@@ -77,15 +79,19 @@ def inject_cache_control(body: dict, provider_type: str, min_chars: int = 4000) 
                    upstream but the dim is still honored).
 
     Returns:
-        Body with cache_control wrapping applied to the last system block
-        and the last tool, when applicable. Original body unchanged.
+        Tuple of ``(body, injected)`` — modified body (original unchanged)
+        plus a boolean indicating whether wrapping actually happened.
+        v3.0.83: the boolean is needed for LMRH 1.2 §E2 capability-header
+        disclosure (``cache-injected=?1``); existing callers should now
+        unpack the tuple.
     """
     if provider_type not in _ANTHROPIC_SHAPE_TYPES:
-        return body
+        return body, False
     if not isinstance(body, dict):
-        return body
+        return body, False
 
     out = {**body}
+    injected = False
 
     # ── System prompt ────────────────────────────────────────────────────
     sys_field = out.get("system")
@@ -97,6 +103,7 @@ def inject_cache_control(body: dict, provider_type: str, min_chars: int = 4000) 
                 "text": sys_field,
                 "cache_control": {"type": "ephemeral"},
             }]
+            injected = True
     elif isinstance(sys_field, list) and sys_field:
         # Skip if any block already has cache_control — caller knows better
         if not any(_has_cache_control(b) for b in sys_field):
@@ -112,6 +119,7 @@ def inject_cache_control(body: dict, provider_type: str, min_chars: int = 4000) 
                     blk = new_sys[i]
                     if isinstance(blk, dict) and blk.get("type") == "text":
                         new_sys[i] = {**blk, "cache_control": {"type": "ephemeral"}}
+                        injected = True
                         break
                 out["system"] = new_sys
 
@@ -132,8 +140,9 @@ def inject_cache_control(body: dict, provider_type: str, min_chars: int = 4000) 
                 if isinstance(last, dict):
                     new_tools[-1] = {**last, "cache_control": {"type": "ephemeral"}}
                     out["tools"] = new_tools
+                    injected = True
 
-    return out
+    return out, injected
 
 
 def caller_opted_out(lmrh_hint: str | None) -> bool:
