@@ -201,3 +201,114 @@ def test_cache_is_in_builtin_dim_names():
     acting on the dim. Adding cache to the builtin set silences that."""
     from app.api.lmrh import _builtin_dim_names
     assert "cache" in _builtin_dim_names()
+
+
+# ── v3.0.87 — build_cache_disclosure helper (LMRH 1.2 §E2) ───────────────────
+
+def test_build_disclosure_no_hint_no_injection_returns_empty():
+    from app.api._cache_inject import build_cache_disclosure
+    decision = parse_cache_mode(None)
+    parts = build_cache_disclosure(
+        llm_hint=None, cache_decision=decision,
+        cache_injected=False, served_provider_type="claude-oauth",
+        usage=None,
+    )
+    assert parts == []
+
+
+def test_build_disclosure_injection_only():
+    """Auto-injection happened; no caller cache= dim. Single line."""
+    from app.api._cache_inject import build_cache_disclosure
+    parts = build_cache_disclosure(
+        llm_hint="task=analysis", cache_decision=parse_cache_mode(None),
+        cache_injected=True, served_provider_type="claude-oauth",
+        usage=None,
+    )
+    assert parts == ["cache-injected=?1"]
+
+
+def test_build_disclosure_with_caller_dim_and_injection():
+    from app.api._cache_inject import build_cache_disclosure
+    parts = build_cache_disclosure(
+        llm_hint="cache=ephemeral",
+        cache_decision=parse_cache_mode("cache=ephemeral"),
+        cache_injected=True, served_provider_type="claude-oauth",
+        usage={"cache_read_input_tokens": 18432,
+               "cache_creation_input_tokens": 512},
+    )
+    assert parts == [
+        "cache=ephemeral", "cache-injected=?1",
+        "cache-tokens-read=18432", "cache-tokens-written=512",
+    ]
+
+
+def test_build_disclosure_zero_token_counts_not_emitted():
+    from app.api._cache_inject import build_cache_disclosure
+    parts = build_cache_disclosure(
+        llm_hint=None, cache_decision=parse_cache_mode(None),
+        cache_injected=False, served_provider_type="claude-oauth",
+        usage={"cache_read_input_tokens": 0, "cache_creation_input_tokens": 0},
+    )
+    assert parts == []  # no zeros surface
+
+
+def test_build_disclosure_substitution_to_non_anthropic_emits_ignored():
+    """Spec §E2: cache=ephemeral substituted to non-Anthropic family →
+    cache=ignored (no cache-injected, no token echo since the served
+    provider doesn't support cache_control)."""
+    from app.api._cache_inject import build_cache_disclosure
+    parts = build_cache_disclosure(
+        llm_hint="cache=ephemeral;require",
+        cache_decision=parse_cache_mode("cache=ephemeral;require"),
+        cache_injected=False, served_provider_type="codex-oauth",
+        usage=None,
+    )
+    assert parts == ["cache=ignored"]
+
+
+def test_build_disclosure_substitution_to_openai_emits_ignored():
+    from app.api._cache_inject import build_cache_disclosure
+    parts = build_cache_disclosure(
+        llm_hint="cache=ephemeral",
+        cache_decision=parse_cache_mode("cache=ephemeral"),
+        cache_injected=False, served_provider_type="vertex_ai",
+        usage=None,
+    )
+    assert parts == ["cache=ignored"]
+
+
+def test_build_disclosure_caller_none_dim_not_overridden():
+    """cache=none on a non-Anthropic provider: caller wanted no inject,
+    served provider doesn't inject anyway. Echo cache=none, NOT
+    cache=ignored (the dim was honored — it's a no-op either way)."""
+    from app.api._cache_inject import build_cache_disclosure
+    parts = build_cache_disclosure(
+        llm_hint="cache=none",
+        cache_decision=parse_cache_mode("cache=none"),
+        cache_injected=False, served_provider_type="codex-oauth",
+        usage=None,
+    )
+    assert parts == ["cache=none"]
+
+
+def test_append_cache_disclosure_appends_to_existing_capability():
+    from app.api._cache_inject import append_cache_disclosure
+    headers = {"LLM-Capability": "v=1, provider=Foo, model=x"}
+    append_cache_disclosure(headers, ["cache-injected=?1", "cache-tokens-read=1024"])
+    assert headers["LLM-Capability"] == (
+        "v=1, provider=Foo, model=x, cache-injected=?1, cache-tokens-read=1024"
+    )
+
+
+def test_append_cache_disclosure_creates_when_missing():
+    from app.api._cache_inject import append_cache_disclosure
+    headers = {}
+    append_cache_disclosure(headers, ["cache-injected=?1"])
+    assert headers["LLM-Capability"] == "cache-injected=?1"
+
+
+def test_append_cache_disclosure_empty_parts_noop():
+    from app.api._cache_inject import append_cache_disclosure
+    headers = {"LLM-Capability": "v=1"}
+    append_cache_disclosure(headers, [])
+    assert headers["LLM-Capability"] == "v=1"

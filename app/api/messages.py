@@ -402,30 +402,27 @@ async def messages(
             raise HTTPException(502, f"Claude OAuth upstream: {e}")
         else:
             resp_headers["X-Cache-Status"] = "bypass"
-            # v3.0.83 — LMRH 1.2 §E2 capability-header cache disclosure.
-            # v3.0.85 — extended with cache-tokens-read / cache-tokens-
-            # written from the upstream Anthropic usage block. Per spec,
-            # these are emitted "when upstream reports" the values, so
-            # operators get a per-response audit signal even when the
-            # caller didn't use the cache= dim.
-            cache_disclosure_parts = []
-            if llm_hint and "cache=" in (llm_hint or "").lower():
-                cache_disclosure_parts.append(f"cache={cache_decision.mode}")
-            if cache_injected:
-                cache_disclosure_parts.append("cache-injected=?1")
-            _u = (result or {}).get("usage") or {}
-            _cr = int(_u.get("cache_read_input_tokens") or 0)
-            _cc = int(_u.get("cache_creation_input_tokens") or 0)
-            if _cr > 0:
-                cache_disclosure_parts.append(f"cache-tokens-read={_cr}")
-            if _cc > 0:
-                cache_disclosure_parts.append(f"cache-tokens-written={_cc}")
-            if cache_disclosure_parts:
-                existing = resp_headers.get("LLM-Capability", "")
-                resp_headers["LLM-Capability"] = (
-                    existing + ", " + ", ".join(cache_disclosure_parts)
-                    if existing else ", ".join(cache_disclosure_parts)
-                )
+            # v3.0.83/.85 disclosure refactored to a shared helper in
+            # v3.0.87 — handles cache=, cache-injected=?1, cache-tokens-
+            # read/written, and the cross-family-substitution
+            # cache=ignored case in one place. served_provider_type here
+            # is "claude-oauth" because we're inside the claude-oauth
+            # dispatch loop, so the cache=ignored override never fires
+            # at this site (still useful when called from non-claude-
+            # oauth branches in the future).
+            from app.api._cache_inject import (
+                build_cache_disclosure, append_cache_disclosure,
+            )
+            append_cache_disclosure(
+                resp_headers,
+                build_cache_disclosure(
+                    llm_hint=llm_hint,
+                    cache_decision=cache_decision,
+                    cache_injected=cache_injected,
+                    served_provider_type=route.provider.provider_type,
+                    usage=(result or {}).get("usage"),
+                ),
+            )
             return JSONResponse(content=result, headers=resp_headers)
         # Defensive: should be unreachable — every branch above either returned,
         # raised, or continued. Break to avoid an accidental infinite loop.
