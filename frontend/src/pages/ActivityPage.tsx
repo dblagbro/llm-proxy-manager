@@ -22,12 +22,29 @@ const SEVERITY_OPTS: { value: string; label: string }[] = [
   { value: 'warning,error,critical', label: 'Non-info only' },
 ]
 
+// v3.0.79: error_class filter — exposes the v3.0.75 taxonomy bucket.
+// Pairs with severity filter (these are typically combined as
+// severity=error&error_class=rate_limit). Order matches the relative
+// frequency / actionability we expect to see in incident reviews.
+const ERROR_CLASS_OPTS: { value: string; label: string }[] = [
+  { value: '',             label: 'All classes' },
+  { value: 'auth',         label: 'Auth (re-key needed)' },
+  { value: 'billing',      label: 'Billing / quota' },
+  { value: 'rate_limit',   label: 'Rate limit' },
+  { value: 'timeout',      label: 'Timeout' },
+  { value: 'network',      label: 'Network / DNS / TLS' },
+  { value: 'upstream_5xx', label: 'Upstream 5xx' },
+  { value: 'bad_request',  label: 'Bad request (4xx)' },
+  { value: 'unknown',      label: 'Unknown' },
+]
+
 export function ActivityPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const providerFilter = searchParams.get('provider') ?? ''
   const [searchInput, setSearchInput] = useState('')
   const [search, setSearch] = useState('')
   const [severity, setSeverity] = useState<string>('')
+  const [errorClass, setErrorClass] = useState<string>('')
   const [livePaused, setLivePaused] = useState(false)
 
   // History — paged. We keep ALL pages we've fetched in `events`.
@@ -40,14 +57,15 @@ export function ActivityPage() {
   // Live tail (only active when no search/filter and not paused)
   const esRef = useRef<EventSource | null>(null)
   const [connected, setConnected] = useState(false)
-  const liveActive = !search && !severity && !livePaused
+  const liveActive = !search && !severity && !errorClass && !livePaused
 
   // Total count for the current filter
   const { data: countData } = useQuery({
-    queryKey: ['activity-count', providerFilter, severity, search],
+    queryKey: ['activity-count', providerFilter, severity, errorClass, search],
     queryFn: () => monitoringApi.activityCount({
       provider_id: providerFilter || null,
       severity: severity || null,
+      error_class: errorClass || null,
       search: search || null,
     }),
     refetchInterval: 30_000,
@@ -65,6 +83,7 @@ export function ActivityPage() {
       limit: PAGE_SIZE,
       provider_id: providerFilter || null,
       severity: severity || null,
+      error_class: errorClass || null,
       search: search || null,
     }).then(rows => {
       if (cancel) return
@@ -73,7 +92,7 @@ export function ActivityPage() {
       setHasMore(rows.length === PAGE_SIZE)
     }).finally(() => { if (!cancel) setLoadingPage(false) })
     return () => { cancel = true }
-  }, [providerFilter, severity, search, refreshKey])
+  }, [providerFilter, severity, errorClass, search, refreshKey])
 
   // Live SSE — only when no filter and not paused
   useEffect(() => {
@@ -107,6 +126,7 @@ export function ActivityPage() {
         before_id: oldestId,
         provider_id: providerFilter || null,
         severity: severity || null,
+        error_class: errorClass || null,
         search: search || null,
       })
       if (rows.length) {
@@ -127,6 +147,7 @@ export function ActivityPage() {
     setSearchInput('')
     setSearch('')
     setSeverity('')
+    setErrorClass('')
     setSearchParams({})
   }
 
@@ -210,12 +231,24 @@ export function ActivityPage() {
             >
               {SEVERITY_OPTS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
             </select>
+            {/* v3.0.79: error_class filter — only meaningful when severity
+                is filtered to non-info events, but exposed unconditionally
+                so operators can drill in without first having to pick a
+                severity. */}
+            <select
+              value={errorClass}
+              onChange={(e) => setErrorClass(e.target.value)}
+              title="Filter by error class (v3.0.75 taxonomy)"
+              className="px-3 py-2 bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 border border-gray-200 dark:border-gray-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            >
+              {ERROR_CLASS_OPTS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
             {liveActive ? (
               <Button size="sm" variant="ghost" onClick={() => setLivePaused(true)}>Pause live</Button>
-            ) : !search && !severity && (
+            ) : !search && !severity && !errorClass && (
               <Button size="sm" variant="ghost" onClick={() => setLivePaused(false)}>Resume live</Button>
             )}
-            {(providerFilter || search || severity) && (
+            {(providerFilter || search || severity || errorClass) && (
               <Button size="sm" variant="ghost" onClick={clearAllFilters}>Clear all</Button>
             )}
           </div>
