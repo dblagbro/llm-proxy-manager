@@ -162,7 +162,12 @@ def list_exports() -> list[dict]:
             out.append({
                 "filename": p.name,
                 "size_bytes": stat.st_size,
-                "created_at": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
+                # v3.0.82: route through utc_iso so the audit-export listing
+                # ships the same canonical Z-suffix shape as every other
+                # API timestamp (was producing ``"+00:00"`` here while
+                # peer endpoints emit ``"Z"`` — JS code that parses both
+                # was working but inconsistent).
+                "created_at": utc_iso(datetime.fromtimestamp(stat.st_mtime, timezone.utc)),
             })
         except FileNotFoundError:
             continue
