@@ -311,8 +311,9 @@ async def messages(
         # v3.0.69: LMRH 1.2 §E2 — ``cache=ephemeral`` forces inject even
         # below threshold; ``cache=none|off|disabled`` opts out.
         cache_decision = parse_cache_mode(llm_hint)
+        cache_injected = False
         if cache_decision.mode != "none":
-            upstream_body = inject_cache_control(
+            upstream_body, cache_injected = inject_cache_control(
                 upstream_body, "claude-oauth",
                 min_chars=resolve_min_chars(cache_decision),
             )
@@ -401,6 +402,28 @@ async def messages(
             raise HTTPException(502, f"Claude OAuth upstream: {e}")
         else:
             resp_headers["X-Cache-Status"] = "bypass"
+            # v3.0.83 — LMRH 1.2 §E2 capability-header cache disclosure.
+            # Append cache-mode + cache-injected fields to the
+            # already-built LLM-Capability header so callers can audit
+            # whether their cache= dim was honored without parsing
+            # event_meta. ``cache=`` echoed only when the caller sent
+            # the dim (per spec); ``cache-injected=?1`` echoed whenever
+            # injection actually happened (broader signal — useful even
+            # for callers not using the dim, to confirm auto-injection
+            # is firing).
+            cache_disclosure_parts = []
+            if llm_hint and "cache=" in (llm_hint or "").lower():
+                # Echo what we actually applied (mode after synonym
+                # canonicalization), not the raw caller value.
+                cache_disclosure_parts.append(f"cache={cache_decision.mode}")
+            if cache_injected:
+                cache_disclosure_parts.append("cache-injected=?1")
+            if cache_disclosure_parts:
+                existing = resp_headers.get("LLM-Capability", "")
+                resp_headers["LLM-Capability"] = (
+                    existing + ", " + ", ".join(cache_disclosure_parts)
+                    if existing else ", ".join(cache_disclosure_parts)
+                )
             return JSONResponse(content=result, headers=resp_headers)
         # Defensive: should be unreachable — every branch above either returned,
         # raised, or continued. Break to avoid an accidental infinite loop.

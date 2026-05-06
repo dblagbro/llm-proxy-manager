@@ -260,8 +260,9 @@ async def chat_completions(
         # v3.0.42: auto-cache injection on the OpenAI-→-Anthropic
         # translation path too. v3.0.69: full LMRH 1.2 §E2 mode parsing.
         cache_decision = parse_cache_mode(llm_hint)
+        cache_injected = False
         if cache_decision.mode != "none":
-            anthropic_body = inject_cache_control(
+            anthropic_body, cache_injected = inject_cache_control(
                 anthropic_body, "claude-oauth",
                 min_chars=resolve_min_chars(cache_decision),
             )

@@ -110,12 +110,13 @@ def test_inject_with_ephemeral_wraps_small_system():
     wrap regardless — proves the min_chars=0 plumbing works."""
     body = {"system": "you are helpful."}
     decision = parse_cache_mode("cache=ephemeral")
-    out = inject_cache_control(
+    out, injected = inject_cache_control(
         body, "claude-oauth", min_chars=resolve_min_chars(decision),
     )
     sys_field = out["system"]
     assert isinstance(sys_field, list)
     assert sys_field[0]["cache_control"] == {"type": "ephemeral"}
+    assert injected is True
 
 
 def test_inject_auto_below_threshold_does_not_wrap():
@@ -123,10 +124,11 @@ def test_inject_auto_below_threshold_does_not_wrap():
     Confirms we didn't accidentally make ephemeral the universal default."""
     body = {"system": "you are helpful."}
     decision = parse_cache_mode("cache=auto")
-    out = inject_cache_control(
+    out, injected = inject_cache_control(
         body, "claude-oauth", min_chars=resolve_min_chars(decision),
     )
     assert out["system"] == "you are helpful."  # unchanged
+    assert injected is False
 
 
 def test_inject_none_mode_in_callsite_pattern():
@@ -144,13 +146,31 @@ def test_inject_with_ephemeral_above_threshold_still_wraps_one_block():
     wrappable system prompt."""
     body = {"system": "x" * 5000}
     decision = parse_cache_mode("cache=ephemeral")
-    out = inject_cache_control(
+    out, injected = inject_cache_control(
         body, "claude-oauth", min_chars=resolve_min_chars(decision),
     )
     sys_field = out["system"]
     assert isinstance(sys_field, list)
     assert len(sys_field) == 1
     assert sys_field[0]["cache_control"] == {"type": "ephemeral"}
+    assert injected is True
+
+
+# v3.0.83 — explicit tests for the injected boolean
+def test_inject_returns_false_for_non_anthropic_provider():
+    body = {"system": "x" * 5000}
+    out, injected = inject_cache_control(body, "openai", min_chars=4000)
+    assert out is body  # passthrough, not even copied
+    assert injected is False
+
+
+def test_inject_returns_false_when_caller_already_has_cache_control():
+    body = {"system": [
+        {"type": "text", "text": "x" * 5000, "cache_control": {"type": "ephemeral"}},
+    ]}
+    out, injected = inject_cache_control(body, "claude-oauth", min_chars=4000)
+    assert injected is False  # caller's cache_control wins; we don't double-wrap
+    assert out["system"] == body["system"]
 
 
 # ── caller_opted_out back-compat shim ──────────────────────────────────────
