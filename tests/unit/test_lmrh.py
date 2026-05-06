@@ -235,3 +235,136 @@ def test_parse_orphaned_value_at_start_dropped():
     assert h is not None
     assert len(h.dimensions) == 1
     assert h.get("task") is not None
+
+
+# v3.0.70 — fallback-chain alias of provider-hint (paperless-ai-analyzer
+# ships this on every call; pre-v3.0.70 the ;require constraint was
+# silently dropped because the dim wasn't in the builtin set).
+def test_fallback_chain_match_boosts_score():
+    """fallback-chain=<name> on a matching provider gets the same boost
+    as provider-hint=<name>."""
+    p = CapabilityProfile(
+        provider_id="p1", provider_type="claude-oauth", model_id="claude-sonnet-4-6",
+        provider_name="Devin-Anthropic-Max-VG",
+        tasks=["analysis"], cost_tier="standard", priority=10,
+    )
+    hint_fc = parse_hint("fallback-chain=anthropic")
+    score_fc, _ = score_candidate(p, hint_fc)
+    hint_ph = parse_hint("provider-hint=anthropic")
+    score_ph, _ = score_candidate(p, hint_ph)
+    assert score_fc == score_ph
+
+
+def test_fallback_chain_require_hard_filter_eliminates():
+    """fallback-chain=anthropic;require on a non-anthropic profile must
+    return -inf (was silently passing pre-v3.0.70)."""
+    p_openai = CapabilityProfile(
+        provider_id="p1", provider_type="openai", model_id="gpt-4o",
+        provider_name="OpenAI-Direct",
+        tasks=["analysis"], cost_tier="standard", priority=10,
+    )
+    hint = parse_hint("fallback-chain=anthropic;require")
+    score, _ = score_candidate(p_openai, hint)
+    assert score == float("-inf")
+
+
+def test_fallback_chain_require_passes_on_match():
+    p = CapabilityProfile(
+        provider_id="p1", provider_type="claude-oauth", model_id="claude-sonnet-4-6",
+        provider_name="Devin-Anthropic-Max-VG",
+        tasks=["analysis"], cost_tier="standard", priority=10,
+    )
+    hint = parse_hint("fallback-chain=anthropic;require")
+    score, _ = score_candidate(p, hint)
+    assert score > 0
+
+
+def test_fallback_chain_in_builtin_dim_names():
+    """Eliminates the unknown-dim:fallback-chain warning that was
+    being emitted on every paperless-ai-analyzer call."""
+    from app.api.lmrh import _builtin_dim_names
+    assert "fallback-chain" in _builtin_dim_names()
+
+
+def test_fallback_chain_alongside_other_dims():
+    """The exact composite hint paperless ships in production:
+    task=analysis, cost=standard, safety-min=3, fallback-chain=anthropic;require"""
+    h = parse_hint("task=analysis, cost=standard, safety-min=3, fallback-chain=anthropic;require")
+    assert h is not None
+    fc = h.get("fallback-chain")
+    assert fc is not None
+    assert fc.value == "anthropic"
+    assert fc.required is True
+
+
+# v3.0.70 — provider-family fuzzy match for provider-hint / fallback-chain
+def test_provider_hint_strict_match_by_name_still_works():
+    """Caller with the full provider_name still matches (back-compat)."""
+    p = CapabilityProfile(
+        provider_id="p1", provider_type="claude-oauth", model_id="claude-sonnet-4-6",
+        provider_name="Devin-Anthropic-Max-VG",
+        tasks=["analysis"], cost_tier="standard", priority=10,
+    )
+    h = parse_hint("provider-hint=Devin-Anthropic-Max-VG")
+    score, _ = score_candidate(p, h)
+    assert score > 0
+
+
+def test_provider_hint_strict_match_by_type_still_works():
+    """Caller with the exact provider_type still matches (back-compat)."""
+    p = CapabilityProfile(
+        provider_id="p1", provider_type="claude-oauth", model_id="claude-sonnet-4-6",
+        provider_name="Devin-Anthropic-Max-VG",
+        tasks=["analysis"], cost_tier="standard", priority=10,
+    )
+    h = parse_hint("provider-hint=claude-oauth")
+    score, _ = score_candidate(p, h)
+    assert score > 0
+
+
+def test_provider_hint_family_match_anthropic_covers_claude_oauth():
+    """provider-hint=anthropic now matches claude-oauth (family expansion).
+    Pre-v3.0.70 this would have failed strict-equality against the type."""
+    p = CapabilityProfile(
+        provider_id="p1", provider_type="claude-oauth", model_id="claude-sonnet-4-6",
+        provider_name="Devin-Anthropic-Max-VG",
+        tasks=["analysis"], cost_tier="standard", priority=10,
+    )
+    h = parse_hint("provider-hint=anthropic;require")
+    score, _ = score_candidate(p, h)
+    assert score > 0
+
+
+def test_provider_hint_family_match_openai_covers_codex_oauth():
+    p = CapabilityProfile(
+        provider_id="p1", provider_type="codex-oauth", model_id="gpt-5.5",
+        provider_name="Devin-Codex-Gmail",
+        tasks=["analysis"], cost_tier="standard", priority=10,
+    )
+    h = parse_hint("provider-hint=openai;require")
+    score, _ = score_candidate(p, h)
+    assert score > 0
+
+
+def test_provider_hint_family_match_google_covers_vertex():
+    p = CapabilityProfile(
+        provider_id="p1", provider_type="vertex_ai", model_id="gemini-2.5-flash",
+        provider_name="C1 Vertex AI",
+        tasks=["analysis"], cost_tier="economy", priority=10,
+    )
+    h = parse_hint("provider-hint=google;require")
+    score, _ = score_candidate(p, h)
+    assert score > 0
+
+
+def test_provider_hint_unknown_family_still_falls_through():
+    """An unrecognized family token falls through to strict match —
+    so it doesn't accidentally become permissive."""
+    p = CapabilityProfile(
+        provider_id="p1", provider_type="claude-oauth", model_id="claude-sonnet-4-6",
+        provider_name="Devin-Anthropic-Max-VG",
+        tasks=["analysis"], cost_tier="standard", priority=10,
+    )
+    h = parse_hint("provider-hint=banana;require")
+    score, _ = score_candidate(p, h)
+    assert score == float("-inf")

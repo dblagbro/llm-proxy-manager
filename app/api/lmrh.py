@@ -70,13 +70,21 @@ def _builtin_dim_names() -> set[str]:
     docs/lmrh-1.2-cache-mode-dim.md). Was being silently flagged as
     unknown-dim despite the proxy already acting on it via _cache_inject's
     substring-check opt-out.
+
+    v3.0.70: ``fallback-chain`` added as a synonym of ``provider-hint``.
+    paperless-ai-analyzer ships ``fallback-chain=anthropic;require`` on
+    every call (1153 events / 2h observed); pre-v3.0.70 the dim was
+    unknown so the ``;require`` hard constraint was silently dropped
+    (and the caller got an ``unknown-dim:fallback-chain`` warning header
+    on every response). Same routing semantics as provider-hint — see
+    app/routing/lmrh/score.py case "provider-hint" | "fallback-chain".
     """
     return {
         "task", "safety-min", "safety-max", "refusal-rate",
         "latency", "cost", "region", "context-length", "modality",
         "max-ttft", "max-cost-per-1k",
         "effort", "cascade", "hedge", "tenant", "freshness",
-        "exclude", "provider-hint",
+        "exclude", "provider-hint", "fallback-chain",
         "cache",
     }
 
