@@ -304,31 +304,23 @@ async def chat_completions(
                 provider_name=route.provider.name,
                 llm_hint=llm_hint,
             )
-            # v3.0.84 — LMRH 1.2 §E2 capability-header cache disclosure
-            # parity with messages.py (shipped v3.0.83).
-            # v3.0.85 — also emit cache-tokens-read/written from the
-            # upstream Anthropic usage block. The OpenAI-format
-            # response body strips usage's cache fields (OpenAI doesn't
-            # ship them) so the header echo is the only way callers
-            # see the value on this endpoint.
-            cache_disclosure_parts = []
-            if llm_hint and "cache=" in (llm_hint or "").lower():
-                cache_disclosure_parts.append(f"cache={cache_decision.mode}")
-            if cache_injected:
-                cache_disclosure_parts.append("cache-injected=?1")
-            _u = (anth_resp or {}).get("usage") or {}
-            _cr = int(_u.get("cache_read_input_tokens") or 0)
-            _cc = int(_u.get("cache_creation_input_tokens") or 0)
-            if _cr > 0:
-                cache_disclosure_parts.append(f"cache-tokens-read={_cr}")
-            if _cc > 0:
-                cache_disclosure_parts.append(f"cache-tokens-written={_cc}")
-            if cache_disclosure_parts:
-                existing = resp_headers.get("LLM-Capability", "")
-                resp_headers["LLM-Capability"] = (
-                    existing + ", " + ", ".join(cache_disclosure_parts)
-                    if existing else ", ".join(cache_disclosure_parts)
-                )
+            # v3.0.83/.84/.85 disclosure refactored to a shared helper
+            # in v3.0.87 — handles cache=, cache-injected, cache-tokens-
+            # read/written, and the cross-family-substitution
+            # cache=ignored case in one place.
+            from app.api._cache_inject import (
+                build_cache_disclosure, append_cache_disclosure,
+            )
+            append_cache_disclosure(
+                resp_headers,
+                build_cache_disclosure(
+                    llm_hint=llm_hint,
+                    cache_decision=cache_decision,
+                    cache_injected=cache_injected,
+                    served_provider_type=route.provider.provider_type,
+                    usage=(anth_resp or {}).get("usage"),
+                ),
+            )
             return JSONResponse(
                 content=anthropic_response_to_openai(anth_resp, requested_model=body.get("model") or ""),
                 headers=resp_headers,

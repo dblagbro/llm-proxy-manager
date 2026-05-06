@@ -226,3 +226,85 @@ def resolve_min_chars(decision: CacheModeDecision, default: int = 4000) -> int:
     caller intent. ``cache=ephemeral`` → 0 (always wrap). Otherwise the
     operator-supplied default."""
     return 0 if decision.force_below_threshold else default
+
+
+# v3.0.87 — shared LMRH 1.2 §E2 disclosure builder. Extracted from the
+# inline blocks in messages.py / completions.py (shipped v3.0.83-v3.0.85)
+# so non-claude-oauth response paths can be wired up later without
+# duplicating the logic. Adds the cache=ignored override per spec §E2
+# substitution interaction: when a caller sends cache=<non-none> but the
+# served provider is non-Anthropic-shape, the dim cannot be honored —
+# emit cache=ignored to inform the caller their hint was a no-op.
+
+def build_cache_disclosure(
+    *,
+    llm_hint: str | None,
+    cache_decision: "CacheModeDecision",
+    cache_injected: bool,
+    served_provider_type: str,
+    usage: dict | None = None,
+) -> list[str]:
+    """Build the LMRH 1.2 §E2 capability-header disclosure parts.
+
+    Returns a list of ``"key=value"`` strings ready to comma-join into the
+    LLM-Capability header. Empty list when nothing is worth disclosing.
+
+    Args:
+        llm_hint: Raw LLM-Hint header value (used to detect ``cache=`` dim).
+        cache_decision: Result of ``parse_cache_mode(llm_hint)``.
+        cache_injected: True when ``inject_cache_control`` actually wrote
+                        cache_control blocks.
+        served_provider_type: ``provider_type`` of the provider that
+                              served the request (after any cross-family
+                              fallback). Used to detect when a cache=
+                              dim got cross-family-substituted.
+        usage: Upstream usage dict (e.g. ``result.get("usage")``);
+               cache_creation_input_tokens / cache_read_input_tokens
+               extracted when present and >0.
+
+    Spec semantics:
+    - ``cache=<mode>`` echoed only when caller sent the dim.
+    - ``cache=ignored`` when caller sent ``cache=<non-none>`` but the
+      served provider is non-Anthropic-shape (the dim couldn't be
+      honored — disclose the no-op).
+    - ``cache-injected=?1`` when injection actually happened.
+    - ``cache-tokens-read`` / ``cache-tokens-written`` when upstream
+      reports them >0.
+    """
+    parts: list[str] = []
+    caller_sent_cache_dim = bool(
+        llm_hint and "cache=" in (llm_hint or "").lower()
+    )
+    is_anthropic_shape = served_provider_type in _ANTHROPIC_SHAPE_TYPES
+
+    if caller_sent_cache_dim:
+        # Spec §E2 substitution interaction: a non-none cache mode that
+        # got served by a non-Anthropic family is an honored no-op.
+        # Inform the caller via cache=ignored.
+        if cache_decision.mode != "none" and not is_anthropic_shape:
+            parts.append("cache=ignored")
+        else:
+            parts.append(f"cache={cache_decision.mode}")
+    if cache_injected:
+        parts.append("cache-injected=?1")
+    u = usage or {}
+    cr = int(u.get("cache_read_input_tokens") or 0)
+    cc = int(u.get("cache_creation_input_tokens") or 0)
+    if cr > 0:
+        parts.append(f"cache-tokens-read={cr}")
+    if cc > 0:
+        parts.append(f"cache-tokens-written={cc}")
+    return parts
+
+
+def append_cache_disclosure(headers: dict, parts: list[str]) -> None:
+    """Mutate ``headers["LLM-Capability"]`` to append the disclosure parts.
+    Idempotent on empty parts (no-op). Comma-joined per RFC 8941
+    Dictionary parsing rules."""
+    if not parts:
+        return
+    existing = headers.get("LLM-Capability", "")
+    headers["LLM-Capability"] = (
+        existing + ", " + ", ".join(parts)
+        if existing else ", ".join(parts)
+    )
