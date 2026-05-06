@@ -268,6 +268,20 @@ async def record_outcome(
             # Useful for "what would this have cost on per-call billing"
             # reporting; not added to spending caps.
             meta["quota_usd"] = round(quota_usd, 6)
+        # v3.0.71 — echo Anthropic prompt-cache token counts so cache
+        # effectiveness is visible in the activity log (not just the
+        # Prometheus histogram). Pre-v3.0.71 the values were extracted
+        # from upstream usage and pushed to ``observe_cache_tokens()``
+        # but never written to event_meta — so the only way to measure
+        # auto-cache injection's hit rate was scraping prom or reading
+        # raw upstream responses. Now any post-hoc audit can compute
+        # cache_read/cache_creation rates straight from activity_log.
+        # Only emit when non-zero (most events have zero — keeps event
+        # rows lean for non-cacheable workloads).
+        if cache_creation:
+            meta["cache_creation_input_tokens"] = int(cache_creation)
+        if cache_read:
+            meta["cache_read_input_tokens"] = int(cache_read)
         if requested_model:
             meta["requested_model"] = requested_model  # caller-asked-for vs served
         if had_lmrh_hint:
