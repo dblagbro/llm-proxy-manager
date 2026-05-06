@@ -198,3 +198,147 @@ async def provider_metrics(
 @router.get("/status-pages")
 async def external_status(_: AdminUser = Depends(require_admin)):
     return await get_status_summary()
+
+
+# v3.0.72 — Cache-effectiveness rollup. Surfaces the cache_read /
+# cache_creation token counts that v3.0.71 started writing to
+# event_meta. Fleet currently reads ~650K cache_read tokens/hr on www01
+# alone (43.9% hit rate verified 2026-05-06); operator dashboards need
+# a stable endpoint to chart against rather than ad-hoc Python in a
+# docker exec.
+@router.get("/cache-stats")
+async def cache_stats(
+    window_minutes: int = Query(60, ge=1, le=1440, description="rolling window size"),
+    group_by: str = Query("provider", description="'provider' (default), 'api_key', or 'none'"),
+    rate_per_million: float = Query(
+        3.0,
+        description="Per-million-token rate for the savings estimate "
+        "(default 3.0 ≈ Claude Sonnet 4.6 input). Caller picks model price.",
+    ),
+    cache_discount_pct: float = Query(
+        0.9, ge=0.0, le=1.0,
+        description="Cache-read discount fraction (default 0.9 = Anthropic's 90%).",
+    ),
+    _: AdminUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Aggregate cache effectiveness from event_meta over a rolling window.
+
+    Source: ``ActivityLog.event_meta`` keys ``cache_read_input_tokens``,
+    ``cache_creation_input_tokens``, ``in_tok`` (NEW input tokens),
+    populated since v3.0.71.
+
+    The savings estimate is a rough order-of-magnitude — it treats every
+    cache_read token as if it would have cost ``rate_per_million`` at full
+    rate but actually cost ``rate * (1 - discount)``. Reality: cache reads
+    are billed at 10% on Anthropic per the prompt-cache pricing, so the
+    saved-portion is 90% of what those tokens would have otherwise cost.
+    Operator can re-run with their own rate for per-model accuracy.
+    """
+    import json
+    from datetime import datetime, timedelta, timezone
+    from sqlalchemy import select, desc
+
+    from app.models.db import Provider, ApiKey
+
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=window_minutes)
+    rows = (await db.execute(
+        select(
+            ActivityLog.event_meta, ActivityLog.provider_id, ActivityLog.api_key_id,
+        )
+        .where(ActivityLog.created_at >= cutoff)
+        .where(ActivityLog.event_type == "llm_request")
+        .where(ActivityLog.severity == "info")
+        # Cap at a sane upper bound — even at 1k events/min for 24h that's
+        # 1.4M rows; the in-Python aggregation tops out around 100k before
+        # latency becomes user-visible. Operator picks a tighter window
+        # for high-volume periods.
+        .order_by(desc(ActivityLog.created_at))
+        .limit(50000)
+    )).all()
+
+    def _bucket():
+        return {
+            "events": 0,
+            "events_with_cache_read": 0,
+            "events_with_cache_creation": 0,
+            "cache_read_tokens": 0,
+            "cache_creation_tokens": 0,
+            "new_input_tokens": 0,
+        }
+
+    overall = _bucket()
+    by_group: dict[str, dict] = {}
+
+    for em, pid, kid in rows:
+        try:
+            m = em if isinstance(em, dict) else json.loads(em or "{}")
+        except (TypeError, ValueError):
+            continue
+        cr = int(m.get("cache_read_input_tokens") or 0)
+        cc = int(m.get("cache_creation_input_tokens") or 0)
+        it = int(m.get("in_tok") or 0)
+        overall["events"] += 1
+        overall["new_input_tokens"] += it
+        if cr:
+            overall["events_with_cache_read"] += 1
+            overall["cache_read_tokens"] += cr
+        if cc:
+            overall["events_with_cache_creation"] += 1
+            overall["cache_creation_tokens"] += cc
+        if group_by != "none":
+            key = pid if group_by == "provider" else kid
+            if not key:
+                continue
+            b = by_group.setdefault(key, _bucket())
+            b["events"] += 1
+            b["new_input_tokens"] += it
+            if cr:
+                b["events_with_cache_read"] += 1
+                b["cache_read_tokens"] += cr
+            if cc:
+                b["events_with_cache_creation"] += 1
+                b["cache_creation_tokens"] += cc
+
+    # Resolve display names for the grouped keys.
+    name_lookup: dict[str, str] = {}
+    if group_by == "provider" and by_group:
+        ps = (await db.execute(
+            select(Provider).where(Provider.id.in_(list(by_group.keys())))
+        )).scalars().all()
+        name_lookup = {p.id: p.name for p in ps}
+    elif group_by == "api_key" and by_group:
+        ks = (await db.execute(
+            select(ApiKey).where(ApiKey.id.in_(list(by_group.keys())))
+        )).scalars().all()
+        name_lookup = {k.id: k.name for k in ks}
+
+    def _enrich(b: dict) -> dict:
+        n = b["events"] or 1
+        out = dict(b)
+        out["cache_hit_rate_pct"] = round(100.0 * b["events_with_cache_read"] / n, 2)
+        denom = b["new_input_tokens"] + b["cache_read_tokens"]
+        out["cache_share_of_input_pct"] = (
+            round(100.0 * b["cache_read_tokens"] / denom, 2) if denom else 0.0
+        )
+        out["estimated_savings_usd"] = round(
+            (b["cache_read_tokens"] / 1_000_000.0) * rate_per_million * cache_discount_pct,
+            4,
+        )
+        return out
+
+    grouped_out: list[dict] = []
+    for key, b in sorted(by_group.items(), key=lambda kv: -kv[1]["events"]):
+        e = _enrich(b)
+        e["id"] = key
+        e["name"] = name_lookup.get(key, key)
+        grouped_out.append(e)
+
+    return {
+        "window_minutes": window_minutes,
+        "rate_per_million_usd": rate_per_million,
+        "cache_discount_pct": cache_discount_pct,
+        "overall": _enrich(overall),
+        "by_group": grouped_out,
+        "group_by": group_by,
+    }
