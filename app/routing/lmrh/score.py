@@ -20,6 +20,53 @@ from app.routing.lmrh.types import (
 )
 
 
+# v3.0.70 — provider-family fuzzy match. When a caller writes
+# provider-hint=anthropic or fallback-chain=anthropic, they mean "any
+# anthropic-shape provider" — including the multiple OAuth tiers
+# (claude-oauth, anthropic-oauth) and the direct API. Strict equality
+# against provider_type/provider_name was too narrow; paperless-ai-
+# analyzer's ``fallback-chain=anthropic;require`` was unmatchable on
+# any claude-oauth provider, which would have hard-failed every call
+# the moment the dim went from unknown (silently ignored) to
+# recognized. This map expands a family token into the set of
+# provider_type values that count as that family.
+_PROVIDER_FAMILY_TYPES: dict[str, frozenset[str]] = {
+    "anthropic": frozenset({
+        "anthropic", "anthropic-direct", "anthropic-oauth", "claude-oauth",
+    }),
+    "openai": frozenset({
+        "openai", "openai-direct", "codex-oauth",
+    }),
+    "google": frozenset({
+        "vertex_ai", "google-genai", "gemini",
+    }),
+    "microsoft": frozenset({"azure"}),
+    "azure": frozenset({"azure"}),
+    "cohere": frozenset({"cohere"}),
+    "grok": frozenset({"grok"}),
+}
+
+
+def _provider_hint_match(token: str, provider_name: str, provider_type: str) -> bool:
+    """True when ``token`` matches the provider — by exact name, exact type,
+    OR family expansion (e.g. ``anthropic`` covers ``claude-oauth``).
+    Strict-match callers (``provider-hint=Devin-Anthropic-Max-VG``) still
+    work; family-match callers (``fallback-chain=anthropic``) now also
+    work without forcing them to enumerate every provider_type variant.
+    """
+    t = token.strip().lower()
+    if not t:
+        return False
+    pn = (provider_name or "").lower()
+    pt = (provider_type or "").lower()
+    if t == pn or t == pt:
+        return True
+    family_types = _PROVIDER_FAMILY_TYPES.get(t)
+    if family_types and pt in family_types:
+        return True
+    return False
+
+
 def score_candidate(profile: CapabilityProfile, hint: LMRHHint) -> tuple[float, list[str]]:
     """Score a candidate profile against a hint.
 
@@ -185,11 +232,19 @@ def score_candidate(profile: CapabilityProfile, hint: LMRHHint) -> tuple[float, 
 
             # v3.0.25 — provider-hint=name (positive selection; existing).
             # Score-only here — endpoint's pinned_provider_id handles hard.
-            case "provider-hint":
-                wanted = {n.strip().lower() for n in dim.value.split(",") if n.strip()}
-                pname = (profile.provider_name or "").lower()
-                ptype = (profile.provider_type or "").lower()
-                if pname in wanted or ptype in wanted:
+            # v3.0.70 — fallback-chain= recognized as a synonym of
+            # provider-hint. paperless-ai-analyzer ships this dim on
+            # every call (1153 events/2h sample) with ``;require`` —
+            # before this alias, the dim was unknown so the hard
+            # constraint was silently dropped and the caller got an
+            # ``X-LMRH-Warnings: unknown-dim:fallback-chain`` on every
+            # response. Same routing semantics as provider-hint, so
+            # treat them identically.
+            case "provider-hint" | "fallback-chain":
+                wanted = [n.strip() for n in dim.value.split(",") if n.strip()]
+                if any(_provider_hint_match(
+                    w, profile.provider_name, profile.provider_type,
+                ) for w in wanted):
                     score += WEIGHTS.get("provider-hint", 5)
                 else:
                     if dim.required:
