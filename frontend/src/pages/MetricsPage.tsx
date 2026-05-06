@@ -6,6 +6,7 @@ import {
 } from 'recharts'
 import { ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react'
 import { monitoringApi } from '@/api'
+import { getBasePath } from '@/lib/basePath'
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/Card'
 import { Spinner } from '@/components/ui/Spinner'
 
@@ -146,7 +147,7 @@ export function MetricsPage() {
                 ? `${Math.round(cacheStats.window_minutes / 60)}h`
                 : `${cacheStats.window_minutes}m`}
             </CardTitle>
-            <div className="flex gap-1">
+            <div className="flex gap-1 items-center">
               {(['provider', 'api_key'] as const).map(g => (
                 <button
                   key={g}
@@ -160,6 +161,19 @@ export function MetricsPage() {
                   {g === 'provider' ? 'By Provider' : 'By API Key'}
                 </button>
               ))}
+              {/* v3.0.77 — CSV download button. Browser handles the
+                  file save via Content-Disposition on the response.
+                  Reuses the card's window + groupBy state. The basePath
+                  resolves correctly whether the app is mounted at
+                  /llm-proxy2 (production) or /llm-proxy2-smoke (smoke). */}
+              <a
+                href={`${getBasePath()}/api/monitoring/usage-report.csv?window_minutes=${cacheWindowMin}&group_by=${cacheGroupBy}`}
+                download
+                title="Download per-caller usage report as CSV"
+                className="ml-2 px-2 py-1 text-xs rounded bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-300 border border-gray-200 dark:border-gray-700 hover:border-indigo-400 transition-colors no-underline"
+              >
+                ↓ CSV
+              </a>
             </div>
           </CardHeader>
           <CardContent>
