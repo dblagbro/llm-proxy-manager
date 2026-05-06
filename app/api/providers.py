@@ -170,21 +170,26 @@ async def provider_usage(
         "tracking_enabled": bool(p.usage_tracking_enabled),
         "session": {
             "tokens": (w.session_tokens if w else 0),
-            "window_start": (w.session_window_start.isoformat() + "Z" if w and w.session_window_start else None),
+            # v3.0.82: utc_iso() instead of naive ``isoformat() + "Z"``.
+            # session_window_start is written by usage_tracker via
+            # datetime.now(timezone.utc) so it's tz-aware; the bare
+            # concat produced ``"2026-05-06T05:00:00+00:00Z"`` which JS
+            # Date won't parse cleanly. Same fix as v3.0.73 utc_iso bug.
+            "window_start": utc_iso(w.session_window_start) if w else None,
             "window_sec": p.usage_session_window_sec,
             "limit_tokens": p.usage_session_limit_tokens,
             "pct": (w.session_pct if w else None),
         },
         "weekly": {
             "tokens": (w.weekly_tokens if w else 0),
-            "reset_at": (w.weekly_reset_at.isoformat() + "Z" if w and w.weekly_reset_at else None),
+            "reset_at": utc_iso(w.weekly_reset_at) if w else None,
             "reset_dow": p.usage_weekly_reset_dow,
             "reset_hour": p.usage_weekly_reset_hour,
             "limit_tokens": p.usage_weekly_limit_tokens,
             "pct": (w.weekly_pct if w else None),
         },
         "rotation_threshold_pct": p.usage_rotation_threshold_pct,
-        "updated_at": (w.updated_at.isoformat() + "Z" if w and w.updated_at else None),
+        "updated_at": utc_iso(w.updated_at) if w else None,
     }
 
 
