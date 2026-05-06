@@ -64,13 +64,20 @@ def _norm(name: str) -> str:
 
 def _builtin_dim_names() -> set[str]:
     """Built-in dims defined in code (app/routing/lmrh/score.py case branches).
-    These cannot be re-registered or shadowed by user dims."""
+    These cannot be re-registered or shadowed by user dims.
+
+    v3.0.69: ``cache`` added per LMRH 1.2 §E2 (cache-mode dim spec at
+    docs/lmrh-1.2-cache-mode-dim.md). Was being silently flagged as
+    unknown-dim despite the proxy already acting on it via _cache_inject's
+    substring-check opt-out.
+    """
     return {
         "task", "safety-min", "safety-max", "refusal-rate",
         "latency", "cost", "region", "context-length", "modality",
         "max-ttft", "max-cost-per-1k",
         "effort", "cascade", "hedge", "tenant", "freshness",
         "exclude", "provider-hint",
+        "cache",
     }
 
 

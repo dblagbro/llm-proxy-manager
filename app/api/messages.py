@@ -297,7 +297,9 @@ async def messages(
         from app.api._messages_streaming import (
             _stream_claude_oauth, _complete_claude_oauth,
         )
-        from app.api._cache_inject import inject_cache_control, caller_opted_out
+        from app.api._cache_inject import (
+            inject_cache_control, parse_cache_mode, resolve_min_chars,
+        )
         access_token = route.provider.api_key or ""
         t0 = time.monotonic()
         upstream_body = dict(body)
@@ -306,9 +308,14 @@ async def messages(
         # cache_control adoption at exactly 0% across 3,005 claude-oauth
         # events in 24h. Wrap the last system block with cache_control:
         # ephemeral when above threshold and the caller hasn't done so.
-        # Caller opts out via LLM-Hint: cache=none.
-        if not caller_opted_out(llm_hint):
-            upstream_body = inject_cache_control(upstream_body, "claude-oauth")
+        # v3.0.69: LMRH 1.2 §E2 — ``cache=ephemeral`` forces inject even
+        # below threshold; ``cache=none|off|disabled`` opts out.
+        cache_decision = parse_cache_mode(llm_hint)
+        if cache_decision.mode != "none":
+            upstream_body = inject_cache_control(
+                upstream_body, "claude-oauth",
+                min_chars=resolve_min_chars(cache_decision),
+            )
         oauth_provider_id = route.provider.id
         tried_oauth_ids.add(oauth_provider_id)
         if stream:

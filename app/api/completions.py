@@ -252,13 +252,19 @@ async def chat_completions(
         from app.api._messages_streaming import (
             _complete_claude_oauth, _stream_claude_oauth,
         )
-        from app.api._cache_inject import inject_cache_control, caller_opted_out
+        from app.api._cache_inject import (
+            inject_cache_control, parse_cache_mode, resolve_min_chars,
+        )
         t0 = time.monotonic()
         anthropic_body = openai_request_to_anthropic(body)
         # v3.0.42: auto-cache injection on the OpenAI-→-Anthropic
-        # translation path too. Same logic as messages.py.
-        if not caller_opted_out(llm_hint):
-            anthropic_body = inject_cache_control(anthropic_body, "claude-oauth")
+        # translation path too. v3.0.69: full LMRH 1.2 §E2 mode parsing.
+        cache_decision = parse_cache_mode(llm_hint)
+        if cache_decision.mode != "none":
+            anthropic_body = inject_cache_control(
+                anthropic_body, "claude-oauth",
+                min_chars=resolve_min_chars(cache_decision),
+            )
         # Resolve the actual model the caller asked for; the routing layer
         # may have substituted a default model on cross-family fallback,
         # but for claude-oauth same-family we want the caller's value.

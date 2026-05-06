@@ -3,7 +3,7 @@
 **Status**: Draft for cross-vendor review.
 **Authors**: D. Blagbrough (llm-proxy-manager).
 **Companion to**: `docs/draft-blagbrough-lmrh-00.md` (LMRH 1.1), `docs/lmrh-1.2-substitution-disclosure.md` (LMRH 1.2 §E1).
-**Reference implementation**: llm-proxy-manager v3.0.42+ (`app/api/_cache_inject.py`).
+**Reference implementation**: llm-proxy-manager v3.0.42+ (auto-inject), v3.0.69+ (full LMRH 1.2 §E2 dim parsing — `cache=auto|ephemeral|none|off|disabled` with `;require` modifier; `cache=ephemeral` forces inject below auto-threshold; `cache` registered as a builtin dim so it no longer surfaces as `unknown-dim:cache`). LLM-Capability disclosure (`cache=`, `cache-injected=?1`, `cache-tokens-read`, `cache-tokens-written`) is **Phase 2 — not yet shipped**; tracked in upstream-negotiations backlog. See `app/api/_cache_inject.py:parse_cache_mode`.
 
 ---
 
