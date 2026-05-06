@@ -13,6 +13,7 @@ export type ProviderType =
   | 'claude-oauth'   // v2.7.0: Claude Pro Max subscription via pasted OAuth credentials
   | 'codex-oauth'    // v3.0.15: OpenAI Codex CLI / ChatGPT subscription via OAuth
   | 'cohere'         // v3.0.23: primarily embeddings (also rerank/chat)
+  | 'azure'          // v3.0.66: Microsoft Azure OpenAI Service
 
 export interface Provider {
   id: string

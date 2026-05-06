@@ -178,6 +178,12 @@ PROVIDER_TYPE_TO_LITELLM = {
     "codex-oauth": "openai",
     # v3.0.23 (Q2): Cohere via litellm (cohere/embed-english-v3.0 etc).
     "cohere": "cohere",
+    # v3.0.66: Microsoft Azure OpenAI Service. Caller's base_url should
+    # carry the Azure resource endpoint (e.g.
+    # https://my-resource.openai.azure.com); api_key carries the key.
+    # litellm uses the ``azure/`` prefix and reads the deployment name
+    # from the model field (``azure/<deployment-name>``).
+    "azure": "azure",
 }
 
 
@@ -189,6 +195,9 @@ PROVIDER_DEFAULT_MODELS = {
     "grok":      "grok-2",
     "ollama":    "llama3",
     "compatible": "gpt-4o",
+    # v3.0.66: Azure deployments are caller-named — admin sets the
+    # deployment name as default_model on the provider row.
+    "azure":     "gpt-4o",
     # Claude Pro Max subscription — caller chooses model at request time.
     "claude-oauth": "claude-sonnet-4-6",
     # ChatGPT Plus/Team/Enterprise subscription via Codex CLI.

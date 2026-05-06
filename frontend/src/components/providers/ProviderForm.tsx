@@ -10,6 +10,7 @@ const PROVIDER_TYPES: ProviderType[] = [
   'claude-oauth',  // v2.7.0 — Claude Pro Max subscription via pasted credentials
   'codex-oauth',   // v3.0.15 — OpenAI Codex CLI / ChatGPT subscription
   'cohere',        // v3.0.23 — Cohere embeddings (and rerank/chat)
+  'azure',         // v3.0.66 — Microsoft Azure OpenAI Service
 ]
 
 // v3.0.15: per-OAuth-flavor copy + API method bindings, keyed by ProviderType.

@@ -191,6 +191,10 @@ async def provider_usage(
 _TYPES_REQUIRING_API_KEY = {
     "anthropic", "openai", "google", "vertex", "grok",
     "cohere", "mistral", "groq", "together", "fireworks",
+    # v3.0.66: Azure OpenAI requires both api_key + base_url (the
+    # resource endpoint). base_url is enforced by the form; api_key
+    # via this set.
+    "azure",
 }
 
 
