@@ -195,3 +195,43 @@ def test_capability_header_omits_region_disclosure_when_no_hint():
     header = build_capability_header(profile, unmet=[])
     assert "served-region" not in header
     assert "region-honored" not in header
+
+
+# v3.0.68 — comma-tolerant legacy parser (DevinGPT 2026-05-06 spec/impl gap)
+def test_parse_provider_hint_comma_list_preserved():
+    """provider-hint=a,b,c parses as ONE dim with value 'a,b,c', not three
+    pieces with two of them orphaned + emitting unknown-dim warnings."""
+    h = parse_hint("provider-hint=claude-oauth,codex-oauth,anthropic-direct;require")
+    assert h is not None
+    assert len(h.dimensions) == 1
+    d = h.dimensions[0]
+    assert d.key == "provider-hint"
+    assert d.value == "claude-oauth,codex-oauth,anthropic-direct"
+    assert d.required is True
+
+
+def test_parse_region_comma_list_preserved():
+    h = parse_hint("region=us,ca;require")
+    assert h is not None
+    d = h.get("region")
+    assert d is not None
+    assert d.value == "us,ca"
+    assert d.required is True
+
+
+def test_parse_mixed_dims_with_comma_list():
+    """task=...,exclude=a,b,c — two dims, the second multi-value."""
+    h = parse_hint("task=reasoning, exclude=foo,bar,baz, cost=economy")
+    assert h is not None
+    assert len(h.dimensions) == 3
+    assert h.get("task").value == "reasoning"
+    assert h.get("exclude").value == "foo,bar,baz"
+    assert h.get("cost").value == "economy"
+
+
+def test_parse_orphaned_value_at_start_dropped():
+    """Bare value with no key at start has nothing to merge into; drop it."""
+    h = parse_hint("orphan, task=reasoning")
+    assert h is not None
+    assert len(h.dimensions) == 1
+    assert h.get("task") is not None
