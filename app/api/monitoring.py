@@ -25,6 +25,7 @@ async def activity_log(
     provider_id: Optional[str] = None,
     api_key_id: Optional[str] = Query(None, description="v3.0.35: filter to a single API key's events"),
     event_type: Optional[str] = Query(None, description="v3.0.35: filter to a single event_type (e.g. llm_request)"),
+    error_class: Optional[str] = Query(None, description="v3.0.78: filter to a single error_class bucket (auth, billing, rate_limit, timeout, network, upstream_5xx, bad_request, unknown)"),
     since: Optional[str] = Query(None, description="v3.0.35: ISO 8601 timestamp lower bound (inclusive)"),
     until: Optional[str] = Query(None, description="v3.0.35: ISO 8601 timestamp upper bound (exclusive)"),
     sort: str = Query("desc", description="v3.0.35: 'desc' (default, newest first) or 'asc' (oldest first)"),
@@ -62,6 +63,22 @@ async def activity_log(
 
     if event_type:
         query = query.where(ActivityLog.event_type == event_type)
+
+    if error_class:
+        # v3.0.78: filter by event_meta.error_class (the v3.0.75 taxonomy
+        # bucket). Comma-separated list supported for OR semantics, e.g.
+        # ?error_class=rate_limit,timeout. SQLite json_extract works on
+        # both string and dict-typed JSON columns.
+        from sqlalchemy import func
+        ec_list = [e.strip() for e in error_class.split(",") if e.strip()]
+        if len(ec_list) == 1:
+            query = query.where(
+                func.json_extract(ActivityLog.event_meta, "$.error_class") == ec_list[0]
+            )
+        elif ec_list:
+            query = query.where(
+                func.json_extract(ActivityLog.event_meta, "$.error_class").in_(ec_list)
+            )
 
     def _parse_iso(s: str):
         try:
@@ -119,13 +136,14 @@ async def activity_log(
 async def activity_count(
     severity: Optional[str] = None,
     provider_id: Optional[str] = None,
+    error_class: Optional[str] = Query(None, description="v3.0.78: filter to a single error_class bucket (or comma-separated for OR)"),
     search: Optional[str] = None,
     db: AsyncSession = Depends(get_db),
     _: AdminUser = Depends(require_admin),
 ):
     """v2.8.5: total matching event count for the current filter — lets
     the UI show "showing 200 of N" so operators know how much they can
-    page back through."""
+    page back through. v3.0.78 adds error_class for parity with /activity."""
     from sqlalchemy import func, cast, String
     query = select(func.count(ActivityLog.id))
     if provider_id:
@@ -136,6 +154,16 @@ async def activity_count(
             query = query.where(ActivityLog.severity == sev_list[0])
         elif sev_list:
             query = query.where(ActivityLog.severity.in_(sev_list))
+    if error_class:
+        ec_list = [e.strip() for e in error_class.split(",") if e.strip()]
+        if len(ec_list) == 1:
+            query = query.where(
+                func.json_extract(ActivityLog.event_meta, "$.error_class") == ec_list[0]
+            )
+        elif ec_list:
+            query = query.where(
+                func.json_extract(ActivityLog.event_meta, "$.error_class").in_(ec_list)
+            )
     if search:
         s = f"%{search}%"
         query = query.where(
