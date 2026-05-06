@@ -3,7 +3,26 @@
 **Status**: Draft for cross-vendor review.
 **Authors**: D. Blagbrough (llm-proxy-manager).
 **Companion to**: `docs/draft-blagbrough-lmrh-00.md` (LMRH 1.1), `docs/lmrh-1.2-substitution-disclosure.md` (LMRH 1.2 §E1).
-**Reference implementation**: llm-proxy-manager v3.0.42+ (auto-inject), v3.0.69+ (full LMRH 1.2 §E2 dim parsing — `cache=auto|ephemeral|none|off|disabled` with `;require` modifier; `cache=ephemeral` forces inject below auto-threshold; `cache` registered as a builtin dim so it no longer surfaces as `unknown-dim:cache`). LLM-Capability disclosure (`cache=`, `cache-injected=?1`, `cache-tokens-read`, `cache-tokens-written`) is **Phase 2 — not yet shipped**; tracked in upstream-negotiations backlog. See `app/api/_cache_inject.py:parse_cache_mode`.
+**Reference implementation**: llm-proxy-manager.
+
+| Layer                                      | Version       | Status     |
+|--------------------------------------------|---------------|------------|
+| Auto-cache injection (Anthropic-shape)     | v3.0.42+      | ✅ shipped |
+| `cache=` dim parsing (auto/ephemeral/none) | v3.0.69+      | ✅ shipped |
+| `cache` registered as builtin dim          | v3.0.69+      | ✅ shipped |
+| `cache=ephemeral` force-inject             | v3.0.69+      | ✅ shipped |
+| Activity-log echo (`cache_read_input_tokens`, `cache_creation_input_tokens` in event_meta) | v3.0.71+ | ✅ shipped |
+| `LLM-Capability: cache=<mode>` (when dim sent) | v3.0.83/.84 | ✅ shipped (non-streaming) |
+| `LLM-Capability: cache-injected=?1`        | v3.0.83/.84   | ✅ shipped (non-streaming) |
+| `LLM-Capability: cache-tokens-read=N`      | v3.0.85       | ✅ shipped (non-streaming) |
+| `LLM-Capability: cache-tokens-written=N`   | v3.0.85       | ✅ shipped (non-streaming) |
+| Streaming-path disclosure                  | —             | ⏳ deferred (synthetic SSE event needed; HTTP trailers unsupported in FastAPI/Starlette) |
+
+Both non-streaming claude-oauth endpoints emit the full LMRH 1.2 §E2 disclosure shape:
+- `POST /v1/messages` (Anthropic-native)
+- `POST /v1/chat/completions` (OpenAI-shape; especially valuable here because the OpenAI-format response body strips cache fields, leaving the LLM-Capability header echo as the only place those values surface)
+
+Source pointers: `app/api/_cache_inject.py:parse_cache_mode`, `app/api/messages.py` JSONResponse builder, `app/api/completions.py` JSONResponse builder, `docs/lmrh-1.2-cache-mode-dim.md` (this doc).
 
 ---
 
@@ -152,11 +171,13 @@ The dim is forward-compatible with future tokens (`persistent`, `semantic`, etc.
 
 ## Estimated impact
 
-Reference implementation observation (llm-proxy-manager production, 2026-05-02 rolling 24h):
+Reference implementation observation (llm-proxy-manager production, 2026-05-06 rolling 60-min steady state on www01):
 
-- 3,005 Anthropic Pro Max OAuth calls with 50–80k-token contexts
-- ~50% cache-hit rate after auto-injection landed (depends on caller-side prompt stability)
-- ~$200/day savings on this proxy alone
+- ~600 Anthropic Pro Max OAuth calls/hour, predominantly paperless-ai-analyzer's stable legal-review template
+- **~93% cache-hit rate** sustained (up from ~50% pre-v3.0.54 + paperless v3.9.22 wire-shape fix)
+- **~1.27M cache_read tokens/hour** = ~30M tokens/day on www01 alone
+- **~$85/day savings** on www01 alone at Sonnet pricing × 90% cache discount
+- Across the 3-node fleet (www01 + www02 + GCP c1conv), extrapolated savings cluster around **$200/day**
 - Network-wide, if other aggregators adopted the same auto-injection + dim, estimated $5–10K/day in unrealized prompt-cache savings would be captured
 
 ## References
