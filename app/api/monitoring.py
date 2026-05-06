@@ -342,3 +342,148 @@ async def cache_stats(
         "by_group": grouped_out,
         "group_by": group_by,
     }
+
+
+# v3.0.76 — Per-caller usage CSV export. Evergreen reporting hook —
+# operator can download a monthly rollup for billing-back to internal
+# teams or external customer chargeback. Default window 7 days, group
+# by api_key (most common reporting pivot). CSV shape is intentionally
+# wide (one row per group, all metrics) so it imports cleanly into
+# spreadsheets / BI tools without further reshaping.
+@router.get("/usage-report.csv")
+async def usage_report_csv(
+    window_minutes: int = Query(
+        10080, ge=1, le=43200,
+        description="rolling window (default 7 days = 10080 min; max 30 days = 43200 min)",
+    ),
+    group_by: str = Query(
+        "api_key", description="'api_key' (default) or 'provider'",
+    ),
+    rate_per_million: float = Query(
+        3.0,
+        description="Per-million-token rate for cache-savings estimate "
+        "(default 3.0 ≈ Claude Sonnet 4.6 input).",
+    ),
+    cache_discount_pct: float = Query(
+        0.9, ge=0.0, le=1.0,
+        description="Cache-read discount fraction (default 0.9 = Anthropic's 90%).",
+    ),
+    _: AdminUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """CSV download of per-caller usage and cache savings over a window.
+
+    Columns: id, name, events, in_tokens, out_tokens,
+    cache_read_tokens, cache_creation_tokens, cost_usd,
+    quota_usd_subscription, estimated_cache_savings_usd.
+
+    Reads the same event_meta fields the cache-stats endpoint does
+    plus ``in_tok``, ``out_tok``, ``cost_usd``, ``quota_usd``. Subscription
+    providers (claude-oauth, codex-oauth) report cost_usd=0 + quota_usd
+    populated — both columns are surfaced so reports can show "real $"
+    vs "subscription $" separately.
+    """
+    import csv
+    import io
+    import json
+    from datetime import datetime, timedelta, timezone
+    from sqlalchemy import select, desc
+
+    from app.models.db import Provider, ApiKey
+
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=window_minutes)
+    rows = (await db.execute(
+        select(
+            ActivityLog.event_meta, ActivityLog.provider_id, ActivityLog.api_key_id,
+        )
+        .where(ActivityLog.created_at >= cutoff)
+        .where(ActivityLog.event_type == "llm_request")
+        .where(ActivityLog.severity == "info")
+        # Same 50k cap as cache-stats; for 30-day windows operator should
+        # query the underlying activity_log directly if they need full
+        # fidelity. This endpoint is for typical billing-cycle rollups.
+        .order_by(desc(ActivityLog.created_at))
+        .limit(50000)
+    )).all()
+
+    def _bucket():
+        return {
+            "events": 0,
+            "in_tokens": 0,
+            "out_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_creation_tokens": 0,
+            "cost_usd": 0.0,
+            "quota_usd": 0.0,
+        }
+
+    by_group: dict[str, dict] = {}
+
+    for em, pid, kid in rows:
+        try:
+            m = em if isinstance(em, dict) else json.loads(em or "{}")
+        except (TypeError, ValueError):
+            continue
+        key = pid if group_by == "provider" else kid
+        if not key:
+            continue
+        b = by_group.setdefault(key, _bucket())
+        b["events"] += 1
+        b["in_tokens"] += int(m.get("in_tok") or 0)
+        b["out_tokens"] += int(m.get("out_tok") or 0)
+        b["cache_read_tokens"] += int(m.get("cache_read_input_tokens") or 0)
+        b["cache_creation_tokens"] += int(m.get("cache_creation_input_tokens") or 0)
+        try:
+            b["cost_usd"] += float(m.get("cost_usd") or 0.0)
+        except (TypeError, ValueError):
+            pass
+        try:
+            b["quota_usd"] += float(m.get("quota_usd") or 0.0)
+        except (TypeError, ValueError):
+            pass
+
+    name_lookup: dict[str, str] = {}
+    if group_by == "provider" and by_group:
+        ps = (await db.execute(
+            select(Provider).where(Provider.id.in_(list(by_group.keys())))
+        )).scalars().all()
+        name_lookup = {p.id: p.name for p in ps}
+    elif group_by == "api_key" and by_group:
+        ks = (await db.execute(
+            select(ApiKey).where(ApiKey.id.in_(list(by_group.keys())))
+        )).scalars().all()
+        name_lookup = {k.id: k.name for k in ks}
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow([
+        "id", "name", "events", "in_tokens", "out_tokens",
+        "cache_read_tokens", "cache_creation_tokens",
+        "cost_usd", "quota_usd_subscription",
+        "estimated_cache_savings_usd",
+    ])
+    # Sort by events desc — heaviest callers at top
+    for key, b in sorted(by_group.items(), key=lambda kv: -kv[1]["events"]):
+        savings = (b["cache_read_tokens"] / 1_000_000.0) * rate_per_million * cache_discount_pct
+        writer.writerow([
+            key,
+            name_lookup.get(key, key),
+            b["events"],
+            b["in_tokens"],
+            b["out_tokens"],
+            b["cache_read_tokens"],
+            b["cache_creation_tokens"],
+            f"{b['cost_usd']:.6f}",
+            f"{b['quota_usd']:.6f}",
+            f"{savings:.4f}",
+        ])
+
+    csv_bytes = buf.getvalue()
+    days = window_minutes // 1440
+    fname_suffix = f"{days}d" if days >= 1 else f"{window_minutes}m"
+    filename = f"usage-report-{group_by}-{fname_suffix}.csv"
+    return StreamingResponse(
+        iter([csv_bytes]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
