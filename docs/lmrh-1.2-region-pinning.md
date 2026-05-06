@@ -50,7 +50,12 @@ A region value is one of:
 | `local`    | Caller-local infrastructure (self-hosted)     |
 | `any`      | No region preference (LMRH 1.0 default)       |
 
-Compound values: comma-separated list expresses "any-of" — `region=us,ca` matches US OR Canada. The canonical wire form is the RFC 8941 InnerList: `region=(us ca)`. Bare-comma `region=us,ca` requires the 8941 parser path (proxy-side `http_sfv` available); the LMRH 1.0 legacy split-on-comma parser will treat the second value as an unkeyed dim and drop it. Implementations SHOULD accept both shapes.
+Compound values: comma-separated list expresses "any-of" — `region=us,ca` matches US OR Canada. Two equivalent wire forms are accepted:
+
+- **Bare-comma**: `region=us,ca`. The legacy parser (v3.0.68+) preserves value-internal commas by merging continuation chunks (chunks without `=`) back into the previous dim's value. Pre-v3.0.68 deployments split on the comma and treated `ca` as an orphan.
+- **RFC 8941 InnerList**: `region=(us ca)`. Always works when the 8941 parser is available.
+
+Implementations SHOULD accept both. Same rule applies to other list-valued dims like `provider-hint=a,b,c`, `exclude=a,b`, etc.
 
 Granularity: `eu` matches any of `eu-west`, `eu-central`. The region taxonomy forms a hierarchy: `*` > `<continent>` > `<continent>-<area>`. Servers MUST honor hierarchy — a provider tagged `eu-west` matches a `region=eu` query.
 

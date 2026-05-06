@@ -45,22 +45,65 @@ _SOVEREIGN_RE = re.compile(r"\s*;\s*sovereign\s*", re.IGNORECASE)
 
 
 def _parse_hint_legacy(header_value: str) -> Optional[LMRHHint]:
+    """Legacy comma-tolerant parser for clients not emitting strict RFC 8941.
+
+    v3.0.68: handles value-internal commas for list-valued dims (e.g.
+    ``provider-hint=claude-oauth,codex-oauth`` or ``region=us,ca``).
+    Previously the naive ``header_value.split(",")`` ate every comma —
+    so multi-value dims silently degraded to first-value-only and the
+    rest of the list became unkeyed bare tokens that got dropped, while
+    surfacing as ``unknown-dim:<value>`` warnings to the caller.
+    DevinGPT v2.74.x flagged the spec/impl gap on 2026-05-06.
+
+    Algorithm: split on commas, then merge any chunk that doesn't
+    contain ``=`` (after modifier-stripping) back into the previous
+    dim's value. ``task=reasoning, exclude=foo,bar`` parses as
+    ``task=reasoning`` + ``exclude=foo,bar`` rather than three pieces
+    with ``bar`` orphaned.
+
+    RFC 8941 InnerList form (``provider-hint=(a b c)``) still works
+    via the http_sfv path when that library is installed.
+    """
+    chunks = [c.strip() for c in header_value.split(",")]
+    chunks = [c for c in chunks if c]
+
+    # Pre-scan: peel ;modifiers off chunks BEFORE deciding key vs continuation,
+    # because a chunk like ``foo;require`` with no ``=`` is still a continuation
+    # of the previous dim's value, not its own dim.
+    processed: list[tuple[str, bool, bool]] = []
+    for chunk in chunks:
+        sov = bool(_SOVEREIGN_RE.search(chunk))
+        if sov:
+            chunk = _SOVEREIGN_RE.sub("", chunk).strip()
+        req = bool(_REQUIRE_RE.search(chunk)) or sov
+        if req:
+            chunk = _REQUIRE_RE.sub("", chunk).strip()
+        processed.append((chunk, req, sov))
+
+    # Merge continuation chunks (no ``=``) into the previous dim's value.
+    # If the FIRST chunk has no ``=`` it's a malformed header — drop it.
+    merged: list[tuple[str, str, bool, bool]] = []  # (key, value, required, sovereign)
+    for chunk, req, sov in processed:
+        if "=" in chunk:
+            key, _, value = chunk.partition("=")
+            merged.append((key.strip(), value.strip(), req, sov))
+        elif merged:
+            # Continuation of previous dim's value. The ;require/;sovereign
+            # modifier on the continuation chunk applies to the WHOLE dim,
+            # so OR it into the previous dim's flags.
+            prev_key, prev_value, prev_req, prev_sov = merged[-1]
+            merged[-1] = (
+                prev_key,
+                f"{prev_value},{chunk}" if chunk else prev_value,
+                prev_req or req,
+                prev_sov or sov,
+            )
+        # else: orphaned chunk at start with no ``=`` → drop silently
+
     hint = LMRHHint(raw=header_value)
-    for part in header_value.split(","):
-        part = part.strip()
-        if not part:
-            continue
-        sovereign = bool(_SOVEREIGN_RE.search(part))
-        if sovereign:
-            part = _SOVEREIGN_RE.sub("", part).strip()
-        required = bool(_REQUIRE_RE.search(part)) or sovereign
-        if required:
-            part = _REQUIRE_RE.sub("", part).strip()
-        if "=" not in part:
-            continue
-        key, _, value = part.partition("=")
+    for key, value, req, sov in merged:
         hint.dimensions.append(HintDimension(
-            key.strip(), value.strip(), required=required, sovereign=sovereign,
+            key, value, required=req, sovereign=sov,
         ))
     return hint if hint.dimensions else None
 
