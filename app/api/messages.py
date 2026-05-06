@@ -403,21 +403,23 @@ async def messages(
         else:
             resp_headers["X-Cache-Status"] = "bypass"
             # v3.0.83 — LMRH 1.2 §E2 capability-header cache disclosure.
-            # Append cache-mode + cache-injected fields to the
-            # already-built LLM-Capability header so callers can audit
-            # whether their cache= dim was honored without parsing
-            # event_meta. ``cache=`` echoed only when the caller sent
-            # the dim (per spec); ``cache-injected=?1`` echoed whenever
-            # injection actually happened (broader signal — useful even
-            # for callers not using the dim, to confirm auto-injection
-            # is firing).
+            # v3.0.85 — extended with cache-tokens-read / cache-tokens-
+            # written from the upstream Anthropic usage block. Per spec,
+            # these are emitted "when upstream reports" the values, so
+            # operators get a per-response audit signal even when the
+            # caller didn't use the cache= dim.
             cache_disclosure_parts = []
             if llm_hint and "cache=" in (llm_hint or "").lower():
-                # Echo what we actually applied (mode after synonym
-                # canonicalization), not the raw caller value.
                 cache_disclosure_parts.append(f"cache={cache_decision.mode}")
             if cache_injected:
                 cache_disclosure_parts.append("cache-injected=?1")
+            _u = (result or {}).get("usage") or {}
+            _cr = int(_u.get("cache_read_input_tokens") or 0)
+            _cc = int(_u.get("cache_creation_input_tokens") or 0)
+            if _cr > 0:
+                cache_disclosure_parts.append(f"cache-tokens-read={_cr}")
+            if _cc > 0:
+                cache_disclosure_parts.append(f"cache-tokens-written={_cc}")
             if cache_disclosure_parts:
                 existing = resp_headers.get("LLM-Capability", "")
                 resp_headers["LLM-Capability"] = (
