@@ -304,6 +304,22 @@ async def chat_completions(
                 provider_name=route.provider.name,
                 llm_hint=llm_hint,
             )
+            # v3.0.84 — LMRH 1.2 §E2 capability-header cache disclosure
+            # parity with messages.py (shipped v3.0.83). The OpenAI-shape
+            # /v1/chat/completions response goes through translation but
+            # response headers pass through unmodified, so the same
+            # disclosure shape applies.
+            cache_disclosure_parts = []
+            if llm_hint and "cache=" in (llm_hint or "").lower():
+                cache_disclosure_parts.append(f"cache={cache_decision.mode}")
+            if cache_injected:
+                cache_disclosure_parts.append("cache-injected=?1")
+            if cache_disclosure_parts:
+                existing = resp_headers.get("LLM-Capability", "")
+                resp_headers["LLM-Capability"] = (
+                    existing + ", " + ", ".join(cache_disclosure_parts)
+                    if existing else ", ".join(cache_disclosure_parts)
+                )
             return JSONResponse(
                 content=anthropic_response_to_openai(anth_resp, requested_model=body.get("model") or ""),
                 headers=resp_headers,
