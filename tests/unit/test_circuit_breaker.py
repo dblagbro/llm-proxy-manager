@@ -185,6 +185,18 @@ class TestClassifyError:
         assert cb.classify_error("Name or service not known") == "network"
         assert cb.classify_error("Temporary failure in name resolution") == "network"
 
+    def test_httpx_exception_names_classified_as_network(self):
+        """v3.0.88: httpx exception names (ReadError, WriteError, etc.)
+        used to fall through to ``unknown`` during the 2026-05-06 22s
+        upstream Anthropic blip. httpx docs ReadError as 'Failed to
+        receive data from the network' — that's network class."""
+        assert cb.classify_error("ReadError (no message)") == "network"
+        assert cb.classify_error("httpx.ReadError") == "network"
+        assert cb.classify_error("WriteError") == "network"
+        assert cb.classify_error("RemoteProtocolError: server disconnected") == "network"
+        assert cb.classify_error("LocalProtocolError: bad chunked encoding") == "network"
+        assert cb.classify_error("ProxyError: failed to connect") == "network"
+
     def test_upstream_5xx_classification(self):
         assert cb.classify_error("502 Bad Gateway") == "upstream_5xx"
         assert cb.classify_error("503 Service Unavailable") == "upstream_5xx"

@@ -278,6 +278,16 @@ _NETWORK_PATTERNS = [
     "network is unreachable",
     "ssl",
     "tls",
+    # v3.0.88: httpx exception names — caught these as "unknown" during a
+    # 22s upstream Anthropic blip on 2026-05-06 (4 events: ConnectTimeout
+    # already classified as ``timeout``, but ReadError + WriteError fell
+    # through). httpx documents ReadError as "Failed to receive data
+    # from the network" — that's a network class.
+    "readerror",
+    "writeerror",
+    "remoteprotocolerror",
+    "localprotocolerror",
+    "proxyerror",
 ]
 
 _UPSTREAM_5XX_PATTERNS = [
