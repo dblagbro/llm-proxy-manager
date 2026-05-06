@@ -51,6 +51,15 @@ class ProviderCreate(BaseModel):
     # the existing api_key column + new oauth_* columns. The raw blob is
     # never persisted.
     oauth_credentials_blob: Optional[str] = None
+    # v3.0.64: per-provider usage-based rotation config (Phase 2). All
+    # optional — providers default to "no tracking" until operator opts in.
+    usage_tracking_enabled: Optional[bool] = None
+    usage_session_window_sec: Optional[int] = None
+    usage_weekly_reset_dow: Optional[int] = None
+    usage_weekly_reset_hour: Optional[int] = None
+    usage_session_limit_tokens: Optional[int] = None
+    usage_weekly_limit_tokens: Optional[int] = None
+    usage_rotation_threshold_pct: Optional[int] = None
 
 
 class ProviderUpdate(ProviderCreate):
@@ -82,7 +91,22 @@ async def list_providers(
         .order_by(Provider.priority)
     )
     providers = result.scalars().all()
-    return [_serialize(p) for p in providers]
+    # v3.0.64: bulk-load usage windows so the list page can show per-provider
+    # session_pct + weekly_pct without an N+1.
+    from app.models.db import ProviderUsageWindow
+    usage_res = await db.execute(select(ProviderUsageWindow))
+    usage_by_id = {w.provider_id: w for w in usage_res.scalars().all()}
+    out = []
+    for p in providers:
+        d = _serialize(p)
+        w = usage_by_id.get(p.id)
+        if w:
+            d["usage_session_pct"] = w.session_pct
+            d["usage_session_tokens"] = w.session_tokens
+            d["usage_weekly_pct"] = w.weekly_pct
+            d["usage_weekly_tokens"] = w.weekly_tokens
+        out.append(d)
+    return out
 
 
 @router.get("/rolling-stats")
@@ -1011,6 +1035,15 @@ def _serialize(p: Provider) -> dict:
         # badge when this is non-null; admin clears via re-key save or
         # POST /api/providers/{id}/clear-auth-failure.
         "auth_failed": auth_fail,
+        # v3.0.64: usage-based rotation config (Phase 2). UI uses these
+        # to render the per-provider usage section in the edit form.
+        "usage_tracking_enabled": bool(p.usage_tracking_enabled),
+        "usage_session_window_sec": p.usage_session_window_sec,
+        "usage_weekly_reset_dow": p.usage_weekly_reset_dow,
+        "usage_weekly_reset_hour": p.usage_weekly_reset_hour,
+        "usage_session_limit_tokens": p.usage_session_limit_tokens,
+        "usage_weekly_limit_tokens": p.usage_weekly_limit_tokens,
+        "usage_rotation_threshold_pct": p.usage_rotation_threshold_pct,
     }
 
 
