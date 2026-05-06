@@ -111,6 +111,10 @@ export interface ActivityQuery {
   before_id?: number | null
   provider_id?: string | null
   severity?: string | null
+  // v3.0.79: filter by event_meta.error_class taxonomy bucket
+  // (auth, billing, rate_limit, timeout, network, upstream_5xx, bad_request,
+  // unknown). Comma-separated for OR semantics.
+  error_class?: string | null
   search?: string | null
 }
 
@@ -120,6 +124,7 @@ function _activityQs(q: ActivityQuery): string {
   if (q.before_id != null)   sp.set('before_id', String(q.before_id))
   if (q.provider_id)         sp.set('provider_id', q.provider_id)
   if (q.severity)            sp.set('severity', q.severity)
+  if (q.error_class)         sp.set('error_class', q.error_class)
   if (q.search)              sp.set('search', q.search)
   return sp.toString()
 }
