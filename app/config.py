@@ -155,8 +155,15 @@ class Settings(BaseSettings):
     audit_export_retention_days: int = Field(90, alias="AUDIT_EXPORT_RETENTION_DAYS")
 
     # v2.8.4 — activity-log payload capture
-    activity_log_capture_bodies: bool = Field(True, alias="ACTIVITY_LOG_CAPTURE_BODIES")
-    activity_log_max_body_chars: int = Field(50000, alias="ACTIVITY_LOG_MAX_BODY_CHARS")
+    # v3.0.91 — defaults flipped to False / 4000 after the 2026-05-06 incident.
+    # Capture=True with 50000-char cap bloated activity_log to ~1 GB / 12 KB
+    # avg per row, which starved the SQLAlchemy pool during background
+    # usage_tracker queries and 500'd login on all 4 nodes simultaneously.
+    # Operators who need wire capture for debugging should opt in explicitly
+    # via env var or runtime setting; the cost under sustained traffic was
+    # much higher than the diagnostic value justified.
+    activity_log_capture_bodies: bool = Field(False, alias="ACTIVITY_LOG_CAPTURE_BODIES")
+    activity_log_max_body_chars: int = Field(4000, alias="ACTIVITY_LOG_MAX_BODY_CHARS")
 
     # Wave 6 — PII masking
     pii_masking_enabled: bool = Field(False, alias="PII_MASKING_ENABLED")
