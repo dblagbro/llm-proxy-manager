@@ -14,7 +14,7 @@ from app.config import settings
 from app.models.db import Provider
 from app.routing.circuit_breaker import (
     record_success, record_failure, is_billing_error,
-    is_auth_error, record_auth_failure, clear_auth_failure,
+    is_auth_error, classify_error, record_auth_failure, clear_auth_failure,
 )
 from app.monitoring.metrics import record_request
 from app.monitoring.pricing import estimate_cost
@@ -327,6 +327,12 @@ async def record_outcome(
             "served_model": served_normalized,
             "provider_name": provider_name,
             "error": error_str[:2000] if error_str else None,
+            # v3.0.75 — coarse error-class taxonomy for activity-log
+            # filtering: auth / billing / rate_limit / timeout /
+            # network / upstream_5xx / bad_request / unknown. Lets ops
+            # answer "are timeout errors spiking?" without grepping the
+            # error blob.
+            "error_class": classify_error(error_str or ""),
             "cost_class": "subscription" if is_subscription else "per_call",
         }
         if requested_model:

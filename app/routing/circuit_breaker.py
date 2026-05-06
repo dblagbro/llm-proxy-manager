@@ -240,6 +240,100 @@ def is_auth_error(error_text: str) -> bool:
     return any(p in low for p in AUTH_ERROR_PATTERNS)
 
 
+# v3.0.75 — error-class taxonomy. Activity log used to record
+# ``error_str`` as a free-form blob, but operators investigating
+# "why the failure rate spiked at 03:14" then had to grep through
+# strings to bucket them. Adding an ``error_class`` enum lets the
+# operator filter / chart by category directly.
+#
+# Order matters in classify_error() — the first matching pattern
+# wins, so more-specific buckets (auth, billing) come before
+# more-general ones (network, upstream_5xx).
+
+_RATE_LIMIT_PATTERNS = [
+    "rate_limit",
+    "rate limit",
+    "too many requests",
+    "ratelimit",
+    "429",
+    "quota exceeded",
+    "throttled",
+]
+
+_TIMEOUT_PATTERNS = [
+    "timed out",
+    "timeout",
+    "deadline exceeded",
+    "read timeout",
+    "connect timeout",
+]
+
+_NETWORK_PATTERNS = [
+    "connection refused",
+    "connection reset",
+    "name or service not known",
+    "temporary failure in name resolution",
+    "dns",
+    "no route to host",
+    "network is unreachable",
+    "ssl",
+    "tls",
+]
+
+_UPSTREAM_5XX_PATTERNS = [
+    "500",
+    "502",
+    "503",
+    "504",
+    "internal server error",
+    "bad gateway",
+    "service unavailable",
+    "gateway timeout",
+]
+
+_BAD_REQUEST_PATTERNS = [
+    "400",
+    "invalid_request",
+    "invalid request",
+    "validation error",
+    "malformed",
+    "bad request",
+]
+
+
+def classify_error(error_text: str) -> str:
+    """Bucket an upstream / client error string into a coarse category.
+
+    Returns one of: ``auth``, ``billing``, ``rate_limit``, ``timeout``,
+    ``network``, ``upstream_5xx``, ``bad_request``, or ``unknown``.
+
+    Used by record_outcome to populate ``event_meta.error_class`` for
+    activity-log filtering. Pattern lists deliberately overlap (e.g. a
+    503 is both upstream_5xx and might mention "rate limit") — the
+    caller-friendly ordering picks the most specific category first.
+    """
+    if not error_text:
+        return "unknown"
+    low = error_text.lower()
+    # auth and billing first — these flag PERMANENT/operator-action conditions
+    # and they share patterns like "401" with auth, "402" with billing.
+    if is_auth_error(error_text):
+        return "auth"
+    if is_billing_error(error_text):
+        return "billing"
+    if any(p in low for p in _RATE_LIMIT_PATTERNS):
+        return "rate_limit"
+    if any(p in low for p in _TIMEOUT_PATTERNS):
+        return "timeout"
+    if any(p in low for p in _NETWORK_PATTERNS):
+        return "network"
+    if any(p in low for p in _UPSTREAM_5XX_PATTERNS):
+        return "upstream_5xx"
+    if any(p in low for p in _BAD_REQUEST_PATTERNS):
+        return "bad_request"
+    return "unknown"
+
+
 # Track providers in "needs re-auth" state separately from the regular CB
 # states. This survives manual `force_close` calls — the only way out is
 # `clear_auth_failure(provider_id)` (called when admin re-keys via the

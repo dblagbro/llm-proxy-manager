@@ -149,3 +149,58 @@ def test_is_billing_error_detection():
 
     # Billing-scoped 429s still match via the specific substring
     assert cb.is_billing_error("429 insufficient_quota") is True
+
+
+# v3.0.75 — coarse error-class taxonomy for activity-log filtering
+class TestClassifyError:
+    def test_empty_string_is_unknown(self):
+        assert cb.classify_error("") == "unknown"
+        assert cb.classify_error(None) == "unknown"  # type: ignore[arg-type]
+
+    def test_auth_takes_precedence(self):
+        # Auth and 401 share status text; auth wins so the operator sees
+        # the actionable category (re-auth needed) not generic upstream_5xx.
+        assert cb.classify_error("HTTP 401: invalid_authentication") == "auth"
+        assert cb.classify_error("authentication_error: bad token") == "auth"
+
+    def test_billing_classification(self):
+        assert cb.classify_error("insufficient_quota") == "billing"
+        assert cb.classify_error("Payment Required") == "billing"
+        assert cb.classify_error("You have exhausted your subscription") == "billing"
+
+    def test_rate_limit_classification(self):
+        assert cb.classify_error("429 Too Many Requests") == "rate_limit"
+        assert cb.classify_error("rate limit exceeded") == "rate_limit"
+        assert cb.classify_error("ratelimit_error") == "rate_limit"
+        assert cb.classify_error("throttled") == "rate_limit"
+
+    def test_timeout_classification(self):
+        assert cb.classify_error("connection timed out") == "timeout"
+        assert cb.classify_error("read timeout") == "timeout"
+        assert cb.classify_error("deadline exceeded") == "timeout"
+
+    def test_network_classification(self):
+        assert cb.classify_error("Connection refused") == "network"
+        assert cb.classify_error("connection reset by peer") == "network"
+        assert cb.classify_error("Name or service not known") == "network"
+        assert cb.classify_error("Temporary failure in name resolution") == "network"
+
+    def test_upstream_5xx_classification(self):
+        assert cb.classify_error("502 Bad Gateway") == "upstream_5xx"
+        assert cb.classify_error("503 Service Unavailable") == "upstream_5xx"
+        assert cb.classify_error("Internal Server Error") == "upstream_5xx"
+
+    def test_bad_request_classification(self):
+        assert cb.classify_error("400: invalid_request") == "bad_request"
+        assert cb.classify_error("validation error: field x missing") == "bad_request"
+
+    def test_unknown_fallthrough(self):
+        # Truly novel error string falls through to unknown rather than
+        # accidentally bucketing into a more specific category.
+        assert cb.classify_error("some bizarre new error from upstream") == "unknown"
+
+    def test_billing_429_routes_to_billing_not_rate_limit(self):
+        """When a single error string is both billing-shaped (insufficient_quota)
+        AND rate-limit-shaped (429), billing should win because it's the
+        actionable signal — operator needs to add credit, not back off."""
+        assert cb.classify_error("429 insufficient_quota") == "billing"
