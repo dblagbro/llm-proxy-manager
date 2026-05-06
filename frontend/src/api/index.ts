@@ -2,7 +2,7 @@ import { api } from './client'
 import type {
   AuthUser, Provider, ProviderFormData, ModelCapability, TestResult, ScannedModel,
   ApiKey, User, ActivityEvent, MetricsSummary, MetricBucket,
-  ClusterStatus, HealthStatus, ExternalStatus,
+  ClusterStatus, HealthStatus, ExternalStatus, CacheStats,
 } from '@/types'
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
@@ -135,6 +135,22 @@ export const monitoringApi = {
       `/api/monitoring/metrics/${id}?hours=${hours}`
     ),
   statusPages: ()           => api.get<ExternalStatus>('/api/monitoring/status-pages'),
+  // v3.0.73 — cache-stats rollup. Reads cache_read/creation tokens from
+  // event_meta over a rolling window and surfaces hit rate + estimated $ savings.
+  cacheStats: (params: {
+    windowMinutes?: number
+    groupBy?: 'provider' | 'api_key' | 'none'
+    ratePerMillion?: number
+    cacheDiscountPct?: number
+  } = {}) => {
+    const qs = new URLSearchParams()
+    if (params.windowMinutes !== undefined) qs.set('window_minutes', String(params.windowMinutes))
+    if (params.groupBy !== undefined) qs.set('group_by', params.groupBy)
+    if (params.ratePerMillion !== undefined) qs.set('rate_per_million', String(params.ratePerMillion))
+    if (params.cacheDiscountPct !== undefined) qs.set('cache_discount_pct', String(params.cacheDiscountPct))
+    const q = qs.toString()
+    return api.get<CacheStats>(`/api/monitoring/cache-stats${q ? '?' + q : ''}`)
+  },
 }
 
 // ── Settings ──────────────────────────────────────────────────────────────────
