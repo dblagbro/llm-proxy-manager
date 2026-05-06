@@ -238,6 +238,10 @@ async def external_status(_: AdminUser = Depends(require_admin)):
 async def cache_stats(
     window_minutes: int = Query(60, ge=1, le=1440, description="rolling window size"),
     group_by: str = Query("provider", description="'provider' (default), 'api_key', or 'none'"),
+    bucket_minutes: int = Query(
+        0, ge=0, le=1440,
+        description="v3.0.80: when >0, return a ``time_series`` array bucketing the window into N-minute slices. 0 = aggregate-only response (default).",
+    ),
     rate_per_million: float = Query(
         3.0,
         description="Per-million-token rate for the savings estimate "
@@ -273,6 +277,7 @@ async def cache_stats(
     rows = (await db.execute(
         select(
             ActivityLog.event_meta, ActivityLog.provider_id, ActivityLog.api_key_id,
+            ActivityLog.created_at,
         )
         .where(ActivityLog.created_at >= cutoff)
         .where(ActivityLog.event_type == "llm_request")
@@ -297,8 +302,13 @@ async def cache_stats(
 
     overall = _bucket()
     by_group: dict[str, dict] = {}
+    # v3.0.80: bucketed time series. Key = bucket-aligned epoch second
+    # (UTC). When bucket_minutes is 0 we skip this dict entirely so the
+    # default codepath stays cheap.
+    time_buckets: dict[int, dict] = {}
+    bucket_secs = bucket_minutes * 60
 
-    for em, pid, kid in rows:
+    for em, pid, kid, ts in rows:
         try:
             m = em if isinstance(em, dict) else json.loads(em or "{}")
         except (TypeError, ValueError):
@@ -316,17 +326,35 @@ async def cache_stats(
             overall["cache_creation_tokens"] += cc
         if group_by != "none":
             key = pid if group_by == "provider" else kid
-            if not key:
+            if key:
+                b = by_group.setdefault(key, _bucket())
+                b["events"] += 1
+                b["new_input_tokens"] += it
+                if cr:
+                    b["events_with_cache_read"] += 1
+                    b["cache_read_tokens"] += cr
+                if cc:
+                    b["events_with_cache_creation"] += 1
+                    b["cache_creation_tokens"] += cc
+        if bucket_secs > 0 and ts is not None:
+            # Server stores naive UTC datetimes; coerce to epoch via the
+            # tz-aware path so floor-by-bucket-size is correct.
+            try:
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                epoch = int(ts.timestamp())
+            except Exception:
                 continue
-            b = by_group.setdefault(key, _bucket())
-            b["events"] += 1
-            b["new_input_tokens"] += it
+            bucket_key = (epoch // bucket_secs) * bucket_secs
+            tb = time_buckets.setdefault(bucket_key, _bucket())
+            tb["events"] += 1
+            tb["new_input_tokens"] += it
             if cr:
-                b["events_with_cache_read"] += 1
-                b["cache_read_tokens"] += cr
+                tb["events_with_cache_read"] += 1
+                tb["cache_read_tokens"] += cr
             if cc:
-                b["events_with_cache_creation"] += 1
-                b["cache_creation_tokens"] += cc
+                tb["events_with_cache_creation"] += 1
+                tb["cache_creation_tokens"] += cc
 
     # Resolve display names for the grouped keys.
     name_lookup: dict[str, str] = {}
@@ -362,7 +390,22 @@ async def cache_stats(
         e["name"] = name_lookup.get(key, key)
         grouped_out.append(e)
 
-    return {
+    # v3.0.80: assemble the time-series array sorted oldest→newest so
+    # consumers can chart it directly without re-sorting. Empty buckets
+    # are filled in for visual continuity (otherwise sparse traffic
+    # produces gappy charts).
+    time_series: list[dict] = []
+    if bucket_secs > 0 and time_buckets:
+        first_bucket = ((int(cutoff.timestamp()) // bucket_secs) + 1) * bucket_secs
+        last_bucket = (int(datetime.now(timezone.utc).timestamp()) // bucket_secs) * bucket_secs
+        for bk in range(first_bucket, last_bucket + bucket_secs, bucket_secs):
+            b = time_buckets.get(bk, _bucket())
+            entry = _enrich(b)
+            entry["bucket_start"] = datetime.fromtimestamp(bk, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+            entry["bucket_end"] = datetime.fromtimestamp(bk + bucket_secs, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+            time_series.append(entry)
+
+    response: dict = {
         "window_minutes": window_minutes,
         "rate_per_million_usd": rate_per_million,
         "cache_discount_pct": cache_discount_pct,
@@ -370,6 +413,10 @@ async def cache_stats(
         "by_group": grouped_out,
         "group_by": group_by,
     }
+    if bucket_minutes > 0:
+        response["bucket_minutes"] = bucket_minutes
+        response["time_series"] = time_series
+    return response
 
 
 # v3.0.76 — Per-caller usage CSV export. Evergreen reporting hook —
