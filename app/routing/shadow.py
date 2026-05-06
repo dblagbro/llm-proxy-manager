@@ -122,7 +122,26 @@ async def _embed_cosine(
     try:
         import litellm
         import math
-        resp = await litellm.aembedding(model=model, input=[text_a, text_b], dimensions=dims)
+        # v3.0.67: honor semantic_cache_provider_id pin for shadow-compare
+        # embeddings too. Same plumbing as semantic.py — when a provider
+        # is pinned, route through its api_key + base_url + litellm prefix
+        # so embeddings respect operator priority intent.
+        from app.config import settings as _settings
+        kwargs: dict = {"model": model, "input": [text_a, text_b], "dimensions": dims}
+        provider_id = (_settings.semantic_cache_provider_id or "").strip()
+        if provider_id:
+            from app.models.database import AsyncSessionLocal
+            from app.models.db import Provider
+            async with AsyncSessionLocal() as _db:
+                _p = await _db.get(Provider, provider_id)
+            if _p is not None and _p.enabled and _p.deleted_at is None:
+                from app.routing.router import build_litellm_model, build_litellm_kwargs
+                kwargs["model"] = build_litellm_model(_p, model_override=model)
+                _pkw = build_litellm_kwargs(_p)
+                for k in ("api_key", "api_base", "api_version"):
+                    if k in _pkw:
+                        kwargs[k] = _pkw[k]
+        resp = await litellm.aembedding(**kwargs)
         data = resp.data if isinstance(resp.data, list) else resp.data
         vecs = [list(d.embedding) if hasattr(d, "embedding") else list(d["embedding"]) for d in data]
         if len(vecs) != 2:

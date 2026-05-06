@@ -77,13 +77,37 @@ class SemanticCache:
         return self._init_ok
 
     async def _embed(self, text: str) -> Optional[list[float]]:
+        # v3.0.67: when ``semantic_cache_provider_id`` is set, route the
+        # embedding call through that specific proxy provider's api_key +
+        # base_url + litellm prefix, so the operator's preferred provider
+        # (often the priority=1 row, e.g. Google Gemini) actually serves
+        # the embedding rather than litellm calling OpenAI direct via the
+        # bare model name. When unset, fall back to the legacy "model name
+        # selects provider implicitly" behavior for backwards compat.
         try:
             import litellm
-            resp = await litellm.aembedding(
-                model=settings.semantic_cache_embedding_model,
-                input=[text],
-                dimensions=settings.semantic_cache_embedding_dims,
-            )
+            provider_id = (settings.semantic_cache_provider_id or "").strip()
+            kwargs: dict = {
+                "model": settings.semantic_cache_embedding_model,
+                "input": [text],
+                "dimensions": settings.semantic_cache_embedding_dims,
+            }
+            if provider_id:
+                from app.models.database import AsyncSessionLocal
+                from app.models.db import Provider
+                async with AsyncSessionLocal() as db:
+                    p = await db.get(Provider, provider_id)
+                if p is not None and p.enabled and p.deleted_at is None:
+                    from app.routing.router import build_litellm_model, build_litellm_kwargs
+                    # Caller-pinned model lives on settings.semantic_cache_embedding_model;
+                    # build_litellm_model prefixes it with the provider's family tag.
+                    kwargs["model"] = build_litellm_model(p, model_override=settings.semantic_cache_embedding_model)
+                    pkw = build_litellm_kwargs(p)
+                    # Don't override max_tokens etc. on an embed call — only auth + endpoint.
+                    for k in ("api_key", "api_base", "api_version"):
+                        if k in pkw:
+                            kwargs[k] = pkw[k]
+            resp = await litellm.aembedding(**kwargs)
             data = resp.data[0] if isinstance(resp.data, list) else resp["data"][0]
             emb = getattr(data, "embedding", None) or data["embedding"]
             return list(emb)
