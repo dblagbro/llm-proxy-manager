@@ -9,6 +9,40 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.0.x — Run runtime, cluster ops, observability
 
+### v3.0.99 — `/v1/messages` capability filter (red-dots fix)
+
+Coordinator-hub's UI showed every provider RED for days. Hub team's prober uses the Anthropic SDK against `/v1/messages` for ALL providers — so `gemini-2.5-flash` for Google providers, `gpt-4o` for OpenAI providers, `claude-*` for Anthropic providers. The non-claude probes 404'd with `not_found_error: model: gemini-2.5-flash` (or similar) and the hub marked the provider red.
+
+**Root cause**: `/v1/messages` routing didn't filter providers by model capability. A `gemini-2.5-flash` request got force-routed to the highest-priority claude-oauth provider (Devin-Anthropic-Max-Gmail, prio=2) regardless of capability. We then forwarded the gemini model name to platform.claude.com, which doesn't have it → 404.
+
+`/v1/chat/completions` had the capability filter wired up since v3.0.22 (it always passes the requested model name as `model_override`, which activates the v3.0.22 model-supports-by-provider filter + v3.0.36 family filter). `/v1/messages` had been Anthropic-shape-only for so long that nobody noticed it was passing `model_override=None` when no `ModelAlias` row existed.
+
+**Fix**: 1-line change in `app/api/messages.py:172`. Pass `parsed_slug.bare_model` as `model_override` even without an alias. That activates:
+- the family filter (`router.py:431`) which excludes claude-oauth from `gemini-*` / `gpt-*` / `cohere-*` requests
+- the v3.0.22 model-supports-by-provider capability filter
+- the v3.0.46 cross-family-fallback path when no provider matches the requested model exactly
+
+Verified live on www01 (and confirmed in coord-hub's own activity log post-deploy):
+- `POST /v1/messages` + `gemini-2.5-flash` → 200, served by Google Generative LLM (was 404)
+- `POST /v1/messages` + `claude-haiku-4-5-20251001` → 200, claude-oauth path unchanged (control)
+- `POST /v1/messages` + `gpt-4o` → 200, served by OpenAI provider with cross-family disclosure
+
+904/904 unit tests pass. Hub flipped all provider dots GREEN on next probe cycle — first time in days.
+
+### v3.0.98 — `/cluster/sync` 60s hang hotfix + codex probe token extraction + probe retention
+
+URGENT INCIDENT FIX. Coordinator-hub team reported 60s hangs on `POST /v1/messages` with valid `llmp-CwLU` key — bad keys rejected fast (401 in 80ms, proving auth path was healthy) but valid keys hung exactly 60s with no first byte.
+
+**Root cause**: v3.0.96 added `ModelCapability` + `ModelAlias` + `OAuthCaptureProfile` to the every-30s `/cluster/sync` payload. With ~304 ModelCapability rows × per-row `SELECT`-then-`INSERT/UPDATE` on the receiver, each sync POST grew from 200-700ms to **12-17 seconds**. With sync running every 30s and taking 13-17s, the DB was contended ~50% of every minute. Real `/v1/messages` calls queued waiting for DB pool slots and timed out at the 60s nginx upstream limit.
+
+**Fix**: Catalog-table inclusion in `_build_sync_payload` is now gated by a new `cluster_sync_catalog_tables` setting, defaulting **OFF**. Restores v3.0.95-era sync payload + receiver workload. Sync latency post-fix: 200-919ms range. Operators who need cross-node `ModelCapability` sync can flip the setting; the proper rework (delta-only push + batched apply) is queued for a future release.
+
+**Bundled (planned ship, kept atomic with hotfix)**:
+
+- **codex keepalive token extraction**. Probe path now parses `response.completed` SSE event for `usage.input_tokens` / `output_tokens` instead of breaking out blindly. Pre-fix codex probe rows showed 0/0 every cycle.
+- **probe-event retention**. New `activity_log_probe_retention_days` setting (default 7 days vs 30 for real events). Probes are 80%+ of fleet traffic when paperless is paused; 30 days of probe rows is wasteful.
+- **`GET /api/monitoring/prune-status` endpoint** returns last sweep counts + retention config + activity_log row count. Lets operators verify the prune is firing without docker-exec.
+
 ### v3.0.57 — Explicit per-provider cost_class column
 
 Replaces the hardcoded `SUBSCRIPTION_TIER_PROVIDER_TYPES` set (introduced in v3.0.50) with a DB-backed `Provider.cost_class TEXT` column. NULL preserves the v3.0.50 default behavior (derive from `provider_type`: `claude-oauth`/`codex-oauth`/`anthropic-oauth` = `subscription`, all else = `per_call`). Admin-overridable when an `anthropic-direct` provider is on a flat-rate enterprise contract, or for any future per-call OAuth tier.
