@@ -117,44 +117,28 @@ async def chat_completions(
             f"Use POST /v1/embeddings instead of /v1/chat/completions.",
         )
     alias = await resolve_alias(db, body.get("model")) if not is_auto else None
-    # v2.8.11: /v1/chat/completions has no claude-oauth dispatch — those
-    # providers require the dedicated handler in messages.py (OAuth Bearer +
-    # CC beta flags + Anthropic body shape). Sending one through litellm here
-    # leaks the OAuth token as an x-api-key and produces a confusing 401 or
-    # "Connection error" upstream. Filter them out at route selection.
-    # v3.0.4: convert the no-providers-available RuntimeError into a clean
-    # 503 with an actionable message instead of letting it bubble to a
-    # raw 500 + ASGI traceback. Hits when the only enabled providers are
-    # claude-oauth (cutover window state).
-    # v3.0.22: pass the requested model as ``model_override`` even when no
-    # alias is defined, so select_provider's model-supports-by-provider
-    # filter (also v3.0.22) can reject providers whose scanned capabilities
-    # don't list this model. Previously model_override was None when the
-    # caller's ``model`` had no ModelAlias row, which meant the filter
-    # never fired and codex-oauth providers happily ate every request.
+    # v3.0.x refactor: provider selection + 503 conversion + auto-model
+    # resolution moved into _request_pipeline shared helpers. Both
+    # /v1/messages and /v1/chat/completions go through the same code path
+    # here — prevents the kind of divergence that caused v3.0.99's
+    # gemini-routing-to-claude-oauth bug.
+    #
+    # Note: completions.py uses the generic 503 (detailed_503=False);
+    # messages.py uses the actionable variant.
+    # v3.0.38 still applies: claude-oauth is reachable from /v1/chat/completions
+    # via the OpenAI↔Anthropic wire-format translator — no exclusion needed.
+    from app.api._request_pipeline import (
+        select_provider_with_503, resolve_auto_model_into_body,
+    )
+    route = await select_provider_with_503(
+        db, hint,
+        has_tools=has_tools, has_images=has_images,
+        key_record=key_record, parsed_slug=parsed_slug, alias=alias,
+        detailed_503=False,
+    )
+    body = resolve_auto_model_into_body(body, route, is_auto)
+    # Kept as a local for downstream record_outcome calls (lines ~600-615).
     requested_model = (alias.model_id if alias else parsed_slug.bare_model) or None
-    try:
-        # v3.0.38: claude-oauth is now reachable from /v1/chat/completions via
-        # the OpenAI↔Anthropic wire-format translator (DevinGPT 2026-05-01
-        # ask). Removed v2.8.11's ``excluded_provider_types={"claude-oauth"}``.
-        route = await select_provider(
-            db, hint, has_tools=has_tools, has_images=has_images, key_type=key_record.key_type,
-            pinned_provider_id=alias.provider_id if alias else None,
-            model_override=requested_model,
-            sort_mode=parsed_slug.sort_mode,
-            api_key_id=key_record.id,  # v3.0.45 tenant scoping
-        )
-    except RuntimeError as e:
-        msg = str(e)
-        raise HTTPException(503, f"Provider selection failed: {msg}")
-    if is_auto:
-        resolved_model = route.profile.model_id or route.provider.default_model
-        if not resolved_model:
-            raise HTTPException(
-                502,
-                f"auto-routing chose {route.provider.name!r} but it has no default_model set",
-            )
-        body = {**body, "model": resolved_model}
 
     # OTEL GenAI span: routing-decision metadata (no-op if OTLP endpoint unset)
     with llm_span(

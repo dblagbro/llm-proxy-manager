@@ -219,3 +219,94 @@ def build_base_response_headers(
             headers["LLM-Hint-Set"] = hint_set
 
     return headers
+
+
+# ── 5. Provider selection (with 503 conversion + auto-model resolution) ──────
+
+
+async def select_provider_with_503(
+    db: AsyncSession,
+    hint,
+    *,
+    has_tools: bool,
+    has_images: bool,
+    key_record,
+    parsed_slug,
+    alias,
+    detailed_503: bool = True,
+):
+    """Centralized ``select_provider`` call with RuntimeError → HTTPException(503)
+    conversion and the v3.0.22 / v3.0.99 ``model_override`` plumbing both
+    endpoints depend on.
+
+    Pre-v3.0.99 only ``/v1/chat/completions`` passed ``parsed_slug.bare_model``
+    as ``model_override`` — ``/v1/messages`` passed ``None`` when no
+    ``ModelAlias`` row existed, which silently disabled the family +
+    capability filters and force-routed gemini probes to claude-oauth
+    providers (→ 404 from platform.claude.com). Centralizing here makes
+    the parity structural instead of incidental.
+
+    Args:
+        detailed_503: When True (used by ``/v1/messages``) include the
+            actionable circuit-breaker / no-providers messages. When False
+            (used by ``/v1/chat/completions``) emit the generic 503.
+
+    Returns the ``RouteResult`` from ``select_provider``.
+    """
+    from app.routing.router import select_provider
+
+    # v3.0.22 / v3.0.99 — always pass the requested model name, even when
+    # no ModelAlias row resolved it. Activates router.py:431 family filter
+    # + the v3.0.22 model-supports-by-provider capability filter +
+    # v3.0.46 cross-family-fallback path.
+    requested_model = (alias.model_id if alias else parsed_slug.bare_model) or None
+    try:
+        return await select_provider(
+            db,
+            hint,
+            has_tools=has_tools,
+            has_images=has_images,
+            key_type=key_record.key_type,
+            pinned_provider_id=alias.provider_id if alias else None,
+            model_override=requested_model,
+            sort_mode=parsed_slug.sort_mode,
+            api_key_id=key_record.id,  # v3.0.45 tenant scoping
+        )
+    except RuntimeError as e:
+        msg = str(e)
+        if detailed_503 and "circuit breakers open" in msg:
+            raise HTTPException(
+                503,
+                "All providers are currently unavailable (circuit breakers open). "
+                "Most common cause: Anthropic server-side OAuth token revocation "
+                "trips the 24h auth-failure breaker on every claude-oauth provider. "
+                "Operator action: re-auth the affected provider(s) via the OAuth UI, "
+                "or wait for the hold-down to expire.",
+            )
+        if detailed_503 and "No providers configured" in msg:
+            raise HTTPException(
+                503,
+                "No providers configured. Operator action: enable at least one "
+                "provider via the Providers page or POST /api/providers.",
+            )
+        raise HTTPException(503, f"Provider selection failed: {msg}")
+
+
+def resolve_auto_model_into_body(body: dict, route, is_auto: bool) -> dict:
+    """When the caller used ``model: "auto"`` (or ``"llmp-auto"``), substitute
+    the resolved model from the chosen route back into ``body["model"]`` so
+    downstream dispatch (claude-oauth direct, codex-oauth direct, litellm)
+    sees a real model name. Idempotent if ``is_auto`` is False.
+
+    Raises HTTP 502 if auto-routing chose a provider with no
+    ``default_model`` to fall back to.
+    """
+    if not is_auto:
+        return body
+    resolved_model = route.profile.model_id or route.provider.default_model
+    if not resolved_model:
+        raise HTTPException(
+            502,
+            f"auto-routing chose {route.provider.name!r} but it has no default_model set",
+        )
+    return {**body, "model": resolved_model}

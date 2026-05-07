@@ -34,7 +34,12 @@ app/
 │   │                              apply_privacy_filters (guard+PII),
 │   │                              build_hint_with_auto_task (parse + classify),
 │   │                              apply_context_compression (truncate/mapreduce),
-│   │                              build_base_response_headers
+│   │                              build_base_response_headers,
+│   │                              select_provider_with_503 + resolve_auto_model_into_body
+│   │                              (v3.1.0: extracted shared provider-selection block
+│   │                              — closes the v3.0.99 divergence-bug class where
+│   │                              /v1/messages + /v1/chat/completions silently
+│   │                              diverged on model_override plumbing).
 │   ├── oauth_capture/           Multi-vendor OAuth capture package (v2.5.0; packaged 2026-04-24):
 │   │   ├── __init__.py          merges sub-routers; re-exports test helpers
 │   │   ├── presets.py           CapturePreset + 8-entry PRESETS table
@@ -47,7 +52,16 @@ app/
 │   ├── models.py                GET /v1/models — OpenAI-compatible model listing
 │   ├── image_utils.py           Image detection + stripping for both wire formats (deduped 2026-04-23)
 │   ├── apikeys.py               CRUD + spending-cap/rate-limit for API keys
-│   ├── providers.py             CRUD + model capability management for providers
+│   ├── providers.py             CRUD + test + scan-models + capability management
+│   │                              (v3.1.0: was 1136 lines; OAuth flow endpoints
+│   │                              moved to providers_oauth.py — now 875 lines)
+│   ├── providers_oauth.py       claude-oauth + codex-oauth authorize / exchange /
+│   │                              rotate (v3.1.0: extracted from providers.py).
+│   │                              Six endpoints over a parameterized
+│   │                              OAuthProviderSpec (CLAUDE_OAUTH_SPEC /
+│   │                              CODEX_OAUTH_SPEC). Adding a third OAuth provider
+│   │                              type (Vertex, Azure-AD, Bedrock) is now ~30
+│   │                              lines instead of a 200-line copy-paste.
 │   └── admin.py                 Admin auth, user management, settings UI API
 │
 ├── auth/
@@ -150,6 +164,7 @@ app/
 - **New LMRH built-in dim**: add a case branch in `app/routing/lmrh/score.py`, the dim name to `_builtin_dim_names()` in `app/api/lmrh.py`, and document in `docs/draft-blagbrough-lmrh-00.md`. The middleware + cluster sync need no changes
 - **New rolling-window aggregate**: extend `get_provider_rolling_windows()` in `app/monitoring/metrics.py` with another conditional sum — single SQL pass covers all windows
 - **Wire-format translator for a new provider type**: pattern is `app/api/_oauth_chat_translate.py` (v3.0.38) — request shape inversion + non-streaming response inversion + SSE delta-chunk re-emission. Hook into the chat handler's provider-type branch alongside `codex-oauth` / `claude-oauth`
+- **New OAuth-flow provider type** (Vertex, Azure-AD, Bedrock, etc.): add a flow module under `app/providers/<name>_oauth_flow.py` exposing `start_authorize() / extract_code_from_callback() / exchange_code() / OAuthFlowError`. Then in `app/api/providers_oauth.py` add a `<NAME>_OAUTH_SPEC = OAuthProviderSpec(...)` constant and three endpoint stubs (`authorize`, `exchange`, `rotate`) that pass the spec into `_do_authorize` / `_do_exchange_create` / `_do_rotate`. ~30 lines total, no logic duplication.
 
 ## Design contract
 
