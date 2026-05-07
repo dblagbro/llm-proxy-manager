@@ -120,7 +120,14 @@ export function ActivityEventRow({ event, compact }: Props) {
   const reqBody = meta.request_body as string | undefined
   const respBody = meta.response_body as string | undefined
   const errorMsg = meta.error as string | undefined
-  const expandable = Boolean(reqBody || respBody || errorMsg)
+  // v3.0.93: row is expandable whenever there's ANY metadata to show, not
+  // just bodies. After v3.0.91 disabled body capture by default, most rows
+  // had request_body/response_body absent — which removed the click-to-
+  // expand affordance entirely. Now any non-empty event_meta makes the row
+  // expandable; the expanded panel shows whichever sections are present
+  // (error / request body / response body / and always: full metadata).
+  const hasMeta = meta && Object.keys(meta).length > 0
+  const expandable = Boolean(reqBody || respBody || errorMsg || hasMeta)
   const [open, setOpen] = useState(false)
   // v3.0.33: Pretty/Raw toggle on request + response. Default to pretty
   // (existing behavior); some operators prefer raw for copy-paste into curl.
@@ -226,6 +233,27 @@ export function ActivityEventRow({ event, compact }: Props) {
                 </button>
               </div>
               <pre className="font-mono whitespace-pre-wrap break-all bg-gray-50 dark:bg-gray-900 text-gray-700 dark:text-gray-200 rounded p-2 max-h-96 overflow-auto">{prettyResp ? tryPretty(respBody) : respBody}</pre>
+            </div>
+          )}
+          {/* v3.0.93: always show the full event_meta dict (sans bodies that
+              have their own section above). After body capture got disabled
+              by default in v3.0.91, this is the primary detail view for the
+              majority of activity-log rows — exposes in_tok, out_tok,
+              latency_ms, model, lmrh_hint, error_class, cache fields, and
+              anything else recorded by record_outcome. */}
+          {hasMeta && (
+            <div>
+              <p className="text-[11px] font-medium text-gray-500 dark:text-gray-400 mb-1">Metadata</p>
+              <pre className="font-mono whitespace-pre-wrap break-all bg-gray-50 dark:bg-gray-900 text-gray-700 dark:text-gray-200 rounded p-2 max-h-96 overflow-auto">
+                {JSON.stringify(
+                  Object.fromEntries(
+                    Object.entries(meta).filter(([k]) =>
+                      !['request_body','response_body','error'].includes(k)
+                    )
+                  ),
+                  null, 2
+                )}
+              </pre>
             </div>
           )}
         </div>
