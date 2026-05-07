@@ -180,6 +180,43 @@ async def _build_sync_payload(db) -> dict:
          "deleted_at": p.deleted_at}
         for p in proposals_result.scalars().all()
     ]
+    # v3.0.96: replicate operator-configured catalog tables that were
+    # previously unsynced. Hub team flagged 2026-05-07 that /v1/models
+    # diverged 196 vs 5 across nodes because ModelCapability wasn't
+    # syncing. Same risk class for ModelAlias (operator-configured
+    # client-facing model name → provider+model mappings) and
+    # OAuthCaptureProfile (named OAuth-capture configurations).
+    from app.models.db import ModelCapability, ModelAlias, OAuthCaptureProfile
+    caps_result = await db.execute(select(ModelCapability))
+    model_capabilities = [
+        {"provider_id": c.provider_id, "model_id": c.model_id,
+         "tasks": c.tasks or [], "latency": c.latency or "medium",
+         "cost_tier": c.cost_tier or "standard", "safety": c.safety or 3,
+         "context_length": c.context_length or 128000,
+         "regions": c.regions or [], "modalities": c.modalities or [],
+         "native_reasoning": bool(c.native_reasoning),
+         "native_tools": bool(c.native_tools) if c.native_tools is not None else True,
+         "native_vision": bool(c.native_vision) if c.native_vision is not None else False,
+         "source": c.source or "inferred",
+         "updated_at": c.updated_at.isoformat() if c.updated_at else None}
+        for c in caps_result.scalars().all()
+    ]
+    aliases_result = await db.execute(select(ModelAlias))
+    model_aliases = [
+        {"alias": a.alias, "provider_id": a.provider_id,
+         "model_id": a.model_id, "description": a.description,
+         "created_at": a.created_at.isoformat() if a.created_at else None}
+        for a in aliases_result.scalars().all()
+    ]
+    profiles_result = await db.execute(select(OAuthCaptureProfile))
+    oauth_capture_profiles = [
+        {"name": p.name, "preset": p.preset,
+         "upstream_urls": p.upstream_urls or [],
+         "secret": p.secret, "enabled": bool(p.enabled),
+         "notes": p.notes,
+         "created_at": p.created_at.isoformat() if p.created_at else None}
+        for p in profiles_result.scalars().all()
+    ]
     return {
         "source_node": settings.cluster_node_id,
         "timestamp": time.time(),
@@ -189,6 +226,9 @@ async def _build_sync_payload(db) -> dict:
         "settings": node_settings,
         "lmrh_dims": lmrh_dims,
         "lmrh_proposals": lmrh_proposals,
+        "model_capabilities": model_capabilities,
+        "model_aliases": model_aliases,
+        "oauth_capture_profiles": oauth_capture_profiles,
     }
 
 

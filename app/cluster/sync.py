@@ -448,6 +448,140 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
             existing.status = pr_data.get("status", existing.status)
             existing.review_note = pr_data.get("review_note", existing.review_note)
 
+    # v3.0.96: replicate operator-configured catalog tables. Apply
+    # AFTER providers (above) so FK references to providers.id resolve.
+    from app.models.db import ModelCapability, ModelAlias, OAuthCaptureProfile
+
+    # ── ModelCapability ─────────────────────────────────────────────────
+    # Identity = (provider_id, model_id). LWW by updated_at when both
+    # sides have a stamp. Peer wins on insert.
+    for c_data in payload.get("model_capabilities", []):
+        prov_id = c_data.get("provider_id")
+        model_id = c_data.get("model_id")
+        if not prov_id or not model_id:
+            continue
+        # Skip if the referenced provider doesn't exist locally — providers
+        # are processed earlier in this same apply_sync run, so a missing
+        # provider here means the peer added a cap row faster than the
+        # provider replicated. Defer to the next sync cycle.
+        prov_check = (await db.execute(
+            select(Provider.id).where(Provider.id == prov_id)
+        )).scalar_one_or_none()
+        if prov_check is None:
+            continue
+        peer_updated = _parse_iso(c_data.get("updated_at"))
+        result = await db.execute(
+            select(ModelCapability).where(
+                ModelCapability.provider_id == prov_id,
+                ModelCapability.model_id == model_id,
+            )
+        )
+        existing = result.scalar_one_or_none()
+        if existing is None:
+            db.add(ModelCapability(
+                provider_id=prov_id,
+                model_id=model_id,
+                tasks=c_data.get("tasks") or [],
+                latency=c_data.get("latency") or "medium",
+                cost_tier=c_data.get("cost_tier") or "standard",
+                safety=c_data.get("safety") or 3,
+                context_length=c_data.get("context_length") or 128000,
+                regions=c_data.get("regions") or [],
+                modalities=c_data.get("modalities") or [],
+                native_reasoning=bool(c_data.get("native_reasoning")),
+                native_tools=bool(c_data.get("native_tools")) if c_data.get("native_tools") is not None else True,
+                native_vision=bool(c_data.get("native_vision")) if c_data.get("native_vision") is not None else False,
+                source=c_data.get("source") or "inferred",
+            ))
+        else:
+            # LWW: skip if local is newer
+            local_updated = existing.updated_at
+            if peer_updated and local_updated and peer_updated <= local_updated:
+                continue
+            existing.tasks = c_data.get("tasks") or existing.tasks
+            existing.latency = c_data.get("latency") or existing.latency
+            existing.cost_tier = c_data.get("cost_tier") or existing.cost_tier
+            if c_data.get("safety") is not None:
+                existing.safety = c_data["safety"]
+            if c_data.get("context_length") is not None:
+                existing.context_length = c_data["context_length"]
+            existing.regions = c_data.get("regions") or existing.regions
+            existing.modalities = c_data.get("modalities") or existing.modalities
+            if c_data.get("native_reasoning") is not None:
+                existing.native_reasoning = bool(c_data["native_reasoning"])
+            if c_data.get("native_tools") is not None:
+                existing.native_tools = bool(c_data["native_tools"])
+            if c_data.get("native_vision") is not None:
+                existing.native_vision = bool(c_data["native_vision"])
+            existing.source = c_data.get("source") or existing.source
+            if peer_updated:
+                existing.updated_at = peer_updated
+
+    # ── ModelAlias ──────────────────────────────────────────────────────
+    # Identity = alias (PK). No updated_at — peer-wins on update.
+    for a_data in payload.get("model_aliases", []):
+        alias = a_data.get("alias")
+        if not alias:
+            continue
+        # FK guard
+        prov_id = a_data.get("provider_id")
+        if prov_id:
+            prov_check = (await db.execute(
+                select(Provider.id).where(Provider.id == prov_id)
+            )).scalar_one_or_none()
+            if prov_check is None:
+                continue  # defer until provider syncs
+        result = await db.execute(select(ModelAlias).where(ModelAlias.alias == alias))
+        existing = result.scalar_one_or_none()
+        if existing is None:
+            db.add(ModelAlias(
+                alias=alias,
+                provider_id=prov_id,
+                model_id=a_data.get("model_id") or "",
+                description=a_data.get("description"),
+            ))
+        else:
+            # Apply only fields that differ (avoid no-op writes)
+            if a_data.get("provider_id") != existing.provider_id:
+                existing.provider_id = a_data.get("provider_id")
+            if a_data.get("model_id") and a_data.get("model_id") != existing.model_id:
+                existing.model_id = a_data["model_id"]
+            if a_data.get("description") != existing.description:
+                existing.description = a_data.get("description")
+
+    # ── OAuthCaptureProfile ─────────────────────────────────────────────
+    # Identity = name (PK). No updated_at — peer-wins on update.
+    # NOTE: secret field is treated as cluster-shared (same secret on each
+    # node so any node can verify capture-side requests).
+    for p_data in payload.get("oauth_capture_profiles", []):
+        name = p_data.get("name")
+        if not name:
+            continue
+        result = await db.execute(
+            select(OAuthCaptureProfile).where(OAuthCaptureProfile.name == name)
+        )
+        existing = result.scalar_one_or_none()
+        if existing is None:
+            db.add(OAuthCaptureProfile(
+                name=name,
+                preset=p_data.get("preset"),
+                upstream_urls=p_data.get("upstream_urls") or [],
+                secret=p_data.get("secret"),
+                enabled=bool(p_data.get("enabled")),
+                notes=p_data.get("notes"),
+            ))
+        else:
+            if p_data.get("preset") != existing.preset:
+                existing.preset = p_data.get("preset")
+            if p_data.get("upstream_urls") is not None:
+                existing.upstream_urls = p_data["upstream_urls"] or []
+            if p_data.get("secret") != existing.secret and p_data.get("secret"):
+                existing.secret = p_data["secret"]
+            if p_data.get("enabled") is not None:
+                existing.enabled = bool(p_data["enabled"])
+            if p_data.get("notes") != existing.notes:
+                existing.notes = p_data.get("notes")
+
     await db.commit()
 
     if settings_to_apply:
