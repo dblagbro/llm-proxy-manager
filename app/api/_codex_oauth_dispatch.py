@@ -128,8 +128,20 @@ async def dispatch_codex_oauth(
     *,
     provider, body: dict, stream: bool, db: AsyncSession,
     resp_headers: dict,
+    key_record_id: Optional[str] = None,
+    llm_hint: Optional[str] = None,
 ) -> StreamingResponse | JSONResponse:
-    """Translate + forward + translate back. Returns a FastAPI response."""
+    """Translate + forward + translate back. Returns a FastAPI response.
+
+    v3.0.97: now calls ``record_outcome`` so real codex-oauth traffic shows
+    up in activity_log + metrics. Pre-v3.0.97 this dispatch path had ZERO
+    logging — only keepalive probes were visible for codex-oauth providers.
+    Operator question on 2026-05-07 ("logs for Devin-Codex-Gmail provider
+    don't have any response messages") surfaced this. Real callers get the
+    same record_outcome treatment as the claude-oauth path now.
+    """
+    import time as _time
+    from app.monitoring.helpers import record_outcome
     if not provider.api_key:
         raise HTTPException(
             502, f"codex-oauth provider {provider.name!r} has no access token",
@@ -137,16 +149,58 @@ async def dispatch_codex_oauth(
 
     upstream_body = chat_completions_to_responses(body)
     model = body.get("model") or upstream_body.get("model") or "gpt-5.5"
+    requested_model = body.get("model") or model
 
     await _refresh_if_needed(provider, db)
 
+    t0 = _time.monotonic()
+
     if stream:
         async def _translated():
-            async for chunk in responses_sse_to_chat_completions_sse(
-                _stream_codex_response_lines(provider, db, upstream_body),
-                model=model,
-            ):
-                yield chunk
+            try:
+                async for chunk in responses_sse_to_chat_completions_sse(
+                    _stream_codex_response_lines(provider, db, upstream_body),
+                    model=model,
+                ):
+                    yield chunk
+            except Exception as e:
+                # On stream error, log the failure outcome so operators see it.
+                try:
+                    from app.models.database import AsyncSessionLocal
+                    async with AsyncSessionLocal() as _logdb:
+                        await record_outcome(
+                            _logdb, provider_id=provider.id, model=model,
+                            success=False, t0=t0,
+                            key_record_id=key_record_id or "unknown",
+                            error_str=f"{type(e).__name__}: {str(e)[:300]}",
+                            provider_name=provider.name,
+                            request_body=body,
+                            requested_model=requested_model,
+                            had_lmrh_hint=bool(llm_hint),
+                            lmrh_hint_raw=llm_hint or None,
+                        )
+                except Exception:
+                    pass
+                raise
+            # Stream completed normally — log success. Token counts aren't
+            # easily available here without re-aggregating; pass 0/0. Real
+            # cost tracking still works via record_outcome's subscription
+            # classification (codex-oauth is subscription tier).
+            try:
+                from app.models.database import AsyncSessionLocal
+                async with AsyncSessionLocal() as _logdb:
+                    await record_outcome(
+                        _logdb, provider_id=provider.id, model=model,
+                        success=True, in_tok=0, out_tok=0, t0=t0,
+                        key_record_id=key_record_id or "unknown",
+                        provider_name=provider.name,
+                        request_body=body,
+                        requested_model=requested_model,
+                        had_lmrh_hint=bool(llm_hint),
+                        lmrh_hint_raw=llm_hint or None,
+                    )
+            except Exception:
+                pass
 
         resp_headers["X-Cache-Status"] = "bypass"
         resp_headers["X-Provider-Type"] = "codex-oauth"
@@ -157,9 +211,46 @@ async def dispatch_codex_oauth(
         )
 
     # Non-stream: aggregate the SSE into a Chat Completions object
-    result = await collect_responses_stream_into_completion(
-        _stream_codex_response_lines(provider, db, upstream_body),
-        model=model,
-    )
+    try:
+        result = await collect_responses_stream_into_completion(
+            _stream_codex_response_lines(provider, db, upstream_body),
+            model=model,
+        )
+    except Exception as e:
+        try:
+            await record_outcome(
+                db, provider_id=provider.id, model=model,
+                success=False, t0=t0,
+                key_record_id=key_record_id or "unknown",
+                error_str=f"{type(e).__name__}: {str(e)[:300]}",
+                provider_name=provider.name,
+                request_body=body,
+                requested_model=requested_model,
+                had_lmrh_hint=bool(llm_hint),
+                lmrh_hint_raw=llm_hint or None,
+            )
+        except Exception:
+            pass
+        raise
+
+    # Extract usage from the aggregated chat-completion result
+    usage = (result or {}).get("usage") or {}
+    in_tok = int(usage.get("prompt_tokens") or 0)
+    out_tok = int(usage.get("completion_tokens") or 0)
+    try:
+        await record_outcome(
+            db, provider_id=provider.id, model=model,
+            success=True, in_tok=in_tok, out_tok=out_tok, t0=t0,
+            key_record_id=key_record_id or "unknown",
+            provider_name=provider.name,
+            request_body=body,
+            response_body=result,
+            requested_model=requested_model,
+            had_lmrh_hint=bool(llm_hint),
+            lmrh_hint_raw=llm_hint or None,
+        )
+    except Exception:
+        pass
+
     resp_headers["X-Provider-Type"] = "codex-oauth"
     return JSONResponse(content=result, headers=resp_headers)
