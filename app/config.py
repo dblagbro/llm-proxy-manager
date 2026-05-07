@@ -165,6 +165,15 @@ class Settings(BaseSettings):
     activity_log_capture_bodies: bool = Field(False, alias="ACTIVITY_LOG_CAPTURE_BODIES")
     activity_log_max_body_chars: int = Field(4000, alias="ACTIVITY_LOG_MAX_BODY_CHARS")
 
+    # v3.0.98 — cluster-sync catalog-table replication. Default OFF after the
+    # 2026-05-07 incident where v3.0.96's full-payload-every-30s sync of
+    # ModelCapability/Alias/OAuthCaptureProfile (~310 row apply ops per push)
+    # made each /cluster/sync take 12-17s, leaving the DB ~50% contended and
+    # causing 60s /v1/messages hangs on coordinator-hub's llmp-CwLU. v3.0.99
+    # will reimplement with delta-only sync; until then this is a defensive
+    # off switch.
+    cluster_sync_catalog_tables: bool = Field(False, alias="CLUSTER_SYNC_CATALOG_TABLES")
+
     # Wave 6 — PII masking
     pii_masking_enabled: bool = Field(False, alias="PII_MASKING_ENABLED")
 

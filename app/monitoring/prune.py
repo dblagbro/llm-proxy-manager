@@ -34,6 +34,7 @@ logger = logging.getLogger(__name__)
 
 
 _DEFAULT_RETENTION_DAYS = 30
+_DEFAULT_PROBE_RETENTION_DAYS = 7   # v3.0.98 — probes age out faster than real traffic
 _BATCH_SIZE = 5000
 _SWEEP_INTERVAL_SEC = 24 * 60 * 60      # daily
 _INITIAL_DELAY_SEC = 60 * 60            # 1h after startup — lets boot settle
@@ -53,6 +54,21 @@ def _retention_days() -> int:
         return max(1, v)
     except Exception:
         return _DEFAULT_RETENTION_DAYS
+
+
+def _probe_retention_days() -> int:
+    """v3.0.98: probe events (api_key_id='probe-keepalive') age out faster
+    than real-caller events. With paperless paused, ~80% of fleet traffic
+    is keepalive probes — keeping all 30 days of them is wasteful when
+    nothing's diagnostic past a week. Minimum is whatever the regular
+    retention is (probes never live LONGER than real events).
+    """
+    try:
+        v = int(getattr(settings, "activity_log_probe_retention_days",
+                        _DEFAULT_PROBE_RETENTION_DAYS))
+        return max(1, min(v, _retention_days()))
+    except Exception:
+        return _DEFAULT_PROBE_RETENTION_DAYS
 
 
 def _tombstone_retention_days() -> int:
@@ -158,16 +174,52 @@ async def _prune_table(table_class, ts_column, keep_days: int) -> int:
             return deleted
 
 
+async def _prune_probe_events(keep_days: int) -> int:
+    """v3.0.98: hard-delete probe-keepalive activity_log rows older than
+    ``keep_days`` (typically 7, vs the regular 30-day retention). Probes
+    are high-volume low-info events — diagnostic value drops sharply
+    after a week (the keepalive trend is captured in metrics buckets).
+    """
+    deleted = 0
+    while True:
+        async with AsyncSessionLocal() as db:
+            cutoff_expr = func.datetime("now", f"-{keep_days} days")
+            id_res = await db.execute(
+                select(ActivityLog.id)
+                .where(ActivityLog.api_key_id == "probe-keepalive")
+                .where(ActivityLog.created_at < cutoff_expr)
+                .limit(_BATCH_SIZE)
+            )
+            ids = [r[0] for r in id_res.all()]
+            if not ids:
+                return deleted
+            await db.execute(delete(ActivityLog).where(ActivityLog.id.in_(ids)))
+            await db.commit()
+            deleted += len(ids)
+        if len(ids) >= _BATCH_SIZE:
+            await asyncio.sleep(0.5)
+        else:
+            return deleted
+
+
 async def _sweep_once() -> dict:
     """One full prune pass across activity_log + provider_metrics +
     run_events. Returns counts so the log line is interpretable."""
     keep_days = _retention_days()
+    probe_keep_days = _probe_retention_days()
     tombstone_days = _tombstone_retention_days()
-    out = {"keep_days": keep_days, "activity_log": 0,
+    out = {"keep_days": keep_days, "probe_keep_days": probe_keep_days,
+           "activity_log": 0, "activity_log_probes": 0,
            "provider_metrics": 0, "run_events": 0,
            "provider_tombstones": 0,
            "apikey_tombstones": 0,
            "tombstone_keep_days": tombstone_days}
+
+    # v3.0.98: probes first (shorter retention, high volume).
+    try:
+        out["activity_log_probes"] = await _prune_probe_events(probe_keep_days)
+    except Exception as e:
+        logger.warning("prune.activity_log_probes_failed err=%s", e)
 
     try:
         out["activity_log"] = await _prune_table(
@@ -227,16 +279,37 @@ async def _prune_loop() -> None:
     while True:
         try:
             counts = await _sweep_once()
+            _LAST_SWEEP_RESULT.update(counts)
+            _LAST_SWEEP_RESULT["last_sweep_ts"] = time.time()
             logger.info(
-                "prune.swept activity_log=%d provider_metrics=%d run_events=%d "
-                "provider_tombstones=%d keep_days=%d tombstone_keep_days=%d",
-                counts["activity_log"], counts["provider_metrics"],
-                counts["run_events"], counts["provider_tombstones"],
-                counts["keep_days"], counts["tombstone_keep_days"],
+                "prune.swept activity_log=%d activity_log_probes=%d "
+                "provider_metrics=%d run_events=%d provider_tombstones=%d "
+                "keep_days=%d probe_keep_days=%d tombstone_keep_days=%d",
+                counts["activity_log"], counts.get("activity_log_probes", 0),
+                counts["provider_metrics"], counts["run_events"],
+                counts["provider_tombstones"], counts["keep_days"],
+                counts.get("probe_keep_days", _DEFAULT_PROBE_RETENTION_DAYS),
+                counts["tombstone_keep_days"],
             )
         except Exception as e:
             logger.warning("prune.sweep_failed err=%s", e)
         await asyncio.sleep(_SWEEP_INTERVAL_SEC)
+
+
+# v3.0.98: surface last sweep result via the admin API so operators can
+# verify the prune is firing without docker-exec'ing.
+_LAST_SWEEP_RESULT: dict = {
+    "last_sweep_ts": None,
+    "keep_days": _DEFAULT_RETENTION_DAYS,
+    "probe_keep_days": _DEFAULT_PROBE_RETENTION_DAYS,
+    "tombstone_keep_days": _DEFAULT_TOMBSTONE_RETENTION_DAYS,
+}
+
+
+def get_last_sweep() -> dict:
+    """Read-only snapshot of the last sweep counts + retention config.
+    Returned as-is from the admin endpoint."""
+    return dict(_LAST_SWEEP_RESULT)
 
 
 _TASK: Optional[asyncio.Task] = None
