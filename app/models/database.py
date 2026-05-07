@@ -14,12 +14,19 @@ engine = create_async_engine(
     # was 5+10=15 connections with 30s wait. During the 2026-05-05
     # outage that drained in seconds while every connection was held
     # by stuck upstream calls, leaving /health and DB-backed endpoints
-    # blocked for 30s+ waiting their turn. Larger pool (20+30=50)
-    # absorbs more bursts; 5s pool_timeout means callers fail fast
-    # rather than queueing if the pool ever exhausts again.
-    pool_size=20,
-    max_overflow=30,
-    pool_timeout=5.0,
+    # blocked for 30s+ waiting their turn.
+    # v3.0.92: bump again. The 2026-05-06 incident showed 20+30=50
+    # was still drainable under sustained background-task load when
+    # activity_log hit 1 GB and json_extract scans got slow. Bumping
+    # to 50 base + 100 overflow = 150 connections max. SQLite handles
+    # this fine (in-process, file-backed, no network overhead per
+    # connection). Plus pool_recycle=1800 to age out long-held conns
+    # in case there's a slow leak we haven't found yet — a 30-min
+    # ceiling keeps the pool fresh.
+    pool_size=50,
+    max_overflow=100,
+    pool_timeout=10.0,
+    pool_recycle=1800,
 )
 
 
