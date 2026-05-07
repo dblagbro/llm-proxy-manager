@@ -165,14 +165,24 @@ class Settings(BaseSettings):
     activity_log_capture_bodies: bool = Field(False, alias="ACTIVITY_LOG_CAPTURE_BODIES")
     activity_log_max_body_chars: int = Field(4000, alias="ACTIVITY_LOG_MAX_BODY_CHARS")
 
-    # v3.0.98 — cluster-sync catalog-table replication. Default OFF after the
-    # 2026-05-07 incident where v3.0.96's full-payload-every-30s sync of
-    # ModelCapability/Alias/OAuthCaptureProfile (~310 row apply ops per push)
-    # made each /cluster/sync take 12-17s, leaving the DB ~50% contended and
-    # causing 60s /v1/messages hangs on coordinator-hub's llmp-CwLU. v3.0.99
-    # will reimplement with delta-only sync; until then this is a defensive
-    # off switch.
-    cluster_sync_catalog_tables: bool = Field(False, alias="CLUSTER_SYNC_CATALOG_TABLES")
+    # v3.0.98 → v3.1.2 — cluster-sync catalog-table replication.
+    #
+    # v3.0.96 added ModelCapability/ModelAlias/OAuthCaptureProfile to every
+    # /cluster/sync push. The receiver did per-row SELECT-then-INSERT/UPDATE
+    # (304 rows × DB round-trip = 12-17s per sync), causing DB contention
+    # severe enough to hit the 60s nginx upstream timeout on real
+    # /v1/messages calls. v3.0.98 disabled the feature behind this flag
+    # while we reworked the apply path.
+    #
+    # v3.1.2 replaced the per-row loop with bulk-SELECT + in-memory diff:
+    # one query pulls all matching existing rows, the per-row LWW logic
+    # runs in memory, and ORM mutations flush in a single batch on commit.
+    # Steady-state apply time dropped to 48-52ms; first-time apply (when
+    # peer_updated > local for every row) is ~2s as a one-time cost.
+    # Default flipped True so catalog rows actually propagate across the
+    # cluster — without this, ModelCapability discoveries on one node
+    # never reach peers and /v1/models capability scoring drifts.
+    cluster_sync_catalog_tables: bool = Field(True, alias="CLUSTER_SYNC_CATALOG_TABLES")
 
     # Wave 6 — PII masking
     pii_masking_enabled: bool = Field(False, alias="PII_MASKING_ENABLED")

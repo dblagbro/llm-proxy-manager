@@ -453,69 +453,112 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
     from app.models.db import ModelCapability, ModelAlias, OAuthCaptureProfile
 
     # ── ModelCapability ─────────────────────────────────────────────────
+    # v3.1.2: bulk fetch + in-memory diff replaces the per-row SELECT loop.
+    # With 304 rows the old loop ran 12-17s per sync (root cause of the
+    # 2026-05-07 60s /v1/messages hang incident). The new path:
+    #   (1) ONE bulk SELECT pulls all existing rows whose (provider_id,
+    #       model_id) matches any incoming row;
+    #   (2) per-row diff happens in memory (no DB round-trips);
+    #   (3) inserts go through ``db.add()`` and flush in batch on commit;
+    #   (4) updates mutate the loaded instance in place — also batched.
+    # ON CONFLICT was tried first but rejected: the table's PK is an
+    # autoincrement ``id`` column, no composite UNIQUE on (provider_id,
+    # model_id), so no constraint to conflict against. Adding one would
+    # need a migration with dup-detection — overkill for the win.
     # Identity = (provider_id, model_id). LWW by updated_at when both
     # sides have a stamp. Peer wins on insert.
-    for c_data in payload.get("model_capabilities", []):
-        prov_id = c_data.get("provider_id")
-        model_id = c_data.get("model_id")
-        if not prov_id or not model_id:
-            continue
-        # Skip if the referenced provider doesn't exist locally — providers
-        # are processed earlier in this same apply_sync run, so a missing
-        # provider here means the peer added a cap row faster than the
-        # provider replicated. Defer to the next sync cycle.
-        prov_check = (await db.execute(
-            select(Provider.id).where(Provider.id == prov_id)
-        )).scalar_one_or_none()
-        if prov_check is None:
-            continue
-        peer_updated = _parse_iso(c_data.get("updated_at"))
-        result = await db.execute(
-            select(ModelCapability).where(
-                ModelCapability.provider_id == prov_id,
-                ModelCapability.model_id == model_id,
-            )
-        )
-        existing = result.scalar_one_or_none()
-        if existing is None:
-            db.add(ModelCapability(
-                provider_id=prov_id,
-                model_id=model_id,
-                tasks=c_data.get("tasks") or [],
-                latency=c_data.get("latency") or "medium",
-                cost_tier=c_data.get("cost_tier") or "standard",
-                safety=c_data.get("safety") or 3,
-                context_length=c_data.get("context_length") or 128000,
-                regions=c_data.get("regions") or [],
-                modalities=c_data.get("modalities") or [],
-                native_reasoning=bool(c_data.get("native_reasoning")),
-                native_tools=bool(c_data.get("native_tools")) if c_data.get("native_tools") is not None else True,
-                native_vision=bool(c_data.get("native_vision")) if c_data.get("native_vision") is not None else False,
-                source=c_data.get("source") or "inferred",
-            ))
-        else:
-            # LWW: skip if local is newer
-            local_updated = existing.updated_at
-            if peer_updated and local_updated and peer_updated <= local_updated:
+    cap_rows = payload.get("model_capabilities", []) or []
+    if cap_rows:
+        # FK pre-filter — skip rows whose referenced provider hasn't
+        # replicated yet. Defer to next sync cycle.
+        known_provider_ids = {
+            pid for (pid,) in (await db.execute(select(Provider.id))).all()
+        }
+        # Filter + collect incoming keys for the bulk fetch
+        valid_data: list[dict] = []
+        incoming_keys: set[tuple[str, str]] = set()
+        for c_data in cap_rows:
+            prov_id = c_data.get("provider_id")
+            model_id = c_data.get("model_id")
+            if not prov_id or not model_id:
                 continue
-            existing.tasks = c_data.get("tasks") or existing.tasks
-            existing.latency = c_data.get("latency") or existing.latency
-            existing.cost_tier = c_data.get("cost_tier") or existing.cost_tier
-            if c_data.get("safety") is not None:
-                existing.safety = c_data["safety"]
-            if c_data.get("context_length") is not None:
-                existing.context_length = c_data["context_length"]
-            existing.regions = c_data.get("regions") or existing.regions
-            existing.modalities = c_data.get("modalities") or existing.modalities
-            if c_data.get("native_reasoning") is not None:
-                existing.native_reasoning = bool(c_data["native_reasoning"])
-            if c_data.get("native_tools") is not None:
-                existing.native_tools = bool(c_data["native_tools"])
-            if c_data.get("native_vision") is not None:
-                existing.native_vision = bool(c_data["native_vision"])
-            existing.source = c_data.get("source") or existing.source
-            if peer_updated:
-                existing.updated_at = peer_updated
+            if prov_id not in known_provider_ids:
+                continue
+            valid_data.append(c_data)
+            incoming_keys.add((prov_id, model_id))
+
+        if valid_data:
+            # ONE bulk SELECT — pulls every row whose composite key matches
+            # any incoming row. SQLAlchemy `tuple_().in_()` compiles to
+            # `WHERE (provider_id, model_id) IN ((...), (...), ...)` on
+            # SQLite, evaluated as a single planned query.
+            from sqlalchemy import tuple_
+            existing_q = await db.execute(
+                select(ModelCapability).where(
+                    tuple_(
+                        ModelCapability.provider_id,
+                        ModelCapability.model_id,
+                    ).in_(list(incoming_keys))
+                )
+            )
+            existing_by_key: dict[tuple[str, str], ModelCapability] = {
+                (r.provider_id, r.model_id): r
+                for r in existing_q.scalars().all()
+            }
+
+            # Now apply each row using the pre-fetched index. This loop is
+            # in-memory — no DB round-trips per row. db.add()/instance
+            # mutations are flushed by the outer commit.
+            for c_data in valid_data:
+                prov_id = c_data["provider_id"]
+                model_id = c_data["model_id"]
+                peer_updated = _parse_iso(c_data.get("updated_at"))
+                existing = existing_by_key.get((prov_id, model_id))
+                if existing is None:
+                    db.add(ModelCapability(
+                        provider_id=prov_id,
+                        model_id=model_id,
+                        tasks=c_data.get("tasks") or [],
+                        latency=c_data.get("latency") or "medium",
+                        cost_tier=c_data.get("cost_tier") or "standard",
+                        safety=c_data.get("safety") or 3,
+                        context_length=c_data.get("context_length") or 128000,
+                        regions=c_data.get("regions") or [],
+                        modalities=c_data.get("modalities") or [],
+                        native_reasoning=bool(c_data.get("native_reasoning")),
+                        native_tools=(
+                            bool(c_data.get("native_tools"))
+                            if c_data.get("native_tools") is not None else True
+                        ),
+                        native_vision=(
+                            bool(c_data.get("native_vision"))
+                            if c_data.get("native_vision") is not None else False
+                        ),
+                        source=c_data.get("source") or "inferred",
+                    ))
+                    continue
+                # LWW: skip if local is newer or equal
+                local_updated = existing.updated_at
+                if peer_updated and local_updated and peer_updated <= local_updated:
+                    continue
+                existing.tasks = c_data.get("tasks") or existing.tasks
+                existing.latency = c_data.get("latency") or existing.latency
+                existing.cost_tier = c_data.get("cost_tier") or existing.cost_tier
+                if c_data.get("safety") is not None:
+                    existing.safety = c_data["safety"]
+                if c_data.get("context_length") is not None:
+                    existing.context_length = c_data["context_length"]
+                existing.regions = c_data.get("regions") or existing.regions
+                existing.modalities = c_data.get("modalities") or existing.modalities
+                if c_data.get("native_reasoning") is not None:
+                    existing.native_reasoning = bool(c_data["native_reasoning"])
+                if c_data.get("native_tools") is not None:
+                    existing.native_tools = bool(c_data["native_tools"])
+                if c_data.get("native_vision") is not None:
+                    existing.native_vision = bool(c_data["native_vision"])
+                existing.source = c_data.get("source") or existing.source
+                if peer_updated:
+                    existing.updated_at = peer_updated
 
     # ── ModelAlias ──────────────────────────────────────────────────────
     # Identity = alias (PK). No updated_at — peer-wins on update.

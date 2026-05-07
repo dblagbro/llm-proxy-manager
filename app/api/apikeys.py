@@ -188,6 +188,45 @@ async def delete_key(
     return {"ok": True}
 
 
+@router.post("/_purge-test-tombstones")
+async def purge_test_tombstones(
+    db: AsyncSession = Depends(get_db),
+    _: AdminUser = Depends(require_admin),
+):
+    """v3.1.x: hard-delete tombstoned api_keys whose name matches a test
+    pattern AND whose ``deleted_at`` is older than 60s (allows cluster
+    sync to converge so peers don't resurrect the rows).
+
+    Used by integration test ``pytest_sessionfinish`` hooks to prevent
+    tombstone bloat — without this, every test session leaves rows that
+    sit in cluster_sync payload for the full 7-day tombstone retention
+    window, eventually slowing apply_sync the same way the 2026-05-07
+    incident did (127 stale tombstones → ~3s sync apply per cycle).
+
+    Safe in production: only affects keys named ``pytest-…``,
+    ``test-playwright-…``, ``cot-debug-…``, or ``debug-…``. Admin-gated.
+    """
+    from sqlalchemy import delete, or_, func
+    from app.models.db import ApiKey
+
+    cutoff = func.datetime("now", "-60 seconds")
+    patterns = (
+        "pytest-%",
+        "pytest-cot-%",
+        "test-playwright-%",
+        "cot-debug-%",
+        "debug-%",
+    )
+    rs = await db.execute(
+        delete(ApiKey)
+        .where(ApiKey.deleted_at.is_not(None))
+        .where(ApiKey.deleted_at < cutoff)
+        .where(or_(*[ApiKey.name.like(p) for p in patterns]))
+    )
+    await db.commit()
+    return {"ok": True, "purged": rs.rowcount}
+
+
 def _validate_tier(tier_name: Optional[str]) -> Optional[str]:
     """Return the normalized tier name, or raise 400 if unknown."""
     if not tier_name:

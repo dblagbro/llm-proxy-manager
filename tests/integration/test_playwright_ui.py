@@ -235,18 +235,36 @@ class TestLLMProxy2UI:
         # Close modal
         page.keyboard.press("Escape")
 
-    def test_create_api_key_flow(self, page: Page):
+    def test_create_api_key_flow(self, page: Page, admin_session):
+        # v3.1.x: unique name per run + try/finally cleanup. The previous
+        # version hardcoded "test-playwright-key" and never deleted it,
+        # leaving one tombstoned row per CI run. Across 7-day cluster-sync
+        # tombstone retention this can accumulate enough rows to slow
+        # apply_sync (root cause of the 2026-05-07 sync-latency incident).
+        import uuid
+        key_name = f"test-playwright-{uuid.uuid4().hex[:8]}"
         login(page)
-        page.goto(f"{BASE_URL}/keys")
-        page.click("text=Create Key")
-        # Fill name
-        page.fill('input[placeholder*="production"]', "test-playwright-key")
-        # Click the submit button inside the modal (scoped to dialog overlay)
-        page.locator('.fixed.inset-0 button:has-text("Create Key")').click()
-        # The raw key modal should appear
-        expect(page.locator("text=Your New API Key")).to_be_visible(timeout=8_000)
-        expect(page.locator("text=NOT be shown again")).to_be_visible()
-        page.click('button:has-text("Done")')
+        try:
+            page.goto(f"{BASE_URL}/keys")
+            page.click("text=Create Key")
+            page.fill('input[placeholder*="production"]', key_name)
+            page.locator('.fixed.inset-0 button:has-text("Create Key")').click()
+            expect(page.locator("text=Your New API Key")).to_be_visible(timeout=8_000)
+            expect(page.locator("text=NOT be shown again")).to_be_visible()
+            page.click('button:has-text("Done")')
+        finally:
+            # Find and delete the key by name (we don't capture the id from
+            # the UI; query the API). Soft-delete via the standard endpoint —
+            # session-finish hook in conftest.py hard-purges tombstones.
+            try:
+                rs = admin_session.get(f"{BASE_URL}/api/keys")
+                if rs.status_code == 200:
+                    for k in rs.json():
+                        if k.get("name") == key_name:
+                            admin_session.delete(f"{BASE_URL}/api/keys/{k['id']}")
+                            break
+            except Exception:
+                pass  # best-effort cleanup; sessionfinish hook is the safety net
 
     def test_logout_redirects_to_login(self, page: Page):
         login(page)

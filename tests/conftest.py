@@ -39,6 +39,34 @@ def pytest_collection_modifyitems(config, items):
                 item.add_marker(skip)
 
 
+def pytest_sessionfinish(session, exitstatus):
+    """v3.1.x: hard-purge tombstoned api_keys created by tests in this session
+    (or any prior session that died before cleanup ran).
+
+    Without this, every soft-delete from a session-scoped fixture leaves a
+    row in the cluster_sync apply pass for the full 7-day tombstone
+    retention window. Across many CI runs this slows apply_sync the same
+    way the 2026-05-07 incident did (127 stale tombstones → ~3s sync apply
+    per cycle).
+
+    Calls the admin-only ``/api/keys/_purge-test-tombstones`` endpoint
+    which hard-deletes rows whose name matches a test pattern AND whose
+    ``deleted_at`` is older than 60s (cluster-sync convergence buffer).
+    Best-effort — failures don't fail the session.
+    """
+    try:
+        s = _api_session()
+        r = s.post(f"{BASE_URL}/api/keys/_purge-test-tombstones", timeout=10)
+        if r.status_code == 200:
+            purged = r.json().get("purged", 0)
+            if purged:
+                print(f"\n[session-finish] purged {purged} test-key tombstones")
+    except Exception as e:
+        # Test session has already finished; don't let a cleanup error
+        # mask test results or leak a non-zero exit.
+        print(f"\n[session-finish] purge failed (best-effort): {e}")
+
+
 def _api_session() -> requests.Session:
     """New session with admin credentials and API-friendly headers."""
     s = requests.Session()
