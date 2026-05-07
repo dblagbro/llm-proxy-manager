@@ -43,6 +43,207 @@ URGENT INCIDENT FIX. Coordinator-hub team reported 60s hangs on `POST /v1/messag
 - **probe-event retention**. New `activity_log_probe_retention_days` setting (default 7 days vs 30 for real events). Probes are 80%+ of fleet traffic when paperless is paused; 30 days of probe rows is wasteful.
 - **`GET /api/monitoring/prune-status` endpoint** returns last sweep counts + retention config + activity_log row count. Lets operators verify the prune is firing without docker-exec.
 
+### v3.0.97 — Close 3 logging blackouts + tombstone schema prep
+
+Three call paths in admin / dispatch were returning to the caller without ever calling `record_outcome`, leaving the activity log silent for entire classes of traffic:
+
+- **`dispatch_codex_oauth`** (both stream + non-stream paths). codex-oauth providers like `Devin-Codex-Gmail` had ZERO response-side log entries — the operator noticed when checking why probe rows showed reasonable latency but no usage info.
+- **`POST /api/providers/{id}/scan`** — model-scan triggers from the admin UI weren't logged; operator-flagged "I don't see model scan requests in the logs."
+- **`POST /api/providers/{id}/test`** — same pattern; admin test-provider clicks were invisible.
+
+All three now `log_event` with metadata (operation, status summary, key counts).
+
+Bundled schema-only prep for v3.0.98: added nullable `deleted_at DATETIME` columns to `model_capabilities`, `model_aliases`, and `oauth_capture_profiles`. Idempotent ALTER TABLE migrations. Sync logic deferred — turned out to be moot when v3.0.96's catalog sync caused the 60s hang and v3.0.98 disabled it by default.
+
+### v3.0.96 — Replicate ModelCapability + ModelAlias + OAuthCaptureProfile (REVERTED IN v3.0.98)
+
+Operator question after the v3.0.95 `/v1/models` fix: "what else may not be cluster-synced that needs to be?" Audit found 3 catalog tables missing from the every-30s sync payload, with predictable cross-node drift on www01 vs www02 (304 ModelCapability rows on www01, 0 on the others).
+
+**Shipped** the additions to `_build_sync_payload` + matching apply-side blocks in `sync.apply_sync` (per-row SELECT-then-INSERT/UPDATE).
+
+**Regression discovered same day**. With ~304 ModelCapability rows × per-row apply on the receiver side, each `/cluster/sync` POST grew from 200-700ms to **12-17 seconds**. Combined with the 30s push interval, the DB was contended ~50% of every minute, queueing real `/v1/messages` calls past the 60s nginx upstream limit. Coordinator-hub team caught it 6 hours after ship.
+
+**v3.0.98 disabled this by default** behind `cluster_sync_catalog_tables` setting. Proper rework (delta-only push + batched `INSERT...ON CONFLICT`) deferred.
+
+### v3.0.95 — `/v1/models` returns only `Provider.default_model`
+
+Cross-node divergence: `GET /v1/models` returned 196 entries on www01 vs 5 on www02. Root cause: ModelCapability table wasn't cluster-synced (one-time discoveries on www01 leaked into the public-list response).
+
+Fix: response now derives strictly from `Provider.default_model` of enabled, non-tombstoned providers — exactly the set that's already cluster-synced. No more hidden cap-table dependency. Same 5 entries everywhere.
+
+### v3.0.94 — Activity log: split previews from full bodies; restore msg in/out
+
+Operator post-v3.0.91 incident: "I see metadata in the activity logs but we had message in and response; where is that now?"
+
+Root cause: v3.0.91 flipped `activity_log_capture_bodies` to default-False to stop the 1 GB activity_log incident, but that was a sledgehammer — operators still want to glance at *what* was sent without the full 50KB body capture cost.
+
+Fix: split into two settings.
+- `activity_log_capture_previews` (default **True**) — captures first 240 chars of request + 240 chars of response. ~500 bytes/row, bounded.
+- `activity_log_capture_bodies` (default **False**) — full bodies up to `activity_log_max_body_chars`. Wire-debugging only.
+
+**Operator-locked rule** (memory `feedback_keep_msg_in_out_logging.md`): previews stay default-True permanently. Operator-typed permission required to flip.
+
+### v3.0.93 — Activity log rows always expandable
+
+Regression from v3.0.91's body-capture flip: the click-to-expand UI hid most rows because `expandable = Boolean(reqBody || respBody || errorMsg)` returned false on the now-empty body fields. Fix: `expandable` now true when ANY metadata is present (route, hint, cache fields, error class, etc.) — rows always click-to-expand.
+
+### v3.0.92 — Bigger DB pool + 30-min recycle (post-incident hardening)
+
+Login 500s and `/v1/messages` queueing 17h after the v3.0.91 restart. Even with body capture disabled, the 1 GB residual rows were still slow on `json_extract` scans, and usage_tracker queries hammered the DB. Bumped `pool_size=50`, `max_overflow=100`, `pool_timeout=10s`, `pool_recycle=1800s`. Plus a one-off prune of 67,548 bloated rows (964 MB freed) on www01.
+
+### v3.0.91 — Default `activity_log_capture_bodies` to False
+
+URGENT INCIDENT FIX. Operator: "I get internal server error logging in." Root cause: 1 GB activity_log table (67k rows, average ~15 KB each), with bodies stored at 50000-char cap. Background `usage_tracker` queries did `json_extract` scans across the bloated rows and exhausted the DB pool. Login (which hit the same pool) returned 500.
+
+Fix: `activity_log_capture_bodies` default flipped True → False. `activity_log_max_body_chars` cap dropped 50000 → 4000. Existing 1 GB pruned via the v3.0.92 sweep. Future operators who actually need wire-level body capture set the flag explicitly.
+
+### v3.0.88-v3.0.90 — Error-class taxonomy refinements
+
+Three follow-ups to v3.0.75's classifier so the histogram on the Metrics page stops bucketing real failures as `unknown`:
+
+- **v3.0.88** — httpx exception names (`ReadError`, `WriteError`, `ConnectError`, etc.) classify as `network` instead of `unknown`. Surfaced when the proxy team's Anthropic backbone had a 30-min flap and operator couldn't tell from the dashboard whether the failures were upstream-network or proxy-side.
+- **v3.0.89** — litellm SDK exception names (`BadRequestError`, `ContextWindowExceededError`, `AuthenticationError`) classify as `bad_request` / `auth` instead of `unknown`.
+- **v3.0.90** — Anthropic-shape `529 Overloaded` body classifies as `upstream_5xx` (was `unknown`). The 529 isn't a 5xx code but Anthropic semantics treat it as transient-server, so we count it on the same pile.
+
+### v3.0.87 — Shared cache-disclosure helper + `cache=ignored` override
+
+Refactor of the inline LMRH 1.2 §E2 disclosure blocks shipped in v3.0.83-85: extracted to `app/api/_cache_inject.py:build_cache_disclosure` + `append_cache_disclosure`. Same logic, single source of truth.
+
+Adds the spec §E2 substitution-interaction rule: when a caller sends `cache=<non-none>` but the served provider is non-Anthropic-shape (cross-family substitution), the dim cannot be honored → emit `cache=ignored` so the caller can audit the no-op. Previously these substituted calls just dropped the cache dim from the response header silently.
+
+### v3.0.86 — Roll up Phase 2 status in cache-mode dim doc
+
+Documentation only. Updated `docs/lmrh-1.2-cache-mode-dim.md` with the v3.0.83-85 disclosure status table (which dim values fire on `/v1/messages` vs `/v1/chat/completions`, streaming vs non-streaming).
+
+### v3.0.85 — `cache-tokens-read` / `cache-tokens-written` disclosure on response headers
+
+Phase 2 partial: `LLM-Capability` response now carries `cache-tokens-read=N, cache-tokens-written=N` (extracted from upstream usage block: `cache_read_input_tokens` / `cache_creation_input_tokens`). Non-streaming claude-oauth path. Lets callers audit *how much* their cache injection actually saved without parsing the response body.
+
+### v3.0.84 — §E2 cache disclosure on `/v1/chat/completions`
+
+Same disclosure shape as v3.0.83 but on the OpenAI-shape endpoint. Especially valuable here because the OpenAI response body strips the cache fields entirely — without the header echo, callers using a chat-completions backend would have no way to see the cache tokens.
+
+### v3.0.83 — §E2 cache disclosure on `LLM-Capability` (Phase 2 partial, non-streaming claude-oauth)
+
+LMRH 1.2 §E2 spec: when a request carries `cache=` dim, the response `LLM-Capability` must echo `cache=<mode>` and `cache-injected=?1` if the proxy auto-injected. Shipped on the non-streaming claude-oauth path first (the highest-volume path — paperless's stable legal-review template).
+
+Streaming-path disclosure deferred: HTTP trailers aren't supported in FastAPI/Starlette, so disclosing on stream needs a synthetic SSE event before `[DONE]` — a separate spec discussion.
+
+### v3.0.82 — `utc_iso()` applied to 4 stragglers
+
+Audit found 4 sites still emitting timezone-naive timestamps (`datetime.utcnow().isoformat()`) — provider-usage endpoint + `audit_export.list_exports`. Routed through the central `utc_iso()` helper for consistent `Z`-suffixed UTC. Closed a pre-existing `audit_export` test failure.
+
+### v3.0.81 — Hit-rate sparkline on Cache Savings card
+
+Compact Recharts `LineChart` showing the last N hourly buckets of cache hit-rate %. Helps spot trend shifts (e.g. paperless template change cratered hit-rate from 93% → 50%).
+
+### v3.0.80 — Time-series bucketing on `/api/monitoring/cache-stats`
+
+Added `bucket_minutes` query param. Returns time-series array of hit-rate / read-tokens / written-tokens per bucket. Powers the v3.0.81 sparkline.
+
+### v3.0.79 — Frontend `error_class` filter dropdown
+
+Activity page gets a dropdown alongside the existing per-key + per-provider filters: filter by `auth` / `billing` / `rate_limit` / `timeout` / `network` / `upstream_5xx` / `bad_request` / `unknown`. Pulls the set dynamically from observed values.
+
+### v3.0.78 — `error_class` filter on activity endpoints
+
+Backend support for the v3.0.79 frontend filter: `error_class=` query param on `/api/monitoring/activity` and `/api/monitoring/activity/count`. Server-side filter, not post-fetch — keeps page-2+ working under high traffic.
+
+### v3.0.77 — CSV download button on Cache Savings card
+
+Frontend button that hits the v3.0.76 endpoint with the user's current filter selection. One click → billing-grade rollup CSV.
+
+### v3.0.76 — `/api/monitoring/usage-report.csv`
+
+Per-key / per-provider rollup of total tokens, cache tokens read/written, estimated cost, request count. CSV output for billing reconciliation. Ad-hoc operator tool that became permanent.
+
+### v3.0.75 — Error-class taxonomy in `event_meta`
+
+`record_outcome` now classifies error responses into a fixed bucket: `auth` / `billing` / `rate_limit` / `timeout` / `network` / `upstream_5xx` / `bad_request` / `unknown`. Stored on `event_meta.error_class`. Powers the v3.0.78-79 filter and the v3.0.88-90 refinements. Without this, the only signal in activity_log was the 500-char error_str blob — useless for at-a-glance triage.
+
+### v3.0.74 — Provider/API-key toggle on Cache Savings card
+
+Card defaults to per-provider grouping; toggle flips to per-api-key. Same data, different cut. Makes it easy to spot which caller is driving most of the cache-hit savings.
+
+### v3.0.73 — Cache Savings card on Metrics page + `utc_iso()` bugfix
+
+Frontend Recharts card showing 24h cache hit-rate, total tokens read from cache, tokens written, estimated $ saved. Feeds off the v3.0.72 endpoint.
+
+Bonus fix: the `utc_iso()` bug that was causing one pre-existing `audit_export` test to fail (timezone-naive stamps in test fixtures) — patched the same release since the test was blocking the audit_export merge.
+
+### v3.0.72 — `/api/monitoring/cache-stats` endpoint
+
+Returns aggregate cache hit-rate, read-token total, write-token total, estimated $-saved (cache-read-tokens × per-model cache-discount price). Groupable by provider OR api_key via query param. Powers the v3.0.73 UI card.
+
+### v3.0.71 — Echo `cache_read_input_tokens` / `cache_creation_input_tokens` to `event_meta`
+
+`record_outcome` now extracts both fields from the upstream usage block and stores them on `event_meta.cache_read_input_tokens` / `event_meta.cache_creation_input_tokens`. Powers v3.0.72-74 dashboards. Without this, the cache savings audit had to grep response bodies — slow and unreliable when bodies aren't captured.
+
+### v3.0.70 — `fallback-chain` alias + provider-family fuzzy match
+
+Two LMRH-parser additions:
+
+- `fallback-chain=...` is now a recognized alias of `provider-hint=...` (caller convenience — "fallback chain" reads more naturally than "provider hint" for an explicit ranked list).
+- Provider-family fuzzy match: `provider-hint=anthropic` matches all 4 anthropic-shape provider types (`anthropic`, `claude-oauth`, `anthropic-direct`, `anthropic-vertex`) instead of requiring an exact `provider_type` match. Makes the dim usable for cross-vendor routing without callers needing to enumerate every implementation.
+
+### v3.0.69 — `cache=ephemeral|none|off|disabled` mode dim (LMRH 1.2 Phase 1)
+
+First wire-up of the LMRH 1.2 cache dim:
+- `cache` registered as a builtin LMRH dim (no proposal needed)
+- `cache=ephemeral` force-injects `cache_control` even below the auto-threshold (caller knows the prefix is stable; respects their judgment over the heuristic)
+- `cache=none|off|disabled` opts out of auto-cache entirely (compliance / debugging / cost-attribution use cases)
+- Default `cache=auto` = pre-v3.0.69 opportunistic behavior (no change for callers who don't send the dim)
+
+Spec doc: `docs/lmrh-1.2-cache-mode-dim.md`. Phase 2 (response disclosure) shipped in v3.0.83-85.
+
+### v3.0.68 — LMRH legacy parser: preserve comma-list values
+
+Bug: `provider-hint=Devin-Anthropic-Max-VG,Devin-Anthropic-Max-Gmail;require` got truncated to just `Devin-Anthropic-Max-VG` because the legacy parser split on commas at the top level instead of respecting the dim's multi-value semantics. Composite hints with multi-value dims now parse correctly.
+
+### v3.0.67 — Semantic cache + shadow embeddings honor provider pin
+
+Bug: when a request had `provider-hint=X;require` and X was a non-embedding provider, the semantic-cache path's embedding lookup ignored the pin and used the default embeddings provider. Same with shadow-embeddings. Fix: respect the pin or skip the cache check (returns `bypass`). Prevents silent provider mixing under hard pins.
+
+### v3.0.66 — Microsoft Azure OpenAI provider type
+
+New `provider_type=azure-openai`. litellm-routed, OpenAI-shape requests/responses, but with Azure's two-stage URL pattern: `base_url + /openai/deployments/{deployment_name}/chat/completions?api-version=...`. Requires the deployment name in `extra_config.deployment` and api-version in `extra_config.api_version`. Capability inference reuses the OpenAI scanner.
+
+### v3.0.65 — Auto-rotate provider priority on usage gap (Phase 3)
+
+When a top-priority provider hits its weekly token cap on a subscription tier, automatically deprioritize it (priority moves toward the back of the list) until the new week starts. Stops the noisy "provider X cap reached" rate-limit cascade. Operator-overrideable via the v3.0.64 Usage UI.
+
+### v3.0.64 — Usage tracking config UI + list-row indicator (Phase 2)
+
+Per-provider weekly-cap config field on the Provider edit form. Provider list shows a colored indicator (green / yellow / red) for usage % toward weekly cap. No data fields shipped here — just the visualization for the v3.0.62 numbers.
+
+### v3.0.62 — Per-provider session+weekly token tracking (Phase 1)
+
+DB schema: `provider_token_usage` table tracking session (today) + weekly window. `record_outcome` writes here on every claude-oauth / codex-oauth / anthropic-oauth call. Powers the v3.0.64 UI + v3.0.65 auto-rotation. Subscription tier providers are the primary use case (free tokens up to N per week, then per-call billing kicks in — operators want hard visibility into where they sit on the cap).
+
+### v3.0.63 — Strict-greater LWW on provider sync stops priority ping-pong
+
+Bug: after v3.0.11 added `last_user_edit_at` for LWW gating, two nodes editing the same Provider row in the same second could ping-pong (each thought theirs was newer because comparison was `>=`). Fix: strict greater-than. Equal timestamps preserve the receiver's local copy; the next real user edit wins on the next sync. No more 4-second priority-flap incidents.
+
+### v3.0.61 — Bigger DB pool + skip middleware on `/health`
+
+Resilience hardening discovered during the 2026-05-05 internet-out incident: even with one upstream provider holding 300s timeouts, the LMRH-warning middleware was running the registry-cache refresh on every request (including `/health` and `/version`), which queued behind the DB pool exhaustion. Fixed two ways:
+- `_LMRH_MIDDLEWARE_SKIP_PATHS` now includes `/health`, `/version`, `/metrics`, `/favicon.ico`. Liveness / observability paths remain answerable even if the registry cache is stalled.
+- DB pool tuning ([was] pool_size=20 max_overflow=30 → pool_size=20 max_overflow=30, plus pool_timeout adjustments). Further tuning in v3.0.92.
+
+### v3.0.60 — Split `httpx.Timeout` into connect/read/write/pool
+
+Single `timeout=300` was wrong — a DNS / TCP-connect failure held the request for 300s while the upstream was confirmed dead. During the 2026-05-05 internet outage this exhausted the SQLAlchemy DB pool within seconds and locked up the whole proxy until container restart.
+
+Fix: `httpx.Timeout(connect=5.0, read=300.0, write=10.0, pool=5.0)` on every outbound httpx call. Connect-phase failures now return in ~5s, freeing the DB connection back to the pool. Streaming reads stay at 300s for slow upstreams.
+
+### v3.0.59 — Plumb `llm_hint` into non-OAuth Anthropic helpers
+
+Companion to v3.0.58 — the same `llm_hint` plumbing for the litellm Anthropic path (`_stream_anthropic`, `_complete_anthropic`). Without this, `anthropic-direct` provider calls also reported `had_lmrh_hint=true` but no `lmrh_hint_raw`.
+
+### v3.0.58 — Plumb `llm_hint` into claude-oauth dispatch
+
+`event_meta.lmrh_hint` (added in v3.0.55) was capturing the header on FastAPI parse, but the claude-oauth dispatch path (`_stream_claude_oauth` / `_complete_claude_oauth`) was constructing its own `record_outcome` calls without the hint, so the activity log showed `had_lmrh_hint=true` but no `lmrh_hint_raw` for the highest-volume path. Threaded `llm_hint` through.
+
 ### v3.0.57 — Explicit per-provider cost_class column
 
 Replaces the hardcoded `SUBSCRIPTION_TIER_PROVIDER_TYPES` set (introduced in v3.0.50) with a DB-backed `Provider.cost_class TEXT` column. NULL preserves the v3.0.50 default behavior (derive from `provider_type`: `claude-oauth`/`codex-oauth`/`anthropic-oauth` = `subscription`, all else = `per_call`). Admin-overridable when an `anthropic-direct` provider is on a flat-rate enterprise contract, or for any future per-call OAuth tier.
