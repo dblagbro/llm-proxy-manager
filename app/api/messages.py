@@ -165,11 +165,22 @@ async def messages(
     # 24h auth-failure breaker on every claude-oauth provider on a node)
     # or (b) no providers configured at all. Same shape as the v3.0.4 fix
     # for /v1/chat/completions; previously bubbled to a 500 + ASGI trace.
+    # v3.0.99: pass the requested model name as ``model_override`` even when
+    # no alias exists, so select_provider's model-supports-by-provider filter
+    # rejects providers that don't list this model. Previously, sending
+    # ``gemini-2.5-flash`` to /v1/messages picked the highest-priority
+    # provider regardless of capability — which forwarded gemini-* to a
+    # claude-oauth provider, which sent it to platform.claude.com, which
+    # 404'd with not_found_error. Hub team's red-dots case 2026-05-07.
+    # /v1/chat/completions had this guard since v3.0.22; messages.py
+    # didn't get it because at the time the only callers were
+    # Anthropic-shape and the requested model was always claude-*.
+    requested_model = (alias.model_id if alias else parsed_slug.bare_model) or None
     try:
         route = await select_provider(
             db, hint, has_tools=has_tools, has_images=has_images, key_type=key_record.key_type,
             pinned_provider_id=alias.provider_id if alias else None,
-            model_override=alias.model_id if alias else None,
+            model_override=requested_model,
             sort_mode=parsed_slug.sort_mode,
             api_key_id=key_record.id,  # v3.0.45 tenant scoping
         )
