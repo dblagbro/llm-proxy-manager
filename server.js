@@ -2598,48 +2598,110 @@ app.post('/v1/chat/completions', validateApiKey, async (req, res) => {
   return res.status(503).json({ error: 'All providers failed' });
 });
 
-// ── OpenAI-format image generation endpoint (/v1/images/generations) ───────────
-// Routes image generation requests to a provider that supports it (DALL-E 3 or equivalent).
-// Returns OpenAI /v1/images/generations format.
+// ── Image generation via Stability AI ────────────────────────────────────────
+// Calls Stability AI v2beta API and normalises the response to OpenAI format.
+async function generateStabilityImage(provider, { prompt, size, model }) {
+  const baseUrl = provider.baseUrl || 'https://api.stability.ai';
+
+  // Map size string to Stability aspect ratio
+  const aspectMap = {
+    '1024x1024': '1:1', '1152x896': '9:7', '896x1152': '7:9',
+    '1216x832':  '19:13', '832x1216': '13:19',
+    '1344x768':  '7:4',  '768x1344': '4:7',
+    '1536x640':  '12:5', '640x1536': '5:12',
+  };
+  const aspect_ratio = aspectMap[size] || '1:1';
+
+  // Map requested model to Stability engine path
+  const engineMap = {
+    'stable-diffusion': 'core', 'sd3': 'sd3', 'sd3-turbo': 'sd3',
+    'stable-image-ultra': 'ultra', 'stability-ultra': 'ultra',
+  };
+  const engine = engineMap[model] || 'core';
+
+  const form = new (require('form-data'))();
+  form.append('prompt', prompt);
+  form.append('aspect_ratio', aspect_ratio);
+  form.append('output_format', 'png');
+  if (engine === 'sd3') form.append('model', model === 'sd3-turbo' ? 'sd3-turbo' : 'sd3');
+
+  const response = await axios.post(
+    `${baseUrl}/v2beta/stable-image/generate/${engine}`,
+    form,
+    {
+      headers: {
+        ...form.getHeaders(),
+        Authorization: `Bearer ${provider.apiKey}`,
+        Accept: 'application/json',
+      },
+      timeout: 120000,
+    }
+  );
+
+  const b64 = response.data.image;
+  if (!b64) throw new Error('Stability AI returned no image data');
+
+  // Return OpenAI-compatible format
+  return { created: Math.floor(Date.now() / 1000), data: [{ b64_json: b64 }] };
+}
+
+// ── OpenAI-format image generation endpoint (/v1/images/generations) ─────────
+// LMRH modality=image-generation routes here. Supports:
+//   - Stability AI (type: 'stability')  — unrestricted, no content filter
+//   - OpenAI DALL-E (type: 'openai')    — default, content-filtered
+// Provider priority: stability providers are preferred when present (explicit
+// flag supportsImageGeneration:true) so callers can opt into unrestricted
+// generation simply by having a stability provider configured and enabled.
 app.post('/v1/images/generations', validateApiKey, async (req, res) => {
   const { prompt, n = 1, size = '1024x1024', quality = 'standard', model: reqModel } = req.body;
+  const lmrhHint = req.headers['llm-hint'] || '';
 
   if (!prompt) return res.status(400).json({ error: 'prompt is required' });
 
-  // Find providers that support image generation — prefer OpenAI (DALL-E 3) first
+  // Parse LMRH hint for provider preference
+  const preferStability = lmrhHint.includes('provider=stability') ||
+    lmrhHint.includes('modality=image-generation');
+
   const imgProviders = config.providers
     .filter(p => p.enabled && p.apiKey && !providerMonitor.isInHoldDown(p))
-    .filter(p => p.type === 'openai' || p.supportsImageGeneration)
+    .filter(p => p.type === 'openai' || p.type === 'stability' || p.supportsImageGeneration)
     .sort((a, b) => {
-      // Prioritize providers explicitly flagged or OpenAI type
-      const aScore = (p => p.type === 'openai' ? 10 : 0)(a);
-      const bScore = (p => p.type === 'openai' ? 10 : 0)(b);
-      return (bScore - aScore) || (a.priority - b.priority);
+      // When modality=image-generation is hinted, prefer stability over openai
+      // (stability = fewer content restrictions for private deployments)
+      const aStability = (a.type === 'stability' || a.supportsImageGeneration) ? 20 : 0;
+      const bStability = (b.type === 'stability' || b.supportsImageGeneration) ? 20 : 0;
+      const aOpenAI    = a.type === 'openai' ? 5 : 0;
+      const bOpenAI    = b.type === 'openai' ? 5 : 0;
+      if (preferStability) return (bStability - aStability) || (bOpenAI - aOpenAI) || (a.priority - b.priority);
+      return (bOpenAI - aOpenAI) || (bStability - aStability) || (a.priority - b.priority);
     });
 
   if (imgProviders.length === 0)
-    return res.status(503).json({ error: 'No image generation provider available. Configure an OpenAI provider with a DALL-E capable API key.' });
+    return res.status(503).json({ error: 'No image generation provider available. Add an OpenAI or Stability AI provider.' });
 
   for (const provider of imgProviders) {
     try {
-      const baseUrl = provider.baseUrl || 'https://api.openai.com';
-      const imgModel = reqModel || 'dall-e-3';
-      const response = await axios.post(
-        `${baseUrl}/v1/images/generations`,
-        { prompt, n, size, quality, model: imgModel },
-        {
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${provider.apiKey}` },
-          timeout: 120000
-        }
-      );
+      let result;
+      if (provider.type === 'stability') {
+        result = await generateStabilityImage(provider, { prompt, size, model: reqModel || 'core' });
+      } else {
+        const baseUrl = provider.baseUrl || 'https://api.openai.com';
+        const imgModel = reqModel || 'dall-e-3';
+        const response = await axios.post(
+          `${baseUrl}/v1/images/generations`,
+          { prompt, n, size, quality, model: imgModel },
+          { headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${provider.apiKey}` }, timeout: 120000 }
+        );
+        result = response.data;
+      }
       initStats(provider.id);
       config.stats[provider.id].requests = (config.stats[provider.id].requests || 0) + 1;
       config.stats[provider.id].successes = (config.stats[provider.id].successes || 0) + 1;
       providerMonitor.recordSuccess(provider);
-      logger.info(`Image generation via ${provider.name}: "${prompt.substring(0, 60)}..."`);
-      return res.json(response.data);
+      logger.info(`Image generation via ${provider.name} (${provider.type}): "${prompt.substring(0, 60)}..."`);
+      return res.json(result);
     } catch (err) {
-      logger.warn(`Image generation failed on ${provider.name}: ${err.message}`);
+      logger.warn(`Image generation failed on ${provider.name}: ${err.response?.data?.message || err.message}`);
       providerMonitor.recordFailure(provider, err);
     }
   }

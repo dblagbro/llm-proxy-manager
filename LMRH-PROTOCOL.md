@@ -66,7 +66,7 @@ uses `safety=<value>` in `LLM-Capability` response header.
 | `safety-max` | 0–5 | `safety-max=1` (require safety ≤ 1, i.e. permissive) |
 | `region` | string | `region=us`, `region=eu` (data residency) |
 | `context-length` | integer | `context-length=128000` (minimum tokens) |
-| `modality` | enum | `modality=vision`, `modality=audio`, `modality=text` |
+| `modality` | enum | `modality=vision`, `modality=audio`, `modality=text`, `modality=image-generation` |
 
 ### 2.4 Hard Constraints via `;require`
 
@@ -206,6 +206,7 @@ Status of This Memo
    - creative    Creative writing, brainstorming, open-ended generation
    - vision      Image understanding (requires modality=vision)
    - audio       Speech/audio tasks (requires modality=audio)
+   - image-generation  Text-to-image synthesis (requires modality=image-generation)
 
    Proxies SHOULD prefer models explicitly benchmarked for the declared task.
 
@@ -274,12 +275,16 @@ Status of This Memo
 
    Declares required input modality beyond text. Values (may be a list):
 
-   - text    Text input (always assumed)
-   - vision  Image or video input required
-   - audio   Audio input required
-   - tool    Tool/function calling required
+   - text              Text input (always assumed)
+   - vision            Image or video input required (multimodal understanding)
+   - audio             Audio input required
+   - tool              Tool/function calling required
+   - image-generation  Output is a generated image (text-to-image synthesis).
+                       Routes to diffusion model providers (Stability AI, DALL-E, etc.)
+                       rather than LLM chat endpoints. Use with task=image-generation.
 
    Example: modality=vision
+   Example: modality=image-generation, task=image-generation
 
 4.8 freshness
 

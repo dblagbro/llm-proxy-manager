@@ -234,6 +234,16 @@ class ProviderHoldDown extends EventEmitter {
         break;
       }
 
+      case 'stability': {
+        // Probe via balance endpoint — cheap and confirms API key is valid
+        const baseUrl = provider.baseUrl || 'https://api.stability.ai';
+        await axios.get(`${baseUrl}/v1/user/balance`, {
+          headers: { Authorization: `Bearer ${provider.apiKey}` },
+          timeout: maxLatencyMs
+        });
+        break;
+      }
+
       case 'vertex':
         // Vertex requires OAuth tokens — skip probe, log warning only
         this.logger.warn(`Hold-down retest skipped for Vertex provider ${provider.name} (OAuth probe not supported)`);

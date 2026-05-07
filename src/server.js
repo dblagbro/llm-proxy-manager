@@ -566,6 +566,7 @@ function saveConfig() {
 // Targeted save helpers — used by hot-path code to avoid a full saveAll()
 // In JSON mode these just call saveConfig(). In SQLite mode they write only the changed row.
 function saveProviderRecord(provider) {
+  provider.updatedAt = Date.now(); // stamp for cluster sync field propagation
   if (USE_SQLITE && sqliteDb) { sqliteDb.saveProvider(provider); return; }
   saveConfig();
 }
@@ -2566,10 +2567,28 @@ async function streamOpenAICompatible(provider, request, res) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ── CoT pipeline constants ────────────────────────────────────────────────────
-const COT_MAX_ITERATIONS     = 1;   // refinement rounds after initial draft (1 = 4 calls total)
-const COT_QUALITY_THRESHOLD  = 6;   // score < this triggers a refinement pass (1-10 scale)
+let COT_MAX_ITERATIONS        = 1;   // refinement rounds after initial draft (1 = 4 calls total); hub-overrideable
+let COT_QUALITY_THRESHOLD     = 6;   // score < this triggers a refinement pass (1-10 scale); hub-overrideable
+let COT_MIN_TOKENS_FOR_REFINE = 800; // skip refinement if draft token estimate exceeds this (0 = always refine); hub-overrideable
 const COT_CRITIQUE_MAX_TOKENS = 200;
-const COT_TEXT_CHUNK_SIZE    = 80;  // chars per text_delta chunk when simulating streaming
+const COT_TEXT_CHUNK_SIZE     = 80;  // chars per text_delta chunk when simulating streaming
+
+// ── Hub-driven CoT settings (polled every 5 min) ─────────────────────────────
+const _COT_HUB_URL = (process.env.COORDINATOR_HUB_PRIMARY || '').replace(/\/$/, '');
+async function _refreshCotFromHub() {
+  if (!_COT_HUB_URL) return;
+  try {
+    const { data: d } = await axios.get(`${_COT_HUB_URL}/api/public/cot-settings`, { timeout: 5000 });
+    if (typeof d.cot_max_iterations        === 'number') COT_MAX_ITERATIONS        = d.cot_max_iterations;
+    if (typeof d.cot_quality_threshold     === 'number') COT_QUALITY_THRESHOLD     = d.cot_quality_threshold;
+    if (typeof d.cot_min_tokens_for_refine === 'number') COT_MIN_TOKENS_FOR_REFINE = d.cot_min_tokens_for_refine;
+    logger.info(`CoT settings from hub: maxIter=${COT_MAX_ITERATIONS} threshold=${COT_QUALITY_THRESHOLD} minTokensSkip=${COT_MIN_TOKENS_FOR_REFINE}`);
+  } catch (e) {
+    logger.warn(`CoT hub settings poll failed: ${e.message}`);
+  }
+}
+setImmediate(_refreshCotFromHub);
+setInterval(_refreshCotFromHub, 5 * 60 * 1000);
 
 const COT_PRE_ANALYSIS_PROMPT = `You are analyzing a task before responding. Think briefly through:
 1. What service, component, or system is involved?
@@ -2675,6 +2694,8 @@ function emitTextBlock(emit, index, text) {
 
 // ── Non-streaming CoT pipeline (used for non-streaming requests) ──────────────
 async function cotPipeline(provider, request) {
+  // Task #6: per-request iteration override via X-Cot-Iterations header (injected as _cotMaxIterations)
+  const maxIter  = request._cotMaxIterations !== undefined ? request._cotMaxIterations : COT_MAX_ITERATIONS;
   const userText = extractLastUserText(request.messages) || 'Analyze the task.';
 
   // Pass 0: pre-analysis
@@ -2701,32 +2722,64 @@ async function cotPipeline(provider, request) {
     return { content: [{ type: 'text', text: '' }] };
   }
 
+  // Task #7: skip refinement for long initial drafts (explicit override bypasses this)
+  const _draftTokenEst = Math.ceil(draft.length / 4);
+  const _skipRefine = request._cotMaxIterations === undefined
+    && COT_MIN_TOKENS_FOR_REFINE > 0 && _draftTokenEst >= COT_MIN_TOKENS_FOR_REFINE;
+
+  // Task #9: tool-use verification pass — fires when request includes tools and refinement isn't skipped
+  if (!_skipRefine && request.tools?.length && draft) {
+    try {
+      const toolNames = request.tools.map(t => t.name || t.function?.name || '').filter(Boolean).join(', ');
+      const verifResult = await callProviderSync(provider, {
+        model: request.model, max_tokens: 120, temperature: 0.1,
+        messages: [{ role: 'user', content: `Tools available: ${toolNames}\n\nResponse:\n${draft.slice(0, 1500)}\n\nDoes the response correctly use or intentionally decline the available tools? Reply YES or describe the issue in one sentence.` }],
+        system: 'You are a tool-use correctness checker. Reply YES if correct, or one sentence describing the problem.',
+      });
+      const verifText = extractResponseText(verifResult).trim();
+      if (verifText && !/^yes/i.test(verifText)) {
+        const refineResult = await callProviderSync(provider, {
+          model: request.model, max_tokens: request.max_tokens || 4096,
+          temperature: request.temperature || 0.7,
+          system: COT_REFINE_SYSTEM,
+          messages: [{ role: 'user', content: `Original task: ${userText.slice(0, 1000)}\n\nDraft:\n${draft.slice(0, 2000)}\n\nTool usage issue: ${verifText}\n\nProvide a corrected response:` }],
+        });
+        const refined = extractResponseText(refineResult);
+        if (refined) draft = refined;
+      }
+    } catch (e) {
+      logger.warn(`CoT tool verification skipped for ${provider.name}: ${e.message}`);
+    }
+  }
+
   // Iterative refinement
   let finalAnswer = draft;
-  for (let iter = 0; iter < COT_MAX_ITERATIONS; iter++) {
-    try {
-      const critiqueResult = await callProviderSync(provider, {
-        model: request.model, max_tokens: COT_CRITIQUE_MAX_TOKENS, temperature: 0.2,
-        messages: [{ role: 'user', content: `Task: ${userText.slice(0, 1000)}\n\nResponse:\n${finalAnswer.slice(0, 2000)}` }],
-        system: COT_CRITIQUE_PROMPT,
-      });
-      const critiqueText = extractResponseText(critiqueResult);
-      const scoreMatch = critiqueText.match(/SCORE:\s*(\d+)/i);
-      const gapsMatch  = critiqueText.match(/GAPS:\s*(.+)/i);
-      const score = scoreMatch ? parseInt(scoreMatch[1], 10) : 10;
-      const gaps  = gapsMatch ? gapsMatch[1].trim() : 'none';
-      if (score >= COT_QUALITY_THRESHOLD || gaps.toLowerCase() === 'none') break;
-      const refineResult = await callProviderSync(provider, {
-        model: request.model, max_tokens: request.max_tokens || 4096,
-        temperature: request.temperature || 0.7,
-        system: COT_REFINE_SYSTEM,
-        messages: [{ role: 'user', content: `Original task: ${userText.slice(0, 1000)}\n\nDraft:\n${finalAnswer.slice(0, 2000)}\n\nCritique: ${gaps}\n\nImproved response:` }],
-      });
-      const refined = extractResponseText(refineResult);
-      if (refined) finalAnswer = refined;
-    } catch (e) {
-      logger.warn(`CoT refinement skipped (iter ${iter}) for ${provider.name}: ${e.message}`);
-      break;
+  if (!_skipRefine) {
+    for (let iter = 0; iter < maxIter; iter++) {
+      try {
+        const critiqueResult = await callProviderSync(provider, {
+          model: request.model, max_tokens: COT_CRITIQUE_MAX_TOKENS, temperature: 0.2,
+          messages: [{ role: 'user', content: `Task: ${userText.slice(0, 1000)}\n\nResponse:\n${finalAnswer.slice(0, 2000)}` }],
+          system: COT_CRITIQUE_PROMPT,
+        });
+        const critiqueText = extractResponseText(critiqueResult);
+        const scoreMatch = critiqueText.match(/SCORE:\s*(\d+)/i);
+        const gapsMatch  = critiqueText.match(/GAPS:\s*(.+)/i);
+        const score = scoreMatch ? parseInt(scoreMatch[1], 10) : 10;
+        const gaps  = gapsMatch ? gapsMatch[1].trim() : 'none';
+        if (score >= COT_QUALITY_THRESHOLD || gaps.toLowerCase() === 'none') break;
+        const refineResult = await callProviderSync(provider, {
+          model: request.model, max_tokens: request.max_tokens || 4096,
+          temperature: request.temperature || 0.7,
+          system: COT_REFINE_SYSTEM,
+          messages: [{ role: 'user', content: `Original task: ${userText.slice(0, 1000)}\n\nDraft:\n${finalAnswer.slice(0, 2000)}\n\nCritique: ${gaps}\n\nImproved response:` }],
+        });
+        const refined = extractResponseText(refineResult);
+        if (refined) finalAnswer = refined;
+      } catch (e) {
+        logger.warn(`CoT refinement skipped (iter ${iter}) for ${provider.name}: ${e.message}`);
+        break;
+      }
     }
   }
 
@@ -2735,6 +2788,8 @@ async function cotPipeline(provider, request) {
 
 // ── Streaming CoT pipeline with iterative refinement ─────────────────────────
 async function streamCotPipeline(provider, request, res, httpReq) {
+  // Task #6: per-request iteration override via X-Cot-Iterations header (injected as _cotMaxIterations)
+  const maxIter    = request._cotMaxIterations !== undefined ? request._cotMaxIterations : COT_MAX_ITERATIONS;
   const sessionId  = httpReq.headers['x-session-id'] || null;
   const messageId  = `msg_${Date.now()}`;
   const model      = request.model || provider.model || 'unknown';
@@ -2779,46 +2834,81 @@ async function streamCotPipeline(provider, request, res, httpReq) {
     return;
   }
 
-  // ── Iterative refinement loop ───────────────────────────────────────────────
-  let finalAnswer = draft;
-  for (let iter = 0; iter < COT_MAX_ITERATIONS; iter++) {
-    let score = 10;
-    let gaps  = 'none';
-    try {
-      const critiqueResult = await callProviderSync(provider, {
-        model: request.model, max_tokens: COT_CRITIQUE_MAX_TOKENS, temperature: 0.2,
-        messages: [{ role: 'user', content: `Task: ${userText.slice(0, 1000)}\n\nResponse to evaluate:\n${finalAnswer.slice(0, 2000)}` }],
-        system: COT_CRITIQUE_PROMPT,
-      });
-      const critiqueText = extractResponseText(critiqueResult);
-      const scoreMatch = critiqueText.match(/SCORE:\s*(\d+)/i);
-      const gapsMatch  = critiqueText.match(/GAPS:\s*(.+)/i);
-      if (scoreMatch) score = parseInt(scoreMatch[1], 10);
-      if (gapsMatch)  gaps  = gapsMatch[1].trim();
-      emitThinkingBlock(emit, blockIndex++, `## Quality Check (pass ${iter + 1})\nScore: ${score}/10\nGaps: ${gaps}`);
-    } catch (e) {
-      logger.warn(`CoT critique failed (iter ${iter}) for ${provider.name}: ${e.message}`);
-      break;
-    }
+  // Task #7: skip refinement for long initial drafts (explicit per-request override bypasses this)
+  const _draftTokenEst = Math.ceil(draft.length / 4);
+  const _skipRefine = request._cotMaxIterations === undefined
+    && COT_MIN_TOKENS_FOR_REFINE > 0 && _draftTokenEst >= COT_MIN_TOKENS_FOR_REFINE;
+  if (_skipRefine)
+    emitThinkingBlock(emit, blockIndex++, `## Refinement Skipped\nDraft is ~${_draftTokenEst} tokens (≥${COT_MIN_TOKENS_FOR_REFINE} threshold) — accepted as-is.`);
 
-    if (score >= COT_QUALITY_THRESHOLD || gaps.toLowerCase() === 'none') break;
-
+  // Task #9: tool-use verification pass — fires when request includes tools and refinement isn't skipped
+  if (!_skipRefine && request.tools?.length && draft) {
     try {
-      const refineResult = await callProviderSync(provider, {
-        model: request.model,
-        max_tokens: request.max_tokens || 4096,
-        temperature: request.temperature || 0.7,
-        system: COT_REFINE_SYSTEM,
-        messages: [{ role: 'user', content: `Original task: ${userText.slice(0, 1000)}\n\nDraft response:\n${finalAnswer.slice(0, 2000)}\n\nCritique: ${gaps}\n\nProvide a complete improved response:` }],
+      const toolNames = request.tools.map(t => t.name || t.function?.name || '').filter(Boolean).join(', ');
+      const verifResult = await callProviderSync(provider, {
+        model: request.model, max_tokens: 120, temperature: 0.1,
+        messages: [{ role: 'user', content: `Tools available: ${toolNames}\n\nResponse:\n${draft.slice(0, 1500)}\n\nDoes the response correctly use or intentionally decline the available tools? Reply YES or describe the issue in one sentence.` }],
+        system: 'You are a tool-use correctness checker. Reply YES if correct, or one sentence describing the problem.',
       });
-      const refined = extractResponseText(refineResult);
-      if (refined) {
-        emitThinkingBlock(emit, blockIndex++, `## Refinement (pass ${iter + 1})\n${refined.slice(0, 300)}${refined.length > 300 ? '…' : ''}`);
-        finalAnswer = refined;
+      const verifText = extractResponseText(verifResult).trim();
+      emitThinkingBlock(emit, blockIndex++, `## Tool Verification\n${verifText}`);
+      if (verifText && !/^yes/i.test(verifText)) {
+        const refineResult = await callProviderSync(provider, {
+          model: request.model, max_tokens: request.max_tokens || 4096,
+          temperature: request.temperature || 0.7,
+          system: COT_REFINE_SYSTEM,
+          messages: [{ role: 'user', content: `Original task: ${userText.slice(0, 1000)}\n\nDraft:\n${draft.slice(0, 2000)}\n\nTool usage issue: ${verifText}\n\nProvide a corrected response:` }],
+        });
+        const refined = extractResponseText(refineResult);
+        if (refined) draft = refined;
       }
     } catch (e) {
-      logger.warn(`CoT refinement failed (iter ${iter}) for ${provider.name}: ${e.message}`);
-      break;
+      logger.warn(`CoT tool verification skipped for ${provider.name}: ${e.message}`);
+    }
+  }
+
+  // ── Iterative refinement loop ───────────────────────────────────────────────
+  let finalAnswer = draft;
+  if (!_skipRefine) {
+    for (let iter = 0; iter < maxIter; iter++) {
+      let score = 10;
+      let gaps  = 'none';
+      try {
+        const critiqueResult = await callProviderSync(provider, {
+          model: request.model, max_tokens: COT_CRITIQUE_MAX_TOKENS, temperature: 0.2,
+          messages: [{ role: 'user', content: `Task: ${userText.slice(0, 1000)}\n\nResponse to evaluate:\n${finalAnswer.slice(0, 2000)}` }],
+          system: COT_CRITIQUE_PROMPT,
+        });
+        const critiqueText = extractResponseText(critiqueResult);
+        const scoreMatch = critiqueText.match(/SCORE:\s*(\d+)/i);
+        const gapsMatch  = critiqueText.match(/GAPS:\s*(.+)/i);
+        if (scoreMatch) score = parseInt(scoreMatch[1], 10);
+        if (gapsMatch)  gaps  = gapsMatch[1].trim();
+        emitThinkingBlock(emit, blockIndex++, `## Quality Check (pass ${iter + 1})\nScore: ${score}/10\nGaps: ${gaps}`);
+      } catch (e) {
+        logger.warn(`CoT critique failed (iter ${iter}) for ${provider.name}: ${e.message}`);
+        break;
+      }
+
+      if (score >= COT_QUALITY_THRESHOLD || gaps.toLowerCase() === 'none') break;
+
+      try {
+        const refineResult = await callProviderSync(provider, {
+          model: request.model,
+          max_tokens: request.max_tokens || 4096,
+          temperature: request.temperature || 0.7,
+          system: COT_REFINE_SYSTEM,
+          messages: [{ role: 'user', content: `Original task: ${userText.slice(0, 1000)}\n\nDraft response:\n${finalAnswer.slice(0, 2000)}\n\nCritique: ${gaps}\n\nProvide a complete improved response:` }],
+        });
+        const refined = extractResponseText(refineResult);
+        if (refined) {
+          emitThinkingBlock(emit, blockIndex++, `## Refinement (pass ${iter + 1})\n${refined.slice(0, 300)}${refined.length > 300 ? '…' : ''}`);
+          finalAnswer = refined;
+        }
+      } catch (e) {
+        logger.warn(`CoT refinement failed (iter ${iter}) for ${provider.name}: ${e.message}`);
+        break;
+      }
     }
   }
 
@@ -3189,42 +3279,109 @@ app.post('/v1/chat/completions', validateApiKey, async (req, res) => {
   return res.status(503).json({ error: 'All providers failed' });
 });
 
-// ── OpenAI-format image generation endpoint (/v1/images/generations) ───────────
-// Routes image generation requests to a provider that supports it (DALL-E 3 or equivalent).
-// Returns OpenAI /v1/images/generations format.
+// ── Image generation via Stability AI ────────────────────────────────────────
+// Calls Stability AI v2beta API and normalises the response to OpenAI format.
+async function generateStabilityImage(provider, { prompt, size, model }) {
+  const FormData = require('form-data');
+  const baseUrl  = provider.baseUrl || 'https://api.stability.ai';
+
+  const aspectMap = {
+    '1024x1024': '1:1',  '1152x896': '9:7',  '896x1152': '7:9',
+    '1216x832':  '19:13','832x1216': '13:19', '1344x768': '7:4',
+    '768x1344':  '4:7',  '1536x640': '12:5',  '640x1536': '5:12',
+  };
+  const aspect_ratio = aspectMap[size] || '1:1';
+  const engineMap = {
+    'stable-diffusion': 'core', 'sd-core': 'core',
+    'sd3': 'sd3', 'sd3-turbo': 'sd3',
+    'stable-image-ultra': 'ultra', 'sd-ultra': 'ultra',
+  };
+  const engine = engineMap[model] || 'core';
+
+  const form = new FormData();
+  form.append('prompt', prompt);
+  form.append('aspect_ratio', aspect_ratio);
+  form.append('output_format', 'png');
+  if (engine === 'sd3') form.append('model', model === 'sd3-turbo' ? 'sd3-turbo' : 'sd3');
+
+  const response = await axios.post(
+    `${baseUrl}/v2beta/stable-image/generate/${engine}`,
+    form,
+    {
+      headers: { ...form.getHeaders(), Authorization: `Bearer ${provider.apiKey}`, Accept: 'application/json' },
+      timeout: 120000,
+    }
+  );
+
+  const b64 = response.data.image;
+  if (!b64) throw new Error('Stability AI returned no image data');
+  return { created: Math.floor(Date.now() / 1000), data: [{ b64_json: b64 }] };
+}
+
+// ── OpenAI-format image generation endpoint (/v1/images/generations) ─────────
+// LMRH modality=image-generation routes here. Supports:
+//   - Stability AI (type: 'stability') — unrestricted, no content filter
+//   - OpenAI DALL-E (type: 'openai')   — default, content-filtered
+// Stability providers are preferred when modality=image-generation is hinted
+// so private deployments get unrestricted generation automatically.
 app.post('/v1/images/generations', validateApiKey, async (req, res) => {
   const { prompt, n = 1, size = '1024x1024', quality = 'standard', model: reqModel } = req.body;
+  const lmrhHint = req.headers['llm-hint'] || '';
 
   if (!prompt) return res.status(400).json({ error: 'prompt is required' });
 
-  // Find providers that support image generation — prefer OpenAI (DALL-E 3) first
+  // LMRH provider preferences for image generation
+  const preferLocal     = lmrhHint.includes('provider=local');
+  const preferStability = !preferLocal && (
+    lmrhHint.includes('modality=image-generation') ||
+    lmrhHint.includes('provider=stability')
+  );
+
   const imgProviders = config.providers
     .filter(p => p.enabled && p.apiKey && !providerMonitor.isInHoldDown(p))
-    .filter(p => p.type === 'openai' || p.supportsImageGeneration)
+    .filter(p => p.type === 'openai' || p.type === 'stability' || p.supportsImageGeneration)
     .sort((a, b) => {
-      // Prioritize providers explicitly flagged or OpenAI type
-      const aScore = (p => p.type === 'openai' ? 10 : 0)(a);
-      const bScore = (p => p.type === 'openai' ? 10 : 0)(b);
-      return (bScore - aScore) || (a.priority - b.priority);
+      // isLocal: true marks providers that run on the local cluster (e.g. CPU imggen)
+      const aLocal = a.isLocal ? 30 : 0;
+      const bLocal = b.isLocal ? 30 : 0;
+      const aStab  = (a.type === 'stability') ? 20 : 0;
+      const bStab  = (b.type === 'stability') ? 20 : 0;
+      const aOAI   = a.type === 'openai' ? 5 : 0;
+      const bOAI   = b.type === 'openai' ? 5 : 0;
+      if (preferLocal)     return (bLocal - aLocal) || (a.priority - b.priority);
+      if (preferStability) return (bStab - aStab)   || (bOAI - aOAI) || (bLocal - aLocal) || (a.priority - b.priority);
+      // Default: Stability → OpenAI → local CPU (slowest, last resort)
+      return (bStab - aStab) || (bOAI - aOAI) || (bLocal - aLocal) || (a.priority - b.priority);
     });
 
+  logger.info(`[IMG-GEN] lmrhHint="${lmrhHint}" preferLocal=${preferLocal} preferStability=${preferStability} providers=[${imgProviders.map(p => `${p.name}(${p.type})`).join(', ')}]`);
+
   if (imgProviders.length === 0)
-    return res.status(503).json({ error: 'No image generation provider available. Configure an OpenAI provider with a DALL-E capable API key.' });
+    return res.status(503).json({ error: 'No image generation provider available. Add an OpenAI, Stability AI, or local imggen provider.' });
 
   for (const provider of imgProviders) {
     try {
-      const baseUrl = provider.baseUrl || 'https://api.openai.com';
-      const imgModel = reqModel || 'dall-e-3';
-      const response = await axios.post(
-        `${baseUrl}/v1/images/generations`,
-        { prompt, n, size, quality, model: imgModel },
-        {
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${provider.apiKey}` },
-          timeout: 120000
-        }
-      );
+      let result;
+      if (provider.type === 'stability') {
+        result = await generateStabilityImage(provider, { prompt, size, model: reqModel || 'core' });
+      } else {
+        const baseUrl  = provider.baseUrl || 'https://api.openai.com';
+        // Normalize model name — pass-through for local providers; force dall-e-3 for OpenAI
+        const DALLE_MODELS = new Set(['dall-e-2', 'dall-e-3']);
+        const imgModel = provider.isLocal
+          ? (reqModel || provider.model || 'stable-diffusion')
+          : ((reqModel && DALLE_MODELS.has(reqModel)) ? reqModel : 'dall-e-3');
+        // Local CPU providers need a much longer timeout (minutes, not seconds)
+        const imgTimeout = provider.isLocal ? 900000 : 120000;
+        const response = await axios.post(
+          `${baseUrl}/v1/images/generations`,
+          { prompt, n, size, quality, model: imgModel },
+          { headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${provider.apiKey}` }, timeout: imgTimeout }
+        );
+        result = response.data;
+      }
       initStats(provider.id);
-      config.stats[provider.id].requests = (config.stats[provider.id].requests || 0) + 1;
+      config.stats[provider.id].requests  = (config.stats[provider.id].requests  || 0) + 1;
       config.stats[provider.id].successes = (config.stats[provider.id].successes || 0) + 1;
       if (USE_SQLITE && sqliteDb) saveStatsRecord(provider.id);
       providerMonitor.recordSuccess(provider);
@@ -3233,10 +3390,10 @@ app.post('/v1/images/generations', validateApiKey, async (req, res) => {
         req.clientKey.lastUsed = new Date().toISOString();
         saveApiKeyRecord(req.clientKey);
       }
-      logger.info(`Image generation via ${provider.name}: "${prompt.substring(0, 60)}..."`);
-      return res.json(response.data);
+      logger.info(`Image generation via ${provider.name} (${provider.type}): "${prompt.substring(0, 60)}..."`);
+      return res.json(result);
     } catch (err) {
-      logger.warn(`Image generation failed on ${provider.name}: ${err.message}`);
+      logger.warn(`Image generation failed on ${provider.name}: ${err.response?.data?.message || err.message}`);
       const _imgErrCat = classifyProviderError(err);
       const _imgNoHD   = ['auth_error', 'not_found', 'client_error'].includes(_imgErrCat);
       if (!_imgNoHD) providerMonitor.recordFailure(provider, err);
@@ -3398,6 +3555,10 @@ app.post('/v1/messages', validateApiKey, async (req, res) => {
         // 4a-emulation: Apply PBTC (tool emulation), PBRC (reasoning emulation),
         // vision stripping, and any other cross-provider feature bridges.
         const { requestBody, usePbtc: _usePbtc, usePbrc: _usePbrc } = applyProviderEmulation(provider, _truncated);
+
+        // Task #6: inject X-Cot-Iterations per-request override into requestBody
+        const _cotIterHdr = req.headers['x-cot-iterations'];
+        if (_cotIterHdr !== undefined) requestBody._cotMaxIterations = Math.max(0, parseInt(_cotIterHdr, 10) || 0);
 
         logChatRequest(provider.name, pass, requestBody.model || provider.model, requestBody.messages, req);
 
@@ -4259,6 +4420,28 @@ app.post('/api/scan-provider-models', async (req, res) => {
         { id: 'gemini-1.5-pro-002', name: 'Gemini 1.5 Pro' },
         { id: 'gemini-1.5-flash-002', name: 'Gemini 1.5 Flash' },
       ];
+    } else if (type === 'stability') {
+      // Stability AI has no /v1/models endpoint — return the fixed v2beta model list
+      // and validate the key with a lightweight balance check
+      const base = (baseUrl || 'https://api.stability.ai').replace(/\/$/, '');
+      try {
+        await axios.get(`${base}/v1/user/balance`, {
+          headers: { Authorization: `Bearer ${apiKey}` },
+          timeout: 8000,
+        });
+      } catch (keyErr) {
+        const status = keyErr.response?.status;
+        const msg    = keyErr.response?.data?.message || keyErr.message;
+        if (status === 401 || status === 403)
+          return res.status(401).json({ error: `Stability AI key rejected (${status}): ${msg}` });
+        // Non-auth error (network, timeout) — still return models, key may be fine
+      }
+      models = [
+        { id: 'core',                name: 'Stable Image Core (fast, good quality)' },
+        { id: 'sd3',                 name: 'Stable Diffusion 3' },
+        { id: 'sd3-turbo',           name: 'Stable Diffusion 3 Turbo (faster)' },
+        { id: 'stable-image-ultra',  name: 'Stable Image Ultra (highest quality)' },
+      ];
     } else {
       return res.status(400).json({ error: `Model scanning not supported for type: ${type}` });
     }
@@ -4412,6 +4595,17 @@ app.post('/api/test-provider', async (req, res) => {
       case 'openai-compatible':
         result = await callOpenAICompatible(testProvider, testRequest);
         break;
+      case 'stability': {
+        // Stability AI is image-only — validate key via balance endpoint, not chat
+        const stabBase = (baseUrl || 'https://api.stability.ai').replace(/\/$/, '');
+        const stabResp = await axios.get(`${stabBase}/v1/user/balance`, {
+          headers: { Authorization: `Bearer ${apiKey}` },
+          timeout: 10000,
+        });
+        const credits = stabResp.data?.credits ?? stabResp.data?.balance ?? 'unknown';
+        result = { type: 'stability', credits, note: 'Image generation provider — key valid' };
+        break;
+      }
       default:
         return res.status(400).json({ error: 'Invalid provider type' });
     }
@@ -4910,7 +5104,7 @@ const providerMonitor = new ProviderHoldDown(logger, (providerId) => {
 });
 
 // Initialize Cluster Manager
-const clusterManager = new ClusterManager(logger, config);
+const clusterManager = new ClusterManager(logger, config, USE_SQLITE ? sqliteDb : null);
 
 // Initialize Notification Manager
 const notificationManager = new NotificationManager(logger, config);
@@ -5040,6 +5234,23 @@ app.get('/cluster/config', (req, res) => {
     return res.status(403).json({ error: 'Invalid cluster signature' });
   }
 
+  // Build model capabilities map for sync
+  const modelCapabilities = {};
+  if (USE_SQLITE && sqliteDb) {
+    for (const provider of config.providers) {
+      try {
+        const caps = sqliteDb.listModelCapabilities(provider.id);
+        if (caps && caps.length > 0) {
+          modelCapabilities[provider.id] = {};
+          for (const cap of caps) {
+            const { model_id, source, updated_at, ...rest } = cap; // eslint-disable-line no-unused-vars
+            modelCapabilities[provider.id][model_id] = rest;
+          }
+        }
+      } catch (_) {}
+    }
+  }
+
   res.json({
     success: true,
     config: {
@@ -5047,6 +5258,7 @@ app.get('/cluster/config', (req, res) => {
       clientApiKeys: config.clientApiKeys,
       providers: config.providers,
       deletedProviderIds: config.deletedProviderIds || [],
+      modelCapabilities,
       activityLog: process.env.CLUSTER_SYNC_ACTIVITY_LOG === 'true'
         ? config.activityLog
         : []
