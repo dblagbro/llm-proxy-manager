@@ -893,6 +893,29 @@ async def test_provider_endpoint(
             f"Update via Edit Provider or wait for the next startup migration."
         )
         result["recommended_default_model"] = replacement
+    # v3.0.97 — log admin-action so operators have an audit trail.
+    # Was previously invisible: no activity_log entry on test/scan/etc.
+    try:
+        from app.monitoring.activity import log_event
+        ok = bool(result.get("ok", True))
+        await log_event(
+            db,
+            event_type="provider_test",
+            message=f"{p.name} · test {'ok' if ok else 'failed'}",
+            severity="info" if ok else "warning",
+            provider_id=p.id,
+            metadata={
+                "provider_name": p.name,
+                "provider_type": p.provider_type,
+                "ok": ok,
+                "result_summary": {k: v for k, v in result.items()
+                                   if k in ("ok", "error", "model", "latency_ms",
+                                            "deprecation_warning",
+                                            "recommended_default_model")},
+            },
+        )
+    except Exception:
+        pass  # never let logging failure break the response
     return result
 
 
@@ -922,8 +945,46 @@ async def scan_models(
             out["warning"] = "No models discovered — check API key and provider type"
         if deprecated_models:
             out["deprecated_models"] = deprecated_models
+        # v3.0.97 — log admin-action so operators have an audit trail.
+        try:
+            from app.monitoring.activity import log_event
+            await log_event(
+                db,
+                event_type="provider_scan_models",
+                message=f"{p.name} · scanned {len(models)} model{'s' if len(models) != 1 else ''}",
+                severity="info" if models else "warning",
+                provider_id=p.id,
+                metadata={
+                    "provider_name": p.name,
+                    "provider_type": p.provider_type,
+                    "scanned_count": len(models),
+                    "model_ids": [m.get("model_id") for m in (models or [])
+                                  if isinstance(m, dict)][:50],  # cap to keep meta lean
+                    "deprecated_count": len(deprecated_models),
+                },
+            )
+        except Exception:
+            pass
         return out
     except Exception as e:
+        # v3.0.97 — also log scan failures so operators see them.
+        try:
+            from app.monitoring.activity import log_event
+            await log_event(
+                db,
+                event_type="provider_scan_models",
+                message=f"{p.name} · scan failed",
+                severity="error",
+                provider_id=p.id,
+                metadata={
+                    "provider_name": p.name,
+                    "provider_type": p.provider_type,
+                    "error": str(e)[:500],
+                    "error_class": "unknown",  # admin error class; v3.0.75 taxonomy is request-side
+                },
+            )
+        except Exception:
+            pass
         raise HTTPException(500, f"Model scan failed: {e}")
 
 

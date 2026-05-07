@@ -115,6 +115,11 @@ class ModelCapability(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     provider_id = Column(String, ForeignKey("providers.id"), nullable=False)
     model_id = Column(String, nullable=False)
+    # v3.0.97: tombstone for cluster-replicated soft delete. Same pattern
+    # as Provider/ApiKey/LmrhDim — without this, a hard delete on one
+    # node is silently re-inserted by the next sync push from a peer
+    # that still has the row.
+    deleted_at = Column(DateTime, nullable=True, index=True)
     tasks = Column(JSON, default=list)          # ["reasoning","code","chat",...]
     latency = Column(String, default="medium")  # low|medium|high
     cost_tier = Column(String, default="standard")  # economy|standard|premium
@@ -230,6 +235,8 @@ class ModelAlias(Base):
     model_id = Column(String, nullable=False)
     description = Column(String, nullable=True)
     created_at = Column(DateTime, server_default=func.now())
+    # v3.0.97: tombstone for cluster-replicated soft delete.
+    deleted_at = Column(DateTime, nullable=True, index=True)
 
 
 class LmrhDim(Base):
@@ -301,6 +308,8 @@ class OAuthCaptureProfile(Base):
     enabled = Column(Boolean, default=False)
     notes = Column(Text, nullable=True)
     created_at = Column(DateTime, server_default=func.now())
+    # v3.0.97: tombstone for cluster-replicated soft delete.
+    deleted_at = Column(DateTime, nullable=True, index=True)
 
 
 class OAuthCaptureLog(Base):

@@ -238,6 +238,10 @@ async def chat_completions(
         return await dispatch_codex_oauth(
             provider=route.provider, body=body, stream=stream, db=db,
             resp_headers=resp_headers,
+            # v3.0.97 — pass through caller identity + hint so dispatch
+            # can call record_outcome with the right tenant + lmrh_hint.
+            key_record_id=key_record.id,
+            llm_hint=llm_hint,
         )
 
     # v3.0.38: claude-oauth on /v1/chat/completions via OpenAI↔Anthropic

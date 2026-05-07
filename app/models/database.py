@@ -124,6 +124,12 @@ async def init_db():
             "ALTER TABLE providers ADD COLUMN usage_session_limit_tokens INTEGER",
             "ALTER TABLE providers ADD COLUMN usage_weekly_limit_tokens INTEGER",
             "ALTER TABLE providers ADD COLUMN usage_rotation_threshold_pct INTEGER",
+            # v3.0.97 — soft-delete tombstones for cluster-replicated catalog
+            # tables. Without these, hard-DELETE on one node was reversed by
+            # the next sync push from a peer that still had the row.
+            "ALTER TABLE model_capabilities ADD COLUMN deleted_at DATETIME",
+            "ALTER TABLE model_aliases ADD COLUMN deleted_at DATETIME",
+            "ALTER TABLE oauth_capture_profiles ADD COLUMN deleted_at DATETIME",
         ]:
             try:
                 await conn.exec_driver_sql(stmt)
