@@ -48,6 +48,31 @@ async def list_models(
     db: AsyncSession = Depends(get_db),
     _key=Depends(_AUTH),
 ):
+    """v3.0.95: return only ``Provider.default_model`` per enabled provider.
+
+    Background — coordinator-hub team flagged on 2026-05-07 that the same
+    ``GET /v1/models`` returned wildly different counts across nodes:
+    www01 → 196 models, www02 + GCP → 5 models. Root cause: the endpoint
+    walked ``ModelCapability`` rows in addition to defaults, AND
+    ``ModelCapability`` is NOT cluster-synced. www01's table had been
+    populated by a one-time discovery action (2026-04-20) with rows that
+    included clearly-non-existent model names (``gemma-4-26b-a4b-it``,
+    ``gemini-3.1-pro-preview-customtools``) — peers had nothing.
+
+    Operator picking a name from www01's 196 would have it work via www01
+    but 4xx via www02/GCP. Listing made-up names to callers is misleading.
+
+    Fix: return only ``Provider.default_model`` per enabled provider.
+    Deterministic, consistent across nodes, every name is real (operator-
+    configured). Callers can still REQUEST other models — the proxy
+    doesn't gate routing on /v1/models membership; this only affects
+    advertised discoverability.
+
+    ModelCapability rows remain in use for routing (LMRH ``_load_profile``
+    falls back to ``infer_capability_profile()`` when no row exists).
+    Cluster-syncing ModelCapability is a separate larger fix queued in
+    backlog.
+    """
     result = await db.execute(
         select(Provider).where(Provider.enabled == True).order_by(Provider.priority)
     )
@@ -55,29 +80,19 @@ async def list_models(
 
     seen: set[str] = set()
     entries: list[dict] = []
-
     for p in providers:
-        caps_result = await db.execute(
-            select(ModelCapability).where(ModelCapability.provider_id == p.id)
-        )
-        caps = caps_result.scalars().all()
-
-        model_ids = [c.model_id for c in caps]
-        if p.default_model and p.default_model not in model_ids:
-            model_ids.insert(0, p.default_model)
-
-        for mid in model_ids:
-            if mid in seen:
-                continue
-            seen.add(mid)
-            entries.append({
-                "id": mid,
-                "object": "model",
-                "created": int(time.time()),
-                "owned_by": p.name,
-                # v3.0.23 (Q10): kind tag for client-side filtering.
-                # One of: chat, embedding, image, audio.
-                "kind": _infer_kind(mid),
-            })
+        if not p.default_model:
+            continue
+        if p.default_model in seen:
+            continue
+        seen.add(p.default_model)
+        entries.append({
+            "id": p.default_model,
+            "object": "model",
+            "created": int(time.time()),
+            "owned_by": p.name,
+            # v3.0.23 (Q10): kind tag for client-side filtering.
+            "kind": _infer_kind(p.default_model),
+        })
 
     return {"object": "list", "data": entries}
