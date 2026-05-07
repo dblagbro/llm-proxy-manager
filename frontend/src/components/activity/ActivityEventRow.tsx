@@ -235,12 +235,23 @@ export function ActivityEventRow({ event, compact }: Props) {
               <pre className="font-mono whitespace-pre-wrap break-all bg-gray-50 dark:bg-gray-900 text-gray-700 dark:text-gray-200 rounded p-2 max-h-96 overflow-auto">{prettyResp ? tryPretty(respBody) : respBody}</pre>
             </div>
           )}
-          {/* v3.0.93: always show the full event_meta dict (sans bodies that
-              have their own section above). After body capture got disabled
-              by default in v3.0.91, this is the primary detail view for the
-              majority of activity-log rows — exposes in_tok, out_tok,
-              latency_ms, model, lmrh_hint, error_class, cache fields, and
-              anything else recorded by record_outcome. */}
+          {/* v3.0.93/.94: show the message previews and the full event_meta
+              dict. Previews are surfaced as their own labeled "Message" /
+              "Response" sections (when capture_previews=True per v3.0.94)
+              so they're easy to read without parsing JSON. Falls back to
+              just the metadata blob when no previews exist. */}
+          {!reqBody && (meta.request_preview as string | undefined) && (
+            <div>
+              <p className="text-[11px] font-medium text-indigo-500 dark:text-indigo-400 mb-1">Message (preview)</p>
+              <pre className="font-mono whitespace-pre-wrap break-all bg-indigo-50 dark:bg-indigo-950/30 text-gray-700 dark:text-gray-200 rounded p-2 max-h-60 overflow-auto">{meta.request_preview as string}</pre>
+            </div>
+          )}
+          {!respBody && (meta.response_preview as string | undefined) && (
+            <div>
+              <p className="text-[11px] font-medium text-emerald-500 dark:text-emerald-400 mb-1">Response (preview)</p>
+              <pre className="font-mono whitespace-pre-wrap break-all bg-emerald-50 dark:bg-emerald-950/30 text-gray-700 dark:text-gray-200 rounded p-2 max-h-60 overflow-auto">{meta.response_preview as string}</pre>
+            </div>
+          )}
           {hasMeta && (
             <div>
               <p className="text-[11px] font-medium text-gray-500 dark:text-gray-400 mb-1">Metadata</p>
@@ -248,7 +259,7 @@ export function ActivityEventRow({ event, compact }: Props) {
                 {JSON.stringify(
                   Object.fromEntries(
                     Object.entries(meta).filter(([k]) =>
-                      !['request_body','response_body','error'].includes(k)
+                      !['request_body','response_body','error','request_preview','response_preview'].includes(k)
                     )
                   ),
                   null, 2

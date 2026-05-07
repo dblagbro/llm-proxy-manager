@@ -143,14 +143,20 @@ SCHEMA: dict[str, dict] = {
     "native_reasoning_effort":       {"type": "str", "default": settings.native_reasoning_effort,       "label": "Reasoning effort (o-series: low / medium / high)"},
     # Circuit breaker
     # v2.8.4 — activity-log payload capture
+    # v3.0.94 — previews split out from full bodies
+    "activity_log_capture_previews": {
+        "type": "bool", "default": settings.activity_log_capture_previews,
+        "label": "Activity log: capture short message previews (~240 chars each, ~500 bytes per row). Lightweight; safe to leave on.",
+        "group": "Activity log",
+    },
     "activity_log_capture_bodies": {
         "type": "bool", "default": settings.activity_log_capture_bodies,
-        "label": "Activity log: capture full request + response payloads (text + tool calls). Adds DB rows ~5-100KB each.",
+        "label": "Activity log: capture FULL request + response payloads (heavyweight; ~5-100KB each row). Default OFF after 2026-05-06 pool-exhaustion incident — only enable for active wire-debugging.",
         "group": "Activity log",
     },
     "activity_log_max_body_chars": {
         "type": "int", "default": settings.activity_log_max_body_chars,
-        "label": "Activity log: max characters to keep per body (truncated with ellipsis past this).",
+        "label": "Activity log: max characters per full body (only relevant when capture_bodies is on; default 4000).",
         "group": "Activity log",
     },
     "circuit_breaker_threshold":    {"type": "int", "default": settings.circuit_breaker_threshold,    "label": "CB failure threshold"},

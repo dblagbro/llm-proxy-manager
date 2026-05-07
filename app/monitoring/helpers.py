@@ -150,25 +150,46 @@ def _extract_preview(body: Any, max_chars: int = 240) -> Optional[str]:
 
 
 def _attach_bodies(metadata: dict, request_body: Any, response_body: Any) -> dict:
-    """Attach captured request/response bodies + previews to metadata when enabled."""
-    if not getattr(settings, "activity_log_capture_bodies", False):
+    """Attach captured request/response bodies + previews to metadata when enabled.
+
+    v3.0.94: previews and full bodies are independently controlled now.
+    The 2026-05-06 incident root-caused the pool exhaustion to full-body
+    capture (50K-char-each rows blew up activity_log to 1 GB). Previews
+    are short (240 chars each) — bounded cost — but operators still
+    want to see the message-in / response-out text in the activity log.
+
+    - ``activity_log_capture_previews`` (default True): extract a 240-
+      char preview of the user message + the response text. Lightweight,
+      ~500 bytes per row max. Powers the inline Activity Log display
+      and the expanded "Metadata" section.
+    - ``activity_log_capture_bodies`` (default False since v3.0.91):
+      capture the full serialized request + response (capped to
+      ``activity_log_max_body_chars``, default 4000). Heavyweight; only
+      enable when actively wire-debugging. Was the cause of the
+      2026-05-06 incident when set to 50000.
+    """
+    capture_previews = getattr(settings, "activity_log_capture_previews", True)
+    capture_bodies = getattr(settings, "activity_log_capture_bodies", False)
+    if not (capture_previews or capture_bodies):
         return metadata
-    cap = max(1000, int(getattr(settings, "activity_log_max_body_chars", 50000) or 50000))
-    # v3.0.34: extract previews FROM THE LIVE OBJECTS (pre-serialization), so
-    # truncation can't break the preview's JSON parse. Frontend prefers these
-    # when present and falls back to parsing the body otherwise.
-    req_preview = _extract_preview(request_body)
-    resp_preview = _extract_preview(response_body)
-    req = _serialize_body(request_body, cap)
-    resp = _serialize_body(response_body, cap)
-    if req is not None:
-        metadata["request_body"] = req
-    if resp is not None:
-        metadata["response_body"] = resp
-    if req_preview:
-        metadata["request_preview"] = req_preview
-    if resp_preview:
-        metadata["response_preview"] = resp_preview
+    if capture_previews:
+        # v3.0.34: extract previews FROM THE LIVE OBJECTS (pre-serialization),
+        # so truncation can't break the preview's JSON parse. Frontend prefers
+        # these when present and falls back to parsing the body otherwise.
+        req_preview = _extract_preview(request_body)
+        resp_preview = _extract_preview(response_body)
+        if req_preview:
+            metadata["request_preview"] = req_preview
+        if resp_preview:
+            metadata["response_preview"] = resp_preview
+    if capture_bodies:
+        cap = max(1000, int(getattr(settings, "activity_log_max_body_chars", 4000) or 4000))
+        req = _serialize_body(request_body, cap)
+        resp = _serialize_body(response_body, cap)
+        if req is not None:
+            metadata["request_body"] = req
+        if resp is not None:
+            metadata["response_body"] = resp
     return metadata
 
 
