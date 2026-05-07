@@ -862,3 +862,110 @@ Top recommended targets:
    `_claude_oauth_dispatch.py` (direct platform.claude.com path) if the
    next OAuth-direct provider type lands. Not urgent.
 
+## 2026-05-07 — v3.1.1 + v3.1.2: test fixture hardening + bulk catalog cluster-sync
+
+Two follow-ups to today's incident chain. Operational hardening rather than
+structural refactoring, but logged here because both touch sync/cluster
+paths and update the next-targets list.
+
+### v3.1.1 — Test fixture hard-purge endpoint + sessionfinish hook
+
+Closed the test-tombstone leak that produced the 127 stale `pytest-*` /
+`test-playwright-*` / `debug-*` rows I cleaned up in cycle 3.
+
+**Root cause**: `tests/integration/test_playwright_ui.py:test_create_api_key_flow`
+hardcoded the name `test-playwright-key` and never deleted it. Each CI run
+leaked one row; eventually a previous bulk-cleanup pass soft-deleted them
+all at the same instant (`2026-05-01 00:10:34.547017`), giving 127
+identical-timestamp tombstones. The 7-day cluster-sync tombstone retention
+meant they sat in every apply_sync pass, contributing to the v3.0.96 →
+v3.0.98 latency cascade.
+
+**Fix**:
+- `app/api/apikeys.py`: new admin-only endpoint
+  `POST /api/keys/_purge-test-tombstones`. Hard-deletes tombstoned api_keys
+  whose `name` matches a test pattern AND whose `deleted_at` is older than
+  60s (cluster-sync convergence buffer).
+- `tests/conftest.py`: new `pytest_sessionfinish` hook calls the endpoint
+  after every test session. Best-effort.
+- `tests/integration/test_playwright_ui.py`: `test_create_api_key_flow`
+  now uses `test-playwright-{uuid}` + `try/finally` cleanup that calls
+  the standard DELETE endpoint. The sessionfinish hook is the safety net.
+
+### v3.1.2 — Bulk catalog cluster-sync (re-enables `cluster_sync_catalog_tables` default)
+
+The proper rework of the v3.0.96 catalog-sync apply path. v3.0.98's hotfix
+disabled the feature entirely; v3.1.2 fixes the apply path so it can run
+safely.
+
+**Old path** (per-row `SELECT` then `INSERT/UPDATE` for each `ModelCapability`
+row): with 304 rows × DB round-trip = 12-17s per sync, DB ~50% contended,
+real `/v1/messages` calls queued past nginx's 60s upstream timeout.
+
+**Investigated `INSERT … ON CONFLICT DO UPDATE`** first. Rejected because
+`ModelCapability`'s primary key is an autoincrement `id`, with no composite
+UNIQUE on `(provider_id, model_id)`. ON CONFLICT requires a constraint to
+conflict against; adding one would need a schema migration with
+dup-detection — overkill for this win.
+
+**Final approach** (file: `app/cluster/sync.py`):
+1. Filter incoming rows by FK (skip orphan caps whose Provider hasn't
+   replicated yet) and collect `(provider_id, model_id)` keys.
+2. ONE bulk SELECT pulls all existing rows whose composite key matches
+   any incoming row. SQLAlchemy `tuple_().in_()` compiles to a single
+   `WHERE (provider_id, model_id) IN ((…))` query on SQLite.
+3. Iterate incoming rows in-memory using the pre-fetched index. New
+   rows go through `db.add()`, existing rows mutate the loaded ORM
+   instance with the same per-row LWW logic as before.
+4. Single commit at the end flushes all inserts and updates.
+
+The semantics are unchanged from the v3.0.96 per-row code; only the DB
+round-trip count drops from O(N) to O(1) plus a single batched commit.
+
+**Benchmark (304-row payload on www01)**:
+- First sync after enable: ~2s (one-time apply of all 304 rows where
+  peer_updated > local)
+- Steady-state apply: 48-52ms (LWW short-circuit when stamps match)
+
+**Live deploy verification**:
+- All 4 nodes confirmed on v3.1.2
+- Sync latency: p50=106-162ms, p95=109-169ms (vs 12-17s pre-rework, 200-919ms
+  with feature disabled)
+- Cross-node convergence within first cycle: www02 jumped from ~0 to 295
+  caps; www01 has 304 because 9 of its rows are orphan caps for a deleted
+  provider (`e5e3905b79d1`) that the FK pre-filter correctly refuses to
+  materialize on peers.
+
+**Default re-enabled** (`config.py: cluster_sync_catalog_tables=True`).
+Without this, ModelCapability discoveries on one node never reach peers
+and `/v1/models` capability scoring drifts.
+
+**Files changed**:
+- `app/cluster/sync.py` (-15 lines net: per-row block replaced with bulk
+  block; total in apply_sync ~unchanged due to verbose comments)
+- `app/config.py` (+1 line: default flipped)
+- `app/api/apikeys.py` (+40 lines for new endpoint)
+- `tests/conftest.py` (+25 lines for sessionfinish hook)
+- `tests/integration/test_playwright_ui.py` (+15/-5 lines for the leak fix)
+
+### Refactor verdict (updated)
+
+Top recommended targets:
+1. `app/runs/worker.py` (749 lines) — defer to next Run feature.
+2. Cascade/CoT/hedging dispatch dedup between messages.py + completions.py.
+   HIGH RISK; defer.
+3. Tombstone propagation for catalog tables (ModelCapability, ModelAlias,
+   OAuthCaptureProfile). v3.0.97 added `deleted_at` columns; v3.1.2 doesn't
+   yet honor them in the build/apply paths. Currently if an admin deletes
+   a ModelCapability row on www01, peers don't learn and may resurrect the
+   row from their own scans. Low urgency — most admins don't delete
+   capability rows manually. Add to bulk apply when next operator
+   workflow needs deletion-by-name to propagate.
+4. Cleanup of orphan ModelCapability rows on www01 (9 caps for deleted
+   provider `e5e3905b79d1`). Should be a one-off `DELETE FROM
+   model_capabilities WHERE provider_id NOT IN (SELECT id FROM providers)`
+   admin sweep, or a scheduled GC job. Not urgent — they don't break
+   anything, just sit in the table.
+5. NEW: `app/api/_messages_streaming.py` (701 lines) — splittable when
+   next OAuth-direct provider type lands. Not urgent.
+

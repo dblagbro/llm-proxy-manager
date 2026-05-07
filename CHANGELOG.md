@@ -9,6 +9,37 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.0.x — Run runtime, cluster ops, observability
 
+### v3.1.2 — Bulk catalog cluster-sync (replaces per-row apply; default re-enabled)
+
+`cluster_sync_catalog_tables` flipped back to default **True** after reworking the apply path that originally caused the 2026-05-07 60s `/v1/messages` hang incident.
+
+**Old path (v3.0.96 → v3.0.98 hotfix disabled it)**: per-row `SELECT` then `INSERT/UPDATE` for every `ModelCapability` row in every sync push. With 304 rows × DB round-trip = 12-17s per sync, DB ~50% contended every minute, real `/v1/messages` calls queued past nginx's 60s upstream timeout.
+
+**New path**: ONE bulk `SELECT` pulls every existing row whose `(provider_id, model_id)` matches any incoming row. Per-row LWW diff happens in memory. Inserts go through `db.add()`, updates mutate the loaded ORM instance — all flushed in a single batch on commit.
+
+ON CONFLICT was tried first but rejected: the table's PK is an autoincrement `id`, not a composite on `(provider_id, model_id)`, so there's no UNIQUE constraint to conflict against. Adding one would need a migration with dup-detection — overkill for this win.
+
+**Benchmark on 304-row dataset (www01)**:
+- First sync after enable: ~2s (one-time apply of 304 rows where peer_updated > local)
+- Steady-state apply: 48-52ms (LWW skips when peer_updated == local_updated)
+- Live deploy showed sync p50=106-162ms, p95=109-169ms in real traffic
+
+**Cross-node convergence**: confirmed within first sync cycle (~60s). www02 went from ~0 caps to 295 in one cycle; www01 has 304 because 9 of its rows are orphan caps for a deleted-and-purged provider (`e5e3905b79d1`) — www02's FK pre-filter correctly refused to materialize them. Working as designed.
+
+**Behavior**: identity = `(provider_id, model_id)`, LWW by `updated_at` when both have a stamp. Same semantics as the per-row code; just batched.
+
+### v3.1.1 — Test fixture hard-purge endpoint + pytest_sessionfinish hook
+
+Closes the test-tombstone leak that caused the 2026-05-07 cycle-3 cleanup of 127 stale `pytest-*` / `test-playwright-*` / `debug-*` rows.
+
+**New endpoint** (admin-only): `POST /api/keys/_purge-test-tombstones` hard-deletes tombstoned api_keys whose `name` matches a test pattern AND whose `deleted_at` is older than 60s (cluster-sync convergence buffer). Patterns: `pytest-%`, `pytest-cot-%`, `test-playwright-%`, `cot-debug-%`, `debug-%`. Admin-gated; safe to call in production.
+
+**conftest.py**: new `pytest_sessionfinish` hook calls the endpoint after every test session, hard-purging any orphans the session left behind. Best-effort — failures don't fail the session.
+
+**Playwright fix**: `test_create_api_key_flow` was the leak source — used hardcoded name `test-playwright-key` and never deleted it. Now uses unique `test-playwright-{uuid}` + `try/finally` cleanup that calls the standard DELETE endpoint. The session-finish hook is the safety net.
+
+Without these, every soft-delete from a test run sat in the cluster_sync apply pass for the full 7-day tombstone retention window. Across many CI runs this slowed apply_sync the same way the 127-tombstone incident did.
+
 ### v3.1.0 — Architectural refactor: shared provider-selection + OAuth endpoint extraction
 
 Two refactors shipped together. Both motivated by today's incident chain
