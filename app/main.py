@@ -30,6 +30,7 @@ from app.api.models import router as models_router
 from app.api.aliases import router as aliases_router
 from app.api.auth import router as auth_router
 from app.api.providers import router as providers_router
+from app.api.providers_oauth import router as providers_oauth_router
 from app.api.apikeys import router as apikeys_router
 from app.api.users import router as users_router
 from app.api.cluster import router as cluster_router
@@ -273,6 +274,7 @@ app.include_router(models_router)
 # ── Admin API ────────────────────────────────────────────────────────────────
 app.include_router(auth_router)
 app.include_router(providers_router)
+app.include_router(providers_oauth_router)  # OAuth flow endpoints (same prefix)
 app.include_router(apikeys_router)
 app.include_router(users_router)
 app.include_router(cluster_router)

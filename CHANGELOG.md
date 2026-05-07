@@ -9,6 +9,51 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.0.x — Run runtime, cluster ops, observability
 
+### v3.1.0 — Architectural refactor: shared provider-selection + OAuth endpoint extraction
+
+Two refactors shipped together. Both motivated by today's incident chain
+(v3.0.99 capability-filter bug + coord-hub red-dots saga) revealing
+two structural smells: silent divergence between the `/v1/messages` and
+`/v1/chat/completions` provider-selection blocks, plus a 1136-line
+`providers.py` with two near-identical OAuth flow trios.
+
+**Refactor 1 — shared provider-selection**: Added `select_provider_with_503`
+and `resolve_auto_model_into_body` to `app/api/_request_pipeline.py`. Both
+endpoints now go through identical code for routing — closes the divergence
+class that caused v3.0.99. `messages.py` and `completions.py` lose ~50 lines
+of try/except + auto-routing each.
+
+**Refactor 2 — OAuth endpoint extraction**: Moved 6 OAuth endpoints
+(claude-oauth + codex-oauth × authorize/exchange/rotate) from `providers.py`
+(1136 lines) to new `app/api/providers_oauth.py` (340 lines). Parameterized
+via `OAuthProviderSpec` dataclass with two constants (`CLAUDE_OAUTH_SPEC`,
+`CODEX_OAUTH_SPEC`). Three inner handlers (`_do_authorize`,
+`_do_exchange_create`, `_do_rotate`) are shared. Adding a third OAuth
+provider type (Vertex, Azure-AD, Bedrock) is now ~30 lines.
+
+**Behavior**: zero changes. Same endpoints, same paths, same wire shapes.
+904/904 unit tests pass. Live smoke verified all 6 wire-format/model
+combinations (`/v1/messages` × claude/gemini/gpt, `/v1/chat/completions` ×
+same). All 6 OAuth routes register correctly per `/openapi.json`.
+
+**File-size impact**:
+- `providers.py`: 1136 → 875 (-261)
+- `providers_oauth.py`: NEW, 340
+- `_request_pipeline.py`: 221 → 312 (+91)
+- `messages.py`: 844 → 804 (-40)
+- `completions.py`: 639 → 622 (-17)
+
+Net file-line growth +113 (module header + docstrings + dataclass);
+~300 lines of duplicated logic removed.
+
+**Caught regression**: first deploy 500'd on `/v1/chat/completions` +
+`gemini-2.5-flash` because `completions.py` had a stale
+`requested_model` reference that I missed in the diff. Re-introduced
+as a one-line local right after the new helper. ~10min from break to
+fix; smoke probe caught it before fleet rollout.
+
+See `refactor-log.md` for full details + extension-point documentation.
+
 ### v3.0.99 — `/v1/messages` capability filter (red-dots fix)
 
 Coordinator-hub's UI showed every provider RED for days. Hub team's prober uses the Anthropic SDK against `/v1/messages` for ALL providers — so `gemini-2.5-flash` for Google providers, `gpt-4o` for OpenAI providers, `claude-*` for Anthropic providers. The non-claude probes 404'd with `not_found_error: model: gemini-2.5-flash` (or similar) and the hub marked the provider red.

@@ -159,61 +159,21 @@ async def messages(
     # capability scoring has signal even without an explicit hint header.
     is_auto = is_auto_model(parsed_slug.bare_model)
     alias = await resolve_alias(db, body.get("model")) if not is_auto else None
-    # v3.0.5: convert provider-selection RuntimeError into a clean 503 with
-    # an actionable message. Hits when (a) all providers' CBs are open
-    # (typical: Anthropic server-side OAuth token revocation triggers the
-    # 24h auth-failure breaker on every claude-oauth provider on a node)
-    # or (b) no providers configured at all. Same shape as the v3.0.4 fix
-    # for /v1/chat/completions; previously bubbled to a 500 + ASGI trace.
-    # v3.0.99: pass the requested model name as ``model_override`` even when
-    # no alias exists, so select_provider's model-supports-by-provider filter
-    # rejects providers that don't list this model. Previously, sending
-    # ``gemini-2.5-flash`` to /v1/messages picked the highest-priority
-    # provider regardless of capability — which forwarded gemini-* to a
-    # claude-oauth provider, which sent it to platform.claude.com, which
-    # 404'd with not_found_error. Hub team's red-dots case 2026-05-07.
-    # /v1/chat/completions had this guard since v3.0.22; messages.py
-    # didn't get it because at the time the only callers were
-    # Anthropic-shape and the requested model was always claude-*.
-    requested_model = (alias.model_id if alias else parsed_slug.bare_model) or None
-    try:
-        route = await select_provider(
-            db, hint, has_tools=has_tools, has_images=has_images, key_type=key_record.key_type,
-            pinned_provider_id=alias.provider_id if alias else None,
-            model_override=requested_model,
-            sort_mode=parsed_slug.sort_mode,
-            api_key_id=key_record.id,  # v3.0.45 tenant scoping
-        )
-    except RuntimeError as e:
-        msg = str(e)
-        if "circuit breakers open" in msg:
-            raise HTTPException(
-                503,
-                "All providers are currently unavailable (circuit breakers open). "
-                "Most common cause: Anthropic server-side OAuth token revocation "
-                "trips the 24h auth-failure breaker on every claude-oauth provider. "
-                "Operator action: re-auth the affected provider(s) via the OAuth UI, "
-                "or wait for the hold-down to expire.",
-            )
-        if "No providers configured" in msg:
-            raise HTTPException(
-                503,
-                "No providers configured. Operator action: enable at least one "
-                "provider via the Providers page or POST /api/providers.",
-            )
-        raise HTTPException(503, f"Provider selection failed: {msg}")
-    if is_auto:
-        # Substitute the resolved model into the body so claude-oauth /
-        # litellm dispatch sees a real model name. Prefer the capability
-        # profile's model_id (it's what we actually scored) — fall back to
-        # provider.default_model if the profile is synthetic.
-        resolved_model = route.profile.model_id or route.provider.default_model
-        if not resolved_model:
-            raise HTTPException(
-                502,
-                f"auto-routing chose {route.provider.name!r} but it has no default_model set",
-            )
-        body = {**body, "model": resolved_model}
+    # v3.0.x refactor: provider selection + 503 conversion + auto-model
+    # resolution moved into _request_pipeline shared helpers. Both
+    # /v1/messages and /v1/chat/completions now go through the same code
+    # path here — prevents future divergence bugs like the v3.0.99
+    # gemini-routing-to-claude-oauth incident.
+    from app.api._request_pipeline import (
+        select_provider_with_503, resolve_auto_model_into_body,
+    )
+    route = await select_provider_with_503(
+        db, hint,
+        has_tools=has_tools, has_images=has_images,
+        key_record=key_record, parsed_slug=parsed_slug, alias=alias,
+        detailed_503=True,
+    )
+    body = resolve_auto_model_into_body(body, route, is_auto)
 
     # v3.0.36: cross-family fallback — rewrite body['model'] to the resolved
     # served model for the claude-oauth dispatcher (which reads body['model']

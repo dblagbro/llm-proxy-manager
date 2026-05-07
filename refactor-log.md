@@ -725,3 +725,140 @@ Top recommended targets unchanged:
    `messages.py` and `completions.py`. High risk; defer.
 3. Split `app/runs/worker.py` state machine alongside the next Run feature.
 
+## 2026-05-07 — v3.1.0: shared provider-selection + OAuth endpoint extraction
+
+Two refactors shipped together. Both motivated by today's incident chain
+(the v3.0.99 capability-filter bug + coord-hub red-dots saga) revealing
+two structural smells: silent divergence between the `/v1/messages` and
+`/v1/chat/completions` provider-selection blocks, plus a 1136-line
+`providers.py` with two near-identical OAuth flow trios.
+
+### Refactor 1 — shared `select_provider_with_503` + `resolve_auto_model_into_body`
+
+Added two helpers to `app/api/_request_pipeline.py`:
+
+- `select_provider_with_503(...)` centralizes the `select_provider`
+  call + `RuntimeError → HTTPException(503)` conversion + the
+  `model_override` plumbing. Both endpoints go through the same helper.
+  `detailed_503=True` (default — used by `/v1/messages`) emits the
+  actionable circuit-breaker / no-providers messages;
+  `detailed_503=False` (used by `/v1/chat/completions`) emits the
+  generic 503.
+- `resolve_auto_model_into_body(body, route, is_auto)` substitutes the
+  resolved model into `body["model"]` when caller used `model: "auto"`.
+  Idempotent.
+
+**Why it matters**: the v3.0.99 bug was a textbook divergence —
+`/v1/chat/completions` had passed the requested model as
+`model_override` since v3.0.22 (which activates router.py's family +
+capability filters), but `/v1/messages` was passing `model_override=None`
+when no `ModelAlias` row existed. This silently disabled the filters on
+/v1/messages for ~3 weeks, force-routing gemini probes from coord-hub to
+claude-oauth providers (→ 404 from platform.claude.com → red dots in
+the hub UI). The fix was a one-line change in messages.py. The refactor
+makes the parity **structural** — there's no separate code path to
+forget to update.
+
+**Files changed**:
+- `app/api/_request_pipeline.py` (+91 lines, two new helpers)
+- `app/api/messages.py` (-40 lines, ~50-line try/except block removed)
+- `app/api/completions.py` (-17 lines)
+
+**Caught regression**: first deploy 500'd on
+`/v1/chat/completions + gemini-2.5-flash` because completions.py had a
+stale `requested_model` reference in the `record_outcome` call path; the
+variable was previously defined inline before the `select_provider`
+call. Re-introduced the local right after the new helper call. ~10
+minutes between regression and fix; smoke probe caught it before fleet
+rollout.
+
+### Refactor 2 — extract OAuth flow endpoints to `providers_oauth.py`
+
+Moved 6 endpoints from `providers.py` (which had grown to 1136 lines)
+to new `app/api/providers_oauth.py` (340 lines). The two flows
+(claude-oauth, codex-oauth) had near-identical authorize / exchange /
+rotate handlers; the only differences:
+
+- `provider_type` column value
+- Flow module name (`app.providers.claude_oauth_flow` vs
+  `app.providers.codex_oauth_flow`)
+- `default_model` fallback
+- Which result fields get stashed in `extra_config` (codex carries
+  `chatgpt_account_id` + `chatgpt_plan_type`; claude has none)
+
+These are now captured in an `OAuthProviderSpec` dataclass with two
+constants: `CLAUDE_OAUTH_SPEC` and `CODEX_OAUTH_SPEC`. Three inner
+handlers (`_do_authorize`, `_do_exchange_create`, `_do_rotate`)
+parameterize over the spec; the six endpoint shells are 3-line
+delegations.
+
+**Why it matters**: adding a third OAuth provider type (Vertex,
+Azure-AD, Bedrock) is now ~30 lines (a flow module + a spec + three
+endpoint stubs) instead of a 200-line copy-paste. The pattern is
+documented in `architecture.md` under "Extension Points".
+
+**Files changed**:
+- `app/api/providers.py` (1136 → 875 lines, 23% smaller)
+- `app/api/providers_oauth.py` (NEW, 340 lines)
+- `app/main.py` (+2 lines: import + `include_router` registration)
+
+OAuth helpers in providers.py (`_get_or_404`, `_stamp_user_edit`,
+`_serialize`, `_bump_priority_conflicts`) stayed where they are — they're
+reused by the CRUD endpoints; importing them from providers_oauth.py
+uses lazy local imports to avoid a circular dependency at module load
+time.
+
+**Endpoints unchanged** — same prefix, same shape, same behavior:
+
+```
+POST /api/providers/claude-oauth/authorize
+POST /api/providers/claude-oauth/exchange
+POST /api/providers/{id}/oauth-rotate
+POST /api/providers/codex-oauth/authorize
+POST /api/providers/codex-oauth/exchange
+POST /api/providers/{id}/codex-oauth-rotate
+```
+
+### Test impact
+
+904/904 unit tests still pass. Pure structural change — no behavior
+modification. Live smoke on www01: `POST /v1/messages` + claude/gemini/
+gpt → 200; `POST /v1/chat/completions` + claude/gemini/gpt → 200.
+All 6 OAuth routes register correctly per `/openapi.json`.
+
+### File-size deltas
+
+| File | Before | After | Δ |
+|------|--------|-------|---|
+| `providers.py` | 1136 | 875 | -261 |
+| `providers_oauth.py` | (new) | 340 | +340 |
+| `_request_pipeline.py` | 221 | 312 | +91 |
+| `messages.py` | 844 | 804 | -40 |
+| `completions.py` | 639 | 622 | -17 |
+| **Net** | **2840** | **2953** | **+113** |
+
+Net line growth of +113 — but that includes a new module header,
+docstrings, and the parameterizing dataclass. Actual duplicated logic
+removed: ~250 lines (OAuth) + ~50 lines (provider-selection) = 300.
+Trade is worth it for divergence-prevention + extension-point clarity.
+
+### Refactor verdict (updated)
+
+Top recommended targets:
+1. `app/runs/worker.py` (749 lines) — split state machine alongside the
+   next Run feature. Still defer.
+2. Dedup the cascade/CoT/hedging dispatch loops between `messages.py`
+   (now 804 lines) and `completions.py` (622). Still HIGH RISK; defer
+   until either both files shrink further or a feature naturally
+   requires unification.
+3. `providers.py` capability/scan-models block (~150 lines around
+   `scan_models` + `list_capabilities` + `put-capability`) — could
+   become `providers_capabilities.py` if a future scan/infer feature
+   lands. Not urgent.
+4. NEW: `app/api/_messages_streaming.py` (701 lines) houses 5 fns —
+   `_stream_cot_anthropic`, `_stream_anthropic`, `_stream_claude_oauth`,
+   `_complete_claude_oauth`, `_webhook_completion_anthropic`.
+   Splittable into `_litellm_dispatch_anthropic.py` (litellm path) +
+   `_claude_oauth_dispatch.py` (direct platform.claude.com path) if the
+   next OAuth-direct provider type lands. Not urgent.
+
