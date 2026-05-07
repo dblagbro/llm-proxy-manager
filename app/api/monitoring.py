@@ -228,6 +228,36 @@ async def external_status(_: AdminUser = Depends(require_admin)):
     return await get_status_summary()
 
 
+@router.get("/prune-status")
+async def prune_status(_: AdminUser = Depends(require_admin)):
+    """v3.0.98 — expose the activity_log/metrics prune worker's last
+    sweep counts + current retention config + current activity_log
+    row count. Lets operators verify the prune is firing without
+    docker-exec'ing.
+
+    Returns:
+      - last_sweep_ts (unix sec, null if never run yet)
+      - keep_days (regular retention; default 30)
+      - probe_keep_days (shorter keepalive retention; default 7)
+      - tombstone_keep_days (deleted-row retention; default 7)
+      - row counts from the most recent sweep
+      - activity_log_total (current row count for headroom display)
+    """
+    from sqlalchemy import select, func
+    from app.monitoring.prune import get_last_sweep
+    from app.models.database import AsyncSessionLocal
+    out = get_last_sweep()
+    try:
+        async with AsyncSessionLocal() as db:
+            out["activity_log_total"] = (await db.execute(
+                select(func.count(ActivityLog.id))
+            )).scalar() or 0
+    except Exception as e:
+        out["activity_log_total"] = None
+        out["error"] = str(e)[:200]
+    return out
+
+
 # v3.0.72 — Cache-effectiveness rollup. Surfaces the cache_read /
 # cache_creation token counts that v3.0.71 started writing to
 # event_meta. Fleet currently reads ~650K cache_read tokens/hr on www01

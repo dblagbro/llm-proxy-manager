@@ -178,10 +178,25 @@ async def _probe_one(provider: Provider) -> None:
                         err_str = f"{_r.status_code}: {body[:300].decode(errors='replace')}"
                     else:
                         # Drain enough events to confirm response.completed.
+                        # v3.0.98: also parse usage from the completed event
+                        # so probe rows show non-zero in_tok/out_tok like the
+                        # litellm path does. Pre-fix every codex probe row
+                        # showed 0/0 because we broke out without parsing
+                        # the JSON. Operator-flagged 2026-05-07.
+                        import json as _json
                         async for line in _r.aiter_lines():
-                            if line.startswith("data:") and "response.completed" in line:
-                                success = True
-                                break
+                            if not line.startswith("data:") or "response.completed" not in line:
+                                continue
+                            success = True
+                            try:
+                                payload = _json.loads(line[5:].strip())
+                                resp_obj = payload.get("response") or payload
+                                usage = resp_obj.get("usage") or {}
+                                in_tok = int(usage.get("input_tokens") or 0)
+                                out_tok = int(usage.get("output_tokens") or 0)
+                            except Exception:
+                                pass  # success=True but tokens stay at 0
+                            break
                         if not success:
                             err_str = "stream ended without response.completed"
         except Exception as e:
