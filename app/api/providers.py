@@ -521,6 +521,31 @@ async def update_provider(
             merged.update(incoming_extra)
             data["extra_config"] = merged
 
+    # v3.1.6: NEVER silently clear an api_key on PUT for ANY provider type.
+    # Earlier guard above covered claude-oauth/codex-oauth only — but the
+    # frontend ProviderForm sends api_key as a masked-display value (or
+    # blank when redisplaying an existing provider), so editing priority
+    # on an OpenRouter / openai / anthropic / etc. provider via the UI
+    # silently dropped the key. Operator hit this twice on OpenRouter
+    # in one day. If admin really wants to clear an api_key they should
+    # delete + recreate the provider.
+    #
+    # Heuristics for "this isn't a real new key":
+    #   - field omitted (None)
+    #   - empty string
+    #   - a masked-display sentinel (contains "…", "..." or matches the
+    #     UI's redacted pattern: starts with the prefix + "..." or "***")
+    if "api_key" in data:
+        incoming = data.get("api_key")
+        if incoming is None or incoming == "" or (
+            isinstance(incoming, str) and (
+                "…" in incoming or "***" in incoming or
+                # First 8 chars of existing + "..." pattern (UI redact)
+                (p.api_key and incoming.startswith(p.api_key[:8]) and ("..." in incoming or "…" in incoming))
+            )
+        ):
+            data.pop("api_key", None)
+
     # v2.7.8 BUG-002: if admin pasted a new api_key OR blob, clear the
     # auth-failure flag so the provider gets a fresh chance.
     new_key_provided = (
