@@ -377,6 +377,23 @@ async def create_provider(
         data["extra_config"] = cfg
         if not data.get("default_model"):
             data["default_model"] = "gpt-5.5"
+    elif body.provider_type == "grok-web":
+        # v3.2.0: grok.com web-subscription provider. Auth is via cookies +
+        # request headers (no api_key, no OAuth blob). All required values
+        # live in extra_config. Validate them here so the operator gets a
+        # clear 400 instead of a 502 on first request.
+        cfg = data.get("extra_config") or {}
+        missing = [k for k in ("cookie_header", "conversation_id") if not (cfg.get(k) or "").strip()]
+        if missing:
+            raise HTTPException(
+                400,
+                f"grok-web providers require extra_config fields {missing}. "
+                "In a logged-in browser at grok.com, copy a fetch as cURL — "
+                "paste the cookie header into 'cookie_header' and the UUID "
+                "from the URL (grok.com/c/<this-uuid>) into 'conversation_id'.",
+            )
+        if not data.get("default_model"):
+            data["default_model"] = "grok-3"
     elif blob:
         raise HTTPException(
             400,

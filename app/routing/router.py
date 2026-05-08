@@ -146,6 +146,10 @@ def _model_family_provider_types(model: str) -> Optional[set[str]]:
     # Cohere family — their embed-* + command-* slugs.
     if m.startswith("embed-") or m.startswith("command-"):
         return {"cohere"}
+    # Grok / xAI family — covers paid xAI API (``grok``), web-subscription
+    # surface (``grok-web``), and OpenRouter's xAI passthrough.
+    if m.startswith("grok-") or m.startswith("x-ai/"):
+        return {"grok", "grok-web", "openrouter"}
     # Unknown family — don't constrain.
     return None
 
@@ -191,6 +195,12 @@ PROVIDER_TYPE_TO_LITELLM = {
     # base_url is fixed at https://openrouter.ai/api/v1 (litellm handles
     # internally — operator doesn't need to set it on the Provider row).
     "openrouter": "openrouter",
+    # v3.2.0: grok-web — replays grok.com browser session against the
+    # operator's web subscription (no xAI API key needed). Like
+    # claude-oauth and codex-oauth, never goes through litellm; messages.py
+    # / completions.py dispatch directly via app.providers.grok_web.
+    # The "xai" prefix here is only used by the X-Resolved-Model header.
+    "grok-web": "xai",
 }
 
 
@@ -218,6 +228,9 @@ PROVIDER_DEFAULT_MODELS = {
     # is OpenRouter's default and a sane fallback when cross-family
     # substitution lands here.
     "openrouter": "openai/gpt-4o",
+    # v3.2.0: grok-web — operator's web subscription. Lite plan default is
+    # grok-3 (modeId=fast); Premium can override default_model to grok-4.
+    "grok-web": "grok-3",
 }
 
 

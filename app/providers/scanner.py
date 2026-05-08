@@ -85,6 +85,14 @@ async def _fetch_model_list(provider: Provider) -> list[str]:
                 return await _fetch_ollama_models(provider)
             case "vertex":
                 return _vertex_default_models()
+            case "grok-web":
+                # v3.2.0: grok.com web subscription. No public model-list
+                # API; the web UI hardcodes a fixed set tied to modeId.
+                # Lite plan exposes grok-3 (fast) and grok-4 (expert);
+                # Premium adds grok-4-super. Return the conservative two
+                # so all subscriptions get a usable scan result.
+                from app.providers.grok_web import SUPPORTED_MODELS
+                return list(SUPPORTED_MODELS)
             case _:
                 return []
     except Exception as e:
@@ -270,6 +278,8 @@ async def test_provider(provider: Provider) -> dict:
         return await _test_claude_oauth(provider)
     if provider.provider_type == "codex-oauth":
         return await _test_codex_oauth(provider)
+    if provider.provider_type == "grok-web":
+        return await _test_grok_web(provider)
 
     model = build_litellm_model(provider)
     kwargs = build_litellm_kwargs(provider)
@@ -519,4 +529,52 @@ async def _test_codex_oauth(provider: Provider) -> dict:
             "success": False,
             "error": err_str, "error_detail": err_str,
             "model": model, "billing_error": False,
+        }
+
+
+async def _test_grok_web(provider: Provider) -> dict:
+    """v3.2.0: smoke-test grok-web by sending one fast-mode "say OK" call.
+
+    Uses the operator's pasted cookies + conversation_id. On HTTP 401/403
+    we surface a re-paste hint; on any other failure we record a circuit-
+    breaker hit so repeated failures rotate the provider out of routing.
+    """
+    from app.providers.grok_web import (
+        complete_grok_web, GrokWebAuthError, GrokWebError,
+    )
+    from app.routing.circuit_breaker import record_failure, record_success, is_billing_error
+    model = provider.default_model or "grok-3"
+    try:
+        result = await complete_grok_web(
+            provider.extra_config or {},
+            messages=[{"role": "user", "content": "Reply with: OK"}],
+            model=model,
+            timeout=30.0,
+        )
+        text = ""
+        if result.get("choices"):
+            text = result["choices"][0].get("message", {}).get("content", "") or ""
+        await record_success(provider.id)
+        return {"success": True, "response": text, "model": model}
+    except GrokWebAuthError as e:
+        err = str(e)
+        await record_failure(provider.id, billing_error=False)
+        return {
+            "success": False,
+            "error": err,
+            "error_detail": err,
+            "model": model,
+            "billing_error": False,
+            "hint": "expired_cookies",
+        }
+    except GrokWebError as e:
+        err = str(e)
+        billing = is_billing_error(err)
+        await record_failure(provider.id, billing_error=billing)
+        return {
+            "success": False,
+            "error": err,
+            "error_detail": err,
+            "model": model,
+            "billing_error": billing,
         }
