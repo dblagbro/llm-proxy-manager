@@ -200,6 +200,9 @@ _TYPES_REQUIRING_API_KEY = {
     # resource endpoint). base_url is enforced by the form; api_key
     # via this set.
     "azure",
+    # v3.1.3: OpenRouter — bearer token (sk-or-v1-…). base_url is
+    # implicit (litellm uses https://openrouter.ai/api/v1 internally).
+    "openrouter",
 }
 
 

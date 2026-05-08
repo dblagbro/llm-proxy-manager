@@ -184,6 +184,13 @@ PROVIDER_TYPE_TO_LITELLM = {
     # litellm uses the ``azure/`` prefix and reads the deployment name
     # from the model field (``azure/<deployment-name>``).
     "azure": "azure",
+    # v3.1.3: OpenRouter — multi-vendor LLM marketplace. litellm has
+    # native support via the ``openrouter/`` prefix. Models are namespaced
+    # vendor/model (e.g. ``openrouter/anthropic/claude-sonnet-4-6``,
+    # ``openrouter/openai/gpt-4o``, ``openrouter/google/gemini-2.5-flash``).
+    # base_url is fixed at https://openrouter.ai/api/v1 (litellm handles
+    # internally — operator doesn't need to set it on the Provider row).
+    "openrouter": "openrouter",
 }
 
 
@@ -207,6 +214,10 @@ PROVIDER_DEFAULT_MODELS = {
     # has rerank/chat surfaces. embed-english-v3.0 is the recommended
     # general-purpose default.
     "cohere": "embed-english-v3.0",
+    # v3.1.3: OpenRouter — vendor-prefixed model names. ``openai/gpt-4o``
+    # is OpenRouter's default and a sane fallback when cross-family
+    # substitution lands here.
+    "openrouter": "openai/gpt-4o",
 }
 
 

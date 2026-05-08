@@ -60,6 +60,11 @@ def infer_capability_profile(
         profile.regions = ["us", "eu", "asia"]
     elif provider_type in ("anthropic", "openai", "grok", "claude-oauth", "codex-oauth", "cohere", "azure"):
         profile.regions = ["us"]
+    elif provider_type == "openrouter":
+        # v3.1.3: OpenRouter is multi-region — they marketplace across vendors.
+        # Use the union of common regions to avoid sovereignty filter rejecting
+        # legitimate routes. Operator can override per-model via scan-models.
+        profile.regions = ["us", "eu", "asia"]
     elif provider_type == "ollama":
         profile.regions = ["local"]
         profile.cost_tier = "economy"
