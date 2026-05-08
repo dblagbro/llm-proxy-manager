@@ -1,11 +1,18 @@
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Pencil } from 'lucide-react'
+import { Pencil, ChevronDown, ChevronRight, Search } from 'lucide-react'
 import { providersApi } from '@/api'
 import { Button } from '@/components/ui/Button'
 import { Modal, ModalHeader, ModalBody, ModalFooter } from '@/components/ui/Modal'
 import { useToast } from '@/components/ui/Toast'
 import type { ModelCapability } from '@/types'
+
+// v3.1.5: collapse the model list by default when a provider has more than
+// AUTO_COLLAPSE_THRESHOLD models. OpenRouter scans 367 models; rendering
+// them all in a flat table makes the providers page scroll for thousands
+// of pixels and disorients the operator. The search input lets you find a
+// specific model id when the list is expanded.
+const AUTO_COLLAPSE_THRESHOLD = 20
 
 const TASKS = ['chat', 'reasoning', 'analysis', 'code', 'creative', 'vision', 'audio']
 const MODALITIES = ['text', 'vision', 'audio', 'multimodal']
@@ -85,11 +92,23 @@ export function ProviderModels({ providerId }: { providerId: string }) {
   const toast = useToast()
   const [editing, setEditing] = useState<ModelCapability | null>(null)
   const [form, setForm] = useState<CapForm | null>(null)
+  const [expanded, setExpanded] = useState<boolean | null>(null)
+  const [filter, setFilter] = useState('')
 
   const { data: caps, isLoading } = useQuery<ModelCapability[]>({
     queryKey: ['capabilities', providerId],
     queryFn: () => providersApi.capabilities(providerId),
   })
+
+  // Default expanded state: open for short lists, collapsed for long ones.
+  // null === user hasn't toggled, follow the threshold; once toggled, honor.
+  const isExpanded = expanded ?? ((caps?.length ?? 0) <= AUTO_COLLAPSE_THRESHOLD)
+
+  const filteredCaps = useMemo(() => {
+    if (!caps || !filter.trim()) return caps ?? []
+    const q = filter.trim().toLowerCase()
+    return caps.filter(c => c.model_id.toLowerCase().includes(q))
+  }, [caps, filter])
 
   const saveMutation = useMutation({
     mutationFn: (f: CapForm) => providersApi.updateCapability(providerId, editing!.model_id, {
@@ -134,57 +153,96 @@ export function ProviderModels({ providerId }: { providerId: string }) {
   return (
     <>
       <div className="mt-1">
-        <p className="text-xs text-gray-400 mb-2 font-medium">
-          {caps.length} model{caps.length !== 1 ? 's' : ''} indexed
-        </p>
-        <div className="overflow-x-auto">
-          <table className="w-full text-xs border-collapse">
-            <thead>
-              <tr className="text-left text-gray-400 border-b border-gray-200 dark:border-gray-700">
-                <th className="pb-1 pr-4 font-medium">Model ID</th>
-                <th className="pb-1 pr-4 font-medium">Tasks</th>
-                <th className="pb-1 pr-4 font-medium">Cost</th>
-                <th className="pb-1 pr-4 font-medium">Latency</th>
-                <th className="pb-1 pr-4 font-medium">Context</th>
-                <th className="pb-1 pr-4 font-medium">Features</th>
-                <th className="pb-1 font-medium">Source</th>
-                <th className="pb-1" />
-              </tr>
-            </thead>
-            <tbody>
-              {caps.map(c => (
-                <tr key={c.id} className="border-b border-gray-100 dark:border-gray-800 last:border-0">
-                  <td className="py-1 pr-4 font-mono text-gray-700 dark:text-gray-300 whitespace-nowrap">{c.model_id}</td>
-                  <td className="py-1 pr-4 text-gray-600 dark:text-gray-400">{c.tasks.join(', ') || '—'}</td>
-                  <td className="py-1 pr-4 text-gray-600 dark:text-gray-400">{c.cost_tier}</td>
-                  <td className="py-1 pr-4 text-gray-600 dark:text-gray-400">{c.latency}</td>
-                  <td className="py-1 pr-4 text-gray-600 dark:text-gray-400">
-                    {c.context_length >= 1000 ? `${Math.round(c.context_length / 1000)}k` : c.context_length}
-                  </td>
-                  <td className="py-1 pr-4 text-gray-500 dark:text-gray-500 whitespace-nowrap">
-                    {c.native_reasoning && <span title="Native reasoning" className="mr-1">🧠</span>}
-                    {c.native_tools && <span title="Native tool use" className="mr-1">🔧</span>}
-                    {c.native_vision && <span title="Native vision" className="mr-1">👁</span>}
-                  </td>
-                  <td className="py-1 pr-4">
-                    <span className={`px-1.5 py-0.5 rounded text-xs ${c.source === 'manual' ? 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300' : 'bg-gray-100 text-gray-500 dark:bg-gray-800'}`}>
-                      {c.source}
-                    </span>
-                  </td>
-                  <td className="py-1">
-                    <button
-                      onClick={() => openEdit(c)}
-                      className="text-gray-400 hover:text-indigo-500 transition-colors"
-                      title="Edit capabilities"
-                    >
-                      <Pencil className="h-3.5 w-3.5" />
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        {/* v3.1.5: collapsible header. Click to expand/collapse the table —
+            providers with hundreds of models (OpenRouter: 367) otherwise
+            require thousands of pixels of scrolling. */}
+        <button
+          onClick={() => setExpanded(!isExpanded)}
+          className="flex items-center gap-1 text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 mb-2 font-medium transition-colors"
+        >
+          {isExpanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+          <span>{caps.length} model{caps.length !== 1 ? 's' : ''} indexed</span>
+          {!isExpanded && caps.length > AUTO_COLLAPSE_THRESHOLD && (
+            <span className="text-gray-500 dark:text-gray-600 ml-1">— click to view</span>
+          )}
+        </button>
+
+        {isExpanded && (
+          <>
+            {caps.length > AUTO_COLLAPSE_THRESHOLD && (
+              <div className="relative mb-2">
+                <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-gray-400 pointer-events-none" />
+                <input
+                  type="text"
+                  value={filter}
+                  onChange={e => setFilter(e.target.value)}
+                  placeholder={`Filter ${caps.length} models by id…`}
+                  className="w-full pl-7 pr-2 py-1 text-xs bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 border border-gray-200 dark:border-gray-700 rounded focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                />
+                {filter && filteredCaps.length !== caps.length && (
+                  <span className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-gray-400">
+                    {filteredCaps.length} / {caps.length}
+                  </span>
+                )}
+              </div>
+            )}
+            <div className="overflow-x-auto max-h-96 overflow-y-auto border border-gray-100 dark:border-gray-800 rounded">
+              <table className="w-full text-xs border-collapse">
+                <thead className="sticky top-0 bg-white dark:bg-gray-900">
+                  <tr className="text-left text-gray-400 border-b border-gray-200 dark:border-gray-700">
+                    <th className="pb-1 pt-1 pr-4 pl-2 font-medium">Model ID</th>
+                    <th className="pb-1 pt-1 pr-4 font-medium">Tasks</th>
+                    <th className="pb-1 pt-1 pr-4 font-medium">Cost</th>
+                    <th className="pb-1 pt-1 pr-4 font-medium">Latency</th>
+                    <th className="pb-1 pt-1 pr-4 font-medium">Context</th>
+                    <th className="pb-1 pt-1 pr-4 font-medium">Features</th>
+                    <th className="pb-1 pt-1 font-medium">Source</th>
+                    <th className="pb-1 pt-1 pr-2" />
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredCaps.map(c => (
+                    <tr key={c.id} className="border-b border-gray-100 dark:border-gray-800 last:border-0">
+                      <td className="py-1 pr-4 pl-2 font-mono text-gray-700 dark:text-gray-300 whitespace-nowrap">{c.model_id}</td>
+                      <td className="py-1 pr-4 text-gray-600 dark:text-gray-400">{c.tasks.join(', ') || '—'}</td>
+                      <td className="py-1 pr-4 text-gray-600 dark:text-gray-400">{c.cost_tier}</td>
+                      <td className="py-1 pr-4 text-gray-600 dark:text-gray-400">{c.latency}</td>
+                      <td className="py-1 pr-4 text-gray-600 dark:text-gray-400">
+                        {c.context_length >= 1000 ? `${Math.round(c.context_length / 1000)}k` : c.context_length}
+                      </td>
+                      <td className="py-1 pr-4 text-gray-500 dark:text-gray-500 whitespace-nowrap">
+                        {c.native_reasoning && <span title="Native reasoning" className="mr-1">🧠</span>}
+                        {c.native_tools && <span title="Native tool use" className="mr-1">🔧</span>}
+                        {c.native_vision && <span title="Native vision" className="mr-1">👁</span>}
+                      </td>
+                      <td className="py-1 pr-4">
+                        <span className={`px-1.5 py-0.5 rounded text-xs ${c.source === 'manual' ? 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300' : 'bg-gray-100 text-gray-500 dark:bg-gray-800'}`}>
+                          {c.source}
+                        </span>
+                      </td>
+                      <td className="py-1 pr-2">
+                        <button
+                          onClick={() => openEdit(c)}
+                          className="text-gray-400 hover:text-indigo-500 transition-colors"
+                          title="Edit capabilities"
+                        >
+                          <Pencil className="h-3.5 w-3.5" />
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                  {filter && filteredCaps.length === 0 && (
+                    <tr>
+                      <td colSpan={8} className="py-2 px-2 text-center text-xs text-gray-400">
+                        No models matching <span className="font-mono">{filter}</span>
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
       </div>
 
       {editing && form && (
