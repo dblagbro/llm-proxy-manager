@@ -14,6 +14,8 @@ export type ProviderType =
   | 'codex-oauth'    // v3.0.15: OpenAI Codex CLI / ChatGPT subscription via OAuth
   | 'cohere'         // v3.0.23: primarily embeddings (also rerank/chat)
   | 'azure'          // v3.0.66: Microsoft Azure OpenAI Service
+  | 'openrouter'     // v3.1.3: OpenRouter multi-vendor marketplace
+  | 'grok-web'       // v3.2.0: grok.com web subscription via cookie replay
 
 export interface Provider {
   id: string
