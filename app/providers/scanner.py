@@ -77,7 +77,7 @@ async def _fetch_model_list(provider: Provider) -> list[str]:
                 return await _fetch_codex_oauth_models(provider)
             case "cohere":
                 return await _fetch_cohere_models(provider)
-            case "openai" | "compatible" | "grok":
+            case "openai" | "compatible" | "grok" | "openrouter":
                 return await _fetch_openai_models(provider)
             case "google":
                 return await _fetch_google_models(provider)
@@ -208,6 +208,12 @@ async def _fetch_openai_models(provider: Provider) -> list[str]:
     base = provider.base_url or "https://api.openai.com"
     if provider.provider_type == "grok":
         base = "https://api.x.ai"
+    elif provider.provider_type == "openrouter":
+        # v3.1.3: OpenRouter's catalog at https://openrouter.ai/api/v1/models —
+        # OpenAI-shape response. Operator doesn't need to set base_url
+        # (litellm dispatches via the openrouter/ prefix), but the scanner
+        # still needs a URL to hit for catalog discovery.
+        base = "https://openrouter.ai/api"
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.get(
             f"{base.rstrip('/')}/v1/models",
@@ -271,7 +277,7 @@ async def test_provider(provider: Provider) -> dict:
     # Pre-flight: catch the common "no API key configured" case before we hit
     # litellm and get a 600-char Python traceback back. Anthropic/OpenAI/Grok
     # store the key on the provider row; ollama and compatible can be keyless.
-    if provider.provider_type in ("anthropic", "openai", "google", "vertex", "grok", "cohere", "mistral", "groq", "together", "fireworks", "azure") and not provider.api_key:
+    if provider.provider_type in ("anthropic", "openai", "google", "vertex", "grok", "cohere", "mistral", "groq", "together", "fireworks", "azure", "openrouter") and not provider.api_key:
         return {
             "success": False,
             "error": f"No API key configured for this {provider.provider_type} provider. Open the Edit modal and paste a key.",

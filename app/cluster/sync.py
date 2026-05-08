@@ -192,6 +192,14 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
                 # payload now includes (v3.0.10 manager.py change).
                 if "name" in p_data:
                     existing.name = p_data["name"]
+                # v3.1.4: replicate provider_type changes too. Pre-fix this
+                # field was set on insert but never on update, so admin
+                # changes to provider type (e.g. openai → openrouter)
+                # silently failed to propagate. Caught when shipping v3.1.3
+                # OpenRouter support: www01 had type=openrouter post-edit,
+                # www02 stayed at type=openai despite same last_user_edit_at.
+                if "provider_type" in p_data:
+                    existing.provider_type = p_data["provider_type"]
                 existing.api_key = p_data.get("api_key", existing.api_key)
                 existing.base_url = p_data.get("base_url", existing.base_url)
                 existing.default_model = p_data.get("default_model", existing.default_model)
