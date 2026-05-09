@@ -124,7 +124,7 @@ export function GrokWebProviderFields({ form, set, editing }: Props) {
           type="button"
           onClick={switchToBridge}
           className={
-            'px-3 py-1.5 -mb-px border-b-2 font-medium ' +
+            'px-3 py-1.5 -mb-px border-b-2 font-medium focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-500 rounded-sm ' +
             (mode === 'bridge'
               ? 'border-purple-600 text-purple-900 dark:text-purple-100'
               : 'border-transparent text-gray-500 hover:text-gray-700')
@@ -136,7 +136,7 @@ export function GrokWebProviderFields({ form, set, editing }: Props) {
           type="button"
           onClick={switchToManual}
           className={
-            'px-3 py-1.5 -mb-px border-b-2 font-medium ' +
+            'px-3 py-1.5 -mb-px border-b-2 font-medium focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-500 rounded-sm ' +
             (mode === 'manual'
               ? 'border-purple-600 text-purple-900 dark:text-purple-100'
               : 'border-transparent text-gray-500 hover:text-gray-700')
@@ -165,7 +165,8 @@ export function GrokWebProviderFields({ form, set, editing }: Props) {
             placeholder="e41fca28-3df3-44ae-ad27-1cb65d5fe2a5"
             required={!editing}
           />
-          {mode === 'bridge' && status?.current_conversation_id && (
+          {mode === 'bridge' && status?.current_conversation_id &&
+            (form.extra_config?.conversation_id as string) !== status.current_conversation_id && (
             <Button
               type="button"
               variant="secondary"
@@ -177,8 +178,9 @@ export function GrokWebProviderFields({ form, set, editing }: Props) {
                   },
                 })
               }
+              title={`Bridge is on ${status.current_conversation_id}`}
             >
-              Use bridge's current ({status.current_conversation_id?.slice(0, 8)}…)
+              Use bridge's
             </Button>
           )}
         </div>

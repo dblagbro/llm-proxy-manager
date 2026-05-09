@@ -7,6 +7,54 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ---
 
+## v3.2.x — grok-web (cookie replay) + Playwright bridge sidecar
+
+### v3.2.5 — Bridge boots to grok.com; current_conversation_id surfaced
+
+Two small wins on top of the v3.2.x stack:
+
+- **Bridge lifespan navigates to `https://grok.com/`** on container boot instead of leaving Chromium on `about:blank`. The persistent `/data/playwright-state` volume already preserves the operator's session across restarts; this just makes the noVNC view show something useful immediately and gives Cloudflare a chance to passively refresh cookies.
+- **`/api/status.current_conversation_id`** parses the bridge's current page URL — when Chromium is sitting on `grok.com/c/<UUID>`, the wizard surfaces a one-click **"Use bridge's current"** button next to the conversation_id field. Eliminates copy/paste from a noVNC screenshot.
+
+### v3.2.4 — Wizard auto-populates bridge URL on mount (form blocker fix)
+
+Symptom: operator selects grok-web in Add Provider, fills `conversation_id`, hits Create → backend rejects with "missing extra_config fields ['cookie_header','conversation_id']". The wizard's Bridge tab was visually selected by default but `bridge_url`/`bridge_token` only got injected into `extra_config` when the operator *clicked* the tab — and they didn't, because it was already selected. Fix: a `useEffect` runs on mount when `mode === 'bridge'` and prefills both fields from the wizard's defaults if absent.
+
+### v3.2.3 — Backend validator allows bridge mode without cookie_header
+
+The v3.2.0 grok-web validator hard-required `cookie_header` + `conversation_id` regardless of mode. Updated to two valid shapes: bridge (requires `bridge_url` + `conversation_id`, cookie_header optional) or manual (requires both as before). Error messages reworded to nudge operators toward Bridge mode first.
+
+### v3.2.2 — Frontend wizard with Bridge / Manual tabs
+
+`GrokWebProviderFields` component replaces the inline grok-web block in `ProviderForm`. Bridge tab is the recommended path: shows live bridge status (`✓ Signed in` once OAuth completes), 5-second status poll, "Connect Grok" button that opens the noVNC tab. Manual tab preserves the v3.2.0 cookie-paste flow as a fallback for operators who don't want to run the bridge container.
+
+### v3.2.1 — Bridge mode wired into grok_web dispatcher
+
+`extra_config.bridge_url` switches the dispatcher from local HTTP replay to forwarding the request body to the bridge's `/api/chat`. Bridge owns the cookies and handles 401/403 retries via Playwright `page.reload()` — Cloudflare challenges resolve passively because it's a real browser. Streaming in v3.2.x is buffer-then-emit (bridge collects the full NDJSON, dispatcher synthesizes SSE chunks); end-to-end token streaming through the bridge is a future enhancement.
+
+### v3.2.0 — `grok-web` provider type (cookie replay)
+
+Adds a new provider type that lets operators bring their grok.com web subscription (Lite / Premium) into the proxy without an xAI API key. We replay the browser's request shape against `https://grok.com/rest/app-chat/conversations/{id}/responses` using cookies + headers captured from a logged-in cURL.
+
+**What works**: `/v1/chat/completions` and `/v1/messages` (both streaming + non-streaming), `grok-3` (modeId=fast), `grok-4` (modeId=expert).
+
+**Single-conversation reuse**: `POST /conversations/new` is rejected by Cloudflare anti-bot from server IPs. Operator supplies one existing conversation_id; each proxy call sends `parentResponseId: ""` so callers don't share thread context inside that conversation.
+
+**Auth model**: cookies (`cf_clearance`, `__cf_bm`, `sso`, `sso-rw`, `x-userid`) + headers (`x-statsig-id`, custom `user-agent`) live in `Provider.extra_config`. `cf_clearance` rotates every few hours — manual mode requires re-pasting periodically. v3.2.1+ bridge mode handles this passively.
+
+**Bridge sidecar (v3.2.1+ companion service)**:
+
+A separate container `llm-proxy2-grok-bridge` runs Playwright + Chromium + Xvfb + noVNC + a tiny FastAPI control plane:
+
+- Persistent state volume `/data/playwright-state` survives restarts; operator signs in once via Google OAuth in the noVNC tab and the session is held indefinitely.
+- 25-minute background refresh loop visits grok.com so Cloudflare passively reissues `__cf_bm`/`cf_clearance` before they expire.
+- Exposed at `/grok-bridge/` via nginx; gated behind `auth_request /grok-bridge-auth-check` which validates the operator's `llmproxy_session` cookie against `/api/auth/me`. Anonymous hits get 302→`/llm-proxy2/?bridge_login_required=1`.
+- `POST /api/chat` is the inference surface llm-proxy2's grok-web dispatcher calls (over the docker-compose internal network — never through nginx).
+
+Build: `grok_bridge/` directory with `Dockerfile`, `app.py`, `start.sh`, `supervisord.conf`. Image `llm-proxy2-grok-bridge:latest` (~1.2 GB; based on `mcr.microsoft.com/playwright/python:v1.45.0-jammy`).
+
+---
+
 ## v3.0.x — Run runtime, cluster ops, observability
 
 ### v3.1.2 — Bulk catalog cluster-sync (replaces per-row apply; default re-enabled)
