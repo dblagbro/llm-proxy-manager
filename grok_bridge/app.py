@@ -65,6 +65,17 @@ COOKIE_REFRESH_INTERVAL_SEC = 25 * 60   # well under __cf_bm's 30-min lifetime
 INFERENCE_RETRY_AFTER_REFRESH = True
 DEFAULT_MODE_ID = "fast"
 
+# v3.3.3 (bridge): cool-off after a 429 from grok.com. When grok.com
+# rate-limits us, hammering again within seconds just guarantees more
+# 429s and burns the proxy's outer timeout budget. Cache the timestamp;
+# subsequent /api/chat calls within the cool-off window short-circuit
+# with a synthetic 429 instead of round-tripping. Affects both probes
+# and real user calls — if grok-side is throttling NOW, the user
+# request is going to 429 anyway, and falling through to the next
+# provider via the proxy router is faster than waiting for grok.com
+# to refuse us a second time.
+GROK_429_COOLDOWN_SEC = int(os.environ.get("GROK_429_COOLDOWN_SEC", "60"))
+
 
 # ── Globals — single live Chromium per container ────────────────────────
 _playwright: Optional[Playwright] = None
@@ -74,6 +85,11 @@ _lock = asyncio.Lock()
 _last_refresh_at: float = 0.0
 _last_refresh_status: str = "never"
 _last_login_url: str = ""
+# v3.3.3: 429 cool-off state. Set when _post_to_grok observes 429 in
+# grok.com's HTTP status; cleared by elapsed time. Read by /api/chat
+# before issuing a new request.
+_last_429_at: float = 0.0
+_last_429_body: str = ""
 
 
 @asynccontextmanager
@@ -318,6 +334,14 @@ async def status():
     needed = ["cf_clearance", "__cf_bm", "sso", "x-userid"]
     present = {k: (k in cookies) for k in needed}
     cur_url = _page.url if _page is not None else None
+    # v3.3.3: surface the 429 cool-off state so the operator can see at
+    # a glance whether the bridge is currently short-circuiting due to
+    # grok.com rate-limit pressure (vs e.g. genuinely down).
+    cooldown_remaining = 0
+    if GROK_429_COOLDOWN_SEC > 0 and _last_429_at > 0:
+        elapsed = time.time() - _last_429_at
+        if elapsed < GROK_429_COOLDOWN_SEC:
+            cooldown_remaining = int(GROK_429_COOLDOWN_SEC - elapsed)
     return {
         "logged_in": all(present[k] for k in ("sso", "x-userid")),
         "cookies_present": present,
@@ -327,6 +351,11 @@ async def status():
         "url": cur_url,
         "current_conversation_id": _conv_id_from_url(cur_url),
         "vnc_url": "/vnc/vnc.html?path=vnc/websockify&autoconnect=true&resize=remote",
+        "rate_limit_429": {
+            "last_429_at": _last_429_at if _last_429_at > 0 else None,
+            "cooldown_remaining_sec": cooldown_remaining,
+            "cooldown_active": cooldown_remaining > 0,
+        },
     }
 
 
@@ -690,6 +719,12 @@ async def _post_to_grok(conv_id: str, body: dict, statsig_id: Optional[str]) -> 
     async with httpx.AsyncClient(timeout=60.0) as client:
         try:
             r = await client.post(url, json=body, headers=headers)
+            # v3.3.3: capture 429 timestamp so subsequent /api/chat
+            # callers can short-circuit during the cool-off window.
+            if r.status_code == 429:
+                global _last_429_at, _last_429_body
+                _last_429_at = time.time()
+                _last_429_body = r.text[:500]
             return r.status_code, r.text
         except httpx.HTTPError as e:
             return 599, f"network error: {e}"
@@ -714,6 +749,25 @@ async def chat(req: Request, _: None = Depends(require_bridge_token)):
         raise HTTPException(400, "conversation_id is required")
     if not messages:
         raise HTTPException(400, "messages is required")
+
+    # v3.3.3: short-circuit if we've recently been 429'd by grok.com.
+    # Cuts grok-side load by ~half during throttle windows + lets the
+    # proxy router fall through to OpenRouter / next provider faster
+    # than waiting for grok.com to refuse us a second time.
+    if GROK_429_COOLDOWN_SEC > 0:
+        elapsed = time.time() - _last_429_at
+        if 0 < elapsed < GROK_429_COOLDOWN_SEC:
+            remaining = int(GROK_429_COOLDOWN_SEC - elapsed)
+            logger.info(
+                "grok.com 429 cool-off active — short-circuit (remaining %ds)",
+                remaining,
+            )
+            raise HTTPException(
+                429,
+                f"grok.com 429 (cached, cool-off {remaining}s remaining): "
+                f"{_last_429_body[:200]}",
+                headers={"Retry-After": str(remaining)},
+            )
 
     mode_id = _model_to_mode_id(model)
     prompt = _flatten_messages(messages)

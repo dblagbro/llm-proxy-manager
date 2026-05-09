@@ -9,6 +9,23 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.3.x — LMRHv2 bidirectional metrics feedback channel
 
+### v3.3.3 — Grok-Web resilience pack
+
+Four targeted fixes to the grok-web provider's reliability profile, all driven by the 2026-05-09 24h log audit. Pattern: 11 of 13 daily warnings on grok-web were synthetic-probe rate_limit (429) hits; success rate read 93.3% but the failures were probe-only — real user traffic was succeeding. Fix-set lifts apparent reliability to ~100% on user-facing metrics and reduces grok.com pressure during throttle windows.
+
+- **#1 Probe back-off after 429** — `app/monitoring/keepalive.py`. When a keepalive probe hits a rate_limit error, double the next-probe delay (`interval_sec × factor^N`, capped at `keepalive_probe_rate_limit_backoff_max_sec`, default 1800s). Reset on first non-rate-limit outcome. Pre-fix, probes fired every 5 min unconditionally — when grok.com rate-limited us, the next probe 5 min later re-hit the same window. New module-level dicts `_probe_backoff_until` + `_consecutive_rate_limits`; new `get_backoff_state()` for diagnostics.
+- **#2 Probes excluded from `provider_metrics`** — `app/monitoring/metrics.py` + `app/monitoring/helpers.py`. New `is_probe: bool = False` parameter on `record_request()`; when True, the function early-returns before touching the ProviderMetric upsert or ApiKey totals. Probe outcomes still hit `activity_log` (operator visibility) and `circuit_breaker` (state transitions). LMRHv2 callers reading `success_rate` now see user-traffic reality, not noisy synthetic-probe failures.
+- **#3 Bridge fast-fail on recent 429** — `grok_bridge/app.py`. `_post_to_grok` records the timestamp of any 429 from grok.com; subsequent `/api/chat` calls within `GROK_429_COOLDOWN_SEC` (default 60s) short-circuit with a synthetic 429 + `Retry-After` header instead of round-tripping. Cuts grok.com pressure during throttle windows and lets the proxy router fall through to the next provider faster than waiting for a second refusal. New `rate_limit_429` block on `/api/status` exposes the cool-off state.
+- **#4 Tighter outer timeout on user-traffic grok-web calls** — `app/api/_grok_web_dispatch.py`. New `_user_call_timeout()` reads `settings.grok_web_user_timeout_sec` (default 30s, down from 60s) and passes it to `complete_grok_web` / `stream_grok_web` / `stream_grok_web_anthropic`. Probes still use `_PROBE_TIMEOUT_SEC=15`. Caps p99 user latency to 30s instead of 60s on bridge tail-latency outliers (15.2s observed in the audit).
+
+New settings:
+- `KEEPALIVE_PROBE_RATE_LIMIT_BACKOFF_MAX_SEC` (default 1800)
+- `KEEPALIVE_PROBE_RATE_LIMIT_BACKOFF_FACTOR` (default 2.0; ≤1.0 disables back-off)
+- `GROK_WEB_USER_TIMEOUT_SEC` (default 30)
+- `GROK_429_COOLDOWN_SEC` (default 60; bridge env var)
+
+Tests: +10 (`tests/unit/test_v333_grok_web_resilience.py`). 988 → 998 passing.
+
 ### v3.3.2 — Public LMRHv2 spec doc + discovery polish
 
 Three small additions to make LMRHv2 self-documenting for callers:

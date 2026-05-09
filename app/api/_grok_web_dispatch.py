@@ -24,6 +24,19 @@ from fastapi import HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
+
+
+def _user_call_timeout() -> float:
+    """v3.3.3: outer ceiling on user-traffic grok-web calls. Lets the
+    router fall through to OpenRouter rather than block a user for 60s
+    on a tail-latency outlier (15s observed 2026-05-09; p95 ~7s).
+    Probes still use the function's own _PROBE_TIMEOUT_SEC (15s)."""
+    try:
+        return float(getattr(settings, "grok_web_user_timeout_sec", 30) or 30)
+    except Exception:
+        return 30.0
+
 
 def _flatten_anthropic_system(system: Any) -> Optional[str]:
     """Anthropic's ``system`` can be a string OR a list of content
@@ -239,6 +252,7 @@ async def dispatch_grok_web_openai(
                 route.provider.extra_config or {},
                 messages=msgs,
                 model=requested_model,
+                timeout=_user_call_timeout(),
             )
             first_chunk = await stream_gen.__anext__()
         except GrokWebAuthError as e:
@@ -305,6 +319,7 @@ async def dispatch_grok_web_openai(
             route.provider.extra_config or {},
             messages=msgs,
             model=requested_model,
+            timeout=_user_call_timeout(),
         )
     except GrokWebAuthError as e:
         if can_record:
@@ -385,6 +400,7 @@ async def dispatch_grok_web_anthropic(
                 messages=msgs_for_grok,
                 system=sys_for_grok,
                 model=requested_model,
+                timeout=_user_call_timeout(),
             )
             first_chunk = await stream_gen.__anext__()
         except GrokWebAuthError as e:
@@ -456,6 +472,7 @@ async def dispatch_grok_web_anthropic(
             route.provider.extra_config or {},
             messages=msgs_with_system,
             model=requested_model,
+            timeout=_user_call_timeout(),
         )
     except GrokWebAuthError as e:
         if can_record:
