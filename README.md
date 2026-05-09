@@ -4,7 +4,7 @@ Self-hosted LLM routing gateway — Python/FastAPI rewrite of llm-proxy v1.
 
 **LMRH semantic routing · circuit breaker failover · CoT-E augmentation · cluster sync · Run runtime · per-provider keep-alive probes · React dashboard**
 
-Current version: **v3.2.5** (see [CHANGELOG.md](CHANGELOG.md))
+Current version: **v3.3.1** (see [CHANGELOG.md](CHANGELOG.md))
 
 ## Access
 
@@ -51,6 +51,18 @@ sudo docker compose up -d --force-recreate --no-deps llm-proxy2
 | POST   | `/lmrh/register`            | Auth-required, register a new LMRH dim (collision-resolved -2/-3 suffix) |
 | POST   | `/lmrh/propose`             | Auth-required, queue a free-form proposal for operator review |
 | DELETE | `/lmrh/registry/{name}`     | Admin-only, soft-delete a registered dim (cluster-replicated tombstone, v3.0.29+) |
+
+### LMRHv2 metrics-feedback endpoints (v3.3.0+, feature-flagged via `lmrh_v2_enabled`)
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET    | `/.well-known/lmrh-config` | Public; protocol metadata + endpoint discovery (RFC 8615) |
+| GET    | `/lmrh/providers`        | Live provider/model snapshot, key-scoped, ETag-cacheable, 30 s `max-age`. Default rate-limit 4/min. |
+| GET    | `/lmrh/providers/{id}`   | Single-provider deep view |
+| GET    | `/lmrh/quotes?model=X[&hint=...]` | Pre-flight an inference request — ranked candidates with predicted cost/latency, no dispatch. Default rate-limit 60/min (v3.3.1+). |
+| GET    | `/lmrh/health`           | Aggregate fleet counters (CB-open, degraded, snapshot age) |
+
+Every `/v1/*` response carries `Link` (RFC 8288) and `LMRH-Version` headers when the flag is enabled. v1.x clients ignore these unconditionally. SDK reference at [`sdk/python/lmrh_client.py`](sdk/python/lmrh_client.py). Full design + decision log in operator memory `project_lmrhv2_design.md`.
 
 ### Run runtime endpoints (v3.0.0+, joint contract with coordinator-hub)
 
