@@ -35,6 +35,13 @@ SUBSCRIPTION_TIER_PROVIDER_TYPES = frozenset({
     "codex-oauth",      # operator's flat-rate ChatGPT Plus / Codex CLI
     "claude-oauth",     # Anthropic Pro Max OAuth
     "anthropic-oauth",  # legacy alias if ever introduced
+    # v3.2.10: grok-web (operator's grok.com Lite/Premium subscription).
+    # Cost-class is subscription — no per-call billing — so traffic to
+    # grok-web should record cost=$0 to total_cost_usd and quota_usd
+    # gets the rated estimate for visibility. Pre-v3.2.10 grok-web was
+    # missing here, but it didn't matter because the dispatcher also
+    # missed record_outcome entirely (separate v3.2.10 fix).
+    "grok-web",
 })
 
 

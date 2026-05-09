@@ -141,6 +141,36 @@ async def _probe_one(provider: Provider) -> None:
             err_str = f"{type(e).__name__}: {str(e) or 'no message'}"
             # Fall through to the generic record_outcome path below so the
             # error gets logged with probe markers.
+    elif provider.provider_type == "grok-web":
+        # v3.2.10: grok-web probes use the dispatcher's complete_grok_web
+        # path (manual or bridge mode, depending on extra_config). On
+        # success / failure we fall through to the generic record_outcome
+        # block below — same shape as the other branches. The bridge
+        # path also exercises Cloudflare cookie freshness as a side
+        # effect, so a probe failure here is the earliest signal that
+        # the operator's session needs re-login.
+        from app.providers.grok_web import (
+            complete_grok_web, GrokWebError, GrokWebAuthError,
+        )
+        try:
+            resp = await asyncio.wait_for(
+                complete_grok_web(
+                    provider.extra_config or {},
+                    messages=[{"role": "user", "content": prompt}],
+                    model=model,
+                    timeout=float(_PROBE_TIMEOUT_SEC),
+                ),
+                timeout=float(_PROBE_TIMEOUT_SEC),
+            )
+            success = True
+            usage = resp.get("usage") or {}
+            in_tok = int(usage.get("prompt_tokens") or 0)
+            out_tok = int(usage.get("completion_tokens") or 0)
+        except (GrokWebAuthError, GrokWebError) as e:
+            err_str = f"{type(e).__name__}: {str(e)[:200]}"
+        except Exception as e:
+            err_str = f"{type(e).__name__}: {str(e) or 'no message'}"
+        litellm_model = model  # for the activity_log message string below
     elif provider.provider_type == "codex-oauth":
         # v3.0.19: codex-oauth probes were going through litellm.acompletion
         # (openai/gpt-5.5), which routes to api.openai.com — that endpoint
@@ -285,7 +315,13 @@ async def _probe_all_once() -> int:
     probe_per_call = getattr(
         settings, "keepalive_probe_per_call_providers", False
     )
-    SUBSCRIPTION_TYPES = {"claude-oauth", "codex-oauth", "anthropic-oauth"}
+    # v3.2.10: grok-web added — operator's grok.com subscription is
+    # cost=$0 per probe (same as other OAuth subscriptions), so worth
+    # the every-5-min health check. Without this, the bridge container
+    # could lose its session and we wouldn't notice until organic
+    # traffic 401s. Probes now fire grok-web → bridge → grok.com,
+    # exercising the full pipeline including Cloudflare cookie freshness.
+    SUBSCRIPTION_TYPES = {"claude-oauth", "codex-oauth", "anthropic-oauth", "grok-web"}
     for p in providers:
         if not probe_per_call and p.provider_type not in SUBSCRIPTION_TYPES:
             logger.debug(

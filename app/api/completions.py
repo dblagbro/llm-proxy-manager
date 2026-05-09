@@ -321,6 +321,8 @@ async def chat_completions(
         from app.api._grok_web_dispatch import dispatch_grok_web_openai
         return await dispatch_grok_web_openai(
             route=route, body=body, stream=stream, resp_headers=resp_headers,
+            db=db, key_record_id=key_record.id, t0=time.monotonic(),
+            llm_hint=llm_hint,
         )
 
     # Semantic cache — check before anything LLM-ish runs
