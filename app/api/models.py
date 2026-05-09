@@ -107,18 +107,50 @@ async def list_models(
             provider_by_id[c.provider_id].priority,
             c.model_id,
         ))
+        # v3.4.1 + v3.5.0: surface aliases + family/variant in each entry.
+        # Pre-v3.4.1 the same upstream model could appear twice when it
+        # was registered under both bare and provider-prefixed spellings
+        # (e.g. ``grok-3`` AND ``x-ai/grok-3`` for the same Grok-3 model).
+        # The fix is two-part:
+        #   1. Capability rows now carry an ``aliases`` JSON column so
+        #      callers can send any registered spelling.
+        #   2. /v1/models de-dupes across the canonical id AND every
+        #      alias — listing the canonical name once with aliases as
+        #      a sibling field — instead of de-duping on bare model_id.
+        # ``model_family`` (when set) lets LMRHv2.1 callers group
+        # multi-route variants of the same upstream model. When NULL
+        # the family is derived from the canonical id (strip prefix).
+        from app.routing.canonical import collect_canonical_aliases, derive_family
         for c in caps_sorted:
-            if c.model_id in seen:
+            # Build the full set of names this capability represents
+            all_names = collect_canonical_aliases(c.model_id, c.aliases or [])
+            # If ANY of those names was already emitted (under a
+            # different capability or a different alias spelling),
+            # this row is the same model — skip.
+            if any(n.lower() in seen for n in all_names):
                 continue
-            seen.add(c.model_id)
+            for n in all_names:
+                seen.add(n.lower())
             p = provider_by_id[c.provider_id]
-            entries.append({
+            family = c.model_family or derive_family(c.model_id)
+            entry = {
                 "id": c.model_id,
                 "object": "model",
                 "created": now,
                 "owned_by": p.name,
                 "kind": _infer_kind(c.model_id),
-            })
+                # v3.4.1: alternate spellings the proxy will route. UI
+                # callers can show this so the user sees that
+                # ``grok-3`` and ``x-ai/grok-3`` are the same model.
+                "aliases": [n for n in all_names if n != c.model_id],
+            }
+            # v3.5.0: family/variant when classified. Older clients
+            # ignore the extra fields (OpenAI list shape is open).
+            if family:
+                entry["family"] = family
+            if c.model_variant:
+                entry["variant"] = c.model_variant
+            entries.append(entry)
 
     # Always include each enabled provider's default_model — it's the
     # canonical "what this provider serves by default" entry, useful when

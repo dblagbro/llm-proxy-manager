@@ -471,18 +471,26 @@ async def select_provider(
     # failure). The fall-through here is now safe because the family filter
     # already excluded provider types that physically can't serve the model.
     if model_override:
+        # v3.4.1: select aliases too so a request for ``grok-3`` matches
+        # a capability registered under ``x-ai/grok-3`` with ``["grok-3"]``
+        # in its aliases list.
         cap_q = await db.execute(
-            select(ModelCapability.provider_id, ModelCapability.model_id)
-            .where(ModelCapability.provider_id.in_([p.id for p in available]))
+            select(
+                ModelCapability.provider_id,
+                ModelCapability.model_id,
+                ModelCapability.aliases,
+            ).where(ModelCapability.provider_id.in_([p.id for p in available]))
         )
-        cap_by_provider: dict[str, set[str]] = {}
-        for pid, mid in cap_q.all():
-            cap_by_provider.setdefault(pid, set()).add(mid)
+        # provider_id → list of (model_id, aliases) tuples
+        cap_by_provider: dict[str, list[tuple[str, list[str]]]] = {}
+        for pid, mid, als in cap_q.all():
+            cap_by_provider.setdefault(pid, []).append((mid, als or []))
+        from app.routing.canonical import matches_capability
         def _supports(p: Provider) -> bool:
             caps = cap_by_provider.get(p.id)
             if not caps:
                 return True   # never scanned — give it a try
-            return model_override in caps
+            return any(matches_capability(model_override, mid, als) for mid, als in caps)
         filtered = [p for p in available if _supports(p)]
         if filtered:
             available = filtered

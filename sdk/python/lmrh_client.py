@@ -110,6 +110,19 @@ class ModelEntry:
     native_tools: bool
     native_reasoning: bool
     metrics: ModelMetrics
+    # v3.5.0 (LMRHv2.1) — model identity grouping. ``aliases`` is the
+    # list of alternate spellings the proxy will accept (so a caller
+    # can send any of them and route to this same model). ``family``
+    # is the upstream physical model identity (same model regardless
+    # of which provider serves it); ``variant`` is the route flavour
+    # ("web", "openrouter", "direct", etc.). Multiple entries with
+    # the same family + different variants represent multi-route
+    # access — pick whichever has the cost / latency profile you want.
+    # All three default to safe sentinels so older proxies (no v2.1)
+    # produce ModelEntry rows without raising.
+    aliases: tuple[str, ...] = ()
+    family: Optional[str] = None
+    variant: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -408,6 +421,13 @@ def _snapshot_from_dict(data: dict, etag: str) -> Snapshot:
                     probe_success_rate=mm.get("probe_success_rate"),
                     probe_samples=int(mm.get("probe_samples", 0) or 0),
                 ),
+                # v3.5.0+: optional model-identity fields. Older proxies
+                # (<= LMRHv2.0) omit these and the SDK applies defaults;
+                # callers that don't use family/variant just see the
+                # canonical model_id + an empty aliases tuple.
+                aliases=tuple(md.get("aliases") or ()),
+                family=md.get("family"),
+                variant=md.get("variant"),
             ))
         providers.append(ProviderEntry(
             id=pd.get("id", ""),

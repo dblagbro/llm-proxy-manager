@@ -131,6 +131,24 @@ class ModelCapability(Base):
     native_tools = Column(Boolean, default=True)
     native_vision = Column(Boolean, default=True)
     source = Column(String, default="inferred") # inferred|manual
+    # v3.4.1 — alternate spellings the router will accept and route to
+    # this same capability row. Solves the "grok-3 vs x-ai/grok-3"
+    # leak in /v1/models (same physical model showing as two list
+    # entries because both names were registered as separate rows).
+    # The router now matches on model_id OR (X IN aliases) so a request
+    # for any spelling resolves to the same canonical capability.
+    # Empty list means "this entry only matches its bare model_id".
+    aliases = Column(JSON, default=list)
+    # v3.5.0 (LMRHv2.1) — family / variant grouping for multi-route
+    # disambiguation. ``family`` is the upstream model identity
+    # (e.g. "grok-3" — same physical model regardless of which
+    # provider serves it); ``variant`` is the route flavour
+    # (e.g. "web" for the bridge, "openrouter" for the marketplace,
+    # "direct" for the vendor API). Both are NULL when not
+    # operator-classified — readers should fall back to deriving
+    # family from the canonical model_id (strip provider prefix).
+    model_family = Column(String, nullable=True)
+    model_variant = Column(String, nullable=True)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 

@@ -111,20 +111,25 @@ def _pick_conversation_id(extra_config: dict) -> str:
     return (extra_config or {}).get("conversation_id") or ""
 
 
-# v3.2.8: include both bare ("grok-3") and OpenRouter-style ("x-ai/grok-3")
-# slug variants in the capability set. The router's candidate-selection
-# step matches on exact model_id; if a caller sends "x-ai/grok-4"
-# (commonly used by clients copying OpenRouter slugs), only providers
-# whose capabilities literally include "x-ai/grok-4" get scored. Without
-# the aliases here, grok-web at priority=1 was losing to OpenRouter at
-# priority=5 every time — the family filter recognized grok-web as
-# eligible but no capability row matched.
+# v3.4.1: canonical model_ids are the OpenRouter-style slugs
+# ("x-ai/grok-3", "x-ai/grok-4"); the bare names ("grok-3", "grok-4")
+# are accepted as ALIASES (router does model_id-OR-alias match per
+# app/routing/canonical.py). This eliminates the v3.2.8 workaround
+# where the same physical Grok-3 model appeared as TWO separate
+# capability rows — leaking duplicates into ``GET /v1/models``.
+#
+# History: pre-v3.4.1 the router matched on exact model_id, so to
+# accept both spellings the operator had to register two ModelCapability
+# rows. With aliases-as-input the router accepts either spelling and
+# the catalog lists each model once with an aliases array.
 SUPPORTED_MODELS = [
-    "grok-3",
-    "grok-4",
     "x-ai/grok-3",
     "x-ai/grok-4",
 ]
+SUPPORTED_MODEL_ALIASES = {
+    "x-ai/grok-3": ["grok-3"],
+    "x-ai/grok-4": ["grok-4"],
+}
 
 
 class GrokWebError(Exception):
