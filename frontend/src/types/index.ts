@@ -38,6 +38,19 @@ export interface Provider {
   // v2.7.8: when set, the provider's auth failed and admin must re-key
   // (or re-OAuth). UI renders a red "Needs re-auth" badge.
   auth_failed?: { since: number; last_error: string } | null
+  // v3.0.64+: per-provider subscription-quota tracking. Surfaced when
+  // ``usage_tracking_enabled=true`` on the provider AND a session/weekly
+  // window has been computed by the usage tracker. Both pcts are 0-N
+  // (can exceed 100 if the operator's configured limit is lower than
+  // the actual upstream allowance — e.g. Anthropic Pro Max). Tokens
+  // are absolute counts when the limit hasn't been set (pct == null).
+  usage_tracking_enabled?: boolean
+  usage_session_pct?: number | null
+  usage_weekly_pct?: number | null
+  usage_session_tokens?: number | null
+  usage_weekly_tokens?: number | null
+  usage_session_limit_tokens?: number | null
+  usage_weekly_limit_tokens?: number | null
 }
 
 export interface ProviderFormData {

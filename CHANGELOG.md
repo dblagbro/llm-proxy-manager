@@ -9,6 +9,20 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.5.x — Model identity model (LMRHv2.1)
 
+### v3.5.3 — Subscription quota dashboard widget + over-limit banner
+
+The proxy has tracked subscription quotas (Anthropic Pro Max weekly window, Codex weekly window, etc.) since v3.0.64 — the data shows up as a small text indicator on the providers page, but it's easy to miss buried in the list. v3.5.3 surfaces it on the dashboard.
+
+- **Dashboard `Sub Quota` stat card** — shows the worst (highest) weekly_pct across providers with `usage_tracking_enabled=true`. Color-coded: green when all <80%, yellow when any 80-100%, red when any >100%. Sub-label says "N over" / "N approaching" / "all healthy". Replaces the redundant Activity stat card when at least one provider has tracking enabled.
+- **Top-of-dashboard banner** — only renders when at least one provider is over 100% on weekly OR session window. Names the offenders, shows the percentages, explains the two interpretations (operator's limit too low vs caller actually over budget), and points at remediation. Stays out of the way when everything is healthy.
+- **Provider type extension** — `Provider` interface in `frontend/src/types/index.ts` now declares the optional `usage_*` fields (was previously cast at the use site with `as unknown as`). Existing usage indicator on the providers page still works; gets proper typing.
+
+Driven by the 2026-05-09 audit finding that `Devin-Anthropic-Max-VG` was at 255.7% of its configured weekly limit with no surfacing on the dashboard. The 255% is itself a misconfiguration (operator's `usage_weekly_limit_tokens=20M` is below Anthropic's actual Pro Max allowance), but the principle holds: when tracking is on, anything over 100% deserves an at-a-glance signal rather than being buried in the providers list.
+
+**No backend changes.** Pure frontend; data was already in `/api/providers` response.
+
+Tests: no changes (1040 still passing).
+
 ### v3.5.2 — SDK `subscribe()` consumer for `/lmrh/stream`
 
 Closes the v3.4.0 SSE push loop. Proxy server has had Server-Sent Events on `/lmrh/stream` since v3.4.0 (2026-05-09 morning); the SDK was still polling-only. v3.5.2 adds `LmrhClient.subscribe(on_snapshot, on_error=None)` to consume the stream.

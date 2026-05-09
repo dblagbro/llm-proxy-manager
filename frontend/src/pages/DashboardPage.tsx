@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { Server, Activity, DollarSign, Zap, AlertTriangle, Clock } from 'lucide-react'
+import { Server, Activity, DollarSign, Zap, AlertTriangle, Clock, Gauge } from 'lucide-react'
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts'
 import { clusterApi, monitoringApi, providersApi } from '@/api'
 import { StatCard } from '@/components/ui/StatCard'
@@ -35,6 +35,31 @@ export function DashboardPage() {
     : 0
   const openCBs = Object.values(health?.circuitBreakers ?? {}).filter(cb => cb.state === 'open').length
 
+  // v3.5.3 — subscription quota summary. Computes the worst (highest)
+  // weekly_pct across providers that have usage tracking enabled. The
+  // session window resets every few hours; the weekly window is the
+  // load-bearing limit for Anthropic Pro Max / Codex / similar. Three
+  // states drive the color + label:
+  //   green  : all enabled providers <80% weekly
+  //   yellow : at least one in 80-100% (approaching cap, plan rotation)
+  //   red    : at least one >100% (over cap — caller is consuming
+  //            Anthropic-side quota beyond the operator-configured
+  //            limit, or the operator's limit was set too low)
+  // Banner only shows on the red path so the dashboard doesn't get
+  // noisy. Stat card always shows so the green state is reassuring.
+  const quotaProviders = (providers ?? []).filter(p => p.usage_tracking_enabled)
+  const quotaWorst = quotaProviders.reduce((worst, p) => {
+    const w = p.usage_weekly_pct ?? 0
+    const s = p.usage_session_pct ?? 0
+    const m = Math.max(w, s)
+    return m > worst.pct ? { pct: m, name: p.name, weekly: w, session: s } : worst
+  }, { pct: 0, name: '', weekly: 0, session: 0 })
+  const quotaOverLimit = quotaProviders.filter(p => (p.usage_weekly_pct ?? 0) > 100 || (p.usage_session_pct ?? 0) > 100)
+  const quotaApproaching = quotaProviders.filter(p =>
+    !((p.usage_weekly_pct ?? 0) > 100 || (p.usage_session_pct ?? 0) > 100)
+    && ((p.usage_weekly_pct ?? 0) >= 80 || (p.usage_session_pct ?? 0) >= 80)
+  )
+
   // Build chart data from metrics buckets (last 6h from any provider)
   const chartData = buildChartData(metrics?.providers ?? [])
 
@@ -45,6 +70,34 @@ export function DashboardPage() {
         <h1 className="text-xl font-bold text-gray-900 dark:text-gray-100">Dashboard</h1>
         <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">Last 24 hours</p>
       </div>
+
+      {/* v3.5.3 — subscription quota over-limit banner. Only renders
+          when at least one provider has crossed 100% on its weekly OR
+          session window. Stays out of the way otherwise — the stat
+          card below carries the always-visible status. */}
+      {quotaOverLimit.length > 0 && (
+        <div className="rounded-lg border border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-950/40 px-4 py-3 flex items-start gap-3">
+          <AlertTriangle className="h-5 w-5 text-red-600 dark:text-red-400 shrink-0 mt-0.5" />
+          <div className="flex-1 text-sm">
+            <p className="font-semibold text-red-700 dark:text-red-300">
+              {quotaOverLimit.length === 1
+                ? `${quotaOverLimit[0].name} is over its subscription quota`
+                : `${quotaOverLimit.length} providers are over their subscription quota`}
+            </p>
+            <p className="text-xs text-red-600 dark:text-red-400 mt-1">
+              {quotaOverLimit.map(p => {
+                const w = p.usage_weekly_pct ?? 0
+                const s = p.usage_session_pct ?? 0
+                const which = w > 100 && s > 100
+                  ? `weekly ${w.toFixed(0)}% + session ${s.toFixed(0)}%`
+                  : w > 100 ? `weekly ${w.toFixed(0)}%` : `session ${s.toFixed(0)}%`
+                return `${p.name} (${which})`
+              }).join('; ')}.
+              {' '}Either the operator's configured limit is below the actual upstream allowance, or the caller is genuinely over budget. Open the provider's settings to raise the limit, or rotate to a peer subscription provider until the window resets.
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Stat cards */}
       <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
@@ -80,12 +133,35 @@ export function DashboardPage() {
           icon={<AlertTriangle className="h-5 w-5" />}
           variant={openCBs > 0 ? 'danger' : 'default'}
         />
-        <StatCard
-          label="Activity"
-          value={activity?.length ?? 0}
-          sub="recent events"
-          icon={<Activity className="h-5 w-5" />}
-        />
+        {/* v3.5.3 — subscription quota at-a-glance. Hides cleanly when
+            no provider has usage tracking enabled (renders Activity
+            card instead). When tracked, value is the worst weekly_pct
+            across enabled providers — that's the load-bearing number
+            for Anthropic Pro Max / Codex / similar subscriptions. */}
+        {quotaProviders.length > 0 ? (
+          <StatCard
+            label="Sub Quota"
+            value={`${quotaWorst.pct.toFixed(0)}%`}
+            sub={
+              quotaOverLimit.length > 0 ? `${quotaOverLimit.length} over`
+              : quotaApproaching.length > 0 ? `${quotaApproaching.length} approaching`
+              : 'all healthy'
+            }
+            icon={<Gauge className="h-5 w-5" />}
+            variant={
+              quotaOverLimit.length > 0 ? 'danger'
+              : quotaApproaching.length > 0 ? 'warning'
+              : 'success'
+            }
+          />
+        ) : (
+          <StatCard
+            label="Activity"
+            value={activity?.length ?? 0}
+            sub="recent events"
+            icon={<Activity className="h-5 w-5" />}
+          />
+        )}
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
