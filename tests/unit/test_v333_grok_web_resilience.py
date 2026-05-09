@@ -215,7 +215,22 @@ def test_user_call_timeout_reads_setting(monkeypatch):
 
 
 def test_user_call_timeout_handles_missing_setting(monkeypatch):
-    """If the setting is somehow None / absent, fall back to 30s."""
+    """If the setting is somehow None / absent, fall back to 30s.
+    Note: v3.4.0 changed the *default* setting to 20s, but the
+    in-code fallback for an absent attr stays at 30 — that's the
+    legacy fallback path, separate from the operator-configured
+    default."""
     from app.api import _grok_web_dispatch as gwd
     monkeypatch.setattr(gwd.settings, "grok_web_user_timeout_sec", None, raising=False)
     assert gwd._user_call_timeout() == 30.0
+
+
+def test_user_call_timeout_default_is_20s_in_v340(monkeypatch):
+    """v3.4.0: production default tightened from 30s → 20s. Validates
+    settings.grok_web_user_timeout_sec resolves to 20 when no
+    GROK_WEB_USER_TIMEOUT_SEC env override is set."""
+    # We don't monkeypatch — read the actual value from the imported
+    # settings instance which reflects the field default.
+    from app.config import Settings
+    s = Settings()
+    assert s.grok_web_user_timeout_sec == 20

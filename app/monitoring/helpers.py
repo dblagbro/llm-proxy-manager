@@ -17,7 +17,7 @@ from app.routing.circuit_breaker import (
     is_auth_error, classify_error, record_auth_failure, clear_auth_failure,
 )
 from app.monitoring.metrics import record_request
-from app.monitoring.pricing import estimate_cost
+from app.monitoring.pricing import estimate_cost, estimate_cost_split
 from app.monitoring.activity import log_event
 from app.observability.prometheus import observe_request, observe_ttft, observe_cache_tokens
 from app.routing.hedging import record_ttft_sample
@@ -269,16 +269,26 @@ async def record_outcome(
     is_probe = key_record_id == "probe-keepalive"
     if success:
         latency_ms = (time.monotonic() - t0) * 1000
-        rated_cost = estimate_cost(model, in_tok, out_tok)
+        # v3.4.0: get the per-direction split. Subscription providers
+        # still record real cost as zero (their flat-rate quota covers
+        # it) but we keep the rated split for quota_usd reporting.
+        rated_in, rated_out = estimate_cost_split(model, in_tok, out_tok)
+        rated_cost = rated_in + rated_out
         cost = 0.0 if is_subscription else rated_cost
+        cost_in = 0.0 if is_subscription else rated_in
+        cost_out = 0.0 if is_subscription else rated_out
         quota_usd = rated_cost if is_subscription else 0.0
         await record_success(provider_id)
         # v3.3.3: pass is_probe so synthetic outcomes don't pollute
         # provider_metrics aggregates that LMRHv2 reports back to
         # callers. Activity log + circuit breaker still record probes.
+        # v3.4.0: pass cost_split so per-direction columns get the
+        # accurate breakdown rather than the token-proportional
+        # heuristic the v3.3.x fallback applies.
         await record_request(
             db, provider_id, True, in_tok, out_tok, latency_ms, cost,
             key_record_id, ttft_ms, is_probe=is_probe,
+            cost_split=(cost_in, cost_out),
         )
         await record_cost(db, key_record_id, cost)
         observe_request(

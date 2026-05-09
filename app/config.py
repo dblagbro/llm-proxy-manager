@@ -142,8 +142,11 @@ class Settings(BaseSettings):
     # tail latency outliers (15s observed 2026-05-09) hurt p99 — better
     # to fail fast and let the router fall through to OpenRouter than
     # let a user wait 60s. Probes still use _PROBE_TIMEOUT_SEC (15s).
+    # v3.4.0: tightened 30→20s after a day of v3.3.3+ telemetry showed
+    # p95 ~7s and only 2 outliers >10s in 24h. 20s is still 3× headroom
+    # over real p95 while cutting tail-latency damage to user requests.
     grok_web_user_timeout_sec: int = Field(
-        30, alias="GROK_WEB_USER_TIMEOUT_SEC"
+        20, alias="GROK_WEB_USER_TIMEOUT_SEC"
     )
 
     # v3.0.7: activity_log + provider_metrics + run_events retention (days)

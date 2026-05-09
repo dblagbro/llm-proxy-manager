@@ -231,6 +231,15 @@ class ProviderMetric(Base):
     avg_ttft_ms = Column(Float, default=0.0)
     ttft_requests = Column(Integer, default=0)
     circuit_state = Column(String, default="closed")  # closed|open|half-open
+    # v3.4.0 — per-direction cost + token split. total_cost_usd /
+    # total_tokens stay as combined sums for back-compat; the new
+    # columns let LMRHv2 callers and operators see input-vs-output
+    # rates independently (e.g. summarization is output-cheap; context
+    # stuffing is input-expensive). Default 0 so older rows still load.
+    input_cost_usd = Column(Float, default=0.0)
+    output_cost_usd = Column(Float, default=0.0)
+    input_tokens = Column(Integer, default=0)
+    output_tokens = Column(Integer, default=0)
 
 
 class ModelAlias(Base):

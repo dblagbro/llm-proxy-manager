@@ -138,6 +138,18 @@ async def init_db():
             # global defaults (4/min providers, 60/min quotes).
             "ALTER TABLE api_keys ADD COLUMN lmrh_polling_rpm INTEGER",
             "ALTER TABLE api_keys ADD COLUMN lmrh_quotes_rpm INTEGER",
+            # v3.4.0 — per-direction cost split in provider_metrics.
+            # The combined ``total_cost_usd`` was insufficient for LMRHv2
+            # callers wanting to optimize input-heavy or output-heavy
+            # workloads independently (e.g. summarization is output-cheap
+            # vs context-stuffing being input-expensive). pricing.py was
+            # already returning a tuple from cost_per_token; we just
+            # weren't storing the split. New columns are nullable + default
+            # 0 so the migration is safe on existing rows.
+            "ALTER TABLE provider_metrics ADD COLUMN input_cost_usd REAL DEFAULT 0",
+            "ALTER TABLE provider_metrics ADD COLUMN output_cost_usd REAL DEFAULT 0",
+            "ALTER TABLE provider_metrics ADD COLUMN input_tokens INTEGER DEFAULT 0",
+            "ALTER TABLE provider_metrics ADD COLUMN output_tokens INTEGER DEFAULT 0",
         ]:
             try:
                 await conn.exec_driver_sql(stmt)

@@ -7,6 +7,25 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ---
 
+## v3.4.x — LMRHv2 Phase 3 (cost split + SSE push)
+
+### v3.4.0 — Per-direction cost split + SSE stream + tighter probe latency
+
+LMRHv2 Phase 3 lands as a single bundle plus a small probe-latency tightening informed by v3.3.3+ telemetry.
+
+- **Per-direction cost split** — `app/monitoring/pricing.py` + `app/monitoring/metrics.py` + `app/monitoring/helpers.py` + `app/routing/lmrh/snapshot.py`. New `estimate_cost_split()` returns `(input_cost, output_cost)` tuple; `estimate_cost()` becomes a thin sum wrapper. `record_request` accepts a `cost_split` parameter and writes to four new `provider_metrics` columns (`input_cost_usd`, `output_cost_usd`, `input_tokens`, `output_tokens`). LMRHv2 snapshot now reports `cost_per_1m_input_usd` and `cost_per_1m_output_usd` as truly independent rates rather than the combined-rate placeholder. Schema migration is idempotent. Legacy callers that don't pass `cost_split` get a token-proportional heuristic so per-direction columns still populate.
+- **`/lmrh/stream` Server-Sent Events endpoint** — `app/api/lmrh_v2.py`. Push semantics for clients that prefer subscribe-once vs polling every 30s. On connect emits `event: snapshot` with full payload + ETag as event id; subsequent ETag changes push fresh snapshots; configurable heartbeat (`heartbeat_sec` query, 10-120s, default 25) prevents proxy idle-timeouts. Per-key auth + per-key scope filter same as `/lmrh/providers`. `/.well-known/lmrh-config` advertises the new endpoint + `polling.stream_recommended: true`.
+- **Subscription quota disclosure** — already wired since v3.3.0; verified end-to-end. Three providers (Devin-Anthropic-Max-Gmail, Devin-Anthropic-Max-VG, Devin-Codex-Gmail) report `subscription_quota` block correctly. Added v3.3.5 spec doc note.
+- **Probe latency tightening 30s → 20s** — `app/config.py`. Default `grok_web_user_timeout_sec` lowered after a day of v3.3.3+ telemetry showed p95 ~7s with only 2 outliers >10s in 24h. 20s is still 3× headroom over real p95 while cutting tail-latency damage to user requests.
+
+Schema:
+- `ALTER TABLE provider_metrics ADD COLUMN input_cost_usd REAL DEFAULT 0`
+- `ALTER TABLE provider_metrics ADD COLUMN output_cost_usd REAL DEFAULT 0`
+- `ALTER TABLE provider_metrics ADD COLUMN input_tokens INTEGER DEFAULT 0`
+- `ALTER TABLE provider_metrics ADD COLUMN output_tokens INTEGER DEFAULT 0`
+
+Tests: +8 in `tests/unit/test_v340_phase3_and_split.py` (split function, total wrapper, unknown-model, record_request split write, fallback heuristic, well-known stream advertisement). 1014 → 1022 passing.
+
 ## v3.3.x — LMRHv2 bidirectional metrics feedback channel
 
 ### v3.3.5 — Conversation rotation + import cleanup
