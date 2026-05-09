@@ -28,6 +28,11 @@ class Settings(BaseSettings):
     # Hold-down timer (seconds to suppress a provider after failure)
     hold_down_sec: int = Field(120, alias="HOLD_DOWN_SEC")
 
+    # LMRH v2 — bidirectional metrics feedback channel.
+    # Operator-approved 2026-05-09; default-off until per-node flip
+    # after SDK reference impl proven (operator decision #6).
+    lmrh_v2_enabled: bool = Field(False, alias="LMRH_V2_ENABLED")
+
     # CoT-E pipeline
     cot_enabled: bool = Field(True, alias="COT_ENABLED")
     cot_max_iterations: int = Field(1, alias="COT_MAX_ITERATIONS")
