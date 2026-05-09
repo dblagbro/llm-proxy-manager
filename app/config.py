@@ -124,6 +124,27 @@ class Settings(BaseSettings):
     keepalive_probe_per_call_providers: bool = Field(
         False, alias="KEEPALIVE_PROBE_PER_CALL_PROVIDERS"
     )
+    # v3.3.3: probe back-off after rate_limit (HTTP 429) — see audit on
+    # 2026-05-09 for the pattern this addresses (probes spaced exactly
+    # 5min apart kept hammering grok.com during throttle windows; 11
+    # probe-warnings/day all rate_limit class). On a rate_limit failure
+    # we double the next-probe delay starting from interval_sec, capped
+    # at backoff_max_sec; reset on first success. 0 disables back-off
+    # (pre-v3.3.3 behavior).
+    keepalive_probe_rate_limit_backoff_max_sec: int = Field(
+        1800, alias="KEEPALIVE_PROBE_RATE_LIMIT_BACKOFF_MAX_SEC"
+    )
+    keepalive_probe_rate_limit_backoff_factor: float = Field(
+        2.0, alias="KEEPALIVE_PROBE_RATE_LIMIT_BACKOFF_FACTOR"
+    )
+
+    # v3.3.3: outer ceiling on user-traffic grok-web requests. Bridge
+    # tail latency outliers (15s observed 2026-05-09) hurt p99 — better
+    # to fail fast and let the router fall through to OpenRouter than
+    # let a user wait 60s. Probes still use _PROBE_TIMEOUT_SEC (15s).
+    grok_web_user_timeout_sec: int = Field(
+        30, alias="GROK_WEB_USER_TIMEOUT_SEC"
+    )
 
     # v3.0.7: activity_log + provider_metrics + run_events retention (days)
     activity_log_retention_days: int = Field(30, alias="ACTIVITY_LOG_RETENTION_DAYS")

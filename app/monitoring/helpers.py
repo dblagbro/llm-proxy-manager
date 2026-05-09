@@ -266,13 +266,20 @@ async def record_outcome(
         is_subscription = (explicit_cost_class == "subscription")
     else:
         is_subscription = provider_type in SUBSCRIPTION_TIER_PROVIDER_TYPES
+    is_probe = key_record_id == "probe-keepalive"
     if success:
         latency_ms = (time.monotonic() - t0) * 1000
         rated_cost = estimate_cost(model, in_tok, out_tok)
         cost = 0.0 if is_subscription else rated_cost
         quota_usd = rated_cost if is_subscription else 0.0
         await record_success(provider_id)
-        await record_request(db, provider_id, True, in_tok, out_tok, latency_ms, cost, key_record_id, ttft_ms)
+        # v3.3.3: pass is_probe so synthetic outcomes don't pollute
+        # provider_metrics aggregates that LMRHv2 reports back to
+        # callers. Activity log + circuit breaker still record probes.
+        await record_request(
+            db, provider_id, True, in_tok, out_tok, latency_ms, cost,
+            key_record_id, ttft_ms, is_probe=is_probe,
+        )
         await record_cost(db, key_record_id, cost)
         observe_request(
             provider=provider_id, model=model, endpoint=endpoint,
@@ -289,7 +296,6 @@ async def record_outcome(
         clear_auth_failure(provider_id)
         # v2.8.5: human-friendly message — use provider_name when given.
         # Reads e.g. "Devin-VG · claude-sonnet-4-6" instead of just "claude-oauth".
-        is_probe = key_record_id == "probe-keepalive"
         msg_prefix = "[probe] " if is_probe else ""
         msg = f"{msg_prefix}{provider_name} · {model}" if provider_name else f"{msg_prefix}{model}"
         # v3.0.41: normalize served_model. Internally `model` carries the
@@ -359,13 +365,17 @@ async def record_outcome(
             await record_auth_failure(provider_id, error_str)
         else:
             await record_failure(provider_id, billing_error=is_billing_error(error_str))
-        await record_request(db, provider_id, False, 0, 0, 0, 0, key_record_id)
+        # v3.3.3: same is_probe gate on the failure path so probe-only
+        # rate-limit warnings don't drag down user-visible success_rate.
+        await record_request(
+            db, provider_id, False, 0, 0, 0, 0, key_record_id,
+            is_probe=is_probe,
+        )
         observe_request(
             provider=provider_id, model=model, endpoint=endpoint,
             success=False, duration_sec=0.0,
             in_tokens=0, out_tokens=0, cost_usd=0.0,
         )
-        is_probe = key_record_id == "probe-keepalive"
         msg_prefix = "[probe] " if is_probe else ""
         msg = (f"{msg_prefix}{provider_name} · {model} — error"
                if provider_name else f"{msg_prefix}{model} — error")

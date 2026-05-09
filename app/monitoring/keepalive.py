@@ -59,6 +59,95 @@ def _probe_interval_sec() -> int:
         return _DEFAULT_INTERVAL_SEC
 
 
+# v3.3.3: per-provider rate-limit back-off state.
+# When a probe gets a rate_limit error (HTTP 429), we delay the next
+# probe by interval × factor^N where N is consecutive 429s (capped at
+# backoff_max_sec). Resets on success. Pre-v3.3.3 every probe fired
+# every 5min unconditionally — when grok.com rate-limited us, the
+# next probe re-hit the same window and the cycle continued for hours.
+_probe_backoff_until: dict[str, float] = {}
+_consecutive_rate_limits: dict[str, int] = {}
+
+
+def _is_rate_limit_error(error_str: str) -> bool:
+    """Lightweight rate-limit detector. Mirrors the rate_limit-class
+    patterns from circuit_breaker.classify_error() but without the
+    full taxonomy import to keep the back-off path cheap."""
+    if not error_str:
+        return False
+    low = error_str.lower()
+    return any(p in low for p in (
+        "429", "rate_limit", "rate limit", "too many requests",
+        "ratelimit", "throttled",
+    ))
+
+
+def _backoff_skip(provider_id: str) -> bool:
+    """True if this provider is currently in a rate-limit back-off
+    window and should be skipped this sweep."""
+    until = _probe_backoff_until.get(provider_id)
+    if not until:
+        return False
+    return time.time() < until
+
+
+def _record_probe_outcome_for_backoff(provider_id: str, error_str: str) -> None:
+    """Update back-off state after a probe completes. Called from
+    _probe_one() so all probe paths feed it.
+
+    On rate-limit error: increment consecutive counter, set
+    _probe_backoff_until = now + interval × factor^N (capped at max).
+    On any other outcome (success, auth error, etc.): clear state so
+    the next probe fires on the normal cadence."""
+    if _is_rate_limit_error(error_str):
+        n = _consecutive_rate_limits.get(provider_id, 0) + 1
+        _consecutive_rate_limits[provider_id] = n
+        try:
+            interval = _probe_interval_sec() or _DEFAULT_INTERVAL_SEC
+            factor = float(getattr(
+                settings, "keepalive_probe_rate_limit_backoff_factor", 2.0,
+            ))
+            cap = int(getattr(
+                settings, "keepalive_probe_rate_limit_backoff_max_sec", 1800,
+            ))
+        except Exception:
+            interval, factor, cap = _DEFAULT_INTERVAL_SEC, 2.0, 1800
+        if cap <= 0 or factor <= 1.0:
+            # Back-off disabled — clear any existing window.
+            _probe_backoff_until.pop(provider_id, None)
+            return
+        # delay = interval × factor^N, capped. N=1 → interval×factor;
+        # the regular loop sleep will already wait one interval, so
+        # the first 429 doubles the gap (interval×2 from now ≈
+        # interval since the loop sleeps interval before the next
+        # sweep anyway → effective ≥ 2×interval = 10min by default).
+        delay = min(interval * (factor ** n), float(cap))
+        _probe_backoff_until[provider_id] = time.time() + delay
+        logger.info(
+            "keepalive.backoff_set provider=%s consecutive_429=%d "
+            "next_probe_in_sec=%.0f",
+            provider_id, n, delay,
+        )
+    else:
+        # Any non-rate-limit outcome (success, auth, network) resets.
+        if provider_id in _consecutive_rate_limits:
+            _consecutive_rate_limits.pop(provider_id, None)
+            _probe_backoff_until.pop(provider_id, None)
+
+
+def get_backoff_state() -> dict[str, dict]:
+    """Diagnostic snapshot — used by admin endpoints + tests to inspect
+    which providers are currently throttled and for how long."""
+    now = time.time()
+    return {
+        pid: {
+            "consecutive_rate_limits": _consecutive_rate_limits.get(pid, 0),
+            "backoff_remaining_sec": max(0.0, until - now),
+        }
+        for pid, until in _probe_backoff_until.items()
+    }
+
+
 async def _had_recent_traffic(db: AsyncSession, provider_id: str, lookback_sec: int) -> bool:
     """True if any provider_metrics bucket for this provider was updated
     within the lookback window. Cheaper than scanning activity_log."""
@@ -283,6 +372,11 @@ async def _probe_one(provider: Provider) -> None:
         except Exception as e:
             logger.warning("keepalive.record_outcome_failed provider=%s err=%s",
                            provider.id, e)
+    # v3.3.3: feed the back-off state machine. Success clears any
+    # consecutive-429 streak; rate_limit error extends the next-probe
+    # delay. Done OUTSIDE the AsyncSessionLocal block so DB lifetime
+    # doesn't entangle with in-memory dict state.
+    _record_probe_outcome_for_backoff(provider.id, err_str if not success else "")
 
 
 async def _probe_all_once() -> int:
@@ -331,6 +425,13 @@ async def _probe_all_once() -> int:
             continue
         if not await is_available(p.id):
             logger.debug("keepalive.skipped_breaker_open provider=%s", p.id)
+            continue
+        # v3.3.3: skip providers in rate-limit back-off window.
+        if _backoff_skip(p.id):
+            logger.debug(
+                "keepalive.skipped_rate_limit_backoff provider=%s remaining=%.0fs",
+                p.id, max(0.0, _probe_backoff_until.get(p.id, 0.0) - time.time()),
+            )
             continue
         try:
             await _probe_one(p)

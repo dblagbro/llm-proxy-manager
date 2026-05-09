@@ -34,7 +34,22 @@ async def record_request(
     cost_usd: float,
     api_key_id: Optional[str] = None,
     ttft_ms: float = 0.0,
+    is_probe: bool = False,
 ):
+    # v3.3.3: synthetic keep-alive probes do not contribute to the
+    # provider_metrics aggregates. Probe outcomes still hit activity_log
+    # (via record_outcome's log_event call) and circuit_breaker
+    # (via record_success/record_failure) — only the
+    # requests/successes/failures counters and avg_latency rolling mean
+    # skip probes. Reason: LMRHv2 callers query success_rate from these
+    # buckets to decide where to route traffic; a 5-min synthetic
+    # probe failing while user requests are succeeding shouldn't tank
+    # the apparent success_rate. The 2026-05-09 audit found 11 of 13
+    # warnings/day on grok-web were rate-limited probes — surfacing
+    # them as a 93% success rate misled the LMRH metric vs the actual
+    # ~100% user-traffic rate.
+    if is_probe:
+        return
     bucket = _bucket()
     cb_states = get_all_states()
     circuit_state = cb_states.get(provider_id, {}).get("state", "closed")
