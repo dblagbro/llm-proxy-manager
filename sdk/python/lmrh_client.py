@@ -359,7 +359,7 @@ class LmrhClient:
         }
         while not self._stop.is_set():
             try:
-                self._sse_session(url, headers, on_snapshot)
+                self._sse_session(url, headers, on_snapshot, heartbeat_sec=heartbeat_sec)
             except _StreamUnsupported:
                 logger.info(
                     "lmrh /stream returned 404 at %s — falling back to polling",
@@ -377,6 +377,7 @@ class LmrhClient:
         url: str,
         headers: dict,
         on_snapshot: "Callable[[Snapshot], None]",
+        heartbeat_sec: int = 25,
     ) -> None:
         """One SSE read loop. Returns on stream close or stop event.
 
@@ -390,13 +391,29 @@ class LmrhClient:
 
         We accumulate ``data:`` lines until a blank line separator,
         then parse + dispatch. Heartbeats (``: ping``) are skipped.
+
+        v3.5.9 BUG-009 fix: read timeout is set to ``heartbeat_sec * 2``
+        so ``iter_lines()`` unblocks at most ~2× the heartbeat interval
+        when ``stop()`` is called between heartbeats. Pre-fix the
+        client used ``timeout=None`` which meant ``iter_lines`` could
+        block indefinitely waiting for the next event/heartbeat,
+        making graceful shutdown unreliable.
+
+        On read timeout we re-raise as ``httpx.ReadTimeout``; the
+        outer ``subscribe()`` reconnect loop catches it and either
+        reconnects (if not stopped) or exits cleanly (if stopped).
+        Effective stop latency: ≤ ``heartbeat_sec * 2`` seconds.
         """
-        # No timeout on httpx stream itself — we rely on the server's
-        # heartbeat (`: ping` every heartbeat_sec) to keep the
-        # connection alive. If the server stops emitting heartbeats
-        # the OS-level TCP keepalive eventually surfaces a connection
-        # error which the outer loop catches + reconnects.
-        with httpx.Client(timeout=None) as client:
+        # Read timeout = 2× heartbeat — server emits heartbeat every
+        # heartbeat_sec, so a 2x ceiling means a missed heartbeat fails
+        # fast without false-positives during normal operation.
+        client_timeout = httpx.Timeout(
+            connect=10.0,
+            read=float(heartbeat_sec * 2),
+            write=10.0,
+            pool=10.0,
+        )
+        with httpx.Client(timeout=client_timeout) as client:
             with client.stream("GET", url, headers=headers) as resp:
                 if resp.status_code == 404:
                     raise _StreamUnsupported()

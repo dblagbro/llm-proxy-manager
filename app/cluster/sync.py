@@ -154,6 +154,20 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
                 existing.enabled = False
                 if peer_updated_at:
                     existing.updated_at = peer_updated_at
+                # v3.5.9 BUG-012 fix — clear local CB state on inbound
+                # tombstone propagation. Same cleanup as the admin
+                # DELETE endpoint does; without it, a delete that
+                # happens on a peer leaves our local /health
+                # reporting ghost CB entries until container restart.
+                try:
+                    from app.routing.circuit_breaker import (
+                        _local_states as _cb_states,
+                        _auth_failed as _cb_auth_failed,
+                    )
+                    _cb_states.pop(existing.id, None)
+                    _cb_auth_failed.pop(existing.id, None)
+                except Exception:
+                    pass  # cluster sync must not fail if CB import shifts
                 continue
 
             # If WE have a tombstone newer than the peer's update, do nothing
