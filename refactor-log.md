@@ -1157,3 +1157,170 @@ maintains a live logged-in browser session (bridge mode).
    directly.
 5. **Activity log api_key_id orphans** (8 events with deleted-key
    refs). Minor; ages out via 30-day prune.
+
+---
+
+## 2026-05-09 — v3.2.10–v3.3.1: grok-web observability + LMRHv2 protocol
+
+### Scope
+
+Six versions in one session continuing the v3.2.x grok-web sprint and
+opening the v3.3.x LMRHv2 protocol family. Three buckets:
+
+1. **Observability fixes** for the v3.2.0 grok-web that had been
+   shipping invisibly (no metrics, no probes).
+2. **Cluster-sync hardening** to prevent the v3.2.7 ad-hoc fix from
+   needing repeat application.
+3. **LMRHv2 Phase 1 + 2** — bidirectional metrics feedback channel,
+   designed and shipped in one session after operator approved all
+   7 design questions.
+
+### Key changes
+
+**v3.2.10** — observability bug fixes:
+- `app/api/_grok_web_dispatch.py` now plumbs `record_outcome` on every
+  terminal state. Streaming wrappers count chars for token estimates.
+- `app/monitoring/keepalive.py` adds `grok-web` to `SUBSCRIPTION_TYPES`
+  + new `_probe_one` branch dispatching via `complete_grok_web`.
+- `app/monitoring/helpers.py` adds `grok-web` to
+  `SUBSCRIPTION_TIER_PROVIDER_TYPES` so cost-class stays subscription.
+
+**v3.2.11** — Playwright `/conversations/new` + auto-stamp listener:
+- `grok_bridge/app.py` /api/conversation/new uses Playwright Locator
+  API (auto-retries on stale DOM) to drive the SPA rather than the
+  blocked server-side POST. In-browser `fetch()` confirmed still 403'd
+  by Cloudflare → URL pattern is the gate, not TLS fingerprint.
+- New `app/models/_user_edit_stamp.py` registers a SQLAlchemy
+  `before_update` listener that auto-bumps
+  `Provider.last_user_edit_at` on user-meaningful column changes.
+  Excludes background-rotation columns. Belt-and-suspenders for the
+  v3.2.7 fix.
+
+**v3.2.12** — `api_key_prefix` denormalized into `event_meta`:
+- `record_outcome` looks up `ApiKey.key_prefix` once per event and
+  writes it. Probes get the literal `"probe-keepalive"` string. Fixes
+  the proactive-monitoring sweep's mis-attribution.
+
+**v3.3.0** — LMRHv2 Phase 1:
+- New `app/routing/lmrh/snapshot.py` (~340 lines) — in-memory snapshot
+  with 30 s background refresh loop. Frozen dataclasses + per-key
+  scope filter. ETag derivation from identity-affecting fields
+  (excludes `as_of`).
+- New `app/api/lmrh_v2.py` (~330 lines) — endpoint router with
+  per-key sliding-window rate limit. `Cache-Control` + ETag
+  conditional GET. Feature-flag gate (`lmrh_v2_enabled`).
+- `app/main.py` — register router, start snapshot loop, add Link
+  header injection middleware (RFC 8288).
+- `app/models/db.py` — `ApiKey.lmrh_polling_rpm` + `lmrh_quotes_rpm`
+  override columns.
+- `app/config.py` + `app/config_runtime.py` — `lmrh_v2_enabled`
+  setting, default False.
+
+**v3.3.1** — LMRHv2 Phase 2:
+- `app/routing/router.py` — `select_provider(dry_run=True)` returns
+  the ranked candidate list (provider, profile, unmet, score) before
+  winner-pick + dispatch. ~20 lines added.
+- `app/api/lmrh_v2.py` — new `GET /lmrh/quotes` endpoint joins
+  ranked candidates with snapshot metrics for predicted-cost /
+  predicted-latency rendering.
+- New `sdk/python/lmrh_client.py` (~370 lines) — single-file Python
+  reference SDK. httpx-based polling thread, ETag-aware, graceful 404
+  degradation. `build_hint(prefer=...)` synthesizes valid LMRH 1.x
+  hints from caller preferences.
+
+### Architectural decisions
+
+- **Per-cluster vs per-node feature flag**: `lmrh_v2_enabled` lives in
+  the cluster-synced `SystemSetting` table, so flipping on one node
+  propagates to peers. Operator decision #6 said "per-node flip" but
+  practically this becomes per-cluster. Acceptable for LMRHv2 (the
+  protocol is read-only + additive, so fleet-wide enable is safe).
+  Future flags that need true per-node control will need a separate
+  config path (env-var-only, no SystemSetting row).
+
+- **Per-node snapshot, no cluster sync of the snapshot itself**: each
+  proxy node builds its own snapshot from its local ProviderMetric.
+  The underlying ProviderMetric IS already cluster-replicated, so the
+  snapshots converge. Cheaper than syncing the rendered snapshot
+  every 30 s.
+
+- **Phase 2 reuses `select_provider` with a `dry_run` flag** rather
+  than extracting a helper. Reasoning: the function already encodes
+  a non-trivial filter pipeline (10+ filters: enabled, pinned,
+  exclude_id, ownership, available, tools, family, model_supports,
+  embedding-only, etc.). Extracting would risk subtle divergence
+  between dry-run and real-dispatch. Single function, single source
+  of truth, clean opt-in.
+
+- **SDK ships with the proxy repo, not as a separate package**.
+  Operators vendor it via `cp` for now; if downstream usage proves
+  out, we publish to PyPI. Avoids npm-style dependency hell across
+  the bot fleet.
+
+### Files impacted
+
+**Backend**:
+- `app/api/_grok_web_dispatch.py` (~530 lines after v3.2.10 hardening)
+- `app/api/lmrh_v2.py` (NEW, ~480 lines after v3.3.1)
+- `app/api/messages.py` + `app/api/completions.py` (+5 line dispatch
+  call sites pass observability args)
+- `app/monitoring/keepalive.py` (+30 lines grok-web branch)
+- `app/monitoring/helpers.py` (+15 lines)
+- `app/routing/router.py` (+25 lines dry-run mode)
+- `app/routing/lmrh/snapshot.py` (NEW)
+- `app/models/db.py` (+2 columns on ApiKey)
+- `app/models/_user_edit_stamp.py` (NEW, ~80 lines)
+- `app/models/database.py` (+3 ALTER TABLE)
+- `app/main.py` (+15 lines: link header middleware, snapshot start)
+- `app/config.py` + `app/config_runtime.py` (+lmrh_v2_enabled)
+
+**Bridge**:
+- `grok_bridge/app.py` (~50 lines for /api/conversation/new rewrite)
+
+**Frontend**:
+- `frontend/src/components/providers/GrokWebProviderFields.tsx`
+  (+30 lines for "Create new" button)
+
+**SDK** (new):
+- `sdk/python/lmrh_client.py` (NEW, ~370 lines)
+- `sdk/python/test_lmrh_client.py` (NEW, 11 tests)
+- `sdk/python/README.md` (NEW)
+
+**Tests**:
+- `tests/unit/test_user_edit_stamp.py` (NEW, 7 tests)
+- `tests/unit/test_record_outcome_meta.py` (NEW, 4 tests)
+- `tests/unit/test_lmrh_v2.py` (NEW, 13 tests)
+- Existing files updated for new behavior
+
+**Net test count**: 950 → 988 (977 unit + 11 SDK).
+
+### Risks
+
+- **`app/api/_grok_web_dispatch.py` at 530 lines** is now the largest
+  single dispatcher in the codebase. Phase 1 split it OUT of
+  messages.py + completions.py (good); Phase 2's record_outcome
+  plumbing added another ~100 lines. Splittable along the
+  manual/bridge axis if it grows further.
+- **`app/api/lmrh_v2.py` at 480 lines** has 5 endpoints + rate
+  limiter + snapshot rendering. Splittable when /lmrh/quotes grows
+  scoring features (e.g. cost-class explanation) — for now, single
+  file is the right cohesion.
+- **In-memory rate-limit state** (`_rate_state`) is per-process. A
+  caller hitting both www01 and www02 sees its rate-limit budget
+  doubled. Acceptable for the v3.3.0 default budgets (4/min); when
+  we tighten budgets or scale up callers, move to Redis.
+
+### Remaining issues / next refactor targets
+
+1. **LMRHv2 Phase 4** (subscription-quota disclosure) — operator
+   approved in v3.3.0 design but deferred to a future ship. Wire
+   `usage_session_window_sec` etc. into snapshot rendering, gated by
+   ownership filter.
+2. **SDK adoption** — pick one downstream caller (likely
+   coordinator-hub or DevinGPT) to integrate the SDK and validate the
+   API shape before publishing to PyPI.
+3. **Activity-log api_key_id orphan cleanup** — recurring item;
+   ages out via 30-day prune.
+4. **`coordinator-post` jq fix propagation** — local fix to the
+   `--arg label` reserved-keyword collision needs to be pushed to
+   other bots via the coordinator installer.

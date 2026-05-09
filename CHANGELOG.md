@@ -7,7 +7,66 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ---
 
+## v3.3.x — LMRHv2 bidirectional metrics feedback channel
+
+### v3.3.1 — `/lmrh/quotes` dry-run scoring + Python SDK reference
+
+Phase 2 of the LMRHv2 protocol (operator decisions locked 2026-05-09).
+
+- **`GET /lmrh/quotes?model=X[&hint=...]`** — pre-flight an inference request without dispatching. Returns the proxy's ranked candidate list (same scoring path as `/v1/messages`, just stops before winner-pick + dispatch) enriched with predicted cost / latency / TTFT / success_rate from the snapshot. Sophisticated callers see what WOULD happen for a given hint. Default rate limit 60/min vs providers' 4/min (per-call, less cache-friendly than bulk). Implementation: new `dry_run=True` mode on `select_provider()`.
+- **`sdk/python/lmrh_client.py`** — single-file Python SDK. Background polling thread (60 s default, ETag-aware so steady-state polls return 304). Graceful 404 degradation. `build_hint(task=, prefer=, model_family=, region=, ...)` synthesizes RFC 8941-shaped headers from caller preferences. `prefer="most_reliable"` weights `success_rate × log(samples)` so 1.0 with 1 sample doesn't beat 0.99 with 600 samples.
+
+Tests: +13 (5 endpoint + 8 SDK). Total 977 unit + 11 SDK = 988.
+
+Live-verified: `/lmrh/quotes?model=x-ai/grok-4` ranks Grok-Web-Devin (#1, score 999, 18 samples) above OpenRouter (#2). SDK live-smoke against the proxy produces correct hints for all four `prefer` modes including resolved provider-id for `most_reliable`.
+
+### v3.3.0 — LMRHv2 Phase 1 (bidirectional metrics feedback)
+
+First major-feature surface of LMRHv2 (operator-approved 2026-05-09). Read-only metrics endpoints so LMRH-aware clients see live provider/model cost, latency, success-rate, and circuit state for their next request. **Default-off** via `lmrh_v2_enabled` feature flag — the flag is stored in cluster-synced `SystemSetting`, so flipping on one cluster node propagates to peers. Isolated nodes (`CLUSTER_ENABLED=false`, e.g. smoke) stay off until manually flipped.
+
+New endpoints (under existing `/llm-proxy2/`):
+- `GET /.well-known/lmrh-config` — server metadata, RFC 8615 well-known URI
+- `GET /lmrh/providers` — live snapshot, key-scoped, ETag-cacheable, 30 s `max-age`
+- `GET /lmrh/providers/{id}` — single-provider deep view; 404 hides operator-private providers
+- `GET /lmrh/health` — aggregate fleet counters
+
+Discovery: every `/v1/*` response carries `Link` header (RFC 8288) plus `LMRH-Version` (1.2 default-off, 2.0 enabled). Backward-compatible — v1.x clients unaffected.
+
+Architecture:
+- `app/routing/lmrh/snapshot.py` — in-memory snapshot, 30 s background refresh loop. Per-node, no cross-cluster sync (underlying ProviderMetric is already cluster-replicated).
+- `app/api/lmrh_v2.py` — endpoint router. Per-key sliding-window rate limit (4/min providers, 60/min quotes), with `ApiKey.lmrh_polling_rpm` / `lmrh_quotes_rpm` overrides.
+- ETag round-trip on `/lmrh/providers` so clients return `304 Not Modified` between snapshot refreshes.
+
+Tests: +9 (snapshot + endpoints). 953 → 964. Operator decisions locked: see `project_lmrhv2_design.md` §8 in memory.
+
+---
+
 ## v3.2.x — grok-web (cookie replay) + Playwright bridge sidecar
+
+### v3.2.12 — `api_key_prefix` denormalized into activity_log event_meta
+
+Self-contained log entries — no JOIN against `api_keys` needed. `record_outcome` now looks up `ApiKey.key_prefix` once per event and writes it to `event_meta.api_key_prefix` on both success and failure paths. The magic `key_record_id` "probe-keepalive" gets a literal `"probe-keepalive"` prefix so probe events stay filterable. Unknown / deleted-key references render as `None`. Bonus: sanitized one stale row in production where an earlier fix-it script had written a sha256 hash into the `key_prefix` column. +4 tests. 956 → 960.
+
+### v3.2.11 — Playwright `/conversations/new` + auto-stamp event listener
+
+Two improvements off the v3.2.10 backlog:
+
+- **Bridge `/api/conversation/new`** drives Chromium UI to send a one-token "hi" message, harvests the resulting `/c/<uuid>` redirect. Uses Playwright Locator API (auto-retries on stale DOM that ElementHandle.click() stumbled on). In-browser `fetch()` to `/conversations/new` confirmed still 403'd by Cloudflare anti-bot even from real-browser TLS context — anti-bot is on the URL pattern, not just fingerprint. Live-verified: returned `e01d81f8-…` conversation_id; new UUID serves inference end-to-end. Wizard exposes a "Create new" button.
+- **`app/models/_user_edit_stamp.py`** — SQLAlchemy `before_update` event listener auto-bumps `Provider.last_user_edit_at` when user-meaningful columns change. Background-rotation columns (api_key, oauth_refresh_token, oauth_expires_at, deleted_at, updated_at) excluded — those are exactly what the v3.0.11 stamp design was built to ignore. Belt-and-suspenders for the v3.2.7 cluster-sync fix: even direct DB writes now signal "this is a real edit". Explicit caller stamps (e.g. data import) still respected. +7 tests. 953 → 960.
+
+### v3.2.10 — grok-web observability (record_outcome + keep-alive + cost-class)
+
+Two real bugs surfaced when the operator asked "0 traffic to grok new provider... not even a search for grok in activity? keep alives working?":
+
+1. **grok-web traffic was completely invisible** to ProviderMetric, activity_log, circuit_breaker, and per-key budget tracking. The v3.2.0 dispatch path bypassed `record_outcome` entirely. Pre-fix: `grok-web 24h: reqs=0 ok=0 fail=0` despite verified live calls.
+2. **Keep-alive probes never ran for grok-web** — only OAuth subscriptions were probed. Bridge session staleness wouldn't surface until organic traffic 401'd.
+
+Three fixes:
+- `app/api/_grok_web_dispatch.py`: both helpers now call `record_outcome` on every terminal state. Streaming wrappers count chars for token estimates (4-char/token heuristic — grok.com web doesn't return per-chunk usage).
+- `app/monitoring/keepalive.py`: `SUBSCRIPTION_TYPES` extended with `grok-web`; new `_probe_one` branch dispatches via `complete_grok_web`.
+- `app/monitoring/helpers.py`: `SUBSCRIPTION_TIER_PROVIDER_TYPES` extended with `grok-web` so cost-class stays subscription.
+
++3 tests. Live-verify: `ProviderMetric reqs=2 ok=2 fail=0` after 1 organic + 1 probe in 10-min window.
 
 ### v3.2.7 — Cluster-sync LWW: tie-break fall-through + tz-naive normalization
 

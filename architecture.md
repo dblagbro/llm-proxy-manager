@@ -353,3 +353,75 @@ records cluster-sync the public URL.
 **Live test**: `tests/integration/` (added v3.2.x) covers the bridge
 contract; manual OAuth login is operator-driven (one-time per fresh
 volume).
+
+## LMRHv2 — bidirectional metrics feedback (v3.3.0+)
+
+LMRH 1.x was one-way: client sends `LLM-Hint` → proxy decides. v2
+adds a feedback channel where the proxy publishes provider/model
+cost/latency/reliability/circuit data and clients use it to construct
+optimal hints for their next request.
+
+```
+app/routing/lmrh/snapshot.py    LmrhSnapshot dataclass + 30s background
+                                  refresh loop. Per-node, no cluster sync
+                                  of the snapshot itself. ETag derived from
+                                  identity-affecting fields.
+
+app/api/lmrh_v2.py              5 endpoints + per-key sliding-window rate
+                                  limit + ETag conditional GET handling.
+                                  Feature-gated via lmrh_v2_enabled
+                                  (default False — endpoints return 404
+                                  when off).
+
+  Endpoints (all under /llm-proxy2/):
+    GET /.well-known/lmrh-config    public; protocol metadata + endpoint
+                                      discovery (RFC 8615)
+    GET /lmrh/providers             auth; live snapshot, key-scoped,
+                                      ETag-cacheable, 30s max-age
+    GET /lmrh/providers/{id}        auth; single-provider deep view
+    GET /lmrh/quotes?model=X        v3.3.1+; pre-flight a request,
+                                      returns ranked candidates without
+                                      dispatching. Reuses
+                                      select_provider(dry_run=True).
+    GET /lmrh/health                auth; aggregate fleet counters
+
+app/main.py                     Link header injection middleware
+                                  (RFC 8288). Every /v1/* response
+                                  carries:
+                                    Link: </.well-known/lmrh-config>; ...
+                                    Link: </lmrh/providers>; ...
+                                    LMRH-Version: 2.0  (or 1.2 default-off)
+
+sdk/python/lmrh_client.py       Single-file Python SDK reference.
+                                  Background polling, ETag-aware,
+                                  graceful 404 degradation. build_hint()
+                                  synthesizes RFC 8941-shaped hints from
+                                  caller preferences (cheapest / fastest /
+                                  most_reliable / model_family / region).
+```
+
+**Per-cluster vs per-node flag**: `lmrh_v2_enabled` lives in the
+cluster-synced `SystemSetting` table, so flipping on one node
+propagates to peers. Isolated nodes (`CLUSTER_ENABLED=false`, e.g.
+the smoke instance) stay off until manually flipped.
+
+**Rate limits** (operator decision #5): per-key, default 4/min for
+`/lmrh/providers` and 60/min for `/lmrh/quotes`. Override via
+`ApiKey.lmrh_polling_rpm` / `lmrh_quotes_rpm` columns (NULL = use
+default). State is in-memory per-process (`_rate_state` dict in
+`lmrh_v2.py`); when budgets tighten or callers scale, move to Redis.
+
+**Scope filter** (operator decision #1): every endpoint applies
+`Provider.owned_by_key_id` filtering at render time so callers see
+only providers their key can route to. Operator-private providers
+stay private.
+
+**Backward compat**: every LMRH 1.x client keeps working unchanged.
+v2 adds optional response headers (`Link`, `LMRH-Version`,
+`LMRH-Hint-Echo`) and new endpoints; nothing in the existing surface
+changes. Coordinator-hub team got 1-week notice via KB #2520 before
+the protocol-version flag flipped fleet-wide.
+
+**Design + decisions doc**: `project_lmrhv2_design.md` in operator
+memory. Operator-locked answers to all 7 design questions on
+2026-05-09.
