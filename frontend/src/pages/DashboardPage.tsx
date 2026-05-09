@@ -27,6 +27,15 @@ export function DashboardPage() {
   const { data: providers } = useQuery({ queryKey: ['providers'], queryFn: providersApi.list, refetchInterval: 30_000 })
   const { data: activity } = useQuery({ queryKey: ['activity'], queryFn: () => monitoringApi.activity({ limit: 20 }), refetchInterval: 10_000 })
   const { data: extStatus } = useQuery({ queryKey: ['status-pages'], queryFn: monitoringApi.statusPages, refetchInterval: 300_000 })
+  // v3.5.6 — keep-alive probe back-off state. Polls every 30s; the
+  // back-off windows are typically 10-30 minutes long so a 30s poll
+  // surfaces transitions within that resolution while keeping the
+  // dashboard request rate negligible.
+  const { data: probeState } = useQuery({
+    queryKey: ['probe-state'],
+    queryFn: monitoringApi.probeState,
+    refetchInterval: 30_000,
+  })
 
   const totalRequests = metrics?.providers.reduce((s, p) => s + p.requests, 0) ?? 0
   const totalCost = metrics?.providers.reduce((s, p) => s + p.total_cost_usd, 0) ?? 0
@@ -190,23 +199,77 @@ export function DashboardPage() {
           </CardContent>
         </Card>
 
-        {/* External status */}
-        <Card>
-          <CardHeader><CardTitle>External Status</CardTitle></CardHeader>
-          <CardContent className="space-y-3">
-            {(['anthropic', 'openai', 'google'] as const).map(key => {
-              const s = extStatus?.[key]
-              return (
-                <div key={key} className="flex items-center justify-between">
-                  <span className="text-sm font-medium text-gray-700 dark:text-gray-300 capitalize">{key}</span>
-                  <Badge variant={!s ? 'muted' : s.degraded ? 'danger' : 'success'}>
-                    {!s ? 'Checking…' : s.degraded ? 'Degraded' : 'Operational'}
-                  </Badge>
-                </div>
-              )
-            })}
-          </CardContent>
-        </Card>
+        {/* Right column — external status + probe state stacked */}
+        <div className="space-y-6">
+          <Card>
+            <CardHeader><CardTitle>External Status</CardTitle></CardHeader>
+            <CardContent className="space-y-3">
+              {(['anthropic', 'openai', 'google'] as const).map(key => {
+                const s = extStatus?.[key]
+                return (
+                  <div key={key} className="flex items-center justify-between">
+                    <span className="text-sm font-medium text-gray-700 dark:text-gray-300 capitalize">{key}</span>
+                    <Badge variant={!s ? 'muted' : s.degraded ? 'danger' : 'success'}>
+                      {!s ? 'Checking…' : s.degraded ? 'Degraded' : 'Operational'}
+                    </Badge>
+                  </div>
+                )
+              })}
+            </CardContent>
+          </Card>
+
+          {/* v3.5.6 — keep-alive probe back-off state. Empty at steady-
+              state (just shows green 'all probes healthy'); when grok-web
+              or any subscription-tier-probed provider is currently in
+              the v3.3.3 back-off window, lists each one with consecutive-
+              429 count + remaining cool-off. Map provider_id → name via
+              the providers query. Refreshes every 30s. */}
+          <Card>
+            <CardHeader>
+              <CardTitle>Probe Back-off</CardTitle>
+            </CardHeader>
+            <CardContent>
+              {(() => {
+                const inBackoff = probeState?.providers_in_backoff ?? {}
+                const ids = Object.keys(inBackoff)
+                if (ids.length === 0) {
+                  return (
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm text-gray-700 dark:text-gray-300">
+                        Keep-alive probes
+                      </span>
+                      <Badge variant="success">All healthy</Badge>
+                    </div>
+                  )
+                }
+                return (
+                  <div className="space-y-2">
+                    {ids.map(pid => {
+                      const s = inBackoff[pid]
+                      const name = providers?.find(p => p.id === pid)?.name ?? pid.slice(0, 12)
+                      const mins = Math.floor(s.backoff_remaining_sec / 60)
+                      const secs = Math.floor(s.backoff_remaining_sec % 60)
+                      return (
+                        <div key={pid} className="flex items-center justify-between text-sm">
+                          <span className="text-gray-700 dark:text-gray-300 truncate">{name}</span>
+                          <span className="text-xs text-gray-500 dark:text-gray-400 font-mono shrink-0">
+                            {s.consecutive_rate_limits}× 429 · {mins}m {secs}s left
+                          </span>
+                        </div>
+                      )
+                    })}
+                    <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-2 leading-snug">
+                      Probes paused until cool-off expires (v3.3.3 back-off
+                      doubles the next-probe delay after each rate-limit hit,
+                      capped at 30 min). Real user traffic continues; only
+                      synthetic probes wait.
+                    </p>
+                  </div>
+                )
+              })()}
+            </CardContent>
+          </Card>
+        </div>
       </div>
 
       {/* Chart */}

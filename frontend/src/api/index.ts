@@ -140,6 +140,16 @@ export const monitoringApi = {
       `/api/monitoring/metrics/${id}?hours=${hours}`
     ),
   statusPages: ()           => api.get<ExternalStatus>('/api/monitoring/status-pages'),
+  // v3.5.4+ — keep-alive probe back-off state. Empty providers_in_backoff
+  // dict at steady-state. When grok-web (or any subscription-tier-probed
+  // provider) hits a streak of 429s, surfaces consecutive_rate_limits
+  // count + remaining cool-off seconds. Used by the dashboard probe-state
+  // widget (v3.5.6+). See docs/refactor-log.md R3 entry for the v3.3.3
+  // back-off design rationale.
+  probeState: () => api.get<{
+    providers_in_backoff: Record<string, { consecutive_rate_limits: number; backoff_remaining_sec: number }>
+    as_of: string
+  }>('/api/monitoring/probe-state'),
   // v3.0.73 — cache-stats rollup. Reads cache_read/creation tokens from
   // event_meta over a rolling window and surfaces hit rate + estimated $ savings.
   cacheStats: (params: {

@@ -9,6 +9,22 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.5.x — Model identity model (LMRHv2.1)
 
+### v3.5.6 — Dashboard probe back-off panel
+
+The v3.5.4 `/api/monitoring/probe-state` endpoint shipped without a UI consumer; this dot release adds it.
+
+- **`monitoringApi.probeState()`** — typed wrapper in `frontend/src/api/index.ts` for the v3.5.4 admin endpoint.
+- **Dashboard "Probe Back-off" card** — sits below "External Status" in the right column. At steady-state shows a single green `All healthy` badge. When any provider is in the v3.3.3 back-off window (consecutive 429s on its keep-alive probe), lists each one with `Nx 429 · Mm Ss left` plus a small explainer that real user traffic continues regardless.
+- Refreshes every 30s (back-off windows are 10-30 min long; faster polling is wasteful).
+
+The whole loop (probe back-off detection → back-end state → admin endpoint → dashboard surfacing) is now end-to-end. Prior to v3.5.6 the only way to see "is the v3.3.3 back-off engaged?" was `docker exec` Python shell or `curl` the admin endpoint.
+
+Files:
+- `frontend/src/api/index.ts` — `probeState()` typed wrapper
+- `frontend/src/pages/DashboardPage.tsx` — new card + 30s refetch hook
+
+Tests: 1040 passing (no test changes — pure frontend addition consuming an existing endpoint).
+
 ### v3.5.5 — Refactor R4: extract claude-oauth request setup
 
 `_complete_claude_oauth` and `_stream_claude_oauth` in `app/api/_messages_streaming.py` each opened with the same 4-line URL + body-mutation block AND each declared the `httpx.Timeout(connect=5.0, read=300.0, write=10.0, pool=5.0)` verbatim.
