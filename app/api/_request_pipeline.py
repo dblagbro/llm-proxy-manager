@@ -310,3 +310,192 @@ def resolve_auto_model_into_body(body: dict, route, is_auto: bool) -> dict:
             f"auto-routing chose {route.provider.name!r} but it has no default_model set",
         )
     return {**body, "model": resolved_model}
+
+
+# ── 7. Semantic-cache decision + serve (R1, 2026-05-09) ────────────────────
+
+
+async def maybe_serve_from_cache(
+    *,
+    # Decision inputs (cache.middleware.decide_cacheable signature)
+    x_cache_header: Optional[str],
+    api_key_opt_in: bool,
+    key_type: str,
+    route,
+    has_tools: bool,
+    webhook_url: Optional[str],
+    body: dict,
+    messages_list: list[dict],
+    system: Any,                  # Anthropic-only; pass None for OpenAI
+    tools: Any,
+    x_cache_ttl_header: Optional[str],
+    tenant_id: str,
+    # Response shape — caller passes the wire-format builders
+    endpoint: str,                # "messages" | "completions"
+    text_sse_fn,                  # callable(text) -> async generator
+    text_response_fn,             # callable(text, model) -> dict
+    # Side outputs
+    resp_headers: dict,
+    stream: bool,
+):
+    """Run the semantic-cache decision + check + (on hit) build a response.
+
+    Pre-R1 (2026-05-09) this 35-line block was duplicated verbatim between
+    ``messages.py`` and ``completions.py``. The orchestration is identical;
+    only the SSE / JSON response builders differ. Caller passes the
+    builders as ``text_sse_fn`` / ``text_response_fn``.
+
+    Returns ``(cache_decision, response_or_none)`` tuple:
+
+      - ``cache_decision``: the CacheDecision the caller needs to retain
+        for the post-response ``maybe_store()`` write-back call. Carries
+        the eligibility flag, prompt-hash key, and TTL. Returned in all
+        three branches so the caller's later ``try: maybe_store(...)``
+        always has a real value (pre-R1 the local was always set; the
+        helper's first cut returned None on miss/bypass and the silent
+        ``try/except Exception`` swallowed the resulting NameError —
+        cache write-back was quietly skipped on every request).
+      - ``response_or_none``: when cache hits, a ready-to-return
+        ``StreamingResponse`` or ``JSONResponse``; when miss / bypass,
+        ``None`` so the caller proceeds with the request.
+
+    Mutates ``resp_headers``: sets ``X-Cache-Status`` to one of
+    ``bypass`` / ``miss`` / ``hit``, plus ``X-Cache-Similarity`` on
+    hit. Does not mutate any other input.
+    """
+    from fastapi.responses import StreamingResponse, JSONResponse
+    from app.cache.middleware import decide_cacheable, maybe_check
+
+    cache_decision = decide_cacheable(
+        x_cache_header=x_cache_header,
+        api_key_opt_in=api_key_opt_in,
+        key_type=key_type,
+        cot_engaged=route.cot_engaged,
+        tool_emulation=route.tool_emulation_engaged,
+        has_tools=has_tools,
+        webhook_url=webhook_url,
+        temperature=body.get("temperature"),
+        messages=messages_list,
+        model=route.litellm_model,
+        tenant_id=tenant_id,
+        system=system,
+        tools=tools,
+        x_cache_ttl_header=x_cache_ttl_header,
+    )
+    resp_headers["X-Cache-Status"] = "bypass" if not cache_decision.eligible else "miss"
+    if not cache_decision.eligible:
+        return cache_decision, None
+    cache_hit = await maybe_check(cache_decision, endpoint=endpoint)
+    if not cache_hit:
+        return cache_decision, None
+    resp_headers["X-Cache-Status"] = "hit"
+    resp_headers["X-Cache-Similarity"] = f"{cache_hit.similarity:.3f}"
+    if stream:
+        return cache_decision, StreamingResponse(
+            text_sse_fn(cache_hit.response_text),
+            media_type="text/event-stream",
+            headers=resp_headers,
+        )
+    return cache_decision, JSONResponse(
+        content=text_response_fn(cache_hit.response_text, route.litellm_model),
+        headers=resp_headers,
+    )
+
+
+# ── 8. CoT-E engagement (R2, 2026-05-09) ───────────────────────────────────
+
+
+async def maybe_engage_cot(
+    *,
+    route,
+    stream: bool,
+    db: AsyncSession,
+    key_record,
+    hint,
+    body: dict,
+    messages_list: list[dict],
+    extra: dict,
+    x_cot_iterations: Optional[str],
+    x_cot_verify: Optional[str],
+    x_cot_samples: Optional[str],
+    x_cot_mode: Optional[str],
+    x_session_id: Optional[str],
+    resp_headers: dict,
+    stream_cot_fn,                # callable returning an async generator
+    extra_kwargs_for_stream: Optional[dict] = None,
+    llm_hint: Optional[str] = None,  # only consumed by stream_cot_anthropic
+):
+    """Run the Chain-of-Thought-Emulation engagement pipeline.
+
+    Pre-R2 (2026-05-09) this 42-line block was 80%-duplicated between
+    ``messages.py`` and ``completions.py``. The orchestration (header
+    parsing, task-branch selection, cross-provider critique pick,
+    StreamingResponse construction) is identical; only the
+    ``_stream_cot_*`` function differs by wire format.
+
+    Caller passes ``stream_cot_fn`` (the shape-specific stream generator)
+    and any wire-format-specific extras via ``extra_kwargs_for_stream``
+    (Anthropic flow passes ``requested_model`` + ``llm_hint`` here;
+    OpenAI flow passes nothing).
+
+    Behavior:
+      - Returns ``None`` when ``route.cot_engaged`` is False (caller
+        proceeds to non-CoT path).
+      - Raises HTTP 422 when CoT is engaged but ``stream=False`` (CoT-E
+        is streaming-only by design).
+      - Otherwise returns a ``StreamingResponse`` the caller should
+        ``return`` directly.
+
+    Mutates ``resp_headers`` only on engaged path.
+    """
+    if not route.cot_engaged:
+        return None
+    if not stream:
+        raise HTTPException(422, "CoT-E requires stream=true")
+
+    from fastapi.responses import StreamingResponse
+    from app.cot.pipeline import parse_cot_request_headers
+    from app.cot.task_adaptive import select_task_branch
+    from app.routing.router import select_provider as _select_provider
+
+    cot_max, force_verify, samples = parse_cot_request_headers(
+        x_cot_iterations, x_cot_verify, x_cot_samples, x_cot_mode,
+    )
+    if samples > 1:
+        resp_headers["X-Cot-Samples"] = str(samples)
+
+    lmrh_task = hint.get("task").value if (hint and hint.get("task")) else None
+    task_branch = select_task_branch(lmrh_task)
+    if task_branch:
+        resp_headers["X-Cot-Task-Branch"] = task_branch
+
+    # Cross-provider critique (Wave 2 #8): pick a different provider for
+    # the critique pass when settings.cot_cross_provider_critique is on.
+    critique_model: Optional[str] = None
+    critique_kwargs: Optional[dict] = None
+    if settings.cot_cross_provider_critique:
+        try:
+            critique_route = await _select_provider(
+                db, hint, has_tools=False, has_images=False,
+                key_type=key_record.key_type,
+                exclude_provider_id=route.provider.id,
+                excluded_provider_types={"claude-oauth"},
+            )
+            critique_model = critique_route.litellm_model
+            critique_kwargs = critique_route.litellm_kwargs
+            resp_headers["X-Critique-Provider"] = critique_route.provider.name
+        except Exception:
+            pass  # no alternate available; critique stays on primary
+
+    extra_kwargs = dict(extra_kwargs_for_stream or {})
+    return StreamingResponse(
+        stream_cot_fn(
+            route.litellm_model, messages_list, x_session_id, extra,
+            cot_max, route.provider.id, db, key_record.id, force_verify,
+            critique_model=critique_model, critique_kwargs=critique_kwargs,
+            samples=samples, task_branch=task_branch,
+            **extra_kwargs,
+        ),
+        media_type="text/event-stream",
+        headers=resp_headers,
+    )

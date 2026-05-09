@@ -9,6 +9,40 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.5.x — Model identity model (LMRHv2.1)
 
+### v3.5.1 — Refactor pass + in-page help expansion + capability-form model-identity edits
+
+Three internal-quality changes shipped as one dot release. No external API changes; all-in-one operator-experience improvement.
+
+**Refactor — duplication-elimination across endpoints (R1+R2+R3)**:
+- **R1+R2** (`app/api/_request_pipeline.py`): extracted the cache-decision-and-serve block (35L, 100% duplicated) and the CoT-E engagement block (42L, 80% duplicated) from `messages.py` and `completions.py` into two shared helpers — `maybe_serve_from_cache()` and `maybe_engage_cot()`. Wire-format-specific bits (SSE/JSON builders, stream functions) pass through as callable parameters. Caught a near-bug during R1: the first cut lost the `cache_decision` local that downstream `maybe_store()` calls relied on; the silent `try/except` was swallowing a NameError so cache write-back was quietly skipped. Helper now returns the decision tuple.
+- **R3** (`app/providers/grok_web.py`): the 3 dispatch functions (`complete_grok_web` / `stream_grok_web` / `stream_grok_web_anthropic`) each opened with the same 6-line conv_id/url/headers/body setup. Extracted to `_build_manual_request(extra_config, prompt, model)` returning a 5-tuple. Future fixes to grok.com URL or header conventions land in one place, not three.
+- **Architecture docs**: new `docs/architecture.md` (module map + boundaries + flow diagrams) and `docs/refactor-log.md` (running ledger of refactor passes). Both updated through R3.
+
+**In-page help expansion** — `frontend/`:
+- `ProviderModels.tsx` capability admin form: every field now has a `?` hover with operator-friendly explanation (Tasks, Modalities, Latency, Cost tier, Safety, Context length, Regions, Native reasoning/tools/vision). Added new section "Model identity (v3.5.0+)" with editable `aliases` (comma-separated), `model_family`, `model_variant` fields plus tooltips explaining canonical naming convention + multi-route disambiguation.
+- `ProviderForm.tsx`: tooltips on Priority, Timeout, Hold-down, Failure threshold (the 4 fields operators tune most often — and that have the least obvious meaning).
+- `APIKeysPage.tsx`: tooltips on Key Name, Key Type, Rate Limit, Lifetime spending cap, edit-modal Rate limit.
+- Total: 16 new `?` hovers across the 3 forms.
+
+**Backend support for capability-form edits** — `app/api/providers.py`:
+- `CapabilityUpdate` Pydantic model accepts optional `aliases`, `model_family`, `model_variant` (defaulted so older Hub UI clients still PUT successfully).
+- `_serialize_cap` emits the three new fields in GET responses so the form can populate.
+
+**Files**:
+- `app/__version__.py`, `README.md`, `CHANGELOG.md`
+- `app/api/_request_pipeline.py` (+~190L two new helpers)
+- `app/api/messages.py`, `app/api/completions.py` (−~60L combined inline blocks; cleaned 6 dead imports)
+- `app/api/providers.py` (`CapabilityUpdate` + `_serialize_cap` extended)
+- `app/providers/grok_web.py` (`_build_manual_request` helper, 3 callers updated)
+- `docs/architecture.md` (NEW)
+- `docs/refactor-log.md` (NEW)
+- `frontend/src/types/index.ts` (`ModelCapability` extended)
+- `frontend/src/components/providers/ProviderModels.tsx` (new fields + 13 tooltips)
+- `frontend/src/components/providers/ProviderForm.tsx` (4 tooltips)
+- `frontend/src/pages/APIKeysPage.tsx` (5 tooltips)
+
+Tests: 1035 passing (no regression).
+
 ### v3.5.0 — Canonical model_id + aliases + family/variant (LMRHv2.1)
 
 Two-step rollout (v3.4.1 catalog + v3.5.0 LMRH) shipped as a single bundle. Closes the duplication issue where the same upstream model appeared as multiple `/v1/models` entries (e.g. `grok-3` AND `x-ai/grok-3`). Cross-project RFC at `docs/rfc/2026-05-model-identity.md`.

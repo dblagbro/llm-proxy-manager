@@ -5,6 +5,7 @@ import { providersApi } from '@/api'
 import { Button } from '@/components/ui/Button'
 import { Modal, ModalHeader, ModalBody, ModalFooter } from '@/components/ui/Modal'
 import { useToast } from '@/components/ui/Toast'
+import { HelpHint } from '@/components/ui/HelpHint'
 import type { ModelCapability } from '@/types'
 
 // v3.1.5: collapse the model list by default when a provider has more than
@@ -28,6 +29,13 @@ interface CapForm {
   native_reasoning: boolean
   native_tools: boolean
   native_vision: boolean
+  // v3.5.1 — model-identity fields editable in the form so operators
+  // can set canonical aliases / family / variant without a DB shell.
+  // ``aliases`` is a comma-separated list in the form; converted back
+  // to a string[] on save.
+  aliases: string
+  model_family: string
+  model_variant: string
 }
 
 function capToForm(c: ModelCapability): CapForm {
@@ -42,10 +50,13 @@ function capToForm(c: ModelCapability): CapForm {
     native_reasoning: c.native_reasoning,
     native_tools: c.native_tools,
     native_vision: c.native_vision,
+    aliases: (c.aliases ?? []).join(', '),
+    model_family: c.model_family ?? '',
+    model_variant: c.model_variant ?? '',
   }
 }
 
-function Toggle({ label, checked, onChange }: { label: string; checked: boolean; onChange: (v: boolean) => void }) {
+function Toggle({ label, checked, onChange, tooltip }: { label: string; checked: boolean; onChange: (v: boolean) => void; tooltip?: string }) {
   return (
     <label className="flex items-center gap-2 cursor-pointer select-none">
       <input
@@ -55,19 +66,23 @@ function Toggle({ label, checked, onChange }: { label: string; checked: boolean;
         className="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
       />
       <span className="text-sm text-gray-700 dark:text-gray-300">{label}</span>
+      {tooltip && <HelpHint text={tooltip} />}
     </label>
   )
 }
 
-function MultiCheck({ label, options, value, onChange }: {
-  label: string; options: string[]; value: string[]; onChange: (v: string[]) => void
+function MultiCheck({ label, options, value, onChange, tooltip }: {
+  label: string; options: string[]; value: string[]; onChange: (v: string[]) => void; tooltip?: string
 }) {
   function toggle(opt: string) {
     onChange(value.includes(opt) ? value.filter(x => x !== opt) : [...value, opt])
   }
   return (
     <div>
-      <p className="text-xs font-medium text-gray-500 mb-1">{label}</p>
+      <p className="text-xs font-medium text-gray-500 mb-1 flex items-center gap-1">
+        <span>{label}</span>
+        {tooltip && <HelpHint text={tooltip} />}
+      </p>
       <div className="flex flex-wrap gap-2">
         {options.map(o => (
           <button
@@ -122,6 +137,12 @@ export function ProviderModels({ providerId }: { providerId: string }) {
       native_reasoning: f.native_reasoning,
       native_tools: f.native_tools,
       native_vision: f.native_vision,
+      // v3.5.1 — model-identity fields. Empty strings → null for
+      // family/variant; aliases empty → empty array (not the same
+      // as null/missing — operator may explicitly clear aliases).
+      aliases: f.aliases.split(',').map(a => a.trim()).filter(Boolean),
+      model_family: f.model_family.trim() || null,
+      model_variant: f.model_variant.trim() || null,
     }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['capabilities', providerId] })
@@ -252,12 +273,27 @@ export function ProviderModels({ providerId }: { providerId: string }) {
           </ModalHeader>
           <ModalBody>
             <div className="space-y-4">
-              <MultiCheck label="Tasks" options={TASKS} value={form.tasks} onChange={v => set('tasks', v)} />
-              <MultiCheck label="Modalities" options={MODALITIES} value={form.modalities} onChange={v => set('modalities', v)} />
+              <MultiCheck
+                label="Tasks"
+                options={TASKS}
+                value={form.tasks}
+                onChange={v => set('tasks', v)}
+                tooltip="Tags the LMRH router uses to match a request's task hint to candidate models. Pick all that apply. ‘chat’ is the safe default. ‘reasoning’ implies the model handles multi-step thinking; ‘code’ optimises for code generation; ‘vision’ requires native vision."
+              />
+              <MultiCheck
+                label="Modalities"
+                options={MODALITIES}
+                value={form.modalities}
+                onChange={v => set('modalities', v)}
+                tooltip="What input/output types this model accepts. Most chat models are ‘text’. Add ‘vision’ for image-input models, ‘audio’ for STT/TTS-style endpoints. ‘multimodal’ is the catch-all for image+text+audio."
+              />
 
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="text-xs font-medium text-gray-500 block mb-1">Latency</label>
+                  <label className="text-xs font-medium text-gray-500 block mb-1 flex items-center gap-1">
+                    <span>Latency</span>
+                    <HelpHint text="Coarse latency band used by LMRH scoring. ‘low’ for sub-2s p50 models (haiku, gpt-4o-mini, grok-fast). ‘medium’ for 2-5s (sonnet, gpt-4o). ‘high’ for 5s+ (opus, reasoning models). Doesn't affect routing alone — it's a tiebreaker when other dimensions match." />
+                  </label>
                   <select
                     value={form.latency}
                     onChange={e => set('latency', e.target.value)}
@@ -267,7 +303,10 @@ export function ProviderModels({ providerId }: { providerId: string }) {
                   </select>
                 </div>
                 <div>
-                  <label className="text-xs font-medium text-gray-500 block mb-1">Cost tier</label>
+                  <label className="text-xs font-medium text-gray-500 block mb-1 flex items-center gap-1">
+                    <span>Cost tier</span>
+                    <HelpHint text="Coarse cost band the router uses when LMRH ‘cost’ hint is set. ‘economy’ for cheapest options (haiku, mini, flash). ‘standard’ for everyday workhorses (sonnet, gpt-4o). ‘premium’ for expensive flagships (opus, gpt-4-turbo, gemini-pro)." />
+                  </label>
                   <select
                     value={form.cost_tier}
                     onChange={e => set('cost_tier', e.target.value)}
@@ -277,7 +316,10 @@ export function ProviderModels({ providerId }: { providerId: string }) {
                   </select>
                 </div>
                 <div>
-                  <label className="text-xs font-medium text-gray-500 block mb-1">Safety level (1–5)</label>
+                  <label className="text-xs font-medium text-gray-500 block mb-1 flex items-center gap-1">
+                    <span>Safety level (1–5)</span>
+                    <HelpHint text="How strict this model's safety filtering is. 1 = permissive (raw research models, ollama). 5 = highly filtered (Claude on platform.claude.com Pro). Used by LMRH ‘safety-min’ hint to require at least N — callers handling sensitive content set safety-min=4 to keep risky content off less-filtered routes." />
+                  </label>
                   <input
                     type="number" min={1} max={5} value={form.safety}
                     onChange={e => set('safety', Number(e.target.value))}
@@ -285,7 +327,10 @@ export function ProviderModels({ providerId }: { providerId: string }) {
                   />
                 </div>
                 <div>
-                  <label className="text-xs font-medium text-gray-500 block mb-1">Context length (tokens)</label>
+                  <label className="text-xs font-medium text-gray-500 block mb-1 flex items-center gap-1">
+                    <span>Context length (tokens)</span>
+                    <HelpHint text="Maximum input + output tokens this model accepts. Used to filter candidates that physically can't serve a long prompt. Common: 128000 (gpt-4o, claude-sonnet-4-5), 200000 (claude opus), 1000000 (gemini 2.5)." />
+                  </label>
                   <input
                     type="number" min={1000} value={form.context_length}
                     onChange={e => set('context_length', Number(e.target.value))}
@@ -295,7 +340,10 @@ export function ProviderModels({ providerId }: { providerId: string }) {
               </div>
 
               <div>
-                <label className="text-xs font-medium text-gray-500 block mb-1">Regions (comma-separated, blank = any)</label>
+                <label className="text-xs font-medium text-gray-500 block mb-1 flex items-center gap-1">
+                  <span>Regions (comma-separated, blank = any)</span>
+                  <HelpHint text="Geographic regions this model is hosted in. Lets LMRH ‘region’ hint route data-residency-sensitive workloads to the right place. Blank means ‘any region acceptable’ — the most common choice unless your callers have legal residency constraints." />
+                </label>
                 <input
                   type="text" value={form.regions} placeholder="us, eu, asia"
                   onChange={e => set('regions', e.target.value)}
@@ -303,10 +351,65 @@ export function ProviderModels({ providerId }: { providerId: string }) {
                 />
               </div>
 
+              {/* v3.5.1 — model-identity fields. See docs/rfc/2026-05-model-identity.md */}
+              <div className="border-t border-gray-200 dark:border-gray-700 pt-3">
+                <p className="text-xs font-semibold text-gray-600 dark:text-gray-400 mb-2 flex items-center gap-1">
+                  <span>Model identity (v3.5.0+)</span>
+                  <HelpHint text="Optional metadata that lets LMRHv2 callers de-duplicate spelling variants of the same upstream model and pick between multi-route variants (e.g. grok-3 via the operator's grok.com web subscription vs via OpenRouter marketplace). See docs/rfc/2026-05-model-identity.md." />
+                </p>
+                <div>
+                  <label className="text-xs font-medium text-gray-500 block mb-1 flex items-center gap-1">
+                    <span>Aliases (comma-separated)</span>
+                    <HelpHint text="Alternate spellings the proxy will accept and route to this same capability. Lets ‘grok-3’ and ‘x-ai/grok-3’ both resolve to the same Grok-3 model without listing it twice in /v1/models. Case-insensitive match. Leave blank if the canonical model_id is the only spelling clients send." />
+                  </label>
+                  <input
+                    type="text" value={form.aliases} placeholder="grok-3, x-ai/grok-3-fast"
+                    onChange={e => set('aliases', e.target.value)}
+                    className="w-full px-2 py-1.5 text-sm bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-4 mt-3">
+                  <div>
+                    <label className="text-xs font-medium text-gray-500 block mb-1 flex items-center gap-1">
+                      <span>Family</span>
+                      <HelpHint text="Upstream physical model identity, independent of provider. e.g. ‘grok-3’ for both the grok.com-web entry AND the OpenRouter entry. Two capability rows with the same family but different variants represent multi-route access to the SAME model. Leave blank to derive from canonical model_id (strip provider prefix)." />
+                    </label>
+                    <input
+                      type="text" value={form.model_family} placeholder="grok-3"
+                      onChange={e => set('model_family', e.target.value)}
+                      className="w-full px-2 py-1.5 text-sm bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs font-medium text-gray-500 block mb-1 flex items-center gap-1">
+                      <span>Variant</span>
+                      <HelpHint text="Route flavour for multi-route models. Common values: ‘web’ (grok-bridge), ‘openrouter’ (marketplace), ‘direct’ (vendor API), ‘vertex’ (GCP), ‘azure’ (AOAI). Leave blank when there's only one route to this family." />
+                    </label>
+                    <input
+                      type="text" value={form.model_variant} placeholder="web"
+                      onChange={e => set('model_variant', e.target.value)}
+                      className="w-full px-2 py-1.5 text-sm bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    />
+                  </div>
+                </div>
+              </div>
+
               <div className="flex gap-6 flex-wrap pt-1">
-                <Toggle label="Native reasoning" checked={form.native_reasoning} onChange={v => set('native_reasoning', v)} />
-                <Toggle label="Native tool use" checked={form.native_tools} onChange={v => set('native_tools', v)} />
-                <Toggle label="Native vision" checked={form.native_vision} onChange={v => set('native_vision', v)} />
+                <Toggle
+                  label="Native reasoning"
+                  checked={form.native_reasoning} onChange={v => set('native_reasoning', v)}
+                  tooltip="Model has native chain-of-thought / extended thinking (Claude opus/sonnet, gpt-4-turbo, o1). When false, the proxy can apply CoT-Emulation if the request asks for it; when true, the model's built-in thinking is used."
+                />
+                <Toggle
+                  label="Native tool use"
+                  checked={form.native_tools} onChange={v => set('native_tools', v)}
+                  tooltip="Model accepts ‘tools: [...]’ requests natively (Claude, GPT-4, Gemini). When false, the proxy emulates tool-calling via prompt — slower and less reliable. Older models like haiku-3.5, mini, etc. are typically false."
+                />
+                <Toggle
+                  label="Native vision"
+                  checked={form.native_vision} onChange={v => set('native_vision', v)}
+                  tooltip="Model accepts image inputs natively (gpt-4o, claude-sonnet-4-5, gemini-2.5). When false, requests with images get filtered out at the routing layer for this model."
+                />
               </div>
             </div>
           </ModalBody>

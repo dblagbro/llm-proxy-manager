@@ -72,6 +72,12 @@ export interface ModelCapability {
   native_tools: boolean
   native_vision: boolean
   source: 'inferred' | 'manual'
+  // v3.5.0+ — model-identity fields. Optional on the wire; older
+  // proxies omit them. See docs/rfc/2026-05-model-identity.md
+  // for the canonical naming convention + family/variant rationale.
+  aliases?: string[]
+  model_family?: string | null
+  model_variant?: string | null
 }
 
 export interface TestResult {
