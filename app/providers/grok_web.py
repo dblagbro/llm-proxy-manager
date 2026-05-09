@@ -227,8 +227,34 @@ def _flatten_messages_to_prompt(messages: list[dict]) -> str:
     return "\n\n".join(parts)
 
 
+def _is_bridge_mode(extra_config: dict) -> bool:
+    """Bridge mode: cookies + auth refresh handled by a Playwright sidecar.
+
+    When ``extra_config.bridge_url`` is set, ``complete_grok_web`` and
+    ``stream_grok_web`` forward the request to the bridge's ``/api/chat``
+    endpoint instead of running the HTTP replay locally. The bridge
+    holds the live cookies and handles 401/403 retries via its own
+    Playwright page-refresh loop.
+    """
+    return bool((extra_config or {}).get("bridge_url"))
+
+
 def _validate_extra_config(extra_config: dict) -> None:
-    """Raise GrokWebError if config is missing required fields."""
+    """Raise GrokWebError if config is missing required fields.
+
+    Two valid shapes:
+      - manual paste: requires ``cookie_header`` + ``conversation_id``
+      - bridge mode:  requires ``bridge_url`` + ``conversation_id``
+                      (the bridge holds cookies; we just forward the body)
+    """
+    if _is_bridge_mode(extra_config):
+        if not (extra_config or {}).get("conversation_id"):
+            raise GrokWebError(
+                "grok-web bridge mode requires extra_config.conversation_id "
+                "(an existing grok.com conversation UUID).",
+                status_code=400,
+            )
+        return
     required = ["cookie_header", "conversation_id"]
     missing = [k for k in required if not (extra_config or {}).get(k)]
     if missing:
@@ -240,6 +266,55 @@ def _validate_extra_config(extra_config: dict) -> None:
         )
 
 
+async def _bridge_chat(
+    provider_extra_config: dict,
+    messages: list[dict],
+    model: str,
+    stream: bool,
+    timeout: float,
+) -> dict:
+    """Forward an OpenAI-shape body to the Playwright bridge sidecar.
+
+    Bridge handles cookie maintenance + 401/403 retry-after-refresh; we
+    just POST the structured request and return whatever the bridge
+    returns. ``bridge_token`` from extra_config rides as ``X-Bridge-Token``.
+    Stream support is pass-through-only for v1 — the bridge buffers the
+    full NDJSON internally.
+    """
+    bridge_url = provider_extra_config["bridge_url"].rstrip("/")
+    conv_id = provider_extra_config["conversation_id"]
+    statsig_id = provider_extra_config.get("x_statsig_id") or None
+    bridge_token = provider_extra_config.get("bridge_token") or ""
+    body = {
+        "messages": messages,
+        "model": model,
+        "conversation_id": conv_id,
+        "stream": stream,
+    }
+    if statsig_id:
+        body["statsig_id"] = statsig_id
+    headers = {"content-type": "application/json"}
+    if bridge_token:
+        headers["x-bridge-token"] = bridge_token
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        try:
+            r = await client.post(f"{bridge_url}/api/chat", json=body, headers=headers)
+        except httpx.HTTPError as e:
+            raise GrokWebError(f"grok-web bridge unreachable: {e}")
+    if r.status_code == 401:
+        raise GrokWebAuthError(
+            f"grok-web bridge auth: {r.text[:200]}. The bridge's "
+            "Playwright session may need re-login — open the bridge "
+            "/login page in a browser and sign in to grok.com again."
+        )
+    if r.status_code != 200:
+        raise GrokWebError(
+            f"grok-web bridge {r.status_code}: {r.text[:200]}",
+            status_code=502,
+        )
+    return r.json()
+
+
 async def complete_grok_web(
     provider_extra_config: dict,
     messages: list[dict],
@@ -248,11 +323,21 @@ async def complete_grok_web(
 ) -> dict:
     """Non-streaming completion. Returns OpenAI-shape response dict.
 
-    Collects the full NDJSON stream upstream, then synthesizes a single
-    chat.completion response. Token counts come from upstream's final
-    metadata when present; otherwise estimated from text length.
+    Two paths:
+      - bridge mode (``extra_config.bridge_url`` set): forward to the
+        Playwright sidecar's /api/chat; bridge does the HTTP replay.
+      - manual mode (cookie_header + conversation_id): direct HTTP replay
+        from this process using pasted cookies.
+
+    Token counts in both modes come from upstream's final metadata when
+    present; otherwise estimated from text length.
     """
     _validate_extra_config(provider_extra_config)
+    if _is_bridge_mode(provider_extra_config):
+        return await _bridge_chat(
+            provider_extra_config, messages, model,
+            stream=False, timeout=timeout,
+        )
     conv_id = provider_extra_config["conversation_id"]
     mode_id = _model_to_mode_id(model)
     prompt = _flatten_messages_to_prompt(messages)
@@ -338,8 +423,44 @@ async def stream_grok_web(
     Each ``result.token`` in the upstream NDJSON becomes a ``data: {...}``
     SSE line with a ``choices[0].delta.content`` payload. Closes with the
     standard ``data: [DONE]`` sentinel.
+
+    Bridge mode (``extra_config.bridge_url`` set): the bridge's /api/chat
+    returns a buffered OpenAI-shape JSON; we synthesize a single content
+    chunk + DONE sentinel. End-to-end token streaming through the bridge
+    is a v1.1 enhancement.
     """
     _validate_extra_config(provider_extra_config)
+    if _is_bridge_mode(provider_extra_config):
+        result = await _bridge_chat(
+            provider_extra_config, messages, model,
+            stream=False, timeout=timeout,
+        )
+        chunk_id = result.get("id", f"chatcmpl-bridge-{uuid.uuid4().hex[:16]}")
+        upstream_model = result.get("model", model)
+        created = result.get("created", int(time.time()))
+        text = ""
+        if result.get("choices"):
+            text = result["choices"][0].get("message", {}).get("content", "") or ""
+        first = {
+            "id": chunk_id, "object": "chat.completion.chunk",
+            "created": created, "model": upstream_model,
+            "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
+        }
+        yield f"data: {json.dumps(first)}\n\n".encode()
+        delta = {
+            "id": chunk_id, "object": "chat.completion.chunk",
+            "created": created, "model": upstream_model,
+            "choices": [{"index": 0, "delta": {"content": text}, "finish_reason": None}],
+        }
+        yield f"data: {json.dumps(delta)}\n\n".encode()
+        final = {
+            "id": chunk_id, "object": "chat.completion.chunk",
+            "created": created, "model": upstream_model,
+            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+        }
+        yield f"data: {json.dumps(final)}\n\n".encode()
+        yield b"data: [DONE]\n\n"
+        return
     conv_id = provider_extra_config["conversation_id"]
     mode_id = _model_to_mode_id(model)
     prompt = _flatten_messages_to_prompt(messages)
@@ -462,6 +583,55 @@ async def stream_grok_web_anthropic(
     → content_block_stop → message_delta (stop_reason) → message_stop.
     """
     _validate_extra_config(provider_extra_config)
+    if _is_bridge_mode(provider_extra_config):
+        # Bridge mode buffers the result on the bridge side; we synthesize
+        # a single text_delta chunk for v1. Streaming-tokens-through-bridge
+        # is a v1.1 enhancement.
+        msgs_with_system = list(messages)
+        if system:
+            msgs_with_system = [{"role": "system", "content": system}] + msgs_with_system
+        result = await _bridge_chat(
+            provider_extra_config, msgs_with_system, model,
+            stream=False, timeout=timeout,
+        )
+        text = ""
+        if result.get("choices"):
+            text = result["choices"][0].get("message", {}).get("content", "") or ""
+        upstream_model = result.get("model", model)
+        msg_id = result.get("id", f"msg_grokweb_{uuid.uuid4().hex[:16]}")
+
+        def _evt(name: str, data: dict) -> bytes:
+            return f"event: {name}\ndata: {json.dumps(data)}\n\n".encode()
+
+        yield _evt("message_start", {
+            "type": "message_start",
+            "message": {
+                "id": msg_id, "type": "message", "role": "assistant",
+                "content": [], "model": upstream_model,
+                "stop_reason": None, "stop_sequence": None,
+                "usage": {"input_tokens": 0, "output_tokens": 0},
+            },
+        })
+        yield _evt("content_block_start", {
+            "type": "content_block_start", "index": 0,
+            "content_block": {"type": "text", "text": ""},
+        })
+        if text:
+            yield _evt("content_block_delta", {
+                "type": "content_block_delta", "index": 0,
+                "delta": {"type": "text_delta", "text": text},
+            })
+        yield _evt("content_block_stop", {"type": "content_block_stop", "index": 0})
+        yield _evt("message_delta", {
+            "type": "message_delta",
+            "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+            "usage": {
+                "input_tokens": max(1, len("\n".join(str(m.get('content','')) for m in msgs_with_system)) // 4),
+                "output_tokens": max(1, len(text) // 4),
+            },
+        })
+        yield _evt("message_stop", {"type": "message_stop"})
+        return
     conv_id = provider_extra_config["conversation_id"]
     mode_id = _model_to_mode_id(model)
 
