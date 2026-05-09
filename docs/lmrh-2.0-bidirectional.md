@@ -429,6 +429,25 @@ a valid LMRH 1.x hint string — your inference calls keep working.
   outcomes over the same window. Lets callers read connectivity
   health alongside user-traffic reliability. Backward-compatible:
   older clients ignore the extra fields, older proxies omit them.
+- **v3.4.0** (2026-05-09): Phase 3 ships —
+  - **Per-direction cost split**: `cost_per_1m_input_usd` and
+    `cost_per_1m_output_usd` are now independently computed from
+    new `input_cost_usd` / `output_cost_usd` /
+    `input_tokens` / `output_tokens` columns on
+    `provider_metrics` (was placeholder same-rate before). Lets
+    callers optimize input-heavy or output-heavy workloads
+    differently. Schema migration is idempotent + nullable; legacy
+    rows fall back to the combined rate.
+  - **`GET /lmrh/stream`**: Server-Sent Events endpoint pushes
+    full snapshot when ETag changes. Eliminates the polling-then-
+    304 dance for clients that prefer push semantics. Same auth +
+    scope filter as `/lmrh/providers`. Heartbeat configurable via
+    `?heartbeat_sec=` (10-120, default 25) to defeat proxy idle
+    timeouts. `/.well-known/lmrh-config` advertises the new
+    endpoint and `polling.stream_recommended: true`.
+  - **Subscription quota disclosure**: verified working end-to-end
+    on three providers (data flow shipped in v3.3.0; this is
+    operational confirmation).
 
 ## Future work (deferred)
 

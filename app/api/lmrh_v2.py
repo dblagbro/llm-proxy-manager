@@ -30,7 +30,8 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.keys import ApiKeyRecord, resolve_api_key_dep
@@ -201,12 +202,21 @@ async def well_known_config() -> dict:
             # v3.3.2: pointer to the public LMRHv2 spec served by the
             # proxy itself. Lets clients self-document.
             "spec": "/lmrh/v2.md",
+            # v3.4.0: Server-Sent Events stream — same payload as
+            # /lmrh/providers but pushed when the underlying snapshot
+            # ETag changes, eliminating the polling-then-304 dance for
+            # clients that prefer push.
+            "stream": "/lmrh/stream",
         })
         polling = {
             "providers_min_interval_sec": 15,
             "providers_recommended_interval_sec": 60,
             "providers_max_rate_per_minute": DEFAULT_PROVIDERS_RPM,
             "quotes_max_rate_per_minute": DEFAULT_QUOTES_RPM,
+            # v3.4.0: clients using /lmrh/stream don't need to poll —
+            # included here for completeness so config consumers can
+            # see the recommended cadence at a glance.
+            "stream_recommended": True,
         }
         cache.update({
             "providers_max_age_sec": 30,
@@ -474,6 +484,109 @@ async def get_quotes(
 
 
 # ── /lmrh/health ──────────────────────────────────────────────────────
+
+
+# ── /lmrh/stream — Server-Sent Events push (v3.4.0) ───────────────────
+
+
+@router.get("/lmrh/stream")
+async def stream_snapshot(
+    request: Request,
+    heartbeat_sec: int = Query(
+        25, ge=10, le=120,
+        description="Seconds between SSE heartbeat (`: ping`) frames. "
+                    "Keeps proxies / load-balancers from idle-timing the "
+                    "long-lived connection. Default 25s.",
+    ),
+    db: AsyncSession = Depends(get_db),
+    key: ApiKeyRecord = Depends(resolve_api_key_dep()),
+):
+    """Server-Sent Events stream of LMRHv2 snapshot updates (v3.4.0+).
+
+    Pushes the full snapshot when the underlying ETag changes. Clients
+    that prefer push semantics (vs polling /lmrh/providers every 30s)
+    consume this and avoid the per-poll round-trip + 304 dance.
+
+    Flow:
+      - On connect: ``event: snapshot`` with current snapshot body
+      - On ETag change: ``event: snapshot`` with new body (max ~30s
+        latency since the underlying refresh loop runs every 30s)
+      - Every ``heartbeat_sec``: ``: ping\\n\\n`` to defeat idle timeouts
+
+    Closes when the client disconnects (FastAPI detects via
+    ``request.is_disconnected()``).
+
+    Auth: same per-key scope as /lmrh/providers. Per-key ``providers``
+    rate limit applies on connect (the long-lived connection itself
+    is not rate-limited; one connection per key is the design).
+    """
+    _ensure_enabled()
+    await _check_rate_limit(db, key, "providers")
+    key_id = key.id
+
+    async def event_gen():
+        import json as _json
+        last_etag: Optional[str] = None
+        last_heartbeat = time.time()
+        # First frame: emit current snapshot synchronously so the client
+        # gets data within the first round-trip rather than waiting for
+        # the next refresh tick.
+        cur = snap_mod.get_current() or await snap_mod.rebuild_now()
+        visible = cur.for_caller(key_id)
+        body = {
+            "version": "2.0",
+            "as_of": cur.as_of.isoformat(),
+            "window_sec": cur.window_sec,
+            "providers": [_render_provider(p) for p in visible],
+        }
+        yield (
+            f"event: snapshot\n"
+            f"id: {cur.etag.strip(chr(34))}\n"
+            f"data: {_json.dumps(body, default=str)}\n\n"
+        ).encode()
+        last_etag = cur.etag
+
+        # Stream loop: poll the in-memory snapshot module every 1s, push
+        # when etag changes; emit heartbeat every heartbeat_sec.
+        while True:
+            if await request.is_disconnected():
+                return
+            await asyncio.sleep(1.0)
+            cur = snap_mod.get_current()
+            if cur is None:
+                continue
+            now = time.time()
+            if cur.etag != last_etag:
+                visible = cur.for_caller(key_id)
+                body = {
+                    "version": "2.0",
+                    "as_of": cur.as_of.isoformat(),
+                    "window_sec": cur.window_sec,
+                    "providers": [_render_provider(p) for p in visible],
+                }
+                yield (
+                    f"event: snapshot\n"
+                    f"id: {cur.etag.strip(chr(34))}\n"
+                    f"data: {_json.dumps(body, default=str)}\n\n"
+                ).encode()
+                last_etag = cur.etag
+                last_heartbeat = now
+            elif now - last_heartbeat >= heartbeat_sec:
+                yield b": ping\n\n"
+                last_heartbeat = now
+
+    # No buffering: each chunk should flush. nginx is configured to
+    # not buffer text/event-stream by default but we set the header
+    # explicitly per RFC.
+    return StreamingResponse(
+        event_gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-store",
+            "X-Accel-Buffering": "no",  # nginx-specific: defeat proxy buffering
+            "Connection": "keep-alive",
+        },
+    )
 
 
 @router.get("/lmrh/health")

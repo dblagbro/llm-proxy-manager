@@ -277,6 +277,14 @@ async def _build_snapshot(
         total_fail = sum(int(m.failures or 0) for m in metrics)
         total_cost = sum(float(m.total_cost_usd or 0.0) for m in metrics)
         total_tokens = sum(int(m.total_tokens or 0) for m in metrics)
+        # v3.4.0: per-direction cost / token aggregates. Older rows
+        # (pre-v3.4.0 migration) have these at 0 — fall through to the
+        # combined-rate fallback so snapshots stay populated until
+        # enough new traffic accumulates.
+        total_in_cost = sum(float(m.input_cost_usd or 0.0) for m in metrics)
+        total_out_cost = sum(float(m.output_cost_usd or 0.0) for m in metrics)
+        total_in_tok = sum(int(m.input_tokens or 0) for m in metrics)
+        total_out_tok = sum(int(m.output_tokens or 0) for m in metrics)
 
         success_rate: Optional[float] = None
         if total_succ + total_fail > 0:
@@ -291,13 +299,23 @@ async def _build_snapshot(
         if probe_samples > 0:
             probe_success_rate = probe_succ / probe_samples
 
-        # Cost rate (per 1M input tokens) — derived. We don't track
-        # input-vs-output split in ProviderMetric so report combined as
-        # "input_usd"; output is the same for now. v3.3.x should split
-        # input/output cost into separate buckets at the metrics writer.
-        cost_per_1m: Optional[float] = None
-        if total_tokens > 0 and not is_subscription:
-            cost_per_1m = (total_cost / total_tokens) * 1_000_000
+        # v3.4.0: real per-direction cost rates. When the per-direction
+        # token totals are non-zero (post-migration data), report
+        # input + output rates independently. Fall back to the combined
+        # "same rate for both" placeholder when only legacy data exists.
+        cost_per_1m_input: Optional[float] = None
+        cost_per_1m_output: Optional[float] = None
+        if not is_subscription:
+            if total_in_tok > 0:
+                cost_per_1m_input = (total_in_cost / total_in_tok) * 1_000_000
+            if total_out_tok > 0:
+                cost_per_1m_output = (total_out_cost / total_out_tok) * 1_000_000
+            # Legacy fallback: derive from combined aggregate when the
+            # per-direction columns weren't populated yet.
+            if cost_per_1m_input is None and total_tokens > 0:
+                cost_per_1m_input = (total_cost / total_tokens) * 1_000_000
+            if cost_per_1m_output is None:
+                cost_per_1m_output = cost_per_1m_input
 
         # Rated-quota equivalent for subscription (what would cost on
         # per-call billing). For v3.3.0 we only have the aggregate
@@ -320,8 +338,8 @@ async def _build_snapshot(
                 context_length=None,
                 native_tools=False,
                 native_reasoning=False,
-                cost_per_1m_input_usd=cost_per_1m,
-                cost_per_1m_output_usd=cost_per_1m,
+                cost_per_1m_input_usd=cost_per_1m_input,
+                cost_per_1m_output_usd=cost_per_1m_output,
                 rated_quota_per_1m_input_usd=rated_quota,
                 latency_p50_ms=p50,
                 latency_p95_ms=p95,
@@ -340,8 +358,8 @@ async def _build_snapshot(
                 context_length=c.context_length,
                 native_tools=bool(c.native_tools),
                 native_reasoning=bool(c.native_reasoning),
-                cost_per_1m_input_usd=cost_per_1m,
-                cost_per_1m_output_usd=cost_per_1m,
+                cost_per_1m_input_usd=cost_per_1m_input,
+                cost_per_1m_output_usd=cost_per_1m_output,
                 rated_quota_per_1m_input_usd=rated_quota,
                 latency_p50_ms=p50,
                 latency_p95_ms=p95,

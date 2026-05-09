@@ -35,6 +35,14 @@ async def record_request(
     api_key_id: Optional[str] = None,
     ttft_ms: float = 0.0,
     is_probe: bool = False,
+    # v3.4.0: per-direction cost split. When passed as a tuple, the
+    # bucket records input/output cost + tokens separately so LMRHv2
+    # can report cost_per_1m_input_usd vs cost_per_1m_output_usd as
+    # independent rates. None means "fall back to splitting cost_usd
+    # 50/50" — preserves back-compat for callers that haven't been
+    # updated to pass the split. record_outcome (the only first-class
+    # caller) always passes the real split.
+    cost_split: Optional[tuple[float, float]] = None,
 ):
     # v3.3.3: synthetic keep-alive probes do not contribute to the
     # provider_metrics aggregates. Probe outcomes still hit activity_log
@@ -54,6 +62,18 @@ async def record_request(
     cb_states = get_all_states()
     circuit_state = cb_states.get(provider_id, {}).get("state", "closed")
 
+    # v3.4.0: derive per-direction cost split. When the caller passed
+    # a real split (record_outcome does), use it. Else fall back to
+    # the v3.3.x heuristic — split combined cost by token-share so
+    # legacy callers still produce non-zero per-direction values for
+    # readers that depend on them.
+    if cost_split is not None:
+        in_cost, out_cost = cost_split
+    else:
+        total_tok = max(input_tokens + output_tokens, 1)
+        in_cost = cost_usd * (input_tokens / total_tok)
+        out_cost = cost_usd * (output_tokens / total_tok)
+
     # Upsert into provider_metrics bucket
     result = await db.execute(
         select(ProviderMetric).where(
@@ -69,6 +89,11 @@ async def record_request(
         metric.failures += (0 if success else 1)
         metric.total_tokens += input_tokens + output_tokens
         metric.total_cost_usd += cost_usd
+        # v3.4.0 per-direction accumulators
+        metric.input_cost_usd = (metric.input_cost_usd or 0.0) + in_cost
+        metric.output_cost_usd = (metric.output_cost_usd or 0.0) + out_cost
+        metric.input_tokens = (metric.input_tokens or 0) + input_tokens
+        metric.output_tokens = (metric.output_tokens or 0) + output_tokens
         # Rolling average latency
         if metric.requests > 0:
             metric.avg_latency_ms = (
@@ -88,6 +113,10 @@ async def record_request(
             failures=0 if success else 1,
             total_tokens=input_tokens + output_tokens,
             total_cost_usd=cost_usd,
+            input_cost_usd=in_cost,
+            output_cost_usd=out_cost,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
             avg_latency_ms=latency_ms,
             avg_ttft_ms=ttft_ms if ttft_ms > 0 else 0.0,
             ttft_requests=1 if ttft_ms > 0 and success else 0,
