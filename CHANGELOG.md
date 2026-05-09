@@ -9,6 +9,22 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.5.x — Model identity model (LMRHv2.1)
 
+### v3.5.5 — Refactor R4: extract claude-oauth request setup
+
+`_complete_claude_oauth` and `_stream_claude_oauth` in `app/api/_messages_streaming.py` each opened with the same 4-line URL + body-mutation block AND each declared the `httpx.Timeout(connect=5.0, read=300.0, write=10.0, pool=5.0)` verbatim.
+
+- **`_CLAUDE_OAUTH_TIMEOUT`** module constant — single source of truth for the split-phase timeout (the v3.0.60 rationale around DNS-failure pool exhaustion lives in the constant's docstring now, not in two separate function-level comments).
+- **`_prepare_claude_oauth_request(body, *, stream)`** helper returning `(url, prepared_body)`. Handles URL construction, `max_tokens` default, claude-code system injection, and the stream flag in one place.
+
+The 401-refresh-and-retry loop was NOT extracted — too different between the dict-returning `complete` and bytes-yielding `stream` paths to do cleanly without a generator-based driver. Deferred until a 3rd OAuth provider makes the pattern worth abstracting.
+
+Files:
+- `app/api/_messages_streaming.py` — added the constant + helper, both call sites updated, verbose pre-fix comments folded into the helper docstring (701 → 727 lines net; the +26 is the helper's docstring explaining v3.0.60 split-timeout history once instead of twice)
+- `docs/refactor-log.md` — R4 entry prepended with audit notes on other candidates surveyed (providers.py 952L, sdk/python/lmrh_client.py 666L, _grok_web_dispatch.py 515L) and why they were skipped this pass
+- `docs/architecture.md` — updated claude-oauth dispatch description to reference the new helpers
+
+Tests: 1040 passing (no regression).
+
 ### v3.5.4 — Probe-state diagnostic endpoint + usage-limit tooltip clarity
 
 Two small monitoring/operator-experience improvements bundled as one dot release.

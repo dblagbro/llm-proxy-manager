@@ -351,6 +351,45 @@ def _inject_claude_code_system(body: dict) -> dict:
     return {**body, "system": new_system}
 
 
+# v3.5.5 R4 — shared httpx timeout for both claude-oauth dispatch paths.
+# Single source of truth; previously declared verbatim inside each of
+# _complete_claude_oauth + _stream_claude_oauth. The split connect /
+# read / write / pool config dates from v3.0.60 (single timeout=300
+# meant DNS / TCP-connect failures held the request for 300s while
+# upstream was confirmed dead — exhausted the SQLAlchemy pool during
+# the 2026-05-05 internet outage). Read budget is generous because
+# Pro Max subscription stream responses can take a few minutes for
+# long context windows.
+_CLAUDE_OAUTH_TIMEOUT = httpx.Timeout(connect=5.0, read=300.0, write=10.0, pool=5.0)
+
+
+def _prepare_claude_oauth_request(body: dict, *, stream: bool) -> tuple[str, dict]:
+    """v3.5.5 R4 — pre-flight setup for a claude-oauth dispatch call.
+
+    Returns ``(url, prepared_body)`` ready to feed to httpx.
+
+    Pre-R4 each of ``_complete_claude_oauth`` + ``_stream_claude_oauth``
+    re-declared:
+
+        url = f"{PLATFORM_BASE_URL}/v1/messages?beta=true"
+        body = {**body}                       # (or {**body, "stream": True} for streams)
+        body.setdefault("max_tokens", 4096)
+        body = _inject_claude_code_system(body)
+
+    Now one helper. Future changes to Anthropic's URL conventions, beta
+    header layout, or the max_tokens default land in one place.
+
+    ``stream=True`` adds ``"stream": True`` to the body up-front so the
+    SSE path doesn't have to merge twice; ``stream=False`` returns the
+    body unchanged from the merge.
+    """
+    url = f"{PLATFORM_BASE_URL}/v1/messages?beta=true"
+    prepared = {**body, "stream": True} if stream else {**body}
+    prepared.setdefault("max_tokens", 4096)
+    prepared = _inject_claude_code_system(prepared)
+    return url, prepared
+
+
 async def _refresh_oauth_token(provider_id: str, db: AsyncSession) -> Optional[str]:
     """Fetch the provider, run refresh_and_persist, return new access_token.
     Returns None if refresh fails (e.g. invalid_grant — admin must re-auth)."""
@@ -397,10 +436,10 @@ async def _complete_claude_oauth(
     v2.8.9: defaults ``max_tokens`` to 4096 if absent — Anthropic's API
     requires it and otherwise returns a confusing 400.
     """
-    url = f"{PLATFORM_BASE_URL}/v1/messages?beta=true"
-    body = {**body}
-    body.setdefault("max_tokens", 4096)
-    body = _inject_claude_code_system(body)
+    # v3.5.5 R4: URL + body prep + timeout extracted to module-level
+    # helpers (single source of truth; the split-timeout rationale lives
+    # in the _CLAUDE_OAUTH_TIMEOUT constant docstring).
+    url, body = _prepare_claude_oauth_request(body, stream=False)
     current_token = access_token
     refreshed = False
 
@@ -410,19 +449,8 @@ async def _complete_claude_oauth(
             "Content-Type": "application/json",
         }
         try:
-            # v2.8.10: 60s was too short for ~50KB user-message bodies the
-            # bot daemon sends. Match streaming timeout (300s — bumped via
-            # the same release for parity).
-            # v3.0.60: split connect/read/write/pool. Single timeout=300
-            # meant a DNS / TCP-connect failure held the request for 300s
-            # while the upstream was confirmed dead. During the 2026-05-05
-            # internet outage this exhausted the SQLAlchemy DB connection
-            # pool (5 + 10 overflow) within seconds and locked up the
-            # whole proxy until container restart. Connect-phase failures
-            # now return in ~5s, freeing the DB connection back to the
-            # pool. Streaming read stays at 300s for slow upstreams.
             async with httpx.AsyncClient(
-                timeout=httpx.Timeout(connect=5.0, read=300.0, write=10.0, pool=5.0),
+                timeout=_CLAUDE_OAUTH_TIMEOUT,
                 follow_redirects=True,
             ) as client:
                 r = await client.post(url, json=body, headers=headers)
@@ -500,10 +528,9 @@ async def _stream_claude_oauth(
     ``[DONE]`` but do NOT synthesize ``message_stop``: the stream is broken,
     not complete, and clients must distinguish the two.
     """
-    url = f"{PLATFORM_BASE_URL}/v1/messages?beta=true"
-    body = {**body, "stream": True}
-    body.setdefault("max_tokens", 4096)
-    body = _inject_claude_code_system(body)
+    # v3.5.5 R4: URL + body prep + timeout extracted (same helpers as
+    # _complete_claude_oauth; ``stream=True`` adds the SSE flag to body).
+    url, body = _prepare_claude_oauth_request(body, stream=True)
 
     in_tok = out_tok = 0
     cache_creation = cache_read = 0
@@ -524,9 +551,8 @@ async def _stream_claude_oauth(
             "Content-Type": "application/json",
         }
         try:
-            # v3.0.60: split timeouts — see _complete_claude_oauth comment.
             async with httpx.AsyncClient(
-                timeout=httpx.Timeout(connect=5.0, read=300.0, write=10.0, pool=5.0),
+                timeout=_CLAUDE_OAUTH_TIMEOUT,
                 follow_redirects=True,
             ) as client:
                 async with client.stream("POST", url, json=body, headers=headers) as r:

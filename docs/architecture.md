@@ -117,7 +117,11 @@ endpoints with shape-specific callbacks where needed.
 Each provider type has a dispatch path:
 - **claude-oauth / codex-oauth**: direct HTTPS to platform endpoints
   with OAuth bearer tokens (`app/providers/claude_oauth.py`,
-  `app/providers/codex_oauth.py`).
+  `app/providers/codex_oauth.py`). The `_complete_claude_oauth` /
+  `_stream_claude_oauth` pair in `app/api/_messages_streaming.py`
+  share request setup via `_prepare_claude_oauth_request()` + the
+  `_CLAUDE_OAUTH_TIMEOUT` constant (R4, 2026-05-09); each then
+  layers shape-specific dispatch (sync POST vs SSE streaming).
 - **grok-web**: bridge sidecar (`grok_bridge/`) running Playwright
   against grok.com; proxy talks to bridge over HTTP
   (`app/providers/grok_web.py` + `app/api/_grok_web_dispatch.py`).
