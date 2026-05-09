@@ -333,7 +333,12 @@ export function ProviderForm({ form, onChange, editing }: Props) {
         label="Default Model"
         value={form.default_model}
         onChange={e => set({ default_model: e.target.value })}
-        placeholder={isOAuth ? 'claude-sonnet-4-6' : 'e.g. gpt-4o'}
+        placeholder={
+          isOAuth ? 'claude-sonnet-4-6' :
+          form.provider_type === 'grok-web' ? 'grok-3' :
+          form.provider_type === 'openrouter' ? 'openai/gpt-4o' :
+          'e.g. gpt-4o'
+        }
       />
       <Input
         label="Priority (lower = preferred)"
