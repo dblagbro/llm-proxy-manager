@@ -312,6 +312,154 @@ async def get_provider_one(
     raise HTTPException(404, "provider not found")
 
 
+# ── /lmrh/quotes ───────────────────────────────────────────────────────
+
+
+@router.get("/lmrh/quotes")
+async def get_quotes(
+    request: Request,
+    response: Response,
+    model: str,
+    hint: Optional[str] = None,
+    has_tools: bool = False,
+    has_images: bool = False,
+    db: AsyncSession = Depends(get_db),
+    key: ApiKeyRecord = Depends(resolve_api_key_dep()),
+) -> dict:
+    """Pre-flight an inference request without dispatching it.
+
+    Returns the proxy's ranked candidate list for ``model`` + optional
+    ``hint`` — same scoring path that ``/v1/messages`` uses, just stops
+    before winner-pick + dispatch. Lets sophisticated callers see what
+    WOULD happen for a given hint, so they can adjust before sending
+    real traffic.
+
+    Per operator decision #5: separate rate-limit budget from
+    /lmrh/providers (default 60/min vs providers' 4/min) since
+    /quotes is per-call and the response shape varies, so caching is
+    less useful than for the bulk providers endpoint.
+
+    Joins predicted cost/latency from the snapshot at render time so
+    each candidate carries the same metric set as /lmrh/providers
+    (samples, latency_p50_ms, etc.).
+    """
+    _ensure_enabled()
+    await _check_rate_limit(db, key, "quotes")
+
+    if not model:
+        raise HTTPException(400, "model query param is required")
+
+    # Parse hint (LMRH 1.x) if provided
+    parsed_hint = None
+    if hint:
+        try:
+            from app.routing.lmrh.parse import parse_hint as _parse_hint
+            parsed_hint = _parse_hint(hint)
+        except Exception as e:
+            raise HTTPException(400, f"invalid hint: {e}")
+
+    # Set the tenant ContextVar so select_provider's ownership filter
+    # picks up THIS caller's key. Without this the dry-run would see
+    # providers any random caller can route to, including operator-
+    # private ones owned by other keys — which would then NOT be in
+    # the snapshot scope filter and confuse the predicted-metrics join.
+    from app.routing import tenant
+    tok = tenant.current_api_key_id.set(key.id)
+    try:
+        from app.routing.router import select_provider
+        try:
+            ranked = await select_provider(
+                db,
+                hint=parsed_hint,
+                has_tools=has_tools,
+                has_images=has_images,
+                key_type=key.key_type,
+                model_override=model,
+                api_key_id=key.id,
+                dry_run=True,
+            )
+        except RuntimeError as e:
+            # No candidates — the same 503 the dispatch path would raise.
+            raise HTTPException(
+                503,
+                f"No providers satisfy these constraints: {e}",
+            )
+    finally:
+        tenant.current_api_key_id.reset(tok)
+
+    # Cross-reference with snapshot for predicted metrics
+    cur = snap_mod.get_current()
+    if cur is None:
+        cur = await snap_mod.rebuild_now(db)
+    visible = {p.id: p for p in cur.for_caller(key.id)}
+
+    candidates = []
+    for rank_pos, item in enumerate(ranked, start=1):
+        provider = item["provider"]
+        profile = item["profile"]
+        score = item["score"]
+        unmet = item["unmet"]
+
+        # Pull predicted metrics from the snapshot (already joined)
+        snap_p = visible.get(provider.id)
+        predicted_latency_p50 = None
+        predicted_latency_p95 = None
+        predicted_cost = None
+        predicted_quota = None
+        success_rate = None
+        samples = 0
+        if snap_p:
+            # Pick the model row in the snapshot that matches the
+            # caller's requested model_override; fall back to the
+            # provider's first model entry if no exact match.
+            chosen_m = None
+            for m in snap_p.models:
+                if m.model_id == model or m.model_id == profile.model_id:
+                    chosen_m = m
+                    break
+            if chosen_m is None and snap_p.models:
+                chosen_m = snap_p.models[0]
+            if chosen_m:
+                predicted_latency_p50 = chosen_m.latency_p50_ms
+                predicted_latency_p95 = chosen_m.latency_p95_ms
+                predicted_cost = chosen_m.cost_per_1m_input_usd
+                predicted_quota = chosen_m.rated_quota_per_1m_input_usd
+                success_rate = chosen_m.success_rate
+                samples = chosen_m.samples
+
+        candidates.append({
+            "rank": rank_pos,
+            "provider_id": provider.id,
+            "provider_name": provider.name,
+            "model_id": profile.model_id,
+            "score": score,
+            "unmet_hints": unmet,
+            "cost_class": (
+                "subscription" if (snap_p and snap_p.cost_class == "subscription")
+                else "per_call"
+            ),
+            "circuit": (snap_p.circuit if snap_p else "closed"),
+            "predicted_latency_p50_ms": predicted_latency_p50,
+            "predicted_latency_p95_ms": predicted_latency_p95,
+            "predicted_cost_per_1m_input_usd": predicted_cost,
+            "predicted_quota_per_1m_input_usd": predicted_quota,
+            "success_rate": success_rate,
+            "samples": samples,
+        })
+
+    return {
+        "version": "2.0",
+        "as_of": cur.as_of.isoformat() if cur else None,
+        "requested": {
+            "model": model,
+            "hint": hint,
+            "has_tools": has_tools,
+            "has_images": has_images,
+        },
+        "candidates": candidates,
+    }
+
+
 # ── /lmrh/health ──────────────────────────────────────────────────────
 
 

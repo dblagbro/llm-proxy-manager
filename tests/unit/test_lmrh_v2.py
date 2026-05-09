@@ -215,6 +215,121 @@ async def test_render_provider_strips_owned_by_key_id(fixture_db):
 # ── Health endpoint ──────────────────────────────────────────────
 
 
+# ── /lmrh/quotes (Phase 2 / v3.3.1) ─────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_select_provider_dry_run_returns_ranked_list(fixture_db, monkeypatch):
+    """Phase 2 foundation: select_provider(dry_run=True) returns the
+    ranked candidate list without dispatching. Each entry is a dict
+    with provider/profile/unmet/score keys."""
+    from app.routing.router import select_provider
+    from app.routing import tenant
+    AsyncSessionLocal = fixture_db
+    tok = tenant.current_api_key_id.set("lv2-key")
+    try:
+        async with AsyncSessionLocal() as db:
+            ranked = await select_provider(
+                db, hint=None,
+                model_override="gpt-4o",
+                api_key_id="lv2-key",
+                dry_run=True,
+            )
+        # Returns a list, NOT a RouteResult
+        assert isinstance(ranked, list)
+        assert len(ranked) >= 1
+        first = ranked[0]
+        assert "provider" in first
+        assert "profile" in first
+        assert "score" in first
+        assert "unmet" in first
+        # Score is float, unmet is list
+        assert isinstance(first["score"], float)
+        assert isinstance(first["unmet"], list)
+    finally:
+        tenant.current_api_key_id.reset(tok)
+
+
+@pytest.mark.asyncio
+async def test_quotes_endpoint_returns_ranked_candidates(fixture_db, monkeypatch):
+    """End-to-end: /lmrh/quotes endpoint returns the candidate list
+    enriched with predicted metrics from the snapshot."""
+    from app.config import settings
+    monkeypatch.setattr(settings, "lmrh_v2_enabled", True)
+    from app.api import lmrh_v2 as lv2
+    from collections import defaultdict
+    monkeypatch.setattr(lv2, "_rate_state", defaultdict(list))
+
+    # Force-rebuild snapshot so it sees fixture providers
+    from app.routing.lmrh import snapshot as snap_mod
+    AsyncSessionLocal = fixture_db
+    async with AsyncSessionLocal() as db:
+        await snap_mod.rebuild_now(db)
+
+    from app.auth.keys import ApiKeyRecord
+    key = ApiKeyRecord(id="lv2-key", name="lv2-test", key_type="standard")
+    async with AsyncSessionLocal() as db:
+        out = await lv2.get_quotes(
+            request=None, response=None,
+            model="gpt-4o", hint=None,
+            db=db, key=key,
+        )
+    assert out["version"] == "2.0"
+    assert out["requested"]["model"] == "gpt-4o"
+    assert "candidates" in out
+    assert len(out["candidates"]) >= 1
+    c = out["candidates"][0]
+    # Required fields per design §4.4
+    for f in ("rank", "provider_id", "provider_name", "model_id",
+              "score", "unmet_hints", "cost_class", "circuit",
+              "predicted_latency_p50_ms", "predicted_cost_per_1m_input_usd",
+              "samples"):
+        assert f in c, f"missing field {f}"
+
+
+@pytest.mark.asyncio
+async def test_quotes_endpoint_404_when_v2_disabled(fixture_db, monkeypatch):
+    """Same gate as /lmrh/providers — when flag is off, /quotes 404s."""
+    from app.config import settings
+    monkeypatch.setattr(settings, "lmrh_v2_enabled", False)
+    from app.api import lmrh_v2 as lv2
+    from app.auth.keys import ApiKeyRecord
+    from fastapi import HTTPException
+    AsyncSessionLocal = fixture_db
+    key = ApiKeyRecord(id="lv2-key", name="lv2-test", key_type="standard")
+    async with AsyncSessionLocal() as db:
+        with pytest.raises(HTTPException) as ex:
+            await lv2.get_quotes(
+                request=None, response=None,
+                model="gpt-4o",
+                db=db, key=key,
+            )
+    assert ex.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_quotes_endpoint_requires_model(fixture_db, monkeypatch):
+    """Without ``model`` query param the endpoint can't score —
+    400 Bad Request, not 500."""
+    from app.config import settings
+    monkeypatch.setattr(settings, "lmrh_v2_enabled", True)
+    from app.api import lmrh_v2 as lv2
+    from collections import defaultdict
+    monkeypatch.setattr(lv2, "_rate_state", defaultdict(list))
+    from app.auth.keys import ApiKeyRecord
+    from fastapi import HTTPException
+    AsyncSessionLocal = fixture_db
+    key = ApiKeyRecord(id="lv2-key", name="lv2-test", key_type="standard")
+    async with AsyncSessionLocal() as db:
+        with pytest.raises(HTTPException) as ex:
+            await lv2.get_quotes(
+                request=None, response=None,
+                model="",
+                db=db, key=key,
+            )
+    assert ex.value.status_code == 400
+
+
 @pytest.mark.asyncio
 async def test_health_aggregate_counts_visible_only(fixture_db, monkeypatch):
     """/lmrh/health returns aggregate counters — must reflect only the
