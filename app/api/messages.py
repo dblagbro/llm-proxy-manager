@@ -118,8 +118,12 @@ async def messages(
     # a substituted model. That's a denial-of-wallet vector if any API
     # key leaks. Now: empty body → 400; missing model → 400; invalid
     # role → 400; negative max_tokens → 400. All BEFORE upstream dispatch.
-    from app.api._input_validation import validate_completion_request
+    from app.api._input_validation import (
+        validate_completion_request,
+        validate_webhook_url,
+    )
     validate_completion_request(body, endpoint="messages")
+    validate_webhook_url(x_webhook_url)
     messages_list = body.get("messages", [])
     stream = body.get("stream", False)
     max_tokens = body.get("max_tokens", 1024)

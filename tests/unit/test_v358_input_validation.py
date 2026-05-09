@@ -208,3 +208,89 @@ def test_sanitize_preserves_short_clean_messages():
     out = sanitize_upstream_error(raw)
     assert "max_output_tokens must be positive" in out
     assert len(out) < 200
+
+
+# ── v3.5.11 additions ──────────────────────────────────────────────
+
+
+def test_validate_rejects_too_many_stop_sequences():
+    """BUG-015: 1000-entry stop_sequences silently accepted pre-fix."""
+    body = {
+        "model": "x-ai/grok-3",
+        "messages": [{"role": "user", "content": "hi"}],
+        "stop_sequences": ["x"] * 17,
+    }
+    with pytest.raises(HTTPException) as ex:
+        validate_completion_request(body, endpoint="messages")
+    assert ex.value.status_code == 400
+    assert "16" in ex.value.detail
+
+
+def test_validate_accepts_stop_sequences_at_limit():
+    body = {
+        "model": "x-ai/grok-3",
+        "messages": [{"role": "user", "content": "hi"}],
+        "stop_sequences": ["x"] * 16,
+    }
+    validate_completion_request(body, endpoint="messages")  # no raise
+
+
+def test_validate_also_caps_openai_stop_field():
+    """OpenAI uses 'stop' instead of 'stop_sequences' — same cap applies."""
+    body = {
+        "model": "x-ai/grok-3",
+        "messages": [{"role": "user", "content": "hi"}],
+        "stop": ["a"] * 50,
+    }
+    with pytest.raises(HTTPException) as ex:
+        validate_completion_request(body, endpoint="completions")
+    assert ex.value.status_code == 400
+
+
+def test_webhook_url_rejects_file_scheme():
+    """BUG-013: file:///etc/passwd accepted pre-fix → SSRF risk."""
+    from app.api._input_validation import validate_webhook_url
+    with pytest.raises(HTTPException) as ex:
+        validate_webhook_url("file:///etc/passwd")
+    assert ex.value.status_code == 400
+    assert "scheme" in ex.value.detail
+
+
+def test_webhook_url_rejects_gopher_scheme():
+    from app.api._input_validation import validate_webhook_url
+    with pytest.raises(HTTPException) as ex:
+        validate_webhook_url("gopher://example.com/")
+    assert ex.value.status_code == 400
+
+
+def test_webhook_url_rejects_data_scheme():
+    from app.api._input_validation import validate_webhook_url
+    with pytest.raises(HTTPException) as ex:
+        validate_webhook_url("data:text/plain,hello")
+    assert ex.value.status_code == 400
+
+
+def test_webhook_url_accepts_https():
+    from app.api._input_validation import validate_webhook_url
+    validate_webhook_url("https://example.com/hook")  # no raise
+
+
+def test_webhook_url_accepts_http():
+    """Allow http:// — internal hub webhooks are common."""
+    from app.api._input_validation import validate_webhook_url
+    validate_webhook_url("http://hub.internal:8080/api/webhook")  # no raise
+
+
+def test_webhook_url_accepts_none():
+    """No header → no validation."""
+    from app.api._input_validation import validate_webhook_url
+    validate_webhook_url(None)  # no raise
+    validate_webhook_url("")  # no raise
+
+
+def test_webhook_url_rejects_missing_host():
+    from app.api._input_validation import validate_webhook_url
+    with pytest.raises(HTTPException) as ex:
+        validate_webhook_url("https:///")
+    assert ex.value.status_code == 400
+    assert "host" in ex.value.detail

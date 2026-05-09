@@ -201,6 +201,30 @@ class MockServer:
         with self._httpd._lock:
             self._httpd._received.clear()
 
+    def clear_queue(self) -> int:
+        """v3.5.11 BUG-001 fix — drain any unconsumed queued responses.
+
+        The flaky-test contributor: ``mock_ctl`` (function-scoped) cleared
+        ``_received`` between tests but did NOT drain ``_queue``. If a
+        prior test queued a response that never got consumed (e.g. the
+        request 4xx'd before reaching the mock), the next test's queued
+        response would be SECOND in line — the prior leftover would be
+        served first, breaking assertions on the new test's response
+        shape. Fixes ``test_text_only_request_passes_through_unchanged``
+        flake when run after the streaming/tool-emulation tests that
+        sometimes errored before consuming their queued mocks.
+
+        Returns the count of drained items (useful for diagnostics).
+        """
+        n = 0
+        while True:
+            try:
+                self._httpd._queue.get_nowait()
+                n += 1
+            except Exception:
+                break
+        return n
+
     def stop(self):
         self._httpd.shutdown()
         # v3.5.9 BUG-002: also close the underlying socket so the

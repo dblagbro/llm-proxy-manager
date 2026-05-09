@@ -664,6 +664,61 @@ async def delete_provider(
     return {"ok": True}
 
 
+@router.post("/_purge-test-tombstones")
+async def purge_test_tombstones(
+    db: AsyncSession = Depends(get_db),
+    _: AdminUser = Depends(require_admin),
+):
+    """v3.5.11 BUG-003 fix — hard-delete tombstoned providers whose name
+    matches a test pattern AND whose ``deleted_at`` is older than 60s
+    (cluster sync convergence buffer).
+
+    Mirrors ``/api/keys/_purge-test-tombstones`` (which exists for
+    api_keys). Without a parallel for providers, every integration
+    test run that creates ``pytest-mock`` rows leaves them
+    soft-deleted for the full 7-day tombstone retention window,
+    bloating cluster_sync payloads and confusing operators reading
+    the providers table directly.
+
+    Used by integration test ``pytest_sessionfinish`` hook. Safe in
+    production: only affects providers named ``pytest-%`` /
+    ``test-playwright-%`` / ``debug-%``. Admin-gated.
+    """
+    from sqlalchemy import delete, or_, func
+    from datetime import datetime, timedelta, timezone
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=60)
+    patterns = ("pytest-%", "test-playwright-%", "debug-%")
+    rs = await db.execute(
+        delete(Provider)
+        .where(Provider.deleted_at.is_not(None))
+        .where(Provider.deleted_at < cutoff)
+        .where(or_(*[Provider.name.like(p) for p in patterns]))
+    )
+    purged = rs.rowcount
+    await db.commit()
+    # Also clean any orphan CB / auth-failed state for the deleted
+    # ids — soft-delete already triggered the cleanup, but if those
+    # rows were soft-deleted before v3.5.9 the CB state may still
+    # be there. This pass is idempotent.
+    from app.routing.circuit_breaker import (
+        _local_states as _cb_states,
+        _auth_failed as _cb_auth_failed,
+    )
+    # Take a snapshot of current CB ids; remove any that aren't still
+    # present in providers table.
+    if _cb_states or _cb_auth_failed:
+        live_ids = {
+            row[0] for row in (
+                await db.execute(select(Provider.id).where(Provider.deleted_at.is_(None)))
+            ).all()
+        }
+        for ghost in [pid for pid in list(_cb_states) if pid not in live_ids]:
+            _cb_states.pop(ghost, None)
+        for ghost in [pid for pid in list(_cb_auth_failed) if pid not in live_ids]:
+            _cb_auth_failed.pop(ghost, None)
+    return {"ok": True, "purged": purged}
+
+
 @router.post("/{provider_id}/clear-auth-failure")
 async def clear_provider_auth_failure(
     provider_id: str,
