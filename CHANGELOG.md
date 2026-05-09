@@ -9,6 +9,16 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.5.x — Model identity model (LMRHv2.1)
 
+### v3.5.10 — QA hardening (X-Substituted-From + alias cleanup tool + ETag doc)
+
+Closes the last 3 bugs from the QA pass (`docs/bug-log.md`).
+
+- **BUG-006 — `X-Substituted-From` / `X-Substituted-To` headers** (`app/api/_request_pipeline.py:build_base_response_headers`). When the router triggers cross-family fallback (caller asked for model X, no provider serves family X, so the proxy substituted Y), the response now includes both headers. Pre-fix the only signal was buried inside the `LLM-Capability` structured-field-value (`chosen-because=cross-family-fallback, requested-model=..., served-model=...`). Browser callers (and any client that doesn't parse RFC 8941 SFVs) can now detect substitution by reading a single header. Both new headers added to the CORS `expose_headers` list in `app/main.py`.
+- **BUG-010 — alias↔canonical collision cleanup tool** (`tools/cleanup_alias_collisions.py`). The 2026-05-09 QA pass found 3 legacy bare-name `model_capabilities` rows (`grok-3`, `grok-4`, plus an extra) that became redundant after v3.4.1's canonical-id+aliases switch. The de-dup logic in `/v1/models` correctly hides these from callers, but they're dead weight. Operator runs `sudo docker exec llm-proxy2 python3 -m tools.cleanup_alias_collisions --dry-run` to preview, then without `--dry-run` to soft-delete. Idempotent. New `tools/` directory shipped inside the Docker image (Dockerfile updated).
+- **BUG-011 — Per-node ETag drift documented** (`docs/lmrh-2.0-bidirectional.md`). Added a "Per-node ETag — what to know" subsection under `/lmrh/providers` explaining why ETags differ across cluster nodes (per-node `provider_metrics` aggregates), the load-balancer pinning recommendation, and that `subscribe()` SSE is immune to the issue.
+
+Tests: 1059 passing (no test changes — header addition + doc fix + new tool).
+
 ### v3.5.9 — Test infra + circuit-breaker cleanup hooks
 
 Closes 3 of the 4 medium-severity bugs from the QA pass (`docs/bug-log.md`).

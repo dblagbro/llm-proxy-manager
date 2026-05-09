@@ -327,6 +327,31 @@ needed.
 When the flag is off, only `LMRH-Version: 1.2` is emitted; the
 `Link` header is omitted.
 
+### Per-node ETag — what to know
+
+Each cluster node maintains its own snapshot, derived from the node-
+local `provider_metrics` aggregates (which are NOT cluster-replicated;
+each node tracks its own dispatch metrics independently). As a
+consequence:
+
+- **ETags differ across cluster nodes** for the same logical
+  configuration. www01's snapshot ETag will not match www02's even
+  when the underlying `Provider` + `ModelCapability` rows are
+  identical, because traffic distribution differs and so the
+  aggregated latency / success rate / sample counts diverge.
+- **Implication for callers behind a load balancer**: round-robin
+  DNS or a load-balancer with multiple upstream cluster nodes will
+  see ETag drift on every poll that lands on a different node,
+  forcing a re-download and defeating the 304 optimization.
+- **Recommendation**: pin polling clients to a single cluster node
+  (sticky-session or single hostname) for the lifetime of their
+  polling session. The `subscribe()` SSE consumer (v3.5.2+) is
+  immune to this issue because it uses a single long-lived
+  connection.
+- **Also note**: `Provider` rows, `ModelCapability` (incl. aliases /
+  family / variant), and circuit-breaker state ARE cluster-replicated.
+  The ETag drift is purely about metrics aggregates.
+
 ## Polling guidance
 
 - **Recommended interval: 60 seconds.** The underlying snapshot

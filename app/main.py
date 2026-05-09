@@ -239,13 +239,18 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=[
-        "LLM-Capability", "X-Provider", "X-Resolved-Model", "X-Token-Budget-Remaining",
+        "LLM-Capability", "X-Provider", "X-Resolved-Provider", "X-Resolved-Model", "X-Token-Budget-Remaining",
         "X-Cache-Status", "X-Cache-Similarity", "X-Hedged-Winner",
         "X-Budget-Warning", "X-Budget-Daily-Remaining", "X-Budget-Hourly-Remaining",
         "X-Critique-Provider", "X-Cot-Samples", "X-Cot-Task-Branch",
         "X-Fallback-Chain",
         "X-Cascade", "X-Cascade-Reason", "X-Cascade-Grader",
         "X-Task-Auto-Detected", "X-Shadow-Queued",
+        "X-Emulation-Level",
+        # v3.5.10 BUG-006 fix — easy-to-detect cross-family substitution
+        # disclosure. Browser callers can read these without parsing the
+        # complex LLM-Capability structured-field-value.
+        "X-Substituted-From", "X-Substituted-To",
         "LLM-Hint-Set",
         "X-Tool-Calls-Emitted",
         "X-Structured-Output-Attempts", "X-Structured-Output-Status",
