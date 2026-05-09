@@ -592,3 +592,45 @@ async def usage_report_csv(
         media_type="text/csv",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@router.get("/probe-state")
+async def probe_state(
+    _: AdminUser = Depends(require_admin),
+):
+    """v3.5.4 — surface the in-memory keep-alive probe back-off state.
+
+    Pre-v3.5.4 this state was only inspectable via ``docker exec
+    llm-proxy2 python3 -c '...keepalive.get_backoff_state()'``. When
+    grok-web (or any provider with subscription-tier probing) hit a
+    streak of 429s and operator wanted to know "is the back-off
+    actually engaged, and for how long", they had to shell into the
+    container.
+
+    This endpoint exposes the same dict over HTTPS for admin keys.
+    Returns one entry per provider currently in back-off (consecutive
+    rate-limit count + remaining cool-off seconds). Empty dict when
+    no providers are throttled — the steady-state.
+
+    Tied to the v3.3.3 probe-back-off design — see
+    ``docs/refactor-log.md`` and the v3.3.3 entry in CHANGELOG for
+    the full context.
+
+    Response shape::
+
+        {
+          "providers_in_backoff": {
+            "8beb17c4bd11de26": {
+              "consecutive_rate_limits": 2,
+              "backoff_remaining_sec": 891.4
+            }
+          },
+          "as_of": "2026-05-09T22:00:00+00:00"
+        }
+    """
+    from datetime import datetime, timezone
+    from app.monitoring.keepalive import get_backoff_state
+    return {
+        "providers_in_backoff": get_backoff_state(),
+        "as_of": datetime.now(timezone.utc).isoformat(),
+    }

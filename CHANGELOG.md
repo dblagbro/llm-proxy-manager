@@ -9,6 +9,17 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.5.x — Model identity model (LMRHv2.1)
 
+### v3.5.4 — Probe-state diagnostic endpoint + usage-limit tooltip clarity
+
+Two small monitoring/operator-experience improvements bundled as one dot release.
+
+- **`GET /api/monitoring/probe-state`** — admin endpoint exposing the in-memory keep-alive probe back-off state (consecutive 429 counts + remaining cool-off seconds per provider). Pre-v3.5.4 this state was only inspectable via `docker exec` Python shell. When grok-web (or any subscription-tier-probed provider) hits a streak of rate-limits, operator can now `curl /api/monitoring/probe-state` instead of shelling into the container. Empty dict at steady-state.
+- **Tooltip clarification on usage-limit fields** in `ProviderForm.tsx` — the v3.5.3 dashboard widget surfaced `Devin-Anthropic-Max-VG` at 256% of weekly limit; root cause was operator-configured `usage_weekly_limit_tokens=20M` being below Anthropic's actual Pro Max allowance. New tooltips on `usage_session_limit_tokens` + `usage_weekly_limit_tokens` make explicit that these are operator-imposed ceilings (early-warning thresholds), NOT the actual upstream provider's allowance. Same clarification on `usage_session_window_sec` + `usage_weekly_reset_hour` for completeness.
+
+Both changes align with the operator-locked "be hugely proactive on monitoring + improvements" rule. No backend logic change beyond the new endpoint.
+
+Tests: no changes (1040 still passing).
+
 ### v3.5.3 — Subscription quota dashboard widget + over-limit banner
 
 The proxy has tracked subscription quotas (Anthropic Pro Max weekly window, Codex weekly window, etc.) since v3.0.64 — the data shows up as a small text indicator on the providers page, but it's easy to miss buried in the list. v3.5.3 surfaces it on the dashboard.

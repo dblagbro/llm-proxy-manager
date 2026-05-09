@@ -409,6 +409,7 @@ export function ProviderForm({ form, onChange, editing }: Props) {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <Input
               label="Session window (seconds)"
+              tooltip="How long the session bucket runs before resetting. Claude.ai's documented session window is 5 hours = 18000s. Codex CLI runs on a similar 5h cadence. Adjust if your subscription tier uses a different rolling window."
               type="number"
               value={form.usage_session_window_sec == null ? '' : String(form.usage_session_window_sec)}
               onChange={e => set({ usage_session_window_sec: e.target.value === '' ? null : Number(e.target.value) })}
@@ -416,6 +417,7 @@ export function ProviderForm({ form, onChange, editing }: Props) {
             />
             <Input
               label="Session token limit"
+              tooltip="Operator-configured ceiling on tokens per session window — NOT the actual upstream provider's allowance. Set conservatively to get an early warning before you hit the real provider limit. Pre-fix the proxy showed Devin-Anthropic-Max-VG at 256% because this was set to 20M while Anthropic's actual Pro Max session allowance is much higher. The dashboard surfaces 'over limit' when usage exceeds THIS value, not when the upstream rejects. Set blank or 0 to disable session-window enforcement."
               type="number"
               value={form.usage_session_limit_tokens == null ? '' : String(form.usage_session_limit_tokens)}
               onChange={e => set({ usage_session_limit_tokens: e.target.value === '' ? null : Number(e.target.value) })}
@@ -442,6 +444,7 @@ export function ProviderForm({ form, onChange, editing }: Props) {
             </div>
             <Input
               label="Weekly reset hour (0-23 local)"
+              tooltip="Hour-of-day when the weekly bucket resets (operator's local timezone). Claude.ai's documented reset is 4pm Sunday. This determines when the dashboard's 'over limit' badge clears."
               type="number"
               value={form.usage_weekly_reset_hour == null ? '' : String(form.usage_weekly_reset_hour)}
               onChange={e => set({ usage_weekly_reset_hour: e.target.value === '' ? null : Number(e.target.value) })}
@@ -449,6 +452,7 @@ export function ProviderForm({ form, onChange, editing }: Props) {
             />
             <Input
               label="Weekly token limit"
+              tooltip="Operator-configured ceiling on tokens per weekly window — NOT the actual upstream provider's allowance. Anthropic Pro Max documents a weekly limit but doesn't publish a number; OAuth tier appears to be ~10× the session limit empirically. Set conservatively (e.g. 5x your session limit) to get an early warning before hitting the real upstream limit, OR set high (50M+) to use this as a sanity-check ceiling only. The dashboard 'over limit' banner triggers at >100% of THIS value, not when the upstream rejects. Set blank or 0 to disable weekly-window enforcement."
               type="number"
               value={form.usage_weekly_limit_tokens == null ? '' : String(form.usage_weekly_limit_tokens)}
               onChange={e => set({ usage_weekly_limit_tokens: e.target.value === '' ? null : Number(e.target.value) })}
