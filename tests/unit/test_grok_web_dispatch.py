@@ -280,3 +280,115 @@ async def test_anthropic_dispatch_streaming_returns_streaming_response(monkeypat
     )
     assert isinstance(out, StreamingResponse)
     assert out.media_type == "text/event-stream"
+
+
+# ── Observability — record_outcome integration (v3.2.10) ────────────────
+
+
+@pytest.mark.asyncio
+async def test_openai_dispatch_records_success(monkeypatch):
+    """v3.2.10 fix: every successful grok-web call must hit
+    record_outcome so ProviderMetric / activity_log / circuit_breaker
+    update. Pre-fix, grok-web traffic was completely invisible."""
+    captured = {}
+
+    async def fake_complete(extra_config, *, messages, model, **kw):
+        return {
+            "id": "chatcmpl-x",
+            "model": "grok-3",
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": "OK"}}],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7},
+        }
+
+    async def fake_record(*args, **kwargs):
+        captured.update(kwargs)
+        captured["positional"] = args
+
+    monkeypatch.setattr("app.providers.grok_web.complete_grok_web", fake_complete)
+    monkeypatch.setattr("app.monitoring.helpers.record_outcome", fake_record)
+
+    # Add provider_id and provider_name to route shape
+    route = _route({"bridge_url": "http://b", "conversation_id": "c"})
+    route.provider.id = "test-provider-id"
+    route.provider.name = "Test-Grok-Web"
+
+    import time
+    t0 = time.monotonic()
+    await dispatch_grok_web_openai(
+        route=route,
+        body={"model": "grok-3", "messages": [{"role": "user", "content": "ping"}]},
+        stream=False,
+        resp_headers={},
+        db="fake-db",
+        key_record_id="caller-key-id",
+        t0=t0,
+        llm_hint=None,
+    )
+    # record_outcome must have been called with success=True and the
+    # token counts from upstream usage
+    assert captured.get("success") is True
+    assert captured.get("in_tok") == 5
+    assert captured.get("out_tok") == 2
+    assert captured.get("key_record_id") == "caller-key-id"
+    assert captured.get("provider_name") == "Test-Grok-Web"
+
+
+@pytest.mark.asyncio
+async def test_openai_dispatch_records_failure_on_error(monkeypatch):
+    """Errors must also fire record_outcome(success=False) so the
+    circuit breaker hears about them. Pre-v3.2.10, grok-web errors
+    silently bypassed the breaker."""
+    from app.providers.grok_web import GrokWebError
+    captured = {}
+
+    async def fake_complete(*a, **kw):
+        raise GrokWebError("upstream 502", status_code=502)
+
+    async def fake_record(*args, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr("app.providers.grok_web.complete_grok_web", fake_complete)
+    monkeypatch.setattr("app.monitoring.helpers.record_outcome", fake_record)
+
+    route = _route({"bridge_url": "http://b", "conversation_id": "c"})
+    route.provider.id = "p-id"
+    route.provider.name = "P"
+
+    import time
+    with pytest.raises(HTTPException):
+        await dispatch_grok_web_openai(
+            route=route,
+            body={"model": "grok-3", "messages": [{"role": "user", "content": "x"}]},
+            stream=False,
+            resp_headers={},
+            db="fake", key_record_id="k", t0=time.monotonic(),
+        )
+    assert captured.get("success") is False
+    assert "GrokWebError" in (captured.get("error_str") or "")
+
+
+@pytest.mark.asyncio
+async def test_dispatch_no_recording_when_db_omitted(monkeypatch):
+    """Backwards-compat: callers that pass db=None get the v3.2.9
+    behavior (no recording). Used by tests + any future caller that
+    deliberately wants to bypass observability."""
+    record_calls = []
+
+    async def fake_complete(*a, **kw):
+        return {"id": "x", "model": "grok-3",
+                "choices": [{"index": 0, "message": {"content": ""}}]}
+
+    async def fake_record(*args, **kwargs):
+        record_calls.append(kwargs)
+
+    monkeypatch.setattr("app.providers.grok_web.complete_grok_web", fake_complete)
+    monkeypatch.setattr("app.monitoring.helpers.record_outcome", fake_record)
+
+    await dispatch_grok_web_openai(
+        route=_route({"bridge_url": "http://b", "conversation_id": "c"}),
+        body={"model": "grok-3", "messages": [{"role": "user", "content": "x"}]},
+        stream=False,
+        resp_headers={},
+        # db / key_record_id / t0 omitted → no recording
+    )
+    assert record_calls == []
