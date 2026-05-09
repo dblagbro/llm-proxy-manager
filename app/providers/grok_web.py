@@ -69,7 +69,20 @@ MODEL_TO_MODE_ID = {
 }
 
 DEFAULT_MODEL = "grok-3"
-SUPPORTED_MODELS = ["grok-3", "grok-4"]
+# v3.2.8: include both bare ("grok-3") and OpenRouter-style ("x-ai/grok-3")
+# slug variants in the capability set. The router's candidate-selection
+# step matches on exact model_id; if a caller sends "x-ai/grok-4"
+# (commonly used by clients copying OpenRouter slugs), only providers
+# whose capabilities literally include "x-ai/grok-4" get scored. Without
+# the aliases here, grok-web at priority=1 was losing to OpenRouter at
+# priority=5 every time — the family filter recognized grok-web as
+# eligible but no capability row matched.
+SUPPORTED_MODELS = [
+    "grok-3",
+    "grok-4",
+    "x-ai/grok-3",
+    "x-ai/grok-4",
+]
 
 
 class GrokWebError(Exception):
