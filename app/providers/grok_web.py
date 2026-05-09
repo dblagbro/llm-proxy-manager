@@ -5,6 +5,13 @@ Lets operators bring their grok.com web subscription (Lite / Premium) into
 the proxy without a paid xAI API key. We replay the exact request shape
 the grok.com web UI sends to ``/rest/app-chat/conversations/{id}/responses``.
 
+v3.3.5: optional `conversation_ids` (list) in extra_config enables
+round-robin rotation across 2+ pre-created conversation UUIDs. Operator
+creates several conversations manually (Cloudflare blocks programmatic
+/new on server IPs), pastes the list, and the proxy spreads probe +
+user traffic across them. Helps when grok.com applies per-conversation
+throttling. Falls back to single `conversation_id` for back-compat.
+
 Reverse-engineered 2026-05-08 from a logged-in browser session:
 
 - Endpoint: ``POST https://grok.com/rest/app-chat/conversations/{conv_id}/responses``
@@ -69,6 +76,41 @@ MODEL_TO_MODE_ID = {
 }
 
 DEFAULT_MODEL = "grok-3"
+
+
+# v3.3.5: per-provider round-robin counters for conversation rotation.
+# Keyed by id(extra_config dict) — adequate since extra_config is the
+# Provider's loaded copy and is stable across the request cycle. We
+# intentionally don't use the conversation_id list itself as the key
+# because that would re-shuffle the rotation order whenever the
+# operator edits the list.
+_rotation_counter: dict[int, int] = {}
+
+
+def _pick_conversation_id(extra_config: dict) -> str:
+    """Pick a conversation UUID for this request.
+
+    If ``extra_config.conversation_ids`` is a non-empty list, round-robin
+    across it. Otherwise fall back to ``extra_config.conversation_id``
+    (the v3.2.x back-compat path — single UUID per provider).
+
+    Returns "" only if neither field is set; the caller's
+    ``_validate_extra_config`` should already have raised in that case.
+    """
+    pool = extra_config.get("conversation_ids") if extra_config else None
+    if isinstance(pool, list) and pool:
+        # Round-robin counter. id(extra_config) keys the counter;
+        # async dispatch is single-threaded so no lock needed.
+        key = id(extra_config)
+        idx = _rotation_counter.get(key, 0)
+        _rotation_counter[key] = (idx + 1) % len(pool)
+        chosen = pool[idx % len(pool)]
+        if isinstance(chosen, str) and chosen:
+            return chosen
+    # Back-compat: single conversation_id
+    return (extra_config or {}).get("conversation_id") or ""
+
+
 # v3.2.8: include both bare ("grok-3") and OpenRouter-style ("x-ai/grok-3")
 # slug variants in the capability set. The router's candidate-selection
 # step matches on exact model_id; if a caller sends "x-ai/grok-4"
@@ -252,29 +294,51 @@ def _is_bridge_mode(extra_config: dict) -> bool:
     return bool((extra_config or {}).get("bridge_url"))
 
 
+def _has_any_conversation(extra_config: dict) -> bool:
+    """v3.3.5: True when either ``conversation_id`` (single, back-compat)
+    or ``conversation_ids`` (list, rotation pool) is set with at least
+    one non-empty UUID."""
+    if not extra_config:
+        return False
+    if extra_config.get("conversation_id"):
+        return True
+    pool = extra_config.get("conversation_ids")
+    if isinstance(pool, list):
+        return any(isinstance(c, str) and c for c in pool)
+    return False
+
+
 def _validate_extra_config(extra_config: dict) -> None:
     """Raise GrokWebError if config is missing required fields.
 
     Two valid shapes:
-      - manual paste: requires ``cookie_header`` + ``conversation_id``
-      - bridge mode:  requires ``bridge_url`` + ``conversation_id``
+      - manual paste: requires ``cookie_header`` + at least one conversation
+      - bridge mode:  requires ``bridge_url`` + at least one conversation
                       (the bridge holds cookies; we just forward the body)
+
+    "At least one conversation" means either ``conversation_id`` (single,
+    back-compat) or ``conversation_ids`` (list, v3.3.5+ rotation pool).
     """
     if _is_bridge_mode(extra_config):
-        if not (extra_config or {}).get("conversation_id"):
+        if not _has_any_conversation(extra_config):
             raise GrokWebError(
                 "grok-web bridge mode requires extra_config.conversation_id "
-                "(an existing grok.com conversation UUID).",
+                "(or conversation_ids list) — an existing grok.com "
+                "conversation UUID.",
                 status_code=400,
             )
         return
-    required = ["cookie_header", "conversation_id"]
-    missing = [k for k in required if not (extra_config or {}).get(k)]
+    missing: list[str] = []
+    if not (extra_config or {}).get("cookie_header"):
+        missing.append("cookie_header")
+    if not _has_any_conversation(extra_config):
+        missing.append("conversation_id")
     if missing:
         raise GrokWebError(
-            f"grok-web provider missing required extra_config fields: {missing}. "
-            "Paste cookie_header (from cURL) and conversation_id (UUID from "
-            "grok.com/c/<this-id>) in the provider edit form.",
+            f"grok-web provider missing required extra_config fields: "
+            f"{missing}. Paste cookie_header (from cURL) and conversation_id "
+            f"(or conversation_ids list — UUID(s) from grok.com/c/<this-id>) "
+            f"in the provider edit form.",
             status_code=400,
         )
 
@@ -295,7 +359,7 @@ async def _bridge_chat(
     full NDJSON internally.
     """
     bridge_url = provider_extra_config["bridge_url"].rstrip("/")
-    conv_id = provider_extra_config["conversation_id"]
+    conv_id = _pick_conversation_id(provider_extra_config)
     statsig_id = provider_extra_config.get("x_statsig_id") or None
     bridge_token = provider_extra_config.get("bridge_token") or ""
     body = {
@@ -351,7 +415,7 @@ async def complete_grok_web(
             provider_extra_config, messages, model,
             stream=False, timeout=timeout,
         )
-    conv_id = provider_extra_config["conversation_id"]
+    conv_id = _pick_conversation_id(provider_extra_config)
     mode_id = _model_to_mode_id(model)
     prompt = _flatten_messages_to_prompt(messages)
 
@@ -474,7 +538,7 @@ async def stream_grok_web(
         yield f"data: {json.dumps(final)}\n\n".encode()
         yield b"data: [DONE]\n\n"
         return
-    conv_id = provider_extra_config["conversation_id"]
+    conv_id = _pick_conversation_id(provider_extra_config)
     mode_id = _model_to_mode_id(model)
     prompt = _flatten_messages_to_prompt(messages)
 
@@ -645,7 +709,7 @@ async def stream_grok_web_anthropic(
         })
         yield _evt("message_stop", {"type": "message_stop"})
         return
-    conv_id = provider_extra_config["conversation_id"]
+    conv_id = _pick_conversation_id(provider_extra_config)
     mode_id = _model_to_mode_id(model)
 
     msgs_with_system = list(messages)
