@@ -4,7 +4,7 @@ Self-hosted LLM routing gateway — Python/FastAPI rewrite of llm-proxy v1.
 
 **LMRH semantic routing · circuit breaker failover · CoT-E augmentation · cluster sync · Run runtime · per-provider keep-alive probes · React dashboard**
 
-Current version: **v3.3.1** (see [CHANGELOG.md](CHANGELOG.md))
+Current version: **v3.3.2** (see [CHANGELOG.md](CHANGELOG.md))
 
 ## Access
 
@@ -62,7 +62,7 @@ sudo docker compose up -d --force-recreate --no-deps llm-proxy2
 | GET    | `/lmrh/quotes?model=X[&hint=...]` | Pre-flight an inference request — ranked candidates with predicted cost/latency, no dispatch. Default rate-limit 60/min (v3.3.1+). |
 | GET    | `/lmrh/health`           | Aggregate fleet counters (CB-open, degraded, snapshot age) |
 
-Every `/v1/*` response carries `Link` (RFC 8288) and `LMRH-Version` headers when the flag is enabled. v1.x clients ignore these unconditionally. SDK reference at [`sdk/python/lmrh_client.py`](sdk/python/lmrh_client.py). Full design + decision log in operator memory `project_lmrhv2_design.md`.
+Every `/v1/*` response carries `Link` (RFC 8288) and `LMRH-Version` headers when the flag is enabled. v1.x clients ignore these unconditionally. **Public spec**: [`docs/lmrh-2.0-bidirectional.md`](docs/lmrh-2.0-bidirectional.md) (also served by the proxy at `/lmrh/v2.md`). **Reference SDK**: [`sdk/python/lmrh_client.py`](sdk/python/lmrh_client.py).
 
 ### Run runtime endpoints (v3.0.0+, joint contract with coordinator-hub)
 

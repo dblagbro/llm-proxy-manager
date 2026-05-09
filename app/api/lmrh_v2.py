@@ -187,7 +187,12 @@ async def well_known_config() -> dict:
         versions.append("2.0")
         endpoints.update({
             "providers": "/lmrh/providers",
+            "providers_one": "/lmrh/providers/{provider_id}",
+            "quotes": "/lmrh/quotes",
             "health": "/lmrh/health",
+            # v3.3.2: pointer to the public LMRHv2 spec served by the
+            # proxy itself. Lets clients self-document.
+            "spec": "/lmrh/v2.md",
         })
         polling = {
             "providers_min_interval_sec": 15,
