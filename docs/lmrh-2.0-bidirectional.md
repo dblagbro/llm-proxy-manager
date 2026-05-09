@@ -151,7 +151,9 @@ Optional query params:
             "ttft_p50_ms": 800,
             "ttft_p95_ms": 1840,
             "success_rate": 0.998,
-            "samples": 16
+            "samples": 16,
+            "probe_success_rate": 0.74,
+            "probe_samples": 23
           }
         }
       ]
@@ -175,6 +177,43 @@ Field semantics:
   503 until the breaker closes.
 - `samples`: number of requests recorded in the window (default 1h).
   Treat metrics with `samples < 5` as noise.
+
+#### Probe vs user-traffic metrics *(v3.3.3+ semantics)*
+
+The `metrics` block separates **user traffic** from **synthetic
+keep-alive probe outcomes**:
+
+| Field | What it measures | Source |
+|---|---|---|
+| `success_rate` | User-traffic success rate (real callers via `/v1/messages`, `/v1/chat/completions`, etc.) | `provider_metrics` aggregate, probe outcomes excluded since v3.3.3 |
+| `samples` | User-traffic request count | `provider_metrics`, probes excluded |
+| `probe_success_rate` *(v3.3.4+)* | Synthetic keep-alive probe outcome rate over the same window | `activity_log` rows with `event_type='keepalive_probe'` |
+| `probe_samples` *(v3.3.4+)* | Synthetic probe count | same |
+
+Why split:
+- A provider can have `success_rate=1.0` (every user request
+  succeeded) while `probe_success_rate=0.74` (probes are hitting a
+  rate-limit window). That's a **leading indicator**: the
+  upstream is throttling, real traffic just hasn't tripped the
+  limit yet. Smart callers can use the gap to start gradually
+  steering traffic away.
+- Conversely, `probe_success_rate=1.0` with `success_rate=0.7`
+  signals a user-input quality issue (bad prompts, oversized
+  context) rather than an infrastructure problem.
+- Probes are spaced 5 min apart and back off exponentially after
+  rate_limit (since v3.3.3). `probe_samples` will typically be
+  ~12 per hour per probed provider when healthy, lower when in
+  back-off.
+
+`probe_success_rate` is `null` and `probe_samples` is `0` for
+providers the proxy doesn't probe (per-call providers like Cohere
+/ OpenAI are not probed by default — see
+`KEEPALIVE_PROBE_PER_CALL_PROVIDERS`). SDK callers should treat
+`probe_samples < 3` as too-small-to-trust.
+
+Older proxies (<v3.3.4) omit both fields entirely; SDK callers
+must handle that gracefully (the reference Python SDK defaults to
+`None` / `0`).
 
 ### `GET /lmrh/providers/{id}`
 
@@ -378,6 +417,18 @@ a valid LMRH 1.x hint string — your inference calls keep working.
   feature flag default-off.
 - **v3.3.1** (2026-05-09): Phase 2 ships — `/lmrh/quotes` dry-run
   scoring + Python SDK reference at `sdk/python/lmrh_client.py`.
+- **v3.3.3** (2026-05-09): `success_rate` and `samples` are now
+  user-traffic only. Synthetic keep-alive probe outcomes are
+  excluded from the `provider_metrics` aggregate that feeds these
+  fields. Existing fields keep their semantics for callers; the
+  apparent reliability of providers that get rate-limited probes
+  (e.g. grok-web) goes UP because probe-only failures stop dragging
+  the metric down.
+- **v3.3.4** (2026-05-09): new `probe_success_rate` +
+  `probe_samples` fields exposed on each model — synthetic probe
+  outcomes over the same window. Lets callers read connectivity
+  health alongside user-traffic reliability. Backward-compatible:
+  older clients ignore the extra fields, older proxies omit them.
 
 ## Future work (deferred)
 

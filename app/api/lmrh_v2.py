@@ -146,8 +146,16 @@ def _render_provider(p: snap_mod._ProviderSnap) -> dict:
                     "latency_p95_ms": m.latency_p95_ms,
                     "ttft_p50_ms": m.ttft_p50_ms,
                     "ttft_p95_ms": m.ttft_p95_ms,
+                    # v3.3.3+: success_rate / samples = USER traffic only
                     "success_rate": m.success_rate,
                     "samples": m.samples,
+                    # v3.3.4+: separate channel for synthetic probe outcomes
+                    # so callers can read connectivity health alongside
+                    # user-traffic reliability. None when no probes ran in
+                    # the window. See docs/lmrh-2.0-bidirectional.md
+                    # "Probe vs user-traffic metrics" for semantics.
+                    "probe_success_rate": m.probe_success_rate,
+                    "probe_samples": m.probe_samples,
                 },
             }
             for m in p.models

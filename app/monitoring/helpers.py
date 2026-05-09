@@ -348,9 +348,19 @@ async def record_outcome(
         if is_probe:
             meta["probe"] = True
         meta = _attach_bodies(meta, request_body, response_body)
+        # v3.3.4: synthetic probes get a distinct event_type so dashboard
+        # filters and SQL aggregates can cleanly separate user-traffic
+        # from connectivity health-checks. Pre-v3.3.4 every probe row
+        # used event_type='llm_request' with a [probe] message prefix —
+        # 4 internal readers (cache-stats, billing-rollup, usage-session,
+        # usage-weekly) inadvertently summed probe in/out tokens into
+        # user-facing totals. The new event_type also unblocks clean
+        # Grafana dashboards. The query gotcha memo
+        # (reference_llm_proxy2_db_query_gotchas.md) tracks this for
+        # future ad-hoc DB queries.
         await log_event(
             db,
-            event_type="llm_request",
+            event_type="keepalive_probe" if is_probe else "llm_request",
             message=msg,
             severity="info",
             provider_id=provider_id,
@@ -406,9 +416,12 @@ async def record_outcome(
         if is_probe:
             meta["probe"] = True
         meta = _attach_bodies(meta, request_body, response_body)
+        # v3.3.4: same probe/user split on the failure path. Probe
+        # rate_limit warnings stay visible in the activity log under
+        # event_type='keepalive_probe' for connectivity diagnostics.
         await log_event(
             db,
-            event_type="llm_request",
+            event_type="keepalive_probe" if is_probe else "llm_request",
             message=msg,
             severity="warning",
             provider_id=provider_id,

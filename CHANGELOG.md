@@ -9,6 +9,16 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.3.x — LMRHv2 bidirectional metrics feedback channel
 
+### v3.3.4 — Probe observability split + LMRHv2 probe channel
+
+Two related cleanups completing the probe-vs-user-traffic story started in v3.3.3.
+
+- **#3 Distinct `event_type='keepalive_probe'`** — `app/monitoring/helpers.py`. Synthetic probes now log under `event_type='keepalive_probe'` instead of overloading `'llm_request'` with a `[probe]` message prefix. Cleans up dashboard filters and SQL aggregates. Side-effect fix: 4 internal readers (cache-stats, billing-rollup, provider usage session/weekly windows) were inadvertently summing probe in/out tokens into user-facing totals — now they're user-only by construction. Memo `reference_llm_proxy2_db_query_gotchas.md` updated.
+- **#4 LMRHv2 `probe_success_rate` + `probe_samples`** — `app/routing/lmrh/snapshot.py` + `app/api/lmrh_v2.py` + `sdk/python/lmrh_client.py`. After v3.3.3 hid probes from `success_rate`, this exposes them as a separate channel. Computed from `activity_log` rows with `event_type='keepalive_probe'` over the same window as `success_rate`. SDK `ModelMetrics` gets two new optional fields with `None` / `0` defaults so older proxies degrade gracefully. ETag input includes the new fields so probe-channel state changes still bust the cached snapshot.
+- **#5 Spec doc** — `docs/lmrh-2.0-bidirectional.md` adds a "Probe vs user-traffic metrics" subsection under `/lmrh/providers` explaining the split, why it's a leading indicator (probe failures while user traffic succeeds = upstream throttling that hasn't tripped real traffic yet), and the SDK back-compat story.
+
+Tests: +5 in `tests/unit/test_v334_probe_event_type_and_metrics.py`. 998 → 1003 passing.
+
 ### v3.3.3 — Grok-Web resilience pack
 
 Four targeted fixes to the grok-web provider's reliability profile, all driven by the 2026-05-09 24h log audit. Pattern: 11 of 13 daily warnings on grok-web were synthetic-probe rate_limit (429) hits; success rate read 93.3% but the failures were probe-only — real user traffic was succeeding. Fix-set lifts apparent reliability to ~100% on user-facing metrics and reduces grok.com pressure during throttle windows.
