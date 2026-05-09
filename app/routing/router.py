@@ -328,6 +328,7 @@ async def select_provider(
     sort_mode: Optional[str] = None,
     excluded_provider_types: Optional[set[str]] = None,
     api_key_id: Optional[str] = None,
+    dry_run: bool = False,
 ) -> RouteResult:
     """
     Select the best available provider+model for this request.
@@ -545,6 +546,24 @@ async def select_provider(
     ranked_scored = rank_candidates_with_scores(profiles, hint)
     if not ranked_scored:
         raise RuntimeError("No providers satisfy the required routing constraints (LLM-Hint hard constraints)")
+
+    # v3.3.1: dry-run mode for /lmrh/quotes. Caller wants the ranked
+    # candidate list — they're not actually dispatching. Return shaped
+    # tuples (provider, profile, unmet, score) so the endpoint can
+    # render predicted cost/latency without redoing the filtering or
+    # scoring. The list is NOT a RouteResult (no winner picked, no
+    # litellm_model built); type signature is widened by the caller's
+    # ``cast`` since this is a closed-set internal callsite.
+    if dry_run:
+        return [
+            {
+                "provider": provider_map[prof.provider_id],
+                "profile": prof,
+                "unmet": list(unmet),
+                "score": float(score),
+            }
+            for prof, unmet, score in ranked_scored
+        ]  # type: ignore[return-value]
 
     # Wave 3 #14 — cascade pre-step: prefer cheapest candidate that satisfies
     # hard constraints. economy < standard < premium, tie-break by priority.
