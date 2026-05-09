@@ -429,6 +429,26 @@ a valid LMRH 1.x hint string — your inference calls keep working.
   outcomes over the same window. Lets callers read connectivity
   health alongside user-traffic reliability. Backward-compatible:
   older clients ignore the extra fields, older proxies omit them.
+- **v3.5.0** (2026-05-09): LMRHv2.1 — model identity model. New
+  fields on each model entry:
+  - `aliases: list[str]` — alternate spellings the proxy will
+    accept; `/v1/models` and `/lmrh/providers` list each model once
+    with its aliases as a sibling array.
+  - `family: str | null` — upstream physical model identity. Two
+    `_ModelSnap` entries with the same `family` but different
+    `variant` represent multi-route access to the SAME upstream
+    model (e.g. grok-3 via the operator's web subscription vs via
+    OpenRouter).
+  - `variant: str | null` — route flavour ("web", "openrouter",
+    "direct", "vertex", etc.).
+  Backward-compatible: LMRHv2.0 clients see the new fields as
+  unknown JSON keys (ignored). Proxies older than v3.5.0 omit
+  them and the SDK applies defaults (`()`, `None`). Drives a small
+  bump to `version: "2.1"` in the response body. Both `2.0` and
+  `2.1` are advertised in `supported_versions` of
+  `/.well-known/lmrh-config`. See the cross-project RFC at
+  `docs/rfc/2026-05-model-identity.md` for the full taxonomy and
+  how downstream consumers should adopt.
 - **v3.4.0** (2026-05-09): Phase 3 ships —
   - **Per-direction cost split**: `cost_per_1m_input_usd` and
     `cost_per_1m_output_usd` are now independently computed from

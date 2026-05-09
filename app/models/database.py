@@ -150,6 +150,18 @@ async def init_db():
             "ALTER TABLE provider_metrics ADD COLUMN output_cost_usd REAL DEFAULT 0",
             "ALTER TABLE provider_metrics ADD COLUMN input_tokens INTEGER DEFAULT 0",
             "ALTER TABLE provider_metrics ADD COLUMN output_tokens INTEGER DEFAULT 0",
+            # v3.4.1 — alias column on model_capabilities. Lets one
+            # canonical model_id absorb multiple input spellings
+            # (e.g. ``x-ai/grok-3`` accepts ``grok-3`` as alias).
+            # Solves the /v1/models leak where the same physical
+            # model showed as two list entries.
+            "ALTER TABLE model_capabilities ADD COLUMN aliases JSON",
+            # v3.5.0 (LMRHv2.1) — family/variant grouping for multi-
+            # route disambiguation. ``family`` = upstream model
+            # identity (same physical model), ``variant`` = route
+            # flavour (web/api/openrouter/direct/etc).
+            "ALTER TABLE model_capabilities ADD COLUMN model_family TEXT",
+            "ALTER TABLE model_capabilities ADD COLUMN model_variant TEXT",
         ]:
             try:
                 await conn.exec_driver_sql(stmt)

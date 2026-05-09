@@ -139,6 +139,20 @@ def _render_provider(p: snap_mod._ProviderSnap) -> dict:
                 "context_length": m.context_length,
                 "native_tools": m.native_tools,
                 "native_reasoning": m.native_reasoning,
+                # v3.5.0 (LMRHv2.1) — model identity surfaced as
+                # siblings of model_id. ``aliases`` lists alternate
+                # spellings the proxy will accept (caller can send
+                # any of them and route to this same model row).
+                # ``family`` is the upstream physical model identity;
+                # ``variant`` is the route flavour. When two model
+                # entries share the same family but different
+                # variants, they are multi-route access to the SAME
+                # underlying model — caller can pick by cost / latency
+                # / reliability rather than picking blindly. See spec
+                # §"Model identity model" for the full taxonomy.
+                "aliases": list(m.aliases or []),
+                "family": m.family,
+                "variant": m.variant,
                 "metrics": {
                     "cost_per_1m_input_usd": m.cost_per_1m_input_usd,
                     "cost_per_1m_output_usd": m.cost_per_1m_output_usd,
@@ -193,7 +207,13 @@ async def well_known_config() -> dict:
     polling = {}
     cache = {"registry_max_age_sec": 3600}
     if _v2_enabled():
+        # v3.5.0 advertises both 2.0 and 2.1 — clients negotiating
+        # against ``supported_versions`` pick the highest they can
+        # parse. 2.1 is additive (aliases/family/variant on each
+        # model entry); 2.0 clients get those fields harmlessly
+        # ignored as unknown JSON keys.
         versions.append("2.0")
+        versions.append("2.1")
         endpoints.update({
             "providers": "/lmrh/providers",
             "providers_one": "/lmrh/providers/{provider_id}",
@@ -288,7 +308,7 @@ async def get_providers(
         ]
 
     body = {
-        "version": "2.0",
+        "version": "2.1",
         "as_of": cur.as_of.isoformat(),
         "window_sec": cur.window_sec,
         "providers": [_render_provider(p) for p in visible],

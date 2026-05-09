@@ -93,6 +93,19 @@ class _ModelSnap:
     # no probes ran in the window.
     probe_success_rate: Optional[float] = None
     probe_samples: int = 0
+    # v3.5.0 (LMRHv2.1) — model identity model. ``aliases`` lists
+    # alternate spellings the proxy will accept (caller can send
+    # either ``grok-3`` or ``x-ai/grok-3`` and route the same).
+    # ``family`` is the upstream model identity (same physical model
+    # regardless of provider — multiple ``_ModelSnap`` entries with
+    # the same family but different ``variant`` represent multi-route
+    # access to the same model). ``variant`` is the route flavour
+    # ("web", "openrouter", "direct", etc.). NULL family/variant
+    # means the operator hasn't classified — readers should fall
+    # back to deriving family from canonical model_id.
+    aliases: list[str] = field(default_factory=list)
+    family: Optional[str] = None
+    variant: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -332,6 +345,7 @@ async def _build_snapshot(
         # entry from default_model so the response isn't empty.
         if not caps and p.default_model:
             from app.api.models import _infer_kind
+            from app.routing.canonical import derive_family
             model_snaps = [_ModelSnap(
                 model_id=p.default_model,
                 kind=_infer_kind(p.default_model),
@@ -349,9 +363,13 @@ async def _build_snapshot(
                 samples=total_reqs,
                 probe_success_rate=probe_success_rate,
                 probe_samples=probe_samples,
+                aliases=[],
+                family=derive_family(p.default_model),
+                variant=None,
             )]
         else:
             from app.api.models import _infer_kind
+            from app.routing.canonical import derive_family
             model_snaps = [_ModelSnap(
                 model_id=c.model_id,
                 kind=(c.tasks[0] if c.tasks else _infer_kind(c.model_id)),
@@ -369,6 +387,9 @@ async def _build_snapshot(
                 samples=total_reqs,
                 probe_success_rate=probe_success_rate,
                 probe_samples=probe_samples,
+                aliases=list(c.aliases or []),
+                family=(c.model_family or derive_family(c.model_id)),
+                variant=c.model_variant,
             ) for c in caps]
 
         # Subscription quota — only for subscription providers; only when

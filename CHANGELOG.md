@@ -7,6 +7,26 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ---
 
+## v3.5.x — Model identity model (LMRHv2.1)
+
+### v3.5.0 — Canonical model_id + aliases + family/variant (LMRHv2.1)
+
+Two-step rollout (v3.4.1 catalog + v3.5.0 LMRH) shipped as a single bundle. Closes the duplication issue where the same upstream model appeared as multiple `/v1/models` entries (e.g. `grok-3` AND `x-ai/grok-3`). Cross-project RFC at `docs/rfc/2026-05-model-identity.md`.
+
+- **Aliases column on `model_capabilities`** — `app/models/db.py` + migration. Each capability now carries `aliases: JSON` listing alternate input spellings. Router matches `model_id == X OR X IN aliases` (case-insensitive). Pre-fix, the operator had to register `grok-3` AND `x-ai/grok-3` as separate rows; v3.4.1 keeps just one canonical row with bare as alias.
+- **`/v1/models` de-dupes across canonical + aliases** — `app/api/models.py`. Each model appears once under canonical id with `aliases: [...]` array as a sibling field. The duplication users were seeing in the upstream catalog disappears.
+- **`app/routing/canonical.py`** (NEW) — `matches_capability`, `derive_family`, `collect_canonical_aliases` helpers. Used by the router and `/v1/models`; also the public API for tests + future provider modules.
+- **Grok-Web canonical-only** — `app/providers/grok_web.py`. `SUPPORTED_MODELS` now `["x-ai/grok-3", "x-ai/grok-4"]`; `SUPPORTED_MODEL_ALIASES` maps each to `["grok-3"]` / `["grok-4"]`. `scanner.py` persists the alias list when seeding capability rows.
+- **LMRHv2.1 — `family` + `variant` + `aliases` on each model entry** — `app/routing/lmrh/snapshot.py` + `app/api/lmrh_v2.py` + `sdk/python/lmrh_client.py`. Multi-route grok-3 (Grok-Web `variant: "web"` vs OpenRouter `variant: "openrouter"`) is now a first-class concept callers can group or pick from. Body version bumps to `2.1`; `/.well-known/lmrh-config` advertises both `2.0` and `2.1` in `supported_versions`.
+- **Cross-project RFC** — `docs/rfc/2026-05-model-identity.md`. Standalone document the operator can share with hub, DevinGPT, paperless teams. Covers motivation, naming convention, migration path, and per-consumer recommendations.
+
+Schema (idempotent ALTER TABLE):
+- `model_capabilities ADD COLUMN aliases JSON`
+- `model_capabilities ADD COLUMN model_family TEXT`
+- `model_capabilities ADD COLUMN model_variant TEXT`
+
+Tests: +13 in `tests/unit/test_v341_v350_canonical_aliases.py` (matches_capability exact / alias / case-insensitive / empty inputs; derive_family with 1, 2+ slashes; collect_canonical_aliases ordering + de-dup; grok_web canonical contract; SDK v2.1 fields with default values; SDK parses v2.1 / handles v2.0; /v1/models de-dupe). 1022 → 1035 passing.
+
 ## v3.4.x — LMRHv2 Phase 3 (cost split + SSE push)
 
 ### v3.4.0 — Per-direction cost split + SSE stream + tighter probe latency

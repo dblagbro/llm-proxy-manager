@@ -35,16 +35,29 @@ from app.providers.grok_web import (
 # ── Static config / catalog ─────────────────────────────────────────────
 
 
-def test_supported_models_includes_xai_aliases():
-    """v3.2.8 regression: callers send `x-ai/grok-4` (OpenRouter slug
-    style). The router scores by exact capability match, so grok-web
-    must claim both bare and prefixed variants or it loses to OpenRouter
-    despite being priority=1. Pre-v3.2.8 only ['grok-3','grok-4'] were
-    listed → 6 of 8 grok requests routed to OpenRouter in 24h."""
-    assert "grok-3" in SUPPORTED_MODELS
-    assert "grok-4" in SUPPORTED_MODELS
-    assert "x-ai/grok-3" in SUPPORTED_MODELS
-    assert "x-ai/grok-4" in SUPPORTED_MODELS
+def test_supported_models_canonical_with_aliases():
+    """v3.4.1 (2026-05-09): the v3.2.8 regression that gave us this
+    test (6 of 8 grok requests losing to OpenRouter when only bare
+    names were registered) is now solved by ALIASES rather than
+    duplicate capability rows.
+
+    Contract:
+      - ``SUPPORTED_MODELS`` lists ONLY canonical OpenRouter-style
+        slugs (``x-ai/grok-3``, ``x-ai/grok-4``).
+      - ``SUPPORTED_MODEL_ALIASES`` maps each canonical → its bare
+        alternate spelling (``"x-ai/grok-3": ["grok-3"]``).
+      - Together they ensure callers sending EITHER spelling resolve
+        to the same provider+capability — same end-state as v3.2.8
+        but without leaking duplicates into ``GET /v1/models``.
+    """
+    from app.providers.grok_web import SUPPORTED_MODEL_ALIASES
+    # Canonical list is OR-prefixed only (no bare names, no dupes)
+    assert SUPPORTED_MODELS == ["x-ai/grok-3", "x-ai/grok-4"]
+    # Bare names live as aliases of their canonical entry
+    assert "grok-3" in SUPPORTED_MODEL_ALIASES["x-ai/grok-3"]
+    assert "grok-4" in SUPPORTED_MODEL_ALIASES["x-ai/grok-4"]
+    # All four spellings are still routable end-to-end (validated
+    # via matches_capability in test_v341_v350_canonical_aliases.py)
 
 
 def test_default_model_is_grok_3():

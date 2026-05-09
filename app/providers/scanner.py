@@ -34,6 +34,20 @@ async def scan_provider_models(db: AsyncSession, provider: Provider) -> list[dic
         )
     )
 
+    # v3.4.1: provider modules can declare aliases per canonical model.
+    # When set, scanner persists them on the capability row and the
+    # router matches model_id OR (X IN aliases). grok_web is the
+    # current consumer (eliminates the bare-vs-prefixed double-row
+    # workaround); other providers remain alias-less unless their
+    # module ships a SUPPORTED_MODEL_ALIASES dict.
+    aliases_map: dict[str, list[str]] = {}
+    try:
+        if provider.provider_type == "grok-web":
+            from app.providers.grok_web import SUPPORTED_MODEL_ALIASES
+            aliases_map = dict(SUPPORTED_MODEL_ALIASES)
+    except ImportError:
+        aliases_map = {}
+
     upserted = []
     for model_id in models:
         profile = infer_capability_profile(
@@ -51,6 +65,7 @@ async def scan_provider_models(db: AsyncSession, provider: Provider) -> list[dic
             modalities=profile.modalities,
             native_reasoning=profile.native_reasoning,
             source="inferred",
+            aliases=aliases_map.get(model_id, []),
         )
         db.add(cap)
         upserted.append({
@@ -58,6 +73,7 @@ async def scan_provider_models(db: AsyncSession, provider: Provider) -> list[dic
             "tasks": profile.tasks,
             "cost_tier": profile.cost_tier,
             "native_reasoning": profile.native_reasoning,
+            "aliases": aliases_map.get(model_id, []),
         })
 
     await db.commit()
