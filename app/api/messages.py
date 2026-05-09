@@ -2,26 +2,22 @@
 /v1/messages — Anthropic-format endpoint (same path as v1).
 Handles both streaming and non-streaming responses.
 """
-import json
 import logging
 import time
-from typing import Optional, AsyncIterator
+from typing import Optional
 
 import httpx
-import litellm
 from fastapi import APIRouter, BackgroundTasks, Request, Depends, HTTPException, Header
 from fastapi.responses import StreamingResponse, JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.database import get_db
-from app.auth.keys import verify_api_key, ApiKeyRecord
+from app.auth.keys import verify_api_key
 from app.routing.router import select_provider
-from app.routing.lmrh import parse_hint
-from app.cot.pipeline import run_cot_pipeline, parse_cot_request_headers
+from app.cot.pipeline import parse_cot_request_headers
 from app.cot.tool_emulation import (
     build_anthropic_tool_prompt,
     normalize_anthropic_messages,
-    parse_tool_call,
     parse_tool_calls,
     call_with_tool_prompt,
 )
@@ -32,13 +28,11 @@ from app.cot.sse import (
     anthropic_tool_response,
     anthropic_tools_response,
     anthropic_text_response,
-    FINISH_TO_STOP,
     to_anthropic_response,
 )
 from app.monitoring.helpers import record_outcome
 from app.api.image_utils import has_images_anthropic, strip_images_anthropic
 from app.routing.aliases import resolve_alias
-from app.api.webhook import post_webhook
 from app.api._messages_streaming import (
     _stream_cot_anthropic, _stream_anthropic, _webhook_completion_anthropic,
 )

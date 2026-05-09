@@ -9,6 +9,15 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.3.x — LMRHv2 bidirectional metrics feedback channel
 
+### v3.3.5 — Conversation rotation + import cleanup
+
+Two unrelated cleanups closing out the 2026-05-09 backlog.
+
+- **Conversation rotation for grok-web** — `app/providers/grok_web.py`. New optional `extra_config.conversation_ids` (list) lets the operator pre-create 2+ grok.com conversation UUIDs and have the proxy round-robin across them per dispatch. Helps when grok.com applies per-conversation throttling. New helper `_pick_conversation_id()` round-robins across the pool with per-provider counter state; falls back to the single `conversation_id` for v3.2.x back-compat. Validator (`_validate_extra_config`) now accepts either field. Cloudflare still blocks programmatic `/conversations/new` from server IPs, so the operator must manually create the convs in a browser and paste UUIDs. Default behavior unchanged: providers without `conversation_ids` keep using their single `conversation_id`.
+- **Import cleanup pass** — pyflakes flagged 87 unused imports across `app/`. Removed 21 in three high-confidence top-level files (`api/messages.py`, `api/completions.py`, `routing/router.py`) — clear-cut cases like unused `litellm`, `time`, dead `parse_hint` / `run_cot_pipeline` / `post_webhook` re-imports. Skipped `pipeline.py` aliases, `__init__.py` re-exports, and `auth/keys.py` rate-limit-state internals — those follow re-export patterns where pyflakes is unreliable.
+
+Tests: +11 in `tests/unit/test_v335_grok_conv_rotation.py` (round-robin, fallback, validation, isolation across providers). 1003 → 1014 passing.
+
 ### v3.3.4 — Probe observability split + LMRHv2 probe channel
 
 Two related cleanups completing the probe-vs-user-traffic story started in v3.3.3.

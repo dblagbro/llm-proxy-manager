@@ -4,20 +4,18 @@ Integrates circuit breaker, LMRH hint scoring, and CoT-E auto-engagement.
 """
 import logging
 import re
-import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional, Any
 
-import litellm
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 
 from app.config import settings
 from app.models.db import Provider, ModelCapability, ProviderMetric
-from app.routing.circuit_breaker import is_available, record_success, record_failure, is_billing_error
+from app.routing.circuit_breaker import is_available
 from app.routing.lmrh import (
-    LMRHHint, CapabilityProfile, rank_candidates, rank_candidates_with_scores, build_capability_header
+    LMRHHint, CapabilityProfile, rank_candidates_with_scores, build_capability_header
 )
 from app.routing.capability_inference import infer_capability_profile
 
