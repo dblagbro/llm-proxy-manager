@@ -26,6 +26,11 @@ FROM deps AS runtime
 COPY app/ ./app/
 COPY alembic.ini .
 COPY alembic/ ./alembic/
+# v3.5.10 — operator admin scripts (cleanup_alias_collisions, etc.).
+# Shipped inside the image so the operator can run them via
+# ``docker exec llm-proxy2 python3 -m tools.<name>`` without needing
+# a host Python env with the proxy stack installed.
+COPY tools/ ./tools/
 # v3.0.23: docs/ ships with the image so /lmrh.md (public, no-auth) can serve
 # the LMRH RFC draft for cross-app integration. Single source of truth.
 COPY docs/ ./docs/

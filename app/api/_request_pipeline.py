@@ -192,6 +192,23 @@ def build_base_response_headers(
         "LLM-Capability": route.capability_header,
         "X-Resolved-Model": route.litellm_model,
     }
+    # v3.5.10 BUG-006 fix — make cross-family substitution easier for
+    # clients to detect. Pre-fix, the only signal was buried inside the
+    # ``LLM-Capability`` header's structured-field-value (need to parse
+    # `chosen-because=cross-family-fallback`). Client SDKs that read the
+    # response body's ``model`` field saw the SUBSTITUTED model name
+    # silently, with no obvious indication. Now: when a substitution
+    # happened, expose ``X-Substituted-From`` with the originally-
+    # requested model name. Cheap to inspect without parsing structured
+    # field values.
+    if getattr(route, "cross_family_fallback", False):
+        # ``requested_model`` holds the original requested model (set
+        # by the router when it triggers fallback — see RouteResult
+        # in app/routing/router.py).
+        original = getattr(route, "requested_model", None)
+        if original:
+            headers["X-Substituted-From"] = str(original)
+            headers["X-Substituted-To"] = route.litellm_model
     if max_tokens is not None:
         headers["X-Token-Budget-Remaining"] = str(max_tokens)
 
