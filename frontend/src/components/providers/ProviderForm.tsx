@@ -342,18 +342,21 @@ export function ProviderForm({ form, onChange, editing }: Props) {
       />
       <Input
         label="Priority (lower = preferred)"
+        tooltip="Routing order. Lower numbers are tried first. Use 1 for your free / subscription provider (Grok-Web, Claude-OAuth, Codex-OAuth) so it absorbs traffic before paid providers. Use 5+ for paid fallbacks (OpenRouter, direct OpenAI). Ties are broken by capability score from LMRH."
         type="number"
         value={String(form.priority)}
         onChange={e => set({ priority: Number(e.target.value) })}
       />
       <Input
         label="Timeout (seconds)"
+        tooltip="Hard upper bound on a single request to this provider. Beyond this, the request fails over to the next priority. 60s is a sensible default; raise for slow reasoning models, lower for known-fast providers. Doesn't apply to keep-alive probes (those use a separate 15s budget)."
         type="number"
         value={String(form.timeout_sec)}
         onChange={e => set({ timeout_sec: Number(e.target.value) })}
       />
       <Input
         label="Hold-down after failure (seconds, blank = global 120s)"
+        tooltip="When the circuit breaker opens for this provider (too many failures), how long to skip it before re-trying. 120s default = enough for a transient outage to clear; 21600s (6h) for billing failures so we don't keep retrying a depleted account. Leave blank to use the global default."
         type="number"
         value={form.hold_down_sec == null ? '' : String(form.hold_down_sec)}
         onChange={e => set({ hold_down_sec: e.target.value === '' ? null : Number(e.target.value) })}
@@ -361,6 +364,7 @@ export function ProviderForm({ form, onChange, editing }: Props) {
       />
       <Input
         label="Failure threshold before trip (blank = global 3)"
+        tooltip="How many consecutive failures before the circuit breaker opens (provider gets removed from the candidate pool until hold-down expires). 3 default = balances ‘don't over-react to one blip’ vs ‘don't keep hammering a dead endpoint’. Lower for fragile providers, higher for noisy ones."
         type="number"
         value={form.failure_threshold == null ? '' : String(form.failure_threshold)}
         onChange={e => set({ failure_threshold: e.target.value === '' ? null : Number(e.target.value) })}

@@ -77,6 +77,14 @@ class CapabilityUpdate(BaseModel):
     native_reasoning: bool
     native_tools: bool = True
     native_vision: bool = True
+    # v3.5.1 — model-identity fields exposed for operator edit via the
+    # Hub capability admin form. Optional + defaulted so older Hub UI
+    # clients that don't send them still PUT successfully (back-compat
+    # with the v3.4.1 schema where these defaulted to []/null/null at
+    # the column level).
+    aliases: list[str] = []
+    model_family: Optional[str] = None
+    model_variant: Optional[str] = None
 
 
 @router.get("")
@@ -936,4 +944,9 @@ def _serialize_cap(c: ModelCapability) -> dict:
         "native_tools": c.native_tools,
         "native_vision": c.native_vision,
         "source": c.source,
+        # v3.5.1 — surface the model-identity fields to the Hub UI so
+        # the capability admin form can show + edit them.
+        "aliases": c.aliases or [],
+        "model_family": c.model_family,
+        "model_variant": c.model_variant,
     }

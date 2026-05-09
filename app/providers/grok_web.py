@@ -232,6 +232,49 @@ def _model_to_mode_id(model: str) -> str:
     return MODEL_TO_MODE_ID.get(model, MODEL_TO_MODE_ID.get(model.lower(), "fast"))
 
 
+def _build_manual_request(
+    extra_config: dict, prompt: str, model: str,
+) -> tuple[str, str, dict, dict, str]:
+    """v3.5.x R3 — pre-flight setup for the manual-mode (non-bridge) HTTP
+    replay against grok.com. Returned tuple feeds straight into either
+    a sync or streaming httpx call.
+
+    Pre-R3 (2026-05-09) the same 6-line setup block was inlined in
+    each of complete_grok_web / stream_grok_web / stream_grok_web_anthropic:
+
+        conv_id  = _pick_conversation_id(extra_config)
+        mode_id  = _model_to_mode_id(model)
+        url      = f"{GROK_BASE_URL}/rest/app-chat/conversations/{conv_id}/responses"
+        headers  = _build_headers(extra_config, conv_id)
+        body     = _build_body(prompt, mode_id)
+
+    Three places to update if any of the conventions ever change.
+    Now one.
+
+    Args:
+        extra_config: provider extra_config (cookie_header, x_statsig_id,
+            conversation_id or conversation_ids, etc.)
+        prompt: pre-flattened single-string prompt — caller already
+            collapsed the message list (and prepended any system
+            content for the Anthropic variant).
+        model: caller's model string (e.g. ``grok-3`` or
+            ``x-ai/grok-3``); resolved to ``modeId`` here.
+
+    Returns:
+        ``(conv_id, mode_id, url, headers, body)`` — caller feeds these
+        directly into the format-specific httpx call. ``mode_id`` and
+        ``conv_id`` are also returned because callers use them in
+        upstream-model fallback strings and Cloudflare ``referer``
+        construction respectively.
+    """
+    conv_id = _pick_conversation_id(extra_config)
+    mode_id = _model_to_mode_id(model)
+    url = f"{GROK_BASE_URL}/rest/app-chat/conversations/{conv_id}/responses"
+    headers = _build_headers(extra_config, conv_id)
+    body = _build_body(prompt, mode_id)
+    return conv_id, mode_id, url, headers, body
+
+
 def _flatten_messages_to_prompt(messages: list[dict]) -> str:
     """Anthropic/OpenAI messages array → single prompt string for grok.com.
 
@@ -420,13 +463,10 @@ async def complete_grok_web(
             provider_extra_config, messages, model,
             stream=False, timeout=timeout,
         )
-    conv_id = _pick_conversation_id(provider_extra_config)
-    mode_id = _model_to_mode_id(model)
     prompt = _flatten_messages_to_prompt(messages)
-
-    url = f"{GROK_BASE_URL}/rest/app-chat/conversations/{conv_id}/responses"
-    headers = _build_headers(provider_extra_config, conv_id)
-    body = _build_body(prompt, mode_id)
+    conv_id, mode_id, url, headers, body = _build_manual_request(
+        provider_extra_config, prompt, model,
+    )
 
     async with httpx.AsyncClient(timeout=timeout) as client:
         try:
@@ -543,13 +583,10 @@ async def stream_grok_web(
         yield f"data: {json.dumps(final)}\n\n".encode()
         yield b"data: [DONE]\n\n"
         return
-    conv_id = _pick_conversation_id(provider_extra_config)
-    mode_id = _model_to_mode_id(model)
     prompt = _flatten_messages_to_prompt(messages)
-
-    url = f"{GROK_BASE_URL}/rest/app-chat/conversations/{conv_id}/responses"
-    headers = _build_headers(provider_extra_config, conv_id)
-    body = _build_body(prompt, mode_id)
+    conv_id, mode_id, url, headers, body = _build_manual_request(
+        provider_extra_config, prompt, model,
+    )
 
     chunk_id = f"chatcmpl-grokweb-{uuid.uuid4().hex[:16]}"
     upstream_model = "grok-3" if mode_id == "fast" else "grok-4"
@@ -714,17 +751,13 @@ async def stream_grok_web_anthropic(
         })
         yield _evt("message_stop", {"type": "message_stop"})
         return
-    conv_id = _pick_conversation_id(provider_extra_config)
-    mode_id = _model_to_mode_id(model)
-
     msgs_with_system = list(messages)
     if system:
         msgs_with_system = [{"role": "system", "content": system}] + msgs_with_system
     prompt = _flatten_messages_to_prompt(msgs_with_system)
-
-    url = f"{GROK_BASE_URL}/rest/app-chat/conversations/{conv_id}/responses"
-    headers = _build_headers(provider_extra_config, conv_id)
-    body = _build_body(prompt, mode_id)
+    conv_id, mode_id, url, headers, body = _build_manual_request(
+        provider_extra_config, prompt, model,
+    )
 
     msg_id = f"msg_grokweb_{uuid.uuid4().hex[:16]}"
     upstream_model = "grok-3" if mode_id == "fast" else "grok-4"

@@ -6,6 +6,7 @@ import { Card, CardContent } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
 import { Badge } from '@/components/ui/Badge'
 import { Input } from '@/components/ui/Input'
+import { HelpHint } from '@/components/ui/HelpHint'
 import { Modal, ModalHeader, ModalBody, ModalFooter } from '@/components/ui/Modal'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { CopyButton } from '@/components/ui/CopyButton'
@@ -417,12 +418,16 @@ export function APIKeysPage() {
             <div className="space-y-4">
               <Input
                 label="Key Name (optional)"
+                tooltip="Human-friendly label that appears in the activity log + dashboards. Pick something that identifies the calling app or environment (‘production-paperless’, ‘devingpt-staging’). The key prefix is what callers actually authenticate with — the name is for your own bookkeeping."
                 value={form.name}
                 onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
                 placeholder="e.g. production-app"
               />
               <div className="flex flex-col gap-1.5">
-                <label className="text-sm font-medium text-gray-700 dark:text-gray-300">Key Type</label>
+                <label className="text-sm font-medium text-gray-700 dark:text-gray-300 flex items-center gap-1">
+                  <span>Key Type</span>
+                  <HelpHint text="Determines what kinds of providers this key can route to AND whether CoT-E is auto-engaged. ‘standard’ routes anywhere. ‘claude-code’ auto-engages CoT-E on non-reasoning models. ‘claude-pro-max’ pins to subscription-tier providers (no per-call billing). Only the operator's own admin key uses ‘admin’." />
+                </label>
                 <select
                   value={form.key_type}
                   onChange={e => setForm(f => ({ ...f, key_type: e.target.value as KeyType }))}
@@ -436,6 +441,7 @@ export function APIKeysPage() {
               </div>
               <Input
                 label="Rate Limit (requests/minute, blank = unlimited)"
+                tooltip="Per-key cap, sliding 60s window, enforced per-node (so a 4-node cluster lets ~4× this rate through). Caller gets HTTP 429 + Retry-After when the window fills. Blank disables — use sparingly; an unlimited key can DoS the upstream subscription quota in minutes if a caller misbehaves."
                 type="number"
                 value={form.rate_limit_rpm}
                 onChange={e => setForm(f => ({ ...f, rate_limit_rpm: e.target.value }))}
@@ -468,6 +474,7 @@ export function APIKeysPage() {
               </p>
               <Input
                 label="Lifetime spending cap in USD (blank = unlimited)"
+                tooltip="Hard ceiling on this key's cumulative paid-provider cost since creation. Subscription routes (claude-oauth / codex-oauth / grok-web) cost $0 and don't count against this. Once hit, requests get HTTP 429 with the cap-exceeded message until you raise the cap or rotate the key."
                 type="number"
                 min="0"
                 step="0.01"
@@ -477,6 +484,7 @@ export function APIKeysPage() {
               />
               <Input
                 label="Rate limit (requests/minute, blank = unlimited)"
+                tooltip="Per-key cap, sliding 60s window, enforced per-node. A 4-node cluster lets ~4× this rate through in aggregate. Caller gets HTTP 429 + Retry-After when the window fills. Blank disables — risky for keys with auto-restarting workflows."
                 type="number"
                 min="1"
                 step="1"

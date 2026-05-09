@@ -16,7 +16,6 @@ from app.routing.router import select_provider
 from app.monitoring.helpers import record_outcome
 from app.api.image_utils import has_images_openai, strip_images_openai
 from app.routing.aliases import resolve_alias
-from app.cot.pipeline import parse_cot_request_headers
 from app.cot.tool_emulation import (
     build_openai_tool_prompt,
     normalize_openai_messages,
@@ -36,7 +35,7 @@ from app.api._completions_streaming import (
 )
 from app.routing.retry import acompletion_with_retry
 from app.observability.otel import llm_span
-from app.cache.middleware import decide_cacheable, maybe_check, maybe_store
+from app.cache.middleware import maybe_store
 from app.routing.hedging import (
     should_hedge_header, wait_budget_ms, race_streams, try_acquire_hedge,
 )
@@ -321,39 +320,34 @@ async def chat_completions(
             llm_hint=llm_hint,
         )
 
-    # Semantic cache — check before anything LLM-ish runs
-    cache_decision = decide_cacheable(
+    # Semantic cache — check before anything LLM-ish runs.
+    # v3.5.x R1 (2026-05-09): orchestration extracted to
+    # _request_pipeline.maybe_serve_from_cache. See messages.py for
+    # the rationale; this is the OpenAI-shape variant — passes
+    # ``system=None`` (OpenAI puts system in messages[0]) and the
+    # openai_text_* response builders.
+    from app.api._request_pipeline import maybe_serve_from_cache
+    cache_decision, cache_resp = await maybe_serve_from_cache(
         x_cache_header=x_cache,
         api_key_opt_in=bool(getattr(key_record, "semantic_cache_enabled", False)),
         key_type=key_record.key_type,
-        cot_engaged=route.cot_engaged,
-        tool_emulation=route.tool_emulation_engaged,
+        route=route,
         has_tools=has_tools,
         webhook_url=x_webhook_url,
-        temperature=body.get("temperature"),
-        messages=messages_list,
-        model=route.litellm_model,
-        tenant_id=key_record.id,
+        body=body,
+        messages_list=messages_list,
         system=None,
         tools=tools,
         x_cache_ttl_header=x_cache_ttl,
+        tenant_id=key_record.id,
+        endpoint="completions",
+        text_sse_fn=openai_text_sse,
+        text_response_fn=openai_text_response,
+        resp_headers=resp_headers,
+        stream=stream,
     )
-    resp_headers["X-Cache-Status"] = "bypass" if not cache_decision.eligible else "miss"
-    if cache_decision.eligible:
-        cache_hit = await maybe_check(cache_decision, endpoint="completions")
-        if cache_hit:
-            resp_headers["X-Cache-Status"] = "hit"
-            resp_headers["X-Cache-Similarity"] = f"{cache_hit.similarity:.3f}"
-            if stream:
-                return StreamingResponse(
-                    openai_text_sse(cache_hit.response_text),
-                    media_type="text/event-stream",
-                    headers=resp_headers,
-                )
-            return JSONResponse(
-                content=openai_text_response(cache_hit.response_text, route.litellm_model),
-                headers=resp_headers,
-            )
+    if cache_resp is not None:
+        return cache_resp
 
     # Webhook async: fire-and-forget completion, return 202 immediately
     if x_webhook_url:
@@ -406,45 +400,22 @@ async def chat_completions(
                     content = openai_text_response(response_text, route.litellm_model)
                 return JSONResponse(content=content, headers=resp_headers)
 
-        if route.cot_engaged:
-            if not stream:
-                raise HTTPException(422, "CoT-E requires stream=true")
-            cot_max, force_verify, samples = parse_cot_request_headers(
-                x_cot_iterations, x_cot_verify, x_cot_samples, x_cot_mode
-            )
-            if samples > 1:
-                resp_headers["X-Cot-Samples"] = str(samples)
-            from app.cot.task_adaptive import select_task_branch
-            lmrh_task = hint.get("task").value if (hint and hint.get("task")) else None
-            task_branch = select_task_branch(lmrh_task)
-            if task_branch:
-                resp_headers["X-Cot-Task-Branch"] = task_branch
-            # Wave 2 #8 — pick a different provider for critique
-            critique_model: Optional[str] = None
-            critique_kwargs: Optional[dict] = None
-            if _cfg_settings.cot_cross_provider_critique:
-                try:
-                    critique_route = await select_provider(
-                        db, hint, has_tools=False, has_images=False,
-                        key_type=key_record.key_type,
-                        exclude_provider_id=route.provider.id,
-                        excluded_provider_types={"claude-oauth"},
-                    )
-                    critique_model = critique_route.litellm_model
-                    critique_kwargs = critique_route.litellm_kwargs
-                    resp_headers["X-Critique-Provider"] = critique_route.provider.name
-                except Exception:
-                    pass
-            return StreamingResponse(
-                _stream_cot_openai(
-                    route.litellm_model, messages_list, x_session_id, extra,
-                    cot_max, route.provider.id, db, key_record.id, force_verify,
-                    critique_model=critique_model, critique_kwargs=critique_kwargs,
-                    samples=samples, task_branch=task_branch,
-                ),
-                media_type="text/event-stream",
-                headers=resp_headers,
-            )
+        # CoT-E engagement.
+        # v3.5.x R2 (2026-05-09): orchestration extracted to
+        # _request_pipeline.maybe_engage_cot. The OpenAI flow uses
+        # _stream_cot_openai with the standard arg list — no extras.
+        from app.api._request_pipeline import maybe_engage_cot
+        cot_resp = await maybe_engage_cot(
+            route=route, stream=stream, db=db, key_record=key_record,
+            hint=hint, body=body, messages_list=messages_list, extra=extra,
+            x_cot_iterations=x_cot_iterations, x_cot_verify=x_cot_verify,
+            x_cot_samples=x_cot_samples, x_cot_mode=x_cot_mode,
+            x_session_id=x_session_id,
+            resp_headers=resp_headers,
+            stream_cot_fn=_stream_cot_openai,
+        )
+        if cot_resp is not None:
+            return cot_resp
 
         if stream:
             lmrh_hedge = hint.get("hedge").value if (hint and hint.get("hedge")) else None

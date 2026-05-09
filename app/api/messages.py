@@ -14,7 +14,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.database import get_db
 from app.auth.keys import verify_api_key
 from app.routing.router import select_provider
-from app.cot.pipeline import parse_cot_request_headers
 from app.cot.tool_emulation import (
     build_anthropic_tool_prompt,
     normalize_anthropic_messages,
@@ -38,7 +37,7 @@ from app.api._messages_streaming import (
 )
 from app.routing.retry import acompletion_with_retry
 from app.observability.otel import llm_span
-from app.cache.middleware import decide_cacheable, maybe_check, maybe_store
+from app.cache.middleware import maybe_store
 from app.routing.hedging import (
     should_hedge_header, wait_budget_ms, race_streams, try_acquire_hedge,
 )
@@ -408,44 +407,33 @@ async def messages(
             llm_hint=llm_hint,
         )
 
-    # Semantic cache — check before anything LLM-ish runs
-    cache_decision = decide_cacheable(
+    # Semantic cache — check before anything LLM-ish runs.
+    # v3.5.x R1 (2026-05-09): orchestration extracted to
+    # _request_pipeline.maybe_serve_from_cache so the same logic isn't
+    # also copy-pasted into completions.py. Wire-format builders
+    # (anthropic_text_sse / anthropic_text_response) are passed in.
+    from app.api._request_pipeline import maybe_serve_from_cache
+    cache_decision, cache_resp = await maybe_serve_from_cache(
         x_cache_header=x_cache,
         api_key_opt_in=bool(getattr(key_record, "semantic_cache_enabled", False)),
         key_type=key_record.key_type,
-        cot_engaged=route.cot_engaged,
-        tool_emulation=route.tool_emulation_engaged,
+        route=route,
         has_tools=has_tools,
         webhook_url=x_webhook_url,
-        temperature=body.get("temperature"),
-        messages=messages_list,
-        model=route.litellm_model,
-        tenant_id=key_record.id,
+        body=body,
+        messages_list=messages_list,
         system=system,
         tools=tools,
         x_cache_ttl_header=x_cache_ttl,
+        tenant_id=key_record.id,
+        endpoint="messages",
+        text_sse_fn=anthropic_text_sse,
+        text_response_fn=anthropic_text_response,
+        resp_headers=resp_headers,
+        stream=stream,
     )
-    resp_headers["X-Cache-Status"] = "bypass" if not cache_decision.eligible else "miss"
-    if cache_decision.eligible:
-        cache_hit = await maybe_check(cache_decision, endpoint="messages")
-        if cache_hit:
-            resp_headers["X-Cache-Status"] = "hit"
-            resp_headers["X-Cache-Similarity"] = f"{cache_hit.similarity:.3f}"
-            # v2.8.6 — DO NOT re-import anthropic_text_sse / anthropic_text_response
-            # locally here. They're imported at module scope; a function-local
-            # ``from … import …`` makes Python flag the name as local, and if
-            # this branch doesn't fire on a particular request, downstream
-            # references at line 379/387 raise UnboundLocalError.
-            if stream:
-                return StreamingResponse(
-                    anthropic_text_sse(cache_hit.response_text),
-                    media_type="text/event-stream",
-                    headers=resp_headers,
-                )
-            return JSONResponse(
-                content=anthropic_text_response(cache_hit.response_text, route.litellm_model),
-                headers=resp_headers,
-            )
+    if cache_resp is not None:
+        return cache_resp
 
     # Webhook async: fire-and-forget completion, return 202 immediately
     if x_webhook_url:
@@ -501,48 +489,30 @@ async def messages(
                     content = anthropic_text_response(response_text, route.litellm_model)
                 return JSONResponse(content=content, headers=resp_headers)
 
-        if route.cot_engaged:
-            if not stream:
-                raise HTTPException(422, "CoT-E requires stream=true")
-            cot_max, force_verify, samples = parse_cot_request_headers(
-                x_cot_iterations, x_cot_verify, x_cot_samples, x_cot_mode
-            )
-            if samples > 1:
-                resp_headers["X-Cot-Samples"] = str(samples)
-            # Wave 2 #11 — resolve task-adaptive branch from LMRH hint
-            from app.cot.task_adaptive import select_task_branch
-            lmrh_task = hint.get("task").value if (hint and hint.get("task")) else None
-            task_branch = select_task_branch(lmrh_task)
-            if task_branch:
-                resp_headers["X-Cot-Task-Branch"] = task_branch
-            # Wave 2 #8 — pick a different provider for the critique pass
-            critique_model: Optional[str] = None
-            critique_kwargs: Optional[dict] = None
-            if settings.cot_cross_provider_critique:
-                try:
-                    critique_route = await select_provider(
-                        db, hint, has_tools=False, has_images=False,
-                        key_type=key_record.key_type,
-                        exclude_provider_id=route.provider.id,
-                        excluded_provider_types={"claude-oauth"},
-                    )
-                    critique_model = critique_route.litellm_model
-                    critique_kwargs = critique_route.litellm_kwargs
-                    resp_headers["X-Critique-Provider"] = critique_route.provider.name
-                except Exception:
-                    pass  # no alternate available; critique stays on primary
-            return StreamingResponse(
-                _stream_cot_anthropic(
-                    route.litellm_model, messages_list, x_session_id, extra,
-                    cot_max, route.provider.id, db, key_record.id, force_verify,
-                    critique_model=critique_model, critique_kwargs=critique_kwargs,
-                    samples=samples, task_branch=task_branch,
-                    requested_model=body.get("model") if isinstance(body, dict) else "",
-                    llm_hint=llm_hint,
-                ),
-                media_type="text/event-stream",
-                headers=resp_headers,
-            )
+        # CoT-E engagement.
+        # v3.5.x R2 (2026-05-09): orchestration extracted to
+        # _request_pipeline.maybe_engage_cot. The Anthropic flow passes
+        # ``requested_model`` + ``llm_hint`` through extra_kwargs_for_stream
+        # because _stream_cot_anthropic accepts them; the OpenAI flow
+        # doesn't. The helper handles header parsing, task-branch
+        # selection, cross-provider critique pick, and StreamingResponse
+        # construction (all identical between the two endpoints).
+        from app.api._request_pipeline import maybe_engage_cot
+        cot_resp = await maybe_engage_cot(
+            route=route, stream=stream, db=db, key_record=key_record,
+            hint=hint, body=body, messages_list=messages_list, extra=extra,
+            x_cot_iterations=x_cot_iterations, x_cot_verify=x_cot_verify,
+            x_cot_samples=x_cot_samples, x_cot_mode=x_cot_mode,
+            x_session_id=x_session_id,
+            resp_headers=resp_headers,
+            stream_cot_fn=_stream_cot_anthropic,
+            extra_kwargs_for_stream={
+                "requested_model": body.get("model") if isinstance(body, dict) else "",
+                "llm_hint": llm_hint,
+            },
+        )
+        if cot_resp is not None:
+            return cot_resp
 
         if stream:
             # Hedging: if opted in and we have a TTFT p95 signal for the primary
