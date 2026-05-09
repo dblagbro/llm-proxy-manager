@@ -242,6 +242,26 @@ async def record_outcome(
     except Exception:
         provider_type = None
         explicit_cost_class = None
+    # v3.2.12: denormalize the caller's key prefix into event_meta so the
+    # activity log is self-contained for grep + dashboard filtering.
+    # Pre-v3.2.12 readers had to JOIN api_keys on api_key_id to know which
+    # caller did the request. The proactive-monitoring sweep on 2026-05-09
+    # mis-attributed traffic because of this gap. Probes use the magic
+    # key_record_id "probe-keepalive" which has no row in api_keys; surface
+    # that as a literal "probe-keepalive" prefix so probe events stay
+    # filterable without a special case at every readsite.
+    api_key_prefix: Optional[str] = None
+    if key_record_id == "probe-keepalive":
+        api_key_prefix = "probe-keepalive"
+    else:
+        try:
+            from app.models.db import ApiKey
+            key_obj = await db.get(ApiKey, key_record_id)
+            api_key_prefix = (
+                getattr(key_obj, "key_prefix", None) if key_obj else None
+            )
+        except Exception:
+            api_key_prefix = None
     if explicit_cost_class in ("subscription", "per_call"):
         is_subscription = (explicit_cost_class == "subscription")
     else:
@@ -285,6 +305,7 @@ async def record_outcome(
             "model": model,                       # legacy — litellm-prefixed
             "served_model": served_normalized,    # v3.0.41: bare slug for fair compare
             "provider_name": provider_name,
+            "api_key_prefix": api_key_prefix,     # v3.2.12: caller attribution
             "in_tok": in_tok,
             "out_tok": out_tok,
             "cost_usd": round(cost, 6),
@@ -354,6 +375,7 @@ async def record_outcome(
             "model": model,
             "served_model": served_normalized,
             "provider_name": provider_name,
+            "api_key_prefix": api_key_prefix,     # v3.2.12: caller attribution
             "error": error_str[:2000] if error_str else None,
             # v3.0.75 — coarse error-class taxonomy for activity-log
             # filtering: auth / billing / rate_limit / timeout /
