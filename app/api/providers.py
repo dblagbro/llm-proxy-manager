@@ -649,6 +649,18 @@ async def delete_provider(
     p.updated_at = datetime.now(timezone.utc)
     _stamp_user_edit(p)
     await db.commit()
+    # v3.5.9 BUG-012 fix — clear in-memory circuit-breaker state for the
+    # deleted provider. Pre-fix the CB ``_local_states`` dict held the
+    # entry indefinitely, so /health reported ghost CBs (open/half-open
+    # states) for providers that no longer existed. Most visible via
+    # the integration tests' pytest-mock leftovers — see docs/bug-log.md
+    # BUG-003 + BUG-012 for context.
+    from app.routing.circuit_breaker import (
+        _local_states as _cb_states,
+        _auth_failed as _cb_auth_failed,
+    )
+    _cb_states.pop(provider_id, None)
+    _cb_auth_failed.pop(provider_id, None)
     return {"ok": True}
 
 

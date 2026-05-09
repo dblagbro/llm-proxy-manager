@@ -183,6 +183,12 @@ class MockServer:
     def __init__(self, httpd: HTTPServer, thread: threading.Thread):
         self._httpd = httpd
         self._thread = thread
+        # v3.5.9 BUG-002: expose the actually-bound port. With port=0
+        # (now the default) the OS picks an ephemeral; tests that need
+        # to point a client at the mock should read this attribute
+        # rather than hardcoding 9876.
+        self.port = httpd.server_address[1]
+        self.url = f"http://127.0.0.1:{self.port}"
 
     def queue_response(self, **kwargs):
         self._httpd._queue.put(kwargs)
@@ -197,14 +203,34 @@ class MockServer:
 
     def stop(self):
         self._httpd.shutdown()
+        # v3.5.9 BUG-002: also close the underlying socket so the
+        # port releases immediately (otherwise it lingers in TIME_WAIT
+        # for the OS-default ~60s, which is what triggered the
+        # "Address already in use" cascade in sequential test runs).
+        try:
+            self._httpd.server_close()
+        except Exception:
+            pass
         self._thread.join(timeout=5)
 
 
-def start_mock_server(port: int = 9876) -> MockServer:
+def start_mock_server(port: int = 0) -> MockServer:
+    """v3.5.9 BUG-002 fix — accept ``port=0`` (default) to ask the OS
+    for a free ephemeral port. Pre-fix the default 9876 collided when
+    the integration suite ran sequentially without the prior server
+    fully releasing the socket (TIME_WAIT). 13 errors per full run.
+    Caller can still pin a specific port for ad-hoc smoke testing.
+
+    The actually-bound port is on ``MockServer.port`` so callers know
+    where to point clients.
+    """
     httpd = HTTPServer(("0.0.0.0", port), _Handler)
     httpd._queue: queue.Queue = queue.Queue()
     httpd._received: list = []
     httpd._lock = threading.Lock()
+
+    # Capture the actually-bound port (when port=0, the OS picks one).
+    bound_port = httpd.server_address[1]
 
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
@@ -213,7 +239,7 @@ def start_mock_server(port: int = 9876) -> MockServer:
     import socket
     for _ in range(30):
         try:
-            with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+            with socket.create_connection(("127.0.0.1", bound_port), timeout=0.5):
                 break
         except OSError:
             time.sleep(0.1)

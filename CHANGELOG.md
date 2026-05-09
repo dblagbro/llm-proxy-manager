@@ -9,6 +9,18 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.5.x — Model identity model (LMRHv2.1)
 
+### v3.5.9 — Test infra + circuit-breaker cleanup hooks
+
+Closes 3 of the 4 medium-severity bugs from the QA pass (`docs/bug-log.md`).
+
+- **BUG-012 — `/health` ghost CB entries on deleted providers** — `app/api/providers.py:delete_provider` and `app/cluster/sync.py:apply_sync` (provider tombstone propagation) now clear `circuit_breaker._local_states` + `_auth_failed` for the deleted provider id. Pre-fix, soft-deleted providers left CB state in memory until container restart, so `/health` reported phantom open/half-open breakers.
+- **BUG-009 — SDK `subscribe()` slow stop** — `sdk/python/lmrh_client.py:_sse_session` now sets `httpx.Timeout(read=heartbeat_sec * 2)` (was `timeout=None`). Effective stop latency: ≤ 2× heartbeat (default 50s → measured 8.2s in regression test); pre-fix it could block indefinitely waiting for the next event/heartbeat.
+- **BUG-002 — Mock LLM server port collisions** — `tests/mock_llm_server.py:start_mock_server` now accepts `port=0` (OS-assigned) by default, exposes the actually-bound port via `MockServer.port` + `.url`, and `MockServer.stop()` calls `server_close()` to release the socket immediately (was leaving it in TIME_WAIT for ~60s, blocking the next test). Existing callers that explicitly pass `port=9876` keep working.
+
+BUG-003 (integration tests pollute prod DB) is partially addressed by BUG-012's CB cleanup — orphan CB state no longer accumulates from deleted-test-provider rows. Full hard-delete cleanup of `pytest-mock` provider rows during teardown is left for v3.5.10 (low-risk follow-up; the soft-delete tombstone retention worker will sweep them after 7 days regardless).
+
+Tests: 1059 still passing. SDK stop-latency regression smoked end-to-end against live fleet (8.2s exit).
+
 ### v3.5.8 — Input validation + upstream-error sanitization (security/quality)
 
 Closes 4 bugs found during the post-v3.5.7 deep QA pass. See `docs/bug-log.md` BUG-004, BUG-005, BUG-007, BUG-008.
