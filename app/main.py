@@ -289,9 +289,12 @@ async def lmrh_link_header(request: Request, call_next):
     path = request.url.path
     if path.startswith("/v1/") or path.startswith("/lmrh/"):
         if getattr(settings, "lmrh_v2_enabled", False):
+            # v3.3.2: include a pointer to the public spec doc so callers
+            # can read the protocol without finding our /docs by hand.
             response.headers["Link"] = (
                 '</.well-known/lmrh-config>; rel="lmrh-config", '
-                '</lmrh/providers>; rel="lmrh-providers"'
+                '</lmrh/providers>; rel="lmrh-providers", '
+                '</lmrh/v2.md>; rel="lmrh-spec"; type="text/markdown"'
             )
             response.headers["LMRH-Version"] = "2.0"
         else:
@@ -455,6 +458,17 @@ if os.path.isdir(_static_dir):
         p = os.path.join(_docs_dir, "draft-blagbrough-lmrh-00.md")
         if not os.path.isfile(p):
             return JSONResponse({"detail": "LMRH draft not found in this build"}, 404)
+        return FileResponse(p, media_type="text/markdown; charset=utf-8")
+
+    # v3.3.2: serve the public LMRHv2 spec at /lmrh/v2.md so callers can
+    # find it via the Link header on responses. Original LMRH 1.x spec
+    # remains at /lmrh.md (unchanged).
+    @app.get("/lmrh/v2", include_in_schema=False)
+    @app.get("/lmrh/v2.md", include_in_schema=False)
+    async def lmrh_v2_doc():
+        p = os.path.join(_docs_dir, "lmrh-2.0-bidirectional.md")
+        if not os.path.isfile(p):
+            return JSONResponse({"detail": "LMRHv2 spec not found in this build"}, 404)
         return FileResponse(p, media_type="text/markdown; charset=utf-8")
 
     @app.get("/icons.svg", include_in_schema=False)

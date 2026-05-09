@@ -9,6 +9,16 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.3.x — LMRHv2 bidirectional metrics feedback channel
 
+### v3.3.2 — Public LMRHv2 spec doc + discovery polish
+
+Three small additions to make LMRHv2 self-documenting for callers:
+
+- **`docs/lmrh-2.0-bidirectional.md`** — public-facing spec. Mirrors the style of the `lmrh-1.2-*.md` family. Covers all five v2 endpoints, the discovery `Link` header, polling guidance, ETag round-trip, scope filter, per-key overrides, the SDK quick-start, and a Phase-3+ roadmap.
+- **`/lmrh/v2.md` route** — the proxy now serves the public spec at this path (analogous to `/lmrh.md` serving the v1 draft). New readers don't need to find `/docs/` by hand.
+- **Discovery improvements**: the `Link` header on `/v1/*` responses now carries a third entry `</lmrh/v2.md>; rel="lmrh-spec"`, and `/.well-known/lmrh-config` advertises `endpoints.spec` + `endpoints.providers_one` + `endpoints.quotes` for completeness.
+
+No code-behavior changes; no tests added. README + CHANGELOG bumped to v3.3.2.
+
 ### v3.3.1 — `/lmrh/quotes` dry-run scoring + Python SDK reference
 
 Phase 2 of the LMRHv2 protocol (operator decisions locked 2026-05-09).
