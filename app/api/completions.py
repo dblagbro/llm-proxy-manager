@@ -81,8 +81,12 @@ async def chat_completions(
     # so missing model/messages return 400 instead of cascading to a
     # 502 with upstream error leakage. See _input_validation.py +
     # docs/bug-log.md BUG-004 for the rationale.
-    from app.api._input_validation import validate_completion_request
+    from app.api._input_validation import (
+        validate_completion_request,
+        validate_webhook_url,
+    )
     validate_completion_request(body, endpoint="completions")
+    validate_webhook_url(x_webhook_url)
     messages_list = body.get("messages", [])
     stream = body.get("stream", False)
     tools = body.get("tools")

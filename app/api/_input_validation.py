@@ -107,6 +107,55 @@ def validate_completion_request(body: dict, *, endpoint: str) -> None:
                 f"{endpoint}: 'max_tokens' must be a positive integer (got {mt!r})",
             )
 
+    # 5. v3.5.11 BUG-015 — cap stop_sequences at 16 entries.
+    # Anthropic and OpenAI both error past ~4-16; pre-validation
+    # saves an upstream round-trip and gives the caller a clearer
+    # error than ``upstream 400: too many stop sequences``.
+    # T23 reproduced: 1000 entries returned 200 (silently truncated
+    # by upstream? wasteful either way).
+    ss = body.get("stop_sequences") if "stop_sequences" in body else body.get("stop")
+    if ss is not None:
+        if isinstance(ss, list) and len(ss) > 16:
+            raise HTTPException(
+                400,
+                f"{endpoint}: 'stop_sequences'/'stop' may have at most 16 "
+                f"entries (got {len(ss)})",
+            )
+
+
+def validate_webhook_url(url: str) -> None:
+    """v3.5.11 BUG-013 — reject unsafe webhook URL schemes.
+
+    Pre-fix: ``X-Webhook-URL: file:///etc/passwd`` was accepted and
+    httpx would attempt to read the local file. Same for ``gopher://``,
+    ``data:``, ``ftp://``, etc. SSRF surface: ``http://localhost:*``
+    or ``http://169.254.169.254`` (cloud metadata) — though those
+    require network access from the proxy container.
+
+    Strategy: require ``http://`` or ``https://`` scheme. We do NOT
+    block private IPs by default — operators may legitimately POST
+    to internal infra (their hub, their alerting webhook). Document
+    that and let network policy enforce egress restrictions.
+
+    Raises ``HTTPException(400)`` on invalid scheme. Returns silently
+    on success.
+    """
+    if not url:
+        return
+    from urllib.parse import urlparse
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        raise HTTPException(400, "x-webhook-url: invalid URL")
+    if parsed.scheme not in ("http", "https"):
+        raise HTTPException(
+            400,
+            f"x-webhook-url: scheme must be http:// or https:// "
+            f"(got {parsed.scheme!r})",
+        )
+    if not parsed.netloc:
+        raise HTTPException(400, "x-webhook-url: missing host")
+
 
 def sanitize_upstream_error(error_text: str, max_chars: int = 300) -> str:
     """Convert a raw upstream / litellm exception string into a caller-safe

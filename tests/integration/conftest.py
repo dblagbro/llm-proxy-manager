@@ -96,8 +96,16 @@ def only_mock_routing(admin_session, all_non_mock_providers, mock_server):
 
 @pytest.fixture
 def mock_ctl(mock_server):
-    """Per-test helper: queue responses on the mock and read what it received."""
+    """Per-test helper: queue responses on the mock and read what it received.
+
+    v3.5.11 BUG-001 fix — also drains any leftover queued responses
+    from prior tests that may have errored before consuming them.
+    Pre-fix, an unconsumed queued response from test N would be served
+    to test N+1, breaking N+1's assertions in subtle ways (most
+    visible on test_text_only_request_passes_through_unchanged).
+    """
     mock_server["srv"].clear_received()
+    mock_server["srv"].clear_queue()
 
     class Ctl:
         def queue(self, **kwargs):

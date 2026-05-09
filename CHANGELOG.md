@@ -9,6 +9,19 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.5.x — Model identity model (LMRHv2.1)
 
+### v3.5.11 — Second QA sweep: webhook SSRF guard + stop_sequences cap + test isolation residue
+
+Closes the remaining 2 bugs from the first QA pass (`docs/bug-log.md`) and
+3 new bugs found in a second probe-driven sweep against the live fleet.
+
+- **BUG-001 — Mock test queue not drained between tests** (`tests/integration/conftest.py`, `tests/mock_llm_server.py`). The flaky-test contributor: `mock_ctl` (function-scoped) cleared `_received` but never drained `_queue`. If a prior test queued a response that never got consumed (e.g. the request 4xx'd before reaching the mock), the next test's queued response was second in line — the leftover served first, breaking subtle assertions on `test_text_only_request_passes_through_unchanged`. Added `MockServer.clear_queue()` and called it from the fixture alongside `clear_received()`.
+- **BUG-003 residual — pytest-mock provider rows persist 7 days** (`app/api/providers.py`, `tests/conftest.py`). Mirrors the existing `/api/keys/_purge-test-tombstones` admin endpoint. Without a parallel for providers, every integration run that creates `pytest-mock` rows leaves them soft-deleted for the full tombstone retention window, bloating cluster-sync apply payloads. New `POST /api/providers/_purge-test-tombstones` (admin-gated, hard-deletes only `pytest-%`/`test-playwright-%`/`debug-%` rows older than 60s). `pytest_sessionfinish` now calls both endpoints.
+- **BUG-013 — Webhook URL scheme not validated (SSRF surface)** (`app/api/_input_validation.py:validate_webhook_url`). Pre-fix, `X-Webhook-URL: file:///etc/passwd` was accepted and the proxy's httpx client would attempt to open it. Same for `gopher://`, `data:`, `ftp://`. Now rejects any scheme other than `http://` or `https://` with a 400. We deliberately do NOT block `localhost` or private IPs because operators legitimately POST to internal hub webhooks; egress restriction is the network layer's job.
+- **BUG-015 — Unbounded `stop_sequences` array** (`app/api/_input_validation.py`). 1000-entry arrays were silently accepted (T23 sweep). Anthropic and OpenAI both cap at ≤16; pre-validating saves a wasted upstream round-trip and gives the caller a clearer error than `upstream 400: too many stop sequences`. Same cap applies to OpenAI-style `stop` field.
+- **Wired** `validate_webhook_url(x_webhook_url)` into both `messages.py` and `completions.py` request entry. 10 new unit tests (`tests/unit/test_v358_input_validation.py`) covering scheme rejection, valid URLs, missing host, and stop-sequences cap.
+
+Tests: 1069 passing (1059 → 1069, +10 new). All 12 bugs from the QA pass now closed; 3 new bugs from the second sweep also closed in this version.
+
 ### v3.5.10 — QA hardening (X-Substituted-From + alias cleanup tool + ETag doc)
 
 Closes the last 3 bugs from the QA pass (`docs/bug-log.md`).

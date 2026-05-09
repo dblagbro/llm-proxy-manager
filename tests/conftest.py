@@ -61,6 +61,16 @@ def pytest_sessionfinish(session, exitstatus):
             purged = r.json().get("purged", 0)
             if purged:
                 print(f"\n[session-finish] purged {purged} test-key tombstones")
+        # v3.5.11 BUG-003 fix — also purge pytest-mock provider rows.
+        # Pre-fix these soft-deleted rows survived 7 days until the
+        # daily prune worker swept them, bloating the providers table
+        # and confusing operators reading /api/providers raw output.
+        # Mirror the api-keys purge above. Best-effort.
+        r2 = s.post(f"{BASE_URL}/api/providers/_purge-test-tombstones", timeout=10)
+        if r2.status_code == 200:
+            purged2 = r2.json().get("purged", 0)
+            if purged2:
+                print(f"[session-finish] purged {purged2} test-provider tombstones")
     except Exception as e:
         # Test session has already finished; don't let a cleanup error
         # mask test results or leak a non-zero exit.

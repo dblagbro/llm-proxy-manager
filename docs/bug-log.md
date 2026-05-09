@@ -230,10 +230,12 @@ All 4 closed by `app/api/_input_validation.py` (NEW): front-line `validate_compl
 - **BUG-010**: alias↔canonical collisions in `model_capabilities` — new `tools/cleanup_alias_collisions.py` admin script (idempotent, dry-run support). Shipped inside the Docker image
 - **BUG-011**: cross-cluster ETag drift on `/lmrh/providers` — documented in `docs/lmrh-2.0-bidirectional.md` with the load-balancer pinning recommendation
 
-### Still open (low-severity, deferred)
+### FIXED in v3.5.11 — Last 2 bugs + second QA sweep
 
-- **BUG-001** — Test isolation flake: `TestVisionStripping::test_text_only_request_passes_through_unchanged` fails in full-suite run, passes alone. Hard to root-cause without `pytest-randomly` to surface contributors. Test-infrastructure issue; not a production defect.
-- **BUG-003** — Integration tests pollute production DB (residual): the BUG-012 fix (CB cleanup on tombstone) closes the orphan-state half. The full hard-delete-on-teardown half is left for a future test-infrastructure rewrite — soft-deleted `pytest-mock` rows are swept by the daily prune worker after 7 days regardless.
+- **BUG-001**: test isolation flake — `mock_ctl` fixture cleared `_received` but never drained `_queue`; an unconsumed leftover from a prior test was served to the next. Added `MockServer.clear_queue()` and called it from the fixture
+- **BUG-003**: full-pruge of pytest-mock provider rows on session-end — added `/api/providers/_purge-test-tombstones` admin endpoint mirroring the existing api-keys parallel; `pytest_sessionfinish` now hits both
+- **BUG-013** (NEW from second sweep): webhook URL scheme not validated — `X-Webhook-URL: file:///etc/passwd` was accepted by httpx. Now rejects any scheme other than http/https with a 400 (`validate_webhook_url`)
+- **BUG-015** (NEW from second sweep): unbounded `stop_sequences` array — 1000-entry payload was silently passed to upstream. Now capped at 16 with a clear 400
 
 ## Recently fixed (during today's velocity, pre-QA-pass)
 

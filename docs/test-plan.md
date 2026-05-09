@@ -1,0 +1,134 @@
+# Test plan
+
+Companion to `docs/architecture.md` + `docs/bug-log.md`. Describes the test surfaces, what kind of testing each gets, and where coverage gaps live.
+
+Created 2026-05-09 during the post-v3.5.7 deep QA pass. Update this doc when adding new endpoints / SDK methods / UI surfaces or when discovering coverage gaps.
+
+---
+
+## Test layers
+
+### Layer 1 — unit tests (`tests/unit/`)
+
+- **Count**: ~1029 tests across 70+ files
+- **Speed**: full suite runs in ~17s
+- **Scope**: pure-Python module behavior, no network, no DB except SQLite test DB at `/tmp/llmproxy-unit-test.db`
+- **Coverage**: routing, provider scoring, LMRH parse/build, cache decision, CoT pipeline, schema migrations, OAuth flows (mocked), monitoring helpers, model identity (canonical / aliases / family / variant), refactor pass helpers (R1+R2+R3+R4)
+- **Strength**: high coverage of pure logic
+- **Weakness**: doesn't catch integration-level bugs (auth/DB/network); race conditions and concurrency aren't exercised; mock fixtures may diverge from real upstream behavior
+
+### Layer 2 — SDK tests (`sdk/python/test_*.py`)
+
+- **Count**: 11 tests (LMRH client polling) + 5 tests (subscribe SSE consumer)
+- **Speed**: ~5s
+- **Scope**: SDK behavior using `httpx.MockTransport` for synthetic HTTP/SSE
+- **Coverage**: snapshot dispatch, hint synthesis, polling fallback, ETag round-trip, SSE frame parsing, heartbeat handling, error paths
+- **Strength**: real protocol-level testing without network
+- **Weakness**: doesn't catch SDK-vs-server protocol drift (when proxy changes wire format); see BUG-009 (subscribe stop-latency)
+
+### Layer 3 — integration tests (`tests/integration/`)
+
+- **Count**: ~30 tests across 7 files
+- **Speed**: ~5-10s; some tests skipped without `--run-real` flag
+- **Scope**: HTTP requests against the LIVE proxy at `https://www.voipguru.org/llm-proxy2/`. Some tests use a local mock LLM server that binds a fixed port.
+- **Coverage**: API key auth, vision stripping, rate limiting, spending caps, settings API, routing decisions
+- **Strength**: catches real auth + dispatch bugs; verifies wire shapes
+- **Weakness**:
+  - **BUG-001**: test isolation issues (test passes alone, fails in full suite)
+  - **BUG-002**: mock LLM server port collisions (13 errors in full run)
+  - **BUG-003**: integration tests pollute the production DB with `pytest-mock` rows that aren't hard-deleted
+  - Missing: no integration tests cover the v3.4.0 SSE stream or v3.5.4 probe-state endpoint
+- **Improvement opportunity**: separate "integration-against-prod-fleet" from "integration-against-localhost-mock-stack" — currently mixed
+
+### Layer 4 — Playwright UI tests (`tests/integration/test_playwright_ui.py`)
+
+- **Count**: small set (operator-noted; "each test gets its own browser context")
+- **Speed**: slow (~30-60s per test)
+- **Scope**: full browser session against the live proxy admin UI
+- **Coverage**: login flow, providers page, settings page, dashboard
+- **Strength**: catches frontend integration bugs invisible to unit tests
+- **Weakness**: not run regularly; requires playwright install + browser. No coverage of the v3.5.x dashboard widgets (Sub Quota stat card, Over-limit banner, Probe Back-off panel)
+
+### Layer 5 — manual / curl-driven smoke (this QA pass)
+
+- **Scope**: negative tests, malformed input, edge cases, multi-node consistency, rate-limit burst, header inspection
+- **Findings**: 10 of the 12 open bug entries originated from this layer. **Fastest defect-discovery rate of any layer.**
+- **Improvement opportunity**: codify the most valuable manual probes as integration tests (see "Coverage gaps" below).
+
+---
+
+## Test surface inventory + coverage status
+
+| Surface | Unit | SDK | Integration | UI | Manual | Adequate? |
+|---|---|---|---|---|---|---|
+| `/v1/messages` happy path | ✅ | — | partial | — | ✅ | OK |
+| `/v1/messages` negative input (empty body, invalid role, negative max_tokens) | partial | — | ❌ | — | ✅ | **GAP** — see BUG-005, BUG-007, BUG-008 |
+| `/v1/chat/completions` happy path | ✅ | — | partial | — | ✅ | OK |
+| `/v1/chat/completions` negative input (missing model, empty messages) | partial | — | ❌ | — | ✅ | **GAP** — see BUG-004 |
+| `/v1/models` (with aliases) | ✅ | — | ❌ | — | ✅ | partial — needs integration test |
+| `/lmrh/providers` ETag round-trip | ✅ | ✅ | ❌ | — | ✅ | OK |
+| `/lmrh/quotes` validation | ✅ | — | ❌ | — | ✅ | OK |
+| `/lmrh/stream` SSE protocol | partial | ✅ | ❌ | — | ✅ | **GAP** — no integration test, no chaos / reconnect coverage |
+| `/lmrh/stream` heartbeat behavior | ❌ | partial | ❌ | — | ✅ | **GAP** — no test of the 25s heartbeat actually firing |
+| `/.well-known/lmrh-config` | ✅ | partial | ❌ | — | ✅ | OK |
+| `/api/monitoring/probe-state` (admin) | ❌ | — | ❌ | — | ✅ | **GAP** — no test of the v3.5.4 endpoint |
+| `/api/providers/*` CRUD | ✅ | — | ✅ | — | — | OK |
+| Dashboard Sub Quota widget | ❌ | — | ❌ | ❌ | ✅ | **GAP** — no Playwright test for the v3.5.3 widget |
+| Dashboard Over-limit banner | ❌ | — | ❌ | ❌ | ✅ | **GAP** |
+| Dashboard Probe Back-off panel | ❌ | — | ❌ | ❌ | ✅ | **GAP** for the v3.5.6 widget |
+| In-page tooltips (27 added) | ❌ | — | ❌ | partial | ❌ | **GAP** — no automated check that `tooltip` props pass the right strings |
+| SDK `LmrhClient.subscribe()` — graceful stop | ❌ | partial | ❌ | — | ✅ | **GAP** — see BUG-009 (no test catches the slow-stop) |
+| Cluster sync — provider tombstone CB cleanup | ❌ | — | ❌ | — | ✅ | **GAP** — see BUG-012 |
+| Cluster sync — cross-node ETag consistency | ❌ | — | ❌ | — | ✅ | **GAP** — see BUG-011 |
+| Cross-family fallback disclosure | ❌ | — | ❌ | — | ✅ | **GAP** — see BUG-006 |
+| Bridge `/api/status` (grok-bridge) | ❌ | — | ❌ | — | partial | **GAP** |
+| Schema migration idempotency | ❌ | — | ❌ | — | partial (container restart smoke) | **GAP** — no test that runs migrations twice |
+| Probe back-off state machine | ✅ | — | ❌ | — | partial | OK on the unit side; integration would need to induce 429s |
+| Stack-trace leak prevention | ❌ | — | ❌ | — | ✅ | **GAP** — see BUG-007, BUG-008 |
+| Concurrent rate-limit behavior | ❌ | — | ❌ | — | ✅ | partial — burst of 10 confirms rate limit fires |
+
+### High-priority coverage gaps to close
+
+In priority order (impact × ease-to-test):
+
+1. **Front-line input validation** — add Pydantic models for `/v1/messages` and `/v1/chat/completions` request bodies; integration tests for malformed input cases (empty body, missing model, empty messages, negative max_tokens, invalid role). Closes BUG-004, BUG-005, BUG-007, BUG-008.
+2. **Stack-trace sanitization** — unit test that asserts upstream litellm exceptions are converted to clean `{"detail": ...}` responses without filenames or line numbers. Closes BUG-007, BUG-008.
+3. **SDK subscribe() stop-latency** — pytest-asyncio test that calls `subscribe()` then `stop()` and asserts the thread exits within `heartbeat_sec * 1.5` seconds. Closes BUG-009.
+4. **Provider tombstone CB cleanup** — integration test that creates + deletes a provider and asserts `/health` no longer reports CB state. Closes BUG-012.
+5. **Dashboard widgets** — Playwright tests for the v3.5.3 + v3.5.6 widgets, checking that the right colors/labels appear when quota over-limit / providers in back-off.
+6. **Mock LLM server isolation** — fix the integration test fixture to use OS-assigned ports; add a session-scoped `mock_llm_server` fixture. Closes BUG-002.
+7. **Production-DB pollution** — change integration test conftest to use a separate test DB or hard-delete pytest-mock rows in teardown. Closes BUG-003.
+
+---
+
+## How to run
+
+```bash
+# Unit + SDK (fast, safe)
+cd /home/dblagbro/llm-proxy-v2
+rm -f /tmp/llmproxy-unit-test.db
+python3 -m pytest tests/unit/ sdk/python/ --ignore=tests/unit/test_runs_cluster.py
+# Expect: 1040 passed
+
+# Integration (CAUTION: hits production DB; pollutes provider table)
+rm -f /tmp/llmproxy-int.db
+python3 -m pytest tests/integration/ -rs --timeout=60
+# Known: BUG-001, BUG-002, BUG-003 will fire
+
+# Real-provider test pass (costs $; requires --run-real flag)
+python3 -m pytest tests/integration/test_compatibility_matrix.py --run-real
+
+# Playwright (slowest)
+python3 -m pytest tests/integration/test_playwright_ui.py -v
+```
+
+## Severity / scope conventions
+
+When adding new tests, label severity by:
+
+- **smoke**: 1-3 happy-path checks per surface; runs in pre-deploy hook
+- **standard**: full unit + SDK + non-Playwright integration; runs in CI per commit
+- **deep regression**: Playwright + real-provider matrix + chaos / load; runs pre-release
+- **release hardening**: stack-trace audit, fuzzing, cross-cluster consistency; runs ad-hoc
+
+Today's QA pass was **deep regression / release hardening**. Of the 12 open bugs found, 7 are in coverage gaps that would benefit from a smoke or standard tier test.
