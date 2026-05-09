@@ -141,3 +141,47 @@ The bar for adding to `refactor-log.md`:
 4. Preserve behavior — all existing tests + manual repros pass.
 5. Update `architecture.md` if module boundaries moved.
 6. Append a one-paragraph entry to `refactor-log.md`.
+
+## Subscription-as-a-provider pattern
+
+Three provider types now follow the "operator brings a subscription
+instead of a paid API key" pattern: `claude-oauth` (v2.7.0),
+`codex-oauth` (v3.0.15), and `grok-web` (v3.2.0). They share these
+properties and constraints:
+
+- **Bypass litellm.** The shared `build_litellm_kwargs` flow is for
+  per-call billed providers. Subscription providers have non-standard
+  auth (OAuth-with-Claude-Code-marker, ChatGPT-Account-ID header,
+  cookie replay) that litellm doesn't model. Each gets a dedicated
+  dispatcher under `app/api/_<type>_dispatch.py` (or `_messages_streaming`
+  for claude-oauth) and a top-level branch in messages.py / completions.py.
+- **Cost class is `subscription`.** `record_outcome` charges $0
+  to `total_cost_usd`; `quota_usd` is tracked separately for the
+  per-key cap path (paperless burn 2026-05-02 was a per-call provider
+  routing without a budget cap; subscription providers don't bill).
+- **Auth refresh has its own discipline.** Token-rotation race
+  recovery (claude-oauth, codex-oauth) uses
+  `app/cluster/oauth_recovery.py`. Cookie staleness (grok-web bridge
+  mode) is handled by the bridge's background loop — Playwright pokes
+  grok.com every 25 min so Cloudflare reissues `__cf_bm`/`cf_clearance`.
+- **Cluster sync replicates auth state.** Both the OAuth refresh-race
+  recovery AND the bridge-mode `extra_config.bridge_url` rely on
+  `last_user_edit_at` LWW (v3.2.7 fix made this work for direct DB
+  writes too).
+
+When adding a fourth subscription provider type:
+
+- Decide replay-from-cookies (grok-web manual mode) vs direct API
+  with an OAuth bearer (claude/codex). If the upstream uses
+  Cloudflare-style anti-bot, prefer a sidecar that owns a real
+  browser context — operator UX is better and cookie maintenance is
+  passive.
+- The sidecar pattern (grok-bridge) is the right shape when the
+  upstream needs TLS/UA fingerprint + IP affinity that don't survive
+  HTTP replay across container restarts. Sidecar costs ~1 GB image
+  but isolates the long-lived browser session.
+- The dispatcher branch in messages.py / completions.py + the
+  capability scanner branch + the validator in `api/providers.py`
+  are the three sites that need updates. Once we have three
+  subscription providers in production for >1 month, the dispatcher
+  pattern will warrant extraction (per the "three callers" rule).
