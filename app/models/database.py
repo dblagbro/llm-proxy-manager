@@ -2,6 +2,10 @@ from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, Asyn
 from sqlalchemy import event
 from app.config import settings
 from app.models.db import Base
+# v3.2.11: auto-bump Provider.last_user_edit_at on user-meaningful column
+# changes. Side-effect import — registers a SQLAlchemy event listener.
+# See _user_edit_stamp.py for design rationale.
+from app.models import _user_edit_stamp  # noqa: F401
 import logging
 
 logger = logging.getLogger(__name__)

@@ -39,6 +39,8 @@ export function GrokWebProviderFields({ form, set, editing }: Props) {
   const [mode, setMode] = useState<Mode>(initialMode)
   const [status, setStatus] = useState<BridgeStatus | null>(null)
   const [statusErr, setStatusErr] = useState<string | null>(null)
+  const [creatingConv, setCreatingConv] = useState(false)
+  const [createConvErr, setCreateConvErr] = useState<string | null>(null)
 
   // Auto-populate bridge_url + bridge_token on initial mount when in bridge
   // mode. Without this, a new provider with bridge mode pre-selected (the
@@ -183,13 +185,52 @@ export function GrokWebProviderFields({ form, set, editing }: Props) {
               Use bridge's
             </Button>
           )}
+          {mode === 'bridge' && (
+            <Button
+              type="button"
+              variant="secondary"
+              disabled={creatingConv}
+              onClick={async () => {
+                setCreatingConv(true)
+                setCreateConvErr(null)
+                try {
+                  const r = await fetch(`${DEFAULT_BRIDGE_PUBLIC}/api/conversation/new`, {
+                    method: 'POST',
+                  })
+                  const j = await r.json()
+                  if (j.conversation_id) {
+                    set({
+                      extra_config: {
+                        ...form.extra_config,
+                        conversation_id: j.conversation_id,
+                      },
+                    })
+                  } else {
+                    setCreateConvErr(j.hint || j.error || 'No conversation_id returned')
+                  }
+                } catch (e) {
+                  setCreateConvErr((e as Error).message)
+                } finally {
+                  setCreatingConv(false)
+                }
+              }}
+              title="Have the bridge open a fresh grok.com chat and capture its UUID"
+            >
+              {creatingConv ? 'Creating…' : 'Create new'}
+            </Button>
+          )}
         </div>
+        {createConvErr && (
+          <p className="text-[11px] text-red-600 dark:text-red-400 mt-1">
+            Create failed: {createConvErr}
+          </p>
+        )}
         <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-1">
           {mode === 'bridge' && !status?.current_conversation_id ? (
             <>
-              Open the bridge's noVNC tab, send any message in any chat —
-              grok.com will assign a UUID and this field will offer to
-              auto-fill it. Or paste from your own browser's URL.
+              Click <strong>Create new</strong> to have the bridge open a
+              fresh grok.com chat and auto-fill its UUID. Or paste one
+              from your own browser's URL.
             </>
           ) : (
             <>

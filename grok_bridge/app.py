@@ -332,42 +332,170 @@ async def status():
 
 @app.post("/api/conversation/new")
 async def create_new_conversation():
-    """Open a fresh chat in the bridge's Chromium and return its UUID
-    once grok.com assigns one. Useful from the wizard so operator gets
-    a conversation_id without leaving the form.
+    """Create a fresh conversation in the operator's grok.com account
+    and return its UUID. v1.1.0 (2026-05-09): drives the SPA itself
+    rather than relying on a server-side POST /conversations/new
+    (which Cloudflare anti-bot blocks from server IPs even with
+    valid cookies).
 
-    Strategy: navigate the page to grok.com root and let the operator's
-    own browser-side machinery start a new chat. Then poll the URL until
-    a /c/<uuid> path appears (~5s ceiling). If grok.com doesn't auto-
-    create one, the operator has to click "+ New chat" once via noVNC.
+    Strategy: in the bridge's logged-in Chromium, send a one-token
+    "hi" message to grok.com via the page's own ``fetch()`` so the
+    request rides the real browser TLS/UA fingerprint that Cloudflare
+    has already cleared. We hit the same ``/responses`` endpoint the
+    SPA uses for normal chat — passing an empty conversation_id or
+    a special marker produces a fresh conversation, depending on what
+    the SPA itself does. If that fails, fall back to UI automation:
+    type into the textarea + press Enter, wait for URL to navigate
+    to /c/<uuid>.
+
+    Returns:
+        {"conversation_id": "<uuid>" | null, "method": "..."}
     """
     if _page is None:
         raise HTTPException(503, "playwright not ready")
+
     async with _lock:
+        # Always start from grok.com root so we know URL state is
+        # predictable. If we're already on /c/<uuid>, navigate away
+        # so we don't accidentally claim that conversation as "new".
         try:
             await _page.goto(GROK_BASE + "/", wait_until="domcontentloaded", timeout=20_000)
         except PlaywrightTimeout:
             pass
-        # Wait up to ~8s for grok.com to redirect to /c/<uuid> after a
-        # message is sent. If we hit timeout the operator needs to
-        # interact via noVNC to start the chat.
-        deadline = time.time() + 8.0
-        cid: Optional[str] = None
-        while time.time() < deadline:
-            cid = _conv_id_from_url(_page.url)
-            if cid:
-                break
-            await asyncio.sleep(0.5)
-    return {
-        "conversation_id": cid,
-        "url": _page.url,
-        "hint": (
-            "If conversation_id is null, click '+ New chat' in the "
-            "embedded browser (noVNC) and send any message — grok.com "
-            "assigns the UUID after the first turn."
-            if cid is None else None
-        ),
-    }
+        await asyncio.sleep(1.5)  # let SPA hydrate
+
+        # ── Strategy 1: in-browser fetch to /conversations/new ──────────
+        # Tries the canonical create endpoint via the page's own fetch().
+        # If grok.com's anti-bot only triggers on server-IP requests, this
+        # bypasses it. Cookies + UA + TLS fingerprint all match the
+        # operator's logged-in browser.
+        try:
+            result = await _page.evaluate(
+                """async () => {
+                    try {
+                        const res = await fetch('https://grok.com/rest/app-chat/conversations/new', {
+                            method: 'POST',
+                            headers: {'content-type': 'application/json'},
+                            body: '{}',
+                            credentials: 'include',
+                        });
+                        const text = await res.text();
+                        return {ok: res.ok, status: res.status, body: text.slice(0, 600)};
+                    } catch (e) {
+                        return {error: String(e)};
+                    }
+                }"""
+            )
+            logger.info("conversation/new fetch result: %s", result)
+            if isinstance(result, dict) and result.get("ok"):
+                # Try to parse the conversation_id out of the body.
+                import re as _re
+                body = result.get("body") or ""
+                m = _re.search(r'"conversation"\s*:\s*"?([0-9a-f-]{32,40})"?', body)
+                if not m:
+                    m = _re.search(r'"id"\s*:\s*"([0-9a-f-]{32,40})"', body)
+                if m:
+                    cid = m.group(1)
+                    return {
+                        "conversation_id": cid,
+                        "method": "in_browser_fetch",
+                        "url": _page.url,
+                    }
+                logger.info("fetch ok but no UUID in body; falling back to UI")
+        except Exception as e:
+            logger.warning("in-browser fetch failed: %s", e)
+
+        # ── Strategy 2: UI automation ───────────────────────────────────
+        # Send a tiny "hi" via the page's textarea — the SPA assigns a
+        # UUID when the first message lands and navigates to /c/<uuid>.
+        # This is the exact flow a human user follows; Cloudflare can't
+        # tell it apart from real traffic.
+        #
+        # Use Locator API (not ElementHandle) so React re-renders during
+        # SPA hydration don't detach the element between locate and act.
+        # Also explicitly wait for the page to be interactive.
+        try:
+            # Wait for SPA to hydrate before locating anything.
+            try:
+                await _page.wait_for_load_state("networkidle", timeout=10_000)
+            except PlaywrightTimeout:
+                pass  # not fatal — SPAs sometimes never go fully idle
+
+            # Try selectors in order of specificity. Locator auto-retries
+            # on stale DOM, which fixes the "Element not attached" error
+            # we saw with ElementHandle.click().
+            tried = []
+            sent = False
+            for selector in (
+                'textarea[placeholder*="What"]',
+                'textarea[placeholder*="Ask"]',
+                'textarea[aria-label*="prompt" i]',
+                'textarea[aria-label*="message" i]',
+                'textarea[name="prompt"]',
+                'textarea',
+                'div[contenteditable="true"]',
+            ):
+                tried.append(selector)
+                try:
+                    loc = _page.locator(selector).first
+                    # wait_for() handles the visibility/stable checks the
+                    # ElementHandle path was failing on
+                    await loc.wait_for(state="visible", timeout=3_000)
+                    await loc.click()
+                    # Type instead of fill — some React inputs ignore
+                    # programmatic value changes that don't fire keystroke
+                    # events
+                    await loc.type("hi", delay=20)
+                    await _page.keyboard.press("Enter")
+                    logger.info("UI-send via selector=%s", selector)
+                    sent = True
+                    break
+                except (PlaywrightTimeout, Exception) as e:
+                    logger.debug("selector %s failed: %s", selector, str(e)[:120])
+                    continue
+
+            if not sent:
+                return {
+                    "conversation_id": None,
+                    "method": "ui_failed",
+                    "tried_selectors": tried,
+                    "hint": (
+                        "couldn't find a usable textarea on grok.com; "
+                        "open /grok-bridge/login in noVNC, send a "
+                        "message manually, then return"
+                    ),
+                }
+
+            # Wait up to ~20s for the URL to flip to /c/<uuid>. Polled
+            # rather than relying on wait_for_url because grok.com may
+            # do an intermediate redirect through ``/?continue=...``.
+            deadline = time.time() + 20.0
+            cid: Optional[str] = None
+            while time.time() < deadline:
+                cid = _conv_id_from_url(_page.url)
+                if cid:
+                    break
+                await asyncio.sleep(0.4)
+
+            return {
+                "conversation_id": cid,
+                "method": "ui_send",
+                "url": _page.url,
+                "hint": (
+                    "UI-send didn't produce a conversation in 20s; "
+                    "the message may still be in flight — refresh in a "
+                    "moment, or use noVNC to confirm"
+                    if cid is None else None
+                ),
+            }
+        except Exception as e:
+            logger.warning("UI-send fallback failed: %s", e)
+            return {
+                "conversation_id": None,
+                "method": "error",
+                "error": str(e)[:300],
+                "url": _page.url,
+            }
 
 
 # ── Login flow ───────────────────────────────────────────────────────────
