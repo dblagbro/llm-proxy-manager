@@ -77,6 +77,12 @@ async def chat_completions(
     current_api_key_id.set(key_record.id)
 
     body = await request.json()
+    # v3.5.8 BUG-004 fix — validate request shape at the input boundary
+    # so missing model/messages return 400 instead of cascading to a
+    # 502 with upstream error leakage. See _input_validation.py +
+    # docs/bug-log.md BUG-004 for the rationale.
+    from app.api._input_validation import validate_completion_request
+    validate_completion_request(body, endpoint="completions")
     messages_list = body.get("messages", [])
     stream = body.get("stream", False)
     tools = body.get("tools")
@@ -596,6 +602,12 @@ async def chat_completions(
             had_lmrh_hint=bool(llm_hint),
             lmrh_hint_raw=llm_hint or None,
         )
-        raise HTTPException(502, f"Upstream provider error: {err_str}")
+        # v3.5.8 BUG-007/008 fix — sanitize before sending to client.
+        from app.api._input_validation import sanitize_upstream_error
+        from app.routing.circuit_breaker import classify_error
+        cls = classify_error(err_str or "")
+        clean = sanitize_upstream_error(err_str)
+        status_code = 400 if cls == "bad_request" else 502
+        raise HTTPException(status_code, f"Upstream provider error ({cls}): {clean}")
 
 

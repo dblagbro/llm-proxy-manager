@@ -112,6 +112,14 @@ async def messages(
     current_api_key_id.set(key_record.id)
 
     body = await request.json()
+    # v3.5.8 BUG-005 fix — validate request shape at the input boundary.
+    # Pre-fix the proxy treated `{}` and `{"model":"x"}` (no messages)
+    # as valid, auto-routed to a default provider, and returned 200 with
+    # a substituted model. That's a denial-of-wallet vector if any API
+    # key leaks. Now: empty body → 400; missing model → 400; invalid
+    # role → 400; negative max_tokens → 400. All BEFORE upstream dispatch.
+    from app.api._input_validation import validate_completion_request
+    validate_completion_request(body, endpoint="messages")
     messages_list = body.get("messages", [])
     stream = body.get("stream", False)
     max_tokens = body.get("max_tokens", 1024)
@@ -778,6 +786,16 @@ async def messages(
             lmrh_hint_raw=llm_hint or None,
         )
         logger.error(f"Provider {route.provider.id} failed: {err_str}")
-        raise HTTPException(502, f"Upstream provider error: {err_str}")
+        # v3.5.8 BUG-007/008 fix — sanitize before sending to client.
+        # Pre-fix the raw litellm/Gemini exception text leaked
+        # /usr/local/lib/python3.13/site-packages/litellm/... paths.
+        from app.api._input_validation import sanitize_upstream_error
+        from app.routing.circuit_breaker import classify_error
+        cls = classify_error(err_str or "")
+        clean = sanitize_upstream_error(err_str)
+        # bad_request → HTTP 400 (it was the caller's fault); other
+        # classes stay as 502 (upstream / network / billing).
+        status_code = 400 if cls == "bad_request" else 502
+        raise HTTPException(status_code, f"Upstream provider error ({cls}): {clean}")
 
 
