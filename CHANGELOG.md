@@ -9,6 +9,15 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.5.x — Model identity model (LMRHv2.1)
 
+### v3.5.7 — Documentation polish + pause-state refresh
+
+End-of-active-session housekeeping. **No code changes.**
+
+- **`docs/architecture.md`** — version stamp bumped from v3.5.0 to v3.5.7 (was four versions stale). Observability section expanded with the v3.5.x dashboard widgets (probe back-off, subscription quota) and the per-direction cost split additions to `ProviderMetric`. "Where to look first when…" table gained four new entries covering the things shipped today: probe back-off pause causes, subscription quota surfacing, SDK SSE consumer, and the model-identity RFC.
+- **Pause-state memory** — refreshed to v3.5.7 with the full v3.5.0 → v3.5.6 sprint summary (12 dot releases shipped this session including the model-identity RFC, refactor pass through R4, in-page help expansion, SDK subscribe(), 3-layer probe-state observability loop, dashboard widgets, Grok 3/4 evaluation findings).
+
+Tests: 1040 passing (no test changes).
+
 ### v3.5.6 — Dashboard probe back-off panel
 
 The v3.5.4 `/api/monitoring/probe-state` endpoint shipped without a UI consumer; this dot release adds it.

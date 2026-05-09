@@ -1,7 +1,8 @@
 # llm-proxy2 — architecture
 
-**Version**: keeps pace with `app/__version__.py` (currently v3.5.0).
-**Last updated**: 2026-05-09 (after the R1/R2 pipeline-helper extraction).
+**Version**: keeps pace with `app/__version__.py` (currently v3.5.7).
+**Last updated**: 2026-05-09 (after the R4 claude-oauth setup extraction
++ v3.5.x dashboard widget additions + v3.5.7 documentation polish pass).
 
 This document describes the static module layout and the runtime data
 flow for the proxy. It pairs with [`refactor-log.md`](refactor-log.md)
@@ -140,7 +141,19 @@ Each provider type has a dispatch path:
   outcome lands here with `event_type=llm_request` (user traffic) or
   `event_type=keepalive_probe` (synthetic — v3.3.4+).
 - **Provider metrics** (`models/db.py:ProviderMetric`): 5-minute
-  buckets, per-provider, used by LMRHv2 snapshot.
+  buckets, per-provider, used by LMRHv2 snapshot. v3.4.0+ split
+  cost/tokens into per-direction columns (`input_cost_usd` /
+  `output_cost_usd` / `input_tokens` / `output_tokens`) so LMRHv2
+  callers can optimize input-heavy or output-heavy workloads.
+- **Probe back-off state** (`monitoring/keepalive.py`): in-memory
+  per-provider tracking of consecutive 429s + cool-off windows
+  (v3.3.3+). Surfaced via:
+  - `GET /api/monitoring/probe-state` admin endpoint (v3.5.4+)
+  - Dashboard "Probe Back-off" card (v3.5.6+)
+- **Subscription quota** (`models/db.py:ProviderUsageWindow`):
+  per-provider session + weekly token usage windows. Surfaced via:
+  - Dashboard "Sub Quota" stat card + over-limit banner (v3.5.3+)
+  - `/lmrh/providers` `subscription_quota` block (v3.3.0+)
 - **Circuit breaker** (`routing/circuit_breaker.py`): in-memory state,
   exported as Prometheus gauge.
 - **OpenTelemetry**: `init_tracer` in `observability/otel.py` reports
@@ -168,6 +181,10 @@ it'll be worth re-evaluating; that's tracked as a future item in
 | "Where do I add a new schema column?" | `app/models/db.py` (ORM) + `app/models/database.py` (migration ALTER TABLE) |
 | "What CoT does this request run?" | `app/cot/pipeline.py` + `app/cot/branches.py` (task-adaptive) |
 | "Where is the LMRHv2 wire format?" | `docs/lmrh-2.0-bidirectional.md` (spec) + `app/api/lmrh_v2.py` (impl) |
+| "Why is grok-web's probe paused?" | `app/monitoring/keepalive.py` back-off state, surfaced at `/api/monitoring/probe-state` and on the dashboard "Probe Back-off" card |
+| "How does subscription quota show up?" | Tracked in `ProviderUsageWindow` rows by `monitoring/usage_tracker.py`; surfaced in dashboard "Sub Quota" card + `/lmrh/providers.subscription_quota` |
+| "How do I push to the SSE stream as a caller?" | `sdk/python/lmrh_client.py:LmrhClient.subscribe()` (v3.5.2+); proxy server-side in `app/api/lmrh_v2.py:stream_snapshot()` (v3.4.0+) |
+| "Where's the model identity (aliases / family / variant) RFC?" | `docs/rfc/2026-05-model-identity.md` (cross-team RFC); impl in `app/routing/canonical.py` + `app/api/models.py` + `app/api/lmrh_v2.py` |
 
 ## Versioning + protocol
 
