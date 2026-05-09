@@ -16,6 +16,72 @@ Each entry follows this shape:
 
 ---
 
+## 2026-05-09 (evening, third pass) — Extract claude-oauth request setup (R4, v3.5.5+)
+
+**What**: `_complete_claude_oauth` and `_stream_claude_oauth` in
+`app/api/_messages_streaming.py` each opened with the same 4-line
+URL + body-mutation block, plus they each declared the
+`httpx.Timeout(connect=5.0, read=300.0, write=10.0, pool=5.0)`
+verbatim. Extracted to:
+
+- `_CLAUDE_OAUTH_TIMEOUT` module constant — single source of truth for
+  the split-phase timeout config (the v3.0.60 rationale lives in the
+  constant's docstring now).
+- `_prepare_claude_oauth_request(body, *, stream)` helper returning
+  `(url, prepared_body)`. Handles URL construction, `max_tokens`
+  default, claude-code system injection, and the stream flag in one
+  place.
+
+**Why**: the duplication is small (~10 LOC literal + the conceptual
+"this is how a claude-oauth request is shaped") but every future
+change to Anthropic's URL conventions, beta header layout, or
+timeout config now lands in one helper instead of two function
+bodies. Also extracts a future-friendly seam if a third
+claude-oauth dispatch path ever shows up (e.g. tool-use-only,
+batch).
+
+The 401-refresh-and-retry loop was NOT extracted — too different
+between the dict-returning complete and bytes-yielding stream
+paths to extract cleanly without a generator-based driver, and the
+payoff would be marginal. Deferred until a 3rd OAuth provider
+makes the pattern worth abstracting.
+
+**Files**:
+- `app/api/_messages_streaming.py` — added `_CLAUDE_OAUTH_TIMEOUT`
+  constant + `_prepare_claude_oauth_request` helper; both call
+  sites updated; verbose pre-fix comments folded into the helper
+
+**Outcome**:
+- `_messages_streaming.py`: 701 → 727 lines (+26; helper docstring
+  is verbose on purpose, explains the v3.0.60 split-timeout history
+  + the URL convention rationale once instead of twice)
+- **Maintenance surface**: 2 places to update timeout / URL / body
+  defaults → 1 place each
+- Tests: **1040 passing** (no regression)
+
+**Audit notes** (other candidates surveyed, not picked):
+- `app/api/providers.py` (952L) — still deferred under the
+  intuitiveness rule. 21 functions in one logically-named file
+  is the right organization; splitting per-CRUD would worsen
+  lookup speed.
+- `sdk/python/lmrh_client.py` (666L, up from 448L pre-v3.5.2
+  subscribe additions) — still cohesive (one `LmrhClient` class).
+  Splitting would create import noise.
+- `app/api/_grok_web_dispatch.py` (515L) — openai-shape +
+  anthropic-shape variants already share the dispatch helpers
+  via parameter passing; no clear seam for further extraction.
+
+**Next** (deferred list, in priority order):
+1. Tool emulation extraction (R1/R2 deferred — only if concrete
+   bug forces editing both messages.py + completions.py).
+2. Streaming + hedging extraction (same condition).
+3. `app/api/lmrh_v2.py` (647L) split into endpoints + render
+   modules — pre-emptive, defer until 800L.
+4. `app/api/providers.py` per-CRUD splits — DEFERRED under
+   intuitiveness rule. Reconsider if file crosses 1200L.
+
+---
+
 ## 2026-05-09 (PM, second pass) — Extract grok_web manual-mode HTTP setup (R3, v3.5.0+)
 
 **What**: The 3 dispatch functions in `app/providers/grok_web.py`
