@@ -47,7 +47,7 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.database import AsyncSessionLocal
-from app.models.db import Provider, ProviderMetric, ModelCapability
+from app.models.db import Provider, ProviderMetric, ModelCapability, ActivityLog
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +81,18 @@ class _ModelSnap:
     ttft_p95_ms: Optional[float]
     success_rate: Optional[float]
     samples: int
+    # v3.3.4: synthetic keep-alive probe stats. Surfaced separately
+    # from `success_rate` so SDK callers can read both:
+    #   - success_rate / samples = user-traffic only (since v3.3.3)
+    #   - probe_success_rate / probe_samples = synthetic probe outcomes
+    # Both come from the same window (DEFAULT_WINDOW_SEC). Probe stats
+    # are cheap connectivity-health indicators ("can the proxy still
+    # reach this provider?"); a probe failing while user traffic
+    # succeeds is a leading indicator that real traffic may degrade
+    # if the operator's auth/cookie rotation is failing. None when
+    # no probes ran in the window.
+    probe_success_rate: Optional[float] = None
+    probe_samples: int = 0
 
 
 @dataclass(frozen=True)
@@ -204,6 +216,38 @@ async def _build_snapshot(
         for m in m_res.scalars().all():
             metrics_by_provider.setdefault(m.provider_id, []).append(m)
 
+    # 3b. v3.3.4: aggregate keep-alive probe outcomes from activity_log
+    # over the same window. Probes are no longer in provider_metrics
+    # (excluded as of v3.3.3 to keep success_rate user-traffic-only) so
+    # we count event_type='keepalive_probe' rows directly. info=success,
+    # warning=failure. Cheap aggregate query: GROUP BY provider_id +
+    # severity, indexed on (created_at, event_type).
+    probe_stats: dict[str, dict[str, int]] = {}
+    if provider_ids:
+        from sqlalchemy import func as _sqlfunc
+        probe_q = await db.execute(
+            select(
+                ActivityLog.provider_id,
+                ActivityLog.severity,
+                _sqlfunc.count(ActivityLog.id),
+            )
+            .where(
+                ActivityLog.provider_id.in_(provider_ids),
+                ActivityLog.event_type == "keepalive_probe",
+                ActivityLog.created_at >= cutoff,
+            )
+            .group_by(ActivityLog.provider_id, ActivityLog.severity)
+        )
+        for pid, sev, cnt in probe_q.all():
+            slot = probe_stats.setdefault(pid, {"successes": 0, "failures": 0})
+            if sev == "info":
+                slot["successes"] += int(cnt or 0)
+            else:
+                # warning + error both count as probe failures. Auth
+                # errors raise a separate auth_failure bucket but the
+                # row itself still has severity in {warning, error}.
+                slot["failures"] += int(cnt or 0)
+
     snap_providers: list[_ProviderSnap] = []
     for p in providers:
         caps = caps_by_provider.get(p.id, [])
@@ -237,6 +281,15 @@ async def _build_snapshot(
         success_rate: Optional[float] = None
         if total_succ + total_fail > 0:
             success_rate = total_succ / (total_succ + total_fail)
+
+        # v3.3.4: synthesise probe stats from activity_log aggregate.
+        ps = probe_stats.get(p.id, {"successes": 0, "failures": 0})
+        probe_succ = ps["successes"]
+        probe_fail = ps["failures"]
+        probe_samples = probe_succ + probe_fail
+        probe_success_rate: Optional[float] = None
+        if probe_samples > 0:
+            probe_success_rate = probe_succ / probe_samples
 
         # Cost rate (per 1M input tokens) — derived. We don't track
         # input-vs-output split in ProviderMetric so report combined as
@@ -276,6 +329,8 @@ async def _build_snapshot(
                 ttft_p95_ms=ttft_p95,
                 success_rate=success_rate,
                 samples=total_reqs,
+                probe_success_rate=probe_success_rate,
+                probe_samples=probe_samples,
             )]
         else:
             from app.api.models import _infer_kind
@@ -294,6 +349,8 @@ async def _build_snapshot(
                 ttft_p95_ms=ttft_p95,
                 success_rate=success_rate,
                 samples=total_reqs,
+                probe_success_rate=probe_success_rate,
+                probe_samples=probe_samples,
             ) for c in caps]
 
         # Subscription quota — only for subscription providers; only when
@@ -377,6 +434,14 @@ async def _build_snapshot(
                         "samples": m.samples,
                         "success_rate": (
                             round(m.success_rate, 3) if m.success_rate else None
+                        ),
+                        # v3.3.4: include probe stats in etag input so
+                        # snapshot identity reflects probe-channel state
+                        # changes (a flaky upstream visible only via probes
+                        # should still bust the cached etag).
+                        "probe_samples": m.probe_samples,
+                        "probe_success_rate": (
+                            round(m.probe_success_rate, 3) if m.probe_success_rate else None
                         ),
                     }
                     for m in p.models

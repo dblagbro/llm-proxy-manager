@@ -88,8 +88,18 @@ class ModelMetrics:
     latency_p95_ms: Optional[float]
     ttft_p50_ms: Optional[float]
     ttft_p95_ms: Optional[float]
+    # v3.3.3+: success_rate / samples reflect USER traffic only.
+    # Synthetic probe outcomes don't pollute these aggregates.
     success_rate: Optional[float]
     samples: int
+    # v3.3.4+: probe stats — synthetic keep-alive probe outcomes only.
+    # Useful for connectivity-health checks ("can the proxy still reach
+    # this provider?") that run continuously even when there's no user
+    # traffic. None when the proxy didn't probe this provider in the
+    # current window (e.g. per-call providers don't get probes by
+    # default; rate-limited providers may be in back-off).
+    probe_success_rate: Optional[float] = None
+    probe_samples: int = 0
 
 
 @dataclass(frozen=True)
@@ -392,6 +402,11 @@ def _snapshot_from_dict(data: dict, etag: str) -> Snapshot:
                     ttft_p95_ms=mm.get("ttft_p95_ms"),
                     success_rate=mm.get("success_rate"),
                     samples=int(mm.get("samples", 0) or 0),
+                    # v3.3.4+: optional probe channel. .get() returns None
+                    # when the proxy is older and doesn't emit these
+                    # fields — SDK degrades gracefully, no version pin.
+                    probe_success_rate=mm.get("probe_success_rate"),
+                    probe_samples=int(mm.get("probe_samples", 0) or 0),
                 ),
             ))
         providers.append(ProviderEntry(
