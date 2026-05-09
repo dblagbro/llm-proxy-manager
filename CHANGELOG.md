@@ -9,6 +9,28 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.5.x — Model identity model (LMRHv2.1)
 
+### v3.5.8 — Input validation + upstream-error sanitization (security/quality)
+
+Closes 4 bugs found during the post-v3.5.7 deep QA pass. See `docs/bug-log.md` BUG-004, BUG-005, BUG-007, BUG-008.
+
+**`app/api/_input_validation.py`** (NEW) — front-line request validation. Wired into both `/v1/messages` and `/v1/chat/completions` immediately after `body = await request.json()`. Rejects:
+- Non-dict body (`null`, list, scalar) → 400
+- Empty body `{}` → 400 with "model required"
+- Missing `model` field → 400
+- `messages` not a non-empty list → 400
+- Invalid `role` (not in `{system, user, assistant, tool, function}`) → 400
+- Non-positive `max_tokens` → 400
+- `model: "auto"` and `model: "llmp-auto"` are explicitly accepted (auto-routing)
+
+**`sanitize_upstream_error()`** (in same file) — strips Python tracebacks, file paths, and `/usr/local/lib/...` references from upstream exception text before returning to the client. Uses `circuit_breaker.classify_error()` to map error class → status code (`bad_request` → HTTP 400, everything else → 502).
+
+**Why this matters**:
+- BUG-005 was a denial-of-wallet vector: any leaked API key could spam `{}` and burn provider quota; now hard-rejected at the input layer
+- BUG-007/008 leaked `/usr/local/lib/python3.13/site-packages/litellm/...` paths to anyone sending malformed input — information disclosure now closed
+- BUG-004 returned upstream 502 with bridge errors when client request was malformed — now returns clear 400
+
+Tests: +19 in `tests/unit/test_v358_input_validation.py` covering all rejection paths + happy path + sanitizer behavior. 1040 → 1059 passing.
+
 ### v3.5.7 — Documentation polish + pause-state refresh
 
 End-of-active-session housekeeping. **No code changes.**
