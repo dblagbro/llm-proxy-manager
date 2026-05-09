@@ -9,6 +9,22 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.5.x — Model identity model (LMRHv2.1)
 
+### v3.5.2 — SDK `subscribe()` consumer for `/lmrh/stream`
+
+Closes the v3.4.0 SSE push loop. Proxy server has had Server-Sent Events on `/lmrh/stream` since v3.4.0 (2026-05-09 morning); the SDK was still polling-only. v3.5.2 adds `LmrhClient.subscribe(on_snapshot, on_error=None)` to consume the stream.
+
+- **`LmrhClient.subscribe(on_snapshot, ...)`** — opens a long-lived SSE connection, parses ``event: snapshot`` frames, yields parsed `Snapshot` objects to the callback. Heartbeat (`: ping`) frames are silently ignored. Blocks the calling thread; spawn in a daemon thread for async usage.
+- **Auto-reconnect**: drops in network → `reconnect_delay_sec` wait → retry, until `stop()` is called.
+- **Auto-fallback**: probes `/.well-known/lmrh-config` first; if `stream` endpoint not advertised (proxy older than v3.4.0), or if `/lmrh/stream` returns 404, falls through to polling and dispatches snapshots from there. **Caller code is identical regardless of proxy version.**
+- **`heartbeat_sec` query parameter** (default 25, range 10-120) propagated to server so callers behind aggressive idle-timeout proxies can shrink it.
+- **`reconnect_delay_sec`** parameter (default 5.0) tunable for testing or strict failure budgets.
+
+`sdk/python/README.md` updated with new "SSE push (v3.5.2+) — `subscribe()`" section explaining when to prefer push over polling and showing the daemon-thread usage pattern.
+
+Tests: +5 in `sdk/python/test_subscribe.py` (snapshot dispatch, heartbeat ignored, no-stream-endpoint fallback, 404-on-stream fallback, clean stop). 1035 → 1040 passing.
+
+**No proxy-side change** — this release is SDK-only. Fleet stays on v3.4.0+ feature surface; callers can adopt the helper when convenient.
+
 ### v3.5.1 — Refactor pass + in-page help expansion + capability-form model-identity edits
 
 Three internal-quality changes shipped as one dot release. No external API changes; all-in-one operator-experience improvement.

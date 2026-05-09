@@ -554,7 +554,7 @@ async def stream_snapshot(
         cur = snap_mod.get_current() or await snap_mod.rebuild_now()
         visible = cur.for_caller(key_id)
         body = {
-            "version": "2.0",
+            "version": "2.1",
             "as_of": cur.as_of.isoformat(),
             "window_sec": cur.window_sec,
             "providers": [_render_provider(p) for p in visible],
@@ -579,7 +579,7 @@ async def stream_snapshot(
             if cur.etag != last_etag:
                 visible = cur.for_caller(key_id)
                 body = {
-                    "version": "2.0",
+                    "version": "2.1",
                     "as_of": cur.as_of.isoformat(),
                     "window_sec": cur.window_sec,
                     "providers": [_render_provider(p) for p in visible],
