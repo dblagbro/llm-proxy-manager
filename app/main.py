@@ -205,6 +205,15 @@ async def lifespan(app: FastAPI):
         notify_fn=alert_cluster_node_down,
     )
 
+    # v3.3.0: LMRHv2 metrics-snapshot loop. Refreshes the in-memory
+    # provider/model snapshot every 30s (when v2 is enabled). Cheap
+    # to run unconditionally — endpoint gating happens at request time.
+    try:
+        from app.routing.lmrh import snapshot as _lmrh_snap
+        _lmrh_snap.start()
+    except Exception as e:
+        logger.warning(f"lmrh snapshot loop failed to start: {e}")
+
     logger.info("llm-proxy v2 started port=%s cluster=%s", settings.port, settings.cluster_enabled)
     yield
     logger.info("llm-proxy v2 shutting down")
@@ -244,6 +253,8 @@ app.add_middleware(
         "X-Resolved-Provider", "X-Emulation-Level", "X-Unsupported-Feature",
         "X-PII-Masked",
         "X-Sort-Mode", "X-Auto-Routed", "X-Fallback-From",
+        # v3.3.0 LMRHv2 — discovery + version negotiation
+        "Link", "LMRH-Version", "LMRH-Hint-Echo",
     ],
 )
 
@@ -262,6 +273,30 @@ async def log_requests(request: Request, call_next):
             status=response.status_code,
             ms=ms,
         )
+    return response
+
+
+# v3.3.0 LMRHv2 — Link header for discovery (RFC 8288). On every
+# /v1/* response we point clients at the well-known config and the
+# providers metrics endpoint so LMRH-aware callers find them without
+# out-of-band docs. The Cache-Control / scope policies are enforced
+# at the endpoints themselves; this is purely advertising.
+@app.middleware("http")
+async def lmrh_link_header(request: Request, call_next):
+    response = await call_next(request)
+    # Only on v1 inference paths — keep noise off /health, /metrics,
+    # static, etc.
+    path = request.url.path
+    if path.startswith("/v1/") or path.startswith("/lmrh/"):
+        if getattr(settings, "lmrh_v2_enabled", False):
+            response.headers["Link"] = (
+                '</.well-known/lmrh-config>; rel="lmrh-config", '
+                '</lmrh/providers>; rel="lmrh-providers"'
+            )
+            response.headers["LMRH-Version"] = "2.0"
+        else:
+            # v1.x clients only
+            response.headers["LMRH-Version"] = "1.2"
     return response
 
 
@@ -285,6 +320,10 @@ app.include_router(audit_router)
 app.include_router(oauth_capture_router)
 app.include_router(runs_router)
 app.include_router(lmrh_router)
+# v3.3.0: LMRHv2 endpoints (feature-flagged via lmrh_v2_enabled).
+# Same /lmrh/* prefix as v1; new paths don't collide with existing ones.
+from app.api.lmrh_v2 import router as lmrh_v2_router  # noqa: E402
+app.include_router(lmrh_v2_router)
 
 
 # v3.0.25: LMRH unknown-dim warning middleware. When a client sends an

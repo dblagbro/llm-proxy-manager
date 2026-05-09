@@ -1,0 +1,353 @@
+"""
+LMRH v2 endpoints — bidirectional metrics feedback channel.
+
+Operator-approved 2026-05-09; design doc lives in
+``project_lmrhv2_design.md`` (memory). Phase 1 surface (this module):
+
+  GET /.well-known/lmrh-config   — protocol metadata, polling guidance
+  GET /lmrh/providers            — live snapshot of providers + metrics
+  GET /lmrh/providers/{id}       — single-provider deep view
+  GET /lmrh/health               — fleet health summary
+
+Auth: same API key as /v1/messages. Per-key scope filter applied at
+render time (operator decision #1 — only providers this key can route
+to). Anonymous access only on `/.well-known/lmrh-config` per RFC 8615.
+
+Feature flag: ``lmrh_v2_enabled`` setting. When False (default), all
+endpoints return ``404 Not Found`` so v1.x callers don't see them
+until operator flips per-node.
+
+Rate limiting: per-key, default 4/min for /lmrh/providers (since the
+underlying snapshot only refreshes every 30s, faster polling returns
+duplicates). Override via new ``ApiKey.lmrh_polling_rpm`` column.
+"""
+from __future__ import annotations
+
+import asyncio
+import time
+from collections import defaultdict
+from dataclasses import asdict
+from datetime import datetime, timezone
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.auth.keys import ApiKeyRecord, resolve_api_key_dep
+from app.config import settings
+from app.models.database import get_db
+from app.models.db import ApiKey
+from app.routing.lmrh import snapshot as snap_mod
+
+router = APIRouter(tags=["lmrh-v2"])
+
+# ── Feature flag gate ─────────────────────────────────────────────────
+
+
+def _v2_enabled() -> bool:
+    """Read the lmrh_v2_enabled runtime flag. Default False until
+    operator flips per-node. ``apply()`` in config_runtime patches
+    settings.lmrh_v2_enabled at boot from the SystemSetting row."""
+    return bool(getattr(settings, "lmrh_v2_enabled", False))
+
+
+def _ensure_enabled() -> None:
+    if not _v2_enabled():
+        # 404 (not 503) so v1.x callers can't probe whether v2 is
+        # installed-but-disabled vs not-installed — endpoint just
+        # doesn't exist as far as they know.
+        raise HTTPException(404, "Not Found")
+
+
+# ── Rate limiting ────────────────────────────────────────────────────
+
+
+# In-process per-key rate-limit state. (key_id, endpoint) → list[float]
+# of recent request timestamps. Pruned + checked on each call.
+_rate_state: dict[tuple[str, str], list[float]] = defaultdict(list)
+_rate_lock = asyncio.Lock()
+
+# Defaults from operator decision #5
+DEFAULT_PROVIDERS_RPM = 4
+DEFAULT_QUOTES_RPM = 60
+
+
+async def _check_rate_limit(
+    db: AsyncSession,
+    key: ApiKeyRecord,
+    endpoint: str,  # "providers" | "quotes"
+) -> None:
+    """Per-key sliding-window rate limit. ``ApiKey.lmrh_polling_rpm``
+    overrides the default for the providers endpoint;
+    ``ApiKey.lmrh_quotes_rpm`` for quotes. Null on either column =
+    use the default."""
+    # Look up overrides once per call. ApiKeyRecord is the lightweight
+    # in-memory shape; the override columns live on the full ApiKey row.
+    db_key = await db.get(ApiKey, key.id)
+    override = None
+    if db_key:
+        if endpoint == "providers":
+            override = getattr(db_key, "lmrh_polling_rpm", None)
+        elif endpoint == "quotes":
+            override = getattr(db_key, "lmrh_quotes_rpm", None)
+    rpm = override or (
+        DEFAULT_PROVIDERS_RPM if endpoint == "providers" else DEFAULT_QUOTES_RPM
+    )
+    window_sec = 60.0
+    now = time.time()
+    state_key = (key.id, endpoint)
+    async with _rate_lock:
+        timestamps = _rate_state[state_key]
+        # Drop timestamps older than the window
+        cutoff = now - window_sec
+        timestamps[:] = [t for t in timestamps if t > cutoff]
+        if len(timestamps) >= rpm:
+            # Compute Retry-After from the oldest timestamp in window
+            retry_after = max(1, int(window_sec - (now - timestamps[0])))
+            raise HTTPException(
+                429,
+                f"LMRH polling rate limit exceeded ({rpm}/min). "
+                f"Retry in {retry_after}s.",
+                headers={"Retry-After": str(retry_after)},
+            )
+        timestamps.append(now)
+
+
+# ── Snapshot rendering ────────────────────────────────────────────────
+
+
+def _render_provider(p: snap_mod._ProviderSnap) -> dict:
+    """Convert a _ProviderSnap to the wire-format dict per design §4.3.
+
+    Drops fields that should NEVER ride the wire (e.g.
+    ``owned_by_key_id`` is internal-only; the scope filter ran before
+    this; we don't tell callers WHO else can route to a provider).
+    """
+    out = {
+        "id": p.id,
+        "name": p.name,
+        "type": p.type,
+        "priority": p.priority,
+        "cost_class": p.cost_class,
+        "circuit": p.circuit,
+        "regions": p.regions,
+        "models": [
+            {
+                "model_id": m.model_id,
+                "kind": m.kind,
+                "context_length": m.context_length,
+                "native_tools": m.native_tools,
+                "native_reasoning": m.native_reasoning,
+                "metrics": {
+                    "cost_per_1m_input_usd": m.cost_per_1m_input_usd,
+                    "cost_per_1m_output_usd": m.cost_per_1m_output_usd,
+                    "rated_quota_per_1m_input_usd": m.rated_quota_per_1m_input_usd,
+                    "latency_p50_ms": m.latency_p50_ms,
+                    "latency_p95_ms": m.latency_p95_ms,
+                    "ttft_p50_ms": m.ttft_p50_ms,
+                    "ttft_p95_ms": m.ttft_p95_ms,
+                    "success_rate": m.success_rate,
+                    "samples": m.samples,
+                },
+            }
+            for m in p.models
+        ],
+    }
+    if p.subscription_quota is not None:
+        out["subscription_quota"] = {
+            "session_used_pct": p.subscription_quota.session_used_pct,
+            "weekly_used_pct": p.subscription_quota.weekly_used_pct,
+            "session_resets_at": p.subscription_quota.session_resets_at,
+            "weekly_resets_at": p.subscription_quota.weekly_resets_at,
+        }
+    return out
+
+
+# ── /.well-known/lmrh-config ──────────────────────────────────────────
+
+
+@router.get("/.well-known/lmrh-config")
+async def well_known_config() -> dict:
+    """Public — server metadata describing the LMRH protocol surface
+    available on this proxy. RFC 8615 well-known URI pattern.
+
+    Doesn't gate on lmrh_v2_enabled because clients use this to
+    discover whether v2 is available — returning 404 here would be
+    indistinguishable from "the proxy doesn't support LMRH at all".
+    Instead, we emit ``versions: ["1.x"]`` only when v2 is off so
+    the client knows what they can use.
+    """
+    versions = ["1.2"]
+    endpoints = {
+        "registry": "/lmrh/registry",
+    }
+    polling = {}
+    cache = {"registry_max_age_sec": 3600}
+    if _v2_enabled():
+        versions.append("2.0")
+        endpoints.update({
+            "providers": "/lmrh/providers",
+            "health": "/lmrh/health",
+        })
+        polling = {
+            "providers_min_interval_sec": 15,
+            "providers_recommended_interval_sec": 60,
+            "providers_max_rate_per_minute": DEFAULT_PROVIDERS_RPM,
+            "quotes_max_rate_per_minute": DEFAULT_QUOTES_RPM,
+        }
+        cache.update({
+            "providers_max_age_sec": 30,
+            "health_max_age_sec": 30,
+        })
+    return {
+        "version": "2.0" if _v2_enabled() else "1.2",
+        "supported_versions": versions,
+        "endpoints": endpoints,
+        "polling": polling,
+        "cache": cache,
+        "supported_dims": [
+            "task", "cost", "latency", "region",
+            "cache", "provider-hint", "exclude",
+            "cost-class", "tools", "vision",
+        ],
+    }
+
+
+# ── /lmrh/providers + /lmrh/providers/{id} ────────────────────────────
+
+
+@router.get("/lmrh/providers")
+async def get_providers(
+    request: Request,
+    response: Response,
+    type: Optional[str] = None,
+    capability: Optional[str] = None,
+    db: AsyncSession = Depends(get_db),
+    key: ApiKeyRecord = Depends(resolve_api_key_dep()),
+) -> Response:
+    """Snapshot of providers visible to this caller, with live metrics.
+
+    Filters:
+      - ``?type=`` — restrict to a single provider_type
+      - ``?capability=`` — restrict to providers offering at least one
+        model with the given kind (chat / embedding / image / audio)
+
+    Conditional GET via ``If-None-Match`` honored. Cache-Control 30s.
+    """
+    _ensure_enabled()
+    await _check_rate_limit(db, key, "providers")
+
+    cur = snap_mod.get_current()
+    if cur is None:
+        # Refresh loop hasn't completed first build yet (or it was
+        # restarted moments ago). Force-build a snapshot inline so the
+        # caller still gets data; this only happens at boot.
+        cur = await snap_mod.rebuild_now(db)
+
+    # Conditional GET — return 304 if client already has this etag
+    inm = request.headers.get("if-none-match")
+    if inm and inm == cur.etag:
+        response.status_code = 304
+        response.headers["ETag"] = cur.etag
+        response.headers["Cache-Control"] = "max-age=30"
+        return response
+
+    # Scope filter (operator decision #1)
+    visible = cur.for_caller(key.id)
+
+    # Optional filters from query params
+    if type:
+        visible = [p for p in visible if p.type == type]
+    if capability:
+        visible = [
+            p for p in visible
+            if any(m.kind == capability for m in p.models)
+        ]
+
+    body = {
+        "version": "2.0",
+        "as_of": cur.as_of.isoformat(),
+        "window_sec": cur.window_sec,
+        "providers": [_render_provider(p) for p in visible],
+    }
+    import json as _json
+    payload = _json.dumps(body, default=str).encode()
+    response.headers["ETag"] = cur.etag
+    response.headers["Cache-Control"] = "max-age=30"
+    response.headers["Content-Type"] = "application/json"
+    response.body = payload
+    return Response(
+        content=payload,
+        media_type="application/json",
+        headers={
+            "ETag": cur.etag,
+            "Cache-Control": "max-age=30",
+        },
+    )
+
+
+@router.get("/lmrh/providers/{provider_id}")
+async def get_provider_one(
+    provider_id: str,
+    db: AsyncSession = Depends(get_db),
+    key: ApiKeyRecord = Depends(resolve_api_key_dep()),
+) -> dict:
+    """Single-provider deep view. 404 if the provider doesn't exist or
+    the caller's key isn't allowed to route to it (don't leak existence
+    of operator-private providers)."""
+    _ensure_enabled()
+    await _check_rate_limit(db, key, "providers")
+
+    cur = snap_mod.get_current()
+    if cur is None:
+        cur = await snap_mod.rebuild_now(db)
+    visible = cur.for_caller(key.id)
+    for p in visible:
+        if p.id == provider_id:
+            return {
+                "version": "2.0",
+                "as_of": cur.as_of.isoformat(),
+                "provider": _render_provider(p),
+            }
+    raise HTTPException(404, "provider not found")
+
+
+# ── /lmrh/health ──────────────────────────────────────────────────────
+
+
+@router.get("/lmrh/health")
+async def get_health(
+    db: AsyncSession = Depends(get_db),
+    key: ApiKeyRecord = Depends(resolve_api_key_dep()),
+) -> dict:
+    """Aggregate fleet health for this caller's visible providers.
+
+    Returns:
+      - total_providers: int
+      - circuit_open_count: int  (any breaker open)
+      - degraded_count: int  (success_rate < 0.95 with samples ≥ 10)
+      - last_snapshot_age_sec: int  (so callers detect stale data)
+    """
+    _ensure_enabled()
+    await _check_rate_limit(db, key, "providers")  # share the providers rpm
+
+    cur = snap_mod.get_current()
+    if cur is None:
+        cur = await snap_mod.rebuild_now(db)
+    visible = cur.for_caller(key.id)
+    open_count = sum(1 for p in visible if p.circuit == "open")
+    degraded = 0
+    for p in visible:
+        for m in p.models:
+            if m.success_rate is not None and m.samples >= 10 and m.success_rate < 0.95:
+                degraded += 1
+                break
+    age = (datetime.now(timezone.utc) - cur.as_of).total_seconds()
+    return {
+        "version": "2.0",
+        "as_of": cur.as_of.isoformat(),
+        "last_snapshot_age_sec": int(age),
+        "total_providers": len(visible),
+        "circuit_open_count": open_count,
+        "degraded_count": degraded,
+    }

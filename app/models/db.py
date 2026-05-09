@@ -171,6 +171,13 @@ class ApiKey(Base):
     # a fresh insert. Soft-delete + sync-aware merge fixes the resurrection.
     # Garbage collection of old tombstones is handled by the daily prune sweep.
     deleted_at = Column(DateTime, nullable=True)
+    # v3.3.0 LMRHv2 polling-rate overrides. Null on either column means
+    # use defaults (4/min providers, 60/min quotes per design doc §4.1).
+    # Operators can set these for high-volume orchestrator keys that
+    # need tighter polling, or zero them out to disable v2 access for
+    # a specific tenant without touching the global flag.
+    lmrh_polling_rpm = Column(Integer, nullable=True)
+    lmrh_quotes_rpm = Column(Integer, nullable=True)
 
 
 class User(Base):

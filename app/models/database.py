@@ -134,6 +134,10 @@ async def init_db():
             "ALTER TABLE model_capabilities ADD COLUMN deleted_at DATETIME",
             "ALTER TABLE model_aliases ADD COLUMN deleted_at DATETIME",
             "ALTER TABLE oauth_capture_profiles ADD COLUMN deleted_at DATETIME",
+            # v3.3.0 — LMRHv2 per-key polling-rate overrides. Null = use
+            # global defaults (4/min providers, 60/min quotes).
+            "ALTER TABLE api_keys ADD COLUMN lmrh_polling_rpm INTEGER",
+            "ALTER TABLE api_keys ADD COLUMN lmrh_quotes_rpm INTEGER",
         ]:
             try:
                 await conn.exec_driver_sql(stmt)

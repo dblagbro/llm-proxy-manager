@@ -105,6 +105,9 @@ def validate_schema_consistency() -> list[str]:
 
 
 SCHEMA: dict[str, dict] = {
+    # LMRHv2 (v3.3.0+) — bidirectional metrics feedback. Default-off
+    # per operator decision #6; flip per-node when ready.
+    "lmrh_v2_enabled":        {"type": "bool",  "default": False, "label": "Enable LMRH v2 endpoints (/lmrh/providers, /lmrh/health, /.well-known/lmrh-config)"},
     # CoT-E
     "cot_enabled":            {"type": "bool",  "default": True,  "label": "Enable CoT-E globally"},
     "cot_max_iterations":     {"type": "int",   "default": settings.cot_max_iterations,     "label": "Max refinement passes"},
