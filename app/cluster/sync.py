@@ -96,16 +96,28 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
     _peer_key_costs[source_node] = peer_costs
 
     from app.monitoring.status import register_provider
-    from datetime import datetime
+    from datetime import datetime, timezone
     def _parse_iso(v):
+        # Returns a NAIVE datetime in UTC. SQLAlchemy's ``Column(DateTime)``
+        # without ``timezone=True`` returns naive values when reading from
+        # SQLite, so we strip tzinfo here to keep comparisons consistent
+        # across all the LWW branches below. Without this, peer payloads
+        # (ISO strings with explicit offsets) compare as tz-aware against
+        # locally-loaded naive datetimes and TypeError out on >=/> ops.
         if not v:
             return None
         if isinstance(v, str):
             try:
-                return datetime.fromisoformat(v.replace("Z", "+00:00"))
+                dt = datetime.fromisoformat(v.replace("Z", "+00:00"))
             except ValueError:
                 return None
-        return v
+        elif isinstance(v, datetime):
+            dt = v
+        else:
+            return v
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+        return dt
 
     for p_data in payload.get("providers", []):
         peer_deleted_at = _parse_iso(p_data.get("deleted_at"))
@@ -164,15 +176,30 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
                 # (post-sync, both sides carry identical last_user_edit_at)
                 # peer always won — creating a ping-pong where any
                 # divergent state on either node would flip back and
-                # forth on each sync cycle. Symptom: operator changes
-                # provider priority on www01, sync replicates timestamp
-                # to www02 with www02's old state still attached, next
-                # sync www02 echoes that state back at the same
-                # timestamp and www01's recent change gets reverted.
+                # forth on each sync cycle.
                 # Strict-greater + tie → keep local means an admin edit
                 # only gets overwritten by an explicitly NEWER edit
                 # elsewhere.
-                accept = peer_user_edit_at > local_user_edit
+                # v3.2.7: when peer_user_edit_at == local_user_edit (a real
+                # tie, NOT a missing stamp), fall through to legacy LWW on
+                # ``updated_at``. This catches background mutations —
+                # direct DB writes, sync-cascade flushes, OAuth refresh on
+                # a non-claude/codex provider type — where the row genuinely
+                # changed but no admin path bumped last_user_edit_at. The
+                # anti-ping-pong concern is preserved because the legacy
+                # LWW path below also uses STRICT-greater on updated_at
+                # for ties, so genuinely-converged state stays converged.
+                # Bug surfaced 2026-05-08: bridge_url change in extra_config
+                # on www01 didn't propagate to peers for hours (hand-fixed
+                # node-by-node) until the operator wondered why.
+                if peer_user_edit_at != local_user_edit:
+                    accept = peer_user_edit_at > local_user_edit
+                else:
+                    accept = (
+                        peer_updated_at is not None
+                        and local_updated is not None
+                        and peer_updated_at > local_updated
+                    )
             elif local_user_edit is not None and peer_user_edit_at is None:
                 # Local row was admin-edited (v3.0.11+); peer's payload
                 # carries no admin-edit stamp — could be a legacy v3.0.10

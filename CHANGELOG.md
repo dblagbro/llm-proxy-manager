@@ -9,6 +9,25 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.2.x — grok-web (cookie replay) + Playwright bridge sidecar
 
+### v3.2.7 — Cluster-sync LWW: tie-break fall-through + tz-naive normalization
+
+**The bug:** v3.0.63's strict-greater check on `last_user_edit_at` correctly broke a ping-pong scenario, but had an unintended side effect: when both nodes carried the SAME `last_user_edit_at` and only one side's `updated_at` had moved (background mutation, direct DB write, sync-cascade flush), the receiving peer rejected the change entirely. Surfaced 2026-05-08 when an `extra_config.bridge_url` change on www01 didn't reach www02/smoke/GCP for hours — the peers had to be hand-fixed node-by-node.
+
+**The fix:** when peer and local `last_user_edit_at` are EQUAL (real tie, not "missing stamp"), fall through to the legacy LWW path on `updated_at` with strict-greater. This catches background mutations without re-introducing the v3.0.63 ping-pong: genuinely-converged state (same user-edit + same updated_at) still rejects the inbound payload.
+
+**Bonus:** `_parse_iso` now strips `tzinfo` and returns naive UTC. The legacy LWW path on line 187 was always going to TypeError in production whenever both `peer_updated_at` and `local_updated` were non-None, because SQLAlchemy returns naive datetimes from SQLite. The error was getting swallowed by the outer apply_sync handler — now the comparison just works.
+
+Coverage: `tests/unit/test_cluster_sync_lww.py` adds 4 cases (strict-greater anti-ping-pong, tie + newer updated_at, peer newer user-edit accepts, peer older user-edit rejects-even-with-newer-updated_at). All pass; no regressions in the broader 900-test suite.
+
+### v3.2.6 — Cross-node bridge access + UI polish
+
+The `/grok-bridge/api/chat` location no longer goes through `auth_request` — peer llm-proxy2 instances (www02, smoke, GCP) call the bridge over the public URL `https://www.voipguru.org/grok-bridge/api/chat` with `X-Bridge-Token`, enforced inside the bridge container itself. Login/control-plane paths (/login, /vnc/, /api/status, /api/login/start) remain admin-session gated. Provider records cluster-sync the public URL.
+
+UI polish:
+- "Use bridge's current" button shrunk to "Use bridge's" (UUID in tooltip), only renders when the form's conv_id differs from the bridge's current page UUID.
+- Default Model placeholder type-aware: 'grok-3' for grok-web, 'openai/gpt-4o' for openrouter, 'claude-sonnet-4-6' for OAuth.
+- Mode-tab buttons gain focus-visible rings for keyboard accessibility.
+
 ### v3.2.5 — Bridge boots to grok.com; current_conversation_id surfaced
 
 Two small wins on top of the v3.2.x stack:
