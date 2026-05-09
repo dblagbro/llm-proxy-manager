@@ -969,3 +969,191 @@ Top recommended targets:
 5. NEW: `app/api/_messages_streaming.py` (701 lines) — splittable when
    next OAuth-direct provider type lands. Not urgent.
 
+
+---
+
+## 2026-05-08/09 — v3.2.0–v3.2.8: grok-web provider + Playwright bridge sidecar
+
+### Scope
+
+Eight versions across two days adding a third "subscription as a
+provider" path (after `claude-oauth` and `codex-oauth`): `grok-web`.
+Operators can now bring their grok.com Lite/Premium subscription into
+the proxy via cookie replay (manual mode) or a Playwright sidecar that
+maintains a live logged-in browser session (bridge mode).
+
+### Key changes
+
+**v3.2.0 — `grok-web` provider type (cookie replay)**
+- New `app/providers/grok_web.py` — manual-mode dispatcher: HTTP replay
+  against `https://grok.com/rest/app-chat/conversations/{id}/responses`
+  using cookies + headers stored on `Provider.extra_config`.
+- Wired into `app/api/messages.py` (Anthropic) and
+  `app/api/completions.py` (OpenAI) with parallel ~50-line dispatch
+  blocks. Both surfaces stream + non-stream. Models: grok-3 (fast),
+  grok-4 (expert).
+- `app/routing/router.py` family filter extended:
+  `x-ai/*` → `{grok, grok-web, openrouter}`.
+- `app/providers/scanner.py` static catalog for grok-web (no upstream
+  model-list API; SUPPORTED_MODELS hardcoded).
+- Frontend `ProviderForm` extended with cookie/conv_id paste fields.
+
+**v3.2.1 — bridge mode in dispatcher**
+- `_is_bridge_mode(extra_config)` switches on `bridge_url`. When set,
+  `complete_grok_web` / `stream_grok_web` forward the request to the
+  bridge sidecar's `/api/chat` instead of replaying locally.
+- Bridge holds the cookies; dispatcher just shapes the request and
+  proxies the response.
+
+**v3.2.1+ — `grok_bridge/` sidecar package**
+- New top-level Docker service `llm-proxy2-grok-bridge`. Image based on
+  `mcr.microsoft.com/playwright/python:v1.45.0-jammy` + xvfb + x11vnc +
+  websockify + noVNC + a small FastAPI control plane.
+- Persistent state volume `/data/playwright-state` survives container
+  restarts (cookies + localStorage held in Playwright user_data_dir).
+- Background loop visits grok.com every 25 min so Cloudflare passively
+  reissues `__cf_bm` / `cf_clearance`.
+- Operator signs in once via noVNC at `/grok-bridge/login`; bridge
+  thereafter serves /api/chat indefinitely.
+
+**v3.2.2 — wizard UI**
+- `GrokWebProviderFields` component (extracted from inline `ProviderForm`
+  block) — Bridge / Manual tabs, live status poll against `/api/status`,
+  "Connect Grok" button that opens noVNC.
+
+**v3.2.3 — backend validator dual-mode**
+- `app/api/providers.py` accepts either `bridge_url + conversation_id`
+  (bridge mode) or `cookie_header + conversation_id` (manual). Error
+  messages updated to nudge operators toward Bridge mode.
+
+**v3.2.4 — wizard auto-populate fix**
+- `useEffect` on mount injects `bridge_url` + `bridge_token` defaults
+  into form state when in Bridge mode. Pre-fix: tab visually selected
+  but defaults only fired on click → form submitted with empty fields
+  → backend rejected.
+
+**v3.2.5 — bridge boot UX + conversation_id auto-detect**
+- Bridge lifespan navigates to grok.com on startup (not about:blank).
+- `/api/status` surfaces `current_conversation_id` parsed from the
+  bridge's current page URL; wizard shows "Use bridge's current" button.
+
+**v3.2.6 — cross-node bridge access**
+- `/grok-bridge/api/chat` removed from nginx auth_request so peer
+  llm-proxy2 nodes (www02, smoke, GCP) can call the bridge via the
+  public URL `https://www.voipguru.org/grok-bridge/api/chat`. Auth on
+  this surface is X-Bridge-Token, enforced inside the bridge container.
+- Other /grok-bridge/* paths remain admin-session gated.
+
+**v3.2.7 — cluster-sync LWW tie-break fall-through**
+- `app/cluster/sync.py` apply_sync: when peer and local
+  `last_user_edit_at` are equal (real tie, not "missing stamp"), fall
+  through to legacy LWW on `updated_at` with strict-greater. Catches
+  background mutations (direct DB writes, sync-cascade flushes) that
+  bumped only `updated_at` without touching `last_user_edit_at`.
+- `_parse_iso` returns naive UTC so peer (tz-aware) vs local (tz-naive)
+  comparisons no longer TypeError silently.
+- `tests/unit/test_cluster_sync_lww.py` (4 cases): strict-greater
+  anti-ping-pong preserved; tie + newer updated_at accepts;
+  peer-newer-user-edit accepts; peer-older-user-edit rejects-even-with-
+  newer-updated_at.
+
+**v3.2.8 — capability slug aliases**
+- `SUPPORTED_MODELS` extended with `x-ai/grok-3` + `x-ai/grok-4` so
+  caller-side OpenRouter-style slugs match grok-web's capability rows.
+  Pre-fix: 6 of 8 grok requests in 24h routed to OpenRouter (per-call
+  billing) despite grok-web at priority=1, because router scores by
+  exact capability match. Post-fix: `X-Resolved-Provider: grok-web`
+  for x-ai/grok-4 verified live.
+
+### Architectural decisions
+
+- **Sidecar over in-process Playwright**: keeps llm-proxy2's image
+  small (Playwright + Chromium adds ~1 GB) and isolates the long-lived
+  browser session from request-handler restarts. Inference path is one
+  HTTP hop slower (~50ms) — acceptable trade for clean separation.
+
+- **Cookie persistence on Docker volume**: the obvious alternative was
+  storing tokens in `Provider.oauth_*` columns à la claude-oauth.
+  Rejected because Cloudflare cookies are anti-bot signals tied to TLS
+  fingerprint + IP + browser context — they don't survive an
+  HTTP-replay rehydration the way OAuth bearer tokens do. The bridge's
+  Chromium IS the trust context.
+
+- **Public bridge URL with token auth (not docker-internal hostname)**:
+  v3.2.6 rejected putting peer-side bridge_url on a docker-network
+  hostname because peers' docker stacks are independent. Public URL +
+  X-Bridge-Token is one extra TLS hop per call (~50ms) — acceptable.
+
+- **Single conversation_id vs auto-create**: `/conversations/new` is
+  Cloudflare-rejected from server IPs even with fresh cookies. Could be
+  worked around by driving Playwright in-browser fetch (TLS fingerprint
+  matches Chromium); deferred as a v3.2.9+ enhancement.
+
+### Files impacted
+
+**Backend:**
+- `app/providers/grok_web.py` (new, 743 lines)
+- `app/api/providers.py` (+30 lines validator + tombstone of test record)
+- `app/api/messages.py` (+72 lines grok-web dispatch block)
+- `app/api/completions.py` (+50 lines grok-web dispatch block)
+- `app/routing/router.py` (+10 lines: x-ai/ family + PROVIDER_TYPE_TO_LITELLM)
+- `app/routing/capability_inference.py` (+1 line)
+- `app/providers/scanner.py` (+25 lines: SUPPORTED_MODELS branch + smoke test)
+- `app/cluster/sync.py` (+15 lines: tie-break fall-through, _parse_iso normalize)
+- `app/__version__.py` (8 bumps)
+
+**Bridge (new):**
+- `grok_bridge/Dockerfile` (~50 lines)
+- `grok_bridge/supervisord.conf` (~50 lines)
+- `grok_bridge/start.sh` (~30 lines)
+- `grok_bridge/app.py` (~580 lines)
+
+**Frontend:**
+- `frontend/src/components/providers/GrokWebProviderFields.tsx` (new, ~280 lines)
+- `frontend/src/components/providers/ProviderForm.tsx` (+10 lines: import + render branch)
+- `frontend/src/types/index.ts` (+4 lines)
+
+**Infra:**
+- `/home/dblagbro/docker/docker-compose.yml` (+15 lines: bridge service + volume)
+- `/home/dblagbro/docker/config/nginx/nginx.conf` (+50 lines: 4 location blocks + auth_request)
+
+**Tests:**
+- `tests/unit/test_cluster_sync_lww.py` (new, 4 cases)
+
+### Risks
+
+- **`grok_web.py` at 743 lines** is now the second-largest file in
+  `app/`. Manual-mode and bridge-mode paths share helpers but each has
+  its own `complete_*` / `stream_*` shape. A small extraction pass
+  (Phase B of the May 2026 doc-catch-up) is queued.
+- **Dispatch duplication** between `app/api/messages.py` and
+  `app/api/completions.py` (~50 lines each, similar shape). Same Phase
+  B target.
+- **`grok_bridge/app.py` re-implements** `_flatten_messages_to_prompt`,
+  `_build_grok_body`, `_model_to_mode_id` from `app/providers/grok_web.py`.
+  These are independent codebases (separate Docker images), so the
+  duplication is intentional — but they can drift. A shared schema or
+  tested-contract approach is the long-term answer.
+- **Test gap**: only v3.2.7 added unit tests. v3.2.0–v3.2.6 + v3.2.8
+  shipped without coverage. Phase C of the doc-catch-up adds them.
+- **Bridge SPOF for grok-web**: only www01 runs the bridge container;
+  if it dies, all 4 nodes lose grok-web routing. Acceptable for a
+  single-subscription provider but worth flagging.
+
+### Remaining issues / next refactor targets
+
+1. **Phase B**: extract `app/api/_grok_web_dispatch.py` shared by
+   messages.py + completions.py; consolidate manual+bridge branches in
+   `grok_web.py`.
+2. **Phase C**: regression tests for manual-mode dispatcher, bridge-mode
+   dispatcher, x-ai/ slug routing, budget cap enforcement, bridge
+   `/api/chat` contract.
+3. **`POST /conversations/new` via Playwright fetch** — bypasses
+   Cloudflare anti-bot by using the live Chromium TLS context. Removes
+   the "operator provides one conversation_id" friction.
+4. **Last-user-edit-at hardening**: SQLAlchemy event listener that
+   bumps the stamp on user-editable field changes. Prevents the
+   v3.2.7 class of bug from recurring when admin scripts touch the DB
+   directly.
+5. **Activity log api_key_id orphans** (8 events with deleted-key
+   refs). Minor; ages out via 30-day prune.

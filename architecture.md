@@ -240,3 +240,116 @@ would be dropped and the next refresh would fail with `invalid_grant`.
 (basic, streaming, multi-turn, tool_use, vision, caching, concurrent,
 multiple models, scan, test button, refresh, invalid-model errors,
 metrics) against a real provider. Not run in CI — opt-in via docker exec.
+
+## grok.com web subscription (`grok-web` — v3.2.0+)
+
+The third "subscription as a provider" path, after `claude-oauth` and
+`codex-oauth`. Replays grok.com's browser-side request shape against
+`https://grok.com/rest/app-chat/conversations/{id}/responses` so an
+operator's Lite / Premium subscription serves traffic without a paid
+xAI API key.
+
+Two operating modes — both configured via `Provider.extra_config`:
+
+```
+              ┌─────────────────────────────┐
+caller ──→ proxy ──→ grok-web dispatcher ─┬──→ MANUAL: HTTP replay using
+                                          │           pasted cookies + headers
+                                          │           on Provider row
+                                          │
+                                          └──→ BRIDGE: POST to grok_bridge
+                                                       sidecar /api/chat
+                                                       (sidecar holds live
+                                                        Playwright session)
+```
+
+```
+app/providers/grok_web.py    (743 lines as of v3.2.8)
+├── _is_bridge_mode(extra_config)  bridge_url present → bridge path
+├── _validate_extra_config         enforces required fields per mode
+├── _build_headers / _build_body / _flatten_messages_to_prompt   shared shape
+├── _bridge_chat                   forward to bridge /api/chat
+├── complete_grok_web              non-streaming OpenAI-shape result
+├── stream_grok_web                streaming SSE (OpenAI delta chunks)
+├── stream_grok_web_anthropic      streaming SSE (Anthropic event format)
+└── anthropic_response_from_openai response shape conversion
+
+SUPPORTED_MODELS = ["grok-3", "grok-4",
+                    "x-ai/grok-3", "x-ai/grok-4"]
+
+  v3.2.8: includes both bare and OpenRouter-style slugs so caller
+  requests like `x-ai/grok-4` capability-match grok-web at priority=1
+  instead of falling through to OpenRouter (per-call billing).
+
+MODEL_TO_MODE_ID:
+  grok-3 / x-ai/grok-3 → modeId="fast"
+  grok-4 / x-ai/grok-4 → modeId="expert"
+```
+
+**Conversation reuse**: `POST /conversations/new` is rejected by Cloudflare
+anti-bot from server IPs. Operator supplies one existing conversation_id
+(any chat in their account); each proxy call sends `parentResponseId: ""`
+so callers don't share thread context inside that conversation. The
+conversation grows in the operator's grok.com UI over time.
+
+## grok-bridge sidecar (`grok_bridge/` — v3.2.1+)
+
+Separate Docker service `llm-proxy2-grok-bridge` that maintains a
+logged-in grok.com session via Playwright + Chromium in a headed Xvfb
+display, exposed to the operator via noVNC.
+
+```
+grok_bridge/
+├── Dockerfile           mcr.microsoft.com/playwright/python:v1.45.0-jammy
+│                          + xvfb + x11vnc + websockify + novnc + supervisord
+├── supervisord.conf     boots Xvfb → fluxbox → x11vnc → websockify in order
+├── start.sh             waits for Xvfb, then exec's uvicorn (FastAPI app)
+└── app.py               FastAPI control plane:
+                           /healthz                 alive check
+                           /api/status              login state + cookie freshness
+                                                      (PUBLIC — no token; surfaces
+                                                       only booleans + counts so
+                                                       the /login HTML can render)
+                           /api/login/start         drive Chromium to grok.com
+                           /api/conversation/new    POST /conversations/new
+                                                      (gated by token)
+                           /api/chat                inference surface called by
+                                                      llm-proxy2's grok-web
+                                                      dispatcher; X-Bridge-Token
+                                                      enforced
+                           /login                   noVNC-framed HTML for the
+                                                      operator's one-time sign-in
+                           /vnc/*                   websockify+noVNC HTML5 client
+```
+
+**Persistence**: `/data/playwright-state` is a Docker volume mounted into
+the bridge. Playwright's `launch_persistent_context` writes cookies +
+localStorage there, so a container restart preserves the operator's
+signed-in session. The 25-minute background refresh loop visits
+grok.com so Cloudflare passively reissues `__cf_bm` / `cf_clearance`
+before they expire.
+
+**nginx routing** (in `/home/dblagbro/docker/config/nginx/nginx.conf`):
+
+```
+/grok-bridge/api/chat   → bridge:8443  (no auth_request — bridge enforces
+                                         X-Bridge-Token internally so peer
+                                         llm-proxy2 nodes can reach it via
+                                         the public URL)
+/grok-bridge/vnc/*      → bridge:6080  (websockify + noVNC; auth_request)
+/grok-bridge/*          → bridge:8443  (login, /api/status, /api/login/start;
+                                         auth_request gates against
+                                         /api/auth/me — operator's
+                                         llmproxy_session cookie required)
+/grok-bridge-auth-check → llm-proxy2:3000/api/auth/me  (internal; subrequest)
+@bridge_unauthorized    → 302 /llm-proxy2/?bridge_login_required=1
+```
+
+**Cross-node reachability**: peer llm-proxy2 nodes (www02, smoke, GCP)
+call the bridge via the public URL `https://www.voipguru.org/grok-bridge`
+because `http://llm-proxy2-grok-bridge:8443` is www01-local. Provider
+records cluster-sync the public URL.
+
+**Live test**: `tests/integration/` (added v3.2.x) covers the bridge
+contract; manual OAuth login is operator-driven (one-time per fresh
+volume).

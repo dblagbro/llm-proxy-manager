@@ -404,66 +404,13 @@ async def messages(
     # short-circuits the rest of the pipeline (no CoT, no tool emulation,
     # no cascade) — Grok serves a single text response and we return it.
     # Only one provider expected (per operator account) so no failover loop.
+    # v3.2.9: shared dispatcher in _grok_web_dispatch (was duplicated 1:1
+    # in completions.py). See design.md "Subscription-as-a-provider pattern".
     if route.provider.provider_type == "grok-web":
-        from app.providers.grok_web import (
-            complete_grok_web, stream_grok_web_anthropic,
-            GrokWebError, GrokWebAuthError,
+        from app.api._grok_web_dispatch import dispatch_grok_web_anthropic
+        return await dispatch_grok_web_anthropic(
+            route=route, body=body, stream=stream, resp_headers=resp_headers,
         )
-        # Anthropic /v1/messages → grok-web translation: messages list +
-        # optional system block. We pass them through grok_web's flatten
-        # helper which rebuilds a single prompt string.
-        msgs_for_grok = list(body.get("messages") or [])
-        sys_for_grok = body.get("system")
-        # Anthropic's `system` can be a string OR list of blocks; flatten.
-        if isinstance(sys_for_grok, list):
-            sys_for_grok = "\n".join(
-                b.get("text", "") for b in sys_for_grok if isinstance(b, dict)
-            )
-        requested_model = body.get("model") or route.profile.model_id
-
-        if stream:
-            stream_gen = stream_grok_web_anthropic(
-                route.provider.extra_config or {},
-                messages=msgs_for_grok,
-                system=sys_for_grok,
-                model=requested_model,
-            )
-            try:
-                first_chunk = await stream_gen.__anext__()
-            except GrokWebAuthError as e:
-                raise HTTPException(401, str(e))
-            except GrokWebError as e:
-                raise HTTPException(e.status_code, str(e))
-            except StopAsyncIteration:
-                raise HTTPException(502, "grok-web upstream: empty stream")
-
-            async def _replay():
-                yield first_chunk
-                async for c in stream_gen:
-                    yield c
-
-            resp_headers["X-Cache-Status"] = "bypass"
-            return StreamingResponse(
-                _replay(),
-                media_type="text/event-stream",
-                headers=resp_headers,
-            )
-        try:
-            openai_result = await complete_grok_web(
-                route.provider.extra_config or {},
-                messages=msgs_for_grok if not sys_for_grok else (
-                    [{"role": "system", "content": sys_for_grok}] + msgs_for_grok
-                ),
-                model=requested_model,
-            )
-        except GrokWebAuthError as e:
-            raise HTTPException(401, str(e))
-        except GrokWebError as e:
-            raise HTTPException(e.status_code, str(e))
-        from app.providers.grok_web import anthropic_response_from_openai
-        anth_result = anthropic_response_from_openai(openai_result)
-        resp_headers["X-Cache-Status"] = "bypass"
-        return JSONResponse(content=anth_result, headers=resp_headers)
 
     # Semantic cache — check before anything LLM-ish runs
     cache_decision = decide_cacheable(

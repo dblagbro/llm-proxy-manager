@@ -315,52 +315,13 @@ async def chat_completions(
             )
 
     # v3.2.0: grok-web on /v1/chat/completions. Operator's grok.com web
-    # subscription serving native OpenAI ChatCompletion shape — easier than
-    # the /v1/messages path because grok_web.complete_grok_web already
-    # returns the OpenAI shape.
+    # subscription. v3.2.9 extracted dispatch into a shared module; see
+    # _grok_web_dispatch.dispatch_grok_web_openai.
     if route.provider.provider_type == "grok-web":
-        from app.providers.grok_web import (
-            complete_grok_web, stream_grok_web,
-            GrokWebError, GrokWebAuthError,
+        from app.api._grok_web_dispatch import dispatch_grok_web_openai
+        return await dispatch_grok_web_openai(
+            route=route, body=body, stream=stream, resp_headers=resp_headers,
         )
-        msgs = list(body.get("messages") or [])
-        requested_model = body.get("model") or route.profile.model_id
-        if stream:
-            stream_gen = stream_grok_web(
-                route.provider.extra_config or {},
-                messages=msgs,
-                model=requested_model,
-            )
-            try:
-                first_chunk = await stream_gen.__anext__()
-            except GrokWebAuthError as e:
-                raise HTTPException(401, str(e))
-            except GrokWebError as e:
-                raise HTTPException(e.status_code, str(e))
-            except StopAsyncIteration:
-                raise HTTPException(502, "grok-web upstream: empty stream")
-
-            async def _replay():
-                yield first_chunk
-                async for c in stream_gen:
-                    yield c
-
-            resp_headers["X-Cache-Status"] = "bypass"
-            return StreamingResponse(
-                _replay(), media_type="text/event-stream", headers=resp_headers,
-            )
-        try:
-            result = await complete_grok_web(
-                route.provider.extra_config or {},
-                messages=msgs,
-                model=requested_model,
-            )
-        except GrokWebAuthError as e:
-            raise HTTPException(401, str(e))
-        except GrokWebError as e:
-            raise HTTPException(e.status_code, str(e))
-        resp_headers["X-Cache-Status"] = "bypass"
-        return JSONResponse(content=result, headers=resp_headers)
 
     # Semantic cache — check before anything LLM-ish runs
     cache_decision = decide_cacheable(
