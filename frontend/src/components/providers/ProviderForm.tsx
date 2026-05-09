@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/Button'
 import { providersApi } from '@/api'
 import { useToast } from '@/components/ui/Toast'
 import type { ProviderType, Provider } from '@/types'
+import { GrokWebProviderFields } from './GrokWebProviderFields'
 
 const PROVIDER_TYPES: ProviderType[] = [
   'anthropic', 'openai', 'google', 'vertex', 'grok', 'ollama', 'compatible',
@@ -296,99 +297,20 @@ export function ProviderForm({ form, onChange, editing }: Props) {
           )}
         </div>
       ) : form.provider_type === 'grok-web' ? (
-        // v3.2.0: grok.com web-subscription provider. No api_key — auth
-        // travels in cookies + headers. Operator captures these by:
-        //   1. Open grok.com, sign in, send any message in any chat
-        //   2. DevTools → Network → find a /responses request → "Copy as cURL"
-        //   3. Paste cookie header + UA + statsig-id below
-        // The conversation_id is the UUID after grok.com/c/ in the URL bar.
-        <div className="space-y-3 p-3 bg-purple-50 dark:bg-purple-950/20 border border-purple-200 dark:border-purple-900 rounded">
-          <p className="text-xs text-purple-900 dark:text-purple-200 leading-snug">
-            <strong>grok.com web subscription</strong> — proxies through your
-            existing browser session (no xAI API key needed). Capture from a
-            logged-in browser tab on grok.com:
-            <span className="block mt-1">
-              1. Open any conversation, send a message · 2. DevTools Network
-              → find a <code className="px-1 bg-white/40 rounded">/responses</code> request → Copy as cURL · 3.
-              Paste the values below
-            </span>
-          </p>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-              Conversation ID (UUID after <code>grok.com/c/</code>)
-            </label>
-            <Input
-              value={(form.extra_config?.conversation_id as string) || ''}
-              onChange={e => set({
-                extra_config: { ...form.extra_config, conversation_id: e.target.value },
-              })}
-              placeholder="e41fca28-3df3-44ae-ad27-1cb65d5fe2a5"
-              required={!editing}
-            />
-            <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-1">
-              Each proxy call uses <code>parentResponseId: ""</code> so callers
-              don't share context inside this conversation. The conversation
-              still grows in your UI; create a fresh one when it gets unwieldy.
-            </p>
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-              Cookie header (raw, from cURL)
-            </label>
-            <textarea
-              value={(form.extra_config?.cookie_header as string) || ''}
-              onChange={e => set({
-                extra_config: { ...form.extra_config, cookie_header: e.target.value },
-              })}
-              rows={4}
-              placeholder="cf_clearance=…; __cf_bm=…; sso=…; sso-rw=…; x-userid=…"
-              className="w-full px-3 py-2 text-xs font-mono bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 border border-gray-300 dark:border-gray-700 rounded focus:outline-none focus:ring-2 focus:ring-purple-500"
-              required={!editing}
-            />
-            <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-1">
-              Paste the entire <code>cookie:</code> header value. <code>cf_clearance</code> rotates
-              every few hours and <code>__cf_bm</code> every 30 min — when you start getting 401/403,
-              re-paste from a fresh browser request.
-            </p>
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-              x-statsig-id header
-            </label>
-            <Input
-              value={(form.extra_config?.x_statsig_id as string) || ''}
-              onChange={e => set({
-                extra_config: { ...form.extra_config, x_statsig_id: e.target.value },
-              })}
-              placeholder="d91JSvHnOYpC8kO+mqgfzEoKkCG…"
-              required={!editing}
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-              x-userid header (optional — also pulled from cookies)
-            </label>
-            <Input
-              value={(form.extra_config?.x_userid as string) || ''}
-              onChange={e => set({
-                extra_config: { ...form.extra_config, x_userid: e.target.value },
-              })}
-              placeholder="d5f586ee-8593-47a8-ba5f-8ca6f8d383aa"
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-              user-agent (optional — defaults to Chrome 147)
-            </label>
-            <Input
-              value={(form.extra_config?.user_agent as string) || ''}
-              onChange={e => set({
-                extra_config: { ...form.extra_config, user_agent: e.target.value },
-              })}
-              placeholder="Mozilla/5.0 (Windows NT 10.0; Win64; x64) …"
-            />
-          </div>
-        </div>
+        // v3.2.0+: grok.com web-subscription provider. Two paths:
+        //
+        //   Bridge mode (recommended, v3.2.1):
+        //     - The llm-proxy2-grok-bridge sidecar holds the live grok.com
+        //       session (Playwright + Chromium + persistent cookies)
+        //     - Operator clicks "Connect Grok" once → opens noVNC tab →
+        //       signs in via Google OAuth → bridge keeps cookies fresh
+        //     - Set bridge_url + conversation_id; bridge does the rest
+        //
+        //   Manual mode (legacy v3.2.0):
+        //     - Paste cookie_header + statsig-id + conversation_id from a
+        //       captured cURL. Re-paste every few hours when CF cookies
+        //       rotate. No bridge container needed.
+        <GrokWebProviderFields form={form} set={set} editing={editing} />
       ) : (
         <>
           <Input

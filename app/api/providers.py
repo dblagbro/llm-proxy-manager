@@ -378,20 +378,39 @@ async def create_provider(
         if not data.get("default_model"):
             data["default_model"] = "gpt-5.5"
     elif body.provider_type == "grok-web":
-        # v3.2.0: grok.com web-subscription provider. Auth is via cookies +
-        # request headers (no api_key, no OAuth blob). All required values
-        # live in extra_config. Validate them here so the operator gets a
-        # clear 400 instead of a 502 on first request.
+        # v3.2.0: grok.com web-subscription provider. Two valid auth paths
+        # captured in extra_config:
+        #
+        #   Bridge mode (v3.2.1+): bridge_url is set → the Playwright sidecar
+        #     holds the live cookies. We only require conversation_id here;
+        #     cookie_header is irrelevant (bridge captures it from its own
+        #     logged-in browser session).
+        #
+        #   Manual mode (legacy): operator pastes cookie_header + conversation_id
+        #     directly. Cookies live on this Provider row and we do HTTP replay
+        #     from the dispatcher.
         cfg = data.get("extra_config") or {}
-        missing = [k for k in ("cookie_header", "conversation_id") if not (cfg.get(k) or "").strip()]
-        if missing:
-            raise HTTPException(
-                400,
-                f"grok-web providers require extra_config fields {missing}. "
-                "In a logged-in browser at grok.com, copy a fetch as cURL — "
-                "paste the cookie header into 'cookie_header' and the UUID "
-                "from the URL (grok.com/c/<this-uuid>) into 'conversation_id'.",
-            )
+        is_bridge = bool((cfg.get("bridge_url") or "").strip())
+        if is_bridge:
+            if not (cfg.get("conversation_id") or "").strip():
+                raise HTTPException(
+                    400,
+                    "grok-web bridge mode requires extra_config.conversation_id "
+                    "(an existing grok.com conversation UUID — the bit after "
+                    "grok.com/c/ in your browser's URL bar).",
+                )
+        else:
+            missing = [k for k in ("cookie_header", "conversation_id") if not (cfg.get(k) or "").strip()]
+            if missing:
+                raise HTTPException(
+                    400,
+                    f"grok-web providers require extra_config fields {missing}. "
+                    "Easiest path: switch to Bridge mode in the form (one-time "
+                    "browser login, no cookie pasting). Or: in a logged-in "
+                    "browser at grok.com, copy a fetch as cURL — paste the cookie "
+                    "header into 'cookie_header' and the UUID from the URL "
+                    "(grok.com/c/<this-uuid>) into 'conversation_id'.",
+                )
         if not data.get("default_model"):
             data["default_model"] = "grok-3"
     elif blob:
