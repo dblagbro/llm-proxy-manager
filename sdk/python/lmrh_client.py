@@ -60,7 +60,7 @@ import logging
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 try:
     import httpx
@@ -74,6 +74,13 @@ logger = logging.getLogger(__name__)
 # Recommended polling cadence per /.well-known/lmrh-config. Stays within
 # the proxy's default 4/min rate limit.
 DEFAULT_POLL_INTERVAL_SEC = 60
+
+
+class _StreamUnsupported(Exception):
+    """v3.5.2 internal sentinel — raised when ``/lmrh/stream`` returns
+    404 inside the SSE read loop. Caught by ``subscribe()`` to fall
+    through to the polling path."""
+    pass
 
 
 # ── Snapshot data classes (mirror of the proxy's wire format) ──────────
@@ -245,6 +252,217 @@ class LmrhClient:
         if self._thread:
             self._thread.join(timeout=2.0)
             self._thread = None
+
+    # ── SSE subscription (v3.5.2 — closes the v3.4.0 push loop) ──
+
+    def subscribe(
+        self,
+        on_snapshot: "Callable[[Snapshot], None]",
+        on_error: "Optional[Callable[[Exception], None]]" = None,
+        heartbeat_sec: int = 25,
+        reconnect_delay_sec: float = 5.0,
+    ) -> None:
+        """Open a long-lived SSE connection to ``/lmrh/stream`` and call
+        ``on_snapshot(snap)`` whenever the proxy pushes a new snapshot.
+
+        Pre-v3.5.2 callers wanting fresh metrics had to call ``start()``
+        which polls every 60s. The v3.4.0 proxy added ``/lmrh/stream``
+        for push semantics — this method consumes it. Use ``subscribe()``
+        when:
+
+          - You want the freshest possible metrics (push latency
+            ≈ snapshot refresh interval, ~30s, vs polling ≈ 60-90s).
+          - You're behind a flaky NAT / firewall and prefer one
+            long-lived connection over many short polls.
+          - You're a high-volume caller and the rate-limit headroom
+            on /lmrh/providers is precious.
+
+        Use ``start()`` (polling) when:
+
+          - You're behind a strict proxy that truncates long-lived
+            HTTP connections (some corporate egress proxies do this).
+          - You want simpler error semantics (poll-failures don't
+            require reconnection logic).
+          - The proxy is older than v3.4.0 (no ``/lmrh/stream`` yet).
+
+        This method blocks the calling thread. For non-blocking
+        usage spawn it in a daemon thread::
+
+            t = threading.Thread(
+                target=lambda: client.subscribe(on_snapshot=cb),
+                daemon=True,
+            )
+            t.start()
+
+        Both ``on_snapshot`` and ``on_error`` callbacks are invoked
+        synchronously from the SSE-reading thread — they should return
+        quickly (push expensive work to a separate thread/queue).
+
+        Auto-reconnect: when the SSE connection drops (network blip,
+        proxy restart, etc.), this method waits ``reconnect_delay_sec``
+        and retries. Loops until ``stop()`` is called or the proxy
+        returns 404 (v2 disabled / not supported).
+
+        Falls back to polling: if ``/lmrh/stream`` returns 404 (proxy
+        is older than v3.4.0), the method calls ``start()`` and
+        polls every ``DEFAULT_POLL_INTERVAL_SEC`` seconds, invoking
+        ``on_snapshot`` each time the snapshot's ETag changes. This
+        keeps callers' code path identical regardless of proxy version.
+
+        Args:
+            on_snapshot: callable invoked with each new ``Snapshot``.
+                Called once on connect with the initial state, then
+                again whenever the proxy pushes a new snapshot
+                (typically every 30-60s when state actually changes).
+            on_error: optional callable invoked with each exception
+                during the SSE read loop. Defaults to logging.
+            heartbeat_sec: passed as ``?heartbeat_sec=`` query to the
+                stream endpoint. Server emits a ``: ping`` every N
+                seconds to keep the connection alive through proxy
+                idle timeouts. Default 25 (matches the server's own
+                default). Range 10-120 enforced server-side.
+            reconnect_delay_sec: how long to wait before retrying
+                after a connection error. Default 5s.
+        """
+        if on_error is None:
+            def on_error(e: Exception) -> None:
+                logger.warning("lmrh stream error: %s", e)
+
+        # First: probe whether /lmrh/stream exists. If 404, fall back
+        # to polling so callers can use ``subscribe()`` regardless of
+        # proxy version.
+        try:
+            with httpx.Client(timeout=self.timeout) as probe_client:
+                probe = probe_client.get(
+                    f"{self.base_url}/.well-known/lmrh-config",
+                )
+            if probe.is_success:
+                endpoints = probe.json().get("endpoints") or {}
+                if "stream" not in endpoints:
+                    logger.info(
+                        "lmrh /stream not available at %s — falling back to polling",
+                        self.base_url,
+                    )
+                    return self._subscribe_via_polling(on_snapshot)
+        except Exception as e:
+            on_error(e)
+            # Probe failed — try the stream anyway; if it 404s we
+            # fall back below.
+
+        # Main loop: open SSE connection, parse frames, dispatch.
+        # On connection drop / server restart, sleep + reconnect.
+        url = f"{self.base_url}/lmrh/stream?heartbeat_sec={heartbeat_sec}"
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Accept": "text/event-stream",
+            "Cache-Control": "no-cache",
+        }
+        while not self._stop.is_set():
+            try:
+                self._sse_session(url, headers, on_snapshot)
+            except _StreamUnsupported:
+                logger.info(
+                    "lmrh /stream returned 404 at %s — falling back to polling",
+                    self.base_url,
+                )
+                return self._subscribe_via_polling(on_snapshot)
+            except Exception as e:
+                on_error(e)
+            if not self._stop.is_set():
+                # Avoid tight reconnect loop on persistent failures.
+                self._stop.wait(reconnect_delay_sec)
+
+    def _sse_session(
+        self,
+        url: str,
+        headers: dict,
+        on_snapshot: "Callable[[Snapshot], None]",
+    ) -> None:
+        """One SSE read loop. Returns on stream close or stop event.
+
+        Frames have the shape::
+
+            event: snapshot
+            id: f231cb9bf665f033
+            data: {"version":"2.1", ...}
+
+            : ping
+
+        We accumulate ``data:`` lines until a blank line separator,
+        then parse + dispatch. Heartbeats (``: ping``) are skipped.
+        """
+        # No timeout on httpx stream itself — we rely on the server's
+        # heartbeat (`: ping` every heartbeat_sec) to keep the
+        # connection alive. If the server stops emitting heartbeats
+        # the OS-level TCP keepalive eventually surfaces a connection
+        # error which the outer loop catches + reconnects.
+        with httpx.Client(timeout=None) as client:
+            with client.stream("GET", url, headers=headers) as resp:
+                if resp.status_code == 404:
+                    raise _StreamUnsupported()
+                if not resp.is_success:
+                    raise RuntimeError(
+                        f"lmrh stream HTTP {resp.status_code}"
+                    )
+                event_name = ""
+                data_buf: list[str] = []
+                for line in resp.iter_lines():
+                    if self._stop.is_set():
+                        return
+                    if not line:
+                        # Blank line = end of event frame
+                        if event_name == "snapshot" and data_buf:
+                            try:
+                                import json as _json
+                                payload = _json.loads("".join(data_buf))
+                                # ETag is the SSE ``id:`` field — but we
+                                # don't track it across the stream
+                                # session, the server emits a fresh
+                                # snapshot anyway. Use empty etag for
+                                # compat with _snapshot_from_dict.
+                                snap = _snapshot_from_dict(payload, etag="")
+                                with self._snap_lock:
+                                    self._snap = snap
+                                on_snapshot(snap)
+                            except Exception as e:
+                                logger.warning(
+                                    "lmrh stream frame parse failed: %s", e,
+                                )
+                        event_name = ""
+                        data_buf = []
+                        continue
+                    if line.startswith(":"):
+                        # Comment / heartbeat — ignore
+                        continue
+                    if line.startswith("event:"):
+                        event_name = line[len("event:"):].strip()
+                    elif line.startswith("data:"):
+                        # SSE allows multi-line ``data:`` per spec; accumulate
+                        data_buf.append(line[len("data:"):].lstrip())
+                    elif line.startswith("id:"):
+                        # We don't track event id across reconnects yet;
+                        # the server doesn't support Last-Event-ID resume
+                        # either, so this is informational only.
+                        pass
+
+    def _subscribe_via_polling(
+        self,
+        on_snapshot: "Callable[[Snapshot], None]",
+    ) -> None:
+        """Polling fallback for proxies older than v3.4.0 (no
+        ``/lmrh/stream``). Calls ``on_snapshot(snap)`` whenever the
+        ETag changes — same semantics as the SSE path so caller code
+        is identical regardless of proxy version."""
+        last_etag: Optional[str] = None
+        while not self._stop.is_set():
+            try:
+                new_etag = self._poll_once(last_etag)
+                if new_etag != last_etag and self._snap is not None:
+                    on_snapshot(self._snap)
+                last_etag = new_etag
+            except Exception as e:
+                logger.warning("lmrh poll fallback error: %s", e)
+            self._stop.wait(self.poll_interval)
 
     # ── Polling ──────────────────────────────────────────────────
 

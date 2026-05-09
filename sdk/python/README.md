@@ -54,6 +54,60 @@ for p in snap.providers:
 client.stop()  # on shutdown
 ```
 
+## SSE push (v3.5.2+) — `subscribe()`
+
+If the proxy is **v3.4.0 or newer**, you can use Server-Sent Events
+push semantics instead of polling. The proxy emits a fresh snapshot
+when its underlying state changes (max ~30s latency vs polling's
+60-90s) and a heartbeat (`: ping`) every 25 seconds to keep the
+connection alive through proxy idle timeouts.
+
+```python
+from lmrh_client import LmrhClient
+import threading
+
+client = LmrhClient(
+    base_url="https://www.voipguru.org/llm-proxy2",
+    api_key="llmp-...",
+)
+
+def on_snapshot(snap):
+    print(f"Got {len(snap.providers)} providers, etag={snap.etag}")
+    # ... your routing logic here ...
+
+# subscribe() blocks the calling thread; spawn it in a daemon
+# thread for non-blocking usage.
+threading.Thread(
+    target=lambda: client.subscribe(on_snapshot=on_snapshot),
+    daemon=True,
+).start()
+```
+
+**Auto-reconnect**: if the connection drops (network blip, proxy
+restart) the method waits `reconnect_delay_sec` (default 5s) and
+retries. Loops until `client.stop()` is called or the proxy returns
+a permanent 404.
+
+**Auto-fallback**: if the proxy is older than v3.4.0 (no
+`/lmrh/stream` endpoint), `subscribe()` transparently falls back
+to polling — same callback signature, same caller code. You get
+push when available, polling otherwise.
+
+**When to prefer SSE over `start()`**:
+- Freshest possible metrics (push latency ≈ 30s vs polling 60-90s)
+- Behind a flaky NAT / firewall: one long-lived connection is
+  often more reliable than many short polls
+- High-volume callers where rate-limit headroom on
+  `/lmrh/providers` is precious
+
+**When `start()` (polling) is still the right choice**:
+- Behind a strict corporate egress proxy that truncates long-lived
+  HTTP connections
+- Simpler error semantics (poll-failures don't require reconnect
+  logic in your callbacks)
+- Connecting to a proxy older than v3.4.0 (use `start()` directly
+  to skip the well-known probe round-trip on `subscribe()`)
+
 ## Design
 
 - **One polling thread per `LmrhClient` instance.** Polls
