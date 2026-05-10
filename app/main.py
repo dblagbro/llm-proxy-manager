@@ -42,6 +42,7 @@ from app.api.runs import router as runs_router
 from app.api.lmrh import router as lmrh_router
 from app.api.llm_models import router as llm_models_router
 from app.api.anthropic_billing import router as anthropic_billing_router
+from app.api.ai_rate_limiter import router as ai_rate_limiter_router
 from app.observability.otel import init_tracer
 from app.observability.prometheus import metrics_response, set_service_info, observe_circuit_breaker_state
 
