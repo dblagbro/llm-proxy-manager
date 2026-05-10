@@ -9,6 +9,39 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.7.x — Anthropic Console billing scrape (real account usage)
 
+### v3.7.16 — Persistent-auth-failure → DB auto-skip (#239) + config schema cleanup (#238)
+
+Surfaced via the 20-min proactive monitoring loop. Devin-Codex-Gmail's
+codex-oauth token expired earlier in the day; the existing in-memory
+CB protection opened a 24h hold-down but reset on each container
+restart (today saw v3.7.14 + v3.7.15 deploys). Result: every fresh
+container re-hit auth-fail-once, marked the CB, then restart wiped
+the state — repeat. Operators saw the persistent warning logs but no
+DB-persisted protective action.
+
+**Fix (#239)**: when a provider accumulates 3+ auth failures within a
+30-min window, ``record_auth_failure`` now ALSO writes
+``Provider.auto_skip_until = now + 24h`` + ``auto_skip_reason =
+"persistent_auth_failure"``. Survives restart (DB-persisted, replicates
+via the v3.7.15 cluster-sync gain). Idempotent: if the provider
+already has an auto_skip_until further out for a different reason
+(e.g. billing 100%), the new write is skipped rather than shortening
+the window. ``clear_auth_failure`` (called on admin re-auth) also
+clears the failure-history counter so the threshold resets cleanly.
+
+This is the first slice of the broader "AI-driven provider supervisor"
+backlog item — fixed-rule for now, queued as v3.8.x to mirror the
+v3.7.10 AI rate limiter on the provider side.
+
+**Cleanup (#238)**: ``config_runtime.SCHEMA`` entries for
+``semantic_cache_embedding_model`` + ``semantic_cache_provider_id``
+declared ``type='string'``, but pydantic reports ``'str'``. The
+mismatch fired a warning on every settings load. Harmonized to
+``'str'`` — silences two log lines per config load.
+
+Tests: +11 unit tests in ``test_v3716_persistent_auth_skip.py``.
+**1369/1369 pass.**
+
 ### v3.7.15 — Cluster sync for three v3.7.x tables (BUG-016) + cross-node IP-block cache invalidation (BUG-018) + AI rate limiter recursion guard (BUG-017)
 
 Closes the three open bugs from the v3.7.13 / v3.7.14 QA pass.

@@ -246,5 +246,8 @@ def test_admin_post_rearms_tombstoned_row():
 
 
 def test_version_bumped_to_3_7_15():
+    """v3.7.15 was the ship that introduced this file. We assert
+    >= rather than == so later bumps don't churn the test."""
     from app.__version__ import __version__
-    assert __version__ == "3.7.15"
+    parts = tuple(int(p) for p in __version__.split("."))
+    assert parts >= (3, 7, 15)
