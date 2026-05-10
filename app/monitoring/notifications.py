@@ -135,3 +135,45 @@ async def alert_cluster_node_down(node_id: str, node_url: str):
         f"The cluster is operating with reduced capacity.",
         throttle_key=f"node_down:{node_id}",
     )
+
+
+async def alert_anthropic_billing_auth_expired(
+    provider_name: str,
+    provider_id: str,
+    auth_state: str,
+    consecutive_failures: int,
+):
+    """v3.7.7 — fire an operator alert when the Anthropic Console billing
+    scraper hits a non-OK auth state for the second+ consecutive scrape.
+
+    First failure: log only (might be a transient Cloudflare interstitial
+    that clears on its own).
+    Second+ consecutive failure: send email alert. Operator needs to
+    re-capture cookies via the admin UI.
+
+    Throttle key is per-provider so multiple providers can have
+    independent reminders, but a single provider can't spam every
+    4 hours when cookies stay expired.
+    """
+    state_msg = {
+        "session_expired": "session cookies have expired (401/403 from Anthropic)",
+        "cf_blocked": "Cloudflare is challenging the scrape (cookies stale or fingerprint changed)",
+        "config_error": "billing credentials are misconfigured",
+        "network_error": "network error reaching claude.ai",
+        "parse_error": "Anthropic returned an unparseable response",
+        "http_error": "unexpected HTTP status from Anthropic",
+    }.get(auth_state, f"scrape failed with auth_state={auth_state}")
+    await send_alert(
+        "warning",
+        f"Anthropic billing scrape failing: {provider_name}",
+        (
+            f"The 4-hourly billing scrape for {provider_name} has failed "
+            f"{consecutive_failures} consecutive times: {state_msg}. "
+            "Auto-rotation decisions for this provider will degrade to "
+            "the proxy-internal slice until cookies are refreshed.\n\n"
+            "Re-capture session cookies from claude.ai DevTools and paste "
+            "via the Edit Provider → External Usage → Rotate cookies UI."
+        ),
+        provider_id=provider_id,
+        throttle_key=f"billing_auth:{provider_id}",
+    )
