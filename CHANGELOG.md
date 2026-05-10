@@ -9,6 +9,61 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.6.x — Model identity edit API (Hub #230)
 
+### v3.6.2 — Caller IP in activity log + api_key_id for joins
+
+Operator-set 2026-05-09 evening: every llm_request entry needs the
+source IP so incident-response / abuse-investigation / quota-by-IP
+queries are answerable from one table. Previously activity_log only
+had `api_key_prefix` (denormalized 2026-05-04 in v3.2.12); we now
+also add `api_key_id` (full id for cross-table joins) and `client_ip`
+(real caller, not the nginx container).
+
+- **`app/observability/request_context.py` (NEW)** — `ContextVar`-based
+  carrier for per-request side-channel data. `extract_client_ip_from_request`
+  prefers `X-Forwarded-For` first hop (we run behind nginx so the raw
+  socket peer is the nginx container), falls back to `X-Real-IP`, then
+  `request.client.host`. Defensive — never raises.
+- **`app/main.py:log_requests`** middleware — sets the contextvar at
+  request entry. Zero callsite churn vs threading a new parameter
+  through ~12 `record_outcome()` callers.
+- **`app/monitoring/helpers.py:record_outcome`** — both success and
+  error paths now add `client_ip` (when set) and `api_key_id` to the
+  activity_log meta dict.
+
+Probes (`api_key_prefix=probe-keepalive`) and other non-HTTP code
+paths run outside a request scope so the contextvar is empty and
+the IP field is omitted — `IS NULL` filters work cleanly.
+
+14 new unit tests covering XFF parsing, multi-hop chains, X-Real-IP
+fallback, malformed request objects, contextvar round-trip, and
+record_outcome wiring regression.
+
+### v3.6.1 — `X-Quality-Hint: thin-content` + 412 ETag header fix
+
+Two small but high-value fixes endorsed by the coordinator-hub team
+in their 2026-05-09 reply.
+
+- **`X-Quality-Hint: thin-content` header** (`app/api/_quality_hint.py`,
+  NEW). Defense-in-depth for the cookie-banner / thin-scrape pattern
+  surfaced in the proactive-monitoring sweep. Detects responses
+  matching the polite-refusal phrase set (cookie consent / footer
+  navigation / incomplete or corrupted / short-response with refusal
+  lead-in) and emits `X-Quality-Hint: thin-content; reason=<short>`.
+  Tuned for high specificity (low false positive) over recall — won't
+  trigger on legitimate refusals that happen to include "I appreciate".
+  Wired into both `/v1/messages` and `/v1/chat/completions` JSON return
+  paths (3 sites total). CORS-exposed.
+- **412 response ETag header fix** (`app/api/llm_models.py:update_model_identity`).
+  Pre-fix: `raise HTTPException(412, ...)` short-circuited any prior
+  `response.headers["ETag"]` mutation, so the 412 carried no fresh
+  ETag and callers had to GET-then-PUT. Now returns
+  `JSONResponse(status_code=412, headers={"ETag": ...})` so callers
+  can retry with one round-trip.
+
+23 new unit tests covering thin-content phrase matching, length-gating,
+defensive handling of malformed bodies, OpenAI/Anthropic shape
+extraction, and a regression check for the 412 fix.
+
 ### v3.6.0 — `PUT /api/llm/models/{model_id}` for cluster-wide identity edits
 
 Companion to the coordinator-hub task #230. Their hub UI now lets

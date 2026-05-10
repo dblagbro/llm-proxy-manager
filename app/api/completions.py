@@ -408,6 +408,9 @@ async def chat_completions(
                     content = openai_tool_response(tool_calls[0]["name"], tool_calls[0]["input"], route.litellm_model)
                 else:
                     content = openai_text_response(response_text, route.litellm_model)
+                # v3.6.1 — X-Quality-Hint for tool-emulation path
+                from app.api._quality_hint import merge_into_headers
+                merge_into_headers(resp_headers, content, endpoint="completions")
                 return JSONResponse(content=content, headers=resp_headers)
 
         # CoT-E engagement.
@@ -592,7 +595,11 @@ async def chat_completions(
             )
             if budget_total:
                 resp_headers["X-Token-Budget-Remaining"] = str(max(0, budget_total - out_tok))
-            return JSONResponse(content=result.model_dump(), headers=resp_headers)
+            # v3.6.1 — X-Quality-Hint thin-content detector
+            from app.api._quality_hint import merge_into_headers
+            _result_body = result.model_dump()
+            merge_into_headers(resp_headers, _result_body, endpoint="completions")
+            return JSONResponse(content=_result_body, headers=resp_headers)
 
     except Exception as e:
         err_str = str(e)

@@ -26,6 +26,7 @@ from __future__ import annotations
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -239,9 +240,17 @@ async def update_model_identity(
             "If-Match header required — fetch via GET first to capture the ETag",
         )
     if sent != expected:
-        response.headers["ETag"] = expected
-        raise HTTPException(
-            412, "ETag mismatch — refresh via GET and retry",
+        # v3.6.1 fix — return the fresh ETag in the 412 response so
+        # the caller can retry with one round-trip instead of two.
+        # Pre-fix: ``raise HTTPException(412, ...)`` short-circuits
+        # the ASGI middleware and any prior ``response.headers["ETag"]``
+        # mutation is dropped, so the 412 carried no fresh ETag and
+        # the caller had to GET-then-PUT. The hub team's flow already
+        # GET-refreshes, but spec drift was real.
+        return JSONResponse(
+            status_code=412,
+            content={"detail": "ETag mismatch — refresh via GET and retry"},
+            headers={"ETag": expected},
         )
 
     # Validation pre-flight (don't mutate any row until all checks pass)

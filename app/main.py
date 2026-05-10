@@ -263,12 +263,23 @@ app.add_middleware(
         "Link", "LMRH-Version", "LMRH-Hint-Echo",
         # v3.6.0 — model-identity edit endpoint concurrency + soft-warn
         "ETag", "X-Warning",
+        # v3.6.1 — thin-content detector hint (defense-in-depth for callers
+        # whose upstream content pipeline sometimes feeds the LLM junk)
+        "X-Quality-Hint",
     ],
 )
 
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
+    # v3.6.2 — capture client IP into a contextvar at request entry so
+    # record_outcome() can pick it up when emitting llm_request events.
+    # Behind nginx the raw socket peer is the nginx container; the real
+    # caller IP is in X-Forwarded-For. See observability/request_context.py.
+    from app.observability.request_context import (
+        set_client_ip, extract_client_ip_from_request,
+    )
+    set_client_ip(extract_client_ip_from_request(request))
     start = time.monotonic()
     response = await call_next(request)
     ms = int((time.monotonic() - start) * 1000)
