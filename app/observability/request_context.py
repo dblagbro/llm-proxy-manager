@@ -68,6 +68,13 @@ _client_ip: ContextVar[Optional[str]] = ContextVar("client_ip", default=None)
 _client_ip_inside: ContextVar[Optional[str]] = ContextVar(
     "client_ip_inside", default=None,
 )
+# v3.7.15 — BUG-017: tag for internal proxy callers (currently only the
+# AI rate limiter). When set, `record_outcome()` stamps the meta dict
+# and the AI rate limiter excludes those events from its next review
+# so it doesn't see (and re-amplify) its own previous calls.
+_internal_source: ContextVar[Optional[str]] = ContextVar(
+    "internal_source", default=None,
+)
 
 
 # v3.6.3 — DNS cache for the LAN-egress hostname rewrite. Map keys are
@@ -217,6 +224,19 @@ def extract_client_ip_from_request(request) -> Optional[str]:
     except Exception:
         pass
     return None
+
+
+def set_internal_source(source: Optional[str]) -> None:
+    """v3.7.15 — tag a request as internally-generated (e.g. from the
+    AI rate limiter) so its activity-log row carries that label and
+    later sweeps can exclude it. Pass ``None`` to clear."""
+    _internal_source.set(source or None)
+
+
+def get_internal_source() -> Optional[str]:
+    """v3.7.15 — read the current internal-source tag, or None if the
+    request is from an external caller."""
+    return _internal_source.get()
 
 
 def _clear_dns_cache_for_tests() -> None:

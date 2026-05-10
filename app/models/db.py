@@ -349,6 +349,13 @@ class BlockedIp(Base):
     reason = Column(String, nullable=True)
     added_at = Column(DateTime, server_default=func.now())
     added_by = Column(String, nullable=True)
+    # v3.7.15 — soft-delete tombstone for cluster-sync propagation. The
+    # admin-DELETE endpoint sets ``deleted_at`` rather than hard-deleting
+    # so peer nodes can learn about the removal on next sync push. The
+    # middleware filters ``deleted_at IS NULL`` so tombstoned rows
+    # don't block traffic. A periodic janitor (or manual op) can hard-
+    # delete tombstoned rows older than N days.
+    deleted_at = Column(DateTime, nullable=True, index=True)
 
 
 class User(Base):

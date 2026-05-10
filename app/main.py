@@ -316,9 +316,15 @@ async def log_requests(request: Request, call_next):
     # Behind nginx the raw socket peer is the nginx container; the real
     # caller IP is in X-Forwarded-For. See observability/request_context.py.
     from app.observability.request_context import (
-        set_client_ip, extract_client_ip_from_request,
+        set_client_ip, extract_client_ip_from_request, set_internal_source,
     )
     set_client_ip(extract_client_ip_from_request(request))
+    # v3.7.15 — BUG-017: tag internally-generated traffic (currently
+    # only the AI rate limiter) so its activity rows can be excluded
+    # from the next review cycle. Header is set by the internal caller,
+    # never by external clients (cosmetic only — review logic still
+    # filters defensively).
+    set_internal_source(request.headers.get("x-internal-source"))
     start = time.monotonic()
     response = await call_next(request)
     ms = int((time.monotonic() - start) * 1000)
