@@ -9,6 +9,39 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.6.x — Model identity edit API (Hub #230)
 
+### v3.6.3 — LAN-egress IP rewrite (hairpin NAT visibility)
+
+When a LAN host calls the proxy via the public URL, the LAN router
+NATs the TCP source to the gateway IP (e.g. `192.168.18.1`) and the
+actual public egress IP is invisible at the HTTP layer (the LAN
+router does IP NAT, not application-layer header injection). The
+v3.6.2 capture surfaced this as `client_ip = 192.168.18.1` for all
+LAN-side traffic — useless for attribution.
+
+- **`client_ip_lan_resolve_map` setting** (`app/config.py`) — operator
+  declares `{"<inside-gateway-ip>": "<resolvable-hostname>"}`. The
+  hostname's A record reflects the LAN's current public IP. Default
+  empty (no rewriting) — opt-in per deploy.
+- **DNS resolution with 5-min TTL cache** (`app/observability/request_context.py:_resolve_cached`).
+  Threading-safe module-level cache. Failed lookups also cached so a
+  misconfigured hostname doesn't burn DNS on every request. Operator
+  ISP-rotated IPs picked up within 5 minutes of change.
+- **`prewarm_lan_egress_dns()`** called from FastAPI startup so the
+  first request after a deploy doesn't pay sync DNS cost in the
+  middleware hot path.
+- **`client_ip_inside`** new field in activity_log meta — only emitted
+  when the rewrite was a no-op-difference (i.e., when the inside IP
+  differs from the post-rewrite public IP). Preserves the raw IP for
+  diagnostics without doubling storage on rows where it's identical.
+
+`docker-compose.yml` on tmrwww01 wired with
+`CLIENT_IP_LAN_RESOLVE_MAP={"192.168.18.1": "ip.voipguru.org"}`. tmrwww02
+and GCP can stay default-empty (they don't see this hairpin chain).
+
+16 new unit tests covering DNS cache TTL, NXDOMAIN cache, fallback to
+inside-IP on resolution failure, prewarm idempotency, and the
+record_outcome wiring guard.
+
 ### v3.6.2 — Caller IP in activity log + api_key_id for joins
 
 Operator-set 2026-05-09 evening: every llm_request entry needs the

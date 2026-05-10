@@ -215,6 +215,15 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"lmrh snapshot loop failed to start: {e}")
 
+    # v3.6.3 — warm the LAN-egress DNS cache so the first request
+    # after startup doesn't pay sync DNS cost in the middleware hot
+    # path. No-op if the rewrite map is empty.
+    try:
+        from app.observability.request_context import prewarm_lan_egress_dns
+        prewarm_lan_egress_dns()
+    except Exception as e:
+        logger.warning(f"lan_egress_dns_prewarm failed: {e}")
+
     logger.info("llm-proxy v2 started port=%s cluster=%s", settings.port, settings.cluster_enabled)
     yield
     logger.info("llm-proxy v2 shutting down")

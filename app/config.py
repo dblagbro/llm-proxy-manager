@@ -194,6 +194,27 @@ class Settings(BaseSettings):
     activity_log_capture_bodies: bool = Field(False, alias="ACTIVITY_LOG_CAPTURE_BODIES")
     activity_log_max_body_chars: int = Field(4000, alias="ACTIVITY_LOG_MAX_BODY_CHARS")
 
+    # v3.6.3 — LAN-egress IP rewrite map.
+    # When the proxy is hairpin-NAT'd from inside a LAN, nginx sees the
+    # LAN gateway IP (e.g. 192.168.18.1) as the source — the actual
+    # public egress IP is invisible at the HTTP layer. For each known
+    # internal gateway, declare a hostname whose A record reflects the
+    # LAN's current public IP; the proxy resolves it (TTL-cached at
+    # 300s) and substitutes the public IP in the activity log's
+    # ``client_ip`` field. The original inside IP is preserved as
+    # ``client_ip_inside`` for diagnostics.
+    #
+    # Example:
+    #   client_ip_lan_resolve_map = {"192.168.18.1": "ip.voipguru.org"}
+    #
+    # Empty (default) → no rewriting; ``client_ip`` is whatever XFF
+    # reported. See ``app/observability/request_context.py`` for the
+    # resolve logic.
+    client_ip_lan_resolve_map: dict[str, str] = Field(
+        default_factory=dict,
+        alias="CLIENT_IP_LAN_RESOLVE_MAP",
+    )
+
     # v3.0.98 → v3.1.2 — cluster-sync catalog-table replication.
     #
     # v3.0.96 added ModelCapability/ModelAlias/OAuthCaptureProfile to every
