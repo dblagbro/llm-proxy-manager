@@ -992,6 +992,15 @@ def _serialize(p: Provider) -> dict:
         "usage_session_limit_tokens": p.usage_session_limit_tokens,
         "usage_weekly_limit_tokens": p.usage_weekly_limit_tokens,
         "usage_rotation_threshold_pct": p.usage_rotation_threshold_pct,
+        # v3.7.0/v3.7.1 — external billing scrape + auto-rotation
+        # diagnostic surface. Operator UI / admin endpoints show
+        # whether the provider is currently in an auto-skip window
+        # and why. Cookies themselves are NEVER surfaced.
+        "anthropic_org_uuid": p.anthropic_org_uuid,
+        "has_anthropic_session_cookies": bool(p.anthropic_session_cookies),
+        "anthropic_session_captured_at": p.anthropic_session_captured_at,
+        "auto_skip_until": utc_iso(p.auto_skip_until) if p.auto_skip_until else None,
+        "auto_skip_reason": p.auto_skip_reason,
     }
 
 
