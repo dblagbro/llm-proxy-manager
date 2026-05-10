@@ -5,9 +5,23 @@ providers, and settings received from peer nodes during cluster synchronisation.
 """
 import logging
 import time
+from datetime import datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+
+
+def _parse_iso_or_none(v):
+    """Module-level ISO parse helper (mirror of the local one in
+    apply_payload). Used by v3.7.3 provider-insert path."""
+    if not v:
+        return None
+    if isinstance(v, str):
+        try:
+            return datetime.fromisoformat(v.replace("Z", "+00:00"))
+        except Exception:
+            return None
+    return v
 
 from app.models.db import User, ApiKey, Provider, SystemSetting
 
@@ -260,6 +274,27 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
                     existing.oauth_refresh_token = p_data["oauth_refresh_token"]
                 if "oauth_expires_at" in p_data:
                     existing.oauth_expires_at = p_data["oauth_expires_at"]
+                # v3.7.3 — Anthropic billing scrape + auto-rotation
+                # fields. Membership-test so an empty/null from a
+                # peer correctly overwrites a stale local value.
+                # ``anthropic_session_cookies`` is INTENTIONALLY not
+                # synced (auth material stays on the capture node).
+                if "anthropic_org_uuid" in p_data:
+                    existing.anthropic_org_uuid = p_data.get("anthropic_org_uuid")
+                if "anthropic_session_captured_at" in p_data:
+                    existing.anthropic_session_captured_at = p_data.get("anthropic_session_captured_at")
+                if "auto_skip_until" in p_data:
+                    val = p_data.get("auto_skip_until")
+                    from datetime import datetime
+                    if val:
+                        try:
+                            existing.auto_skip_until = datetime.fromisoformat(val.replace("Z", "+00:00"))
+                        except Exception:
+                            existing.auto_skip_until = None
+                    else:
+                        existing.auto_skip_until = None
+                if "auto_skip_reason" in p_data:
+                    existing.auto_skip_reason = p_data.get("auto_skip_reason")
                 if peer_updated_at:
                     existing.updated_at = peer_updated_at
                 # v3.0.11: preserve peer's user-edit timestamp so further
@@ -292,6 +327,12 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
             daily_budget_usd=p_data.get("daily_budget_usd"),
             oauth_refresh_token=p_data.get("oauth_refresh_token"),
             oauth_expires_at=p_data.get("oauth_expires_at"),
+            # v3.7.3 — billing-scrape + auto-rotation fields. Cookies
+            # are intentionally not synced (stay on the capture node).
+            anthropic_org_uuid=p_data.get("anthropic_org_uuid"),
+            anthropic_session_captured_at=p_data.get("anthropic_session_captured_at"),
+            auto_skip_until=_parse_iso_or_none(p_data.get("auto_skip_until")),
+            auto_skip_reason=p_data.get("auto_skip_reason"),
             last_user_edit_at=peer_user_edit_at,
         )
         db.add(p)
