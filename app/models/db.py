@@ -326,6 +326,11 @@ class ApiKeyAiReview(Base):
     prior_rate_limit_rpm = Column(Integer, nullable=True)  # for revert
     reverted_at = Column(DateTime, nullable=True)
     dismissed_at = Column(DateTime, nullable=True)
+    # v3.7.12 — when verdict == "block_ip", the LLM names the
+    # specific IP it thinks should be blocked. Stored here so the
+    # ``apply`` endpoint knows which IP to insert into
+    # ``blocked_ips`` and ``revert`` knows which one to remove.
+    suggested_block_ip = Column(String, nullable=True)
 
 
 class BlockedIp(Base):

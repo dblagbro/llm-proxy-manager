@@ -89,6 +89,9 @@ def compute_stats(events: list[dict]) -> dict:
       - p50/p95 input tokens, output tokens, latency
       - cost-class distribution (subscription / per_call)
       - prompt-size variance pct
+    v3.7.12 — top source IPs by request count (max 5). Lets the LLM
+    recommend a specific ``verdict=block_ip`` when one source IP is
+    the abuser and the rest of the key's traffic is legitimate.
     """
     out: dict = {
         "total_requests": len(events),
@@ -105,10 +108,12 @@ def compute_stats(events: list[dict]) -> dict:
         "p95_latency_ms": None,
         "cost_class_dist": {},
         "prompt_size_variance_pct": None,
+        "top_source_ips": {},  # v3.7.12 — {ip: count} top 5
     }
     if not events:
         return out
     ips: set = set()
+    ip_counts: dict = {}  # v3.7.12 — for top_source_ips
     models: set = set()
     in_toks: list[float] = []
     out_toks: list[float] = []
@@ -123,6 +128,7 @@ def compute_stats(events: list[dict]) -> dict:
         ip = md.get("client_ip")
         if ip:
             ips.add(ip)
+            ip_counts[ip] = ip_counts.get(ip, 0) + 1
         m = md.get("model")
         if m:
             models.add(m)
@@ -139,6 +145,10 @@ def compute_stats(events: list[dict]) -> dict:
     out["error_count"] = errors
     out["unique_ips"] = len(ips)
     out["unique_models"] = len(models)
+    # v3.7.12 — top-5 source IPs by request count, sorted desc
+    out["top_source_ips"] = dict(
+        sorted(ip_counts.items(), key=lambda kv: kv[1], reverse=True)[:5]
+    )
     # Time-window for rate calc: span between first and last event
     try:
         timestamps = sorted([e.get("timestamp", "") for e in events if e.get("timestamp")])
@@ -194,6 +204,11 @@ def pick_sample_previews(events: list[dict], n: int = 3) -> list[str]:
 
 def build_prompt(stats: dict, samples: list[str], api_key_name: str) -> str:
     samples_block = "\n".join(f"  - {s!r}" for s in samples) if samples else "  (none captured)"
+    top_ips = stats.get('top_source_ips') or {}
+    if top_ips:
+        ips_block = "\n".join(f"  - {ip}: {n} requests" for ip, n in top_ips.items())
+    else:
+        ips_block = "  (no source IPs captured — may be internal traffic)"
     return f"""You are a rate-limit analyst for an LLM proxy. Review the
 following 30-minute activity summary for ONE API key and classify
 whether the traffic pattern suggests legitimate use, abuse, or
@@ -213,6 +228,9 @@ Activity summary:
 - Cost class distribution: {stats.get('cost_class_dist')}
 - Prompt-size variance (coefficient of variation): {stats.get('prompt_size_variance_pct')}%
 
+Top source IPs (by request count):
+{ips_block}
+
 Sample request previews (redacted):
 {samples_block}
 
@@ -220,10 +238,12 @@ Classify into exactly one of:
 - "normal" — healthy pattern, no concern
 - "watch" — slightly elevated, keep observing
 - "throttle" — suspicious (sudden spike, abusive prompts, error storms) — recommend lowering rate_limit_rpm to the configured throttle floor
-- "block" — clear abuse — recommend disabling the key
+- "block_ip" — ONE specific source IP is the abuser, the rest of the key's traffic is legitimate — recommend blocking just that IP. Pick the IP from the "Top source IPs" list above.
+- "block" — clear key-wide abuse — recommend disabling the entire key
 
 Reply ONLY with valid JSON (no markdown, no preamble):
-{{"verdict": "normal|watch|throttle|block", "reasoning": "<2-3 sentences>"}}"""
+- For normal/watch/throttle/block: {{"verdict": "...", "reasoning": "<2-3 sentences>"}}
+- For block_ip (REQUIRES ip field): {{"verdict": "block_ip", "ip": "<one of the top IPs>", "reasoning": "<...>"}}"""
 
 
 def parse_llm_response(text: str) -> Optional[dict]:
@@ -255,6 +275,8 @@ def _verdict_to_action(verdict: str) -> str:
         return "throttle_rpm"
     if verdict == "block":
         return "disable"
+    if verdict == "block_ip":
+        return "block_ip"
     return "none"
 
 
@@ -342,8 +364,18 @@ async def review_one_key(db, api_key, window_min: int = DEFAULT_WINDOW_MIN) -> O
     if classification is None:
         return None
     verdict = (classification.get("verdict") or "").strip().lower()
-    if verdict not in ("normal", "watch", "throttle", "block"):
+    if verdict not in ("normal", "watch", "throttle", "block", "block_ip"):
         verdict = "watch"  # treat parser garbage as cautious-watch
+    # v3.7.12 — block_ip needs a valid IP from the top_source_ips list,
+    # else demote to "watch" to avoid acting on a hallucinated IP.
+    suggested_block_ip: Optional[str] = None
+    if verdict == "block_ip":
+        candidate = (classification.get("ip") or "").strip()
+        top_ips = (stats.get("top_source_ips") or {})
+        if candidate and candidate in top_ips:
+            suggested_block_ip = candidate
+        else:
+            verdict = "watch"  # LLM didn't name a valid IP — don't act
     suggested = _verdict_to_action(verdict)
     review = ApiKeyAiReview(
         api_key_id=api_key.id,
@@ -352,6 +384,7 @@ async def review_one_key(db, api_key, window_min: int = DEFAULT_WINDOW_MIN) -> O
         llm_reasoning=classification.get("reasoning", "")[:2000],
         suggested_action=suggested,
         stats_summary=stats,
+        suggested_block_ip=suggested_block_ip,
     )
     db.add(review)
     await db.flush()  # populate review.id
@@ -387,9 +420,31 @@ async def _apply_suggestion(db, api_key, review, floor_rpm: int):
         api_key.rate_limit_rpm = floor_rpm
     elif review.suggested_action == "disable":
         api_key.enabled = False
+    elif review.suggested_action == "block_ip":
+        # v3.7.12 — insert into blocked_ips. Idempotent: if the IP is
+        # already blocked we don't create a duplicate row (sqlalchemy
+        # would raise on the PK violation otherwise).
+        from app.models.db import BlockedIp
+        from sqlalchemy import select
+        ip = review.suggested_block_ip
+        if ip:
+            rs = await db.execute(select(BlockedIp).where(BlockedIp.ip == ip))
+            if rs.scalar_one_or_none() is None:
+                db.add(BlockedIp(
+                    ip=ip,
+                    reason=f"AI rate limiter: {review.llm_reasoning or '(no reasoning)'}",
+                    added_by=f"ai-rate-limiter (review {review.id})",
+                ))
+            # Invalidate the middleware cache on this node
+            try:
+                from app.middleware.ip_block import _clear_cache_for_tests
+                _clear_cache_for_tests()
+            except Exception:
+                pass
     logger.warning(
-        "ai_rate_limiter.applied verdict=%s key_id=%s prior_rpm=%s",
+        "ai_rate_limiter.applied verdict=%s key_id=%s prior_rpm=%s block_ip=%s",
         review.llm_verdict, api_key.id, review.prior_rate_limit_rpm,
+        review.suggested_block_ip,
     )
 
 
