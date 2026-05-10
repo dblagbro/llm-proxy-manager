@@ -178,6 +178,13 @@ async def init_db():
             # priority/enabled fields.
             "ALTER TABLE providers ADD COLUMN auto_skip_until DATETIME",
             "ALTER TABLE providers ADD COLUMN auto_skip_reason TEXT",
+            # v3.7.10 — proactive AI rate limiter. The new
+            # ``api_key_ai_review`` table is created via
+            # Base.metadata.create_all; no Provider columns here.
+            # ApiKey doesn't need new columns either — we read its
+            # existing rate_limit_rpm and write back to it when
+            # auto-applying a throttle suggestion. (prior_rate_limit_rpm
+            # is stored on the review row for revert.)
         ]:
             try:
                 await conn.exec_driver_sql(stmt)

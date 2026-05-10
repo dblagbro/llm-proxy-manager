@@ -289,6 +289,45 @@ class ApiKey(Base):
     lmrh_quotes_rpm = Column(Integer, nullable=True)
 
 
+class ApiKeyAiReview(Base):
+    """v3.7.10 — operator-requested proactive rate limiter. A background
+    worker scans recent activity for each api_key every 5 min, computes
+    a stats summary, sends it to an LLM for classification, and writes
+    a row here. Operator reviews via admin endpoints (suggest-only by
+    default; ``ai_rate_limiter_auto_apply=True`` flips to auto-action).
+
+    Verdict enum:
+      - ``normal``     — healthy traffic pattern; no action
+      - ``watch``      — slightly elevated; record but don't act
+      - ``throttle``   — recommend lowering ``rate_limit_rpm`` to floor
+      - ``block``      — recommend disabling the key entirely
+
+    Suggested-action enum:
+      - ``none``           — verdict is normal/watch; just log
+      - ``throttle_rpm``   — lower rate_limit_rpm to throttle_floor
+      - ``disable``        — set enabled=False (requires operator unblock)
+
+    When ``applied_at`` is set, the suggestion was applied (manually or
+    auto). ``prior_rate_limit_rpm`` lets us revert to the operator-set
+    value when the throttle is lifted.
+    """
+    __tablename__ = "api_key_ai_review"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    api_key_id = Column(String, ForeignKey("api_keys.id"), nullable=False, index=True)
+    captured_at = Column(DateTime, server_default=func.now(), index=True)
+    llm_model = Column(String, nullable=True)  # which model was called for classification
+    llm_verdict = Column(String, nullable=False)
+    llm_reasoning = Column(Text, nullable=True)
+    suggested_action = Column(String, nullable=False, default="none")
+    stats_summary = Column(JSON, nullable=True)  # dict of input stats — for diagnostics
+    # Lifecycle: applied / dismissed / reverted
+    applied_at = Column(DateTime, nullable=True)
+    applied_action = Column(String, nullable=True)
+    prior_rate_limit_rpm = Column(Integer, nullable=True)  # for revert
+    reverted_at = Column(DateTime, nullable=True)
+    dismissed_at = Column(DateTime, nullable=True)
+
+
 class User(Base):
     __tablename__ = "users"
 
