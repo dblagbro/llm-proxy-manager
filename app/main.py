@@ -235,6 +235,15 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"anthropic_billing_worker failed to start: {e}")
 
+    # v3.7.10 — proactive AI rate limiter. Default disabled
+    # (ai_rate_limiter_enabled=False); worker no-ops when disabled so
+    # safe to always start. Opt-in per node per operator Q6.
+    try:
+        from app.monitoring import ai_rate_limiter as _ai_rl
+        _ai_rl.start()
+    except Exception as e:
+        logger.warning(f"ai_rate_limiter failed to start: {e}")
+
     logger.info("llm-proxy v2 started port=%s cluster=%s", settings.port, settings.cluster_enabled)
     yield
     logger.info("llm-proxy v2 shutting down")
@@ -364,6 +373,7 @@ app.include_router(runs_router)
 app.include_router(lmrh_router)
 app.include_router(llm_models_router)
 app.include_router(anthropic_billing_router)
+app.include_router(ai_rate_limiter_router)
 # v3.3.0: LMRHv2 endpoints (feature-flagged via lmrh_v2_enabled).
 # Same /lmrh/* prefix as v1; new paths don't collide with existing ones.
 from app.api.lmrh_v2 import router as lmrh_v2_router  # noqa: E402

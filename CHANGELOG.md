@@ -9,6 +9,78 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.7.x — Anthropic Console billing scrape (real account usage)
 
+### v3.7.10 — Proactive AI rate limiter (operator-requested Q5)
+
+Closes operator Q5 from the 2026-05-10 LMRHv2 design discussion:
+
+> we need an ai built into the proxy that itself reviews this and
+> proactively makes suggestions - so default to a loose rate limit
+> but then that AI should analyze rates and the traffic it is using
+> and if there's red flags; proactively slow that api key's usage
+> or it's source ip.
+
+**Architecture**: background worker (`app/monitoring/ai_rate_limiter.py`)
+runs every `ai_rate_limiter_interval_sec` (default 300s = 5min) and
+for each enabled api_key with recent traffic:
+
+1. Pulls last 30 min of activity_log
+2. Computes a structured stats summary (req-rate, error-rate, latency
+   p50/p95, IP variance, model variance, prompt-size variance, etc.)
+3. Picks 2-3 sample `request_preview` snippets, redacted of any
+   token-shaped strings (sk-ant-, sk-, llmp-, AIza patterns)
+4. Builds a prompt and calls the configured model via the proxy
+   itself (`http://localhost:3000/v1/messages`) — reuses our routing
+   logic, shows up in our own activity log transparently
+5. Parses verdict: `normal` / `watch` / `throttle` / `block`
+6. Writes an `ApiKeyAiReview` row with verdict + reasoning + stats
+7. If `ai_rate_limiter_auto_apply=True` AND verdict in
+   `{throttle, block}`: applies the action (lower rate_limit_rpm to
+   floor, or set enabled=False) and records prior values for revert
+
+**New table** `api_key_ai_review` — full lifecycle tracking:
+`captured_at` / `llm_verdict` / `llm_reasoning` / `suggested_action`
+/ `applied_at` / `applied_action` / `prior_rate_limit_rpm` /
+`reverted_at` / `dismissed_at`.
+
+**Defaults per operator Q5/Q6 decisions**:
+- `ai_rate_limiter_enabled=False` — opt-in per node
+- `ai_rate_limiter_auto_apply=False` — suggest-only until operator
+  validates verdicts on real traffic
+- `ai_rate_limiter_interval_sec=300` — 5min cadence
+- `ai_rate_limiter_throttle_floor_rpm=5` — floor when applied
+- `ai_rate_limiter_model="claude-haiku-4-5-20251001"` — Haiku for cost
+- `ai_rate_limiter_internal_api_key=None` — operator generates a
+  dedicated key and sets via env. Worker no-ops without it.
+
+**New admin endpoints** (`app/api/ai_rate_limiter.py`):
+- `GET /api/keys/{id}/ai-reviews` — list recent reviews newest-first
+- `POST /api/keys/{id}/ai-reviews/{review_id}/dismiss` — mark
+  false-positive (doesn't undo auto-applied actions)
+- `POST /api/keys/{id}/ai-reviews/{review_id}/apply` — force-apply
+  the suggestion now (manual path when auto_apply=False)
+- `POST /api/keys/{id}/ai-reviews/{review_id}/revert` — undo an
+  applied action; restores prior `rate_limit_rpm` or re-enables key
+
+**Security**: sample previews are redacted of token-shaped strings
+before being sent to the LLM (`sk-ant-`, `sk-`, `llmp-`, `AIza` prefix
+patterns, plus `"api_key": "..."` JSON snippets). The LLM never sees
+raw cookies or full request bodies — only aggregate stats + redacted
+~300-char snippets.
+
+**IP blocking deferred to v3.7.11** per operator Q5 scope — we'd
+need new middleware infrastructure to enforce IP blocks. v3.7.10 is
+focused on the api_key-level controls.
+
+**Worker safety**:
+- Wrapped in try/except per-key so one bad key doesn't break the
+  whole sweep
+- 60-second poll when disabled (cheap)
+- Bounded 2000-row activity-log fetch per key (memory cap)
+- Garbage verdict from the LLM gets coerced to "watch" (cautious
+  fallback, not "normal")
+
+32 new unit tests. **1278 → 1310 passing**.
+
 ### v3.7.9 — LMRH v2 subscription_quota uses authoritative Anthropic snapshot
 
 Closes the Q4 follow-up from the operator's LMRHv2 decisions

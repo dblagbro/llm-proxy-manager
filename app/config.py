@@ -245,6 +245,32 @@ class Settings(BaseSettings):
         25.0, alias="EXTERNAL_ROTATION_UTIL_BUCKET_PCT",
     )
 
+    # v3.7.10 — proactive AI rate limiter (operator-requested 2026-05-10).
+    # A background worker reviews each api_key's last 30 min of traffic
+    # every interval_sec and asks an LLM whether the pattern looks
+    # normal/watch/throttle/block. Default OFF (opt-in per node per
+    # operator Q6). When enabled but auto_apply=False (default),
+    # suggestions are only recorded — operator reviews + applies via
+    # the admin endpoint. Set auto_apply=True for hands-off operation
+    # once you trust the model's judgement.
+    ai_rate_limiter_enabled: bool = Field(False, alias="AI_RATE_LIMITER_ENABLED")
+    ai_rate_limiter_interval_sec: int = Field(300, alias="AI_RATE_LIMITER_INTERVAL_SEC")
+    ai_rate_limiter_window_min: int = Field(30, alias="AI_RATE_LIMITER_WINDOW_MIN")
+    ai_rate_limiter_model: str = Field(
+        "claude-haiku-4-5-20251001", alias="AI_RATE_LIMITER_MODEL",
+    )
+    ai_rate_limiter_throttle_floor_rpm: int = Field(
+        5, alias="AI_RATE_LIMITER_THROTTLE_FLOOR_RPM",
+    )
+    ai_rate_limiter_auto_apply: bool = Field(False, alias="AI_RATE_LIMITER_AUTO_APPLY")
+    # Internal api_key the worker uses to call /v1/messages for classification.
+    # Operator creates a low-privilege key + sets this — without it the
+    # worker no-ops cleanly. Self-issued to avoid recursion through OAuth
+    # rotation logic.
+    ai_rate_limiter_internal_api_key: Optional[str] = Field(
+        None, alias="AI_RATE_LIMITER_INTERNAL_API_KEY",
+    )
+
     # v3.0.98 → v3.1.2 — cluster-sync catalog-table replication.
     #
     # v3.0.96 added ModelCapability/ModelAlias/OAuthCaptureProfile to every
