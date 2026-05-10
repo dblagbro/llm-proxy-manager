@@ -165,13 +165,25 @@ def test_prewarm_doesnt_crash_on_dns_error():
 
 
 def test_record_outcome_emits_client_ip_inside_only_when_different():
-    """Source-level check that the meta dict only carries
-    ``client_ip_inside`` when the rewrite actually happened — no
-    point doubling the storage cost on rows where the IP is the same."""
-    import inspect
-    from app.monitoring import helpers
-    src = inspect.getsource(helpers.record_outcome)
-    # Both success and error paths should reference get_client_ip_inside
-    assert src.count("get_client_ip_inside") >= 2
+    """The meta dict only carries ``client_ip_inside`` when the
+    rewrite actually happened — no point doubling the storage cost
+    on rows where the IP is the same.
+
+    v3.7.13 R5: the IP-attach is now in the shared
+    ``_attach_client_ip`` helper. Both branches still see it via
+    ``_build_event_meta_base``, but the "only emit when different"
+    guard lives in the helper, not the function body.
+    """
+    from pathlib import Path
+    src = Path("app/monitoring/helpers.py").read_text()
+    # Helper exists and reads both ip variants
+    assert "def _attach_client_ip" in src
+    assert "get_client_ip_inside" in src
     # The "only emit when different" guard
     assert "client_ip_inside != client_ip" in src
+    # Both record_outcome branches go through _build_event_meta_base
+    # (which calls _attach_client_ip).
+    import inspect
+    from app.monitoring import helpers
+    fn_src = inspect.getsource(helpers.record_outcome)
+    assert fn_src.count("_build_event_meta_base") >= 2

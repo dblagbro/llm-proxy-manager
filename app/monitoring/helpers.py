@@ -156,6 +156,111 @@ def _extract_preview(body: Any, max_chars: int = 240) -> Optional[str]:
     return None
 
 
+def _attach_client_ip(meta: dict) -> None:
+    """v3.7.13 R5 — mutate ``meta`` to add ``client_ip`` and (when
+    different) ``client_ip_inside`` from the per-request contextvar.
+
+    Pre-R5 this 12-line try/except was inlined into BOTH branches of
+    ``record_outcome`` (success + error), so every change to the IP
+    capture model (v3.6.2 add, v3.6.3 LAN-egress rewrite split) had
+    to land twice. One place now.
+
+    Defensive: never raises. Failure to read the contextvar means the
+    activity-log row lacks IP fields but the rest of the event still
+    lands — better than a 500 on the log path.
+    """
+    try:
+        from app.observability.request_context import (
+            get_client_ip, get_client_ip_inside,
+        )
+        client_ip = get_client_ip()
+        client_ip_inside = get_client_ip_inside()
+        if client_ip:
+            meta["client_ip"] = client_ip
+        # Only emit inside-ip when it differs from public — avoids
+        # doubling storage on rows where the rewrite was a no-op.
+        if client_ip_inside and client_ip_inside != client_ip:
+            meta["client_ip_inside"] = client_ip_inside
+    except Exception:
+        pass
+
+
+def _build_event_meta_base(
+    *,
+    model: str,
+    provider_name: Optional[str],
+    api_key_prefix: Optional[str],
+    key_record_id: str,
+    is_subscription: bool,
+    is_probe: bool,
+    requested_model: Optional[str],
+    had_lmrh_hint: bool,
+    lmrh_hint_raw: Optional[str],
+    lmrh_warnings: Optional[list[str]],
+) -> dict:
+    """v3.7.13 R5 — build the branch-agnostic activity-log meta dict.
+
+    Both the success and error branches of ``record_outcome`` need
+    the same identifying fields (provider_name, api_key_prefix +
+    api_key_id, served_model with prefix stripped, cost_class,
+    client_ip pair) plus the same set of optional caller-hint fields
+    (requested_model, had_lmrh_hint, lmrh_hint, lmrh_warnings, probe).
+
+    Branches add their own fields on top of the base dict returned
+    here. Anything that's structurally identical between success and
+    failure events lives in this helper.
+    """
+    # v3.0.41: served_model is the BARE slug (litellm prefix stripped)
+    # so client-side substitution-detection compares apples to apples.
+    served_normalized = model.split("/", 1)[1] if "/" in model else model
+    meta: dict = {
+        "model": model,                       # legacy — litellm-prefixed
+        "served_model": served_normalized,    # v3.0.41: bare slug for fair compare
+        "provider_name": provider_name,
+        "api_key_prefix": api_key_prefix,     # v3.2.12: caller attribution
+        "api_key_id": key_record_id,          # v3.6.2: full id for cross-table joins
+        "cost_class": "subscription" if is_subscription else "per_call",
+    }
+    _attach_client_ip(meta)
+    if requested_model:
+        meta["requested_model"] = requested_model
+    if had_lmrh_hint:
+        meta["had_lmrh_hint"] = True
+    if lmrh_hint_raw:
+        meta["lmrh_hint"] = lmrh_hint_raw[:500]
+    if lmrh_warnings:
+        meta["lmrh_warnings"] = list(lmrh_warnings)
+    if is_probe:
+        meta["probe"] = True
+    return meta
+
+
+async def _emit_outcome_event(
+    db: AsyncSession,
+    *,
+    is_probe: bool,
+    severity: str,
+    msg: str,
+    meta: dict,
+    provider_id: str,
+    key_record_id: str,
+) -> None:
+    """v3.7.13 R5 — wrap the ``log_event`` call shared by both branches.
+
+    Encapsulates the v3.3.4 event_type split (keepalive_probe vs
+    llm_request) so the same gate doesn't have to live in two places.
+    """
+    await log_event(
+        db,
+        event_type="keepalive_probe" if is_probe else "llm_request",
+        message=msg,
+        severity=severity,
+        provider_id=provider_id,
+        api_key_id=key_record_id,
+        metadata=meta,
+    )
+
+
 def _attach_bodies(metadata: dict, request_body: Any, response_body: Any) -> dict:
     """Attach captured request/response bodies + previews to metadata when enabled.
 
@@ -308,47 +413,26 @@ async def record_outcome(
         # Reads e.g. "Devin-VG · claude-sonnet-4-6" instead of just "claude-oauth".
         msg_prefix = "[probe] " if is_probe else ""
         msg = f"{msg_prefix}{provider_name} · {model}" if provider_name else f"{msg_prefix}{model}"
-        # v3.0.41: normalize served_model. Internally `model` carries the
-        # litellm-prefixed slug (e.g. ``openai/gpt-4o-mini``) but
-        # ``requested_model`` is the caller's bare value (``gpt-4o-mini``).
-        # Comparing the two for substitution detection naively would
-        # always-mismatch on the prefix. Strip it for the activity-log
-        # field so client-side detectors compare apples-to-apples. Keep
-        # the legacy ``model`` field unchanged for back-compat with older
-        # readers (cluster sync, dashboards).
-        served_normalized = model.split("/", 1)[1] if "/" in model else model
-        meta = {
-            "model": model,                       # legacy — litellm-prefixed
-            "served_model": served_normalized,    # v3.0.41: bare slug for fair compare
-            "provider_name": provider_name,
-            "api_key_prefix": api_key_prefix,     # v3.2.12: caller attribution
-            "api_key_id": key_record_id,          # v3.6.2: full id for cross-table joins
-            "in_tok": in_tok,
-            "out_tok": out_tok,
-            "cost_usd": round(cost, 6),
-            "latency_ms": round(latency_ms, 1),
-            "cost_class": "subscription" if is_subscription else "per_call",
-        }
-        # v3.6.2 — caller IP from the request context (set by the
-        # log_requests middleware in app/main.py). None for probes
-        # and other non-HTTP code paths; we only emit when set so
-        # IS NULL filters work cleanly in dashboards.
-        # v3.6.3 — also emit ``client_ip_inside`` (raw nginx-reported
-        # IP, before LAN-egress DNS rewrite) when it differs from
-        # ``client_ip``. Lets dashboards distinguish "behind the
-        # operator's LAN router" traffic from "actual external".
-        try:
-            from app.observability.request_context import (
-                get_client_ip, get_client_ip_inside,
-            )
-            client_ip = get_client_ip()
-            client_ip_inside = get_client_ip_inside()
-            if client_ip:
-                meta["client_ip"] = client_ip
-            if client_ip_inside and client_ip_inside != client_ip:
-                meta["client_ip_inside"] = client_ip_inside
-        except Exception:
-            pass
+        # v3.7.13 R5 — branch-agnostic meta fields (provider/key
+        # attribution, served_model, cost_class, client_ip pair,
+        # optional caller-hint fields) come from a helper now.
+        meta = _build_event_meta_base(
+            model=model,
+            provider_name=provider_name,
+            api_key_prefix=api_key_prefix,
+            key_record_id=key_record_id,
+            is_subscription=is_subscription,
+            is_probe=is_probe,
+            requested_model=requested_model,
+            had_lmrh_hint=had_lmrh_hint,
+            lmrh_hint_raw=lmrh_hint_raw,
+            lmrh_warnings=lmrh_warnings,
+        )
+        # Branch-specific: per-request volume + cost + latency
+        meta["in_tok"] = in_tok
+        meta["out_tok"] = out_tok
+        meta["cost_usd"] = round(cost, 6)
+        meta["latency_ms"] = round(latency_ms, 1)
         if is_subscription:
             # litellm-rate equivalent of the consumed subscription quota.
             # Useful for "what would this have cost on per-call billing"
@@ -356,47 +440,16 @@ async def record_outcome(
             meta["quota_usd"] = round(quota_usd, 6)
         # v3.0.71 — echo Anthropic prompt-cache token counts so cache
         # effectiveness is visible in the activity log (not just the
-        # Prometheus histogram). Pre-v3.0.71 the values were extracted
-        # from upstream usage and pushed to ``observe_cache_tokens()``
-        # but never written to event_meta — so the only way to measure
-        # auto-cache injection's hit rate was scraping prom or reading
-        # raw upstream responses. Now any post-hoc audit can compute
-        # cache_read/cache_creation rates straight from activity_log.
-        # Only emit when non-zero (most events have zero — keeps event
-        # rows lean for non-cacheable workloads).
+        # Prometheus histogram). Only emit when non-zero (most events
+        # have zero — keeps event rows lean for non-cacheable workloads).
         if cache_creation:
             meta["cache_creation_input_tokens"] = int(cache_creation)
         if cache_read:
             meta["cache_read_input_tokens"] = int(cache_read)
-        if requested_model:
-            meta["requested_model"] = requested_model  # caller-asked-for vs served
-        if had_lmrh_hint:
-            meta["had_lmrh_hint"] = True
-        if lmrh_hint_raw:
-            meta["lmrh_hint"] = lmrh_hint_raw[:500]
-        if lmrh_warnings:
-            meta["lmrh_warnings"] = list(lmrh_warnings)
-        if is_probe:
-            meta["probe"] = True
         meta = _attach_bodies(meta, request_body, response_body)
-        # v3.3.4: synthetic probes get a distinct event_type so dashboard
-        # filters and SQL aggregates can cleanly separate user-traffic
-        # from connectivity health-checks. Pre-v3.3.4 every probe row
-        # used event_type='llm_request' with a [probe] message prefix —
-        # 4 internal readers (cache-stats, billing-rollup, usage-session,
-        # usage-weekly) inadvertently summed probe in/out tokens into
-        # user-facing totals. The new event_type also unblocks clean
-        # Grafana dashboards. The query gotcha memo
-        # (reference_llm_proxy2_db_query_gotchas.md) tracks this for
-        # future ad-hoc DB queries.
-        await log_event(
-            db,
-            event_type="keepalive_probe" if is_probe else "llm_request",
-            message=msg,
-            severity="info",
-            provider_id=provider_id,
-            api_key_id=key_record_id,
-            metadata=meta,
+        await _emit_outcome_event(
+            db, is_probe=is_probe, severity="info", msg=msg, meta=meta,
+            provider_id=provider_id, key_record_id=key_record_id,
         )
     else:
         # v2.7.8 BUG-002: classify the error. Auth errors are PERMANENT
@@ -420,58 +473,28 @@ async def record_outcome(
         msg_prefix = "[probe] " if is_probe else ""
         msg = (f"{msg_prefix}{provider_name} · {model} — error"
                if provider_name else f"{msg_prefix}{model} — error")
-        # v3.0.41: same normalization on the error path.
-        served_normalized = model.split("/", 1)[1] if "/" in model else model
-        meta = {
-            "model": model,
-            "served_model": served_normalized,
-            "provider_name": provider_name,
-            "api_key_prefix": api_key_prefix,     # v3.2.12: caller attribution
-            "api_key_id": key_record_id,          # v3.6.2: full id for joins
-            "error": error_str[:2000] if error_str else None,
-            # v3.0.75 — coarse error-class taxonomy for activity-log
-            # filtering: auth / billing / rate_limit / timeout /
-            # network / upstream_5xx / bad_request / unknown. Lets ops
-            # answer "are timeout errors spiking?" without grepping the
-            # error blob.
-            "error_class": classify_error(error_str or ""),
-            "cost_class": "subscription" if is_subscription else "per_call",
-        }
-        # v3.6.2/v3.6.3 — caller IP on the error path too (incident
-        # response / abuse investigation needs it MORE than the
-        # success path). Mirror the success-path's public+inside split.
-        try:
-            from app.observability.request_context import (
-                get_client_ip, get_client_ip_inside,
-            )
-            client_ip = get_client_ip()
-            client_ip_inside = get_client_ip_inside()
-            if client_ip:
-                meta["client_ip"] = client_ip
-            if client_ip_inside and client_ip_inside != client_ip:
-                meta["client_ip_inside"] = client_ip_inside
-        except Exception:
-            pass
-        if requested_model:
-            meta["requested_model"] = requested_model
-        if had_lmrh_hint:
-            meta["had_lmrh_hint"] = True
-        if lmrh_hint_raw:
-            meta["lmrh_hint"] = lmrh_hint_raw[:500]
-        if lmrh_warnings:
-            meta["lmrh_warnings"] = list(lmrh_warnings)
-        if is_probe:
-            meta["probe"] = True
+        # v3.7.13 R5 — same branch-agnostic meta as the success path.
+        meta = _build_event_meta_base(
+            model=model,
+            provider_name=provider_name,
+            api_key_prefix=api_key_prefix,
+            key_record_id=key_record_id,
+            is_subscription=is_subscription,
+            is_probe=is_probe,
+            requested_model=requested_model,
+            had_lmrh_hint=had_lmrh_hint,
+            lmrh_hint_raw=lmrh_hint_raw,
+            lmrh_warnings=lmrh_warnings,
+        )
+        # Branch-specific: error blob + classified taxonomy
+        # v3.0.75 — coarse error-class taxonomy for activity-log
+        # filtering: auth / billing / rate_limit / timeout / network /
+        # upstream_5xx / bad_request / unknown. Lets ops answer "are
+        # timeout errors spiking?" without grepping the error blob.
+        meta["error"] = error_str[:2000] if error_str else None
+        meta["error_class"] = classify_error(error_str or "")
         meta = _attach_bodies(meta, request_body, response_body)
-        # v3.3.4: same probe/user split on the failure path. Probe
-        # rate_limit warnings stay visible in the activity log under
-        # event_type='keepalive_probe' for connectivity diagnostics.
-        await log_event(
-            db,
-            event_type="keepalive_probe" if is_probe else "llm_request",
-            message=msg,
-            severity="warning",
-            provider_id=provider_id,
-            api_key_id=key_record_id,
-            metadata=meta,
+        await _emit_outcome_event(
+            db, is_probe=is_probe, severity="warning", msg=msg, meta=meta,
+            provider_id=provider_id, key_record_id=key_record_id,
         )

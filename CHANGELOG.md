@@ -9,6 +9,36 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.7.x — Anthropic Console billing scrape (real account usage)
 
+### v3.7.13 — Refactor R5: deduplicate `record_outcome` success/error paths
+
+Architectural cleanup pass. Closes a real-pain refactor: every
+shared meta field added to `record_outcome` had to land twice
+(once in the success branch, once in the error branch). v3.6.2's
+`client_ip`, v3.6.3's `client_ip_inside` split, and v3.6.2's
+`api_key_id` all required dual edits. v3.7.x shipped 13 versions in
+one day — each was a chance to forget the second edit.
+
+**Three new private helpers** in `app/monitoring/helpers.py`:
+- `_attach_client_ip(meta)` — mutating helper for v3.6.2/v3.6.3
+  client IP fields
+- `_build_event_meta_base(...)` — branch-agnostic dict with
+  provider/key attribution + client IP + optional caller hints
+- `_emit_outcome_event(...)` — wraps `log_event` so the v3.3.4
+  keepalive/llm event-type split lives in one place
+
+`record_outcome` body: **275 → 193 lines** (−82, −30%). Each branch
+now reads as "build base meta + add my branch-specific fields + emit"
+instead of duplicating 50+ lines of setup.
+
+Behavior preservation: zero changes to inputs/outputs/meta-dict
+contents. Confirmed by **1338 passing tests** (no count change).
+
+Two source-level regression tests updated to point at the new
+helper structure (`_attach_client_ip` + `_build_event_meta_base`).
+
+Architecture docs (`docs/architecture.md`) and refactor ledger
+(`docs/refactor-log.md`) updated with R5 entry.
+
 ### v3.7.12 — AI rate limiter recommends specific IP blocks
 
 Closes the v3.7.11 follow-up: AI rate limiter can now recommend

@@ -1,8 +1,8 @@
 # llm-proxy2 — architecture
 
-**Version**: keeps pace with `app/__version__.py` (currently v3.5.7).
-**Last updated**: 2026-05-09 (after the R4 claude-oauth setup extraction
-+ v3.5.x dashboard widget additions + v3.5.7 documentation polish pass).
+**Version**: keeps pace with `app/__version__.py` (currently v3.7.13).
+**Last updated**: 2026-05-10 (after R5 — extracting `record_outcome`
+success/error duplication into shared meta-building helpers).
 
 This document describes the static module layout and the runtime data
 flow for the proxy. It pairs with [`refactor-log.md`](refactor-log.md)
@@ -140,6 +140,19 @@ Each provider type has a dispatch path:
 - **Activity log** (`app/monitoring/activity.py`): every dispatch
   outcome lands here with `event_type=llm_request` (user traffic) or
   `event_type=keepalive_probe` (synthetic — v3.3.4+).
+- **Outcome recorder** (`app/monitoring/helpers.py:record_outcome`):
+  single entry-point for all post-dispatch bookkeeping. Two branches
+  (success / error) share their meta-dict construction via three
+  private helpers added in R5:
+  - `_build_event_meta_base()` — branch-agnostic fields (model,
+    provider, key attribution, cost class, client_ip pair, caller
+    hints)
+  - `_attach_client_ip()` — v3.6.2/v3.6.3 `client_ip` +
+    `client_ip_inside` capture (single source of truth)
+  - `_emit_outcome_event()` — wraps the `log_event` call so the
+    v3.3.4 keepalive/llm split lives in one place
+  Every new shared meta field now lands in one helper rather than
+  two branches.
 - **Provider metrics** (`models/db.py:ProviderMetric`): 5-minute
   buckets, per-provider, used by LMRHv2 snapshot. v3.4.0+ split
   cost/tokens into per-direction columns (`input_cost_usd` /

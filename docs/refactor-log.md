@@ -16,6 +16,88 @@ Each entry follows this shape:
 
 ---
 
+## 2026-05-10 — Extract `record_outcome` success/error duplication (R5, v3.7.13+)
+
+**What**: `record_outcome` in `app/monitoring/helpers.py` was a single
+275-line function with two parallel branches (success / error) that
+duplicated:
+- The branch-agnostic `meta` dict construction (model, served_model,
+  provider_name, api_key_prefix, api_key_id, cost_class)
+- The client-IP capture try/except (v3.6.2 client_ip + v3.6.3
+  client_ip_inside split)
+- The optional caller-hint fields (requested_model, had_lmrh_hint,
+  lmrh_hint_raw, lmrh_warnings, probe)
+- The `log_event` call with `event_type="keepalive_probe" if is_probe
+  else "llm_request"`
+
+Extracted three private helpers:
+- `_attach_client_ip(meta)` — mutating helper for the v3.6.2/v3.6.3
+  client_ip + client_ip_inside fields (single source of truth for the
+  IP capture contract)
+- `_build_event_meta_base(...)` — builds the shared base dict + calls
+  `_attach_client_ip` + appends the optional caller-hint fields
+- `_emit_outcome_event(...)` — wraps the `log_event` call so the
+  v3.3.4 keepalive/llm event-type split lives in one place
+
+Each branch now: calls `_build_event_meta_base`, adds branch-specific
+fields (success: in_tok/out_tok/cost_usd/latency_ms/quota_usd/cache_*;
+error: error/error_class), then calls `_emit_outcome_event`.
+
+**Why**: every change to the shared meta fields had to land twice.
+Confirmed: v3.6.2's `client_ip` add, v3.6.3's `client_ip_inside`
+split, and v3.6.2's `api_key_id` all required dual edits — the
+operator hit this themselves while reviewing the v3.6.x diffs.
+v3.7.x added 13 ships in one day; if any of them had needed a new
+shared field, that's 13 chances to forget the second edit.
+
+**Files**:
+- `app/monitoring/helpers.py` — three new private helpers
+  (`_attach_client_ip`, `_build_event_meta_base`, `_emit_outcome_event`);
+  both branches of `record_outcome` rewritten to use them
+- `tests/unit/test_v362_request_context.py` — regression-check
+  updated to verify the new helper structure (looks for
+  `_attach_client_ip` + `_build_event_meta_base` call from both
+  branches)
+- `tests/unit/test_v363_lan_egress_rewrite.py` — same update
+
+**Outcome**:
+- `record_outcome` body: 275 → **193 lines** (−82, −30%)
+- Helpers add ~110 lines (including verbose docstrings explaining the
+  v3.6.2/v3.6.3/v3.3.4 history once instead of twice)
+- File total: 477 → 500 lines (+23)
+- **Maintenance surface**: 2 places to update shared meta fields → 1
+- Tests: **1338 passing** (no behavior change — confirmed by zero
+  test count delta and unchanged test file count)
+
+**Audit notes** (other candidates surveyed, not picked):
+- `app/api/providers.py` (1028L, was 952 at R4) — still below 1200L
+  threshold per the deferred list; largest function is `create_provider`
+  at 143L which is at the right granularity (provider creation is
+  intrinsically multi-field)
+- `app/api/lmrh_v2.py` (647L) — still below 800L threshold per R4
+- `app/models/db.py` (620L, ~13 ORM classes) — splitting across files
+  would conflict with the architecture-rule "models/ is the only
+  module that defines SQLAlchemy table classes" (single Base.metadata
+  invariant); over-fragmentation. Skip.
+- Three new v3.7.x admin endpoint files (anthropic_billing, ai_rate_limiter,
+  blocked_ips) — each ~100-180L with distinct serializers and
+  endpoint shapes. Already at the right granularity. No duplication.
+- `create_provider` (143L) + `update_provider` (110L) — large but
+  cohesive; each new provider field naturally adds one line in each.
+  Splitting wouldn't help. Skip.
+
+**Next** (deferred list, in priority order):
+1. Tool emulation / streaming extraction (R1/R2 deferred — only on
+   concrete bug forcing edits to both messages.py + completions.py)
+2. `app/api/lmrh_v2.py` (647L) split into endpoints + render modules —
+   pre-emptive, defer until 800L
+3. `app/api/providers.py` per-CRUD splits — DEFERRED under
+   intuitiveness rule. Reconsider if file crosses 1200L
+4. Alembic migration framework — defer until ALTER count crosses 50
+   (currently ~40, +3 from v3.7.x — billing, ai-review, ip-block)
+
+---
+
 ## 2026-05-09 (evening, third pass) — Extract claude-oauth request setup (R4, v3.5.5+)
 
 **What**: `_complete_claude_oauth` and `_stream_claude_oauth` in
