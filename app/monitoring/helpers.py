@@ -322,12 +322,24 @@ async def record_outcome(
             "served_model": served_normalized,    # v3.0.41: bare slug for fair compare
             "provider_name": provider_name,
             "api_key_prefix": api_key_prefix,     # v3.2.12: caller attribution
+            "api_key_id": key_record_id,          # v3.6.2: full id for cross-table joins
             "in_tok": in_tok,
             "out_tok": out_tok,
             "cost_usd": round(cost, 6),
             "latency_ms": round(latency_ms, 1),
             "cost_class": "subscription" if is_subscription else "per_call",
         }
+        # v3.6.2 — caller IP from the request context (set by the
+        # log_requests middleware in app/main.py). None for probes
+        # and other non-HTTP code paths; we only emit when set so
+        # IS NULL filters work cleanly in dashboards.
+        try:
+            from app.observability.request_context import get_client_ip
+            client_ip = get_client_ip()
+            if client_ip:
+                meta["client_ip"] = client_ip
+        except Exception:
+            pass
         if is_subscription:
             # litellm-rate equivalent of the consumed subscription quota.
             # Useful for "what would this have cost on per-call billing"
@@ -406,6 +418,7 @@ async def record_outcome(
             "served_model": served_normalized,
             "provider_name": provider_name,
             "api_key_prefix": api_key_prefix,     # v3.2.12: caller attribution
+            "api_key_id": key_record_id,          # v3.6.2: full id for joins
             "error": error_str[:2000] if error_str else None,
             # v3.0.75 — coarse error-class taxonomy for activity-log
             # filtering: auth / billing / rate_limit / timeout /
@@ -415,6 +428,15 @@ async def record_outcome(
             "error_class": classify_error(error_str or ""),
             "cost_class": "subscription" if is_subscription else "per_call",
         }
+        # v3.6.2 — caller IP on the error path too (incident response
+        # / abuse investigation needs it MORE than the success path).
+        try:
+            from app.observability.request_context import get_client_ip
+            client_ip = get_client_ip()
+            if client_ip:
+                meta["client_ip"] = client_ip
+        except Exception:
+            pass
         if requested_model:
             meta["requested_model"] = requested_model
         if had_lmrh_hint:

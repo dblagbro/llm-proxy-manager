@@ -399,6 +399,9 @@ async def messages(
                     usage=(result or {}).get("usage"),
                 ),
             )
+            # v3.6.1 — merge X-Quality-Hint header if response looks thin
+            from app.api._quality_hint import merge_into_headers
+            merge_into_headers(resp_headers, result, endpoint="messages")
             return JSONResponse(content=result, headers=resp_headers)
         # Defensive: should be unreachable — every branch above either returned,
         # raised, or continued. Break to avoid an accidental infinite loop.
@@ -499,6 +502,9 @@ async def messages(
                     content = anthropic_tool_response(tool_calls[0]["name"], tool_calls[0]["input"], route.litellm_model)
                 else:
                     content = anthropic_text_response(response_text, route.litellm_model)
+                # v3.6.1 — merge X-Quality-Hint for tool-emulation path
+                from app.api._quality_hint import merge_into_headers
+                merge_into_headers(resp_headers, content, endpoint="messages")
                 return JSONResponse(content=content, headers=resp_headers)
 
         # CoT-E engagement.
