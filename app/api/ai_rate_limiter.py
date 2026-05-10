@@ -31,6 +31,7 @@ def _serialize_review(r: ApiKeyAiReview) -> dict:
         "llm_verdict": r.llm_verdict,
         "llm_reasoning": r.llm_reasoning,
         "suggested_action": r.suggested_action,
+        "suggested_block_ip": r.suggested_block_ip,  # v3.7.12
         "stats_summary": r.stats_summary,
         "applied_at": r.applied_at.isoformat() if r.applied_at else None,
         "applied_action": r.applied_action,
@@ -136,6 +137,21 @@ async def revert_review(
         api_key.rate_limit_rpm = review.prior_rate_limit_rpm
     elif review.applied_action == "disable":
         api_key.enabled = True
+    elif review.applied_action == "block_ip":
+        # v3.7.12 — remove the IP from the block list. Idempotent
+        # (DELETE WHERE ... is a no-op if the row was already removed
+        # via the admin endpoint).
+        from sqlalchemy import delete as _delete
+        from app.models.db import BlockedIp
+        if review.suggested_block_ip:
+            await db.execute(
+                _delete(BlockedIp).where(BlockedIp.ip == review.suggested_block_ip)
+            )
+            try:
+                from app.middleware.ip_block import _clear_cache_for_tests
+                _clear_cache_for_tests()
+            except Exception:
+                pass
     review.reverted_at = datetime.now(timezone.utc)
     await db.commit()
     return {"ok": True, "review": _serialize_review(review)}

@@ -9,6 +9,39 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.7.x — Anthropic Console billing scrape (real account usage)
 
+### v3.7.12 — AI rate limiter recommends specific IP blocks
+
+Closes the v3.7.11 follow-up: AI rate limiter can now recommend
+blocking a specific source IP, not just throttling/disabling the
+whole key. Useful when one client IP is misbehaving but the rest of
+the key's traffic is legitimate.
+
+- **New verdict** `block_ip` joins `normal/watch/throttle/block`.
+- **Top-5 source IPs** included in the LLM prompt (`top_source_ips`
+  dict computed by `compute_stats`, sorted desc by request count).
+- **LLM response shape** extended with optional `ip` field — required
+  when verdict is `block_ip`. Hallucination guard: if the LLM names
+  an IP not in the top-5 list, we demote the verdict to `watch` to
+  avoid acting on a fabricated IP.
+- **New column** `api_key_ai_review.suggested_block_ip` stores the
+  selected IP for the `apply` path + `revert` reversal.
+- **`apply` path**: inserts the IP into `blocked_ips` via the same
+  table the v3.7.11 admin endpoint uses, with
+  `added_by="ai-rate-limiter (review N)"` for attribution. Idempotent
+  (skips if already blocked). Invalidates the middleware cache so
+  the next request hits the block.
+- **`revert` path**: deletes the IP from `blocked_ips`. Idempotent —
+  if operator manually removed the block earlier, revert still
+  completes cleanly.
+
+This is the FULL v3.7.10 promise from operator Q5 ("slow that api
+key's usage OR its source ip") now end-to-end:
+- Key-level: throttle_rpm / disable (v3.7.10)
+- IP-level: block_ip (v3.7.12)
+- Both: lifecycle endpoints (apply / dismiss / revert)
+
+14 new unit tests. **1324 → 1338 passing**.
+
 ### v3.7.11 — IP block middleware (closes Q5 IP-level controls)
 
 Closes the half of operator Q5 that was deferred from v3.7.10:

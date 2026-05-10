@@ -185,6 +185,9 @@ async def init_db():
             # existing rate_limit_rpm and write back to it when
             # auto-applying a throttle suggestion. (prior_rate_limit_rpm
             # is stored on the review row for revert.)
+            # v3.7.12 — new column for the IP that the LLM thinks
+            # should be blocked when verdict == "block_ip".
+            "ALTER TABLE api_key_ai_review ADD COLUMN suggested_block_ip TEXT",
         ]:
             try:
                 await conn.exec_driver_sql(stmt)
