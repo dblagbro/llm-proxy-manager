@@ -333,11 +333,20 @@ async def record_outcome(
         # log_requests middleware in app/main.py). None for probes
         # and other non-HTTP code paths; we only emit when set so
         # IS NULL filters work cleanly in dashboards.
+        # v3.6.3 — also emit ``client_ip_inside`` (raw nginx-reported
+        # IP, before LAN-egress DNS rewrite) when it differs from
+        # ``client_ip``. Lets dashboards distinguish "behind the
+        # operator's LAN router" traffic from "actual external".
         try:
-            from app.observability.request_context import get_client_ip
+            from app.observability.request_context import (
+                get_client_ip, get_client_ip_inside,
+            )
             client_ip = get_client_ip()
+            client_ip_inside = get_client_ip_inside()
             if client_ip:
                 meta["client_ip"] = client_ip
+            if client_ip_inside and client_ip_inside != client_ip:
+                meta["client_ip_inside"] = client_ip_inside
         except Exception:
             pass
         if is_subscription:
@@ -428,13 +437,19 @@ async def record_outcome(
             "error_class": classify_error(error_str or ""),
             "cost_class": "subscription" if is_subscription else "per_call",
         }
-        # v3.6.2 — caller IP on the error path too (incident response
-        # / abuse investigation needs it MORE than the success path).
+        # v3.6.2/v3.6.3 — caller IP on the error path too (incident
+        # response / abuse investigation needs it MORE than the
+        # success path). Mirror the success-path's public+inside split.
         try:
-            from app.observability.request_context import get_client_ip
+            from app.observability.request_context import (
+                get_client_ip, get_client_ip_inside,
+            )
             client_ip = get_client_ip()
+            client_ip_inside = get_client_ip_inside()
             if client_ip:
                 meta["client_ip"] = client_ip
+            if client_ip_inside and client_ip_inside != client_ip:
+                meta["client_ip_inside"] = client_ip_inside
         except Exception:
             pass
         if requested_model:
