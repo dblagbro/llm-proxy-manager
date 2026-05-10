@@ -394,7 +394,40 @@ async def _build_snapshot(
 
         # Subscription quota — only for subscription providers; only when
         # ProviderUsageWindow has a row for this provider.
+        # v3.7.9: for claude-oauth providers prefer the authoritative
+        # Anthropic snapshot (ExternalUsageSnapshot.seven_day_utilization)
+        # when fresh (<8h). Proxy slice (ProviderUsageWindow) is
+        # structurally misleading (account total ≠ proxy slice).
         sub_quota = None
+        external_snap_used = None
+        external_snap_resets = None
+        if is_subscription and p.provider_type == "claude-oauth":
+            try:
+                from app.models.db import ExternalUsageSnapshot
+                from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+                snap_res = await db.execute(
+                    select(ExternalUsageSnapshot)
+                    .where(ExternalUsageSnapshot.provider_id == p.id)
+                    .where(ExternalUsageSnapshot.seven_day_utilization.is_not(None))
+                    .order_by(ExternalUsageSnapshot.captured_at.desc())
+                    .limit(1)
+                )
+                latest = snap_res.scalar_one_or_none()
+                if latest and latest.captured_at:
+                    age = _dt.now(_tz.utc) - (
+                        latest.captured_at if latest.captured_at.tzinfo
+                        else latest.captured_at.replace(tzinfo=_tz.utc)
+                    )
+                    if age < _td(hours=8):
+                        external_snap_used = float(latest.seven_day_utilization)
+                        if latest.seven_day_resets_at:
+                            external_snap_resets = (
+                                latest.seven_day_resets_at.isoformat()
+                                if latest.seven_day_resets_at.tzinfo
+                                else latest.seven_day_resets_at.replace(tzinfo=_tz.utc).isoformat()
+                            )
+            except Exception as e:
+                logger.debug("external-snapshot lookup failed for %s: %s", p.id, e)
         if is_subscription and getattr(p, "usage_tracking_enabled", False):
             try:
                 from app.models.db import ProviderUsageWindow
@@ -405,20 +438,38 @@ async def _build_snapshot(
                 )
                 w = w_res.scalar_one_or_none()
                 if w:
+                    # Prefer the external snapshot value when available;
+                    # fall back to the proxy slice otherwise. Always
+                    # carry the proxy-slice session_used_pct because the
+                    # external snapshot has its own 5-hour window which
+                    # we map to session.
+                    weekly_used = external_snap_used if external_snap_used is not None else getattr(w, "weekly_pct", None)
+                    weekly_resets = external_snap_resets if external_snap_resets is not None else (
+                        w.weekly_reset_at.isoformat()
+                        if getattr(w, "weekly_reset_at", None) else None
+                    )
                     sub_quota = _SubQuota(
                         session_used_pct=getattr(w, "session_pct", None),
-                        weekly_used_pct=getattr(w, "weekly_pct", None),
+                        weekly_used_pct=weekly_used,
                         session_resets_at=(
                             w.session_reset_at.isoformat()
                             if getattr(w, "session_reset_at", None) else None
                         ),
-                        weekly_resets_at=(
-                            w.weekly_reset_at.isoformat()
-                            if getattr(w, "weekly_reset_at", None) else None
-                        ),
+                        weekly_resets_at=weekly_resets,
                     )
             except Exception as e:
                 logger.debug("usage-window lookup failed for %s: %s", p.id, e)
+        # v3.7.9 — synthesize sub_quota from external snapshot alone if
+        # no proxy-slice usage tracking is enabled. Operators who set
+        # usage_weekly_limit_tokens=NULL (per the v3.7.x recommendation)
+        # would otherwise lose subscription_quota visibility entirely.
+        if sub_quota is None and is_subscription and external_snap_used is not None:
+            sub_quota = _SubQuota(
+                session_used_pct=None,
+                weekly_used_pct=external_snap_used,
+                session_resets_at=None,
+                weekly_resets_at=external_snap_resets,
+            )
 
         # Circuit state from in-process register
         try:

@@ -9,6 +9,33 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.7.x — Anthropic Console billing scrape (real account usage)
 
+### v3.7.9 — LMRH v2 subscription_quota uses authoritative Anthropic snapshot
+
+Closes the Q4 follow-up from the operator's LMRHv2 decisions
+(2026-05-10): `/lmrh/providers` was returning the proxy-slice
+`weekly_pct` for claude-oauth providers — misleading per v3.7.0
+findings (proxy slice ≠ account total). Now prefers the
+authoritative `ExternalUsageSnapshot.seven_day_utilization` when
+fresh (<8h old), falls back to proxy slice when no snapshot exists.
+
+- Only applies to **claude-oauth** providers (codex-oauth + grok-web
+  don't have an Anthropic Console scraper; they keep the proxy
+  slice).
+- **Freshness window**: 8 hours. Stale snapshots (e.g. scraper has
+  been silently failing) fall back to proxy slice rather than
+  serve old data.
+- **New code path**: when an operator sets
+  `usage_weekly_limit_tokens=NULL` per the v3.7.x recommendation,
+  `subscription_quota` was previously absent from the response
+  entirely. Now synthesized from the external snapshot alone —
+  `session_used_pct=None` (5-hour scrape window maps to session
+  but we don't surface that yet), `weekly_used_pct` and
+  `weekly_resets_at` from the snapshot.
+- Defensive: snapshot table query wrapped in try/except, falls back
+  to proxy slice silently on error.
+
+7 new source-level regression tests. **1271 → 1278 passing**.
+
 ### v3.7.8 — Third QA sweep nit: 404 on `GET /external-usage` for unknown provider
 
 Tiny consistency fix surfaced by a v3.7.x QA sweep. Pre-fix
