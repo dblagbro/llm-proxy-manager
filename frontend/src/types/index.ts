@@ -129,7 +129,13 @@ export interface CircuitBreakerInfo {
 }
 
 // ── API Keys ──────────────────────────────────────────────────────────────────
-export type KeyType = 'standard' | 'claude-code'
+// v3.7.17 — 'admin-readonly-catalog' is the narrow-scope key the
+// coordinator-hub team provisions in their "Proxy Catalog Admin Key"
+// setting. Backed by app/auth/catalog_scope.py (v3.7.2): can edit
+// /api/llm/models/{id} per-model aliases/family/variant, but
+// verify_api_key rejects it on /v1/messages + /v1/chat/completions,
+// so it cannot make inference calls.
+export type KeyType = 'standard' | 'claude-code' | 'admin-readonly-catalog'
 
 export interface ApiKey {
   id: string
