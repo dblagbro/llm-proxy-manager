@@ -254,7 +254,7 @@ class ApiKey(Base):
     key_hash = Column(String, nullable=False, unique=True)
     key_prefix = Column(String, nullable=False)  # first 8 chars for display
     encrypted_key = Column(String, nullable=True)  # Fernet-encrypted full key; NULL for legacy pre-encryption keys
-    key_type = Column(String, default="standard")  # standard|claude-code
+    key_type = Column(String, default="standard")  # standard|claude-code|admin|admin-readonly-catalog
     enabled = Column(Boolean, default=True)
     total_requests = Column(Integer, default=0)
     total_tokens = Column(Integer, default=0)

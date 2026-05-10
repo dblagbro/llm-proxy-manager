@@ -9,6 +9,36 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.7.x — Anthropic Console billing scrape (real account usage)
 
+### v3.7.2 — `admin-readonly-catalog` scope for hub-team #230 follow-up
+
+Promised in the v3.6.0 #230 contract reply: a narrower-scoped admin
+key that grants access to the model-identity catalog endpoints only,
+so the hub team's stored credential (currently a full-admin session
+Bearer) can be downgraded in scope without giving up the catalog-edit
+capability.
+
+- **Two new `api_keys.key_type` values**:
+  - `admin` — full admin via Bearer/x-api-key (parity with session admin)
+  - `admin-readonly-catalog` — scoped to model-identity catalog only.
+    Can do GET + PUT on `/api/llm/models/*` and nothing else.
+- **New auth dependency** (`app/auth/catalog_scope.py:require_catalog_auth`):
+  - Accepts existing admin session (cookie or Bearer-session) OR
+    api-key with `key_type` in (`admin`, `admin-readonly-catalog`).
+  - Bearer prefix `llmp-*` distinguishes api-keys from session tokens
+    so the two flows don't collide.
+  - Returns 403 (not 401) when an api-key is supplied but with the
+    wrong scope, so callers can distinguish "fix your scope" from
+    "auth missing".
+- **`/api/llm/models/{model_id:path}` GET and PUT now use
+  `require_catalog_auth`** in place of `require_admin`. All other
+  admin endpoints are unchanged.
+- **In-place swap**: hub team currently uses an admin session Bearer.
+  Once they rotate to an `admin-readonly-catalog` api-key, behavior
+  is byte-identical from their side (same Authorization header
+  shape, same response contract).
+
+9 new unit tests. **1203 → 1212 passing**.
+
 ### v3.7.1 — Auto-rotation: skip at-capacity providers automatically
 
 The v3.7.0 scraper writes authoritative weekly utilization to

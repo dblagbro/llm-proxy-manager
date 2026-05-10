@@ -32,7 +32,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api._etag import etag_for_canonical_model, parse_if_match
-from app.auth.admin import AdminUser, require_admin
+from app.auth.admin import AdminUser
+from app.auth.catalog_scope import require_catalog_auth
 from app.models.database import get_db
 from app.models.db import ModelCapability
 from app.routing.canonical import KNOWN_FAMILIES, derive_family
@@ -186,7 +187,7 @@ async def get_model_identity(
     response: Response,
     provider_id: Optional[str] = Query(default=None),
     db: AsyncSession = Depends(get_db),
-    _: AdminUser = Depends(require_admin),
+    _: AdminUser = Depends(require_catalog_auth),
 ):
     """Read identity for one canonical model.
 
@@ -210,7 +211,7 @@ async def update_model_identity(
     if_match: Optional[str] = Header(default=None, alias="If-Match"),
     provider_id: Optional[str] = Query(default=None),
     db: AsyncSession = Depends(get_db),
-    _: AdminUser = Depends(require_admin),
+    _: AdminUser = Depends(require_catalog_auth),
 ):
     """Update aliases/family/variant for the canonical model.
 
