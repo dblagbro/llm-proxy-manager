@@ -6,6 +6,117 @@ Add new findings on top. When status changes, leave the row in place and update 
 
 ---
 
+## 2026-05-10 — QA pass v3.7.13 / v3.7.14 (v3.7.x surface)
+
+### Remediation plan (priority order)
+
+| # | Item | Severity | Status | Sized to |
+|---|------|----------|--------|---------|
+| 1 | BUG-019 — admin lockout deadlock | **CRITICAL** | ✅ FIXED in v3.7.14 | shipped same session |
+| 2 | BUG-016 — cluster sync gap (3 new tables) | medium | OPEN | v3.7.15 (1 PR, +3 sync entries + 3 unit tests) |
+| 3 | BUG-017 — AI rate limiter recursion guard | high | OPEN | v3.7.15 (1 PR, tag-and-filter pattern) |
+| 4 | BUG-018 — IP block cache invalidation cross-node | medium | OPEN | v3.7.15 (piggyback on BUG-016 sync hookpoint) |
+| 5 | UI Backlog A — claude-oauth legacy usage fields | enhancement | ✅ FIXED in v3.7.14 (collapsed behind disclosure) | shipped same session |
+| 6 | UI Backlog B — codex-oauth → ChatGPT-oauth-plan UI label | enhancement | ✅ FIXED in v3.7.14 (label-only) | shipped same session |
+| 7 | Full data rename — codex-oauth value → ChatGPT-oauth-plan | enhancement | OPEN — needs operator approval | see scope below |
+
+### Open scope item: full-value rename of `codex-oauth` provider_type
+
+The v3.7.14 UI label change ("ChatGPT-oauth-plan (codex-oauth)" displayed in the dropdown) satisfies the user-facing intent without breaking changes. A full string-value rename — changing the actual `provider_type` value from `codex-oauth` to `ChatGPT-oauth-plan` everywhere — has these costs:
+
+- 34 source files updated (94 literal occurrences)
+- DB migration to UPDATE existing `providers` rows
+- Cluster sync coordination: peers must roll concurrently OR accept a brief mismatch window
+- External callers (anyone POSTing to `/api/providers` with `provider_type: "codex-oauth"`) will need to update
+- Routing-key matches in `app/routing/router.py`, `app/api/messages.py`, `app/api/completions.py`, etc.
+
+**Recommendation**: do NOT ship the full rename without explicit operator approval. The UI label change captures the intent at near-zero risk; the value rename is breaking. If approved, ship as a major-bump (v3.8.0) with:
+1. Idempotent migration in `app/models/database.py` that UPDATEs existing rows
+2. Dual-accept compatibility window in API endpoints (accept both old and new values for one minor version)
+3. Deprecation log on every old-value match so external callers see warnings
+4. Coordinated cluster roll (all 3 nodes within ~5 min of each other)
+
+Files touched (highest-impact, sample):
+- `app/api/providers.py` (9 occurrences — validation strings)
+- `app/api/providers_oauth.py` (11 — OAuth flow branching)
+- `app/routing/router.py` (9 — provider-type filters)
+- `app/api/_codex_oauth_dispatch.py` (8 — dispatch helpers)
+- `frontend/src/pages/ProvidersPage.tsx` (5 — type guards)
+- ... plus 29 more
+
+### BUG-019 — Admin lockout deadlock: middleware 403s the only endpoint that can un-block
+
+- **Severity**: **CRITICAL** (operator self-DoS; no in-band recovery path)
+- **Area**: `app/middleware/ip_block.py` (v3.7.11 ASGI front-stack)
+- **Reproduction**:
+  1. POST `/api/admin/blocked-ips` with `{"ip": "<your own egress IP>"}` (deliberate, or via a future "auto-add" rule from BUG-017)
+  2. Try to call `DELETE /api/admin/blocked-ips/<that IP>`
+- **Expected**: DELETE succeeds (HTTP 200, row removed)
+- **Actual** (pre-fix): DELETE returns 403 "Source IP is blocked by administrator." — the IP block middleware runs before the endpoint handler, so the operator cannot use the API to recover. Direct DB access was required.
+- **How it surfaced**: while testing BUG-018 cache invalidation, I added my own LAN-egress IP (192.168.18.1) to the block list. The next request — including the DELETE I was about to make to remove it — was 403'd by the middleware. The DELETE handler itself was fine; it just never ran.
+- **Fix shipped**: **v3.7.14**. Middleware now bypasses two narrow path prefixes for any caller, blocked or not:
+  - `/api/auth/login` (admin can sign in)
+  - `/api/admin/blocked-ips` (admin can list / add / DELETE)
+
+  Both endpoints remain `require_admin`-gated, so a blocked attacker still can't use them — they just don't 403 at the middleware layer. +4 unit tests in `tests/unit/test_v3711_ip_block.py`.
+- **E2E verified post-deploy**:
+  ```
+  POST   /api/admin/blocked-ips    add 192.168.18.1   → 200 ok
+  GET    /api/providers            (blocked IP test)  → 403 (block active)
+  DELETE /api/admin/blocked-ips/192.168.18.1          → 200 ok (the fix)
+  blocked_ips: 0 entries
+  ```
+- **Status**: **FIXED in v3.7.14** (cluster on .14)
+
+### BUG-018 — IP block cache invalidation is single-node (peers wait ≤30s)
+
+- **Severity**: medium (timing window, not data integrity)
+- **Area**: `app/middleware/ip_block.py` (`_TTL_SEC = 30.0`)
+- **Reproduction**:
+  1. POST `/api/admin/blocked-ips` against www01
+  2. Immediately verify www01 enforces (403)
+  3. Immediately verify www02 — still 200 until its TTL expires
+- **Expected (caller intuition)**: cluster-wide block within seconds
+- **Actual**: only the receiving node clears its cache eagerly (via `_clear_cache_for_tests` from the admin write path). Peer nodes pick up the new row via cluster sync + their own 30s TTL refresh.
+- **Likely cause**: no pub/sub or sync-broadcast on `blocked_ips` writes. Cluster sync handles the row replication; cache invalidation isn't wired into that sync.
+- **Recommended fix**: emit a cluster-sync event for `blocked_ips` writes that calls `_clear_cache_for_tests()` on receipt. Low-risk; pattern already exists for other admin writes.
+- **Status**: **OPEN** — accept timing window for now (admin writes are rare; 30s peer-stale window is acceptable for v3.7.x)
+
+### BUG-017 — AI rate limiter has no recursion guard for its own LLM calls
+
+- **Severity**: high (cost-amplifier risk; not a runtime crash)
+- **Area**: `app/monitoring/ai_rate_limiter.py` (v3.7.10 + v3.7.12)
+- **Reproduction**: enable the AI rate limiter; it calls `http://localhost:3000/v1/messages` with a proxy-internal admin key to classify per-key behavior. That request:
+  1. Hits `/v1/messages` — picks a provider, dispatches, returns
+  2. Is logged in `activity_log` (per v3.6.2 capture)
+  3. Will be included in the NEXT AI-rate-limiter sample window for that internal key
+- **Expected**: the AI rate limiter's own calls are excluded from the sample, or marked so they can't recursively be the subject of their own classification
+- **Actual**: no recursion guard. Each review cycle includes the previous cycle's prompts in the new prompt's sample, slowly amplifying the prompt size and cost.
+- **Why we didn't see it explode yet**: the cycle is hourly + the prompts are tiny. But under sustained operation this is an O(n²) cost in stored sample size.
+- **Recommended fix**: tag activity_log rows from the AI rate limiter (`event_meta.source = "ai_rate_limiter"`) and exclude them in `compute_stats` / `pick_sample_previews`. Add a recursion-depth header on the outgoing httpx request as belt-and-braces.
+- **Status**: **OPEN** (queued for v3.7.15)
+
+### BUG-016 — Three new v3.7.x tables NOT in cluster sync
+
+- **Severity**: medium (multi-node data drift; not a single-node bug)
+- **Area**: `app/cluster/sync.py` table allowlist
+- **Reproduction**:
+  1. Add an entry to `blocked_ips` on www01 via admin API
+  2. Query www02 DB directly: `SELECT * FROM blocked_ips` — 0 rows
+- **Expected**: cluster-replicated like `Provider`, `ModelCapability`, `LmrhDims`
+- **Actual**: the v3.7.x tables that landed quickly all skipped the sync list:
+  - `blocked_ips` (v3.7.11)
+  - `api_key_ai_review` (v3.7.10)
+  - `external_usage_snapshot` (v3.7.0) — partial: `Provider.anthropic_session_captured_at` syncs but the snapshot rows don't
+- **Why this matters**:
+  - `blocked_ips`: admin blocks an IP on one node; peers don't enforce until their own scrape catches it (n/a at v3.7.x — peers don't scrape, so peers never block)
+  - `api_key_ai_review`: review reports are node-local; operator viewing the UI on www02 won't see reviews that ran on www01
+  - `external_usage_snapshot`: each node scrapes independently, multiplying provider-side load 2-3x for no incremental data
+- **Recommended fix**: add all three to the cluster-sync allowlist with LWW conflict resolution. For `external_usage_snapshot`, additionally elect a single leader to do the scrape and replicate (separate ticket).
+- **Status**: **OPEN** (queued for v3.7.15)
+
+---
+
 ## 2026-05-09 — Open findings (QA pass v3.5.7)
 
 ### BUG-001 — Test isolation failure: `TestVisionStripping::test_text_only_request_passes_through_unchanged`

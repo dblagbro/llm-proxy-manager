@@ -9,6 +9,30 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.7.x — Anthropic Console billing scrape (real account usage)
 
+### v3.7.14 — Hotfix: admin-recovery exemption for IP block middleware (BUG-019)
+
+**Critical lockout deadlock fix.** v3.7.11 introduced IP-blocking via
+admin-managed `blocked_ips`. The middleware runs at the very front of
+the ASGI stack so blocked traffic is rejected before any work runs.
+But it had no exemption: an admin who accidentally blocked their own
+IP could not call `DELETE /api/admin/blocked-ips/{ip}` to un-block —
+the middleware 403'd the request before the endpoint handler ran.
+
+Caught during the post-v3.7.13 QA pass when the operator's LAN-egress
+IP (192.168.18.1) got added to the block list while testing
+BUG-018 (cache invalidation). Recovery required direct DB access.
+
+**Fix**: the middleware now bypasses two narrow path prefixes for any
+caller, blocked or not:
+- `/api/auth/login` — admin can sign in to the UI
+- `/api/admin/blocked-ips` — admin can list, add, or DELETE entries
+
+Everything else still 403s uniformly. Both exempt endpoints remain
+admin-gated (`require_admin`) so a blocked attacker still can't use
+them — they just no longer 403 at the middleware layer. +4 unit
+tests in `tests/unit/test_v3711_ip_block.py` covering the exemption
+and the negative case (other admin paths still blocked).
+
 ### v3.7.13 — Refactor R5: deduplicate `record_outcome` success/error paths
 
 Architectural cleanup pass. Closes a real-pain refactor: every
