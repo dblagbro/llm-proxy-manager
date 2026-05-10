@@ -43,6 +43,7 @@ from app.api.lmrh import router as lmrh_router
 from app.api.llm_models import router as llm_models_router
 from app.api.anthropic_billing import router as anthropic_billing_router
 from app.api.ai_rate_limiter import router as ai_rate_limiter_router
+from app.api.blocked_ips import router as blocked_ips_router
 from app.observability.otel import init_tracer
 from app.observability.prometheus import metrics_response, set_service_info, observe_circuit_breaker_state
 
@@ -300,6 +301,14 @@ app.add_middleware(
 )
 
 
+# v3.7.11 — IP block middleware. Registered FIRST in this file (which
+# means it runs OUTERMOST in the ASGI stack — first to see the request,
+# last to see the response). Returns 403 early for blocked source IPs
+# without touching auth, routing, or any expensive code paths.
+from app.middleware.ip_block import ip_block_middleware  # noqa: E402
+app.middleware("http")(ip_block_middleware)
+
+
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
     # v3.6.2 — capture client IP into a contextvar at request entry so
@@ -375,6 +384,7 @@ app.include_router(lmrh_router)
 app.include_router(llm_models_router)
 app.include_router(anthropic_billing_router)
 app.include_router(ai_rate_limiter_router)
+app.include_router(blocked_ips_router)
 # v3.3.0: LMRHv2 endpoints (feature-flagged via lmrh_v2_enabled).
 # Same /lmrh/* prefix as v1; new paths don't collide with existing ones.
 from app.api.lmrh_v2 import router as lmrh_v2_router  # noqa: E402
