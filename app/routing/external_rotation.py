@@ -194,6 +194,114 @@ def is_currently_at_capacity(provider: Provider) -> bool:
     return skip > now
 
 
+# v3.7.4 — utilization-weighted preference for claude-oauth providers.
+# In-process cache keyed by node. Refreshes when the underlying
+# snapshot data changes (we don't watch for that — just a 30s TTL).
+import time as _time
+_util_cache: dict[str, tuple[float, dict[str, float]]] = {}
+_UTIL_CACHE_TTL_SEC = 30.0
+
+
+async def get_utilization_map(db: AsyncSession) -> dict[str, float]:
+    """Return {provider_id: latest seven_day_utilization} for every
+    provider with a non-null snapshot. Cached 30s per process.
+
+    Used by the router to re-order claude-oauth providers by current
+    headroom. Returns an empty dict if the snapshot table is empty
+    (graceful degrade — router falls back to operator priority).
+    """
+    now = _time.monotonic()
+    cached = _util_cache.get("default")
+    if cached and cached[0] > now:
+        return cached[1]
+    rs = await db.execute(
+        select(
+            ExternalUsageSnapshot.provider_id,
+            ExternalUsageSnapshot.seven_day_utilization,
+            ExternalUsageSnapshot.captured_at,
+        )
+        .where(ExternalUsageSnapshot.seven_day_utilization.is_not(None))
+        .order_by(desc(ExternalUsageSnapshot.captured_at))
+    )
+    # Walk results newest-first, take first non-null per provider.
+    util_map: dict[str, float] = {}
+    for pid, util, _ in rs.all():
+        if pid not in util_map:
+            util_map[pid] = float(util)
+    _util_cache["default"] = (now + _UTIL_CACHE_TTL_SEC, util_map)
+    return util_map
+
+
+def _utilization_bucket(util: Optional[float], bucket_size_pct: float = 25.0) -> int:
+    """Convert a utilization percent into a coarse bucket index.
+
+    Returns a non-negative integer; smaller = more headroom = preferred.
+    Default bucket size 25pp → 0=0-24%, 1=25-49%, 2=50-74%, 3=75-99%, 4=100%.
+    A coarse-grained bucket avoids constant reordering when utilization
+    changes by trivial amounts. ``None`` (no snapshot) maps to the
+    "no data" bucket which sorts AFTER known-good buckets, so a
+    provider with snapshot data preferentially wins over one without.
+    """
+    if util is None:
+        return 999  # "no data" — sorts last among claude-oauth
+    if util < 0:
+        return 0
+    return max(0, int(util // max(bucket_size_pct, 1.0)))
+
+
+def reorder_claude_oauth_by_utilization(
+    providers: list[Provider],
+    util_map: dict[str, float],
+    *,
+    bucket_size_pct: float = 25.0,
+) -> list[Provider]:
+    """Return ``providers`` with claude-oauth entries re-sorted by
+    (utilization_bucket, operator_priority). Non-claude-oauth
+    entries occupy the same positions they did originally — only
+    the claude-oauth subset is shuffled among its own slots.
+
+    Why this design: operator-set priority encodes cost class, account
+    preference, and other dimensions not captured by utilization. We
+    don't want to route a $$$ per-call provider just because its
+    utilization happens to be lower than a subscription provider.
+    Limiting the reorder to within the claude-oauth subset preserves
+    the operator's coarse-grained ordering while expressing
+    "use the account with more headroom" within the subscription pool.
+
+    No-op when fewer than 2 claude-oauth providers are present.
+    """
+    if not providers:
+        return providers
+    oauth_positions = [i for i, p in enumerate(providers) if p.provider_type == "claude-oauth"]
+    if len(oauth_positions) < 2:
+        return providers
+    oauth_subset = [providers[i] for i in oauth_positions]
+
+    def _key(p: Provider) -> tuple:
+        util = util_map.get(p.id)
+        bucket = _utilization_bucket(util, bucket_size_pct)
+        return (bucket, p.priority)
+
+    sorted_subset = sorted(oauth_subset, key=_key)
+    if all(a is b for a, b in zip(sorted_subset, oauth_subset)):
+        return providers  # already in correct order — avoid list-copy
+    result = list(providers)
+    for idx, p in zip(oauth_positions, sorted_subset):
+        result[idx] = p
+    return result
+
+
+def _bucket_size_setting() -> float:
+    try:
+        from app.config import settings
+        v = getattr(settings, "external_rotation_util_bucket_pct", None)
+        if v is not None:
+            return float(v)
+    except Exception:
+        pass
+    return 25.0
+
+
 def _iso(dt: Optional[datetime]) -> Optional[str]:
     if dt is None:
         return None

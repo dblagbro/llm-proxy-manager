@@ -360,9 +360,32 @@ async def select_provider(
     # automatically include the provider again. Operator-set
     # ``priority`` and ``enabled`` are preserved unchanged — this
     # filter is purely additive.
-    from app.routing.external_rotation import is_currently_at_capacity
+    from app.routing.external_rotation import (
+        is_currently_at_capacity,
+        get_utilization_map,
+        reorder_claude_oauth_by_utilization,
+        _bucket_size_setting,
+    )
     pre_filter_count = len(providers)
     providers = [p for p in providers if not is_currently_at_capacity(p)]
+    # v3.7.4 — utilization-weighted preference for claude-oauth providers.
+    # Among claude-oauth entries, rank by (utilization_bucket,
+    # operator_priority). The lowest-util account in each bucket
+    # wins. Non-claude-oauth providers keep their operator-priority
+    # slot unchanged. This expresses "prefer the account with more
+    # headroom" without overriding operator-encoded cost-class /
+    # account-preference signals.
+    try:
+        util_map = await get_utilization_map(db)
+        providers = reorder_claude_oauth_by_utilization(
+            providers, util_map, bucket_size_pct=_bucket_size_setting(),
+        )
+    except Exception as _e:
+        # Defensive: routing must never crash on a snapshot-table issue.
+        import logging as _log
+        _log.getLogger(__name__).warning(
+            "external_rotation.utilization_reorder_failed err=%s", _e,
+        )
     if not providers:
         # Defensive — if every provider is auto-skipped we'd hard-fail
         # the request. Better to fall through to the original list

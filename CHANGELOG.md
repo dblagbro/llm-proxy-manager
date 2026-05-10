@@ -9,6 +9,52 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.7.x — Anthropic Console billing scrape (real account usage)
 
+### v3.7.4 — Utilization-weighted preference among claude-oauth providers
+
+Operator surfaced the gap in v3.7.1: skip-based rotation correctly
+handled the "Gmail at 100%" case (filter it out), but didn't express
+the more general "use the account with more headroom" preference
+below threshold. If Gmail were at 80% and VG at 20%, v3.7.1 still
+preferred Gmail (operator priority=4 > priority=5).
+
+v3.7.4 adds utilization-weighted reordering **within the claude-oauth
+subset**. Among claude-oauth providers, sort by
+``(utilization_bucket, operator_priority)``. Non-claude-oauth
+providers keep their operator-priority slot unchanged — we don't
+shuffle $$$ per-call providers based on subscription-account
+utilization.
+
+- **`reorder_claude_oauth_by_utilization(providers, util_map)`**
+  (`app/routing/external_rotation.py`) — reorders only the
+  claude-oauth slots, preserves non-oauth positions.
+- **`get_utilization_map(db)`** — 30s TTL cache of latest
+  `seven_day_utilization` per provider from
+  `external_usage_snapshot`. Single query, cached so per-request
+  cost is O(1).
+- **Buckets**: default 25pp (0-24% / 25-49% / 50-74% / 75-99% / 100%).
+  Coarse-grained to avoid flapping on trivial differential. Tunable
+  via `EXTERNAL_ROTATION_UTIL_BUCKET_PCT`.
+- **Tie-breaker**: same-bucket providers follow operator priority,
+  preserving operator-encoded preferences when utilizations are
+  comparable.
+- **Provider-with-data > provider-without**: claude-oauth providers
+  without a snapshot get a "no data" bucket that sorts after all
+  known-data buckets, so a recently-scraped provider preferentially
+  wins over an unscanned one.
+
+Effect on operator's current state:
+- Gmail at 100% (bucket 4), VG at 24% (bucket 0)
+- Within claude-oauth subset: VG ranks first (bucket 0 < bucket 4)
+- Net: VG preferred regardless of operator priority order
+- (v3.7.1's skip already filters Gmail entirely at 100% — v3.7.4
+  makes the behavior correct for the not-yet-at-capacity case too)
+
+Defensive: routing wrapped in try/except — utilization reorder
+failures fall back to operator priority unchanged.
+
+19 new tests including the exact operator scenario as
+`test_operator_scenario_swaps_gmail_vg`. **1223 → 1242 passing**.
+
 ### v3.7.3 — Cluster-sync the auto-rotation skip decisions
 
 Real bug found while watching v3.7.1 in production: only `www01`
