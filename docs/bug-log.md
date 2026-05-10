@@ -10,15 +10,15 @@ Add new findings on top. When status changes, leave the row in place and update 
 
 ### Remediation plan (priority order)
 
-| # | Item | Severity | Status | Sized to |
-|---|------|----------|--------|---------|
-| 1 | BUG-019 — admin lockout deadlock | **CRITICAL** | ✅ FIXED in v3.7.14 | shipped same session |
-| 2 | BUG-016 — cluster sync gap (3 new tables) | medium | OPEN | v3.7.15 (1 PR, +3 sync entries + 3 unit tests) |
-| 3 | BUG-017 — AI rate limiter recursion guard | high | OPEN | v3.7.15 (1 PR, tag-and-filter pattern) |
-| 4 | BUG-018 — IP block cache invalidation cross-node | medium | OPEN | v3.7.15 (piggyback on BUG-016 sync hookpoint) |
-| 5 | UI Backlog A — claude-oauth legacy usage fields | enhancement | ✅ FIXED in v3.7.14 (collapsed behind disclosure) | shipped same session |
-| 6 | UI Backlog B — codex-oauth → ChatGPT-oauth-plan UI label | enhancement | ✅ FIXED in v3.7.14 (label-only) | shipped same session |
-| 7 | Full data rename — codex-oauth value → ChatGPT-oauth-plan | enhancement | OPEN — needs operator approval | see scope below |
+| # | Item | Severity | Status |
+|---|------|----------|--------|
+| 1 | BUG-019 — admin lockout deadlock | **CRITICAL** | ✅ FIXED in v3.7.14 |
+| 2 | BUG-016 — cluster sync gap (3 new tables) | medium | ✅ FIXED in v3.7.15 (+ tombstone column for blocked_ips DELETE propagation) |
+| 3 | BUG-017 — AI rate limiter recursion guard | high | ✅ FIXED in v3.7.15 (X-Internal-Source tag + filter) |
+| 4 | BUG-018 — IP block cache invalidation cross-node | medium | ✅ FIXED in v3.7.15 (bundled with BUG-016) |
+| 5 | UI Backlog A — claude-oauth legacy usage fields | enhancement | ✅ FIXED in v3.7.14 (collapsed behind disclosure) |
+| 6 | UI Backlog B — codex-oauth → ChatGPT-oauth-plan UI label | enhancement | ✅ FIXED in v3.7.14 (label-only) |
+| 7 | Full data rename — codex-oauth value → ChatGPT-oauth-plan | enhancement | OPEN — needs operator approval (breaking; v3.8.0) |
 
 ### Open scope item: full-value rename of `codex-oauth` provider_type
 
@@ -68,7 +68,7 @@ Files touched (highest-impact, sample):
   ```
 - **Status**: **FIXED in v3.7.14** (cluster on .14)
 
-### BUG-018 — IP block cache invalidation is single-node (peers wait ≤30s)
+### BUG-018 — IP block cache invalidation is single-node (peers wait ≤30s) ✅ FIXED in v3.7.15
 
 - **Severity**: medium (timing window, not data integrity)
 - **Area**: `app/middleware/ip_block.py` (`_TTL_SEC = 30.0`)
@@ -82,7 +82,7 @@ Files touched (highest-impact, sample):
 - **Recommended fix**: emit a cluster-sync event for `blocked_ips` writes that calls `_clear_cache_for_tests()` on receipt. Low-risk; pattern already exists for other admin writes.
 - **Status**: **OPEN** — accept timing window for now (admin writes are rare; 30s peer-stale window is acceptable for v3.7.x)
 
-### BUG-017 — AI rate limiter has no recursion guard for its own LLM calls
+### BUG-017 — AI rate limiter has no recursion guard for its own LLM calls ✅ FIXED in v3.7.15
 
 - **Severity**: high (cost-amplifier risk; not a runtime crash)
 - **Area**: `app/monitoring/ai_rate_limiter.py` (v3.7.10 + v3.7.12)
@@ -96,7 +96,7 @@ Files touched (highest-impact, sample):
 - **Recommended fix**: tag activity_log rows from the AI rate limiter (`event_meta.source = "ai_rate_limiter"`) and exclude them in `compute_stats` / `pick_sample_previews`. Add a recursion-depth header on the outgoing httpx request as belt-and-braces.
 - **Status**: **OPEN** (queued for v3.7.15)
 
-### BUG-016 — Three new v3.7.x tables NOT in cluster sync
+### BUG-016 — Three new v3.7.x tables NOT in cluster sync ✅ FIXED in v3.7.15
 
 - **Severity**: medium (multi-node data drift; not a single-node bug)
 - **Area**: `app/cluster/sync.py` table allowlist
