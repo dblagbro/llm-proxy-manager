@@ -125,13 +125,27 @@ def test_empty_string_clears_to_none():
 
 def test_record_outcome_meta_includes_client_ip_field_signature():
     """v3.6.2 must surface client_ip in the meta dict that goes to
-    activity_log. Source-level check that the wiring is in place."""
+    activity_log.
+
+    v3.7.13 R5: the client-IP capture is now in the shared
+    ``_attach_client_ip`` helper called from both success and error
+    branches via ``_build_event_meta_base``. We check the module
+    source rather than just ``record_outcome``'s source so we cover
+    the helper too.
+    """
+    from pathlib import Path
+    src = Path("app/monitoring/helpers.py").read_text()
+    # The shared helper exists and reads both ip variants
+    assert "def _attach_client_ip" in src
+    assert "get_client_ip" in src
+    assert "get_client_ip_inside" in src
+    # Both success and error branches go through _build_event_meta_base
+    # which calls _attach_client_ip — so api_key_id + client_ip are
+    # populated on both paths.
+    assert '"api_key_id"' in src
+    assert 'meta["client_ip"]' in src
+    # And _build_event_meta_base is called from both paths in record_outcome
     import inspect
     from app.monitoring import helpers
-    src = inspect.getsource(helpers.record_outcome)
-    # Both success and error paths read get_client_ip
-    assert src.count("get_client_ip") >= 2
-    # Both paths add api_key_id for joins
-    assert src.count('"api_key_id"') >= 2
-    # client_ip key only added when truthy
-    assert 'meta["client_ip"]' in src
+    fn_src = inspect.getsource(helpers.record_outcome)
+    assert fn_src.count("_build_event_meta_base") >= 2
