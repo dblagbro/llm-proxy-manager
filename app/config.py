@@ -236,6 +236,15 @@ class Settings(BaseSettings):
         5.0, alias="EXTERNAL_ROTATION_HYSTERESIS_PCT",
     )
 
+    # v3.7.4 — bucket size (percentage points) for the utilization-
+    # weighted reorder among claude-oauth providers. Smaller = more
+    # reactive, more potential for flapping when utilization is near
+    # a boundary. Default 25pp means a provider has to be >=25% lower
+    # utilization than another to override operator priority.
+    external_rotation_util_bucket_pct: float = Field(
+        25.0, alias="EXTERNAL_ROTATION_UTIL_BUCKET_PCT",
+    )
+
     # v3.0.98 → v3.1.2 — cluster-sync catalog-table replication.
     #
     # v3.0.96 added ModelCapability/ModelAlias/OAuthCaptureProfile to every
