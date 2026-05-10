@@ -496,15 +496,28 @@ a valid LMRH 1.x hint string — your inference calls keep working.
 
 ## Future work (deferred)
 
-- **Phase 3**: subscription-quota disclosure (`session_used_pct`,
-  `weekly_used_pct`, `session_resets_at`) in `/lmrh/providers` for
-  callers whose key can route to claude-oauth / codex-oauth /
-  grok-web.
-- **Phase 4**: SDK adoption with one downstream caller validating
-  the API shape before publishing the SDK to PyPI.
-- **Per-input/output cost split**: today the snapshot reports a
-  combined cost rate; per-direction split needs a metrics-writer
-  refactor.
+**Status note (2026-05-10)**: the items previously listed here as
+"Phase 3 future work" have all shipped between v3.3.0 and v3.4.0
+(subscription-quota disclosure, per-direction cost split, SSE
+stream endpoint). The remaining real-world gap is **adoption**:
+the spec is complete, the SDK is in `sdk/python/`, but zero
+downstream callers polled `/lmrh/providers` in 24 h as of
+2026-05-10 22:00 EDT. Updating this section to reflect that.
+
+- **Phase 4 — downstream adoption** (open):
+  - Coordinator-hub is the heaviest LMRH 1.x consumer (524 req/24h).
+    Best candidate to validate v2 SDK shape end-to-end.
+  - Outreach message draft: see operator hand-off in session log.
+  - Once one downstream caller is live + stable for 7 days,
+    publish the SDK to PyPI under a stable package name.
+
+- **Phase 5 — proxy→caller bidirectional metrics feedback**
+  (caller-side AI rate limiter design from the 2026-05-10
+  7-question discussion — Q5 answer already shipped in v3.7.10/11/12;
+  remaining LMRHv2 design questions Q2/Q3/Q4/Q6/Q7 "all 4 as
+  proposed" need re-surfaced to operator since the original
+  question set isn't in a committed doc).
+
 - **Server-Sent Events push**: today's polling is sufficient at
   60 s cadence; SSE-driven updates are a v3.4+ enhancement if
   callers ask.
