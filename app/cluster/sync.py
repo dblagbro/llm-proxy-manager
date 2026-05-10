@@ -729,8 +729,170 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
             if p_data.get("notes") != existing.notes:
                 existing.notes = p_data.get("notes")
 
+    # v3.7.15 — BUG-016: merge the three v3.7.x tables. LWW by
+    # added_at / captured_at. Tracks whether the block-list mutated
+    # so we can invalidate the middleware cache after commit
+    # (BUG-018 fix).
+    blocked_ips_changed = await _apply_blocked_ips(db, payload.get("blocked_ips", []))
+    await _apply_ai_reviews(db, payload.get("api_key_ai_reviews", []))
+    await _apply_external_usage_snapshots(db, payload.get("external_usage_snapshots", []))
+
     await db.commit()
+
+    # v3.7.15 — BUG-018: peer nodes were waiting up to 30s for their
+    # in-memory cache to expire after an admin block was synced. Now
+    # we invalidate explicitly on receipt — the next request reloads
+    # from the freshly-synced row.
+    if blocked_ips_changed:
+        try:
+            from app.middleware.ip_block import _clear_cache_for_tests
+            _clear_cache_for_tests()
+            logger.info("cluster_ip_block_cache_invalidated")
+        except Exception as exc:
+            logger.warning("cluster_ip_block_cache_invalidate_failed err=%s", exc)
 
     if settings_to_apply:
         config_runtime.apply(settings_to_apply)
         logger.info("cluster_settings_applied count=%s keys=%s", len(settings_to_apply), list(settings_to_apply))
+
+
+async def _apply_blocked_ips(db: AsyncSession, rows: list[dict]) -> bool:
+    """v3.7.15 — merge incoming blocked_ips. Returns True if any
+    row was inserted, updated, or tombstoned (so the caller can
+    invalidate the ip_block middleware cache).
+
+    LWW semantics:
+      - peer.deleted_at non-null + > local.deleted_at → propagate tombstone
+      - peer.added_at > local.added_at AND peer.deleted_at is null →
+        re-arm (clears local tombstone if any)
+      - otherwise no-op
+    """
+    from app.models.db import BlockedIp
+    changed = False
+    for r in rows:
+        ip = (r.get("ip") or "").strip()
+        if not ip:
+            continue
+        peer_added_at = _parse_iso_or_none(r.get("added_at"))
+        peer_deleted_at = _parse_iso_or_none(r.get("deleted_at"))
+        result = await db.execute(select(BlockedIp).where(BlockedIp.ip == ip))
+        existing = result.scalar_one_or_none()
+        if existing is None:
+            db.add(BlockedIp(
+                ip=ip,
+                reason=r.get("reason"),
+                added_by=r.get("added_by"),
+                added_at=peer_added_at,
+                deleted_at=peer_deleted_at,
+            ))
+            # Only counts as "changed cache state" if the row is live
+            if peer_deleted_at is None:
+                changed = True
+        else:
+            # Tombstone propagation: peer says deleted, local doesn't
+            # know yet (or is older). Adopt the tombstone.
+            if peer_deleted_at and (
+                existing.deleted_at is None or peer_deleted_at > existing.deleted_at
+            ):
+                existing.deleted_at = peer_deleted_at
+                changed = True
+            # Re-arm: peer's added_at is newer than ours AND peer has
+            # no tombstone — clear local tombstone, update fields.
+            elif peer_added_at and peer_deleted_at is None and (
+                existing.added_at is None or peer_added_at > existing.added_at
+            ):
+                if existing.deleted_at is not None:
+                    existing.deleted_at = None
+                    changed = True
+                if existing.reason != r.get("reason"):
+                    existing.reason = r.get("reason")
+                    changed = True
+                if existing.added_by != r.get("added_by"):
+                    existing.added_by = r.get("added_by")
+                    changed = True
+    return changed
+
+
+async def _apply_ai_reviews(db: AsyncSession, rows: list[dict]) -> None:
+    """v3.7.15 — merge incoming api_key_ai_review rows. PK is
+    auto-increment integer per node, so we de-dup by
+    (api_key_id, captured_at). LWW on the lifecycle fields
+    (applied_at / reverted_at / dismissed_at)."""
+    from app.models.db import ApiKeyAiReview
+    for r in rows:
+        api_key_id = r.get("api_key_id")
+        captured_at = _parse_iso_or_none(r.get("captured_at"))
+        if not (api_key_id and captured_at):
+            continue
+        existing = (await db.execute(
+            select(ApiKeyAiReview)
+            .where(ApiKeyAiReview.api_key_id == api_key_id)
+            .where(ApiKeyAiReview.captured_at == captured_at)
+        )).scalar_one_or_none()
+        if existing is None:
+            db.add(ApiKeyAiReview(
+                api_key_id=api_key_id,
+                captured_at=captured_at,
+                llm_model=r.get("llm_model"),
+                llm_verdict=r.get("llm_verdict") or "watch",
+                llm_reasoning=r.get("llm_reasoning"),
+                suggested_action=r.get("suggested_action") or "none",
+                stats_summary=r.get("stats_summary"),
+                applied_at=_parse_iso_or_none(r.get("applied_at")),
+                applied_action=r.get("applied_action"),
+                prior_rate_limit_rpm=r.get("prior_rate_limit_rpm"),
+                reverted_at=_parse_iso_or_none(r.get("reverted_at")),
+                dismissed_at=_parse_iso_or_none(r.get("dismissed_at")),
+                suggested_block_ip=r.get("suggested_block_ip"),
+            ))
+        else:
+            # Lifecycle transitions are monotone (None → set), so we
+            # accept any non-None peer value the local row doesn't have.
+            for field in ("applied_at", "reverted_at", "dismissed_at"):
+                peer_val = _parse_iso_or_none(r.get(field))
+                if peer_val and getattr(existing, field) is None:
+                    setattr(existing, field, peer_val)
+            if r.get("applied_action") and not existing.applied_action:
+                existing.applied_action = r["applied_action"]
+
+
+async def _apply_external_usage_snapshots(db: AsyncSession, rows: list[dict]) -> None:
+    """v3.7.15 — merge incoming external_usage_snapshot rows. Each row
+    represents one provider's latest snapshot at peer-capture-time.
+    Insert if no row exists at that exact captured_at; append-only
+    (we never overwrite history)."""
+    from app.models.db import ExternalUsageSnapshot
+    for r in rows:
+        provider_id = r.get("provider_id")
+        captured_at = _parse_iso_or_none(r.get("captured_at"))
+        if not (provider_id and captured_at):
+            continue
+        existing = (await db.execute(
+            select(ExternalUsageSnapshot)
+            .where(ExternalUsageSnapshot.provider_id == provider_id)
+            .where(ExternalUsageSnapshot.captured_at == captured_at)
+            .limit(1)
+        )).scalar_one_or_none()
+        if existing is not None:
+            continue
+        db.add(ExternalUsageSnapshot(
+            provider_id=provider_id,
+            captured_at=captured_at,
+            source=r.get("source") or "anthropic_console_v1",
+            http_status=r.get("http_status"),
+            error=r.get("error"),
+            auth_state=r.get("auth_state"),
+            five_hour_utilization=r.get("five_hour_utilization"),
+            five_hour_resets_at=_parse_iso_or_none(r.get("five_hour_resets_at")),
+            seven_day_utilization=r.get("seven_day_utilization"),
+            seven_day_resets_at=_parse_iso_or_none(r.get("seven_day_resets_at")),
+            seven_day_sonnet_utilization=r.get("seven_day_sonnet_utilization"),
+            seven_day_sonnet_resets_at=_parse_iso_or_none(r.get("seven_day_sonnet_resets_at")),
+            seven_day_opus_utilization=r.get("seven_day_opus_utilization"),
+            seven_day_opus_resets_at=_parse_iso_or_none(r.get("seven_day_opus_resets_at")),
+            extra_usage_is_enabled=r.get("extra_usage_is_enabled"),
+            extra_usage_monthly_limit=r.get("extra_usage_monthly_limit"),
+            extra_usage_used_credits=r.get("extra_usage_used_credits"),
+            extra_usage_utilization=r.get("extra_usage_utilization"),
+            extra_usage_currency=r.get("extra_usage_currency"),
+        ))

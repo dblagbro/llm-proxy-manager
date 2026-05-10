@@ -35,9 +35,19 @@ def test_provider_form_takes_provider_prop():
 
 def test_old_usage_section_marks_superseded_for_claude_oauth():
     """The legacy 'Usage-based rotation' section must surface a
-    'superseded' note when the provider is claude-oauth."""
+    superseded/disabled note when the provider is claude-oauth.
+
+    v3.7.14: the section is now collapsed by default behind a
+    "(disabled — External Usage above is authoritative)" badge with
+    a "Show legacy fields (advanced)" toggle. Either phrasing is
+    acceptable evidence the section is no longer the default rotation
+    signal for claude-oauth providers."""
     src = Path("frontend/src/components/providers/ProviderForm.tsx").read_text()
-    assert "superseded by External Usage above" in src
+    has_supersede_note = (
+        "superseded by External Usage above" in src
+        or "External Usage above is authoritative" in src
+    )
+    assert has_supersede_note
 
 
 def test_providers_page_passes_provider_to_form():

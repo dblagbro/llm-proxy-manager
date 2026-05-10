@@ -65,7 +65,11 @@ async def _load_blocked_set() -> frozenset[str]:
         from app.models.database import AsyncSessionLocal
         from app.models.db import BlockedIp
         async with AsyncSessionLocal() as db:
-            rs = await db.execute(select(BlockedIp.ip))
+            # v3.7.15 — filter tombstoned rows so cluster-replicated
+            # deletions don't keep blocking traffic.
+            rs = await db.execute(
+                select(BlockedIp.ip).where(BlockedIp.deleted_at.is_(None))
+            )
             return frozenset(r[0] for r in rs.all() if r[0])
     except Exception as exc:
         logger.warning("ip_block.cache_load_failed err=%s", exc)

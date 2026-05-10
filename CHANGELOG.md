@@ -9,6 +9,49 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.7.x — Anthropic Console billing scrape (real account usage)
 
+### v3.7.15 — Cluster sync for three v3.7.x tables (BUG-016) + cross-node IP-block cache invalidation (BUG-018) + AI rate limiter recursion guard (BUG-017)
+
+Closes the three open bugs from the v3.7.13 / v3.7.14 QA pass.
+
+**BUG-017 — AI rate limiter recursion guard (high)**
+
+The AI rate limiter calls `http://localhost:3000/v1/messages` with an
+internal admin key to classify per-key behavior. Pre-fix: that call
+was logged to `activity_log` like any other request, so the *next*
+review cycle pulled it into the sample, slowly amplifying prompt
+size + cost O(n²).
+
+Fix: outgoing httpx request from `classify_with_llm()` now carries
+`X-Internal-Source: ai_rate_limiter`. The middleware reads the header
+into a contextvar; `record_outcome()` stamps it onto
+`event_meta.internal_source`; `review_one_key()` filters out those
+rows from the sample so the AI can't see its own previous calls.
+
+**BUG-016 — cluster sync for the three new v3.7.x tables (medium)**
+
+`blocked_ips`, `api_key_ai_review`, `external_usage_snapshot` landed
+quickly without being added to the cluster-sync allowlist. Result:
+admin blocks on one node didn't propagate, reviews were node-local,
+and each node scraped Anthropic independently (2-3x provider load).
+
+Fix: `_build_sync_payload` now emits three new sections; `apply_sync`
+gained three new merge helpers (`_apply_blocked_ips`,
+`_apply_ai_reviews`, `_apply_external_usage_snapshots`) with LWW
+conflict resolution. Plus a `deleted_at` tombstone column on
+`BlockedIp` so DELETEs propagate (admin DELETE is now soft-delete +
+`deleted_at IS NULL` filter in the middleware loader + list endpoint).
+
+**BUG-018 — IP-block cache invalidation on peer nodes (medium)**
+
+Pre-fix: peers waited up to 30s for their in-memory cache TTL after
+a block synced. Fix: `apply_sync` checks whether `_apply_blocked_ips`
+mutated the table (insert / update / tombstone) and calls
+`_clear_cache_for_tests()` so the next request reloads from the
+freshly-synced rows. Bundles into the BUG-016 sync path.
+
+Tests: +19 unit tests in `tests/unit/test_v3715_cluster_sync_v37x.py`
+plus +5 in `test_v3710_ai_rate_limiter.py`. 1358/1358 pass.
+
 ### v3.7.14 — Hotfix: admin-recovery exemption for IP block middleware (BUG-019)
 
 **Critical lockout deadlock fix.** v3.7.11 introduced IP-blocking via

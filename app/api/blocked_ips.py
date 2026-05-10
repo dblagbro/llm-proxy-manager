@@ -16,7 +16,8 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
+from datetime import datetime as _dt, timezone as _tz
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.admin import AdminUser, require_admin
@@ -45,7 +46,12 @@ async def list_blocked_ips(
     db: AsyncSession = Depends(get_db),
     _: AdminUser = Depends(require_admin),
 ):
-    rs = await db.execute(select(BlockedIp).order_by(BlockedIp.added_at.desc()))
+    # v3.7.15 — filter tombstoned rows; the admin UI shows only live blocks.
+    rs = await db.execute(
+        select(BlockedIp)
+        .where(BlockedIp.deleted_at.is_(None))
+        .order_by(BlockedIp.added_at.desc())
+    )
     return [_serialize(b) for b in rs.scalars().all()]
 
 
@@ -65,7 +71,15 @@ async def add_blocked_ip(
     rs = await db.execute(select(BlockedIp).where(BlockedIp.ip == body.ip))
     existing = rs.scalar_one_or_none()
     if existing is not None:
-        if body.reason and body.reason != existing.reason:
+        # v3.7.15 — re-arm a previously-tombstoned row by clearing
+        # deleted_at + bumping added_at + recording the new actor.
+        if existing.deleted_at is not None:
+            existing.deleted_at = None
+            existing.added_at = _dt.now(_tz.utc)
+            existing.added_by = admin.username
+            if body.reason:
+                existing.reason = body.reason
+        elif body.reason and body.reason != existing.reason:
             existing.reason = body.reason
             existing.added_by = admin.username
         await db.commit()
@@ -92,12 +106,22 @@ async def remove_blocked_ip(
     db: AsyncSession = Depends(get_db),
     _: AdminUser = Depends(require_admin),
 ):
-    """Remove an IP from the block list. 404 if not currently blocked."""
-    rs = await db.execute(select(BlockedIp).where(BlockedIp.ip == ip))
+    """Remove an IP from the block list. 404 if not currently blocked.
+
+    v3.7.15 — soft-delete (sets ``deleted_at``) so the removal
+    propagates through cluster sync as a tombstone. Peer nodes
+    apply the tombstone and invalidate their middleware cache.
+    Hard-delete remains available via the cluster janitor for old
+    tombstones."""
+    rs = await db.execute(
+        select(BlockedIp)
+        .where(BlockedIp.ip == ip)
+        .where(BlockedIp.deleted_at.is_(None))
+    )
     existing = rs.scalar_one_or_none()
     if existing is None:
         raise HTTPException(404, "IP not in block list")
-    await db.execute(delete(BlockedIp).where(BlockedIp.ip == ip))
+    existing.deleted_at = _dt.now(_tz.utc)
     await db.commit()
     from app.middleware.ip_block import _clear_cache_for_tests
     _clear_cache_for_tests()

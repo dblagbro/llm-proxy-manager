@@ -251,6 +251,75 @@ async def _build_sync_payload(db) -> dict:
         model_capabilities = []
         model_aliases = []
         oauth_capture_profiles = []
+    # v3.7.15 — BUG-016: replicate the three v3.7.x tables that landed
+    # in a hurry without sync entries. LWW conflict resolution: latest
+    # added_at / captured_at wins.
+    from app.models.db import BlockedIp, ApiKeyAiReview, ExternalUsageSnapshot
+    # Include tombstoned rows so peers learn about deletions.
+    blocked_rs = await db.execute(select(BlockedIp))
+    blocked_ips_payload = [
+        {"ip": b.ip, "reason": b.reason, "added_by": b.added_by,
+         "added_at": b.added_at.isoformat() if b.added_at else None,
+         "deleted_at": b.deleted_at.isoformat() if b.deleted_at else None}
+        for b in blocked_rs.scalars().all()
+    ]
+    # Reviews — last 7 days is plenty for cross-node visibility; older
+    # rows are operator-audit-only and don't need to be on every node.
+    from datetime import timedelta as _td, datetime as _dtnow, timezone as _tz
+    cutoff = _dtnow.now(_tz.utc) - _td(days=7)
+    reviews_rs = await db.execute(select(ApiKeyAiReview).where(ApiKeyAiReview.captured_at >= cutoff))
+    ai_reviews_payload = [
+        {"id": r.id, "api_key_id": r.api_key_id,
+         "captured_at": r.captured_at.isoformat() if r.captured_at else None,
+         "llm_model": r.llm_model, "llm_verdict": r.llm_verdict,
+         "llm_reasoning": r.llm_reasoning, "suggested_action": r.suggested_action,
+         "stats_summary": r.stats_summary,
+         "applied_at": r.applied_at.isoformat() if r.applied_at else None,
+         "applied_action": r.applied_action,
+         "prior_rate_limit_rpm": r.prior_rate_limit_rpm,
+         "reverted_at": r.reverted_at.isoformat() if r.reverted_at else None,
+         "dismissed_at": r.dismissed_at.isoformat() if r.dismissed_at else None,
+         "suggested_block_ip": r.suggested_block_ip}
+        for r in reviews_rs.scalars().all()
+    ]
+    # External usage snapshots: only keep the LATEST per (provider_id)
+    # cluster-wide. Older history is per-node audit; the routing layer
+    # only consults the latest row. Each node also has its own scrape
+    # in case the leader's last scrape was stale.
+    from sqlalchemy import func as _sqlfunc
+    latest_per_provider = (
+        select(ExternalUsageSnapshot.provider_id,
+               _sqlfunc.max(ExternalUsageSnapshot.captured_at).label("last_at"))
+        .group_by(ExternalUsageSnapshot.provider_id)
+        .subquery()
+    )
+    snap_rs = await db.execute(
+        select(ExternalUsageSnapshot).join(
+            latest_per_provider,
+            (ExternalUsageSnapshot.provider_id == latest_per_provider.c.provider_id)
+            & (ExternalUsageSnapshot.captured_at == latest_per_provider.c.last_at)
+        )
+    )
+    external_usage_payload = [
+        {"provider_id": s.provider_id,
+         "captured_at": s.captured_at.isoformat() if s.captured_at else None,
+         "source": s.source, "http_status": s.http_status,
+         "error": s.error, "auth_state": s.auth_state,
+         "five_hour_utilization": s.five_hour_utilization,
+         "five_hour_resets_at": s.five_hour_resets_at.isoformat() if s.five_hour_resets_at else None,
+         "seven_day_utilization": s.seven_day_utilization,
+         "seven_day_resets_at": s.seven_day_resets_at.isoformat() if s.seven_day_resets_at else None,
+         "seven_day_sonnet_utilization": s.seven_day_sonnet_utilization,
+         "seven_day_sonnet_resets_at": s.seven_day_sonnet_resets_at.isoformat() if s.seven_day_sonnet_resets_at else None,
+         "seven_day_opus_utilization": s.seven_day_opus_utilization,
+         "seven_day_opus_resets_at": s.seven_day_opus_resets_at.isoformat() if s.seven_day_opus_resets_at else None,
+         "extra_usage_is_enabled": s.extra_usage_is_enabled,
+         "extra_usage_monthly_limit": s.extra_usage_monthly_limit,
+         "extra_usage_used_credits": s.extra_usage_used_credits,
+         "extra_usage_utilization": s.extra_usage_utilization,
+         "extra_usage_currency": s.extra_usage_currency}
+        for s in snap_rs.scalars().all()
+    ]
     return {
         "source_node": settings.cluster_node_id,
         "timestamp": time.time(),
@@ -263,6 +332,10 @@ async def _build_sync_payload(db) -> dict:
         "model_capabilities": model_capabilities,
         "model_aliases": model_aliases,
         "oauth_capture_profiles": oauth_capture_profiles,
+        # v3.7.15 — BUG-016
+        "blocked_ips": blocked_ips_payload,
+        "api_key_ai_reviews": ai_reviews_payload,
+        "external_usage_snapshots": external_usage_payload,
     }
 
 

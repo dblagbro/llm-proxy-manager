@@ -293,3 +293,56 @@ def test_api_key_ai_review_model_exists():
     }
     missing = expected - cols
     assert not missing, f"missing columns: {missing}"
+
+
+# ── v3.7.15 — BUG-017 recursion guard ─────────────────────────────
+
+
+def test_classify_with_llm_sends_internal_source_header():
+    """Outgoing httpx request must carry X-Internal-Source: ai_rate_limiter
+    so the activity-log row gets tagged and excluded from next cycle."""
+    from pathlib import Path
+    src = Path("app/monitoring/ai_rate_limiter.py").read_text()
+    # The header literal must be present in classify_with_llm's headers dict
+    assert "X-Internal-Source" in src
+    assert '"ai_rate_limiter"' in src
+
+
+def test_review_one_key_filters_internal_source_in_source():
+    """review_one_key() must skip rows whose metadata.internal_source
+    matches our own tag — defensive filter in case the meta gets stamped."""
+    from pathlib import Path
+    src = Path("app/monitoring/ai_rate_limiter.py").read_text()
+    assert "internal_source" in src
+    assert 'ai_rate_limiter' in src
+    # Specifically: a filter expression on r.metadata
+    assert 'get("internal_source")' in src or 'get(\'internal_source\')' in src
+
+
+def test_record_outcome_helper_attaches_internal_source():
+    """_attach_client_ip() (R5 helper) must also pull get_internal_source()
+    so the meta dict carries internal_source when set."""
+    from pathlib import Path
+    src = Path("app/monitoring/helpers.py").read_text()
+    assert "get_internal_source" in src
+    assert 'meta["internal_source"]' in src
+
+
+def test_request_context_exposes_internal_source_helpers():
+    from app.observability.request_context import (
+        set_internal_source, get_internal_source,
+    )
+    set_internal_source("ai_rate_limiter")
+    assert get_internal_source() == "ai_rate_limiter"
+    set_internal_source(None)
+    assert get_internal_source() is None
+
+
+def test_log_requests_middleware_reads_internal_source_header():
+    """log_requests middleware must read the X-Internal-Source header
+    and stamp the contextvar."""
+    from pathlib import Path
+    src = Path("app/main.py").read_text()
+    assert "set_internal_source" in src
+    # Read from request headers
+    assert 'x-internal-source' in src.lower()

@@ -188,6 +188,10 @@ async def init_db():
             # v3.7.12 — new column for the IP that the LLM thinks
             # should be blocked when verdict == "block_ip".
             "ALTER TABLE api_key_ai_review ADD COLUMN suggested_block_ip TEXT",
+            # v3.7.15 — BUG-016: soft-delete tombstone on blocked_ips
+            # so DELETE propagates through cluster sync. Middleware +
+            # admin listing filter ``deleted_at IS NULL``.
+            "ALTER TABLE blocked_ips ADD COLUMN deleted_at DATETIME",
         ]:
             try:
                 await conn.exec_driver_sql(stmt)

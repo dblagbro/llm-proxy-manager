@@ -311,6 +311,11 @@ async def classify_with_llm(
                     "x-api-key": api_key,
                     "anthropic-version": "2023-06-01",
                     "Content-Type": "application/json",
+                    # v3.7.15 — BUG-017: tag this request so its
+                    # activity-log row gets ``meta.internal_source =
+                    # "ai_rate_limiter"`` and the next review cycle
+                    # filters it out (no recursive amplification).
+                    "X-Internal-Source": "ai_rate_limiter",
                 },
             )
         if resp.status_code != 200:
@@ -348,6 +353,10 @@ async def review_one_key(db, api_key, window_min: int = DEFAULT_WINDOW_MIN) -> O
     rows = rs.scalars().all()
     if not rows:
         return None
+    # v3.7.15 — BUG-017: exclude rows tagged as internally-generated
+    # (currently only the AI rate limiter's own LLM calls). Without
+    # this filter, each cycle's reviewer-call is included in the next
+    # cycle's sample, growing prompt size + cost O(n²).
     events = [
         {
             "timestamp": r.timestamp.isoformat() if r.timestamp else "",
@@ -357,7 +366,10 @@ async def review_one_key(db, api_key, window_min: int = DEFAULT_WINDOW_MIN) -> O
             "metadata": r.metadata or {},
         }
         for r in rows
+        if not ((r.metadata or {}).get("internal_source") == "ai_rate_limiter")
     ]
+    if not events:
+        return None
     stats = compute_stats(events)
     samples = pick_sample_previews(events)
     classification = await classify_with_llm(stats, samples, api_key.name or api_key.id)

@@ -171,7 +171,7 @@ def _attach_client_ip(meta: dict) -> None:
     """
     try:
         from app.observability.request_context import (
-            get_client_ip, get_client_ip_inside,
+            get_client_ip, get_client_ip_inside, get_internal_source,
         )
         client_ip = get_client_ip()
         client_ip_inside = get_client_ip_inside()
@@ -181,6 +181,12 @@ def _attach_client_ip(meta: dict) -> None:
         # doubling storage on rows where the rewrite was a no-op.
         if client_ip_inside and client_ip_inside != client_ip:
             meta["client_ip_inside"] = client_ip_inside
+        # v3.7.15 — BUG-017: tag internally-generated traffic (e.g.
+        # the AI rate limiter calling its own proxy) so review sweeps
+        # can exclude it and avoid amplifying their own previous calls.
+        internal_source = get_internal_source()
+        if internal_source:
+            meta["internal_source"] = internal_source
     except Exception:
         pass
 
