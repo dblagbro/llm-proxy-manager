@@ -72,6 +72,26 @@ def matches_capability(requested: str, model_id: str, aliases: Optional[Iterable
     return False
 
 
+# v3.6.0 — known family enum for operator-driven model_family edits.
+# Soft-warn (200 + X-Warning) on values outside this set, NOT a hard
+# reject — operators may legitimately classify novel architectures
+# under non-standard names. Update this set when a new family becomes
+# canonical (e.g. when a major OSS model line emerges).
+#
+# Hub team consumes this constant via the OpenAPI spec for client-side
+# pre-validation of the family field in their model-identity edit UI.
+KNOWN_FAMILIES = frozenset({
+    "claude",
+    "gpt",
+    "gemini",
+    "grok",
+    "llama",
+    "mistral",
+    "cohere",
+    "deepseek",
+})
+
+
 def derive_family(model_id: str) -> str:
     """Strip a single ``provider/`` prefix to produce the bare family
     name. ``x-ai/grok-3`` → ``grok-3``; ``openai/gpt-4o`` → ``gpt-4o``;

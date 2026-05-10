@@ -584,6 +584,10 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
                             if c_data.get("native_vision") is not None else False
                         ),
                         source=c_data.get("source") or "inferred",
+                        # v3.6.0 — replicate identity fields on insert
+                        aliases=c_data.get("aliases") or [],
+                        model_family=c_data.get("model_family"),
+                        model_variant=c_data.get("model_variant"),
                     ))
                     continue
                 # LWW: skip if local is newer or equal
@@ -606,6 +610,16 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
                 if c_data.get("native_vision") is not None:
                     existing.native_vision = bool(c_data["native_vision"])
                 existing.source = c_data.get("source") or existing.source
+                # v3.6.0 — replicate identity fields on update. Use the
+                # ``in c_data`` membership test instead of a truthy check
+                # so an empty list (cleared aliases) or null (cleared
+                # family/variant) overwrites correctly.
+                if "aliases" in c_data:
+                    existing.aliases = c_data.get("aliases") or []
+                if "model_family" in c_data:
+                    existing.model_family = c_data.get("model_family")
+                if "model_variant" in c_data:
+                    existing.model_variant = c_data.get("model_variant")
                 if peer_updated:
                     existing.updated_at = peer_updated
 

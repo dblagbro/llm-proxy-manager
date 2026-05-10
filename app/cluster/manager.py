@@ -206,6 +206,14 @@ async def _build_sync_payload(db) -> dict:
              "native_tools": bool(c.native_tools) if c.native_tools is not None else True,
              "native_vision": bool(c.native_vision) if c.native_vision is not None else False,
              "source": c.source or "inferred",
+             # v3.6.0 — aliases / family / variant must replicate so the
+             # Hub model-identity edit endpoint produces cluster-wide
+             # consistent results. Pre-v3.6.0 these were silently dropped
+             # by the sync apply pass (model_capabilities entries didn't
+             # include them) so a PUT on www01 wouldn't reach www02/GCP.
+             "aliases": c.aliases or [],
+             "model_family": c.model_family,
+             "model_variant": c.model_variant,
              "updated_at": c.updated_at.isoformat() if c.updated_at else None}
             for c in caps_result.scalars().all()
         ]
