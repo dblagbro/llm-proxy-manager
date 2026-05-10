@@ -9,6 +9,50 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.7.x — Anthropic Console billing scrape (real account usage)
 
+### v3.7.11 — IP block middleware (closes Q5 IP-level controls)
+
+Closes the half of operator Q5 that was deferred from v3.7.10:
+*"proactively slow that api key's usage **or it's source ip**"*. v3.7.10
+shipped the key-level controls; v3.7.11 adds the IP-level layer.
+
+- **New table** `blocked_ips` — operator-managed list of IPs that
+  should be rejected with 403 before any auth/routing logic runs.
+  Columns: `ip` (PK), `reason`, `added_at`, `added_by`.
+- **New middleware** `app/middleware/ip_block.py` — registered FIRST
+  in `app/main.py` so it wraps every other middleware (outermost in
+  the ASGI stack = first to see incoming requests).
+  - Checks BOTH `extract_client_ip_from_request` (raw inside IP) AND
+    `_maybe_rewrite_lan_ip` (the LAN-egress public IP from v3.6.3).
+    Operators can block either form depending on attribution model.
+  - 30s in-memory cache so the middleware doesn't hit the DB on
+    every request. New blocks added via the admin endpoint
+    invalidate the local cache instantly; peer nodes pick up via
+    cluster sync + their own 30s refresh.
+  - **Fail-open** on cache load error — better to let traffic through
+    than to 403-everything because of an unrelated DB hiccup.
+- **New admin endpoints** under `/api/admin/blocked-ips/`:
+  - `GET /api/admin/blocked-ips` — list current blocks
+  - `POST /api/admin/blocked-ips` — add an IP (body: `{ip, reason?}`)
+  - `DELETE /api/admin/blocked-ips/{ip:path}` — remove
+- **Light validation**: accepts any non-empty string up to 128 chars.
+  Operator might want to block CIDR ranges, hostnames, or future
+  IPv6 forms — we don't gate on format. Idempotent on POST.
+- **Block rejection is uniform** across the surface — no exempted
+  endpoints (health, login, etc. all return 403 for blocked IPs).
+  Prevents probing for which endpoints are open.
+
+**Not extended into AI rate limiter yet**: v3.7.10's
+`ApiKeyAiReview.suggested_action` enum is still `none / throttle_rpm
+/ disable` — no `block_ip` value. The LLM doesn't currently get the
+specific source IPs in the prompt (only `unique_ips_count`), so it
+can't recommend a specific IP to block. If we want auto-IP-blocking
+that's a v3.7.12 follow-up: include top-N IPs in the prompt + add
+`block_ip` to the verdict enum + apply path.
+
+14 new unit tests covering middleware behavior, fail-open semantics,
+LAN-egress rewrite check, and the admin endpoint wiring.
+**1310 → 1324 passing**.
+
 ### v3.7.10 — Proactive AI rate limiter (operator-requested Q5)
 
 Closes operator Q5 from the 2026-05-10 LMRHv2 design discussion:

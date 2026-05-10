@@ -328,6 +328,24 @@ class ApiKeyAiReview(Base):
     dismissed_at = Column(DateTime, nullable=True)
 
 
+class BlockedIp(Base):
+    """v3.7.11 — IP block list. Per operator Q5: AI rate limiter
+    should be able to slow keys OR source IPs. v3.7.10 shipped the
+    key-level controls; v3.7.11 adds the IP-level layer.
+
+    Middleware (``app/middleware/ip_block.py``) reads this table into
+    an in-memory set (refreshed every 30s) and returns 403 early for
+    any matching client_ip OR client_ip_inside. Operator manages via
+    admin endpoints; auto-population by the AI rate limiter is a
+    deferred follow-up (v3.7.12+).
+    """
+    __tablename__ = "blocked_ips"
+    ip = Column(String, primary_key=True)
+    reason = Column(String, nullable=True)
+    added_at = Column(DateTime, server_default=func.now())
+    added_by = Column(String, nullable=True)
+
+
 class User(Base):
     __tablename__ = "users"
 
