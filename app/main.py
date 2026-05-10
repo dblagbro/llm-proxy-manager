@@ -40,6 +40,7 @@ from app.api.audit import router as audit_router
 from app.api.oauth_capture import router as oauth_capture_router
 from app.api.runs import router as runs_router
 from app.api.lmrh import router as lmrh_router
+from app.api.llm_models import router as llm_models_router
 from app.observability.otel import init_tracer
 from app.observability.prometheus import metrics_response, set_service_info, observe_circuit_breaker_state
 
@@ -260,6 +261,8 @@ app.add_middleware(
         "X-Sort-Mode", "X-Auto-Routed", "X-Fallback-From",
         # v3.3.0 LMRHv2 — discovery + version negotiation
         "Link", "LMRH-Version", "LMRH-Hint-Echo",
+        # v3.6.0 — model-identity edit endpoint concurrency + soft-warn
+        "ETag", "X-Warning",
     ],
 )
 
@@ -328,6 +331,7 @@ app.include_router(audit_router)
 app.include_router(oauth_capture_router)
 app.include_router(runs_router)
 app.include_router(lmrh_router)
+app.include_router(llm_models_router)
 # v3.3.0: LMRHv2 endpoints (feature-flagged via lmrh_v2_enabled).
 # Same /lmrh/* prefix as v1; new paths don't collide with existing ones.
 from app.api.lmrh_v2 import router as lmrh_v2_router  # noqa: E402

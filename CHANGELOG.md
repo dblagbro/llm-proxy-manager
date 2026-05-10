@@ -7,6 +7,49 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ---
 
+## v3.6.x — Model identity edit API (Hub #230)
+
+### v3.6.0 — `PUT /api/llm/models/{model_id}` for cluster-wide identity edits
+
+Companion to the coordinator-hub task #230. Their hub UI now lets
+operators edit `aliases` / `family` / `variant` for any canonical
+model in the catalog scan view; this version ships the proxy-side
+endpoint they call. Contract was locked 2026-05-09 in operator-forwarded
+memos; OpenAPI spec at `docs/rfc/2026-05-model-identity-put-spec.md`.
+
+- **`GET /api/llm/models/{model_id:path}`** — read merged identity
+  state across all `ModelCapability` rows that match the canonical id
+  OR any registered alias. Returns `ETag` header for downstream PUT
+  concurrency. Optional `?provider_id=<id>` to scope to one row.
+- **`PUT /api/llm/models/{model_id:path}`** — update aliases/family/variant.
+  Default semantic: applies to ALL matching rows (same upstream model
+  served by 2 providers → both rows updated). `If-Match` ETag required;
+  mismatch → 412 with the fresh ETag in the response. PATCH-like
+  semantics on PUT — fields absent from the body preserve their
+  current value.
+- **Validation** (`app/api/llm_models.py:_validate_aliases`):
+  alias 1-64 chars, no whitespace, no duplicates (case-insensitive),
+  max 16, no cross-row collision with another model's canonical id
+  or alias. `family=""` rejected; novel `family` values save with a
+  `X-Warning` header for the Hub UI to render as a yellow toast.
+- **`KNOWN_FAMILIES` constant** (`app/routing/canonical.py`) —
+  `claude / cohere / deepseek / gemini / gpt / grok / llama / mistral`.
+  Hub team lifts this via the OpenAPI spec for client-side pre-validation.
+- **Cluster sync replication of identity fields** (prerequisite —
+  `app/cluster/manager.py` + `app/cluster/sync.py`). Pre-v3.6.0 the
+  build payload didn't include `aliases / model_family / model_variant`,
+  and the apply pass didn't write them. PUTs would have silently
+  diverged across nodes. Both sides patched.
+- **CORS expose** — `ETag` and `X-Warning` added to the allowed-headers
+  list in `app/main.py`.
+- **Auth**: standard admin scope (session cookie or admin API key).
+  v3.6.1 will add a narrower `key_type=admin-readonly-catalog` as a
+  drop-in replacement.
+
+29 new unit tests covering validation, ETag determinism, parse_if_match,
+multi-row merge, and cluster-sync replication regression.
+Total: 1069 → 1098 passing.
+
 ## v3.5.x — Model identity model (LMRHv2.1)
 
 ### v3.5.11 — Second QA sweep: webhook SSRF guard + stop_sequences cap + test isolation residue
