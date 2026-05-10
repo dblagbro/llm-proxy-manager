@@ -78,13 +78,13 @@ async def test_is_blocked_known_ip_returns_true():
 # ── ip_block_middleware ───────────────────────────────────────────
 
 
-def _stub_request(headers=None, client_host=None):
+def _stub_request(headers=None, client_host=None, path="/v1/messages"):
     req = MagicMock()
     req.headers = headers or {}
     req.client = MagicMock()
     req.client.host = client_host
     req.url = MagicMock()
-    req.url.path = "/v1/messages"
+    req.url.path = path
     return req
 
 
@@ -171,6 +171,66 @@ def test_admin_endpoints_use_require_admin():
     assert "require_admin" in src
     # All three endpoint handlers should depend on require_admin
     assert src.count("require_admin") >= 3
+
+
+# ── v3.7.14 — admin-recovery exemption (BUG-019) ──────────────────
+
+
+@pytest.mark.asyncio
+async def test_middleware_exempts_admin_login_for_blocked_ip():
+    """Blocked IP can still POST /api/auth/login so operator can recover."""
+    req = _stub_request(
+        headers={"x-forwarded-for": "192.168.18.1"},
+        path="/api/auth/login",
+    )
+    call_next = AsyncMock(return_value=MagicMock(status_code=200))
+    with patch("app.middleware.ip_block.is_blocked", new=AsyncMock(return_value=True)):
+        result = await ip_block_middleware(req, call_next)
+    call_next.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_middleware_exempts_blocked_ips_admin_for_blocked_ip():
+    """Blocked IP can still GET/POST/DELETE /api/admin/blocked-ips."""
+    for path in (
+        "/api/admin/blocked-ips",
+        "/api/admin/blocked-ips/192.168.18.1",
+    ):
+        req = _stub_request(
+            headers={"x-forwarded-for": "192.168.18.1"},
+            path=path,
+        )
+        call_next = AsyncMock(return_value=MagicMock(status_code=200))
+        with patch("app.middleware.ip_block.is_blocked", new=AsyncMock(return_value=True)):
+            result = await ip_block_middleware(req, call_next)
+        call_next.assert_awaited_once(), f"path {path} should be exempt"
+
+
+@pytest.mark.asyncio
+async def test_middleware_does_not_exempt_other_admin_paths():
+    """Other admin paths still 403 for blocked IPs — only login + blocked-ips are exempt."""
+    for path in ("/api/admin/providers", "/api/admin/ai-rate-limiter/reviews"):
+        req = _stub_request(
+            headers={"x-forwarded-for": "192.168.18.1"},
+            path=path,
+        )
+        call_next = AsyncMock()
+        with patch("app.middleware.ip_block.is_blocked", new=AsyncMock(return_value=True)):
+            result = await ip_block_middleware(req, call_next)
+        call_next.assert_not_awaited()
+        assert result.status_code == 403
+
+
+def test_admin_recovery_path_helper():
+    """_is_admin_recovery_path matches the two recovery prefixes."""
+    from app.middleware.ip_block import _is_admin_recovery_path
+    assert _is_admin_recovery_path("/api/auth/login") is True
+    assert _is_admin_recovery_path("/api/auth/login/whatever") is True
+    assert _is_admin_recovery_path("/api/admin/blocked-ips") is True
+    assert _is_admin_recovery_path("/api/admin/blocked-ips/1.2.3.4") is True
+    assert _is_admin_recovery_path("/api/admin/providers") is False
+    assert _is_admin_recovery_path("/v1/messages") is False
+    assert _is_admin_recovery_path("/") is False
 
 
 def test_admin_endpoint_paths():

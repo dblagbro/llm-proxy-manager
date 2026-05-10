@@ -12,10 +12,16 @@ endpoint propagate within ~30s (or instantly on the node that did
 the write; peer nodes pick it up on cluster sync + next refresh).
 
 The middleware is registered ahead of the auth/inference path so
-blocked traffic is rejected before any expensive work runs. Health
-checks and the admin-login endpoint are intentionally NOT exempted
-— a blocked IP gets a uniform 403 across the whole surface so
-attackers can't probe for which endpoints are open.
+blocked traffic is rejected before any expensive work runs.
+
+**Admin-recovery exemption (v3.7.14)**: A small, tightly-scoped set
+of paths bypasses the block list so an operator who accidentally
+blocks their own IP can still:
+  - log into the admin UI (``/api/auth/login``)
+  - list and DELETE entries from the block table
+    (``/api/admin/blocked-ips``)
+Health checks remain blocked — a blocked IP gets a uniform 403
+everywhere else so attackers can't probe for open endpoints.
 
 Defensive: if the cache load fails (DB timeout, etc.) we fail OPEN
 — better to let traffic through than to 403 every request because
@@ -37,6 +43,17 @@ logger = logging.getLogger(__name__)
 _blocked: frozenset[str] = frozenset()
 _loaded_at: float = 0.0
 _TTL_SEC = 30.0
+
+# v3.7.14 — paths that must remain reachable from a blocked IP so
+# the operator can recover. Prefix-matched.
+_ADMIN_RECOVERY_PREFIXES = (
+    "/api/auth/login",
+    "/api/admin/blocked-ips",
+)
+
+
+def _is_admin_recovery_path(path: str) -> bool:
+    return any(path.startswith(p) for p in _ADMIN_RECOVERY_PREFIXES)
 
 
 async def _load_blocked_set() -> frozenset[str]:
@@ -86,6 +103,11 @@ async def ip_block_middleware(request: Request, call_next):
     middleware registered later wraps registered-earlier — runs
     outermost first. To run inside log_requests, register first.)
     """
+    # v3.7.14 — recovery exemption: never 403 the admin login or the
+    # block-list management endpoints. Without this, an operator who
+    # blocks their own IP cannot un-block it via the API (deadlock).
+    if _is_admin_recovery_path(request.url.path):
+        return await call_next(request)
     try:
         from app.observability.request_context import (
             extract_client_ip_from_request,

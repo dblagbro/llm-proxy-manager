@@ -57,6 +57,43 @@ Created 2026-05-09 during the post-v3.5.7 deep QA pass. Update this doc when add
 
 ---
 
+## v3.7.x surfaces — added 2026-05-10
+
+| Surface | Unit | SDK | Integration | UI | Manual | Adequate? |
+|---|---|---|---|---|---|---|
+| `GET /api/providers/{id}/anthropic-billing-credentials` (v3.7.0) | ✅ | — | ❌ | — | ✅ | partial |
+| `POST /api/providers/{id}/anthropic-billing-credentials` cookie paste (v3.7.0) | ✅ | — | ❌ | — | ✅ | partial |
+| `POST /api/providers/{id}/anthropic-billing/refresh-now` (v3.7.0) | ✅ | — | ❌ | — | ✅ | partial |
+| `GET /api/providers/{id}/anthropic-billing/snapshots` (v3.7.0) | ✅ | — | ❌ | — | ✅ | partial |
+| `anthropic_billing_worker` 4-hourly background loop (v3.7.0) | partial | — | ❌ | — | ✅ | **GAP** — no test verifying the loop runs on schedule |
+| `external_rotation.evaluate_rules_for_provider` (v3.7.1) | ✅ | — | ❌ | — | ✅ | partial |
+| `external_rotation.reorder_claude_oauth_by_utilization` (v3.7.4) | ✅ | — | ❌ | — | ✅ | partial |
+| `Provider.auto_skip_until` honored by router (v3.7.1) | ✅ | — | ❌ | — | ✅ | partial |
+| Cluster sync of new Provider columns (v3.7.3) | ✅ | — | ❌ | — | ✅ | partial — sync of `anthropic_session_cookies` intentionally skipped |
+| `client_ip` + `client_ip_inside` activity-log fields (v3.6.2 / v3.6.3) | ✅ | — | ❌ | — | ✅ | OK after R5 |
+| LAN-egress DNS rewrite (v3.6.3) | ✅ | — | ❌ | — | ✅ | OK |
+| 412 with fresh ETag on `PUT /api/llm/models/{id}` (v3.6.1) | ✅ | — | ❌ | — | ✅ | OK |
+| `AI rate limiter` review pipeline (v3.7.10) | ✅ | — | ❌ | — | ✅ | **GAP** — no recursion-guard test (BUG-017) |
+| `AI rate limiter` apply/dismiss/revert API (v3.7.10) | ✅ | — | ❌ | — | ✅ | OK |
+| `IP block` middleware basic (v3.7.11) | ✅ | — | ❌ | — | ✅ | OK |
+| `IP block` admin-recovery exemption (v3.7.14) | ✅ | — | ❌ | — | ✅ | OK (4 new unit tests + e2e curl) |
+| `IP block` cache invalidation cross-node (v3.7.11) | ❌ | — | ❌ | — | ✅ | **GAP** — see BUG-018 |
+| `BlockedIp` cluster sync (v3.7.11) | ❌ | — | ❌ | — | ✅ | **GAP** — see BUG-016 |
+| AnthropicBillingPanel (v3.7.5) | ❌ | — | ❌ | ❌ | ✅ | **GAP** — no Playwright |
+| Edit Provider modal "Usage-based rotation (superseded…)" note (v3.7.5) | ❌ | — | ❌ | ❌ | ✅ | **GAP** — pending Backlog A decision |
+
+### High-priority v3.7.x coverage gaps to close
+
+In priority order (impact × ease-to-test):
+
+1. **Cluster-sync the three new tables** (BUG-016) — add `blocked_ips`, `api_key_ai_review`, `external_usage_snapshot` to the cluster-sync allowlist with LWW conflict resolution. Add unit test asserting each table is enumerated.
+2. **Recursion guard on AI rate limiter** (BUG-017) — tag outgoing httpx requests from `review_one_key()` with `event_meta.source = "ai_rate_limiter"` and exclude in `compute_stats`. Unit test for the exclude path.
+3. **IP block cache invalidation broadcast** (BUG-018) — emit cluster-sync event on `blocked_ips` write that calls `_clear_cache_for_tests()` on peer nodes. Integration test that POSTs to www01 and verifies www02 enforces within 1s.
+4. **AnthropicBillingPanel Playwright** — cover cookie paste → snapshot table render → refresh button → auto-skip banner.
+5. **Single-leader external_usage scrape** — when cluster sync of `external_usage_snapshot` lands, also elect a leader so we don't multiply provider load. Separate ticket.
+
+---
+
 ## Test surface inventory + coverage status
 
 | Surface | Unit | SDK | Integration | UI | Manual | Adequate? |

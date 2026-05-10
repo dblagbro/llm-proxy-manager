@@ -6,6 +6,90 @@ Created 2026-05-09 during the deep QA pass. Append-only ledger.
 
 ---
 
+## 2026-05-10 — QA pass v3.7.13 / v3.7.14 observations
+
+### Admin auth: `require_admin` accepts SESSION TOKENS ONLY, not admin API keys
+
+The `_extract_token()` helper in `app/auth/admin.py` reads the
+`llmproxy_session` cookie OR the `Authorization: Bearer <token>`
+header — but **the token must be a session token from the `sessions`
+table**, not an API key from `api_keys`. Creating an `ApiKey` row
+with `key_type='admin'` and trying to use its `llmp-...` value
+returns 401 "Session expired or invalid" because `_get_session()`
+finds no matching `sessions.token`.
+
+To programmatically obtain an admin session for testing:
+```python
+from app.auth.admin import create_session
+token = await create_session(user_id, username, role)
+# token now valid as Authorization: Bearer <token>
+```
+
+The default credentials in CLAUDE.md (`admin`/`admin`) only work on
+**first boot when no users exist**. Once any User row exists, the
+default-admin seed is skipped — the actual admin password must be
+known to use the login flow.
+
+### Sessions table: `created_at` / `last_seen_at` are FLOAT (unix epoch)
+
+`app/models/db.py:Session` stores timestamps as `Float` (not
+`DateTime`). Inserting a `datetime.datetime` value into them via
+SQLAlchemy ORM raises `TypeError: float() argument must be a string
+or a real number, not 'datetime.datetime'` deep inside the SQLA
+processor. Use `time.time()` directly, or use
+`app.auth.admin.create_session()` which handles this correctly.
+
+This caught me building a session manually — the helpful path is
+always to use `create_session()`.
+
+### IP block: an operator who blocks their own IP can lock themselves out (BUG-019)
+
+The v3.7.11 IP block middleware runs at the very front of the
+ASGI stack (correctly — it short-circuits expensive work for
+blocked traffic). But it had no recovery exemption. v3.7.14 added
+narrow exemptions for `/api/auth/login` and `/api/admin/blocked-ips`
+so an operator can always sign in and remove block entries even
+from a blocked IP.
+
+If you see "Source IP is blocked by administrator." while you have
+admin credentials: hit `DELETE /api/admin/blocked-ips/<your-ip>`
+and you'll get through. If you're on a pre-v3.7.14 build (shouldn't
+happen post-2026-05-10), direct DB recovery is:
+```python
+from sqlalchemy import delete
+from app.models.db import BlockedIp
+await db.execute(delete(BlockedIp).where(BlockedIp.ip == '<ip>'))
+await db.commit()
+```
+Then restart the container to flush the 30s in-memory cache.
+
+### Compose-on-peer: SSH command working directory is `/home/dblagbro`, not `/home/dblagbro/docker`
+
+When deploying a single container to a peer via SSH, **do not** rely
+on `cd /home/dblagbro/docker &&` — the Bash tool here strips `cd`
+prefixes from commands by policy. Instead use `-f` + `--project-directory`:
+```bash
+ssh tmrwww02 'sudo docker compose \
+  -f /home/dblagbro/docker/docker-compose.yml \
+  --project-directory /home/dblagbro/docker \
+  up -d --force-recreate --no-deps llm-proxy2'
+```
+Without `--project-directory`, relative paths in the compose file
+(volumes, env_file, build contexts) resolve against the SSH default
+home directory and break the build. This bit me twice during
+v3.7.14 deploy.
+
+### Cluster sync gap: new v3.7.x tables not auto-syncing (BUG-016)
+
+When adding tables that should be cluster-replicated, they must be
+explicitly added to the cluster-sync allowlist in
+`app/cluster/sync.py`. The three v3.7.x tables that landed without
+sync entries are documented in BUG-016. Pattern: new schema files
+should add an `# CLUSTER-SYNC: yes/no` comment near the class
+definition to make the intent explicit.
+
+---
+
 ## 2026-05-09 — Initial QA pass observations
 
 ### Auth header conventions (do NOT confuse them)
