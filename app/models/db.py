@@ -107,6 +107,20 @@ class Provider(Base):
     anthropic_session_cookies = Column(String, nullable=True)        # JSON dict: {sessionKey, sessionKeyLC, routingHint, lastActiveOrg, cf_clearance, __cf_bm, ...}
     anthropic_session_captured_at = Column(Float, nullable=True)     # unix ts of last operator paste; for "cookies are N days old" UI
 
+    # v3.7.1 — auto-rotation: when an external snapshot reports a
+    # provider above the at-capacity threshold (default 95% weekly
+    # utilization), the rule evaluator sets ``auto_skip_until`` to
+    # the snapshot's ``seven_day_resets_at``. The router skips this
+    # provider until that timestamp passes — at which point the next
+    # scrape produces a fresh snapshot whose utilization will drop
+    # post-reset, and the rule evaluator clears the field. Operator
+    # configured ``Provider.priority`` is preserved unchanged.
+    # ``auto_skip_reason`` is a short human-readable string for the
+    # admin UI / activity log so the operator sees WHY a provider is
+    # being skipped automatically.
+    auto_skip_until = Column(DateTime, nullable=True)
+    auto_skip_reason = Column(String, nullable=True)
+
     capabilities = relationship("ModelCapability", back_populates="provider", cascade="all, delete-orphan")
 
 

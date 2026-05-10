@@ -322,6 +322,22 @@ async def scrape_provider_into_snapshot(db, provider) -> dict:
         snap_kwargs.update(parse_usage_response(result.parsed))
     snap = ExternalUsageSnapshot(**snap_kwargs)
     db.add(snap)
+    await db.flush()  # populate snap.id without committing yet
+    # v3.7.1 — feed the fresh snapshot into the auto-rotation rule
+    # evaluator. The evaluator may set/clear ``provider.auto_skip_until``;
+    # both that mutation and the snapshot insert commit together below.
+    rotation_decision: dict = {}
+    if result.ok:
+        try:
+            from app.routing.external_rotation import evaluate_rules_for_provider
+            rotation_decision = await evaluate_rules_for_provider(
+                db, provider, snapshot=snap,
+            )
+        except Exception as exc:
+            logger.warning(
+                "external_rotation.evaluate_failed",
+                extra={"provider_id": provider.id, "error": str(exc)},
+            )
     await db.commit()
     if not result.ok:
         logger.warning(
@@ -349,4 +365,7 @@ async def scrape_provider_into_snapshot(db, provider) -> dict:
         "snapshot_id": snap.id,
         "seven_day_utilization": snap_kwargs.get("seven_day_utilization"),
         "five_hour_utilization": snap_kwargs.get("five_hour_utilization"),
+        # v3.7.1 — surface the auto-rotation decision so the operator
+        # sees what changed (or didn't) right after a paste/refresh.
+        "rotation_decision": rotation_decision,
     }
