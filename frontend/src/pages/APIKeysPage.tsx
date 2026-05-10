@@ -16,7 +16,7 @@ import type { ApiKey, KeyType } from '@/types'
 import { useAuth } from '@/context/AuthContext'
 import { formatTimeForUser } from '@/utils/time'
 
-const KEY_TYPES: KeyType[] = ['standard', 'claude-code']
+const KEY_TYPES: KeyType[] = ['standard', 'claude-code', 'admin-readonly-catalog']
 
 type SortKey = 'name' | 'key_type' | 'total_requests' | 'total_tokens' |
   'total_cost_usd' | 'spending_cap_usd' | 'rate_limit_rpm' | 'created_at'
@@ -426,7 +426,7 @@ export function APIKeysPage() {
               <div className="flex flex-col gap-1.5">
                 <label className="text-sm font-medium text-gray-700 dark:text-gray-300 flex items-center gap-1">
                   <span>Key Type</span>
-                  <HelpHint text="Determines what kinds of providers this key can route to AND whether CoT-E is auto-engaged. ‘standard’ routes anywhere. ‘claude-code’ auto-engages CoT-E on non-reasoning models. ‘claude-pro-max’ pins to subscription-tier providers (no per-call billing). Only the operator's own admin key uses ‘admin’." />
+                  <HelpHint text="Determines what kinds of providers this key can route to AND whether CoT-E is auto-engaged. ‘standard’ routes anywhere. ‘claude-code’ auto-engages CoT-E on non-reasoning models. ‘claude-pro-max’ pins to subscription-tier providers (no per-call billing). Only the operator's own admin key uses ‘admin’. ‘admin-readonly-catalog’ is a narrow-scope key (v3.7.2) that can edit /api/llm/models/{id} per-model aliases/family/variant — paste it into the coordinator-hub Proxy Catalog Admin Key setting. It CANNOT make inference calls (rejected by /v1/messages + /v1/chat/completions). Despite the name it allows PUT writes; ‘read-only’ in the name refers to ‘no inference’, not ‘no edits’." />
                 </label>
                 <select
                   value={form.key_type}
@@ -437,6 +437,13 @@ export function APIKeysPage() {
                 </select>
                 {form.key_type === 'claude-code' && (
                   <p className="text-xs text-amber-500">Claude Code keys automatically enable CoT-E for non-reasoning models.</p>
+                )}
+                {form.key_type === 'admin-readonly-catalog' && (
+                  <p className="text-xs text-indigo-600 dark:text-indigo-400">
+                    Catalog-scope key for the coordinator-hub Scan Models picker.
+                    Can edit per-model aliases/family/variant via PUT /api/llm/models/{'{id}'}.
+                    Cannot make inference calls.
+                  </p>
                 )}
               </div>
               <Input

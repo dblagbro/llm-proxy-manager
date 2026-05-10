@@ -162,4 +162,5 @@ async def test_persist_auto_skip_idempotent():
 
 def test_version_bumped():
     from app.__version__ import __version__
-    assert __version__ == "3.7.16"
+    parts = tuple(int(p) for p in __version__.split("."))
+    assert parts >= (3, 7, 16)

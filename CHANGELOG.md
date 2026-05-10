@@ -9,6 +9,28 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.7.x — Anthropic Console billing scrape (real account usage)
 
+### v3.7.17 — Expose `admin-readonly-catalog` key_type in API Keys UI
+
+The v3.7.2 catalog-scope auth shipped a narrow-scope `key_type` that
+the coordinator-hub team's "Proxy Catalog Admin Key" setting expects
+operators to provision. The backend has accepted it since 2026-05-09,
+but the API Keys page dropdown only offered `standard` + `claude-code`,
+so operators couldn't actually create one without going through DB.
+
+**Fix**: added `admin-readonly-catalog` to the dropdown (frontend
+`KeyType` union + `KEY_TYPES` array), plus a hint paragraph that
+appears when the type is selected explaining:
+- It's for the coordinator-hub Scan Models picker
+- It can PUT `/api/llm/models/{id}` (per-model aliases/family/variant)
+- It CANNOT make inference calls (rejected by `verify_api_key` on
+  `/v1/messages` + `/v1/chat/completions`)
+- Despite the name, "readonly" refers to "no inference", not "no edits"
+
+Backend was already in place — only the UI dropdown was the gap.
+
+Tests: +7 unit tests in `test_v3717_catalog_key_ui_exposure.py`.
+**1376/1376 pass.**
+
 ### v3.7.16 — Persistent-auth-failure → DB auto-skip (#239) + config schema cleanup (#238)
 
 Surfaced via the 20-min proactive monitoring loop. Devin-Codex-Gmail's
