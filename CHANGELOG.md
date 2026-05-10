@@ -9,6 +9,38 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.7.x — Anthropic Console billing scrape (real account usage)
 
+### v3.7.3 — Cluster-sync the auto-rotation skip decisions
+
+Real bug found while watching v3.7.1 in production: only `www01`
+had cookies (operator pasted there), only `www01` scraped, only
+`www01` knew Gmail was at-capacity. Routing requests landing on
+`www02` or `GCP` happily routed to Gmail despite the skip — they
+had no `auto_skip_until` to filter on.
+
+Fix: replicate the auto-rotation outcome (`auto_skip_until` /
+`auto_skip_reason`) plus the billing-scrape identifiers
+(`anthropic_org_uuid`, `anthropic_session_captured_at`) through the
+existing cluster sync push. Cookies themselves stay on the capture
+node — auth material doesn't replicate. Peer scrapers no-op when
+they don't have cookies (existing `is_not(None)` filter on the
+worker), so we get effective primary-node-only scraping for free
+while still propagating decisions.
+
+- **Cluster manager** (`app/cluster/manager.py:_build_payload`) now
+  emits the four new fields in each Provider entry.
+- **Cluster sync apply** (`app/cluster/sync.py:apply_payload`) reads
+  them on both the update-existing and insert-new paths. Membership-
+  test (``"key" in p_data``) so an explicit null overwrites a stale
+  local value. ISO timestamp parsing handled by new module-level
+  `_parse_iso_or_none` helper.
+- **Intentional non-replication**: `Provider.anthropic_session_cookies`
+  is NOT in the cluster sync payload, AND the apply pass never
+  writes to it. Test coverage enforces both invariants.
+
+11 new unit tests including regression for "cookies must not appear
+in payload" and "cookies must never be written by sync apply".
+**1212 → 1223 passing**.
+
 ### v3.7.2 — `admin-readonly-catalog` scope for hub-team #230 follow-up
 
 Promised in the v3.6.0 #230 contract reply: a narrower-scoped admin

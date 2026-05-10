@@ -149,7 +149,21 @@ async def _build_sync_payload(db) -> dict:
          # background mutations can't revert a real config edit.
          "last_user_edit_at": p.last_user_edit_at,
          # v3.0.45 — provider tenant scoping
-         "owned_by_key_id": p.owned_by_key_id}
+         "owned_by_key_id": p.owned_by_key_id,
+         # v3.7.0/v3.7.1/v3.7.3 — Anthropic billing scrape + auto-rotation.
+         # We sync the org_uuid (identifier, not sensitive), the
+         # cookie-captured-at timestamp (so the "cookies are N days
+         # old" UI works cluster-wide), and the auto-skip decision
+         # (auto_skip_until / auto_skip_reason). We INTENTIONALLY do
+         # NOT sync the cookies themselves — they stay on the node
+         # where the operator pasted them, limiting auth-material
+         # spread. The worker on peer nodes filters
+         # ``Provider.anthropic_session_cookies.is_not(None)``, so
+         # peers won't try to scrape without credentials.
+         "anthropic_org_uuid": p.anthropic_org_uuid,
+         "anthropic_session_captured_at": p.anthropic_session_captured_at,
+         "auto_skip_until": p.auto_skip_until.isoformat() if p.auto_skip_until else None,
+         "auto_skip_reason": p.auto_skip_reason}
         for p in providers_result.scalars().all()
     ]
     # Only push settings that were explicitly saved (have a DB row) — not env-var defaults
