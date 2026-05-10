@@ -213,6 +213,30 @@ def test_sanitize_preserves_short_clean_messages():
 # ── v3.5.11 additions ──────────────────────────────────────────────
 
 
+def test_validate_rejects_10mb_system_prompt():
+    """v3.7.7 BUG-014: cap total request body at 8MB. Prevents the
+    leaky upstream-nginx-413 → 502 chain."""
+    body = {
+        "model": "x-ai/grok-3",
+        "messages": [{"role": "user", "content": "hi"}],
+        "system": "x" * (10 * 1024 * 1024),  # 10MB
+    }
+    with pytest.raises(HTTPException) as ex:
+        validate_completion_request(body, endpoint="messages")
+    assert ex.value.status_code == 400
+    assert "8MB" in ex.value.detail or "too large" in ex.value.detail
+
+
+def test_validate_accepts_under_cap_body():
+    """A 4MB body should pass — well under the 8MB cap."""
+    body = {
+        "model": "x-ai/grok-3",
+        "messages": [{"role": "user", "content": "hi"}],
+        "system": "x" * (4 * 1024 * 1024),
+    }
+    validate_completion_request(body, endpoint="messages")  # no raise
+
+
 def test_validate_rejects_too_many_stop_sequences():
     """BUG-015: 1000-entry stop_sequences silently accepted pre-fix."""
     body = {

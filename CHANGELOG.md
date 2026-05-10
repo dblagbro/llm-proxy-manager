@@ -9,6 +9,48 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.7.x — Anthropic Console billing scrape (real account usage)
 
+### v3.7.7 — Email alert when Anthropic billing scrape auth fails
+
+When the 4-hourly billing scraper hits a non-OK `auth_state`
+(`session_expired` / `cf_blocked` / `config_error` / `network_error`
+/ `parse_error` / `http_error`) for the **2nd or later** consecutive
+scrape, the proxy emails the operator via the existing SMTP alert
+path. Without the alert, cookies could silently fail for up to
+~30 days × 6 scrapes/day = 180 dead scrapes before anyone notices.
+
+- **`alert_anthropic_billing_auth_expired`** in
+  `app/monitoring/notifications.py` — uses the existing
+  `send_alert` pattern with throttle-key `billing_auth:{provider_id}`
+  so each provider has independent reminders and the same provider
+  can't spam every 4 hours when cookies stay expired (SMTP throttle
+  cache dedupes by throttle_key for the configured window).
+- **First-failure tolerance**: Cloudflare interstitials sometimes
+  clear on their own, so we only alert on the 2nd+ consecutive
+  failure. Single transient failures stay in the activity log only.
+- **Auth-state → human text mapping**: each enum value gets a
+  plain-English explanation in the email body (e.g.
+  `cf_blocked` → "Cloudflare is challenging the scrape — cookies
+  stale or fingerprint changed").
+- **Email body includes the fix path**: tells the operator exactly
+  where to re-paste (Edit Provider → External Usage → Rotate
+  cookies). v3.7.5's UI surface makes this a one-click workflow.
+- **Severity is `warning`, not `error` or `critical`** — billing
+  scrape failure degrades rotation accuracy but doesn't break
+  inference. Auto-rotation gracefully falls back to operator
+  priority when no recent snapshot exists.
+
+Defensive: wrapping the alert in try/except so an SMTP failure
+doesn't break the scrape itself.
+
+**Also in v3.7.7 — BUG-014 closed**: 8MB total request body size cap
+in `validate_completion_request`. Pre-fix a 10MB system prompt
+leaked an upstream nginx 413 → 502 chain; now returns clean 400
+with `"request body too large (X bytes > 8MB cap). Trim the system
+prompt or break the request into smaller chunks."`. Closes a P3
+backlog item that's been open since the first QA sweep (v3.5.x).
+
+9 new unit tests (7 alert + 2 size-cap). **1262 → 1271 passing**.
+
 ### v3.7.6 — Provider-list effective-preference badges
 
 Closes the "why does Gmail still say priority=4 if VG has more

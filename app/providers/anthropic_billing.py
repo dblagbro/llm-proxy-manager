@@ -349,6 +349,39 @@ async def scrape_provider_into_snapshot(db, provider) -> dict:
                 "error": result.error,
             },
         )
+        # v3.7.7 — fire an operator alert when scrapes are failing
+        # repeatedly. Single transient failures don't alert (Cloudflare
+        # interstitials often clear on their own); 2nd+ consecutive
+        # failure = real problem requiring operator action.
+        try:
+            from sqlalchemy import select as _select, desc as _desc
+            rs = await db.execute(
+                _select(ExternalUsageSnapshot)
+                .where(ExternalUsageSnapshot.provider_id == provider.id)
+                .order_by(_desc(ExternalUsageSnapshot.captured_at))
+                .limit(5)
+            )
+            recent = rs.scalars().all()
+            consecutive_failures = 0
+            for r in recent:
+                if r.auth_state == "ok":
+                    break
+                consecutive_failures += 1
+            if consecutive_failures >= 2:
+                from app.monitoring.notifications import (
+                    alert_anthropic_billing_auth_expired,
+                )
+                await alert_anthropic_billing_auth_expired(
+                    provider_name=provider.name,
+                    provider_id=provider.id,
+                    auth_state=result.auth_state,
+                    consecutive_failures=consecutive_failures,
+                )
+        except Exception as alert_exc:
+            logger.warning(
+                "anthropic_billing.alert_failed",
+                extra={"provider_id": provider.id, "error": str(alert_exc)},
+            )
     else:
         logger.info(
             "anthropic_billing.snapshot_captured",

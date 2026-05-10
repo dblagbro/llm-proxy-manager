@@ -107,6 +107,31 @@ def validate_completion_request(body: dict, *, endpoint: str) -> None:
                 f"{endpoint}: 'max_tokens' must be a positive integer (got {mt!r})",
             )
 
+    # v3.7.7 BUG-014 — cap total request body size. A 10MB system
+    # prompt leaks an upstream nginx 413 → 502 chain to the caller;
+    # we'd rather return a clean 400 with a clear message. The cap
+    # is generous (8MB JSON body) — large legitimate prompts fit
+    # easily, but the upstream's hard 413 ceiling is avoided.
+    # Estimated by serializing the body to JSON; cheap because the
+    # body's already an in-memory dict by the time we reach here.
+    try:
+        import json as _json
+        approx_size = len(_json.dumps(body))
+        if approx_size > 8 * 1024 * 1024:
+            raise HTTPException(
+                400,
+                f"{endpoint}: request body too large "
+                f"({approx_size} bytes > 8MB cap). "
+                "Trim the system prompt or break the request into smaller chunks.",
+            )
+    except HTTPException:
+        raise
+    except Exception:
+        # If serialization itself fails, let the existing validation
+        # downstream surface the real error rather than mis-attributing
+        # it to a size issue.
+        pass
+
     # 5. v3.5.11 BUG-015 — cap stop_sequences at 16 entries.
     # Anthropic and OpenAI both error past ~4-16; pre-validation
     # saves an upstream round-trip and gives the caller a clearer
