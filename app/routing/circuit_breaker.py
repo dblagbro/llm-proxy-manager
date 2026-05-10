@@ -369,6 +369,18 @@ def classify_error(error_text: str) -> str:
 # Provider edit form) or a successful test request.
 _auth_failed: dict[str, dict] = {}  # provider_id → {since: float, last_error: str}
 
+# v3.7.16 — persistent-auth-failure detection (#239). When a provider
+# accumulates >= ``PERSISTENT_AUTH_THRESHOLD`` failures within
+# ``PERSISTENT_AUTH_WINDOW_SEC``, ``record_auth_failure`` ALSO sets
+# ``Provider.auto_skip_until = now + 24h`` so the router protects
+# itself without waiting for the in-memory CB. The DB field survives
+# container restart (which v3.7.x in-memory ``_auth_failed`` doesn't),
+# closing the gap where each fresh container deployed today re-hit
+# auth-failed-once and rebuilt the CB state from scratch.
+_auth_failure_history: dict[str, list[float]] = {}
+PERSISTENT_AUTH_THRESHOLD = 3
+PERSISTENT_AUTH_WINDOW_SEC = 1800.0  # 30 min
+
 
 def get_auth_failure(provider_id: str) -> Optional[dict]:
     return _auth_failed.get(provider_id)
@@ -376,6 +388,7 @@ def get_auth_failure(provider_id: str) -> Optional[dict]:
 
 def clear_auth_failure(provider_id: str) -> None:
     _auth_failed.pop(provider_id, None)
+    _auth_failure_history.pop(provider_id, None)
 
 
 def get_all_auth_failures() -> dict[str, dict]:
@@ -397,8 +410,66 @@ async def record_auth_failure(provider_id: str, error_text: str) -> None:
             "since": time.time(),
             "last_error": (error_text or "")[:300],
         }
+        # v3.7.16 — track failure history for the persistent-auth-failure
+        # detector (#239). Only escalate to DB-persisted auto_skip after
+        # the in-memory CB has been hit N times in a window, so a single
+        # transient blip doesn't 24h-skip the provider.
+        history = _auth_failure_history.setdefault(provider_id, [])
+        now = time.time()
+        history.append(now)
+        # Prune entries older than the window so the threshold check
+        # only sees recent failures.
+        cutoff = now - PERSISTENT_AUTH_WINDOW_SEC
+        history[:] = [t for t in history if t > cutoff]
+        should_auto_skip = len(history) >= PERSISTENT_AUTH_THRESHOLD
         logger.warning(
             "circuit_breaker.auth_failure_marked",
-            extra={"provider": provider_id, "error": error_text[:200]},
+            extra={
+                "provider": provider_id,
+                "error": error_text[:200],
+                "consecutive_in_window": len(history),
+            },
         )
         _export_gauge(provider_id, s.state)
+    # Done with the lock — escalate to DB-persisted auto_skip if the
+    # threshold tripped. Separate transaction so we don't hold the CB
+    # lock during DB write.
+    if should_auto_skip:
+        try:
+            await _persist_auto_skip(provider_id, error_text)
+        except Exception as exc:
+            logger.warning(
+                "circuit_breaker.auto_skip_persist_failed provider=%s err=%s",
+                provider_id, exc,
+            )
+
+
+async def _persist_auto_skip(provider_id: str, error_text: str) -> None:
+    """v3.7.16 — write ``auto_skip_until = now + 24h`` to the Provider
+    row so the router excludes this provider even after container
+    restart (the in-memory ``_auth_failed`` map resets on restart, so
+    DB persistence is what closes the gap).
+
+    Idempotent: if the provider already has an auto_skip_until in the
+    future for a non-billing reason, we extend it rather than overwrite
+    (no need to keep re-stamping the same window)."""
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    from sqlalchemy import select
+    from app.models.database import AsyncSessionLocal
+    from app.models.db import Provider
+    new_until = _dt.now(_tz.utc) + _td(hours=24)
+    async with AsyncSessionLocal() as db:
+        rs = await db.execute(select(Provider).where(Provider.id == provider_id))
+        p = rs.scalar_one_or_none()
+        if not p:
+            return
+        # Skip if already auto-skipped further out
+        if p.auto_skip_until and p.auto_skip_until > new_until.replace(tzinfo=None):
+            return
+        p.auto_skip_until = new_until.replace(tzinfo=None)
+        p.auto_skip_reason = "persistent_auth_failure"
+        await db.commit()
+        logger.warning(
+            "circuit_breaker.auto_skip_persisted provider=%s until=%s reason=%s",
+            provider_id, new_until.isoformat(), "persistent_auth_failure",
+        )
