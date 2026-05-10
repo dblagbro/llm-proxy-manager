@@ -511,7 +511,13 @@ export function ProvidersPage() {
       <Modal open={showModal} onClose={closeModal} size="lg">
         <ModalHeader onClose={closeModal}>{editing ? 'Edit Provider' : 'Add Provider'}</ModalHeader>
         <ModalBody>
-          <ProviderForm form={form} onChange={setForm} editing={!!editing} />
+          <ProviderForm
+            form={form}
+            onChange={setForm}
+            editing={!!editing}
+            provider={editing ?? undefined}
+            onProviderUpdated={() => qc.invalidateQueries({ queryKey: ['providers'] })}
+          />
         </ModalBody>
         <ModalFooter>
           <Button variant="ghost" onClick={closeModal}>Cancel</Button>
