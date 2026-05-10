@@ -5,6 +5,7 @@ import { providersApi } from '@/api'
 import { useToast } from '@/components/ui/Toast'
 import type { ProviderType, Provider } from '@/types'
 import { GrokWebProviderFields } from './GrokWebProviderFields'
+import { AnthropicBillingPanel } from './AnthropicBillingPanel'
 
 const PROVIDER_TYPES: ProviderType[] = [
   'anthropic', 'openai', 'google', 'vertex', 'grok', 'ollama', 'compatible',
@@ -151,9 +152,15 @@ interface Props {
   form: ProviderFormState
   onChange: (f: ProviderFormState) => void
   editing: boolean
+  // v3.7.5 — when editing an existing claude-oauth provider, pass the
+  // full Provider so the AnthropicBillingPanel can render its scrape
+  // state (org_uuid / cookies-present / auto_skip_until / snapshots).
+  // Optional so create-flow callers don't have to construct a stub.
+  provider?: Provider
+  onProviderUpdated?: () => void
 }
 
-export function ProviderForm({ form, onChange, editing }: Props) {
+export function ProviderForm({ form, onChange, editing, provider, onProviderUpdated }: Props) {
   const set = (patch: Partial<ProviderFormState>) => onChange({ ...form, ...patch })
   const flavor = OAUTH_FLAVORS[form.provider_type]
   const isOAuth = !!flavor
@@ -380,18 +387,47 @@ export function ProviderForm({ form, onChange, editing }: Props) {
         />
       </div>
 
+      {/* v3.7.5 — Anthropic Console billing scrape + auto-rotation
+          surface, only rendered for claude-oauth providers in edit
+          mode (need a stored provider with id + cookies state). */}
+      {editing && provider && form.provider_type === 'claude-oauth' && (
+        <AnthropicBillingPanel
+          provider={provider}
+          onUpdated={onProviderUpdated}
+        />
+      )}
+
       {/* v3.0.64: Per-provider usage-based rotation (Phase 2 — config UI).
-          Phase 3 will add the auto-rotate background task. */}
+          v3.7.x — superseded for claude-oauth providers by the
+          External Usage panel above. Kept for non-claude-oauth providers
+          and for operators who want the proxy-internal soft ceiling
+          as a sanity check. */}
       <div className="md:col-span-2 mt-6 border-t border-gray-200 dark:border-gray-700 pt-4">
         <div className="flex items-center justify-between mb-3">
           <div>
             <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
               Usage-based rotation
+              {form.provider_type === 'claude-oauth' && (
+                <span className="ml-2 text-xs font-normal text-amber-600 dark:text-amber-400">
+                  (superseded by External Usage above for claude-oauth)
+                </span>
+              )}
             </h4>
             <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
-              Track rolling token usage so the proxy can rotate priority between same-type
-              providers when one gets too far ahead. Suitable for OAuth subscriptions
-              (claude-oauth, codex-oauth) with session + weekly quotas.
+              {form.provider_type === 'claude-oauth' ? (
+                <>
+                  Legacy proxy-internal counter. For claude-oauth the External Usage panel
+                  (above) is the authoritative signal — set the weekly token limit here
+                  to NULL or a high sanity value (e.g. 100M) to avoid false-alarm
+                  thresholds that don't reflect Anthropic's actual cap.
+                </>
+              ) : (
+                <>
+                  Track rolling token usage so the proxy can rotate priority between same-type
+                  providers when one gets too far ahead. Suitable for OAuth subscriptions
+                  (claude-oauth, codex-oauth) with session + weekly quotas.
+                </>
+              )}
             </p>
           </div>
           <label className="flex items-center gap-2 shrink-0">

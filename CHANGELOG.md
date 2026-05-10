@@ -9,6 +9,43 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.7.x — Anthropic Console billing scrape (real account usage)
 
+### v3.7.5 — UI: External Usage panel + supersedes-note on legacy section
+
+Operator surfaced the gap: the Edit Provider modal still showed only
+the v3.0.64 "Usage-based rotation" fields and had no surface for the
+v3.6/3.7 features (cookie paste, snapshots, auto-rotation state,
+manual refresh). Frontend was backend-only this whole time.
+
+- **New `AnthropicBillingPanel.tsx`** rendered for editing
+  claude-oauth providers. Surfaces:
+  - **Auto-skip banner** when `auto_skip_until` is set — red, shows
+    the rotation reason + countdown to reset.
+  - **Org UUID + cookies-stored badge** with "captured N days ago"
+    indicator. Amber warning at ≥25 days (~30 day cookie lifetime).
+  - **"Rotate cookies" workflow** — textarea + org_uuid input → POST
+    to `/api/providers/{id}/anthropic-billing-credentials`. Step-by-
+    step capture instructions inline.
+  - **"Refresh now" button** — fires `POST .../anthropic-billing-refresh`
+    and prints the real 7d/5h utilization in a toast.
+  - **Snapshots table** — latest 10 captures with utilization columns
+    (5h, 7d, Sonnet 7d), extra-usage credits, color-coded by pct
+    band (green <50, yellow 50-79, amber 80-94, red ≥95).
+- **Legacy "Usage-based rotation" section** now shows a "superseded
+  by External Usage above" note when the provider is claude-oauth.
+  Other provider types see the unchanged description. Reduces
+  confusion about which signal drives rotation.
+- **API client** (`frontend/src/api/index.ts`) gains four methods:
+  `setBillingCredentials`, `refreshBillingNow`, `listSnapshots`,
+  `evaluateRotationRulesNow` — all targeting the v3.7.0/3.7.1 admin
+  endpoints.
+- **`Provider` type** (`frontend/src/types/index.ts`) extended with
+  the five new fields so the panel can render without `any` casts.
+- **Cookies are never displayed** — only the boolean
+  `has_anthropic_session_cookies` flag from the API. Verified by a
+  source-level guard test.
+
+14 new source-level wiring tests. **1242 → 1256 passing**.
+
 ### v3.7.4 — Utilization-weighted preference among claude-oauth providers
 
 Operator surfaced the gap in v3.7.1: skip-based rotation correctly

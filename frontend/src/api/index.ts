@@ -82,6 +82,45 @@ export const providersApi = {
   // v2.8.0: clear the BUG-002 "needs re-auth" flag (admin asserts they fixed it)
   clearAuthFailure: (id: string) =>
     api.post<{ ok: boolean }>(`/api/providers/${id}/clear-auth-failure`, {}),
+  // v3.7.5 — Anthropic Console billing scrape admin endpoints
+  setBillingCredentials: (id: string, data: { org_uuid: string; cookies: string }) =>
+    api.post<{ ok: boolean; provider_id: string; org_uuid: string; cookie_count: number; captured_at: number }>(
+      `/api/providers/${id}/anthropic-billing-credentials`, data,
+    ),
+  refreshBillingNow: (id: string) =>
+    api.post<{
+      ok: boolean
+      auth_state: string
+      http_status: number | null
+      snapshot_id: number | null
+      seven_day_utilization: number | null
+      five_hour_utilization: number | null
+      rotation_decision: Record<string, unknown>
+    }>(`/api/providers/${id}/anthropic-billing-refresh`, {}),
+  listSnapshots: (id: string, limit: number = 20) =>
+    api.get<Array<{
+      id: number
+      captured_at: string | null
+      source: string | null
+      http_status: number | null
+      auth_state: string | null
+      error: string | null
+      five_hour_utilization: number | null
+      five_hour_resets_at: string | null
+      seven_day_utilization: number | null
+      seven_day_resets_at: string | null
+      seven_day_sonnet_utilization: number | null
+      seven_day_opus_utilization: number | null
+      extra_usage_is_enabled: boolean | null
+      extra_usage_monthly_limit: number | null
+      extra_usage_used_credits: number | null
+      extra_usage_utilization: number | null
+      extra_usage_currency: string | null
+    }>>(`/api/providers/${id}/external-usage?limit=${limit}`),
+  evaluateRotationRulesNow: () =>
+    api.post<{ evaluated: number; decisions: Array<Record<string, unknown>> }>(
+      '/api/providers/_evaluate-rotation-rules', {},
+    ),
 }
 
 // ── API Keys ──────────────────────────────────────────────────────────────────

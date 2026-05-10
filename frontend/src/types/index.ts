@@ -51,6 +51,18 @@ export interface Provider {
   usage_weekly_tokens?: number | null
   usage_session_limit_tokens?: number | null
   usage_weekly_limit_tokens?: number | null
+  // v3.7.0/v3.7.1/v3.7.2/v3.7.3 — Anthropic Console billing scrape +
+  // auto-rotation surface. Operator pastes a captured browser cookie
+  // blob; the scraper runs every 4h and writes ExternalUsageSnapshot
+  // rows. When seven_day_utilization >= 95% the auto-rotation rule
+  // sets auto_skip_until = snapshot.seven_day_resets_at; router
+  // skips this provider until then. Cookies themselves are never
+  // returned by the API — only the boolean has_anthropic_session_cookies.
+  anthropic_org_uuid?: string | null
+  has_anthropic_session_cookies?: boolean
+  anthropic_session_captured_at?: number | null
+  auto_skip_until?: string | null
+  auto_skip_reason?: string | null
 }
 
 export interface ProviderFormData {
