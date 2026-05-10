@@ -138,7 +138,15 @@ async def list_snapshots(
 
     Includes failure rows (auth_state != 'ok') so the operator can see
     when cookies expired without scrolling through the activity log.
+
+    v3.7.8 — returns 404 for unknown provider_id (was returning 200 []
+    pre-fix, which made it impossible for callers to tell "no snapshots
+    yet" from "provider doesn't exist"). Matches the
+    -refresh endpoint's existing 404 behavior.
     """
+    rs0 = await db.execute(select(Provider).where(Provider.id == provider_id))
+    if rs0.scalar_one_or_none() is None:
+        raise HTTPException(404, "Provider not found")
     rs = await db.execute(
         select(ExternalUsageSnapshot)
         .where(ExternalUsageSnapshot.provider_id == provider_id)

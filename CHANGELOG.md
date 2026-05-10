@@ -9,6 +9,19 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.7.x — Anthropic Console billing scrape (real account usage)
 
+### v3.7.8 — Third QA sweep nit: 404 on `GET /external-usage` for unknown provider
+
+Tiny consistency fix surfaced by a v3.7.x QA sweep. Pre-fix
+`GET /api/providers/{id}/external-usage` returned 200 `[]` for an
+unknown provider_id, making it impossible for callers to distinguish
+"no snapshots yet" from "provider doesn't exist". Now returns 404
+to match the existing behavior on the `-refresh` endpoint.
+
+No other QA findings — the v3.7.x surface is clean. Smoke node also
+rolled to current (was on v3.5.10).
+
+**1271 passing** (no test count change — single source-level fix).
+
 ### v3.7.7 — Email alert when Anthropic billing scrape auth fails
 
 When the 4-hourly billing scraper hits a non-OK `auth_state`
