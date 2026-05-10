@@ -215,6 +215,14 @@ class Settings(BaseSettings):
         alias="CLIENT_IP_LAN_RESOLVE_MAP",
     )
 
+    # v3.7.0 — Anthropic Console billing scraper cadence. Every 4 hours
+    # by default. Set to 0 to disable the worker (operator pause).
+    # See ``app/monitoring/anthropic_billing_worker.py`` and
+    # ``project_backlog_anthropic_billing_scrape.md`` for context.
+    anthropic_billing_scrape_interval_sec: int = Field(
+        14400, alias="ANTHROPIC_BILLING_SCRAPE_INTERVAL_SEC",
+    )
+
     # v3.0.98 → v3.1.2 — cluster-sync catalog-table replication.
     #
     # v3.0.96 added ModelCapability/ModelAlias/OAuthCaptureProfile to every
