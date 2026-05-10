@@ -171,6 +171,13 @@ async def init_db():
             "ALTER TABLE providers ADD COLUMN anthropic_org_uuid TEXT",
             "ALTER TABLE providers ADD COLUMN anthropic_session_cookies TEXT",
             "ALTER TABLE providers ADD COLUMN anthropic_session_captured_at REAL",
+            # v3.7.1 — auto-rotation skip. Cleared automatically once
+            # the next snapshot shows utilization back below threshold
+            # (or simply when the timestamp passes — router compares
+            # at request time). Doesn't touch operator-configured
+            # priority/enabled fields.
+            "ALTER TABLE providers ADD COLUMN auto_skip_until DATETIME",
+            "ALTER TABLE providers ADD COLUMN auto_skip_reason TEXT",
         ]:
             try:
                 await conn.exec_driver_sql(stmt)

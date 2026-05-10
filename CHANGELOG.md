@@ -9,6 +9,67 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.7.x — Anthropic Console billing scrape (real account usage)
 
+### v3.7.1 — Auto-rotation: skip at-capacity providers automatically
+
+The v3.7.0 scraper writes authoritative weekly utilization to
+`ExternalUsageSnapshot`. v3.7.1 turns those snapshots into routing
+decisions: providers whose latest snapshot reports
+`seven_day_utilization >= 95%` are auto-skipped by the router until
+the snapshot's `seven_day_resets_at` passes.
+
+Live integration test against the first batch of snapshots:
+- Gmail at 100% (resets in ~80 min) → `auto_skip_until` set; router skips it
+- VG at 24% → `auto_skip_until=None`; router prefers it
+- After Gmail's 20:00 reset, the next scrape's snapshot will show
+  the post-reset percentage and the rule clears `auto_skip_until`
+
+**New columns on `Provider`** (`app/models/db.py`):
+- `auto_skip_until` (DateTime, nullable) — set by rule evaluator,
+  cleared automatically once util drops below `capacity - hysteresis`.
+- `auto_skip_reason` (String, nullable) — short human-readable string
+  for admin UI / activity log diagnostics.
+
+**New module** (`app/routing/external_rotation.py`):
+- `evaluate_rules_for_provider(db, provider, snapshot=...)` — single-
+  provider rule application. Used by the scraper after each capture.
+- `evaluate_rules_for_all_providers(db)` — batch evaluator for the
+  manual-trigger admin endpoint.
+- `is_currently_at_capacity(provider)` — routing-time predicate
+  (timestamp comparison, no DB round-trip).
+
+Rules:
+- **Set skip** when `seven_day_utilization >= external_rotation_capacity_pct`
+  (default 95%).
+- **Clear skip** when utilization back below
+  `external_rotation_capacity_pct - external_rotation_hysteresis_pct`
+  (default 90% — gives 5pp hysteresis to avoid flapping).
+
+**Router integration** (`app/routing/router.py:select_provider`):
+- Filters out providers where `is_currently_at_capacity(p)` is true.
+- Defensive fallback: if EVERY provider is auto-skipped, falls back
+  to the unfiltered list and logs `external_rotation.all_providers_at_capacity`
+  so the operator sees it.
+
+**New admin endpoint** (`app/api/anthropic_billing.py`):
+- `POST /api/providers/_evaluate-rotation-rules` — fire the evaluator
+  across all `claude-oauth` providers using their latest snapshots,
+  without waiting for the next 4-hour cycle. Returns the decision
+  dict for each provider.
+
+**Auto-evaluation** is also wired into `scrape_provider_into_snapshot`
+so every successful scrape immediately re-evaluates the rules.
+
+**Settings** (`app/config.py`):
+- `external_rotation_capacity_pct` (default 95.0)
+- `external_rotation_hysteresis_pct` (default 5.0)
+
+Operator-set `Provider.priority` and `Provider.enabled` are preserved
+unchanged — auto-rotation is purely additive. Routing logic still
+respects the operator's chain ordering; auto-skip just removes
+at-capacity entries from the candidate list.
+
+16 new unit tests. **1187 → 1203 passing**.
+
 ### v3.7.0 — `/api/organizations/{uuid}/usage` scraper + 4-hourly worker
 
 Closes the long-standing assumption gap: `ProviderUsageWindow` only

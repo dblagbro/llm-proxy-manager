@@ -105,6 +105,28 @@ async def refresh_now(
     return await scrape_provider_into_snapshot(db, provider)
 
 
+@router.post("/_evaluate-rotation-rules")
+async def evaluate_rotation_now(
+    db: AsyncSession = Depends(get_db),
+    _: AdminUser = Depends(require_admin),
+):
+    """v3.7.1 — fire the auto-rotation rule evaluator across every
+    claude-oauth provider using their latest snapshot. Used to apply
+    rules immediately after a credential paste, or any time the
+    operator wants to force a re-evaluation without waiting for the
+    next 4-hour scrape cycle.
+
+    Returns the decision dict for each provider so the operator can
+    see exactly what changed (or didn't).
+    """
+    from app.routing.external_rotation import evaluate_rules_for_all_providers
+    decisions = await evaluate_rules_for_all_providers(db)
+    return {
+        "evaluated": len(decisions),
+        "decisions": decisions,
+    }
+
+
 @router.get("/{provider_id}/external-usage")
 async def list_snapshots(
     provider_id: str,

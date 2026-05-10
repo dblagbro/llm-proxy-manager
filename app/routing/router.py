@@ -354,6 +354,31 @@ async def select_provider(
     if not providers:
         raise RuntimeError("No providers configured")
 
+    # v3.7.1 — auto-rotation skip. Filter out providers currently
+    # marked as at-capacity by ``external_rotation`` rules. The skip
+    # is timestamp-bounded; once ``auto_skip_until`` passes we
+    # automatically include the provider again. Operator-set
+    # ``priority`` and ``enabled`` are preserved unchanged — this
+    # filter is purely additive.
+    from app.routing.external_rotation import is_currently_at_capacity
+    pre_filter_count = len(providers)
+    providers = [p for p in providers if not is_currently_at_capacity(p)]
+    if not providers:
+        # Defensive — if every provider is auto-skipped we'd hard-fail
+        # the request. Better to fall through to the original list
+        # (let the at-capacity provider attempt and probably get
+        # throttled by the upstream) than 503 the caller with no
+        # alternative. Log loudly so the operator sees it.
+        import logging as _log
+        _log.getLogger(__name__).warning(
+            "external_rotation.all_providers_at_capacity falling_back_to=%d",
+            pre_filter_count,
+        )
+        result = await db.execute(
+            select(Provider).where(Provider.enabled == True).order_by(Provider.priority)
+        )
+        providers = result.scalars().all()
+
     # Pin to a specific provider when an alias demands it
     if pinned_provider_id:
         providers = [p for p in providers if p.id == pinned_provider_id]

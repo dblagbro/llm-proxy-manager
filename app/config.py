@@ -223,6 +223,19 @@ class Settings(BaseSettings):
         14400, alias="ANTHROPIC_BILLING_SCRAPE_INTERVAL_SEC",
     )
 
+    # v3.7.1 — auto-rotation rule thresholds. The router skips providers
+    # whose latest snapshot reports ``seven_day_utilization >=
+    # external_rotation_capacity_pct``. Skip is cleared once
+    # utilization drops back below ``external_rotation_capacity_pct -
+    # external_rotation_hysteresis_pct``. Defaults are 95% / 5%
+    # → skip at 95%, clear at 90%.
+    external_rotation_capacity_pct: float = Field(
+        95.0, alias="EXTERNAL_ROTATION_CAPACITY_PCT",
+    )
+    external_rotation_hysteresis_pct: float = Field(
+        5.0, alias="EXTERNAL_ROTATION_HYSTERESIS_PCT",
+    )
+
     # v3.0.98 → v3.1.2 — cluster-sync catalog-table replication.
     #
     # v3.0.96 added ModelCapability/ModelAlias/OAuthCaptureProfile to every
