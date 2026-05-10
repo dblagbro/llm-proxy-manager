@@ -20,7 +20,7 @@ router = APIRouter(prefix="/api/keys", tags=["api-keys"])
 
 class KeyCreate(BaseModel):
     name: str
-    key_type: str = "standard"  # standard|claude-code
+    key_type: str = "standard"  # standard | claude-code | admin | admin-readonly-catalog
     spending_cap_usd: Optional[float] = None
     rate_limit_rpm: Optional[int] = None
     rate_limit_tier: Optional[str] = None  # Wave 6: named tier
