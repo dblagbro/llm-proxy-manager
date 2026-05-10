@@ -91,6 +91,22 @@ class Provider(Base):
     usage_weekly_limit_tokens = Column(Integer, nullable=True)
     usage_rotation_threshold_pct = Column(Integer, nullable=True)    # rotate when max/min ratio exceeds this; default 30
 
+    # v3.7.0 — external billing scrape (Anthropic Console).
+    # When the operator pastes a captured browser session, store the
+    # cookies (JSON string) + organization UUID here. The 4-hourly
+    # billing worker reads these and calls
+    # ``GET https://claude.ai/api/organizations/{uuid}/usage`` to
+    # get authoritative weekly/per-model usage that includes ALL
+    # consumption on the account (not just the proxy's slice — see
+    # ``project_backlog_anthropic_billing_scrape.md`` for the why).
+    # Cookies expire (typically 30+ days for ``sessionKey``); when
+    # the worker hits 401/403/Cloudflare it logs a re-auth-needed
+    # event and the operator pastes a fresh capture via the admin
+    # endpoint at ``POST /api/providers/{id}/anthropic-billing-credentials``.
+    anthropic_org_uuid = Column(String, nullable=True)
+    anthropic_session_cookies = Column(String, nullable=True)        # JSON dict: {sessionKey, sessionKeyLC, routingHint, lastActiveOrg, cf_clearance, __cf_bm, ...}
+    anthropic_session_captured_at = Column(Float, nullable=True)     # unix ts of last operator paste; for "cookies are N days old" UI
+
     capabilities = relationship("ModelCapability", back_populates="provider", cascade="all, delete-orphan")
 
 
@@ -107,6 +123,67 @@ class ProviderUsageWindow(Base):
     weekly_reset_at = Column(DateTime, nullable=True)  # next reset (last reset + 7 days)
     weekly_pct = Column(Float, nullable=True)
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class ExternalUsageSnapshot(Base):
+    """v3.7.0 — authoritative external usage view scraped from the
+    Anthropic Console (``claude.ai/api/organizations/{uuid}/usage``).
+
+    Why this exists: ``ProviderUsageWindow`` (above) tracks tokens
+    consumed THROUGH THE PROXY only. The same Anthropic Pro Max
+    accounts are used by other channels (Claude Code, mobile app,
+    other tools), so the proxy slice ≠ the account total. Rotation
+    decisions based on the proxy slice trigger at the wrong time.
+
+    This table stores 4-hourly snapshots of the authoritative weekly
+    + per-model utilization figures Anthropic itself reports. The
+    cascade / rotation logic consults the latest snapshot before
+    falling back to the proxy slice.
+
+    Schema mirrors the captured response shape from 2026-05-10:
+
+      five_hour:                  {utilization, resets_at}
+      seven_day:                  {utilization, resets_at}
+      seven_day_oauth_apps:       null | {utilization, resets_at}
+      seven_day_opus:             null | {utilization, resets_at}
+      seven_day_sonnet:           {utilization, resets_at}
+      seven_day_cowork:           null | {utilization, resets_at}
+      seven_day_omelette:         {utilization, resets_at}
+      tangelo / iguana_necktie /
+      omelette_promotional:       null | conditional objects
+      extra_usage:                {is_enabled, monthly_limit, used_credits, utilization, currency}
+
+    We extract the columnar fields below for easy querying; full
+    body is preserved as ``raw_response`` JSON for forward-compat
+    with response-shape changes Anthropic ships.
+    """
+    __tablename__ = "external_usage_snapshot"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    provider_id = Column(String, ForeignKey("providers.id"), nullable=False, index=True)
+    captured_at = Column(DateTime, server_default=func.now(), index=True)
+    source = Column(String, default="anthropic_console_v1")
+    # Capture diagnostics
+    http_status = Column(Integer, nullable=True)
+    error = Column(Text, nullable=True)              # non-null when scrape failed
+    auth_state = Column(String, nullable=True)       # "ok" | "session_expired" | "cf_blocked" | "network_error"
+    # Core utilization fields (percent 0-100)
+    five_hour_utilization = Column(Float, nullable=True)
+    five_hour_resets_at = Column(DateTime, nullable=True)
+    seven_day_utilization = Column(Float, nullable=True)
+    seven_day_resets_at = Column(DateTime, nullable=True)
+    seven_day_sonnet_utilization = Column(Float, nullable=True)
+    seven_day_sonnet_resets_at = Column(DateTime, nullable=True)
+    seven_day_opus_utilization = Column(Float, nullable=True)
+    seven_day_opus_resets_at = Column(DateTime, nullable=True)
+    # Overage / consumer-pricing
+    extra_usage_is_enabled = Column(Boolean, nullable=True)
+    extra_usage_monthly_limit = Column(Float, nullable=True)
+    extra_usage_used_credits = Column(Float, nullable=True)
+    extra_usage_utilization = Column(Float, nullable=True)
+    extra_usage_currency = Column(String, nullable=True)
+    # Forward-compat catch-all so we can decode new fields without a
+    # migration each time Anthropic adds one
+    raw_response = Column(Text, nullable=True)
 
 
 class ModelCapability(Base):

@@ -162,6 +162,15 @@ async def init_db():
             # flavour (web/api/openrouter/direct/etc).
             "ALTER TABLE model_capabilities ADD COLUMN model_family TEXT",
             "ALTER TABLE model_capabilities ADD COLUMN model_variant TEXT",
+            # v3.7.0 — external billing scrape (Anthropic Console).
+            # Stores cookies + organization UUID for the
+            # claude.ai/api/organizations/{uuid}/usage endpoint. The
+            # `external_usage_snapshot` table is created via
+            # Base.metadata.create_all above; these columns annotate
+            # the existing Provider rows that drive the scraper.
+            "ALTER TABLE providers ADD COLUMN anthropic_org_uuid TEXT",
+            "ALTER TABLE providers ADD COLUMN anthropic_session_cookies TEXT",
+            "ALTER TABLE providers ADD COLUMN anthropic_session_captured_at REAL",
         ]:
             try:
                 await conn.exec_driver_sql(stmt)

@@ -41,6 +41,7 @@ from app.api.oauth_capture import router as oauth_capture_router
 from app.api.runs import router as runs_router
 from app.api.lmrh import router as lmrh_router
 from app.api.llm_models import router as llm_models_router
+from app.api.anthropic_billing import router as anthropic_billing_router
 from app.observability.otel import init_tracer
 from app.observability.prometheus import metrics_response, set_service_info, observe_circuit_breaker_state
 
@@ -224,6 +225,16 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"lan_egress_dns_prewarm failed: {e}")
 
+    # v3.7.0 — Anthropic Console billing scraper. Runs every 4h on
+    # claude-oauth providers that have cookies configured. No-op if
+    # no provider has anthropic_session_cookies set, so safe to
+    # always start.
+    try:
+        from app.monitoring import anthropic_billing_worker as _ab_worker
+        _ab_worker.start()
+    except Exception as e:
+        logger.warning(f"anthropic_billing_worker failed to start: {e}")
+
     logger.info("llm-proxy v2 started port=%s cluster=%s", settings.port, settings.cluster_enabled)
     yield
     logger.info("llm-proxy v2 shutting down")
@@ -352,6 +363,7 @@ app.include_router(oauth_capture_router)
 app.include_router(runs_router)
 app.include_router(lmrh_router)
 app.include_router(llm_models_router)
+app.include_router(anthropic_billing_router)
 # v3.3.0: LMRHv2 endpoints (feature-flagged via lmrh_v2_enabled).
 # Same /lmrh/* prefix as v1; new paths don't collide with existing ones.
 from app.api.lmrh_v2 import router as lmrh_v2_router  # noqa: E402

@@ -7,6 +7,90 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ---
 
+## v3.7.x — Anthropic Console billing scrape (real account usage)
+
+### v3.7.0 — `/api/organizations/{uuid}/usage` scraper + 4-hourly worker
+
+Closes the long-standing assumption gap: `ProviderUsageWindow` only
+sees the proxy's slice of an Anthropic Pro Max account. The same
+accounts are also used by Claude Code CLI / mobile / other tools, so
+the proxy's count is structurally less than the account total —
+rotation/cascade decisions based on it triggered at the wrong time.
+
+The third-party browser-bridge agent captured the authoritative
+endpoint on 2026-05-10:
+
+- **`GET https://claude.ai/api/organizations/{org_uuid}/usage`**
+- **Auth: cookie-only** — `sessionKey`, `sessionKeyLC`, `routingHint`,
+  `lastActiveOrg`, plus Cloudflare cookies. No bearer token, no
+  `anthropic-version` / `anthropic-beta` headers needed.
+- **Response**: `five_hour` + `seven_day` windows with `utilization`
+  (percent) and `resets_at`, plus per-model breakdowns
+  (`seven_day_sonnet`, `seven_day_opus`) and an `extra_usage` overage
+  block with `monthly_limit` / `used_credits` / `currency`.
+
+This version ships data collection only. Wiring into rotation
+decisions lands in v3.7.1 once we have a few weeks of snapshot
+history to validate against.
+
+**New model** (`app/models/db.py`):
+
+- `ExternalUsageSnapshot` — one row per scrape attempt. Columns flatten
+  the captured response shape (utilization, resets_at, extra_usage block)
+  for easy SQL; `raw_response` preserves the full JSON for forward-
+  compat. `auth_state` distinguishes `ok` / `session_expired` /
+  `cf_blocked` / `network_error` / `parse_error` / `config_error`.
+- Three new columns on `Provider`: `anthropic_org_uuid`,
+  `anthropic_session_cookies` (JSON dict), `anthropic_session_captured_at`
+  (unix ts). Idempotent ALTER TABLE pattern.
+
+**New module** (`app/providers/anthropic_billing.py`):
+
+- `parse_cookie_jar(raw)` — accepts JSON dict, JSON string, or
+  cookie-header style; defensive parsing.
+- `validate_cookies(cookies)` — required: `sessionKey`. Returns a
+  human-readable reason string when insufficient.
+- `parse_usage_response(body)` — flattens the captured response shape
+  into the columnar fields. Tolerates missing keys, null values,
+  unexpected types.
+- `fetch_usage(org_uuid, cookies)` — async httpx call, classifies
+  outcomes by auth_state. Detects Cloudflare interstitials separately
+  from real 401/403 so operator gets actionable diagnostics.
+- `scrape_provider_into_snapshot(db, provider)` — high-level helper
+  that fetches, parses, and writes one snapshot row.
+
+**New worker** (`app/monitoring/anthropic_billing_worker.py`):
+
+- Runs every 4 hours (configurable via
+  `ANTHROPIC_BILLING_SCRAPE_INTERVAL_SEC`, set to 0 to disable).
+- Iterates all `claude-oauth` providers with cookies+UUID configured.
+- Mirrors the existing `keepalive.py` periodic-loop pattern.
+- Started from FastAPI lifespan hook in `app/main.py`.
+
+**New admin API** (`app/api/anthropic_billing.py`):
+
+- `POST /api/providers/{id}/anthropic-billing-credentials` — paste
+  cookies + org UUID. Pre-validates required cookies.
+- `POST /api/providers/{id}/anthropic-billing-refresh` — fire one
+  scrape immediately for smoke-testing fresh credentials.
+- `GET /api/providers/{id}/external-usage` — return latest N snapshots,
+  newest first, including failure rows so cookie-expiration is visible.
+
+**Operator workflow**:
+
+1. Sign into the Anthropic account in a real browser.
+2. DevTools → Application → Cookies → `https://claude.ai`, copy as JSON dict.
+3. POST to the `-credentials` endpoint with cookies + org UUID.
+4. POST `-refresh` to verify it works (response includes the parsed `seven_day_utilization` so you immediately see the real number).
+5. Worker takes over on the 4-hour cadence.
+
+When `sessionKey` expires (~30 days), the next scrape returns
+`auth_state=session_expired`. Operator re-pastes a fresh capture.
+
+**Tests**: 36 new unit tests. Total **1151 → 1187 passing**.
+
+Backlog reference: `project_backlog_anthropic_billing_scrape.md`.
+
 ## v3.6.x — Model identity edit API (Hub #230)
 
 ### v3.6.3 — LAN-egress IP rewrite (hairpin NAT visibility)
