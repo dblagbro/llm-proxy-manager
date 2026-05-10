@@ -217,6 +217,51 @@ export function ProvidersPage() {
     for (const [pri, n] of counts) if (n > 1) priorityTies.add(pri)
   }
 
+  // v3.7.6 — fetch latest external snapshots for each claude-oauth
+  // provider so we can render a "preferred" badge next to the one with
+  // the lowest weekly utilization. The router uses the same signal
+  // (see app/routing/external_rotation.py:reorder_claude_oauth_by_utilization)
+  // so the badge reflects actual routing behavior, not just stored
+  // operator priority.
+  const claudeOauthIds = (providers ?? [])
+    .filter(p => p.provider_type === 'claude-oauth' && p.enabled)
+    .map(p => p.id)
+  const claudeOauthIdsKey = claudeOauthIds.join(',')
+  const { data: claudeOauthUtilMap } = useQuery({
+    queryKey: ['claude-oauth-snapshots', claudeOauthIdsKey],
+    queryFn: async () => {
+      const out: Record<string, number> = {}
+      for (const id of claudeOauthIds) {
+        try {
+          const rows = await providersApi.listSnapshots(id, 1)
+          if (rows.length && rows[0].seven_day_utilization != null) {
+            out[id] = rows[0].seven_day_utilization
+          }
+        } catch { /* no snapshot yet — fine */ }
+      }
+      return out
+    },
+    enabled: claudeOauthIds.length >= 2,
+    staleTime: 60_000,  // 1 min — matches router's 30s util cache
+    refetchInterval: 120_000,
+  })
+  // "Preferred" = the claude-oauth provider with the LOWEST weekly
+  // utilization AND no active auto-skip. Returns null when we don't
+  // have enough data to rank (e.g. only one claude-oauth provider or
+  // no snapshots).
+  const claudeOauthPreferred: string | null = (() => {
+    if (!claudeOauthUtilMap || claudeOauthIds.length < 2) return null
+    const candidates = (providers ?? [])
+      .filter(p =>
+        p.provider_type === 'claude-oauth' &&
+        p.enabled &&
+        !(p.auto_skip_until && new Date(p.auto_skip_until).getTime() > Date.now()) &&
+        claudeOauthUtilMap[p.id] !== undefined
+      )
+      .sort((a, b) => (claudeOauthUtilMap[a.id] ?? 999) - (claudeOauthUtilMap[b.id] ?? 999))
+    return candidates.length > 0 ? candidates[0].id : null
+  })()
+
   return (
     <div className="p-6 space-y-6 max-w-6xl">
       <div className="flex items-center justify-between">
@@ -272,7 +317,32 @@ export function ProvidersPage() {
                 >
                   <div className={clsx('h-2.5 w-2.5 rounded-full shrink-0', p.enabled ? 'bg-green-500' : 'bg-gray-400')} />
                   <div className="flex-1 min-w-0">
-                    <p className="font-medium text-gray-900 dark:text-gray-100">{p.name}</p>
+                    <p className="font-medium text-gray-900 dark:text-gray-100 flex items-center gap-2 flex-wrap">
+                      <span>{p.name}</span>
+                      {/* v3.7.6 — effective-preference indicators for
+                          claude-oauth providers. ``auto_skip_until`` in
+                          the future = router is currently bypassing this
+                          provider (red badge). Among claude-oauth
+                          providers, the lowest-utilization one (per
+                          latest snapshot) is the router's current first
+                          choice — green "preferred" badge. */}
+                      {p.auto_skip_until && new Date(p.auto_skip_until).getTime() > Date.now() && (
+                        <span
+                          className="inline-flex items-center rounded-full bg-red-100 dark:bg-red-950 text-red-800 dark:text-red-200 px-2 py-0.5 text-xs font-normal"
+                          title={p.auto_skip_reason ?? 'Auto-skipped by external rotation rules'}
+                        >
+                          🚦 auto-skipped
+                        </span>
+                      )}
+                      {p.provider_type === 'claude-oauth' && claudeOauthPreferred === p.id && (
+                        <span
+                          className="inline-flex items-center rounded-full bg-emerald-100 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-200 px-2 py-0.5 text-xs font-normal"
+                          title="Lowest weekly utilization among claude-oauth providers — current first-choice for routing"
+                        >
+                          ✓ preferred
+                        </span>
+                      )}
+                    </p>
                     <p className="text-xs text-gray-500">{p.provider_type} · {p.default_model ?? 'no default model'} · priority {p.priority}</p>
                     {/* v3.0.6: per-provider 24h metrics inline. Hidden when no
                         traffic to that provider, so configured-but-unused

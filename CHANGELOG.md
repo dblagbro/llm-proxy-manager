@@ -9,6 +9,32 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.7.x — Anthropic Console billing scrape (real account usage)
 
+### v3.7.6 — Provider-list effective-preference badges
+
+Closes the "why does Gmail still say priority=4 if VG has more
+headroom" UX gap. Stored priority is unchanged by design (operator-set
+intent), but now the providers LIST page surfaces the **effective**
+state at a glance:
+
+- 🚦 **`auto-skipped`** red badge next to any provider whose
+  ``auto_skip_until`` is in the future. Title hover shows the reason
+  ("weekly utilization 100.0% >= 95% threshold; resets ...").
+- ✓ **`preferred`** green badge next to whichever claude-oauth
+  provider currently has the lowest weekly utilization (and isn't
+  auto-skipped). This is the router's actual first-choice given
+  v3.7.4's utilization-weighted preference.
+
+The list-page query reads latest snapshots via
+`providersApi.listSnapshots(id, 1)` for every enabled claude-oauth
+provider. 60s `staleTime`, 2-min `refetchInterval` — matches the
+router's 30s internal cache (so badges stay accurate without
+hammering the DB).
+
+Badges only render with ≥2 claude-oauth providers (nothing to rank
+against if only one).
+
+6 new source-level wiring tests. **1256 → 1262 passing**.
+
 ### v3.7.5 — UI: External Usage panel + supersedes-note on legacy section
 
 Operator surfaced the gap: the Edit Provider modal still showed only
