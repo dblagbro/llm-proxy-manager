@@ -141,6 +141,115 @@ class LmrhSnapshot:
     providers: list[_ProviderSnap]
     etag: str
 
+    def to_public_view(self) -> dict:
+        """v3.7.18 — public, redacted view for LMRHv2 Q1 (operator answer).
+
+        Returns a sanitized aggregate suitable for unauthenticated callers:
+        ``GET /lmrh/public``. Strips operator-internal info that would
+        leak via the standard ``/lmrh/providers`` endpoint:
+
+        - Provider operator-internal names + ids (e.g.
+          "Devin-Anthropic-Max-Gmail") — hidden
+        - Per-provider counts ("we have 3 anthropic accounts") — hidden
+        - Subscription-quota numbers (account-specific) — hidden
+        - Detailed cost figures (operational/financial sensitivity) — hidden
+        - Per-provider metrics (would let competitors infer usage) — hidden
+
+        Exposed:
+
+        - Available canonical ``model_id`` set + aliases
+        - ``family`` / ``variant`` taxonomy (so callers know multi-route
+          availability without naming routes)
+        - Capability features (tools, vision, reasoning, context length)
+        - Aggregate ``cost_tier`` per model (economy / standard / premium)
+        - Supported regions (set, not per-provider)
+        - Whether the model is currently available at all (≥1 healthy
+          provider)
+
+        This is enough for an LMRH client to decide "is the proxy
+        reachable, does it serve the models I need, what hints can I
+        send" without exchanging an API key. After API-key exchange
+        callers use the full ``/lmrh/providers`` view.
+        """
+        # Aggregate by (family, model_id) — same model exposed via
+        # multiple routes coalesces into one entry with variants list.
+        by_model: dict[tuple[Optional[str], str], dict] = {}
+        for prov in self.providers:
+            # Skip providers in OPEN circuit — they're not currently
+            # reachable, but ONLY skip if every provider for the model
+            # is open. Track per-model availability below.
+            for m in prov.models:
+                key = (m.family, m.model_id)
+                entry = by_model.setdefault(key, {
+                    "model_id": m.model_id,
+                    "family": m.family,
+                    "aliases": set(),
+                    "variants": set(),
+                    "context_length": m.context_length,
+                    "native_tools": m.native_tools,
+                    "native_reasoning": m.native_reasoning,
+                    "regions": set(),
+                    "cost_tiers": set(),
+                    "available_routes": 0,
+                    "total_routes": 0,
+                    "subscription_routes": 0,
+                })
+                entry["aliases"].update(m.aliases or [])
+                if m.variant:
+                    entry["variants"].add(m.variant)
+                entry["regions"].update(prov.regions or [])
+                # Coarse cost-tier bucketing — never expose numbers
+                if prov.cost_class == "subscription":
+                    entry["cost_tiers"].add("subscription")
+                    entry["subscription_routes"] += 1
+                else:
+                    if m.cost_per_1m_input_usd is None:
+                        entry["cost_tiers"].add("unknown")
+                    elif m.cost_per_1m_input_usd < 1.0:
+                        entry["cost_tiers"].add("economy")
+                    elif m.cost_per_1m_input_usd < 10.0:
+                        entry["cost_tiers"].add("standard")
+                    else:
+                        entry["cost_tiers"].add("premium")
+                entry["total_routes"] += 1
+                if prov.circuit != "open":
+                    entry["available_routes"] += 1
+
+        models_out: list[dict] = []
+        for entry in by_model.values():
+            models_out.append({
+                "model_id": entry["model_id"],
+                "family": entry["family"],
+                "aliases": sorted(entry["aliases"]),
+                "variants": sorted(entry["variants"]),
+                "capabilities": {
+                    "context_length": entry["context_length"],
+                    "native_tools": entry["native_tools"],
+                    "native_reasoning": entry["native_reasoning"],
+                },
+                "regions": sorted(entry["regions"]),
+                "cost_tiers": sorted(entry["cost_tiers"]),
+                "available": entry["available_routes"] > 0,
+                # Public callers see only a coarse signal — buckets are
+                # 0 / "few" / "many" to obscure exact route count.
+                "redundancy": (
+                    "many" if entry["available_routes"] >= 3
+                    else "few" if entry["available_routes"] >= 2
+                    else "single" if entry["available_routes"] == 1
+                    else "none"
+                ),
+            })
+        models_out.sort(key=lambda x: (x["family"] or "", x["model_id"]))
+        return {
+            "version": "2.0",
+            "as_of": self.as_of.isoformat() if self.as_of else None,
+            "scope": "public",
+            "models_count": len(models_out),
+            "models": models_out,
+            "auth_required_for_full_view": True,
+            "auth_endpoint": "/lmrh/providers",
+        }
+
     def for_caller(self, key_id: str) -> list[_ProviderSnap]:
         """Filter providers per the v2 scope policy (decision #1).
 

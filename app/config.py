@@ -32,6 +32,17 @@ class Settings(BaseSettings):
     # Operator-approved 2026-05-09; default-off until per-node flip
     # after SDK reference impl proven (operator decision #6).
     lmrh_v2_enabled: bool = Field(False, alias="LMRH_V2_ENABLED")
+    # v3.7.18 — operator answer to LMRHv2 Q6: per-NODE control,
+    # one at a time. The lmrh_v2_enabled flag above is cluster-synced
+    # via SystemSetting and propagates to all peers within ~60s, so it
+    # doesn't allow per-node-only enablement. This env var overrides
+    # that: when set explicitly to "on" or "off", THIS node uses the
+    # override regardless of cluster setting. Default "auto" means
+    # follow the SystemSetting (legacy behavior). Operators flipping
+    # one-node-at-a-time should `LMRH_V2_NODE_OVERRIDE=on` on the
+    # target node, verify, then propagate cluster-wide via the
+    # SystemSetting before clearing the env var.
+    lmrh_v2_node_override: str = Field("auto", alias="LMRH_V2_NODE_OVERRIDE")
 
     # CoT-E pipeline
     cot_enabled: bool = Field(True, alias="COT_ENABLED")
