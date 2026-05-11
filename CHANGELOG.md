@@ -9,6 +9,48 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.7.x — Anthropic Console billing scrape (real account usage)
 
+### v3.7.20 — BUG-020: utilization bucket filter on P2C selection (claude-oauth routing balance fix)
+
+**High-severity routing bug.** Surfaced 2026-05-11 evening: VG
+account got **1138/1138 claude-oauth requests** while Gmail account
+got **0**, despite VG being at 49% utilization and Gmail at 4%. The
+v3.7.4 utilization-aware reorder was silently overridden by the
+v2.8.0 PeakEWMA P2C selection.
+
+**Root cause** in `app/routing/router.py:select_provider`:
+
+1. `reorder_claude_oauth_by_utilization` correctly put Gmail (lower
+   bucket) first in the `providers` list
+2. `profiles` was built from that reordered list
+3. **But** `rank_candidates_with_scores(profiles, hint)` re-sorted
+   by score, undoing the reorder
+4. The default P2C/PeakEWMA selection block then:
+   - Built `top_tier` of candidates within 1.0 score of top
+   - Sampled 2 randomly, picked by EWMA
+   - **Explicitly preferred the candidate WITH EWMA samples over the
+     one without** (`elif e1 is None: winner = c2`)
+5. Self-reinforcing loop: VG got all traffic → VG's EWMA stayed warm
+   → Gmail never seeded its EWMA → VG always won
+
+**Fix**: before the P2C random sample runs, narrow `top_tier` to
+candidates in the lowest utilization bucket. If candidates span
+multiple buckets, the higher-bucket entries drop out entirely. Same
+bucket → existing P2C/EWMA logic applies unchanged. Empty `util_map`
+(snapshot table issue) → no-op fallback to existing behavior.
+
+`util_map` was hoisted to broader scope so the P2C selection block
+can consult it (previously local to the reorder's try/except).
+`_utilization_bucket` was added to the router's import from
+`external_rotation`.
+
+**Effect**: when a load burst pushes one claude-oauth account into
+a higher utilization bucket while the other stays in a lower bucket,
+the lower-utilization account immediately takes over routing. Should
+restore the operator's expected "use the account with more headroom"
+behavior.
+
+Tests: +10 unit tests in `test_v3720_routing_bucket_filter.py`. **1416/1416 pass.**
+
 ### v3.7.19 — Log-noise cleanup (BUG-021 embeddings base64 + BUG-022 DB session close)
 
 Two log-noise fixes surfaced during 2026-05-11 evening load burst

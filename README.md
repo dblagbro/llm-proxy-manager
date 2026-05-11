@@ -4,7 +4,7 @@ Self-hosted LLM routing gateway — Python/FastAPI rewrite of llm-proxy v1.
 
 **LMRH semantic routing · circuit breaker failover · CoT-E augmentation · cluster sync · Run runtime · per-provider keep-alive probes · React dashboard**
 
-Current version: **v3.7.19** (see [CHANGELOG.md](CHANGELOG.md))
+Current version: **v3.7.20** (see [CHANGELOG.md](CHANGELOG.md))
 
 ## Access
 
