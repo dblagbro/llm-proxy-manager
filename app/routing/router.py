@@ -365,6 +365,7 @@ async def select_provider(
         get_utilization_map,
         reorder_claude_oauth_by_utilization,
         _bucket_size_setting,
+        _utilization_bucket,
     )
     pre_filter_count = len(providers)
     providers = [p for p in providers if not is_currently_at_capacity(p)]
@@ -375,6 +376,11 @@ async def select_provider(
     # slot unchanged. This expresses "prefer the account with more
     # headroom" without overriding operator-encoded cost-class /
     # account-preference signals.
+    # v3.7.20 — hoist util_map to broader scope so the BUG-020 fix in the
+    # P2C selection block below can also consult it. Default to empty
+    # dict on failure so the downstream bucket check degrades to "all
+    # candidates in same bucket" (i.e. no behavior change vs pre-fix).
+    util_map: dict[str, float] = {}
     try:
         util_map = await get_utilization_map(db)
         providers = reorder_claude_oauth_by_utilization(
@@ -680,6 +686,29 @@ async def select_provider(
         import random as _random
         top_score = ranked_scored[0][2]
         top_tier = [t for t in ranked_scored if top_score - t[2] < 1.0]
+        # v3.7.20 — BUG-020 fix. Before falling into the P2C/EWMA random
+        # sample, narrow ``top_tier`` to candidates in the lowest
+        # utilization bucket. Without this filter, the v3.7.4 reorder is
+        # silently overridden: ``rank_candidates_with_scores`` re-sorts
+        # by score, and when buckets are tied at the top-of-band, the
+        # "candidate with EWMA samples" explicitly wins over the one
+        # without. Self-reinforcing — the busy provider stays busy and
+        # the lower-utilization alternate never gets sampled. Operator-
+        # observed 2026-05-11: VG (49% util) got 1138/1138 claude-oauth
+        # requests while Gmail (4% util) got 0.
+        #
+        # Logic: if any candidate is in a strictly lower bucket than
+        # another, drop the higher-bucket candidates from ``top_tier``.
+        # Within the same bucket, fall through to existing P2C/EWMA.
+        if util_map and len(top_tier) >= 2:
+            bucket_size = _bucket_size_setting()
+            def _bucket_of(t):
+                u = util_map.get(t[0].provider_id)
+                return _utilization_bucket(u, bucket_size)
+            bucket_min = min(_bucket_of(t) for t in top_tier)
+            low_bucket = [t for t in top_tier if _bucket_of(t) == bucket_min]
+            if len(low_bucket) < len(top_tier):
+                top_tier = low_bucket
         if len(top_tier) >= 2:
             c1, c2 = _random.sample(top_tier, 2)
             e1 = peak_ewma(c1[0].provider_id)
@@ -694,7 +723,7 @@ async def select_provider(
                 winner = c1 if e1 <= e2 else c2
             best_profile, unmet, _ = winner
         else:
-            best_profile, unmet, _ = ranked_scored[0]
+            best_profile, unmet, _ = top_tier[0]
     provider = provider_map[best_profile.provider_id]
 
     # CoT-E auto-engagement:
