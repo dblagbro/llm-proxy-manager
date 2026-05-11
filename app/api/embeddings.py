@@ -116,12 +116,29 @@ async def create_embeddings(
     await record_success(provider.id)
 
     elapsed_ms = (time.monotonic() - t0) * 1000.0
+    # v3.7.19 — BUG-021: some upstreams (notably Cohere) return embeddings
+    # in base64-encoded float-array form even when the caller didn't ask
+    # for ``encoding_format=base64``. litellm's EmbeddingResponse model
+    # declares ``embedding: list[float]``, so the Pydantic serializer
+    # emits a noisy ``PydanticSerializationUnexpectedValue`` warning on
+    # every such response. Detect the base64 case and decode to
+    # ``list[float]`` before serialization. Honors the caller's explicit
+    # ``encoding_format=base64`` request — only decode when caller did
+    # NOT opt into base64 explicitly.
     if hasattr(result, "model_dump"):
-        body_out = result.model_dump()
+        # Use warnings='none' on model_dump to suppress the serializer
+        # warning since we'll normalize the value ourselves below.
+        try:
+            body_out = result.model_dump(warnings="none")
+        except TypeError:
+            # Older pydantic without warnings kwarg
+            body_out = result.model_dump()
     elif hasattr(result, "dict"):
         body_out = result.dict()
     else:
         body_out = dict(result)
+    if (body.get("encoding_format") or "float") != "base64":
+        _normalize_embeddings_to_floats(body_out)
 
     headers = {
         "X-Provider-Type": provider.provider_type,
@@ -130,3 +147,35 @@ async def create_embeddings(
         "X-Embed-Latency-Ms": f"{elapsed_ms:.1f}",
     }
     return JSONResponse(content=body_out, headers=headers)
+
+
+def _normalize_embeddings_to_floats(body_out: dict) -> None:
+    """v3.7.19 — BUG-021 normalizer. Walk the embeddings response and
+    decode base64-encoded vectors to ``list[float]`` so the response
+    matches the documented ``encoding_format=float`` contract.
+
+    Mutates ``body_out`` in place. No-op when the values are already
+    ``list[float]`` (the common case). Safe against missing/empty
+    ``data`` arrays.
+    """
+    import base64
+    import struct
+    data = body_out.get("data") or []
+    if not isinstance(data, list):
+        return
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        emb = item.get("embedding")
+        if isinstance(emb, str):
+            # base64-encoded packed float32 array
+            try:
+                raw = base64.b64decode(emb)
+                # f32 = 4 bytes each; unpack to list of floats
+                count = len(raw) // 4
+                item["embedding"] = list(struct.unpack(f"<{count}f", raw))
+            except Exception as exc:
+                logger.warning(
+                    "embeddings._normalize_decode_failed err=%s len=%d",
+                    exc, len(emb),
+                )
