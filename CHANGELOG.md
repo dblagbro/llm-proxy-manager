@@ -9,6 +9,45 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.7.x — Anthropic Console billing scrape (real account usage)
 
+### v3.7.19 — Log-noise cleanup (BUG-021 embeddings base64 + BUG-022 DB session close)
+
+Two log-noise fixes surfaced during 2026-05-11 evening load burst
+(coordinator-hub hit 740 req/20m for ~40 min):
+
+**BUG-021** — `/v1/embeddings` was emitting Pydantic
+`PydanticSerializationUnexpectedValue` warnings on every Cohere
+response because the upstream returns base64-encoded float32 arrays
+even when the caller didn't request `encoding_format=base64`.
+litellm's `EmbeddingResponse.embedding` field is typed `list[float]`,
+so the type mismatch triggered the serializer warning. Responses
+were still HTTP 200, but each call generated a stack-trace-like log
+line.
+
+Fix: new `_normalize_embeddings_to_floats()` helper decodes the
+base64 to `list[float]` before serialization. Gated on
+`encoding_format != "base64"` so callers who explicitly opted into
+base64 still get base64. Also passes `warnings="none"` to
+`model_dump()` so the serializer doesn't emit during the dump itself
+(we normalize the value afterward).
+
+**BUG-022** — under bursty load, request cancellations from clients
+(disconnects, timeouts) propagated `CancelledError` through the
+Starlette middleware chain. This closed the underlying aiosqlite
+connection before SQLA's `AsyncSession.close()` ran, causing
+`OperationalError('no active connection')` on cleanup. Each
+cancellation generated 3-5 stack-trace lines, plus an
+`asyncio:Task exception was never retrieved` log.
+
+Fix: `get_db()` dependency now explicitly catches the
+"no active connection" error during close and swallows it
+(re-raises `CancelledError`). Unexpected errors during close are
+logged at DEBUG level so they don't drown the rest of the logs.
+
+**Severity**: both low — pure log noise, no correctness impact.
+Cleanup pass to keep the activity log readable under load.
+
+Tests: +14 unit tests in `test_v3719_log_noise_cleanup.py`. **1406/1406 pass.**
+
 ### v3.7.18 — LMRHv2 Q1 (public no-auth aggregate view) + Q6 (per-node override env var)
 
 Two of the three remaining LMRHv2 design questions implemented:
