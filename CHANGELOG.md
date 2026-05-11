@@ -9,6 +9,57 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.7.x — Anthropic Console billing scrape (real account usage)
 
+### v3.7.18 — LMRHv2 Q1 (public no-auth aggregate view) + Q6 (per-node override env var)
+
+Two of the three remaining LMRHv2 design questions implemented:
+
+**Q1 — public no-auth discovery endpoint**
+
+Operator's 2026-05-10 answer: *"secure info via API only, public info on
+a public URL that all LMRH-supporting clients can reach to determine how
+they will integrate"*.
+
+New endpoint `GET /lmrh/public` returns a sanitized aggregate suitable
+for unauthenticated callers. Hides operator-internal provider names + ids,
+per-provider counts, subscription quotas, exact cost figures, and
+per-provider metrics. Exposes available model identifiers + capability
+features + aggregate availability indicators per model. After API-key
+exchange, callers move to the full `/lmrh/providers` view.
+
+Aggregation pivots on `(family, model_id)` so multi-route models coalesce
+into one entry with a `variants` list. Cost numbers are bucketed into
+`economy / standard / premium / subscription` tiers. Route counts are
+bucketed into `none / single / few / many` (≥3 = "many") so callers see
+redundancy signal without exact account counts.
+
+Endpoint advertised in `/.well-known/lmrh-config` under the new `public`
+endpoint key. Cache-Control: public, max-age=60.
+
+**Q6 — per-node enable override env var**
+
+Operator's 2026-05-10 answer: *"per-node yes, one at a time"*. The
+existing `lmrh_v2_enabled` flag was cluster-synced via SystemSetting and
+propagated to all peers within ~60s, so it didn't support per-node-only
+enablement.
+
+New env var `LMRH_V2_NODE_OVERRIDE` accepts:
+- `on` — this node enables LMRH v2 regardless of cluster setting
+- `off` — this node disables LMRH v2 regardless of cluster setting
+- `auto` (default) — follow the SystemSetting cluster flag
+
+Operators flipping one-node-at-a-time should set `=on` on the target
+node, verify, then propagate cluster-wide via the SystemSetting before
+clearing the env var.
+
+**Q4 verified**: snapshot-or-proxy-slice subscription-quota fallback was
+already shipped in v3.7.9 — `app/routing/lmrh/snapshot.py` correctly
+prefers fresh `ExternalUsageSnapshot.seven_day_utilization` (<8h),
+falls back to `ProviderUsageWindow.weekly_pct`, and synthesizes from
+the snapshot alone when proxy-slice tracking is disabled. No additional
+work needed.
+
+Tests: +16 unit tests in `test_v3718_lmrh_q1_q6.py`. **1392/1392 pass.**
+
 ### v3.7.17 — Expose `admin-readonly-catalog` key_type in API Keys UI
 
 The v3.7.2 catalog-scope auth shipped a narrow-scope `key_type` that

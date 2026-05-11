@@ -46,9 +46,25 @@ router = APIRouter(tags=["lmrh-v2"])
 
 
 def _v2_enabled() -> bool:
-    """Read the lmrh_v2_enabled runtime flag. Default False until
-    operator flips per-node. ``apply()`` in config_runtime patches
-    settings.lmrh_v2_enabled at boot from the SystemSetting row."""
+    """Read the lmrh_v2_enabled runtime flag.
+
+    Resolution order (v3.7.18, LMRHv2 Q6 operator answer):
+      1. ``LMRH_V2_NODE_OVERRIDE=on`` — this node enables regardless
+         of cluster setting (per-node opt-in for staged rollout)
+      2. ``LMRH_V2_NODE_OVERRIDE=off`` — this node disables regardless
+         of cluster setting (per-node hotfix kill-switch)
+      3. ``LMRH_V2_NODE_OVERRIDE=auto`` (default) — follow the
+         cluster-synced ``lmrh_v2_enabled`` SystemSetting.
+
+    Default behavior preserves legacy semantics for nodes that don't
+    set the override. ``apply()`` in config_runtime patches
+    settings.lmrh_v2_enabled at boot from the SystemSetting row.
+    """
+    override = (getattr(settings, "lmrh_v2_node_override", "auto") or "auto").strip().lower()
+    if override == "on":
+        return True
+    if override == "off":
+        return False
     return bool(getattr(settings, "lmrh_v2_enabled", False))
 
 
@@ -215,6 +231,12 @@ async def well_known_config() -> dict:
         versions.append("2.0")
         versions.append("2.1")
         endpoints.update({
+            # v3.7.18 (LMRHv2 Q1 operator answer): public, no-auth
+            # endpoint exposing model availability + capabilities
+            # without leaking operator-internal provider names or
+            # per-provider metrics. Lets new clients discover what
+            # the proxy offers before they negotiate an API key.
+            "public": "/lmrh/public",
             "providers": "/lmrh/providers",
             "providers_one": "/lmrh/providers/{provider_id}",
             "quotes": "/lmrh/quotes",
@@ -254,6 +276,40 @@ async def well_known_config() -> dict:
             "cost-class", "tools", "vision",
         ],
     }
+
+
+# ── /lmrh/public — Q1 public/no-auth aggregate view ──────────────────
+
+
+@router.get("/lmrh/public")
+async def get_public_view(response: Response) -> dict:
+    """v3.7.18 — public, unauthenticated, redacted aggregate view.
+
+    Operator answer to LMRHv2 Q1: "secure info via API only, public
+    info on a public URL that all LMRH-supporting clients can reach
+    to determine how they will integrate".
+
+    Exposes available model families + capabilities + aggregate
+    availability indicators. Hides operator-internal provider names,
+    per-provider counts, subscription quotas, detailed cost figures,
+    and per-provider metrics. After this discovery step callers
+    exchange an API key for the full ``/lmrh/providers`` view.
+
+    Gated by ``lmrh_v2_enabled`` like other v2 endpoints — returns
+    404 when v2 is off so v1.x callers don't see the endpoint exist.
+
+    Public response cache: Cache-Control: public, max-age=60. A
+    60-second TTL is safe since this view aggregates fast-changing
+    per-provider state into slow-changing model-level summaries.
+    """
+    _ensure_enabled()
+    snap = snap_mod.get_current()
+    if snap is None:
+        raise HTTPException(503, "snapshot not yet built")
+    payload = snap.to_public_view()
+    response.headers["Cache-Control"] = "public, max-age=60"
+    response.headers["LMRH-Version"] = "2.0"
+    return payload
 
 
 # ── /lmrh/providers + /lmrh/providers/{id} ────────────────────────────
