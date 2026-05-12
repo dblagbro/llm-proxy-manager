@@ -6,6 +6,74 @@ Created 2026-05-09 during the deep QA pass. Append-only ledger.
 
 ---
 
+## 2026-05-12 — Querying cluster-replicated tables (operator/agent runbook)
+
+### The trap
+
+Tables that participate in `/cluster/sync` (currently `external_usage_snapshot`, `ai_review`, `blocked_ips`) get rows replicated from peer nodes with the **same `captured_at` / timestamp** as the originating row. A naive "give me the latest per provider" query like
+
+```python
+# ❌ DON'T — non-deterministic on cluster-replicated tables
+q = (
+    select(ExternalUsageSnapshot)
+    .order_by(ExternalUsageSnapshot.captured_at.desc())
+    .limit(10)
+)
+seen = set()
+for row in (await s.execute(q)).scalars():
+    if row.provider_id in seen:
+        continue
+    seen.add(row.provider_id)
+    yield row
+```
+
+silently returns the wrong row when two siblings tie on `captured_at` — SQLA emits whichever happens first, and "first" is replica-vs-originator non-deterministic. This bit our self-monitor twice on 2026-05-12 (07:07 EDT and 10:27 EDT), reporting "worker stalled" while docker logs showed it firing on schedule.
+
+### The fix
+
+Use `MAX(captured_at) GROUP BY provider_id` as a subquery and join back:
+
+```python
+# ✅ DO — deterministic latest-per-provider
+from sqlalchemy import select, func
+
+latest = (
+    select(
+        ExternalUsageSnapshot.provider_id,
+        func.max(ExternalUsageSnapshot.captured_at).label("mx"),
+    )
+    .group_by(ExternalUsageSnapshot.provider_id)
+    .subquery()
+)
+
+q = (
+    select(
+        Provider.name,
+        ExternalUsageSnapshot.captured_at,
+        ExternalUsageSnapshot.seven_day_utilization,
+        ExternalUsageSnapshot.auth_state,
+    )
+    .join(Provider, Provider.id == ExternalUsageSnapshot.provider_id)
+    .join(
+        latest,
+        (latest.c.provider_id == ExternalUsageSnapshot.provider_id)
+        & (latest.c.mx == ExternalUsageSnapshot.captured_at),
+    )
+)
+```
+
+If two rows still tie after the join (e.g. originator + replica with identical `captured_at`), add a tiebreaker like `.order_by(ExternalUsageSnapshot.id.desc()).limit(1)` per provider — but that's normally unnecessary; SQLA returns one row per provider via the join key.
+
+### Applies to
+
+- `external_usage_snapshot` — cluster-synced since v3.7.15
+- `ai_review` — cluster-synced since v3.7.15
+- `blocked_ips` — cluster-synced since v3.7.15 (use tombstone column `deleted_at IS NULL` filter)
+
+For non-replicated tables (e.g. local-only `activity_log`), the naive `ORDER BY + LIMIT + seen-set` pattern is fine — but get in the habit of using the GROUP BY pattern uniformly; it's the same effort and immune to future replication.
+
+---
+
 ## 2026-05-10 — QA pass v3.7.13 / v3.7.14 observations
 
 ### Admin auth: `require_admin` accepts SESSION TOKENS ONLY, not admin API keys
