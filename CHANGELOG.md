@@ -9,6 +9,29 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.7.x — Anthropic Console billing scrape (real account usage)
 
+### v3.7.21 — Hotfix: BUG-022 regression — restore async with in get_db()
+
+The v3.7.19 BUG-022 fix replaced `async with AsyncSessionLocal()`
+with manual `try/finally` + `session.close()` to swallow
+`OperationalError('no active connection')` on request cancellation.
+That silenced the visible error but bypassed SQLA's pool-return
+path. The garbage collector then surfaced
+`SAWarning: non-checked-in connection will be terminated` for each
+leaked connection. Net worse: log lines per cancellation went from
+3-5 (pre-fix) to 7-10 (post-v3.7.19).
+
+Surfaced 2026-05-12 02:47 monitor cycle: 3 `Task was destroyed but
+it is pending!` plus 6 SAWarning lines + 3 pool-error lines.
+
+**Fix**: restore the `async with` pattern. Wrap it in a try/except
+that ONLY swallows the post-cancellation
+`no active connection` error — every other exception still bubbles
+up. The `async with __aexit__` runs rollback/close cleanly before
+the exception reaches our handler, so the pool state is intact.
+
+Updated 5 unit tests in `test_v3719_log_noise_cleanup.py` to assert
+the new pattern. **1417/1417 pass.**
+
 ### v3.7.20 — BUG-020: utilization bucket filter on P2C selection (claude-oauth routing balance fix)
 
 **High-severity routing bug.** Surfaced 2026-05-11 evening: VG
