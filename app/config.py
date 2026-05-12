@@ -167,6 +167,11 @@ class Settings(BaseSettings):
     # post-mortem-valuable for much longer. Defaults: warning 1y, error 5y.
     activity_log_warning_retention_days: int = Field(365, alias="ACTIVITY_LOG_WARNING_RETENTION_DAYS")
     activity_log_error_retention_days: int = Field(1825, alias="ACTIVITY_LOG_ERROR_RETENTION_DAYS")
+    # v3.7.24 (#258): minimum gap between Anthropic billing scrapes for the
+    # same provider. Defaults to interval/2 in the worker if left at 0.
+    # Operator can pin this to override the heuristic (e.g. set to 7200 to
+    # enforce "no scrapes more often than every 2h regardless of interval").
+    anthropic_billing_min_scrape_gap_sec: int = Field(0, alias="ANTHROPIC_BILLING_MIN_SCRAPE_GAP_SEC")
     # v3.0.13: how long a provider tombstone (deleted_at non-null) is kept
     # before hard-delete. Cluster sync converges in seconds, so 7d is a
     # comfortable safety margin.
