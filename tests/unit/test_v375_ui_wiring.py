@@ -33,21 +33,19 @@ def test_provider_form_takes_provider_prop():
     assert "onProviderUpdated?:" in src
 
 
-def test_old_usage_section_marks_superseded_for_claude_oauth():
-    """The legacy 'Usage-based rotation' section must surface a
-    superseded/disabled note when the provider is claude-oauth.
-
-    v3.7.14: the section is now collapsed by default behind a
-    "(disabled — External Usage above is authoritative)" badge with
-    a "Show legacy fields (advanced)" toggle. Either phrasing is
-    acceptable evidence the section is no longer the default rotation
-    signal for claude-oauth providers."""
+def test_old_usage_section_hidden_for_claude_oauth():
+    """v3.7.25 (#257): the legacy 'Usage-based rotation' section is
+    now hidden outright for claude-oauth providers — the External
+    Usage panel above replaced its function in v3.7.0, and the
+    collapsed-fields disclosure left over from v3.7.14 was confusing
+    operators. The block must be wrapped in a non-claude-oauth check
+    so the React subtree is omitted entirely for claude-oauth."""
     src = Path("frontend/src/components/providers/ProviderForm.tsx").read_text()
-    has_supersede_note = (
-        "superseded by External Usage above" in src
-        or "External Usage above is authoritative" in src
-    )
-    assert has_supersede_note
+    assert "form.provider_type !== 'claude-oauth'" in src
+    # No "(disabled — External Usage above is authoritative)" badge
+    assert "External Usage above is authoritative" not in src
+    # No "Show legacy fields (advanced)" disclosure
+    assert "Show legacy fields" not in src
 
 
 def test_providers_page_passes_provider_to_form():

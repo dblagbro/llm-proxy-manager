@@ -169,9 +169,7 @@ export function AnthropicBillingPanel({ provider, onUpdated }: Props) {
             Authoritative weekly + per-model utilization from
             <code className="mx-1">claude.ai/api/organizations/&#123;uuid&#125;/usage</code>
             via a 4-hourly browser-cookie scrape. Routing decisions
-            (v3.7.1+) use this as the rotation signal — supersedes
-            the proxy-internal "Usage-based rotation" section below
-            for claude-oauth.
+            (v3.7.1+) use this as the rotation signal for claude-oauth.
           </p>
         </div>
       </div>
