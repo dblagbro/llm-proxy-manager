@@ -176,8 +176,6 @@ export function ProviderForm({ form, onChange, editing, provider, onProviderUpda
   const isOAuth = !!flavor
   const [generating, setGenerating] = useState(false)
   const [showPasteFallback, setShowPasteFallback] = useState(false)
-  // v3.7.14 — claude-oauth legacy usage fields collapsed by default
-  const [showLegacyUsage, setShowLegacyUsage] = useState(false)
   const toast = useToast()
 
   async function handleGenerateAuthUrl() {
@@ -410,67 +408,39 @@ export function ProviderForm({ form, onChange, editing, provider, onProviderUpda
       )}
 
       {/* v3.0.64: Per-provider usage-based rotation (Phase 2 — config UI).
-          v3.7.x — superseded for claude-oauth providers by the
-          External Usage panel above.
-          v3.7.14 — for claude-oauth the whole section is collapsed
-          behind a disclosure so operators aren't tempted to set the
-          soft ceilings that get overridden by External Usage. */}
+          v3.7.25 (#257): for claude-oauth providers, the External Usage
+          panel above replaced this section's function in v3.7.0. The
+          legacy disclosure + collapsed-fields UI is removed — the
+          section now renders only for non-claude-oauth providers
+          (e.g. codex-oauth, where no External Usage scrape exists yet).
+          The underlying ``usage_*`` columns remain in the DB for audit
+          and may still be set via the API; this just hides the now-
+          confusing knobs from the claude-oauth detail form. */}
+      {form.provider_type !== 'claude-oauth' && (
       <div className="md:col-span-2 mt-6 border-t border-gray-200 dark:border-gray-700 pt-4">
         <div className="flex items-center justify-between mb-3">
           <div>
             <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
               Usage-based rotation
-              {form.provider_type === 'claude-oauth' && (
-                <span className="ml-2 text-xs font-normal text-amber-600 dark:text-amber-400">
-                  (disabled — External Usage above is authoritative)
-                </span>
-              )}
             </h4>
             <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
-              {form.provider_type === 'claude-oauth' ? (
-                <>
-                  For claude-oauth providers, the External Usage panel above is now the
-                  authoritative rotation signal — it polls Anthropic's Console for real
-                  account usage every 4 hours.
-                  {!showLegacyUsage && (
-                    <>
-                      {' '}Legacy proxy-internal counters remain in the database for
-                      audit purposes, but are no longer used for rotation decisions.
-                    </>
-                  )}
-                </>
-              ) : (
-                <>
-                  Track rolling token usage so the proxy can rotate priority between same-type
-                  providers when one gets too far ahead. Suitable for OAuth subscriptions
-                  with session + weekly quotas.
-                </>
-              )}
+              Track rolling token usage so the proxy can rotate priority between same-type
+              providers when one gets too far ahead. Suitable for OAuth subscriptions
+              with session + weekly quotas.
             </p>
-            {form.provider_type === 'claude-oauth' && (
-              <button
-                type="button"
-                onClick={() => setShowLegacyUsage(s => !s)}
-                className="mt-2 text-xs text-indigo-600 dark:text-indigo-400 hover:underline"
-              >
-                {showLegacyUsage ? '▾ Hide legacy fields' : '▸ Show legacy fields (advanced)'}
-              </button>
-            )}
           </div>
-          {(form.provider_type !== 'claude-oauth' || showLegacyUsage) && (
-            <label className="flex items-center gap-2 shrink-0">
-              <input
-                type="checkbox"
-                checked={!!form.usage_tracking_enabled}
-                onChange={e => set({ usage_tracking_enabled: e.target.checked })}
-                className="h-4 w-4 accent-indigo-600"
-              />
-              <span className="text-sm text-gray-700 dark:text-gray-300">Enable tracking</span>
-            </label>
-          )}
+          <label className="flex items-center gap-2 shrink-0">
+            <input
+              type="checkbox"
+              checked={!!form.usage_tracking_enabled}
+              onChange={e => set({ usage_tracking_enabled: e.target.checked })}
+              className="h-4 w-4 accent-indigo-600"
+            />
+            <span className="text-sm text-gray-700 dark:text-gray-300">Enable tracking</span>
+          </label>
         </div>
 
-        {form.usage_tracking_enabled && (form.provider_type !== 'claude-oauth' || showLegacyUsage) && (
+        {form.usage_tracking_enabled && (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <Input
               label="Session window (seconds)"
@@ -533,6 +503,7 @@ export function ProviderForm({ form, onChange, editing, provider, onProviderUpda
           </div>
         )}
       </div>
+      )}
     </div>
   )
 }
