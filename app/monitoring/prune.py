@@ -35,6 +35,13 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_RETENTION_DAYS = 30
 _DEFAULT_PROBE_RETENTION_DAYS = 7   # v3.0.98 — probes age out faster than real traffic
+# v3.7.22 (#254) — severity-tiered retention. info events dominate volume
+# (~99% in steady state) and lose diagnostic value within ~30d. warning/error
+# events are rare and post-mortem-valuable for much longer; default to 1y
+# and 5y respectively so a slow-fuse bug discovered weeks later still has
+# evidence.
+_DEFAULT_WARNING_RETENTION_DAYS = 365
+_DEFAULT_ERROR_RETENTION_DAYS = 1825
 _BATCH_SIZE = 5000
 _SWEEP_INTERVAL_SEC = 24 * 60 * 60      # daily
 _INITIAL_DELAY_SEC = 60 * 60            # 1h after startup — lets boot settle
@@ -54,6 +61,26 @@ def _retention_days() -> int:
         return max(1, v)
     except Exception:
         return _DEFAULT_RETENTION_DAYS
+
+
+def _warning_retention_days() -> int:
+    """Admin-tunable warning-severity retention; default 365 days."""
+    try:
+        v = int(getattr(settings, "activity_log_warning_retention_days",
+                        _DEFAULT_WARNING_RETENTION_DAYS))
+        return max(1, v)
+    except Exception:
+        return _DEFAULT_WARNING_RETENTION_DAYS
+
+
+def _error_retention_days() -> int:
+    """Admin-tunable error-severity retention; default 1825 days (5y)."""
+    try:
+        v = int(getattr(settings, "activity_log_error_retention_days",
+                        _DEFAULT_ERROR_RETENTION_DAYS))
+        return max(1, v)
+    except Exception:
+        return _DEFAULT_ERROR_RETENTION_DAYS
 
 
 def _probe_retention_days() -> int:
@@ -174,6 +201,34 @@ async def _prune_table(table_class, ts_column, keep_days: int) -> int:
             return deleted
 
 
+async def _prune_activity_log_by_severity(severity: str, keep_days: int) -> int:
+    """v3.7.22 (#254) — delete activity_log rows of a specific severity
+    older than ``keep_days``. Lets info events age out at the regular
+    cadence while preserving warning/error events for longer post-mortem
+    windows.
+    """
+    deleted = 0
+    while True:
+        async with AsyncSessionLocal() as db:
+            cutoff_expr = func.datetime("now", f"-{keep_days} days")
+            id_res = await db.execute(
+                select(ActivityLog.id)
+                .where(ActivityLog.severity == severity)
+                .where(ActivityLog.created_at < cutoff_expr)
+                .limit(_BATCH_SIZE)
+            )
+            ids = [r[0] for r in id_res.all()]
+            if not ids:
+                return deleted
+            await db.execute(delete(ActivityLog).where(ActivityLog.id.in_(ids)))
+            await db.commit()
+            deleted += len(ids)
+        if len(ids) >= _BATCH_SIZE:
+            await asyncio.sleep(0.5)
+        else:
+            return deleted
+
+
 async def _prune_probe_events(keep_days: int) -> int:
     """v3.0.98: hard-delete probe-keepalive activity_log rows older than
     ``keep_days`` (typically 7, vs the regular 30-day retention). Probes
@@ -207,9 +262,14 @@ async def _sweep_once() -> dict:
     run_events. Returns counts so the log line is interpretable."""
     keep_days = _retention_days()
     probe_keep_days = _probe_retention_days()
+    warning_keep_days = _warning_retention_days()
+    error_keep_days = _error_retention_days()
     tombstone_days = _tombstone_retention_days()
     out = {"keep_days": keep_days, "probe_keep_days": probe_keep_days,
+           "warning_keep_days": warning_keep_days,
+           "error_keep_days": error_keep_days,
            "activity_log": 0, "activity_log_probes": 0,
+           "activity_log_warnings": 0, "activity_log_errors": 0,
            "provider_metrics": 0, "run_events": 0,
            "provider_tombstones": 0,
            "apikey_tombstones": 0,
@@ -221,12 +281,29 @@ async def _sweep_once() -> dict:
     except Exception as e:
         logger.warning("prune.activity_log_probes_failed err=%s", e)
 
+    # v3.7.22 (#254): severity-tiered retention. info uses the legacy
+    # ``activity_log_retention_days`` setting (default 30d); warning and
+    # error severities use their own longer retentions.
     try:
-        out["activity_log"] = await _prune_table(
-            ActivityLog, ActivityLog.created_at, keep_days,
+        out["activity_log"] = await _prune_activity_log_by_severity(
+            "info", keep_days,
         )
     except Exception as e:
-        logger.warning("prune.activity_log_failed err=%s", e)
+        logger.warning("prune.activity_log_info_failed err=%s", e)
+
+    try:
+        out["activity_log_warnings"] = await _prune_activity_log_by_severity(
+            "warning", warning_keep_days,
+        )
+    except Exception as e:
+        logger.warning("prune.activity_log_warnings_failed err=%s", e)
+
+    try:
+        out["activity_log_errors"] = await _prune_activity_log_by_severity(
+            "error", error_keep_days,
+        )
+    except Exception as e:
+        logger.warning("prune.activity_log_errors_failed err=%s", e)
 
     try:
         # Reuse the existing helper for provider_metrics (kept ts comparisons
@@ -283,12 +360,18 @@ async def _prune_loop() -> None:
             _LAST_SWEEP_RESULT["last_sweep_ts"] = time.time()
             logger.info(
                 "prune.swept activity_log=%d activity_log_probes=%d "
+                "activity_log_warnings=%d activity_log_errors=%d "
                 "provider_metrics=%d run_events=%d provider_tombstones=%d "
-                "keep_days=%d probe_keep_days=%d tombstone_keep_days=%d",
+                "keep_days=%d probe_keep_days=%d warning_keep_days=%d "
+                "error_keep_days=%d tombstone_keep_days=%d",
                 counts["activity_log"], counts.get("activity_log_probes", 0),
+                counts.get("activity_log_warnings", 0),
+                counts.get("activity_log_errors", 0),
                 counts["provider_metrics"], counts["run_events"],
                 counts["provider_tombstones"], counts["keep_days"],
                 counts.get("probe_keep_days", _DEFAULT_PROBE_RETENTION_DAYS),
+                counts.get("warning_keep_days", _DEFAULT_WARNING_RETENTION_DAYS),
+                counts.get("error_keep_days", _DEFAULT_ERROR_RETENTION_DAYS),
                 counts["tombstone_keep_days"],
             )
         except Exception as e:
@@ -302,6 +385,8 @@ _LAST_SWEEP_RESULT: dict = {
     "last_sweep_ts": None,
     "keep_days": _DEFAULT_RETENTION_DAYS,
     "probe_keep_days": _DEFAULT_PROBE_RETENTION_DAYS,
+    "warning_keep_days": _DEFAULT_WARNING_RETENTION_DAYS,
+    "error_keep_days": _DEFAULT_ERROR_RETENTION_DAYS,
     "tombstone_keep_days": _DEFAULT_TOMBSTONE_RETENTION_DAYS,
 }
 

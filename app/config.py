@@ -162,6 +162,11 @@ class Settings(BaseSettings):
 
     # v3.0.7: activity_log + provider_metrics + run_events retention (days)
     activity_log_retention_days: int = Field(30, alias="ACTIVITY_LOG_RETENTION_DAYS")
+    # v3.7.22 (#254): severity-tiered retention. info events are >99% of volume
+    # and lose diagnostic value within ~30d; warning/error events are rare and
+    # post-mortem-valuable for much longer. Defaults: warning 1y, error 5y.
+    activity_log_warning_retention_days: int = Field(365, alias="ACTIVITY_LOG_WARNING_RETENTION_DAYS")
+    activity_log_error_retention_days: int = Field(1825, alias="ACTIVITY_LOG_ERROR_RETENTION_DAYS")
     # v3.0.13: how long a provider tombstone (deleted_at non-null) is kept
     # before hard-delete. Cluster sync converges in seconds, so 7d is a
     # comfortable safety margin.
