@@ -367,6 +367,25 @@ async def lmrh_link_header(request: Request, call_next):
     return response
 
 
+# v3.7.22 (#253) — ClientDisconnect is raised by Starlette when a caller
+# drops the connection mid-request (commonly seen on /cluster/sync when a
+# peer dies during a heartbeat POST). Without a handler it bubbles up as
+# an unhandled 500 with a full stack trace, polluting the error logs even
+# though there's nothing actionable — the client is gone. Return 499
+# (nginx convention for "client closed request") and log at debug only.
+from starlette.requests import ClientDisconnect as _ClientDisconnect
+
+
+@app.exception_handler(_ClientDisconnect)
+async def _handle_client_disconnect(request: Request, exc: _ClientDisconnect):
+    logger.debug(
+        "client_disconnect",
+        path=request.url.path,
+        method=request.method,
+    )
+    return JSONResponse(status_code=499, content={"detail": "client_disconnect"})
+
+
 # ── Core LLM endpoints (same paths as v1) ────────────────────────────────────
 app.include_router(messages_router)
 app.include_router(completions_router)
