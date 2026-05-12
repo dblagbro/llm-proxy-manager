@@ -272,6 +272,113 @@ export function DashboardPage() {
         </div>
       </div>
 
+      {/* v3.7.22 (#255) — Routing balance tile for claude-oauth providers.
+          Renders when at least 2 claude-oauth providers are configured (the
+          one-provider case has no balance to display). Visualizes the BUG-020
+          fix: with the utilization-bucket filter in place, traffic should
+          consistently lean toward the lower-utilization provider.
+
+          Shows per-provider:
+            - share of claude-oauth requests over the last 24h
+            - current weekly utilization (from the Anthropic billing scrape
+              when available, else the proxy-side estimate)
+          Hidden when no claude-oauth providers exist (e.g. dev/test stacks). */}
+      {(() => {
+        const oauthProviders = (providers ?? []).filter(p => p.provider_type === 'claude-oauth' && p.enabled)
+        if (oauthProviders.length < 2) return null
+        const oauthMetrics = oauthProviders.map(p => {
+          const m = metrics?.providers.find(mp => mp.provider_id === p.id)
+          return {
+            id: p.id,
+            name: p.name,
+            requests: m?.requests ?? 0,
+            utilization: p.usage_weekly_pct ?? null,
+            skipped: !!p.auto_skip_until,
+          }
+        })
+        const totalReqs = oauthMetrics.reduce((s, x) => s + x.requests, 0)
+        // Sort by share desc so the dominant winner reads first.
+        oauthMetrics.sort((a, b) => b.requests - a.requests)
+        const utilColor = (u: number | null) =>
+          u === null ? 'bg-gray-400'
+          : u >= 95 ? 'bg-red-500'
+          : u >= 80 ? 'bg-amber-500'
+          : u >= 50 ? 'bg-blue-500'
+          : 'bg-emerald-500'
+        return (
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between">
+              <CardTitle>Routing Balance — claude-oauth</CardTitle>
+              <span className="text-[11px] text-gray-400 dark:text-gray-500">
+                24h share · weekly utilization
+              </span>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-3">
+                {oauthMetrics.map(o => {
+                  const share = totalReqs > 0 ? (o.requests / totalReqs) * 100 : 0
+                  return (
+                    <div key={o.id} className="space-y-1">
+                      <div className="flex items-center justify-between text-sm">
+                        <span className="font-medium text-gray-800 dark:text-gray-200 truncate">
+                          {o.name}
+                          {o.skipped && (
+                            <span className="ml-2 text-[10px] uppercase tracking-wide text-amber-600 dark:text-amber-400">
+                              auto-skip
+                            </span>
+                          )}
+                        </span>
+                        <span className="text-xs text-gray-500 dark:text-gray-400 font-mono tabular-nums shrink-0">
+                          {o.requests.toLocaleString()} req · {share.toFixed(1)}%
+                          {o.utilization !== null && (
+                            <>
+                              {' · '}
+                              <span className={
+                                o.utilization >= 95 ? 'text-red-500'
+                                : o.utilization >= 80 ? 'text-amber-500'
+                                : 'text-gray-500'
+                              }>
+                                util {o.utilization.toFixed(0)}%
+                              </span>
+                            </>
+                          )}
+                        </span>
+                      </div>
+                      {/* Share bar (indigo) — stacked above a thinner util bar */}
+                      <div className="h-1.5 w-full rounded-full bg-gray-100 dark:bg-gray-800 overflow-hidden">
+                        <div
+                          className="h-full bg-indigo-500 transition-all"
+                          style={{ width: `${share}%` }}
+                        />
+                      </div>
+                      {o.utilization !== null && (
+                        <div className="h-1 w-full rounded-full bg-gray-100 dark:bg-gray-800 overflow-hidden">
+                          <div
+                            className={`h-full transition-all ${utilColor(o.utilization)}`}
+                            style={{ width: `${Math.min(100, o.utilization)}%` }}
+                          />
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+              {totalReqs === 0 ? (
+                <p className="text-xs text-gray-400 dark:text-gray-500 mt-3">
+                  No claude-oauth requests in the last 24h.
+                </p>
+              ) : (
+                <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-3 leading-snug">
+                  Router prefers the lower-utilization provider (v3.7.20 bucket
+                  filter). Heavily lopsided 24h share is expected when one
+                  account is near its weekly cap and the other is fresh.
+                </p>
+              )}
+            </CardContent>
+          </Card>
+        )
+      })()}
+
       {/* Chart */}
       {chartData.length > 0 && (
         <Card>
