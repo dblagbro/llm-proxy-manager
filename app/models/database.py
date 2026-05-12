@@ -244,32 +244,32 @@ async def init_db():
 async def get_db() -> AsyncSession:
     """FastAPI dependency yielding an AsyncSession.
 
-    v3.7.19 (BUG-022): swallow the SQLA "no active connection" error
-    that fires during session close after request cancellation. When
-    the client disconnects mid-flight, Starlette raises CancelledError
-    through the middleware chain, which closes the aiosqlite connection
-    before SQLA's session.close() runs. The close then complains. The
-    underlying request is already cancelled — the cleanup error is
-    log-noise only and adds 3-5 trace lines per cancellation. Catch
-    OperationalError("no active connection") and any post-cancellation
-    Exception during close; everything else continues to bubble up.
+    v3.7.21: restore the ``async with`` pattern that v3.7.19's
+    BUG-022 fix accidentally broke. The previous attempt replaced the
+    context manager with manual ``try/finally`` + ``session.close()``
+    to swallow ``OperationalError('no active connection')`` on
+    request cancellation. That swallowed the visible error but bypassed
+    SQLA's pool-return path — the GC then surfaced
+    ``SAWarning: non-checked-in connection will be terminated`` for
+    each leaked connection. Net worse: log lines per cancellation
+    increased from 3-5 to 7-10.
+
+    Correct fix: keep the ``async with`` so the pool gets the
+    connection back cleanly. Wrap the ``async with`` in a try/except
+    that ONLY swallows the documented post-cancellation
+    ``no active connection`` error — every other exception still
+    bubbles up. The ``async with __aexit__`` has already run
+    rollback/close by the time the exception reaches our handler,
+    so the pool state is intact.
     """
-    import asyncio
     from sqlalchemy.exc import OperationalError
-    session = AsyncSessionLocal()
     try:
-        yield session
-    finally:
-        try:
-            await session.close()
-        except OperationalError as exc:
-            if "no active connection" in str(exc).lower():
-                pass  # expected post-cancellation
-            else:
-                logger.debug("get_db.close_operational_error err=%s", exc)
-        except asyncio.CancelledError:
-            # Re-raise so the outer task sees the cancellation, but
-            # don't let the close exception override it.
-            raise
-        except Exception as exc:
-            logger.debug("get_db.close_unexpected err=%s", exc)
+        async with AsyncSessionLocal() as session:
+            yield session
+    except OperationalError as exc:
+        # Post-cancellation: aiosqlite connection got closed before
+        # SQLA finished its cleanup. The async with has already done
+        # what it can; the error is log-noise only.
+        if "no active connection" in str(exc).lower():
+            return
+        raise

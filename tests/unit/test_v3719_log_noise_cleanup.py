@@ -110,59 +110,74 @@ def test_endpoint_uses_warnings_none_on_model_dump():
 # ── BUG-022: graceful session close on cancellation ───────────────
 
 
+def test_get_db_uses_async_with_pattern():
+    """v3.7.21 — get_db must use async with so SQLA's pool-return
+    runs cleanly. The v3.7.19 manual try/finally bypass caused
+    SAWarning leaks where connections were never checked back in."""
+    from pathlib import Path
+    src = Path("app/models/database.py").read_text()
+    idx = src.index("async def get_db")
+    body = src[idx:idx + 1500]
+    assert "async with AsyncSessionLocal() as session:" in body
+    assert "yield session" in body
+
+
 def test_get_db_swallows_no_active_connection():
-    """get_db's cleanup must swallow OperationalError('no active connection')
-    that fires when the underlying aiosqlite connection got closed by a
-    CancelledError before session.close() ran."""
+    """get_db must still catch OperationalError('no active connection')
+    that fires post-cancellation. v3.7.21 wraps the async with in a
+    try/except instead of doing manual close."""
     from pathlib import Path
     src = Path("app/models/database.py").read_text()
     idx = src.index("async def get_db")
     body = src[idx:idx + 1500]
     assert "no active connection" in body
     assert "OperationalError" in body
-    # Must NOT bare-except (would hide real bugs)
-    assert "except Exception:" not in body or "except Exception as " in body
 
 
-def test_get_db_reraises_cancelled_error():
-    """get_db close must NOT swallow CancelledError — the outer task
-    needs to see it to honor cancellation semantics."""
+def test_get_db_reraises_other_operational_errors():
+    """Only the specific 'no active connection' message is swallowed.
+    Other OperationalErrors (real DB problems) must still propagate."""
     from pathlib import Path
     src = Path("app/models/database.py").read_text()
     idx = src.index("async def get_db")
-    body = src[idx:idx + 1500]
-    assert "CancelledError" in body
-    assert "raise" in body  # explicit re-raise
+    # Wider window — the function body is long including the docstring
+    body = src[idx:idx + 2500]
+    # The check is conditional on the message text
+    assert 'in str(exc).lower()' in body
+    # Must have an unconditional re-raise for the non-matching case
+    assert "raise" in body
 
 
 @pytest.mark.asyncio
-async def test_get_db_normal_path_closes_cleanly():
-    """Happy path: no exception → session.close() runs, no error
-    propagates."""
+async def test_get_db_normal_path_yields_session():
+    """Happy path: async with yields a session and exits cleanly."""
     from app.models import database as db_mod
     fake_session = MagicMock()
-    fake_session.close = AsyncMock()
-    with patch.object(db_mod, "AsyncSessionLocal", return_value=fake_session):
+    fake_session.__aenter__ = AsyncMock(return_value=fake_session)
+    fake_session.__aexit__ = AsyncMock(return_value=None)
+    fake_factory = MagicMock(return_value=fake_session)
+    with patch.object(db_mod, "AsyncSessionLocal", fake_factory):
         async for s in db_mod.get_db():
             assert s is fake_session
-    fake_session.close.assert_awaited_once()
+    fake_session.__aexit__.assert_awaited_once()
 
 
 @pytest.mark.asyncio
 async def test_get_db_swallows_no_active_connection_runtime():
-    """Runtime: when session.close() raises OperationalError('no active
-    connection'), the dep finishes cleanly without propagating."""
+    """Runtime: when the async with exit raises OperationalError with
+    'no active connection', the dep finishes cleanly."""
     from app.models import database as db_mod
     from sqlalchemy.exc import OperationalError
-    fake_session = MagicMock()
-    fake_session.close = AsyncMock(
-        side_effect=OperationalError(
-            "(sqlite3.OperationalError) no active connection",
-            None, None,
-        )
+
+    op_err = OperationalError(
+        "(sqlite3.OperationalError) no active connection",
+        None, None,
     )
-    with patch.object(db_mod, "AsyncSessionLocal", return_value=fake_session):
-        # Iterate the async generator — should complete without raising
+    fake_session = MagicMock()
+    fake_session.__aenter__ = AsyncMock(return_value=fake_session)
+    fake_session.__aexit__ = AsyncMock(side_effect=op_err)
+    fake_factory = MagicMock(return_value=fake_session)
+    with patch.object(db_mod, "AsyncSessionLocal", fake_factory):
         async for s in db_mod.get_db():
             pass
 
