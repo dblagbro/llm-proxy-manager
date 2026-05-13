@@ -260,7 +260,7 @@ def test_build_disclosure_substitution_to_non_anthropic_emits_ignored():
     parts = build_cache_disclosure(
         llm_hint="cache=ephemeral;require",
         cache_decision=parse_cache_mode("cache=ephemeral;require"),
-        cache_injected=False, served_provider_type="codex-oauth",
+        cache_injected=False, served_provider_type="ChatGPT-oauth-plan",
         usage=None,
     )
     assert parts == ["cache=ignored"]
@@ -285,7 +285,7 @@ def test_build_disclosure_caller_none_dim_not_overridden():
     parts = build_cache_disclosure(
         llm_hint="cache=none",
         cache_decision=parse_cache_mode("cache=none"),
-        cache_injected=False, served_provider_type="codex-oauth",
+        cache_injected=False, served_provider_type="ChatGPT-oauth-plan",
         usage=None,
     )
     assert parts == ["cache=none"]

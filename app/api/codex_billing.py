@@ -74,7 +74,7 @@ async def store_codex_credentials(
     provider = rs.scalar_one_or_none()
     if not provider or provider.deleted_at is not None:
         raise HTTPException(404, "Provider not found")
-    if provider.provider_type != "codex-oauth":
+    if provider.provider_type != "ChatGPT-oauth-plan":
         raise HTTPException(
             400,
             f"codex billing scraper only applies to codex-oauth providers (got {provider.provider_type!r})",

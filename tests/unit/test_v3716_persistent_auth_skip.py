@@ -113,7 +113,7 @@ async def test_persist_auto_skip_writes_db_fields():
     from app.routing import circuit_breaker as cb
     from app.models.db import Provider
     p = Provider(
-        id="p6", name="test", provider_type="codex-oauth",
+        id="p6", name="test", provider_type="ChatGPT-oauth-plan",
         api_key="x", enabled=True, priority=1,
         auto_skip_until=None, auto_skip_reason=None,
     )
@@ -139,7 +139,7 @@ async def test_persist_auto_skip_idempotent():
     from datetime import datetime, timedelta
     far_future = datetime.utcnow() + timedelta(hours=48)
     p = Provider(
-        id="p7", name="test", provider_type="codex-oauth",
+        id="p7", name="test", provider_type="ChatGPT-oauth-plan",
         api_key="x", enabled=True, priority=1,
         auto_skip_until=far_future, auto_skip_reason="billing_100pct",
     )

@@ -222,7 +222,7 @@ async def chat_completions(
     # short-circuit pattern as claude-oauth). Translate Chat Completions ↔
     # Responses API and forward to chatgpt.com/backend-api/codex/responses
     # with the OAuth bearer + ChatGPT-Account-ID workspace header.
-    if route.provider.provider_type == "codex-oauth":
+    if route.provider.provider_type == "ChatGPT-oauth-plan":
         from app.api._codex_oauth_dispatch import dispatch_codex_oauth
         return await dispatch_codex_oauth(
             provider=route.provider, body=body, stream=stream, db=db,

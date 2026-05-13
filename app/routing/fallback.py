@@ -87,7 +87,7 @@ async def try_ranked_non_streaming(
     tried: set[str] = set()
     last_exc: Optional[Exception] = None
 
-    if current is not None and current.provider.provider_type in ("claude-oauth", "codex-oauth"):
+    if current is not None and current.provider.provider_type in ("claude-oauth", "ChatGPT-oauth-plan"):
         tried.add(current.provider.id)
         chain.add(current.provider.name, "skip:oauth-not-via-litellm")
         try:
@@ -174,7 +174,7 @@ async def _next_route(
         if candidate.provider.id in extended_excluded:
             extended_excluded.add(candidate.provider.id)
             continue
-        if candidate.provider.provider_type in ("claude-oauth", "codex-oauth"):
+        if candidate.provider.provider_type in ("claude-oauth", "ChatGPT-oauth-plan"):
             # OAuth-based providers can't go through litellm; skip them in
             # the fallback chain. Add to excluded so the next pick is fresh.
             extended_excluded.add(candidate.provider.id)

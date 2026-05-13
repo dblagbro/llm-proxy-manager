@@ -337,7 +337,7 @@ def test_provider_hint_family_match_anthropic_covers_claude_oauth():
 
 def test_provider_hint_family_match_openai_covers_codex_oauth():
     p = CapabilityProfile(
-        provider_id="p1", provider_type="codex-oauth", model_id="gpt-5.5",
+        provider_id="p1", provider_type="ChatGPT-oauth-plan", model_id="gpt-5.5",
         provider_name="Devin-Codex-Gmail",
         tasks=["analysis"], cost_tier="standard", priority=10,
     )

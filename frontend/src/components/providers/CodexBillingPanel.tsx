@@ -7,7 +7,7 @@
  * AND the chatgpt.com session cookies. The 4h worker fires a GET
  * against that URL and stores the response in external_usage_snapshot.
  *
- * Only rendered when provider_type === "codex-oauth".
+ * Only rendered when provider_type === "ChatGPT-oauth-plan".
  *
  * Phase 1: capture + raw_response storage. Field extraction lands in
  * Phase 2 once a sample response confirms the shape.

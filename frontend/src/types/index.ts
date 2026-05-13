@@ -11,7 +11,7 @@ export interface AuthUser {
 export type ProviderType =
   | 'anthropic' | 'openai' | 'google' | 'vertex' | 'grok' | 'ollama' | 'compatible'
   | 'claude-oauth'   // v2.7.0: Claude Pro Max subscription via pasted OAuth credentials
-  | 'codex-oauth'    // v3.0.15: OpenAI Codex CLI / ChatGPT subscription via OAuth
+  | 'ChatGPT-oauth-plan'    // v3.0.15: OpenAI Codex CLI / ChatGPT subscription via OAuth
   | 'cohere'         // v3.0.23: primarily embeddings (also rerank/chat)
   | 'azure'          // v3.0.66: Microsoft Azure OpenAI Service
   | 'openrouter'     // v3.1.3: OpenRouter multi-vendor marketplace

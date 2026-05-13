@@ -99,7 +99,7 @@ async def _scrape_all_once() -> int:
     async with AsyncSessionLocal() as db:
         result = await db.execute(
             select(Provider)
-            .where(Provider.provider_type == "codex-oauth")
+            .where(Provider.provider_type == "ChatGPT-oauth-plan")
             .where(Provider.deleted_at.is_(None))
             .where(Provider.codex_usage_endpoint_url.is_not(None))
             .where(Provider.codex_session_cookies.is_not(None))

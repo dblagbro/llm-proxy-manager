@@ -119,7 +119,7 @@ async def cluster_oauth_pull(
     p = result.scalar_one_or_none()
     if p is None:
         raise HTTPException(404, "Provider not found")
-    if p.provider_type not in ("claude-oauth", "codex-oauth"):
+    if p.provider_type not in ("claude-oauth", "ChatGPT-oauth-plan"):
         raise HTTPException(400, f"{p.provider_type!r} is not an OAuth provider")
     if not p.api_key:
         raise HTTPException(404, "Provider has no access_token")

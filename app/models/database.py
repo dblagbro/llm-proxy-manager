@@ -211,6 +211,13 @@ async def init_db():
             "ALTER TABLE providers ADD COLUMN manual_override_set_by TEXT",
             "ALTER TABLE providers ADD COLUMN manual_override_set_at DATETIME",
             "ALTER TABLE providers ADD COLUMN manual_override_reason TEXT",
+            # v3.8.0 (#251) — rename provider_type value from
+            # "codex-oauth" to "ChatGPT-oauth-plan". One-shot UPDATE
+            # that's safe to re-run (no-op when no rows match the old
+            # value). Cluster sync propagates the new value via the
+            # existing Provider sync path so peer nodes converge on
+            # the new name even if they haven't been restarted yet.
+            "UPDATE providers SET provider_type='ChatGPT-oauth-plan' WHERE provider_type='codex-oauth'",
         ]:
             try:
                 await conn.exec_driver_sql(stmt)
