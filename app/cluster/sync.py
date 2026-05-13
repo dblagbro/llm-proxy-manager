@@ -763,6 +763,7 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
     blocked_ips_changed = await _apply_blocked_ips(db, payload.get("blocked_ips", []))
     await _apply_ai_reviews(db, payload.get("api_key_ai_reviews", []))
     await _apply_external_usage_snapshots(db, payload.get("external_usage_snapshots", []))
+    await _apply_provider_ai_reviews(db, payload.get("provider_ai_reviews", []))
 
     await db.commit()
 
@@ -875,6 +876,49 @@ async def _apply_ai_reviews(db: AsyncSession, rows: list[dict]) -> None:
         else:
             # Lifecycle transitions are monotone (None → set), so we
             # accept any non-None peer value the local row doesn't have.
+            for field in ("applied_at", "reverted_at", "dismissed_at"):
+                peer_val = _parse_iso_or_none(r.get(field))
+                if peer_val and getattr(existing, field) is None:
+                    setattr(existing, field, peer_val)
+            if r.get("applied_action") and not existing.applied_action:
+                existing.applied_action = r["applied_action"]
+
+
+async def _apply_provider_ai_reviews(db: AsyncSession, rows: list[dict]) -> None:
+    """v3.7.31 (#252 phase 4) — merge incoming provider_ai_review rows.
+    Same pattern as _apply_ai_reviews for api_key_ai_review: PK is
+    auto-increment integer per node, so we de-dup by (provider_id,
+    captured_at). LWW on the monotone lifecycle fields (applied_at /
+    reverted_at / dismissed_at)."""
+    from app.models.db import ProviderAiReview
+    for r in rows:
+        provider_id = r.get("provider_id")
+        captured_at = _parse_iso_or_none(r.get("captured_at"))
+        if not (provider_id and captured_at):
+            continue
+        existing = (await db.execute(
+            select(ProviderAiReview)
+            .where(ProviderAiReview.provider_id == provider_id)
+            .where(ProviderAiReview.captured_at == captured_at)
+        )).scalar_one_or_none()
+        if existing is None:
+            db.add(ProviderAiReview(
+                provider_id=provider_id,
+                captured_at=captured_at,
+                llm_model=r.get("llm_model"),
+                llm_verdict=r.get("llm_verdict") or "watch",
+                llm_reasoning=r.get("llm_reasoning"),
+                suggested_priority_delta=r.get("suggested_priority_delta"),
+                suggested_auto_skip_hours=r.get("suggested_auto_skip_hours"),
+                stats_summary=r.get("stats_summary"),
+                applied_at=_parse_iso_or_none(r.get("applied_at")),
+                applied_action=r.get("applied_action"),
+                prior_priority=r.get("prior_priority"),
+                prior_auto_skip_until=_parse_iso_or_none(r.get("prior_auto_skip_until")),
+                reverted_at=_parse_iso_or_none(r.get("reverted_at")),
+                dismissed_at=_parse_iso_or_none(r.get("dismissed_at")),
+            ))
+        else:
             for field in ("applied_at", "reverted_at", "dismissed_at"):
                 peer_val = _parse_iso_or_none(r.get(field))
                 if peer_val and getattr(existing, field) is None:
