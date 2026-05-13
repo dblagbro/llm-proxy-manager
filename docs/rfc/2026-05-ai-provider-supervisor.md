@@ -84,6 +84,39 @@ app/models/db.py
    - Suggest-only by default (`ai_provider_supervisor_auto_apply=False`)
    - Auto-apply opt-in per node: `verdict ∈ {deprioritize, disable}` → mutate `Provider.priority` or `Provider.auto_skip_until`, record `prior_priority` for revert
    - All actions cluster-synced via existing Provider sync path
+   - **Manual override is sticky**: the supervisor MUST refuse to mutate any provider where `Provider.manual_override_until` is non-null (see "Manual override" section below). This is the operator's escape hatch — explicit disables stay disabled until the operator clears them, no matter what the AI thinks.
+
+### Manual override (operator escape hatch — 2026-05-13)
+
+Operator concern: if the supervisor auto-applies, it may re-enable a provider the operator explicitly disabled (because the operator had a reason the AI can't see — e.g. "I need to preserve weekly token budget for direct use elsewhere"). Need a way for the operator's explicit "Disable" click to **stick** until manually released, AND a visible reminder so operator doesn't forget they have manual overrides in place.
+
+**Schema additions to `Provider`**:
+- `manual_override_until` (DateTime or sentinel `"9999-12-31T23:59:59"` for indefinite, nullable, default NULL) — when non-null, supervisor must skip this provider entirely
+- `manual_override_set_by` (String, nullable) — admin user_id for audit trail
+- `manual_override_set_at` (DateTime, nullable)
+- `manual_override_reason` (Text, nullable, optional operator-pasted note)
+
+**Operator UI semantics**:
+- "Disable" button in providers list/detail → sets `enabled=False` AND `manual_override_until="9999-12-31..."` (indefinite lock)
+- "Enable" button → clears `manual_override_until` AND sets `enabled=True`
+- Per-row 🔒 badge whenever `manual_override_until` is non-null
+
+**Top-of-page banner** (rendered on every admin view when any provider is locked):
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│ 🔒 N provider(s) under manual override — AI supervisor won't manage  │
+│    them.  [View details]   [Release all to AI control]               │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+- "View details" → expands the providers list with the locked rows highlighted
+- "Release all" → bulk-clears `manual_override_until` on all currently-locked providers (with a confirmation modal) → they return to the AI-managed pool
+
+**Cluster sync**: the new override columns ride the existing Provider sync path. LWW conflict resolution applies — last write wins, exactly like the rest of the Provider fields.
+
+**Supervisor enforcement**: the worker's per-provider stats compute (step 2 above) MUST skip providers with `manual_override_until > now()`. No review row is written, no LLM call is made for those providers. This avoids paying for reviews of providers the operator has already pinned.
+
+**Migration safety**: the new columns are nullable with NULL default → backward-compatible. Existing disable behavior (no `manual_override_until` set) remains exactly as today, until the operator first clicks "Disable" through the new UI surface.
 
 ### Recursion guard (lessons from BUG-017)
 
@@ -171,7 +204,7 @@ For operator decision before scoping:
 
 1. **Ship as v3.8.0 (new major surface)?** Or bundle with LMRHv2 Phase 3 (v3.8.0 still)? Or standalone subsystem?
 2. **Default model**: Haiku 4.5 (cheap, fast) vs Sonnet 4.6 (better at nuanced reasoning)? Reviews are infrequent (one per 30 min × ~10 providers = 480/day) so cost not a hard constraint.
-3. **Auto-apply scope**: should auto-apply EVER mutate `Provider.enabled = False`? Or only ever soft-skip via `auto_skip_until`? More conservative = soft-skip only.
+3. ~~**Auto-apply scope**: should auto-apply EVER mutate `Provider.enabled = False`?~~ **RESOLVED 2026-05-13**: AI auto-applies on unlocked providers (including `enabled` flips); operator's explicit Disable is sticky via the new manual-override columns. See "Manual override" section.
 4. **Revert window**: how long after auto-apply can operator revert? Same lifecycle as rate-limiter (no time limit, lifecycle is monotone).
 5. **Trend window**: 7 days vs 14 days for the trailing baseline? 7 is enough to catch drift but might miss weekly cycles.
 6. **Quality metrics**: should we add time-to-first-token + response-length-trend instrumentation now, or defer to a Phase 2 of this work?
@@ -181,12 +214,13 @@ For operator decision before scoping:
 
 | Phase | Scope | Estimate |
 |---|---|---|
-| 1 | Schema + migration + cluster sync entry | 1 ship (~1h) |
-| 2 | Worker + stats compute + LLM call | 2 ships (~3h) |
-| 3 | API endpoints + apply/revert lifecycle | 1 ship (~2h) |
-| 4 | UI page (optional, can defer) | 1-2 ships (~4h) |
-| 5 | Recursion guard wiring + tests | 1 ship (~1h) |
-| **Total** | | **6-7 ships ≈ 1 working day** |
+| 1 | Provider schema additions (manual_override_* columns) + migration + cluster sync entry | 1 ship (~1h) |
+| 2 | Disable/Enable UI wired to manual_override + top-of-page banner + 🔒 badge | 1 ship (~2h) |
+| 3 | ProviderAiReview table + migration | 1 ship (~1h) |
+| 4 | Supervisor worker + stats compute + LLM call (respects manual override) | 2 ships (~3h) |
+| 5 | API endpoints + apply/revert lifecycle + recursion guard wiring + tests | 1 ship (~2h) |
+| 6 | Review UI page (optional, can defer past v3.8.0) | 1-2 ships (~4h) |
+| **Total (without Phase 6)** | | **6 ships ≈ 1 working day** |
 
 ## Test plan
 
