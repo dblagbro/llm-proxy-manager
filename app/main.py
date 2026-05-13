@@ -43,6 +43,7 @@ from app.api.lmrh import router as lmrh_router
 from app.api.llm_models import router as llm_models_router
 from app.api.anthropic_billing import router as anthropic_billing_router
 from app.api.codex_billing import router as codex_billing_router
+from app.api.ai_provider_supervisor import router as ai_provider_supervisor_router
 from app.api.ai_rate_limiter import router as ai_rate_limiter_router
 from app.api.blocked_ips import router as blocked_ips_router
 from app.observability.otel import init_tracer
@@ -429,6 +430,7 @@ app.include_router(lmrh_router)
 app.include_router(llm_models_router)
 app.include_router(anthropic_billing_router)
 app.include_router(codex_billing_router)
+app.include_router(ai_provider_supervisor_router)
 app.include_router(ai_rate_limiter_router)
 app.include_router(blocked_ips_router)
 # v3.3.0: LMRHv2 endpoints (feature-flagged via lmrh_v2_enabled).
