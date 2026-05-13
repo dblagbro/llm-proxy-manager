@@ -178,6 +178,21 @@ class Settings(BaseSettings):
     # operator-supplied chatgpt.com analytics endpoint URL.
     codex_billing_scrape_interval_sec: int = Field(14400, alias="CODEX_BILLING_SCRAPE_INTERVAL_SEC")
     codex_billing_min_scrape_gap_sec: int = Field(0, alias="CODEX_BILLING_MIN_SCRAPE_GAP_SEC")
+
+    # v3.7.30 (#252 phase 3): AI provider supervisor — provider-side
+    # mirror of the v3.7.10 AI rate limiter. Default OFF; opt-in per
+    # node via ``ai_provider_supervisor_enabled=True``. Auto-apply is
+    # gated by a separate flag so operators can run in suggest-only
+    # mode for an observation period first.
+    ai_provider_supervisor_enabled: bool = Field(False, alias="AI_PROVIDER_SUPERVISOR_ENABLED")
+    ai_provider_supervisor_auto_apply: bool = Field(False, alias="AI_PROVIDER_SUPERVISOR_AUTO_APPLY")
+    ai_provider_supervisor_interval_sec: int = Field(1800, alias="AI_PROVIDER_SUPERVISOR_INTERVAL_SEC")        # 30 min
+    ai_provider_supervisor_short_window_min: int = Field(30, alias="AI_PROVIDER_SUPERVISOR_SHORT_WINDOW_MIN")
+    ai_provider_supervisor_trend_window_days: int = Field(1, alias="AI_PROVIDER_SUPERVISOR_TREND_WINDOW_DAYS") # operator-locked 2026-05-13
+    ai_provider_supervisor_model: str = Field("claude-haiku-4-5-20251001", alias="AI_PROVIDER_SUPERVISOR_MODEL")
+    ai_provider_supervisor_internal_api_key: str = Field("", alias="AI_PROVIDER_SUPERVISOR_INTERNAL_API_KEY")
+    ai_provider_supervisor_max_priority_delta: int = Field(2, alias="AI_PROVIDER_SUPERVISOR_MAX_PRIORITY_DELTA")
+    ai_provider_supervisor_max_auto_skip_hours: int = Field(24, alias="AI_PROVIDER_SUPERVISOR_MAX_AUTO_SKIP_HOURS")
     # v3.0.13: how long a provider tombstone (deleted_at non-null) is kept
     # before hard-delete. Cluster sync converges in seconds, so 7d is a
     # comfortable safety margin.
