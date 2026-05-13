@@ -68,6 +68,16 @@ export interface Provider {
   codex_usage_endpoint_url?: string | null
   has_codex_session_cookies?: boolean
   codex_session_captured_at?: number | null
+  // v3.7.28 (#252 phase 1) — manual override lock. When the operator
+  // clicks Disable, manual_override_until is set so the upcoming AI
+  // supervisor will not re-enable the provider. Enable clears it.
+  // The UI banner reads ``manual_override_active`` to decide whether
+  // to render at all.
+  manual_override_active?: boolean
+  manual_override_until?: string | null
+  manual_override_set_by?: string | null
+  manual_override_set_at?: string | null
+  manual_override_reason?: string | null
   auto_skip_until?: string | null
   auto_skip_reason?: string | null
 }

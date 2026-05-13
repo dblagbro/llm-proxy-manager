@@ -131,6 +131,22 @@ class Provider(Base):
     codex_usage_endpoint_url = Column(String, nullable=True)         # full URL captured from DevTools
     codex_session_captured_at = Column(Float, nullable=True)         # unix ts of last operator paste
 
+    # v3.7.28 (#252 phase 1) — manual override escape hatch for the
+    # upcoming AI provider supervisor. When non-null, the supervisor
+    # MUST skip this provider entirely (no stats compute, no LLM call,
+    # no review row written, no enabled/auto_skip_until mutations).
+    # Operator-set via the Disable button in the UI; cleared via
+    # Enable. The sentinel string "9999-12-31T23:59:59" represents
+    # an indefinite lock; a real DateTime represents a time-bounded
+    # lock (reserved — not used in the current UI).
+    #
+    # Cluster sync replicates these fields via the existing Provider
+    # sync path (LWW conflict resolution applies).
+    manual_override_until = Column(DateTime, nullable=True)
+    manual_override_set_by = Column(String, nullable=True)           # admin user id for audit
+    manual_override_set_at = Column(DateTime, nullable=True)
+    manual_override_reason = Column(Text, nullable=True)             # optional operator note
+
     # v3.7.1 — auto-rotation: when an external snapshot reports a
     # provider above the at-capacity threshold (default 95% weekly
     # utilization), the rule evaluator sets ``auto_skip_until`` to

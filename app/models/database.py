@@ -202,6 +202,15 @@ async def init_db():
             "ALTER TABLE providers ADD COLUMN codex_session_cookies TEXT",
             "ALTER TABLE providers ADD COLUMN codex_usage_endpoint_url TEXT",
             "ALTER TABLE providers ADD COLUMN codex_session_captured_at REAL",
+            # v3.7.28 (#252 phase 1) — manual override escape hatch
+            # for the AI provider supervisor. When set, supervisor must
+            # skip this provider; operator's explicit Disable click is
+            # sticky until they Enable again. Cluster sync replicates
+            # via the existing Provider sync path.
+            "ALTER TABLE providers ADD COLUMN manual_override_until DATETIME",
+            "ALTER TABLE providers ADD COLUMN manual_override_set_by TEXT",
+            "ALTER TABLE providers ADD COLUMN manual_override_set_at DATETIME",
+            "ALTER TABLE providers ADD COLUMN manual_override_reason TEXT",
         ]:
             try:
                 await conn.exec_driver_sql(stmt)
