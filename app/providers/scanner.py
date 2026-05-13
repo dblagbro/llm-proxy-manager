@@ -89,7 +89,7 @@ async def _fetch_model_list(provider: Provider) -> list[str]:
                 return await _fetch_anthropic_models(provider)
             case "claude-oauth":
                 return await _fetch_claude_oauth_models(provider)
-            case "codex-oauth":
+            case "ChatGPT-oauth-plan":
                 return await _fetch_codex_oauth_models(provider)
             case "cohere":
                 return await _fetch_cohere_models(provider)
@@ -292,7 +292,7 @@ async def test_provider(provider: Provider) -> dict:
     # /v1/messages uses in production.
     if provider.provider_type == "claude-oauth":
         return await _test_claude_oauth(provider)
-    if provider.provider_type == "codex-oauth":
+    if provider.provider_type == "ChatGPT-oauth-plan":
         return await _test_codex_oauth(provider)
     if provider.provider_type == "grok-web":
         return await _test_grok_web(provider)

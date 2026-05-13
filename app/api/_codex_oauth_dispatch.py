@@ -203,7 +203,7 @@ async def dispatch_codex_oauth(
                 pass
 
         resp_headers["X-Cache-Status"] = "bypass"
-        resp_headers["X-Provider-Type"] = "codex-oauth"
+        resp_headers["X-Provider-Type"] = "ChatGPT-oauth-plan"
         return StreamingResponse(
             _translated(),
             media_type="text/event-stream",
@@ -252,5 +252,5 @@ async def dispatch_codex_oauth(
     except Exception:
         pass
 
-    resp_headers["X-Provider-Type"] = "codex-oauth"
+    resp_headers["X-Provider-Type"] = "ChatGPT-oauth-plan"
     return JSONResponse(content=result, headers=resp_headers)

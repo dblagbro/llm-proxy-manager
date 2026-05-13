@@ -66,7 +66,7 @@ async def create_embeddings(
             key_type=key_record.key_type,
             pinned_provider_id=None, model_override=model,
             sort_mode=None,
-            excluded_provider_types={"claude-oauth", "codex-oauth"},
+            excluded_provider_types={"claude-oauth", "ChatGPT-oauth-plan"},
         )
     except RuntimeError as e:
         msg = str(e)

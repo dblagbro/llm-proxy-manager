@@ -93,6 +93,7 @@ def test_oauth_subscription_types_present():
     type maps. v3.2.0 added grok-web; v2.7.0 + v3.0.15 added the OAuth
     pair. Missing entries here would cause silent KeyErrors in the
     routing layer."""
-    for t in ("claude-oauth", "codex-oauth", "grok-web"):
+    # v3.8.0 (#251) — codex-oauth was renamed to ChatGPT-oauth-plan
+    for t in ("claude-oauth", "ChatGPT-oauth-plan", "grok-web"):
         assert t in PROVIDER_TYPE_TO_LITELLM, f"{t} missing from type map"
         assert t in PROVIDER_DEFAULT_MODELS, f"{t} missing from default models"

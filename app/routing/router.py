@@ -137,7 +137,7 @@ def _model_family_provider_types(model: str) -> Optional[set[str]]:
             or m.startswith("o4-") or m.startswith("text-embedding-")
             or m.startswith("whisper-") or m.startswith("dall-e-")
             or m.startswith("codex-")):
-        return {"openai", "codex-oauth"}
+        return {"openai", "ChatGPT-oauth-plan"}
     # Google / Gemini family.
     if m.startswith("gemini-") or m.startswith("text-bison") or m.startswith("chat-bison"):
         return {"google", "vertex", "vertex_ai"}
@@ -177,7 +177,7 @@ PROVIDER_TYPE_TO_LITELLM = {
     # v3.0.15: codex-oauth never routes through litellm either —
     # _codex_oauth_dispatch handles it via direct httpx to chatgpt.com.
     # The "openai" prefix is only used for the X-Resolved-Model header.
-    "codex-oauth": "openai",
+    "ChatGPT-oauth-plan": "openai",
     # v3.0.23 (Q2): Cohere via litellm (cohere/embed-english-v3.0 etc).
     "cohere": "cohere",
     # v3.0.66: Microsoft Azure OpenAI Service. Caller's base_url should
@@ -217,7 +217,7 @@ PROVIDER_DEFAULT_MODELS = {
     "claude-oauth": "claude-sonnet-4-6",
     # ChatGPT Plus/Team/Enterprise subscription via Codex CLI.
     # gpt-5.5 is the Plus default; Pro/Team see different slugs.
-    "codex-oauth": "gpt-5.5",
+    "ChatGPT-oauth-plan": "gpt-5.5",
     # v3.0.23 (Q2): Cohere — primarily an embeddings provider but also
     # has rerank/chat surfaces. embed-english-v3.0 is the recommended
     # general-purpose default.

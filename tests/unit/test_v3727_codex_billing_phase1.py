@@ -113,7 +113,7 @@ def test_worker_uses_freshness_guard_pattern():
 def test_worker_filters_to_codex_oauth():
     """Worker only scrapes codex-oauth providers with credentials set."""
     src = Path("app/monitoring/codex_billing_worker.py").read_text()
-    assert 'Provider.provider_type == "codex-oauth"' in src
+    assert 'Provider.provider_type == "ChatGPT-oauth-plan"' in src
     assert "Provider.codex_usage_endpoint_url.is_not(None)" in src
     assert "Provider.codex_session_cookies.is_not(None)" in src
 
@@ -146,7 +146,7 @@ def test_credentials_endpoint_gated_on_provider_type():
     """The POST credentials handler must reject non-codex-oauth provider
     types — the cookies wouldn't be usable on a claude-oauth provider."""
     src = Path("app/api/codex_billing.py").read_text()
-    assert 'provider_type != "codex-oauth"' in src
+    assert 'provider_type != "ChatGPT-oauth-plan"' in src
 
 
 def test_worker_wired_into_main_lifespan():
@@ -223,8 +223,8 @@ def test_codex_billing_panel_component_exists():
 def test_provider_form_renders_codex_panel_only_for_codex_oauth():
     src = Path("frontend/src/components/providers/ProviderForm.tsx").read_text()
     assert "CodexBillingPanel" in src
-    # Gating expression must match form.provider_type === 'codex-oauth'
-    assert "form.provider_type === 'codex-oauth'" in src
+    # Gating expression must match form.provider_type === 'ChatGPT-oauth-plan'
+    assert "form.provider_type === 'ChatGPT-oauth-plan'" in src
 
 
 def test_version_bumped():

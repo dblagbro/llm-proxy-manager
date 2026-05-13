@@ -77,7 +77,7 @@ export function ProvidersPage() {
       // endpoints instead of the plain POST/PUT.
       const isOAuthExchange =
         data.oauth_state && data.oauth_callback &&
-        (data.provider_type === 'claude-oauth' || data.provider_type === 'codex-oauth')
+        (data.provider_type === 'claude-oauth' || data.provider_type === 'ChatGPT-oauth-plan')
       if (!editing && isOAuthExchange) {
         const payload = {
           state: data.oauth_state,
@@ -93,14 +93,14 @@ export function ProvidersPage() {
           failure_threshold: data.failure_threshold,
           extra_config: data.extra_config,
         }
-        return data.provider_type === 'codex-oauth'
+        return data.provider_type === 'ChatGPT-oauth-plan'
           ? providersApi.codexOauthExchange(payload)
           : providersApi.oauthExchange(payload)
       }
       // v2.7.7 / v3.0.15: re-auth in place when editing with state+callback.
       if (editing && isOAuthExchange) {
         const rotatePayload = { state: data.oauth_state, callback: data.oauth_callback }
-        if (data.provider_type === 'codex-oauth') {
+        if (data.provider_type === 'ChatGPT-oauth-plan') {
           await providersApi.codexOauthRotate(editing.id, rotatePayload)
         } else {
           await providersApi.oauthRotate(editing.id, rotatePayload)
@@ -521,7 +521,7 @@ export function ProvidersPage() {
                             <p className="text-xs text-gray-600 dark:text-gray-400 mt-0.5">
                               Failed since {formatTimeForUser(p.auth_failed.since * 1000, user)}
                               {' · '}
-                              {(p.provider_type === 'claude-oauth' || p.provider_type === 'codex-oauth')
+                              {(p.provider_type === 'claude-oauth' || p.provider_type === 'ChatGPT-oauth-plan')
                                 ? 'Open Edit and click Generate New Auth URL to re-authorize.'
                                 : 'Open Edit and paste a fresh API key.'}
                             </p>

@@ -35,7 +35,11 @@ _PROVIDER_FAMILY_TYPES: dict[str, frozenset[str]] = {
         "anthropic", "anthropic-direct", "anthropic-oauth", "claude-oauth",
     }),
     "openai": frozenset({
-        "openai", "openai-direct", "codex-oauth",
+        # v3.8.0 (#251) — entries are lowercased to match the case-insensitive
+        # comparison below (provider_type is .lower()-normalized before
+        # membership-checking). Even though the canonical value retains its
+        # mixed case ("ChatGPT-oauth-plan"), the family map keys it lowercase.
+        "openai", "openai-direct", "chatgpt-oauth-plan",
     }),
     "google": frozenset({
         "vertex_ai", "google-genai", "gemini",

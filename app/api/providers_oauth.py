@@ -11,7 +11,7 @@ Both vendors follow the same browser-PKCE pattern:
 The two flows differ only in vendor-specific details captured in
 ``OAuthProviderSpec``:
 
-  - ``provider_type`` column value (``"claude-oauth"`` / ``"codex-oauth"``)
+  - ``provider_type`` column value (``"claude-oauth"`` / ``"ChatGPT-oauth-plan"``)
   - flow module (``app.providers.claude_oauth_flow`` /
     ``app.providers.codex_oauth_flow``) — both expose the same surface:
     ``start_authorize() -> AuthorizeStart``,
@@ -73,7 +73,7 @@ CLAUDE_OAUTH_SPEC = OAuthProviderSpec(
 
 
 CODEX_OAUTH_SPEC = OAuthProviderSpec(
-    provider_type="codex-oauth",
+    provider_type="ChatGPT-oauth-plan",
     default_model="gpt-5.5",
     flow_module_name="app.providers.codex_oauth_flow",
     # Codex tokens carry the workspace/account/plan-tier metadata in

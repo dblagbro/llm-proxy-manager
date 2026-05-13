@@ -32,7 +32,7 @@ from app.budget.tracker import record_cost
 # rate as ``quota_usd`` for visibility but record ``cost_usd=0`` so
 # spending-cap enforcement and per-key totals stay accurate.
 SUBSCRIPTION_TIER_PROVIDER_TYPES = frozenset({
-    "codex-oauth",      # operator's flat-rate ChatGPT Plus / Codex CLI
+    "ChatGPT-oauth-plan",      # operator's flat-rate ChatGPT Plus / Codex CLI
     "claude-oauth",     # Anthropic Pro Max OAuth
     "anthropic-oauth",  # legacy alias if ever introduced
     # v3.2.10: grok-web (operator's grok.com Lite/Premium subscription).

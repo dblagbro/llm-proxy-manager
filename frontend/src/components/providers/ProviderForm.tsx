@@ -11,20 +11,21 @@ import { CodexBillingPanel } from './CodexBillingPanel'
 const PROVIDER_TYPES: ProviderType[] = [
   'anthropic', 'openai', 'google', 'vertex', 'grok', 'ollama', 'compatible',
   'claude-oauth',  // v2.7.0 — Claude Pro Max subscription via pasted credentials
-  'codex-oauth',   // v3.0.15 — OpenAI Codex CLI / ChatGPT subscription
+  'ChatGPT-oauth-plan',   // v3.0.15 — OpenAI Codex CLI / ChatGPT subscription
   'cohere',        // v3.0.23 — Cohere embeddings (and rerank/chat)
   'azure',         // v3.0.66 — Microsoft Azure OpenAI Service
   'openrouter',    // v3.1.3 — OpenRouter multi-vendor marketplace
   'grok-web',      // v3.2.0 — grok.com web subscription via pasted cookies
 ]
 
-// v3.7.14 — display labels for the provider_type dropdown. The internal
-// string value stays the same (preserves DB rows + external callers);
-// only the visible label changes. Operators asked for "ChatGPT-oauth-plan"
-// to replace the legacy "codex-oauth" label since the latter doesn't
-// communicate what kind of account it represents.
+// v3.8.0 — display labels for the provider_type dropdown. The internal
+// string value was renamed from "codex-oauth" to "ChatGPT-oauth-plan"
+// (#251). The label keeps the old name in parens as a transitional
+// hint so operators familiar with the old name can still find it.
+// Drop the "(codex-oauth)" suffix in a future version once operators
+// have absorbed the change.
 function providerTypeLabel(t: ProviderType): string {
-  if (t === 'codex-oauth') return 'ChatGPT-oauth-plan (codex-oauth)'
+  if (t === 'ChatGPT-oauth-plan') return 'ChatGPT-oauth-plan (was codex-oauth)'
   return t
 }
 
@@ -57,7 +58,7 @@ const OAUTH_FLAVORS: Record<string, OAuthFlavor> = {
     exchange: (data) => providersApi.oauthExchange(data),
     rotate: (id, data) => providersApi.oauthRotate(id, data),
   },
-  'codex-oauth': {
+  'ChatGPT-oauth-plan': {
     label: 'ChatGPT subscription (Plus/Team/Enterprise) — sign in via Codex',
     callbackHostHint: 'localhost:1455/auth/callback (browser will dead-end here — copy the URL anyway)',
     defaultModel: 'gpt-5.5',
@@ -226,7 +227,7 @@ export function ProviderForm({ form, onChange, editing, provider, onProviderUpda
               <ol className="list-decimal list-inside text-xs text-gray-600 dark:text-gray-300 space-y-1">
                 {editing && <li className="text-amber-600 dark:text-amber-400 font-medium">Re-authorize this provider — replaces the stored access &amp; refresh tokens.</li>}
                 <li>Click <strong>{editing ? 'Generate New Auth URL' : 'Generate Auth URL'}</strong> below.</li>
-                <li>Open the URL in a tab where you're signed in to your {form.provider_type === 'codex-oauth' ? 'ChatGPT' : 'Claude'} account and approve access.</li>
+                <li>Open the URL in a tab where you're signed in to your {form.provider_type === 'ChatGPT-oauth-plan' ? 'ChatGPT' : 'Claude'} account and approve access.</li>
                 <li>You'll be redirected to <code className="px-1 font-mono bg-gray-100 dark:bg-gray-800 rounded">{flavor.callbackHostHint}</code>.</li>
                 <li>Copy that code (or the full URL from your address bar) and paste it below. We'll trade it for a token automatically.</li>
               </ol>
@@ -411,7 +412,7 @@ export function ProviderForm({ form, onChange, editing, provider, onProviderUpda
       {/* v3.7.27 (#245) — ChatGPT / Codex Cloud usage scrape surface,
           same shape as the Anthropic panel above but operator supplies
           the analytics endpoint URL since it isn't documented. */}
-      {editing && provider && form.provider_type === 'codex-oauth' && (
+      {editing && provider && form.provider_type === 'ChatGPT-oauth-plan' && (
         <CodexBillingPanel
           provider={provider}
           onUpdated={onProviderUpdated}

@@ -260,7 +260,7 @@ async def _probe_one(provider: Provider) -> None:
         except Exception as e:
             err_str = f"{type(e).__name__}: {str(e) or 'no message'}"
         litellm_model = model  # for the activity_log message string below
-    elif provider.provider_type == "codex-oauth":
+    elif provider.provider_type == "ChatGPT-oauth-plan":
         # v3.0.19: codex-oauth probes were going through litellm.acompletion
         # (openai/gpt-5.5), which routes to api.openai.com — that endpoint
         # rejects Codex CLI bearer tokens with "Missing scopes: model.request".
@@ -415,7 +415,7 @@ async def _probe_all_once() -> int:
     # could lose its session and we wouldn't notice until organic
     # traffic 401s. Probes now fire grok-web → bridge → grok.com,
     # exercising the full pipeline including Cloudflare cookie freshness.
-    SUBSCRIPTION_TYPES = {"claude-oauth", "codex-oauth", "anthropic-oauth", "grok-web"}
+    SUBSCRIPTION_TYPES = {"claude-oauth", "ChatGPT-oauth-plan", "anthropic-oauth", "grok-web"}
     for p in providers:
         if not probe_per_call and p.provider_type not in SUBSCRIPTION_TYPES:
             logger.debug(

@@ -321,6 +321,14 @@ async def create_provider(
     data = body.model_dump()
     blob = data.pop("oauth_credentials_blob", None)
 
+    # v3.8.0 (#251) — backward-compat alias for the codex-oauth → ChatGPT-oauth-plan
+    # rename. Callers that POST the old name still work; we normalize to the
+    # new name before storing. Drop this shim in a future major version once
+    # all known callers have updated.
+    if body.provider_type == "codex-oauth":
+        body.provider_type = "ChatGPT-oauth-plan"
+        data["provider_type"] = "ChatGPT-oauth-plan"
+
     # v2.7.6 BUG-019: reject providers that require auth but have no key.
     # Without this, the provider is enabled but every routed request 502s.
     if body.provider_type in _TYPES_REQUIRING_API_KEY and not (data.get("api_key") or "").strip():
@@ -357,7 +365,7 @@ async def create_provider(
         data["oauth_expires_at"] = creds.expires_at
         if not data.get("default_model"):
             data["default_model"] = "claude-sonnet-4-6"
-    elif body.provider_type == "codex-oauth":
+    elif body.provider_type == "ChatGPT-oauth-plan":
         # v3.0.15: OpenAI Codex CLI / ChatGPT subscription OAuth.
         if not blob:
             raise HTTPException(
@@ -425,7 +433,7 @@ async def create_provider(
         raise HTTPException(
             400,
             f"oauth_credentials_blob is only valid when provider_type is 'claude-oauth' "
-            f"or 'codex-oauth' (got {body.provider_type!r})",
+            f"or 'ChatGPT-oauth-plan' (got {body.provider_type!r})",
         )
 
     # v2.8.2: bump any existing provider already at this priority +1 (chained)
@@ -482,7 +490,7 @@ async def get_rate_limit_state(
     this node yet (cold cache / never-used provider).
     """
     p = await _get_or_404(db, provider_id)
-    if p.provider_type != "codex-oauth":
+    if p.provider_type != "ChatGPT-oauth-plan":
         raise HTTPException(
             400,
             f"Provider {p.name!r} is type {p.provider_type!r}; rate-limit "
@@ -557,7 +565,7 @@ async def update_provider(
     # Solution: layer the incoming form values OVER the current row's
     # extra_config so OAuth-stashed keys survive while admin-added keys
     # still win.
-    if p.provider_type in ("claude-oauth", "codex-oauth") and not blob:
+    if p.provider_type in ("claude-oauth", "ChatGPT-oauth-plan") and not blob:
         data.pop("api_key", None)
         incoming_extra = data.pop("extra_config", None)
         if incoming_extra is not None:
