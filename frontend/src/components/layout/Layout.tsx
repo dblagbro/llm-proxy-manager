@@ -3,6 +3,7 @@ import { Outlet } from 'react-router-dom'
 import { RefreshCw, X } from 'lucide-react'
 import { Sidebar } from './Sidebar'
 import { TopBar } from './TopBar'
+import { ManualOverrideBanner } from './ManualOverrideBanner'
 import { useQuery } from '@tanstack/react-query'
 import { clusterApi } from '@/api'
 
@@ -56,6 +57,7 @@ export function Layout() {
       />
       <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
         <TopBar />
+        <ManualOverrideBanner />
         {staleVersion && !bannerDismissed && (
           <div className="bg-indigo-600 text-white px-4 py-2 flex items-center gap-3 text-sm shrink-0">
             <RefreshCw className="h-4 w-4 shrink-0" />
