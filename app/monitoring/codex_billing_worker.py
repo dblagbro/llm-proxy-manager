@@ -97,12 +97,14 @@ async def _scrape_all_once() -> int:
     count = 0
     skipped = 0
     async with AsyncSessionLocal() as db:
+        # v3.8.1 (#245 Phase 2): use the OAuth access_token (Provider.api_key)
+        # instead of operator-pasted cookies. The chatgpt.com /backend-api/wham/usage
+        # endpoint accepts the same bearer the inference path uses.
         result = await db.execute(
             select(Provider)
             .where(Provider.provider_type == "ChatGPT-oauth-plan")
             .where(Provider.deleted_at.is_(None))
-            .where(Provider.codex_usage_endpoint_url.is_not(None))
-            .where(Provider.codex_session_cookies.is_not(None))
+            .where(Provider.api_key.is_not(None))
         )
         providers = result.scalars().all()
         for p in providers:
