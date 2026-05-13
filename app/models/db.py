@@ -373,6 +373,49 @@ class ApiKeyAiReview(Base):
     suggested_block_ip = Column(String, nullable=True)
 
 
+class ProviderAiReview(Base):
+    """v3.7.30 (#252 phase 3) — provider-level mirror of ``ApiKeyAiReview``.
+
+    A background worker (Phase 4) scans recent activity for each
+    provider on a configurable cadence (default 30 min), computes a
+    stats summary including TTFT p50/p95 and response-length trends,
+    sends it to an LLM for classification, and writes a row here.
+
+    Operator reviews via admin endpoints (Phase 5). When
+    ``ai_provider_supervisor_auto_apply=True``, deprioritize/disable
+    verdicts mutate Provider.priority / auto_skip_until — but ONLY
+    for providers without ``manual_override_until`` set (Phase 1
+    escape hatch).
+
+    Verdict enum:
+      - ``normal``       — healthy; no action
+      - ``watch``        — slightly elevated; record but don't act
+      - ``deprioritize`` — recommend Provider.priority += N
+      - ``disable``      — recommend Provider.enabled = False
+      - ``investigate``  — anomaly detected, operator should look manually
+
+    Cluster sync replicates this table via the BUG-016 pattern (added
+    in Phase 4/5 ship).
+    """
+    __tablename__ = "provider_ai_review"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    provider_id = Column(String, ForeignKey("providers.id"), nullable=False, index=True)
+    captured_at = Column(DateTime, server_default=func.now(), index=True)
+    llm_model = Column(String, nullable=True)
+    llm_verdict = Column(String, nullable=False)
+    llm_reasoning = Column(Text, nullable=True)
+    suggested_priority_delta = Column(Integer, nullable=True)
+    suggested_auto_skip_hours = Column(Integer, nullable=True)
+    stats_summary = Column(JSON, nullable=True)  # input stats for diagnostics
+    # Lifecycle: applied / dismissed / reverted (mirrors ApiKeyAiReview)
+    applied_at = Column(DateTime, nullable=True)
+    applied_action = Column(String, nullable=True)
+    prior_priority = Column(Integer, nullable=True)             # for revert
+    prior_auto_skip_until = Column(DateTime, nullable=True)     # for revert
+    reverted_at = Column(DateTime, nullable=True)
+    dismissed_at = Column(DateTime, nullable=True)
+
+
 class BlockedIp(Base):
     """v3.7.11 — IP block list. Per operator Q5: AI rate limiter
     should be able to slow keys OR source IPs. v3.7.10 shipped the
