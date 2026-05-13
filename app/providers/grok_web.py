@@ -147,6 +147,27 @@ class GrokWebAuthError(GrokWebError):
         super().__init__(message, status_code=401)
 
 
+def _map_upstream_status(upstream_sc: int) -> int:
+    """v3.7.26 (#259) — pick the HTTP status to return to the caller
+    when the bridge or grok.com replies with a non-2xx.
+
+    Previously every non-200 was wrapped as a 502 Bad Gateway, which
+    erased upstream rate-limit signal — callers received 502 instead of
+    429 and couldn't apply standard Retry-After / exponential-backoff
+    behavior.
+
+    Mapping:
+      429 → 429 (preserve rate-limit semantics)
+      else → 502 (legacy — proxy IS a gateway, upstream failures
+                   should look like Bad Gateway to callers regardless
+                   of whether the bridge sidecar itself errored or
+                   grok.com errored)
+    """
+    if upstream_sc == 429:
+        return 429
+    return 502
+
+
 def _build_headers(extra_config: dict, conversation_id: str) -> dict:
     """Build the header set for a grok.com inference request.
 
@@ -435,7 +456,7 @@ async def _bridge_chat(
     if r.status_code != 200:
         raise GrokWebError(
             f"grok-web bridge {r.status_code}: {r.text[:200]}",
-            status_code=502,
+            status_code=_map_upstream_status(r.status_code),
         )
     return r.json()
 
@@ -483,7 +504,7 @@ async def complete_grok_web(
     if resp.status_code != 200:
         raise GrokWebError(
             f"grok-web upstream {resp.status_code}: {resp.text[:200]}",
-            status_code=502,
+            status_code=_map_upstream_status(resp.status_code),
         )
 
     full_text = ""
@@ -617,7 +638,7 @@ async def stream_grok_web(
                     body_text = (await resp.aread()).decode("utf-8", errors="replace")
                     raise GrokWebError(
                         f"grok-web upstream {resp.status_code}: {body_text[:200]}",
-                        status_code=502,
+                        status_code=_map_upstream_status(resp.status_code),
                     )
                 async for line in resp.aiter_lines():
                     if not line or not line.strip():
@@ -803,7 +824,7 @@ async def stream_grok_web_anthropic(
                     body_text = (await resp.aread()).decode("utf-8", errors="replace")
                     raise GrokWebError(
                         f"grok-web upstream {resp.status_code}: {body_text[:200]}",
-                        status_code=502,
+                        status_code=_map_upstream_status(resp.status_code),
                     )
                 async for line in resp.aiter_lines():
                     if not line or not line.strip():
