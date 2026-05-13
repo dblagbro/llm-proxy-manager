@@ -437,7 +437,20 @@ function ProviderStatusRow({ provider, cb, summary }: {
     <div className="flex items-center gap-3 px-4 py-3">
       <div className={`h-2 w-2 rounded-full shrink-0 ${provider.enabled ? 'bg-green-500' : 'bg-gray-400'}`} />
       <div className="flex-1 min-w-0">
-        <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">{provider.name}</p>
+        <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate flex items-center gap-1.5">
+          <span className="truncate">{provider.name}</span>
+          {/* v3.7.29 (#252 phase 2) — manual-override 🔒 badge mirrors the
+              ProvidersPage badge so operators see the lock state at a
+              glance from the dashboard too. */}
+          {provider.manual_override_active && (
+            <span
+              className="shrink-0 text-amber-600 dark:text-amber-400"
+              title="Manual override — AI supervisor will not manage this provider"
+            >
+              🔒
+            </span>
+          )}
+        </p>
         <p className="text-xs text-gray-500 truncate">{provider.provider_type} · {provider.default_model ?? 'no model set'}</p>
       </div>
       <div className="flex items-center gap-2 shrink-0">

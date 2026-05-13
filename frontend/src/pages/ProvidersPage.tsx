@@ -326,6 +326,22 @@ export function ProvidersPage() {
                           providers, the lowest-utilization one (per
                           latest snapshot) is the router's current first
                           choice — green "preferred" badge. */}
+                      {/* v3.7.28 (#252 phase 2) — manual override badge.
+                          When set, AI supervisor (Phase 4) will not
+                          touch this provider; operator's explicit
+                          Disable click is sticky. */}
+                      {p.manual_override_active && (
+                        <span
+                          className="inline-flex items-center rounded-full bg-amber-100 dark:bg-amber-950 text-amber-800 dark:text-amber-200 px-2 py-0.5 text-xs font-normal"
+                          title={
+                            p.manual_override_reason
+                              ? `Manual override — ${p.manual_override_reason}`
+                              : 'Manual override — AI supervisor will not manage this provider until released via the banner.'
+                          }
+                        >
+                          🔒 manual override
+                        </span>
+                      )}
                       {p.auto_skip_until && new Date(p.auto_skip_until).getTime() > Date.now() && (
                         <span
                           className="inline-flex items-center rounded-full bg-red-100 dark:bg-red-950 text-red-800 dark:text-red-200 px-2 py-0.5 text-xs font-normal"
