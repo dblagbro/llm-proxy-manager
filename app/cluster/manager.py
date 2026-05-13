@@ -266,7 +266,7 @@ async def _build_sync_payload(db) -> dict:
     # v3.7.15 — BUG-016: replicate the three v3.7.x tables that landed
     # in a hurry without sync entries. LWW conflict resolution: latest
     # added_at / captured_at wins.
-    from app.models.db import BlockedIp, ApiKeyAiReview, ExternalUsageSnapshot
+    from app.models.db import BlockedIp, ApiKeyAiReview, ExternalUsageSnapshot, ProviderAiReview
     # Include tombstoned rows so peers learn about deletions.
     blocked_rs = await db.execute(select(BlockedIp))
     blocked_ips_payload = [
@@ -332,6 +332,27 @@ async def _build_sync_payload(db) -> dict:
          "extra_usage_currency": s.extra_usage_currency}
         for s in snap_rs.scalars().all()
     ]
+    # v3.7.31 (#252 phase 4) — provider AI reviews (last 7d).
+    provider_reviews_rs = await db.execute(
+        select(ProviderAiReview).where(ProviderAiReview.captured_at >= cutoff)
+    )
+    provider_ai_reviews_payload = [
+        {"id": r.id, "provider_id": r.provider_id,
+         "captured_at": r.captured_at.isoformat() if r.captured_at else None,
+         "llm_model": r.llm_model, "llm_verdict": r.llm_verdict,
+         "llm_reasoning": r.llm_reasoning,
+         "suggested_priority_delta": r.suggested_priority_delta,
+         "suggested_auto_skip_hours": r.suggested_auto_skip_hours,
+         "stats_summary": r.stats_summary,
+         "applied_at": r.applied_at.isoformat() if r.applied_at else None,
+         "applied_action": r.applied_action,
+         "prior_priority": r.prior_priority,
+         "prior_auto_skip_until": r.prior_auto_skip_until.isoformat() if r.prior_auto_skip_until else None,
+         "reverted_at": r.reverted_at.isoformat() if r.reverted_at else None,
+         "dismissed_at": r.dismissed_at.isoformat() if r.dismissed_at else None}
+        for r in provider_reviews_rs.scalars().all()
+    ]
+
     return {
         "source_node": settings.cluster_node_id,
         "timestamp": time.time(),
@@ -348,6 +369,10 @@ async def _build_sync_payload(db) -> dict:
         "blocked_ips": blocked_ips_payload,
         "api_key_ai_reviews": ai_reviews_payload,
         "external_usage_snapshots": external_usage_payload,
+        # v3.7.31 (#252 phase 4) — provider supervisor reviews follow
+        # the same posture as api_key_ai_reviews: last 7 days, PK is
+        # (provider_id, captured_at).
+        "provider_ai_reviews": provider_ai_reviews_payload,
     }
 
 

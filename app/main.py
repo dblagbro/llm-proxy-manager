@@ -248,6 +248,15 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"codex_billing_worker failed to start: {e}")
 
+    # v3.7.31 (#252 phase 4) — AI provider supervisor. Default disabled
+    # (ai_provider_supervisor_enabled=False); worker sleeps when
+    # disabled so safe to always start. Opt-in via env/setting.
+    try:
+        from app.monitoring import ai_provider_supervisor as _ai_sup
+        _ai_sup.start()
+    except Exception as e:
+        logger.warning(f"ai_provider_supervisor failed to start: {e}")
+
     # v3.7.10 — proactive AI rate limiter. Default disabled
     # (ai_rate_limiter_enabled=False); worker no-ops when disabled so
     # safe to always start. Opt-in per node per operator Q6.
