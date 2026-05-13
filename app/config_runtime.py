@@ -275,6 +275,113 @@ SCHEMA: dict[str, dict] = {
     # OAuth capture moved to a proper table in v2.5.0 — see Admin → Providers →
     # "Add OAuth capture" for the multi-profile UI. The legacy global
     # oauth_capture_* settings on `settings` are ignored since v2.5.0.
+
+    # v3.7.33 — surface the AI rate limiter + AI provider supervisor +
+    # billing-scrape settings in the Settings UI. Previously env-var-only,
+    # which meant operators couldn't toggle the workers without a
+    # container restart AND had no visibility into the current values.
+    "ai_rate_limiter_enabled": {
+        "type": "bool", "default": settings.ai_rate_limiter_enabled,
+        "label": "AI rate limiter: enable per-key suggestions (writes review rows)",
+        "group": "AI rate limiter",
+    },
+    "ai_rate_limiter_auto_apply": {
+        "type": "bool", "default": settings.ai_rate_limiter_auto_apply,
+        "label": "AI rate limiter: auto-apply throttle/disable verdicts (suggest-only when off)",
+        "group": "AI rate limiter",
+    },
+    "ai_rate_limiter_interval_sec": {
+        "type": "int", "default": settings.ai_rate_limiter_interval_sec,
+        "label": "AI rate limiter: scan cadence (seconds)",
+        "group": "AI rate limiter",
+    },
+    "ai_rate_limiter_window_min": {
+        "type": "int", "default": settings.ai_rate_limiter_window_min,
+        "label": "AI rate limiter: activity-log window (minutes)",
+        "group": "AI rate limiter",
+    },
+    "ai_rate_limiter_model": {
+        "type": "str", "default": settings.ai_rate_limiter_model,
+        "label": "AI rate limiter: classifier LLM model",
+        "group": "AI rate limiter",
+    },
+    "ai_rate_limiter_internal_api_key": {
+        "type": "str", "default": settings.ai_rate_limiter_internal_api_key or "",
+        "label": "AI rate limiter: internal API key for self-call (llmp-...)",
+        "group": "AI rate limiter",
+    },
+    "ai_rate_limiter_throttle_floor_rpm": {
+        "type": "int", "default": settings.ai_rate_limiter_throttle_floor_rpm,
+        "label": "AI rate limiter: floor rpm when auto-applying a throttle",
+        "group": "AI rate limiter",
+    },
+
+    "ai_provider_supervisor_enabled": {
+        "type": "bool", "default": settings.ai_provider_supervisor_enabled,
+        "label": "AI provider supervisor: enable per-provider review (writes review rows)",
+        "group": "AI provider supervisor",
+    },
+    "ai_provider_supervisor_auto_apply": {
+        "type": "bool", "default": settings.ai_provider_supervisor_auto_apply,
+        "label": "AI provider supervisor: auto-apply deprioritize/disable verdicts (suggest-only when off)",
+        "group": "AI provider supervisor",
+    },
+    "ai_provider_supervisor_interval_sec": {
+        "type": "int", "default": settings.ai_provider_supervisor_interval_sec,
+        "label": "AI provider supervisor: scan cadence (seconds, default 1800 = 30 min)",
+        "group": "AI provider supervisor",
+    },
+    "ai_provider_supervisor_short_window_min": {
+        "type": "int", "default": settings.ai_provider_supervisor_short_window_min,
+        "label": "AI provider supervisor: short window (minutes)",
+        "group": "AI provider supervisor",
+    },
+    "ai_provider_supervisor_trend_window_days": {
+        "type": "int", "default": settings.ai_provider_supervisor_trend_window_days,
+        "label": "AI provider supervisor: trend baseline window (days)",
+        "group": "AI provider supervisor",
+    },
+    "ai_provider_supervisor_model": {
+        "type": "str", "default": settings.ai_provider_supervisor_model,
+        "label": "AI provider supervisor: classifier LLM model",
+        "group": "AI provider supervisor",
+    },
+    "ai_provider_supervisor_internal_api_key": {
+        "type": "str", "default": settings.ai_provider_supervisor_internal_api_key or "",
+        "label": "AI provider supervisor: internal API key for self-call (llmp-...)",
+        "group": "AI provider supervisor",
+    },
+    "ai_provider_supervisor_max_priority_delta": {
+        "type": "int", "default": settings.ai_provider_supervisor_max_priority_delta,
+        "label": "AI provider supervisor: max priority delta per auto-apply",
+        "group": "AI provider supervisor",
+    },
+    "ai_provider_supervisor_max_auto_skip_hours": {
+        "type": "int", "default": settings.ai_provider_supervisor_max_auto_skip_hours,
+        "label": "AI provider supervisor: max auto-skip duration (hours)",
+        "group": "AI provider supervisor",
+    },
+
+    "anthropic_billing_scrape_interval_sec": {
+        "type": "int", "default": settings.anthropic_billing_scrape_interval_sec,
+        "label": "Anthropic billing scrape: cadence (seconds, default 14400 = 4h, 0 = disabled)",
+        "group": "Billing scrape",
+    },
+    "anthropic_billing_min_scrape_gap_sec": {
+        "type": "int", "default": settings.anthropic_billing_min_scrape_gap_sec,
+        "label": "Anthropic billing scrape: min gap between scrapes (0 = interval/2 heuristic)",
+        "group": "Billing scrape",
+    },
+    "codex_billing_scrape_interval_sec": {
+        "type": "int", "default": settings.codex_billing_scrape_interval_sec,
+        "label": "ChatGPT/Codex billing scrape: cadence (seconds, default 14400 = 4h, 0 = disabled)",
+        "group": "Billing scrape",
+    },
+    "codex_billing_min_scrape_gap_sec": {
+        "type": "int", "default": settings.codex_billing_min_scrape_gap_sec,
+        "label": "ChatGPT/Codex billing scrape: min gap between scrapes (0 = interval/2 heuristic)",
+        "group": "Billing scrape",
+    },
 }
 
 
