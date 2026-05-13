@@ -61,6 +61,13 @@ export interface Provider {
   anthropic_org_uuid?: string | null
   has_anthropic_session_cookies?: boolean
   anthropic_session_captured_at?: number | null
+  // v3.7.27 (#245) — Codex / ChatGPT Plus usage scrape. Operator-pasted
+  // analytics endpoint URL + cookies. Same shape as the Anthropic
+  // fields above. The cookies themselves are never returned by the API
+  // — only has_codex_session_cookies plus the captured-at timestamp.
+  codex_usage_endpoint_url?: string | null
+  has_codex_session_cookies?: boolean
+  codex_session_captured_at?: number | null
   auto_skip_until?: string | null
   auto_skip_reason?: string | null
 }

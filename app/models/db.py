@@ -107,6 +107,30 @@ class Provider(Base):
     anthropic_session_cookies = Column(String, nullable=True)        # JSON dict: {sessionKey, sessionKeyLC, routingHint, lastActiveOrg, cf_clearance, __cf_bm, ...}
     anthropic_session_captured_at = Column(Float, nullable=True)     # unix ts of last operator paste; for "cookies are N days old" UI
 
+    # v3.7.27 (#245) — Codex / ChatGPT Plus usage scrape. Same problem
+    # as the Anthropic Pro Max case: the same ChatGPT Plus subscription
+    # is also used outside this proxy (mobile app, chat UI, etc.), so
+    # the proxy's local counters undercount the account's actual usage
+    # against its weekly cap. The Codex Cloud analytics page at
+    # ``https://chatgpt.com/codex/cloud/settings/analytics`` shows the
+    # authoritative weekly figure; we scrape it every 4h and store
+    # snapshots so the router can use real account totals for
+    # rotation decisions.
+    #
+    # ``codex_usage_endpoint_url`` is operator-supplied because the
+    # actual XHR endpoint behind the analytics page is not in any
+    # public docs — the operator captures it from browser DevTools
+    # (Network panel) on the analytics page and pastes it along with
+    # the session cookies. The scraper fires a GET against that URL.
+    #
+    # ``codex_session_cookies`` is a JSON dict captured the same way:
+    # operator copies the chatgpt.com cookies from DevTools →
+    # Application → Cookies into a JSON blob and pastes both via
+    # ``POST /api/providers/{id}/codex-billing-credentials``.
+    codex_session_cookies = Column(String, nullable=True)            # JSON dict of chatgpt.com session cookies
+    codex_usage_endpoint_url = Column(String, nullable=True)         # full URL captured from DevTools
+    codex_session_captured_at = Column(Float, nullable=True)         # unix ts of last operator paste
+
     # v3.7.1 — auto-rotation: when an external snapshot reports a
     # provider above the at-capacity threshold (default 95% weekly
     # utilization), the rule evaluator sets ``auto_skip_until`` to

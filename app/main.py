@@ -42,6 +42,7 @@ from app.api.runs import router as runs_router
 from app.api.lmrh import router as lmrh_router
 from app.api.llm_models import router as llm_models_router
 from app.api.anthropic_billing import router as anthropic_billing_router
+from app.api.codex_billing import router as codex_billing_router
 from app.api.ai_rate_limiter import router as ai_rate_limiter_router
 from app.api.blocked_ips import router as blocked_ips_router
 from app.observability.otel import init_tracer
@@ -237,6 +238,16 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"anthropic_billing_worker failed to start: {e}")
 
+    # v3.7.27 (#245) — ChatGPT Plus / Codex Cloud billing scraper.
+    # Same shape as the Anthropic one. No-op until the operator pastes
+    # codex_session_cookies + codex_usage_endpoint_url on a codex-oauth
+    # provider; safe to always start.
+    try:
+        from app.monitoring import codex_billing_worker as _cb_worker
+        _cb_worker.start()
+    except Exception as e:
+        logger.warning(f"codex_billing_worker failed to start: {e}")
+
     # v3.7.10 — proactive AI rate limiter. Default disabled
     # (ai_rate_limiter_enabled=False); worker no-ops when disabled so
     # safe to always start. Opt-in per node per operator Q6.
@@ -408,6 +419,7 @@ app.include_router(runs_router)
 app.include_router(lmrh_router)
 app.include_router(llm_models_router)
 app.include_router(anthropic_billing_router)
+app.include_router(codex_billing_router)
 app.include_router(ai_rate_limiter_router)
 app.include_router(blocked_ips_router)
 # v3.3.0: LMRHv2 endpoints (feature-flagged via lmrh_v2_enabled).

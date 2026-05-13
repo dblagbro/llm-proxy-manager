@@ -192,6 +192,16 @@ async def init_db():
             # so DELETE propagates through cluster sync. Middleware +
             # admin listing filter ``deleted_at IS NULL``.
             "ALTER TABLE blocked_ips ADD COLUMN deleted_at DATETIME",
+            # v3.7.27 (#245) — Codex / ChatGPT Plus usage scrape.
+            # Mirrors the Anthropic billing scrape: operator captures
+            # the chatgpt.com analytics XHR endpoint from DevTools and
+            # pastes it along with session cookies; 4h worker fires a
+            # GET and stores the response in ``external_usage_snapshot``
+            # with source ``chatgpt_codex_v1`` for forward-compat with
+            # field extraction once the response shape is confirmed.
+            "ALTER TABLE providers ADD COLUMN codex_session_cookies TEXT",
+            "ALTER TABLE providers ADD COLUMN codex_usage_endpoint_url TEXT",
+            "ALTER TABLE providers ADD COLUMN codex_session_captured_at REAL",
         ]:
             try:
                 await conn.exec_driver_sql(stmt)

@@ -172,6 +172,12 @@ class Settings(BaseSettings):
     # Operator can pin this to override the heuristic (e.g. set to 7200 to
     # enforce "no scrapes more often than every 2h regardless of interval").
     anthropic_billing_min_scrape_gap_sec: int = Field(0, alias="ANTHROPIC_BILLING_MIN_SCRAPE_GAP_SEC")
+
+    # v3.7.27 (#245): ChatGPT Plus / Codex Cloud usage scrape — same
+    # behavior as the Anthropic billing scraper but against an
+    # operator-supplied chatgpt.com analytics endpoint URL.
+    codex_billing_scrape_interval_sec: int = Field(14400, alias="CODEX_BILLING_SCRAPE_INTERVAL_SEC")
+    codex_billing_min_scrape_gap_sec: int = Field(0, alias="CODEX_BILLING_MIN_SCRAPE_GAP_SEC")
     # v3.0.13: how long a provider tombstone (deleted_at non-null) is kept
     # before hard-delete. Cluster sync converges in seconds, so 7d is a
     # comfortable safety margin.

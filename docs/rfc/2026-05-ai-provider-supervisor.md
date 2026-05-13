@@ -143,7 +143,7 @@ ai_provider_supervisor_enabled: bool = False           # opt-in
 ai_provider_supervisor_auto_apply: bool = False        # suggest-only by default
 ai_provider_supervisor_interval_sec: int = 1800        # 30 min
 ai_provider_supervisor_window_min: int = 30            # short window
-ai_provider_supervisor_trend_window_days: int = 7      # long window for delta calc
+ai_provider_supervisor_trend_window_days: int = 1      # short trend window — 1d catches drift; operator-tunable
 ai_provider_supervisor_model: str = "claude-haiku-4-5-20251001"
 ai_provider_supervisor_internal_api_key: str = ""      # operator-set; same pattern as rate limiter
 ai_provider_supervisor_max_priority_delta: int = 2     # cap on auto-action priority change
@@ -203,11 +203,11 @@ Mirror of the existing AI Rate Limiter page.
 For operator decision before scoping:
 
 1. **Ship as v3.8.0 (new major surface)?** Or bundle with LMRHv2 Phase 3 (v3.8.0 still)? Or standalone subsystem?
-2. **Default model**: Haiku 4.5 (cheap, fast) vs Sonnet 4.6 (better at nuanced reasoning)? Reviews are infrequent (one per 30 min × ~10 providers = 480/day) so cost not a hard constraint.
+2. ~~**Default model**: Haiku 4.5 vs Sonnet 4.6?~~ **RESOLVED 2026-05-13**: Haiku 4.5 default. Operator-configurable via `ai_provider_supervisor_model` setting (already in proposed settings list below).
 3. ~~**Auto-apply scope**: should auto-apply EVER mutate `Provider.enabled = False`?~~ **RESOLVED 2026-05-13**: AI auto-applies on unlocked providers (including `enabled` flips); operator's explicit Disable is sticky via the new manual-override columns. See "Manual override" section.
 4. **Revert window**: how long after auto-apply can operator revert? Same lifecycle as rate-limiter (no time limit, lifecycle is monotone).
-5. **Trend window**: 7 days vs 14 days for the trailing baseline? 7 is enough to catch drift but might miss weekly cycles.
-6. **Quality metrics**: should we add time-to-first-token + response-length-trend instrumentation now, or defer to a Phase 2 of this work?
+5. ~~**Trend window**: 7 days vs 14 days?~~ **RESOLVED 2026-05-13**: 1 day default. Operator-configurable via `ai_provider_supervisor_trend_window_days`. Rationale: drift detection matters most on short timescales; 1d captures intraday patterns without requiring a long history to compute deltas.
+6. ~~**Quality metrics**: ship Phase 1 lean vs instrument now?~~ **RESOLVED 2026-05-13**: Instrument now. Phase 1 includes time-to-first-token (TTFT) and response-length-trend instrumentation; both signals feed into the supervisor's stats compute. Adds ~1 extra ship to the estimate.
 7. **First-class verdicts**: are the 5 verdicts (normal/watch/deprio/disable/investigate) the right granularity? Operator may prefer fewer or more.
 
 ## Effort estimate
