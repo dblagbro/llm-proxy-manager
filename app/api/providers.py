@@ -742,13 +742,75 @@ async def clear_provider_auth_failure(
 async def toggle_provider(
     provider_id: str,
     db: AsyncSession = Depends(get_db),
-    _: AdminUser = Depends(require_admin),
+    user: AdminUser = Depends(require_admin),
 ):
+    """v3.7.28 (#252 phase 1): toggling now also sets/clears the manual
+    override lock so the AI supervisor (when it ships) can't reverse
+    the operator's explicit decision.
+
+    - Disable → enabled=False AND manual_override_until=indefinite
+    - Enable  → enabled=True  AND manual_override_until=NULL (released)
+
+    The supervisor reads ``manual_override_until`` and skips any
+    provider where it's non-null. Operator's UI banner surfaces the
+    set of locked providers; "Release all" clears them in bulk via
+    POST /api/providers/_release-manual-overrides.
+    """
+    from datetime import datetime as _dt
+    INDEFINITE_LOCK = _dt(9999, 12, 31, 23, 59, 59)
+
     p = await _get_or_404(db, provider_id)
-    p.enabled = not p.enabled
+    new_state = not p.enabled
+    p.enabled = new_state
+    now = _dt.utcnow()
+    if not new_state:
+        # Disable click → set manual override (sticky against AI)
+        p.manual_override_until = INDEFINITE_LOCK
+        p.manual_override_set_by = getattr(user, "id", None) or getattr(user, "username", None)
+        p.manual_override_set_at = now
+    else:
+        # Enable click → release any prior manual override
+        p.manual_override_until = None
+        p.manual_override_set_by = None
+        p.manual_override_set_at = None
+        p.manual_override_reason = None
     _stamp_user_edit(p)
     await db.commit()
-    return {"enabled": p.enabled}
+    return {
+        "enabled": p.enabled,
+        "manual_override_active": p.manual_override_until is not None,
+    }
+
+
+@router.post("/_release-manual-overrides")
+async def release_manual_overrides(
+    db: AsyncSession = Depends(get_db),
+    _: AdminUser = Depends(require_admin),
+):
+    """v3.7.28 (#252 phase 1): bulk-clear manual override on all
+    providers — the "Release all to AI control" banner button. Does
+    NOT change ``enabled``; only releases the lock so the supervisor
+    can manage the providers again. If a provider is currently
+    disabled by manual override and the operator releases it, the
+    supervisor will see ``enabled=False`` + ``manual_override_until=NULL``
+    and treat it like any other disabled provider (may re-enable
+    based on its verdict).
+    """
+    from sqlalchemy import update
+    from app.models.db import Provider
+    result = await db.execute(
+        update(Provider)
+        .where(Provider.manual_override_until.is_not(None))
+        .where(Provider.deleted_at.is_(None))
+        .values(
+            manual_override_until=None,
+            manual_override_set_by=None,
+            manual_override_set_at=None,
+            manual_override_reason=None,
+        )
+    )
+    await db.commit()
+    return {"released": result.rowcount}
 
 
 @router.post("/{provider_id}/test")
@@ -1006,6 +1068,15 @@ def _serialize(p: Provider) -> dict:
         "codex_usage_endpoint_url": getattr(p, "codex_usage_endpoint_url", None),
         "has_codex_session_cookies": bool(getattr(p, "codex_session_cookies", None)),
         "codex_session_captured_at": getattr(p, "codex_session_captured_at", None),
+        # v3.7.28 (#252 phase 1) — manual override state. When the UI
+        # banner detects ``manual_override_active`` on any provider it
+        # surfaces the top-of-page warning. The supervisor (Phase 4)
+        # reads ``manual_override_until`` directly from the row.
+        "manual_override_active": getattr(p, "manual_override_until", None) is not None,
+        "manual_override_until": utc_iso(p.manual_override_until) if getattr(p, "manual_override_until", None) else None,
+        "manual_override_set_by": getattr(p, "manual_override_set_by", None),
+        "manual_override_set_at": utc_iso(p.manual_override_set_at) if getattr(p, "manual_override_set_at", None) else None,
+        "manual_override_reason": getattr(p, "manual_override_reason", None),
         "auto_skip_until": utc_iso(p.auto_skip_until) if p.auto_skip_until else None,
         "auto_skip_reason": p.auto_skip_reason,
     }

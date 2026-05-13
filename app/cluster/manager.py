@@ -162,6 +162,18 @@ async def _build_sync_payload(db) -> dict:
          # peers won't try to scrape without credentials.
          "anthropic_org_uuid": p.anthropic_org_uuid,
          "anthropic_session_captured_at": p.anthropic_session_captured_at,
+         # v3.7.27 (#245) — Codex billing scrape state. Same posture as
+         # Anthropic: replicate the endpoint URL + captured-at so peers
+         # can render UI badges, but NOT the cookies (auth material
+         # stays on the node where the operator pasted them).
+         "codex_usage_endpoint_url": getattr(p, "codex_usage_endpoint_url", None),
+         "codex_session_captured_at": getattr(p, "codex_session_captured_at", None),
+         # v3.7.28 (#252 phase 1) — manual override lock. ALL fields
+         # sync so any node can render the banner + 🔒 badge identically.
+         "manual_override_until": p.manual_override_until.isoformat() if getattr(p, "manual_override_until", None) else None,
+         "manual_override_set_by": getattr(p, "manual_override_set_by", None),
+         "manual_override_set_at": p.manual_override_set_at.isoformat() if getattr(p, "manual_override_set_at", None) else None,
+         "manual_override_reason": getattr(p, "manual_override_reason", None),
          "auto_skip_until": p.auto_skip_until.isoformat() if p.auto_skip_until else None,
          "auto_skip_reason": p.auto_skip_reason}
         for p in providers_result.scalars().all()

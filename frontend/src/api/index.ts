@@ -133,6 +133,10 @@ export const providersApi = {
       http_status: number | null
       snapshot_id: number | null
     }>(`/api/providers/${id}/codex-billing-refresh`, {}),
+  // v3.7.28 (#252 phase 1) — bulk-release all manual override locks
+  // (the "Release all to AI control" banner button)
+  releaseManualOverrides: () =>
+    api.post<{ released: number }>('/api/providers/_release-manual-overrides', {}),
 }
 
 // ── API Keys ──────────────────────────────────────────────────────────────────

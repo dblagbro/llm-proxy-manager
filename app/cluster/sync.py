@@ -283,6 +283,25 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
                     existing.anthropic_org_uuid = p_data.get("anthropic_org_uuid")
                 if "anthropic_session_captured_at" in p_data:
                     existing.anthropic_session_captured_at = p_data.get("anthropic_session_captured_at")
+                # v3.7.27 (#245) — Codex billing scrape state. Same posture as
+                # the Anthropic fields above. Cookies are NOT synced (auth
+                # material stays on the capture node); only the endpoint URL
+                # + captured-at timestamp.
+                if "codex_usage_endpoint_url" in p_data:
+                    existing.codex_usage_endpoint_url = p_data.get("codex_usage_endpoint_url")
+                if "codex_session_captured_at" in p_data:
+                    existing.codex_session_captured_at = p_data.get("codex_session_captured_at")
+                # v3.7.28 (#252 phase 1) — manual override lock. All 4 fields
+                # sync via membership-test so a null overwrite from a peer
+                # correctly releases a stale local lock.
+                if "manual_override_until" in p_data:
+                    existing.manual_override_until = _parse_iso_or_none(p_data.get("manual_override_until"))
+                if "manual_override_set_by" in p_data:
+                    existing.manual_override_set_by = p_data.get("manual_override_set_by")
+                if "manual_override_set_at" in p_data:
+                    existing.manual_override_set_at = _parse_iso_or_none(p_data.get("manual_override_set_at"))
+                if "manual_override_reason" in p_data:
+                    existing.manual_override_reason = p_data.get("manual_override_reason")
                 if "auto_skip_until" in p_data:
                     val = p_data.get("auto_skip_until")
                     from datetime import datetime
@@ -331,6 +350,14 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
             # are intentionally not synced (stay on the capture node).
             anthropic_org_uuid=p_data.get("anthropic_org_uuid"),
             anthropic_session_captured_at=p_data.get("anthropic_session_captured_at"),
+            # v3.7.27 (#245) — Codex billing scrape state.
+            codex_usage_endpoint_url=p_data.get("codex_usage_endpoint_url"),
+            codex_session_captured_at=p_data.get("codex_session_captured_at"),
+            # v3.7.28 (#252 phase 1) — manual override lock.
+            manual_override_until=_parse_iso_or_none(p_data.get("manual_override_until")),
+            manual_override_set_by=p_data.get("manual_override_set_by"),
+            manual_override_set_at=_parse_iso_or_none(p_data.get("manual_override_set_at")),
+            manual_override_reason=p_data.get("manual_override_reason"),
             auto_skip_until=_parse_iso_or_none(p_data.get("auto_skip_until")),
             auto_skip_reason=p_data.get("auto_skip_reason"),
             last_user_edit_at=peer_user_edit_at,
