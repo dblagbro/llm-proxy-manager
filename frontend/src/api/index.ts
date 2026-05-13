@@ -121,6 +121,18 @@ export const providersApi = {
     api.post<{ evaluated: number; decisions: Array<Record<string, unknown>> }>(
       '/api/providers/_evaluate-rotation-rules', {},
     ),
+  // v3.7.27 (#245) — ChatGPT Plus / Codex Cloud billing scrape admin endpoints
+  setCodexBillingCredentials: (id: string, data: { endpoint_url: string; cookies: string }) =>
+    api.post<{ ok: boolean; provider_id: string; endpoint_url: string; cookie_count: number; captured_at: number }>(
+      `/api/providers/${id}/codex-billing-credentials`, data,
+    ),
+  refreshCodexBillingNow: (id: string) =>
+    api.post<{
+      ok: boolean
+      auth_state: string
+      http_status: number | null
+      snapshot_id: number | null
+    }>(`/api/providers/${id}/codex-billing-refresh`, {}),
 }
 
 // ── API Keys ──────────────────────────────────────────────────────────────────

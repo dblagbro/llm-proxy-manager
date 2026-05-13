@@ -999,6 +999,13 @@ def _serialize(p: Provider) -> dict:
         "anthropic_org_uuid": p.anthropic_org_uuid,
         "has_anthropic_session_cookies": bool(p.anthropic_session_cookies),
         "anthropic_session_captured_at": p.anthropic_session_captured_at,
+        # v3.7.27 (#245) — Codex / ChatGPT Plus billing scrape state.
+        # Same shape as the Anthropic fields above. The cookies blob
+        # itself is NEVER surfaced; only the endpoint URL the operator
+        # captured + the captured-at timestamp.
+        "codex_usage_endpoint_url": getattr(p, "codex_usage_endpoint_url", None),
+        "has_codex_session_cookies": bool(getattr(p, "codex_session_cookies", None)),
+        "codex_session_captured_at": getattr(p, "codex_session_captured_at", None),
         "auto_skip_until": utc_iso(p.auto_skip_until) if p.auto_skip_until else None,
         "auto_skip_reason": p.auto_skip_reason,
     }

@@ -6,6 +6,7 @@ import { useToast } from '@/components/ui/Toast'
 import type { ProviderType, Provider } from '@/types'
 import { GrokWebProviderFields } from './GrokWebProviderFields'
 import { AnthropicBillingPanel } from './AnthropicBillingPanel'
+import { CodexBillingPanel } from './CodexBillingPanel'
 
 const PROVIDER_TYPES: ProviderType[] = [
   'anthropic', 'openai', 'google', 'vertex', 'grok', 'ollama', 'compatible',
@@ -402,6 +403,16 @@ export function ProviderForm({ form, onChange, editing, provider, onProviderUpda
           mode (need a stored provider with id + cookies state). */}
       {editing && provider && form.provider_type === 'claude-oauth' && (
         <AnthropicBillingPanel
+          provider={provider}
+          onUpdated={onProviderUpdated}
+        />
+      )}
+
+      {/* v3.7.27 (#245) — ChatGPT / Codex Cloud usage scrape surface,
+          same shape as the Anthropic panel above but operator supplies
+          the analytics endpoint URL since it isn't documented. */}
+      {editing && provider && form.provider_type === 'codex-oauth' && (
+        <CodexBillingPanel
           provider={provider}
           onUpdated={onProviderUpdated}
         />
