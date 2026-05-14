@@ -261,6 +261,11 @@ class ModelCapability(Base):
     native_reasoning = Column(Boolean, default=False)
     native_tools = Column(Boolean, default=True)
     native_vision = Column(Boolean, default=True)
+    # v3.8.5 (#265) — rolling tool-call success rate from the v3.8.4
+    # prober. Null = no probe data yet (router falls back to binary
+    # native_tools). Populated by ai_tool_prober's
+    # update_native_tools_from_rolling() helper.
+    tool_call_success_rate = Column(Float, nullable=True)
     source = Column(String, default="inferred") # inferred|manual
     # v3.4.1 — alternate spellings the router will accept and route to
     # this same capability row. Solves the "grok-3 vs x-ai/grok-3"

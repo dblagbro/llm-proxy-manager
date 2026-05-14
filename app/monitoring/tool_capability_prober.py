@@ -229,22 +229,24 @@ async def update_native_tools_from_rolling(db, provider_id: str, model_id: str) 
         new_val = True
     elif rate < emul_thr:
         new_val = False
-    if new_val is None:
-        return None
 
-    # Update every ModelCapability row for this (provider, model)
+    # v3.8.5 (#265): ALWAYS update tool_call_success_rate so the router
+    # can weight candidates regardless of whether native_tools flipped.
+    # The bool is hysteresis-gated; the rate is monotonic per probe.
     cap_rs = (await db.execute(
         select(ModelCapability)
         .where(ModelCapability.provider_id == provider_id)
         .where(ModelCapability.model_id == model_id)
     )).scalars().all()
-    changed = False
+    bool_changed = False
     for cap in cap_rs:
-        if cap.native_tools is not new_val:
+        cap.tool_call_success_rate = float(rate)
+        if new_val is not None and cap.native_tools is not new_val:
             cap.native_tools = new_val
-            changed = True
-    if changed:
+            bool_changed = True
+    if cap_rs:
         await db.commit()
+    if bool_changed and new_val is not None:
         logger.info(
             "ai_tool_prober.native_tools_changed provider_id=%s model=%s rate=%.2f new=%s",
             provider_id, model_id, rate, new_val,
