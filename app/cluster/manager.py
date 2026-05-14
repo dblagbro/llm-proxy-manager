@@ -266,7 +266,7 @@ async def _build_sync_payload(db) -> dict:
     # v3.7.15 — BUG-016: replicate the three v3.7.x tables that landed
     # in a hurry without sync entries. LWW conflict resolution: latest
     # added_at / captured_at wins.
-    from app.models.db import BlockedIp, ApiKeyAiReview, ExternalUsageSnapshot, ProviderAiReview
+    from app.models.db import BlockedIp, ApiKeyAiReview, ExternalUsageSnapshot, ProviderAiReview, CallerMemory, CallerMemoryMarker
     # Include tombstoned rows so peers learn about deletions.
     blocked_rs = await db.execute(select(BlockedIp))
     blocked_ips_payload = [
@@ -353,6 +353,43 @@ async def _build_sync_payload(db) -> dict:
         for r in provider_reviews_rs.scalars().all()
     ]
 
+    # v3.8.7 (#267) Phase 2 — caller memory (king-store for cross-provider
+    # memory state). Cluster-sync LWW by (api_key_id, conversation_id,
+    # memory_tag) + updated_at. Last 7d window to match the existing
+    # sync-payload posture; older rows are operator-audit-only.
+    memory_rs = await db.execute(
+        select(CallerMemory).where(CallerMemory.updated_at >= time.time() - 7 * 86400)
+    )
+    caller_memory_payload = [
+        {"api_key_id": r.api_key_id,
+         "conversation_id": r.conversation_id,
+         "memory_tag": r.memory_tag,
+         "content": r.content,
+         "content_format": r.content_format,
+         "updated_at": r.updated_at,
+         "updated_by_node": r.updated_by_node,
+         "source_provider_id": r.source_provider_id,
+         "source_request_id": r.source_request_id,
+         "deleted_at": r.deleted_at}
+        for r in memory_rs.scalars().all()
+    ]
+    # Markers are smaller + lower-frequency; send all non-deleted rows
+    # so back-pressure recovery has full visibility cluster-wide.
+    marker_rs = await db.execute(
+        select(CallerMemoryMarker).where(CallerMemoryMarker.deleted_at.is_(None))
+    )
+    caller_memory_markers_payload = [
+        {"api_key_id": r.api_key_id,
+         "conversation_id": r.conversation_id,
+         "memory_tag": r.memory_tag,
+         "first_seen_at": r.first_seen_at,
+         "last_known_provider_id": r.last_known_provider_id,
+         "last_known_external_ref": r.last_known_external_ref,
+         "recovered_at": r.recovered_at,
+         "deleted_at": r.deleted_at}
+        for r in marker_rs.scalars().all()
+    ]
+
     return {
         "source_node": settings.cluster_node_id,
         "timestamp": time.time(),
@@ -373,6 +410,9 @@ async def _build_sync_payload(db) -> dict:
         # the same posture as api_key_ai_reviews: last 7 days, PK is
         # (provider_id, captured_at).
         "provider_ai_reviews": provider_ai_reviews_payload,
+        # v3.8.7 (#267) Phase 2 — caller memory king-store.
+        "caller_memory": caller_memory_payload,
+        "caller_memory_markers": caller_memory_markers_payload,
     }
 
 
