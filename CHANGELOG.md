@@ -9,6 +9,45 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.9.x — Proxy-side Caller Memory (#267) — phases 4–10 + ops fixes
 
+### v3.9.12 — API-key-scoped memory CRUD (hub-team unblock)
+
+Hub team replied to the v3.9.10 broadcast: opt-out by default, but
+asked two questions before any opt-in:
+
+1. **Eviction / TTL semantics** — what happens to memory for an inactive
+   X-Conversation-Id after N days? Is there a hub-callable purge endpoint?
+2. **Cross-account isolation** — caller memory is scoped per-account,
+   right? If two use_cases coincidentally use the same conversation_id,
+   memory doesn't merge across api_keys?
+
+**Q2 answer (existing behavior, confirmed)**: Yes — the king-store
+schema is keyed by ``(api_key_id, conversation_id, memory_tag)`` with
+api_key_id as the outermost filter on every read/write/Redis cache key.
+Two api_keys with the same conversation_id are strictly isolated.
+
+**Q1 answer (gap closed by this version)**: No automatic TTL today
+(rows stay until tombstoned). v3.9.12 ships the missing
+hub-callable purge surface so room archival doesn't need an admin
+session:
+
+- ``GET    /v1/memory/conversations``                          → list this key's conversation_ids
+- ``GET    /v1/memory/conversations/{conv_id}``                → list (tag, content) rows for this conv
+- ``PUT    /v1/memory/conversations/{conv_id}/{tag}``          → upsert
+- ``DELETE /v1/memory/conversations/{conv_id}``                → tombstone entire conversation (rows + marker)
+- ``DELETE /v1/memory/conversations/{conv_id}/{tag}``          → tombstone one tag
+
+Auth is the same x-api-key / Bearer pair as /v1/messages — explicitly
+NOT require_admin. All queries are scoped to the verified key's
+api_key_id; cross-key access is impossible (and locked by tests).
+Delete-entire-conversation tombstones the CallerMemoryMarker too so
+Phase 7 recovery doesn't try to reconstruct stale state.
+
+Automatic TTL sweeper deferred — operator can decide cadence per
+api_key. The new endpoints are sufficient for caller-driven purge
+on archival events (hub's stated pattern).
+
+11 new unit tests; 1850 total green.
+
 ### v3.9.11 — Streaming Anthropic memory-tool write-back (#267 Phase 5.5, DevinGPT unblock)
 
 DevinGPT replied to the v3.9.10 adoption broadcast: blocked on streaming
