@@ -327,6 +327,20 @@ _BAD_REQUEST_PATTERNS = [
     "contextwindowexceeded",
     "contentpolicyviolation",
     "unsupportedparams",
+    # v3.8.2 (#260): coordinator-hub sent ~370 requests in 24h that
+    # litellm rejects with "Invalid user message at index N" (malformed
+    # messages[] array — e.g. message with role but no content). These
+    # are caller-side bugs; do not retry on fallback providers.
+    "invalid user message",
+    "xaiexception - invalid user message",
+    "openrouterexception - invalid user message",
+    # v3.8.2 (#262): gemini safety-block / refusal returns response with
+    # empty choices[]. ``to_anthropic_response()`` now raises a clear
+    # error message on this case; classify as bad_request so the router
+    # doesn't trigger CB / fallback (other providers will likely also
+    # block the same content).
+    "upstream returned no choices",
+    "upstream returned empty choices",
 ]
 
 

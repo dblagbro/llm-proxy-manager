@@ -218,6 +218,17 @@ async def init_db():
             # existing Provider sync path so peer nodes converge on
             # the new name even if they haven't been restarted yet.
             "UPDATE providers SET provider_type='ChatGPT-oauth-plan' WHERE provider_type='codex-oauth'",
+            # v3.8.2 (#261) — backfill manual_override_until on
+            # providers that were Disabled BEFORE v3.7.28 shipped the
+            # sticky-disable mechanism. Without this, the AI provider
+            # supervisor (when enabled) would see legacy-disabled
+            # providers as fair game for auto-re-enable, defeating
+            # the operator's original disable intent.
+            #
+            # Safe to re-run: no-op when no rows match. Uses the
+            # ``9999-12-31 23:59:59`` sentinel that toggle_provider
+            # writes for indefinite locks.
+            "UPDATE providers SET manual_override_until='9999-12-31 23:59:59' WHERE enabled=0 AND manual_override_until IS NULL AND deleted_at IS NULL",
         ]:
             try:
                 await conn.exec_driver_sql(stmt)
