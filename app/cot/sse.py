@@ -329,6 +329,21 @@ def extract_cache_tokens(usage) -> tuple[int, int]:
 
 
 def to_anthropic_response(litellm_response) -> dict:
+    # v3.8.2 (#262): guard against empty choices[]. Gemini (and a few
+    # other providers) return a response with no choices when the
+    # safety classifier blocks the request OR the model refuses without
+    # producing any content. Pre-fix, the IndexError on choices[0]
+    # bubbled up as "list index out of range" — the generic Python
+    # error message — and bucketed as ``unknown`` in activity-log
+    # classification, hiding the real failure mode from the operator.
+    # Raise a clear, classifier-recognized error instead so the routing
+    # layer treats it as bad_request (no CB / fallback churn — other
+    # providers will likely block the same content).
+    if not getattr(litellm_response, "choices", None):
+        raise ValueError(
+            "upstream returned no choices — likely safety-block or refusal "
+            "(no content generated)"
+        )
     choice = litellm_response.choices[0]
     finish = choice.finish_reason or "stop"
     content: list = []
