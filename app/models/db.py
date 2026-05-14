@@ -35,6 +35,15 @@ class Provider(Base):
     enabled = Column(Boolean, default=True)
     timeout_sec = Column(Integer, default=30)
     exclude_from_tool_requests = Column(Boolean, default=False)
+    # v3.9.5 (#267 Phase 8) — opt-out from the proxy's caller-memory
+    # system. When True: extract.py skips memory writes from this
+    # provider's responses AND inject.py skips memory injection when
+    # this provider is selected by the router. Use cases: keep certain
+    # providers "pure" for testing, avoid memory tool surcharge on
+    # specific accounts, or comply with per-provider data-residency
+    # rules. Default False = participates in memory normally. Gated
+    # behind caller_memory_enabled overall.
+    memory_disabled = Column(Boolean, default=False)
     # Per-provider CB overrides (null = use global setting)
     hold_down_sec = Column(Integer, nullable=True)
     failure_threshold = Column(Integer, nullable=True)

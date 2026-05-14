@@ -244,6 +244,10 @@ async def init_db():
             # populated by the v3.8.4 tool prober. Router uses it to
             # weight candidates on has_tools=True requests.
             "ALTER TABLE model_capabilities ADD COLUMN tool_call_success_rate REAL",
+            # v3.9.5 (#267 Phase 8) — per-provider opt-out from the
+            # caller-memory system. extract.py + inject.py both gate
+            # on this. Default 0 = participates normally.
+            "ALTER TABLE providers ADD COLUMN memory_disabled BOOLEAN DEFAULT 0",
         ]:
             try:
                 await conn.exec_driver_sql(stmt)

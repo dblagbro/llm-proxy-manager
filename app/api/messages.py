@@ -143,19 +143,12 @@ async def messages(
     has_tools = bool(tools)
     has_images = has_images_anthropic(messages_list)
 
-    # v3.8.9 (#267) Phase 4 — proxy-side caller-memory injection.
-    # No-op unless settings.caller_memory_enabled AND request supplies
-    # X-Conversation-Id. Silent degrade on any store error.
-    from app.memory.inject import maybe_inject_memory
-    body, _mem_injected = await maybe_inject_memory(
-        db, body=body, api_key_id=key_record.id,
-        conversation_id=x_conversation_id, memory_tag=x_memory_tag,
-        endpoint="messages",
-    )
-    if _mem_injected:
-        # Re-extract system since we may have just prepended to it.
-        system = body.get("system")
-        messages_list = body.get("messages", messages_list)
+    # v3.9.5 (#267 Phase 8) — memory injection moved here from pre-route
+    # to post-route so we can gate on route.provider.memory_disabled.
+    # The actual inject call site is below, after Phase 6 flush and
+    # cross-family body rewrite, but before Fix B translation (which
+    # consumes Anthropic-shape body['system']).
+    _mem_injected = False
 
     # v2.8.0: parse :floor / :nitro / :exacto suffix off the requested model.
     # The suffix never reaches upstream — Anthropic / OpenAI etc. would 4xx.
@@ -255,6 +248,23 @@ async def messages(
         conversation_id=x_conversation_id, memory_tag=x_memory_tag,
         new_provider_id=route.provider.id,
     )
+
+    # v3.8.9 (#267) Phase 4 — proxy-side caller-memory injection.
+    # Relocated here in v3.9.5 (Phase 8) so we can gate on the chosen
+    # provider's memory_disabled flag. Must run BEFORE Fix B translation
+    # below (which consumes Anthropic-shape body['system']).
+    # Silent degrade on any store error.
+    if not getattr(route.provider, "memory_disabled", False):
+        from app.memory.inject import maybe_inject_memory
+        body, _mem_injected = await maybe_inject_memory(
+            db, body=body, api_key_id=key_record.id,
+            conversation_id=x_conversation_id, memory_tag=x_memory_tag,
+            endpoint="messages",
+        )
+        if _mem_injected:
+            # Re-extract since we may have just prepended to system / messages.
+            system = body.get("system")
+            messages_list = body.get("messages", messages_list)
 
     # v3.9.1 (#269 Fix B) — Anthropic→OpenAI body translation when the
     # cross-family fallback target speaks OpenAI Chat Completions.

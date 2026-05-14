@@ -58,6 +58,17 @@ async def maybe_extract_memory_writes(
         if not conversation_id:
             return 0
 
+        # v3.9.5 (#267 Phase 8) — per-provider opt-out. Skip extract
+        # entirely if the provider that served this response has
+        # memory_disabled=True.
+        if source_provider_id:
+            from sqlalchemy import select
+            from app.models.db import Provider
+            pq = select(Provider).where(Provider.id == source_provider_id)
+            p = (await db.execute(pq)).scalar_one_or_none()
+            if p is not None and getattr(p, "memory_disabled", False):
+                return 0
+
         content = response_dict.get("content") or []
         if not isinstance(content, list):
             return 0
