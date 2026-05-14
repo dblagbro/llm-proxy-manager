@@ -9,6 +9,9 @@ Modules:
 
 - ``inject`` — Phase 4: request-time memory injection middleware
   (prepends a system-prompt prefix when ``X-Conversation-Id`` is set).
+- ``extract`` — Phase 5: Anthropic memory-tool write-back. Scans the
+  upstream response for ``tool_use`` blocks targeting the memory tool
+  and persists writes to the king-store.
 
 Future:
 - ``flush`` (Phase 6) — vendor-specific provider-side flush handlers
