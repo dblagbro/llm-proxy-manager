@@ -267,6 +267,68 @@ async def _emit_outcome_event(
     )
 
 
+def _extract_tool_call_stats(response_body: Any) -> tuple[int, bool]:
+    """v3.8.3 (#263) — count tool_use/tool_calls blocks in the response
+    and verify each has a name + dict input (validated=True).
+
+    Handles both response shapes the proxy emits:
+    - Anthropic (`/v1/messages`): ``content`` list with
+      ``{"type": "tool_use", "name": ..., "input": {...}}`` blocks.
+    - OpenAI (`/v1/chat/completions`): ``choices[0].message.tool_calls``
+      list with ``function.name`` + ``function.arguments`` (JSON string).
+
+    Returns (count, validated). When response_body has no recognizable
+    tool-call structure, returns (0, True) — no calls is trivially
+    valid. ``validated=False`` means at least one call had a missing
+    name or unparseable args.
+    """
+    if not isinstance(response_body, dict):
+        return 0, True
+    # Anthropic shape
+    content = response_body.get("content")
+    if isinstance(content, list):
+        anth_calls = [b for b in content if isinstance(b, dict) and b.get("type") == "tool_use"]
+        if anth_calls:
+            count = len(anth_calls)
+            valid = all(
+                isinstance(b.get("name"), str) and bool(b.get("name"))
+                and isinstance(b.get("input"), dict)
+                for b in anth_calls
+            )
+            return count, valid
+    # OpenAI shape
+    choices = response_body.get("choices")
+    if isinstance(choices, list) and choices:
+        first = choices[0]
+        msg = first.get("message") if isinstance(first, dict) else None
+        tcs = (msg or {}).get("tool_calls") if isinstance(msg, dict) else None
+        if isinstance(tcs, list) and tcs:
+            count = len(tcs)
+            valid = True
+            for tc in tcs:
+                fn = tc.get("function") if isinstance(tc, dict) else None
+                if not isinstance(fn, dict):
+                    valid = False
+                    continue
+                if not isinstance(fn.get("name"), str) or not fn.get("name"):
+                    valid = False
+                    continue
+                # arguments is a JSON string in OpenAI shape; must parse
+                args = fn.get("arguments")
+                if isinstance(args, str):
+                    import json as _json
+                    try:
+                        parsed = _json.loads(args) if args else {}
+                        if not isinstance(parsed, dict):
+                            valid = False
+                    except (ValueError, TypeError):
+                        valid = False
+                elif args is not None and not isinstance(args, dict):
+                    valid = False
+            return count, valid
+    return 0, True
+
+
 def _attach_bodies(metadata: dict, request_body: Any, response_body: Any) -> dict:
     """Attach captured request/response bodies + previews to metadata when enabled.
 
@@ -340,6 +402,18 @@ async def record_outcome(
     # silently rerouting them off claude-oauth onto Vertex (economy-tier
     # mismatch) and we couldn't see the hint to confirm.
     lmrh_hint_raw: Optional[str] = None,
+    # v3.8.3 (#263): tool-call telemetry. Caller-side annotated:
+    # "native"   — request had tools=[] and went through litellm native
+    #              tool-protocol bridging (the response.tool_calls path).
+    # "emulated" — request had tools=[] but the model lacked native
+    #              support; proxy injected the tool prompt + parsed
+    #              <tool_call> markers from the model response.
+    # None       — request had no tools=[]. Field is omitted from meta
+    #              so non-tool requests stay lean.
+    # The success path computes tool_calls_emitted (count) + validated
+    # (all calls have name + dict input) from response_body when this
+    # is non-None.
+    tool_call_format: Optional[str] = None,
 ) -> None:
     # v3.0.50: classify provider as subscription vs per-call so paperless's
     # cost ticker (and api_keys.total_cost_usd) doesn't inflate from
@@ -452,6 +526,16 @@ async def record_outcome(
             meta["cache_creation_input_tokens"] = int(cache_creation)
         if cache_read:
             meta["cache_read_input_tokens"] = int(cache_read)
+        # v3.8.3 (#263) — tool-call telemetry. Only stamped when the
+        # caller annotated the request as a tool-call (native or
+        # emulated). count + validated derived from response_body so
+        # we can audit per-(provider, model) success without a separate
+        # probe.
+        if tool_call_format is not None:
+            tc_count, tc_valid = _extract_tool_call_stats(response_body)
+            meta["tool_call_format"] = tool_call_format
+            meta["tool_calls_emitted"] = tc_count
+            meta["tool_call_validated"] = tc_valid
         meta = _attach_bodies(meta, request_body, response_body)
         await _emit_outcome_event(
             db, is_probe=is_probe, severity="info", msg=msg, meta=meta,

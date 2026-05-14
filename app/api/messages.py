@@ -479,9 +479,27 @@ async def messages(
             response_text = await call_with_tool_prompt(
                 route.litellm_model, norm_msgs, merged_system, emul_extra
             )
-            await record_outcome(db, route.provider.id, route.litellm_model, success=True,
-                                 t0=time.monotonic(), key_record_id=key_record.id)
             tool_calls = parse_tool_calls(response_text)
+            # v3.8.3 (#263) — emit telemetry BEFORE response building so
+            # the activity_log row carries the count + validation flag
+            # for this emulated tool-call request. Note: response_body
+            # is constructed below from tool_calls; we re-derive a
+            # synthetic Anthropic-shape response for the meta extractor
+            # so success-rate aggregation across native + emulated paths
+            # uses the same response_body schema.
+            _emul_resp_body = {
+                "content": [
+                    {"type": "tool_use", "name": tc.get("name", ""),
+                     "input": tc.get("input", {}) if isinstance(tc.get("input"), dict) else {}}
+                    for tc in tool_calls
+                ],
+            } if tool_calls else {"content": []}
+            await record_outcome(
+                db, route.provider.id, route.litellm_model, success=True,
+                t0=time.monotonic(), key_record_id=key_record.id,
+                response_body=_emul_resp_body,
+                tool_call_format="emulated",
+            )
             # Enforce serial when parallel is disabled
             if not allow_parallel and len(tool_calls) > 1:
                 tool_calls = tool_calls[:1]
@@ -746,6 +764,10 @@ async def messages(
                 requested_model=body.get("model") if isinstance(body, dict) else None,
                 had_lmrh_hint=bool(llm_hint),
                 lmrh_hint_raw=llm_hint or None,
+                # v3.8.3 (#263) — stamp tool_call_format when the
+                # request carried tools=[]. The to_anthropic_response
+                # body is what the meta extractor walks.
+                tool_call_format=("native" if has_tools else None),
             )
             # Store in semantic cache (fire-and-forget; won't affect response latency)
             try:
