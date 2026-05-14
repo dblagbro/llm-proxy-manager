@@ -50,7 +50,7 @@ def test_sync_payload_blocked_ips_includes_tombstone_field():
 
 def test_apply_sync_invokes_blocked_ips_handler():
     from pathlib import Path
-    src = Path("app/cluster/sync.py").read_text()
+    src = Path("app/cluster/sync_handlers.py").read_text()
     assert "_apply_blocked_ips" in src
     assert "_apply_ai_reviews" in src
     assert "_apply_external_usage_snapshots" in src
@@ -72,6 +72,8 @@ def test_apply_sync_invalidates_ip_block_cache_when_changed():
     _clear_cache_for_tests so peer nodes see the new block list
     on the next request (not 30s later)."""
     from pathlib import Path
+    # v3.9.8 (P5 refactor): apply_sync orchestrator stayed in sync.py;
+    # the per-table _apply_* handlers moved to sync_handlers.py.
     src = Path("app/cluster/sync.py").read_text()
     # The invalidation call must be reachable from apply_sync after
     # blocked_ips_changed is True
@@ -83,7 +85,7 @@ def test_blocked_ips_handler_returns_bool_change_signal():
     """_apply_blocked_ips must return a bool — True iff any row was
     inserted, updated, or tombstoned (so caller can invalidate cache)."""
     from pathlib import Path
-    src = Path("app/cluster/sync.py").read_text()
+    src = Path("app/cluster/sync_handlers.py").read_text()
     # Function signature returns bool
     assert "async def _apply_blocked_ips(db: AsyncSession, rows: list[dict]) -> bool:" in src
     assert "changed = False" in src

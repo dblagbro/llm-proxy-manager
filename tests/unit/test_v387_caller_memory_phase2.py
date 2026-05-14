@@ -104,7 +104,7 @@ def test_caller_memory_apply_uses_lww():
     """The merge code must compare timestamps and only adopt strictly-
     newer peer values (== keeps local stable on tie, avoiding ping-pong
     on identical timestamps)."""
-    src = Path("app/cluster/sync.py").read_text()
+    src = Path("app/cluster/sync_handlers.py").read_text()
     idx = src.index("async def _apply_caller_memory(")
     body = src[idx:idx + 3500]
     # LWW comparison
@@ -117,7 +117,7 @@ def test_marker_apply_uses_min_first_seen():
     """first_seen_at is the EARLIEST occurrence; sync should keep the
     minimum so a snapshot-restore that bumps it forward doesn't lose
     the original first-seen timestamp."""
-    src = Path("app/cluster/sync.py").read_text()
+    src = Path("app/cluster/sync_handlers.py").read_text()
     idx = src.index("async def _apply_caller_memory_markers")
     body = src[idx:idx + 3000]
     assert "peer_first < existing.first_seen_at" in body
@@ -125,7 +125,7 @@ def test_marker_apply_uses_min_first_seen():
 
 def test_marker_apply_recovered_at_monotone():
     """recovered_at is monotone (None → set, never reverts)."""
-    src = Path("app/cluster/sync.py").read_text()
+    src = Path("app/cluster/sync_handlers.py").read_text()
     idx = src.index("async def _apply_caller_memory_markers")
     body = src[idx:idx + 3000]
     assert "peer_rec and not existing.recovered_at" in body

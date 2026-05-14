@@ -19,7 +19,7 @@ from pathlib import Path
 
 
 def test_release_endpoint_re_enables_by_default():
-    src = Path("app/api/providers.py").read_text()
+    src = Path("app/api/provider_lifecycle.py").read_text()
     idx = src.index("async def release_manual_overrides")
     body = src[idx:idx + 3000]
     # Default behavior: enable=True
@@ -33,7 +33,7 @@ def test_release_endpoint_re_enables_by_default():
 def test_release_endpoint_supports_opt_out():
     """Caller can pass ?enable=false to get pre-v3.8.6 release-only
     behavior (e.g. an operator script handing off to AI supervisor)."""
-    src = Path("app/api/providers.py").read_text()
+    src = Path("app/api/provider_lifecycle.py").read_text()
     idx = src.index("async def release_manual_overrides")
     body = src[idx:idx + 3000]
     # The conditional path: skip the enabled column when caller opts out

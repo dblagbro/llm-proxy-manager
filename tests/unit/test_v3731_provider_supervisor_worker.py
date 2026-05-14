@@ -185,16 +185,18 @@ def test_cluster_manager_includes_provider_ai_reviews_in_payload():
 
 
 def test_cluster_sync_applies_provider_ai_reviews():
-    src = Path("app/cluster/sync.py").read_text()
-    assert "_apply_provider_ai_reviews" in src
-    # Called from apply_sync
-    assert 'payload.get("provider_ai_reviews", [])' in src
+    # v3.9.8 (P5 refactor): handler moved to sync_handlers.py; the call
+    # from apply_sync still lives in sync.py.
+    handlers_src = Path("app/cluster/sync_handlers.py").read_text()
+    sync_src = Path("app/cluster/sync.py").read_text()
+    assert "_apply_provider_ai_reviews" in handlers_src
+    assert 'payload.get("provider_ai_reviews", [])' in sync_src
 
 
 def test_apply_provider_ai_reviews_handles_lifecycle_monotone():
     """Applied/reverted/dismissed transitions are monotone (None → set).
     The merge code must respect this same as the api_key_ai_review path."""
-    src = Path("app/cluster/sync.py").read_text()
+    src = Path("app/cluster/sync_handlers.py").read_text()
     idx = src.index("async def _apply_provider_ai_reviews")
     body = src[idx:idx + 3000]
     for field in ('"applied_at"', '"reverted_at"', '"dismissed_at"'):
