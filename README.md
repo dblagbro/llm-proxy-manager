@@ -2,9 +2,16 @@
 
 Self-hosted LLM routing gateway — Python/FastAPI rewrite of llm-proxy v1.
 
-**LMRH semantic routing · circuit breaker failover · CoT-E augmentation · cluster sync · Run runtime · per-provider keep-alive probes · React dashboard**
+**LMRH semantic routing · circuit breaker failover · CoT-E augmentation · cluster sync · Run runtime · per-provider keep-alive probes · proxy-side caller memory (#267) · React dashboard**
 
-Current version: **v3.7.21** (see [CHANGELOG.md](CHANGELOG.md))
+Current version: **v3.9.7** (see [CHANGELOG.md](CHANGELOG.md))
+
+The proxy-side caller memory system shipped in phases 2–10 today (2026-05-14).
+Gated by the `X-Conversation-Id` request header — opt-in per caller; zero
+impact on callers that don't pass it. See
+[`docs/rfc/2026-05-proxy-memory-store.md`](docs/rfc/2026-05-proxy-memory-store.md)
+for the design + [`app/memory/`](app/memory/) for the implementation
+(inject / extract / flush / recover / store).
 
 ## Access
 

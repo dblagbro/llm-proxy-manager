@@ -108,6 +108,18 @@ app/
 │   └── auth.py              HMAC signing/verification primitives (sign_payload, verify_payload,
 │                              verify_cluster_request, auth_headers_for)
 │
+├── memory/                  Proxy-side caller memory (#267, shipped 2026-05-14)
+│   ├── store.py             Redis hot cache + SQLite king-store + in-process fallback
+│   │                          (mirrors cot/session.py pattern); cluster-replicated via LWW
+│   ├── inject.py            Phase 4 — request-time injection as system-prompt prefix.
+│   │                          Gated on X-Conversation-Id header (Q1 locked 2026-05-14)
+│   ├── extract.py           Phase 5 — Anthropic memory-tool write-back from response
+│   │                          tool_use blocks (memory_20250818)
+│   ├── flush.py             Phase 6 — registry-based per-vendor flush dispatcher;
+│   │                          detects provider transitions, emits best-effort cleanup
+│   └── recover.py           Phase 7 — registry-based back-pressure recovery;
+│                              reconstructs missing content from upstream when marker survives
+│
 ├── monitoring/
 │   ├── helpers.py           record_outcome() — shared success/failure metrics recorder
 │   ├── metrics.py           request/token/cost DB writes

@@ -7,7 +7,309 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ---
 
+## v3.9.x — Proxy-side Caller Memory (#267) — phases 4–10 + ops fixes
+
+### v3.9.7 — Lock 3 Phase-4 design decisions before Phase 10 flip (#267)
+
+The shipped Phase-4 (v3.8.9) injection behavior was originally framed as
+"sensible defaults — operator can revisit later". Before the Phase 10
+operator opt-in flip, all three open questions are resolved and locked
+by code, RFC text, and regression tests:
+
+- **Q1 (scope)** — Inject fires only when caller supplies
+  `X-Conversation-Id`. One-shot requests stay clean.
+- **Q2 (Anthropic injection point)** — System-prompt prefix on
+  `body["system"]`. NOT `memory_blocks` (tied to the Anthropic memory
+  tool — too narrow). NOT first user message (breaks role boundaries).
+- **Q3 (OpenAI injection point)** — System-prompt prefix on
+  `messages[0]`, or synthesized at index 0 if missing.
+
+Docs-only ship — code already implements the recommended answers.
+Changes: `app/memory/inject.py` docstring + `docs/rfc/2026-05-proxy-memory-store.md`
++ 11 new regression tests in `test_v397_inject_decisions_locked.py`.
+
+**Phase 10 (operator opt-in flip)** followed v3.9.7 the same day:
+`CALLER_MEMORY_ENABLED=true` set in docker-compose for both www01 + www02,
+rolling deploy clean, observation period begins. Feature is dormant
+until callers pass `X-Conversation-Id`.
+
+### v3.9.6 — Admin API for caller_memory + markers (#267 Phase 9)
+
+New `app/api/memory_admin.py` blueprint mounted at `/api/memory/*`:
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET    | `/keys/{key}` | list entries |
+| PUT    | `/keys/{key}/{tag}` | upsert (operator write) |
+| DELETE | `/keys/{key}/{tag}` | soft-delete |
+| GET    | `/markers/{key}` | list markers |
+| POST   | `/markers/{id}/clear-recovered` | reset recovered_at for retry |
+| POST   | `/recover/{key}/{conv}/{tag}` | manual Phase-7 fire |
+
+All require `Depends(require_admin)`. Endpoints work regardless of
+`settings.caller_memory_enabled` — useful for inspecting state before
+flipping the feature on. Also exposes `Provider.memory_disabled` in
+the provider edit form (`ProviderCreate` schema + `_serialize`).
+
+### v3.9.5 — Per-provider memory_disabled flag (#267 Phase 8)
+
+New `Provider.memory_disabled` boolean column. When True:
+- `extract.py` skips memory writes from this provider's responses
+- `inject.py` skips memory injection when this provider is selected
+
+Implementation moved Phase 4 inject from pre-routing to post-routing
+in both `messages.py` and `completions.py` so we can check
+`route.provider.memory_disabled`. New order:
+
+```
+privacy filters → hint build → route selection →
+Phase 6 flush → cross-family body['model'] rewrite →
+Phase 4 inject (gated on route.provider.memory_disabled) →
+Fix B Anthropic→OpenAI translation → dispatch
+```
+
+Use cases: keep test providers pure, avoid memory-tool surcharges on
+specific accounts, per-provider data-residency boundaries. Default
+False = participates normally. Migration:
+`ALTER TABLE providers ADD COLUMN memory_disabled BOOLEAN DEFAULT 0`.
+
+### v3.9.4 — Back-pressure memory recovery (#267 Phase 7)
+
+When `CallerMemoryMarker` exists but the content row is missing — the
+DB-restore-lost-content-rows-while-markers-survived case — try to
+reconstruct content from the original upstream provider. Per RFC:
+markers are small + frozen and back up cleanly even when content
+rows are mid-mutation.
+
+Same shape as Phase 6: registry-based dispatcher
+(`maybe_recover_memory(db, *, api_key_id, conversation_id, memory_tag) -> Optional[str]`)
+wired into `inject.py`'s no-content path. All current handlers ship as
+noop because no deployed provider exposes a clean conversation-state
+read-back API. Marker advance semantics: on success
+`marker.recovered_at = now`; on handler failure/None marker stays clean
+so retry is possible.
+
+### v3.9.3 — Provider-side memory flush handlers (#267 Phase 6)
+
+Detection of provider transitions per
+`(api_key_id, conversation_id, memory_tag)` and registry-based per-vendor
+flush dispatcher hooked into `messages.py` after route selection +
+cross-family adjustments. Per RFC decision #3: best-effort, default ON,
+log+continue on failure.
+
+All current handlers ship as noop — none of the deployed provider types
+expose a clean cleanup API the proxy can call without side effects.
+Scaffolding is in place to land real handlers (ChatGPT-oauth conversation
+delete, OpenAI Assistants thread delete) incrementally without re-wiring
+the call site.
+
+### v3.9.2 — 1% sample-rate request_body capture on bad_request 4xx (#268)
+
+Hub team asked for a way to debug payload-shape upstream rejections
+(the #269 class of bug) without paying the full-time storage cost of
+`activity_log_capture_bodies=True` (the 2026-05-06 1 GB blowup).
+
+New setting `activity_log_body_sample_rate_4xx` (default 0.01 = 1%).
+Independent of `capture_bodies`. Only fires on
+`error_class == "bad_request"`; auth/billing/rate_limit are skipped
+because those are credential/account state, not payload shape. When
+sampled, writes `request_body` + `body_sampled=True` tag to event_meta
+(filter on this in the hub UI).
+
+### v3.9.1 — Anthropic→OpenAI cross-family translation (#269 A+B)
+
+OpenRouter-Devin-Personal cross-family fallback was 400-ing on every
+tool-bearing request with `litellm.APIConnectionError: XaiException -
+Invalid user message at index N`.
+
+Root cause (activity_log id=169903): cross-family fallback from
+claude-haiku to OpenRouter `served=openai/gpt-4o` rewrote `body.model`
+but preserved Anthropic-shape `tool_result` blocks. OpenAI rejected
+every retry.
+
+**Fix A — safety net** (`app/routing/tool_content.py`): when tool
+blocks present AND cross-family target is NOT OpenAI-shape (Gemini,
+Cohere, etc.), walk past via `_select_excluding`. Returns 503 with
+`X-Cross-Family-Skipped` header if all candidates exhausted, rather
+than burning upstream cost on guaranteed 400s.
+
+**Fix B — translator**
+(`anthropic_to_openai_body()` in `app/api/_oauth_chat_translate.py`):
+full Anthropic-shape body → OpenAI Chat-Completions shape translation
+when the cross-family target speaks OpenAI shape. Handles `tool_use`,
+`tool_result` (incl. empty/bare variants — `(no output)` placeholder),
+system field → leading system message, tool definitions schema
+translation. Response header: `X-Cross-Family-Translated: anthropic->openai`.
+
+Verified end-to-end via synthetic test (auto_skip on C1 Anthropic
+Claude + replay of the failing-shape body → 200 + translated header).
+
+### v3.9.0 — Anthropic memory-tool write-back (#267 Phase 5)
+
+When an Anthropic `/v1/messages` response contains `tool_use` blocks
+for the `memory` tool (`memory_20250818`), `extract.py` extracts the
+write operations and persists them to the king-store. Supports
+`create`, `str_replace`, `insert`, `delete`, `rename`. Closes the
+read/write loop with Phase 4.
+
+Streaming non-streaming only; streaming write-back lands in Phase 5.5
+(needs assembled-block sniffing in `_messages_streaming.py`).
+
+### v3.8.9 — Memory injection middleware (#267 Phase 4)
+
+`app/memory/inject.py` — request-time injection of stored memory as a
+system-prompt prefix on outgoing upstream requests. Wired into both
+`/v1/messages` and `/v1/chat/completions`. Gated on
+`X-Conversation-Id` header. Silent degrade on any store error.
+Cross-vendor strategy: same shape for Anthropic + OpenAI (system
+prompt).
+
+---
+
+## v3.8.x — Caller-memory store + tool telemetry + provider rename
+
+### v3.8.8 — Caller memory store: Redis hot cache + SQLite durable (#267 Phase 3)
+
+Three-tier read/write layer (`app/memory/store.py`): Redis hot cache
+(per-node), SQLite durable king-store (cluster-replicated), in-process
+fallback. Mirrors the `app/cot/session.py` pattern. Reads are
+always-local (no network hop); writes go to SQLite first, then
+invalidate Redis. `MemoryEntry` dataclass for operator-facing rows.
+
+### v3.8.7 — Caller memory + marker tables + cluster sync (#267 Phase 2)
+
+New SQLAlchemy models: `CallerMemory` (content rows scoped by
+`api_key_id` × `conversation_id` × `memory_tag`) and
+`CallerMemoryMarker` (back-pressure recovery anchor). Cluster-sync
+hooked up via the existing LWW propagation. Operator-locked decisions
+documented in `docs/rfc/2026-05-proxy-memory-store.md`. Default OFF
+(`caller_memory_enabled=False`) — Phases 4-10 followed.
+
+### v3.8.6 — "Release & re-enable all" banner now actually re-enables
+
+The release banner's "release all" button was a no-op for providers
+that had been manually disabled. Fix: include `enabled=True` in the
+batched UPDATE. Test added.
+
+### v3.8.5 — Tool-call success weighting in router scoring (#265, closes audit)
+
+Router scoring now consumes the rolling `tool_call_success_rate`
+populated by the v3.8.4 prober. Providers with low recent success on
+tool calls get downranked for `has_tools=True` requests. Closes the
+tool-emulation audit follow-up.
+
+### v3.8.4 — Periodic tool-call probe + auto-native_tools adjustment (#264)
+
+Background worker probes each provider's tool-calling shape and
+records success rate in `model_capabilities.tool_call_success_rate`.
+On 3 consecutive failures: `native_tools` flips to False so future
+requests engage the emulation layer instead of pretending the upstream
+supports tools.
+
+### v3.8.3 — Tool-call telemetry + Grok-Web native_tools=False (#263)
+
+Adds `tool_call_format` ("native" vs "emulated") to `record_outcome`
++ `tool_calls_emitted`/`validated` counters in event_meta. Flips
+`native_tools=False` for all Grok-Web `ModelCapability` rows (grok.com
+chat is Playwright-driven; no function calling).
+
+### v3.8.2 — Classify caller-side bugs + guard empty-choices + override backfill (#260 #261 #262)
+
+Three smaller fixes: caller-bug error classification (so they don't
+contaminate provider failure stats), empty-`choices[]` guard in
+OpenAI response path, `manual_override_until=9999...` backfill for
+providers disabled before v3.7.28 (so the supervisor doesn't grab them).
+
+### v3.8.1 — Codex billing scrape Phase 2 — bearer auth via existing OAuth (#245)
+
+ChatGPT/Codex Cloud usage scrape Phase 2: reuses the captured OAuth
+bearer token from `Provider.codex_session_cookies` to call the cloud
+billing API directly. Was previously stubbed in Phase 1.
+
+### v3.8.0 — Rename provider_type `codex-oauth` → `ChatGPT-oauth-plan` (#251)
+
+Operator-driven rename: the OAuth credential is from ChatGPT Plus,
+not the Codex CLI. The new name is more accurate + reflects how the
+operator thinks about it. One-shot SQL UPDATE in the migration block
+(safe to re-run; no-op when no rows match the old value).
+
+---
+
 ## v3.7.x — Anthropic Console billing scrape (real account usage)
+
+### v3.7.33 — Expose AI supervisor / rate limiter / billing scrape settings in UI
+
+Per-feature toggle controls in the Settings page for the AI provider
+supervisor, AI rate limiter, and Anthropic billing scrape worker.
+Operator can pause any of these without container restart via the
+runtime SCHEMA admin endpoint.
+
+### v3.7.32 — AI provider supervisor admin endpoints (#252 phase 5 — CLOSES #252)
+
+Apply/revert/dismiss lifecycle endpoints + a trigger-now smoke-test
+endpoint + a live-stats diagnostic endpoint. All respect
+`manual_override_until` — operator-pinned providers return 409 Conflict
+on apply/trigger.
+
+### v3.7.31 — AI provider supervisor worker + cluster sync (#252 phase 4)
+
+Background worker that periodically calls the supervisor LLM with
+fleet stats. Generates `ProviderAiReview` rows that propagate via
+cluster sync. Operator applies via the v3.7.32 endpoints.
+
+### v3.7.30 — ProviderAiReview table + stats helper (#252 phase 3)
+
+Schema + cluster-sync wiring for the AI supervisor's review/proposal
+rows. Stats helper formats fleet state into a prompt-friendly summary.
+
+### v3.7.29 — Manual override UI banner + 🔒 badge (#252 phase 2)
+
+Provider list UI surfaces operator-pinned providers (manual override
+on) with a banner + lock badge. Disables the auto-toggle path for
+those rows.
+
+### v3.7.28 — Manual override schema + toggle/release endpoints (#252 phase 1)
+
+`Provider.manual_override_until` / `manual_override_set_by` /
+`manual_override_set_at` / `manual_override_reason`. Toggle endpoint
+sets the override; release endpoint clears it.
+
+### v3.7.27 — ChatGPT/Codex Cloud usage scrape — Phase 1 scaffolding (#245)
+
+Schema + endpoint scaffolding for the Codex usage scrape. Real
+implementation followed in v3.8.1.
+
+### v3.7.26 — grok-web propagates upstream 429 instead of masking as 502 (#259)
+
+Bug where grok-web rate-limit responses got wrapped into a generic 502.
+Now flows through with the original 429 so callers can back off.
+
+### v3.7.25 — Remove legacy "Usage-based rotation" UI for claude-oauth (#257)
+
+The Anthropic billing scrape from v3.7.0 supersedes the manual
+usage-tracking config. UI section retired; backend code stays for
+ChatGPT-oauth-plan / future providers.
+
+### v3.7.24 — Anthropic billing scrape — freshness guard + jitter (#258)
+
+Worker now skips re-scraping accounts whose snapshot is younger than
+the configured floor (default 2h) and adds jitter so all 3 nodes
+don't hit the upstream simultaneously.
+
+### v3.7.23 — Routing balance dashboard tile for claude-oauth (#255)
+
+New tile on the Activity page: rolling 24h request counts split by
+claude-oauth account so operator can eyeball the routing balance.
+
+### v3.7.22 — ClientDisconnect handler (#253) + activity_log retention tiers (#254)
+
+Two ops fixes: structured `ClientDisconnect` handling (was logged as
+generic 500 noise); severity-tiered retention (errors kept 30d,
+warnings 14d, info 7d) so the table doesn't grow unbounded.
+
+---
+
+## v3.7.x — Anthropic Console billing scrape (real account usage) — original entry
 
 ### v3.7.21 — Hotfix: BUG-022 regression — restore async with in get_db()
 
