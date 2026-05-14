@@ -52,7 +52,10 @@ app/
 │   ├── models.py                GET /v1/models — OpenAI-compatible model listing
 │   ├── image_utils.py           Image detection + stripping for both wire formats (deduped 2026-04-23)
 │   ├── apikeys.py               CRUD + spending-cap/rate-limit for API keys
-│   ├── providers.py             CRUD + test + scan-models + capability management
+│   ├── providers.py             Core provider CRUD (list/get/create/update/delete + usage)
+│   ├── provider_lifecycle.py    Lifecycle ops (v3.9.8): clear-auth-failure, toggle,
+│   │                              release-manual-overrides, test, scan-models
+│   ├── provider_capabilities.py Capability admin (v3.9.8): list/upsert/infer + _serialize_cap
 │   │                              (v3.1.0: was 1136 lines; OAuth flow endpoints
 │   │                              moved to providers_oauth.py — now 875 lines)
 │   ├── providers_oauth.py       claude-oauth + codex-oauth authorize / exchange /
@@ -104,7 +107,11 @@ app/
 │
 ├── cluster/
 │   ├── manager.py           Peer state, heartbeat loop, push-sync outgoing
-│   ├── sync.py              apply_sync() — incoming peer data merge; peer cost tracking
+│   ├── sync.py              apply_sync() — incoming peer data merge orchestrator; peer cost tracking
+│   ├── sync_handlers.py     Per-table _apply_<table> handlers (v3.9.8 P5 refactor):
+│   │                          _apply_blocked_ips, _apply_ai_reviews,
+│   │                          _apply_provider_ai_reviews, _apply_caller_memory,
+│   │                          _apply_caller_memory_markers, _apply_external_usage_snapshots
 │   └── auth.py              HMAC signing/verification primitives (sign_payload, verify_payload,
 │                              verify_cluster_request, auth_headers_for)
 │
