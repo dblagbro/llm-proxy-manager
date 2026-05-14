@@ -68,25 +68,6 @@ class ProviderUpdate(ProviderCreate):
     pass
 
 
-class CapabilityUpdate(BaseModel):
-    tasks: list[str]
-    latency: str
-    cost_tier: str
-    safety: int
-    context_length: int
-    regions: list[str]
-    modalities: list[str]
-    native_reasoning: bool
-    native_tools: bool = True
-    native_vision: bool = True
-    # v3.5.1 — model-identity fields exposed for operator edit via the
-    # Hub capability admin form. Optional + defaulted so older Hub UI
-    # clients that don't send them still PUT successfully (back-compat
-    # with the v3.4.1 schema where these defaulted to []/null/null at
-    # the column level).
-    aliases: list[str] = []
-    model_family: Optional[str] = None
-    model_variant: Optional[str] = None
 
 
 @router.get("")
@@ -101,20 +82,60 @@ async def list_providers(
         .order_by(Provider.priority)
     )
     providers = result.scalars().all()
-    # v3.0.64: bulk-load usage windows so the list page can show per-provider
-    # session_pct + weekly_pct without an N+1.
-    from app.models.db import ProviderUsageWindow
+    # v3.9.8 (#267 follow-up) — Authoritative usage data from
+    # ExternalUsageSnapshot (Anthropic Console + ChatGPT Cloud scrape,
+    # shipped v3.7.0 + v3.8.1) supersedes ProviderUsageWindow for
+    # display. Background: ProviderUsageWindow only sees the PROXY's
+    # slice of traffic to each upstream account. The same Anthropic Pro
+    # Max / ChatGPT Plus accounts are shared with Claude Code / desktop
+    # clients / other workloads, so the proxy slice is ~3 orders of
+    # magnitude lower than the account total. Pre-fix, this produced
+    # nonsense "weekly 643%" warnings on the Dashboard because the
+    # operator-set ``usage_weekly_limit_tokens`` was sized for the
+    # proxy slice but the rolled-up counter was the account total.
+    #
+    # The scrape stores authoritative 0-100% utilization directly from
+    # Anthropic's / ChatGPT's own metering. Use that when present; fall
+    # back to ProviderUsageWindow only when no snapshot exists (e.g.
+    # newly-added providers, providers without a captured session).
+    from sqlalchemy import desc
+    from app.models.db import ExternalUsageSnapshot, ProviderUsageWindow
+
+    # Latest snapshot per provider (one query, ordered by captured_at DESC,
+    # then dedup in Python — small fleet so this is cheap).
+    snap_res = await db.execute(
+        select(ExternalUsageSnapshot)
+        .order_by(desc(ExternalUsageSnapshot.captured_at))
+    )
+    snap_by_provider: dict[str, ExternalUsageSnapshot] = {}
+    for snap in snap_res.scalars().all():
+        snap_by_provider.setdefault(snap.provider_id, snap)
+
+    # Internal usage windows (fallback for non-scraped providers)
     usage_res = await db.execute(select(ProviderUsageWindow))
     usage_by_id = {w.provider_id: w for w in usage_res.scalars().all()}
+
     out = []
     for p in providers:
         d = _serialize(p)
+        snap = snap_by_provider.get(p.id)
         w = usage_by_id.get(p.id)
-        if w:
+        if snap is not None and snap.seven_day_utilization is not None:
+            # Authoritative path — scrape data wins.
+            d["usage_weekly_pct"] = snap.seven_day_utilization
+            d["usage_session_pct"] = snap.five_hour_utilization
+            d["usage_weekly_tokens"] = None  # not available from scrape
+            d["usage_session_tokens"] = None
+            d["usage_data_source"] = "external_scrape"
+            d["usage_captured_at"] = (
+                snap.captured_at.isoformat() if snap.captured_at else None
+            )
+        elif w is not None:
             d["usage_session_pct"] = w.session_pct
             d["usage_session_tokens"] = w.session_tokens
             d["usage_weekly_pct"] = w.weekly_pct
             d["usage_weekly_tokens"] = w.weekly_tokens
+            d["usage_data_source"] = "internal_window"
         out.append(d)
     return out
 
@@ -160,8 +181,8 @@ async def provider_usage(
     If tracking is disabled, returns the config + null totals so the UI
     can show the "enable tracking" affordance.
     """
-    from app.models.db import ProviderUsageWindow
-    from sqlalchemy import select as _sel
+    from app.models.db import ExternalUsageSnapshot, ProviderUsageWindow
+    from sqlalchemy import select as _sel, desc
     res = await db.execute(_sel(Provider).where(
         Provider.id == provider_id, Provider.deleted_at.is_(None),
     ))
@@ -169,15 +190,56 @@ async def provider_usage(
     if p is None:
         raise HTTPException(404, "provider not found")
 
+    # v3.9.8 — prefer ExternalUsageSnapshot (authoritative) over
+    # ProviderUsageWindow (proxy-slice only). See providers.list_providers
+    # docstring for the full rationale.
+    snap_res = await db.execute(
+        _sel(ExternalUsageSnapshot)
+        .where(ExternalUsageSnapshot.provider_id == provider_id)
+        .order_by(desc(ExternalUsageSnapshot.captured_at))
+        .limit(1)
+    )
+    snap = snap_res.scalar_one_or_none()
+
     res2 = await db.execute(_sel(ProviderUsageWindow).where(
         ProviderUsageWindow.provider_id == provider_id,
     ))
     w = res2.scalar_one_or_none()
 
+    if snap is not None and snap.seven_day_utilization is not None:
+        # Authoritative path — scrape data.
+        return {
+            "provider_id": p.id,
+            "provider_name": p.name,
+            "tracking_enabled": bool(p.usage_tracking_enabled),
+            "data_source": "external_scrape",
+            "captured_at": utc_iso(snap.captured_at) if snap.captured_at else None,
+            "auth_state": snap.auth_state,
+            "session": {
+                "tokens": None,  # not exposed by upstream scrape
+                "window_start": None,
+                "window_sec": p.usage_session_window_sec,
+                "limit_tokens": p.usage_session_limit_tokens,
+                "pct": snap.five_hour_utilization,
+                "resets_at": utc_iso(snap.five_hour_resets_at) if snap.five_hour_resets_at else None,
+            },
+            "weekly": {
+                "tokens": None,
+                "reset_at": utc_iso(snap.seven_day_resets_at) if snap.seven_day_resets_at else None,
+                "reset_dow": p.usage_weekly_reset_dow,
+                "reset_hour": p.usage_weekly_reset_hour,
+                "limit_tokens": p.usage_weekly_limit_tokens,
+                "pct": snap.seven_day_utilization,
+            },
+            "rotation_threshold_pct": p.usage_rotation_threshold_pct,
+            "updated_at": utc_iso(snap.captured_at) if snap.captured_at else None,
+        }
+
     return {
         "provider_id": p.id,
         "provider_name": p.name,
         "tracking_enabled": bool(p.usage_tracking_enabled),
+        "data_source": "internal_window" if w else None,
         "session": {
             "tokens": (w.session_tokens if w else 0),
             # v3.0.82: utc_iso() instead of naive ``isoformat() + "Z"``.
@@ -729,306 +791,6 @@ async def purge_test_tombstones(
     return {"ok": True, "purged": purged}
 
 
-@router.post("/{provider_id}/clear-auth-failure")
-async def clear_provider_auth_failure(
-    provider_id: str,
-    db: AsyncSession = Depends(get_db),
-    _: AdminUser = Depends(require_admin),
-):
-    """v2.7.8 BUG-002: clear the 'needs re-auth' flag for a provider.
-
-    Called by the UI's "Mark Re-Authed" button, by save-with-new-key
-    handlers, and by the OAuth rotate endpoint. Does NOT close the
-    circuit breaker on its own — admin must hit Test for that, or the
-    next successful call will close it via record_outcome.
-    """
-    from app.routing.circuit_breaker import clear_auth_failure
-    await _get_or_404(db, provider_id)
-    clear_auth_failure(provider_id)
-    return {"ok": True}
-
-
-@router.patch("/{provider_id}/toggle")
-async def toggle_provider(
-    provider_id: str,
-    db: AsyncSession = Depends(get_db),
-    user: AdminUser = Depends(require_admin),
-):
-    """v3.7.28 (#252 phase 1): toggling now also sets/clears the manual
-    override lock so the AI supervisor (when it ships) can't reverse
-    the operator's explicit decision.
-
-    - Disable → enabled=False AND manual_override_until=indefinite
-    - Enable  → enabled=True  AND manual_override_until=NULL (released)
-
-    The supervisor reads ``manual_override_until`` and skips any
-    provider where it's non-null. Operator's UI banner surfaces the
-    set of locked providers; "Release all" clears them in bulk via
-    POST /api/providers/_release-manual-overrides.
-    """
-    from datetime import datetime as _dt
-    INDEFINITE_LOCK = _dt(9999, 12, 31, 23, 59, 59)
-
-    p = await _get_or_404(db, provider_id)
-    new_state = not p.enabled
-    p.enabled = new_state
-    now = _dt.utcnow()
-    if not new_state:
-        # Disable click → set manual override (sticky against AI)
-        p.manual_override_until = INDEFINITE_LOCK
-        p.manual_override_set_by = getattr(user, "id", None) or getattr(user, "username", None)
-        p.manual_override_set_at = now
-    else:
-        # Enable click → release any prior manual override
-        p.manual_override_until = None
-        p.manual_override_set_by = None
-        p.manual_override_set_at = None
-        p.manual_override_reason = None
-    _stamp_user_edit(p)
-    await db.commit()
-    return {
-        "enabled": p.enabled,
-        "manual_override_active": p.manual_override_until is not None,
-    }
-
-
-@router.post("/_release-manual-overrides")
-async def release_manual_overrides(
-    enable: bool = True,
-    db: AsyncSession = Depends(get_db),
-    _: AdminUser = Depends(require_admin),
-):
-    """v3.7.28 (#252 phase 1): bulk-clear manual override on all
-    providers — the banner's "Release & re-enable all" button.
-
-    v3.8.6 behavior change: by default, ALSO sets enabled=True on the
-    affected rows. Pre-v3.8.6 the endpoint left enabled unchanged,
-    which produced an operator-confusing UX: clicking "Release" left
-    providers disabled, the provider detail then showed an "Enable"
-    button, and the operator was stuck wondering whether their click
-    had any effect.
-
-    Why this is safe: the only way a provider got into
-    ``manual_override_until=non-null AND enabled=False`` is via the
-    operator clicking Disable. Releasing the lock and re-enabling
-    is the inverse of that single user action — the natural symmetric
-    "Release & re-enable" the banner UX implies.
-
-    Caller can override with ``?enable=false`` for explicit release-only
-    behavior (e.g. operator script that wants to hand control to the
-    AI supervisor without immediately re-enabling).
-    """
-    from sqlalchemy import update
-    from app.models.db import Provider
-    values = {
-        "manual_override_until": None,
-        "manual_override_set_by": None,
-        "manual_override_set_at": None,
-        "manual_override_reason": None,
-    }
-    if enable:
-        values["enabled"] = True
-    result = await db.execute(
-        update(Provider)
-        .where(Provider.manual_override_until.is_not(None))
-        .where(Provider.deleted_at.is_(None))
-        .values(**values)
-    )
-    await db.commit()
-    return {"released": result.rowcount, "re_enabled": enable}
-
-
-@router.post("/{provider_id}/test")
-async def test_provider_endpoint(
-    provider_id: str,
-    db: AsyncSession = Depends(get_db),
-    _: AdminUser = Depends(require_admin),
-):
-    p = await _get_or_404(db, provider_id)
-    result = await test_provider(p)
-    # v3.0.9: surface model-deprecation warning so operators see the
-    # actionable fix BEFORE the upstream 404s on real traffic.
-    from app.providers.deprecations import check_model_deprecation
-    replacement = check_model_deprecation(p.default_model)
-    if replacement:
-        result = dict(result)
-        result["deprecation_warning"] = (
-            f"Provider's default_model {p.default_model!r} is deprecated by "
-            f"the upstream vendor. Recommended replacement: {replacement!r}. "
-            f"Update via Edit Provider or wait for the next startup migration."
-        )
-        result["recommended_default_model"] = replacement
-    # v3.0.97 — log admin-action so operators have an audit trail.
-    # Was previously invisible: no activity_log entry on test/scan/etc.
-    try:
-        from app.monitoring.activity import log_event
-        ok = bool(result.get("ok", True))
-        await log_event(
-            db,
-            event_type="provider_test",
-            message=f"{p.name} · test {'ok' if ok else 'failed'}",
-            severity="info" if ok else "warning",
-            provider_id=p.id,
-            metadata={
-                "provider_name": p.name,
-                "provider_type": p.provider_type,
-                "ok": ok,
-                "result_summary": {k: v for k, v in result.items()
-                                   if k in ("ok", "error", "model", "latency_ms",
-                                            "deprecation_warning",
-                                            "recommended_default_model")},
-            },
-        )
-    except Exception:
-        pass  # never let logging failure break the response
-    return result
-
-
-@router.post("/{provider_id}/scan-models")
-async def scan_models(
-    provider_id: str,
-    db: AsyncSession = Depends(get_db),
-    _: AdminUser = Depends(require_admin),
-):
-    p = await _get_or_404(db, provider_id)
-    try:
-        models = await scan_provider_models(db, p)
-        # v3.0.9: also flag deprecated models in the scan result so the
-        # UI can render them with a warning + suggested replacement.
-        # v3.0.16 fix: scan_provider_models returns list[dict] (each entry
-        # has ``model_id``), not list[str] — the original comprehension
-        # was treating each dict as a key, which raised "unhashable type:
-        # 'dict'" the first time a non-empty scan landed.
-        from app.providers.deprecations import MODEL_DEPRECATIONS
-        deprecated_models = [
-            {"id": m["model_id"], "replacement": MODEL_DEPRECATIONS[m["model_id"]]}
-            for m in (models or [])
-            if isinstance(m, dict) and m.get("model_id") in MODEL_DEPRECATIONS
-        ]
-        out = {"scanned": len(models), "models": models}
-        if not models:
-            out["warning"] = "No models discovered — check API key and provider type"
-        if deprecated_models:
-            out["deprecated_models"] = deprecated_models
-        # v3.0.97 — log admin-action so operators have an audit trail.
-        try:
-            from app.monitoring.activity import log_event
-            await log_event(
-                db,
-                event_type="provider_scan_models",
-                message=f"{p.name} · scanned {len(models)} model{'s' if len(models) != 1 else ''}",
-                severity="info" if models else "warning",
-                provider_id=p.id,
-                metadata={
-                    "provider_name": p.name,
-                    "provider_type": p.provider_type,
-                    "scanned_count": len(models),
-                    "model_ids": [m.get("model_id") for m in (models or [])
-                                  if isinstance(m, dict)][:50],  # cap to keep meta lean
-                    "deprecated_count": len(deprecated_models),
-                },
-            )
-        except Exception:
-            pass
-        return out
-    except Exception as e:
-        # v3.0.97 — also log scan failures so operators see them.
-        try:
-            from app.monitoring.activity import log_event
-            await log_event(
-                db,
-                event_type="provider_scan_models",
-                message=f"{p.name} · scan failed",
-                severity="error",
-                provider_id=p.id,
-                metadata={
-                    "provider_name": p.name,
-                    "provider_type": p.provider_type,
-                    "error": str(e)[:500],
-                    "error_class": "unknown",  # admin error class; v3.0.75 taxonomy is request-side
-                },
-            )
-        except Exception:
-            pass
-        raise HTTPException(500, f"Model scan failed: {e}")
-
-
-@router.get("/{provider_id}/model-capabilities")
-async def list_capabilities(
-    provider_id: str,
-    db: AsyncSession = Depends(get_db),
-    _: AdminUser = Depends(require_admin),
-):
-    result = await db.execute(
-        select(ModelCapability).where(ModelCapability.provider_id == provider_id)
-    )
-    caps = result.scalars().all()
-    return [_serialize_cap(c) for c in caps]
-
-
-@router.put("/{provider_id}/model-capabilities/{model_id:path}")
-async def upsert_capability(
-    provider_id: str,
-    model_id: str,
-    body: CapabilityUpdate,
-    db: AsyncSession = Depends(get_db),
-    _: AdminUser = Depends(require_admin),
-):
-    result = await db.execute(
-        select(ModelCapability).where(
-            ModelCapability.provider_id == provider_id,
-            ModelCapability.model_id == model_id,
-        )
-    )
-    cap = result.scalar_one_or_none()
-    if cap:
-        for f, v in body.model_dump().items():
-            setattr(cap, f, v)
-        cap.source = "manual"
-    else:
-        cap = ModelCapability(
-            provider_id=provider_id,
-            model_id=model_id,
-            source="manual",
-            **body.model_dump(),
-        )
-        db.add(cap)
-    await db.commit()
-    await db.refresh(cap)
-    return _serialize_cap(cap)
-
-
-@router.post("/{provider_id}/model-capabilities/infer")
-async def infer_capabilities(
-    provider_id: str,
-    db: AsyncSession = Depends(get_db),
-    _: AdminUser = Depends(require_admin),
-):
-    """Re-run auto-inference on all existing capability records for this provider."""
-    p = await _get_or_404(db, provider_id)
-    result = await db.execute(
-        select(ModelCapability).where(
-            ModelCapability.provider_id == provider_id,
-            ModelCapability.source == "inferred",
-        )
-    )
-    caps = result.scalars().all()
-    updated = 0
-    for cap in caps:
-        profile = infer_capability_profile(provider_id, p.provider_type, cap.model_id, p.priority)
-        cap.tasks = profile.tasks
-        cap.latency = profile.latency
-        cap.cost_tier = profile.cost_tier
-        cap.safety = profile.safety
-        cap.context_length = profile.context_length
-        cap.regions = profile.regions
-        cap.modalities = profile.modalities
-        cap.native_reasoning = profile.native_reasoning
-        updated += 1
-    await db.commit()
-    return {"updated": updated}
-
-
 async def _get_or_404(db: AsyncSession, provider_id: str) -> Provider:
     result = await db.execute(select(Provider).where(Provider.id == provider_id))
     p = result.scalar_one_or_none()
@@ -1108,25 +870,3 @@ def _serialize(p: Provider) -> dict:
     }
 
 
-def _serialize_cap(c: ModelCapability) -> dict:
-    return {
-        "id": c.id,
-        "provider_id": c.provider_id,
-        "model_id": c.model_id,
-        "tasks": c.tasks,
-        "latency": c.latency,
-        "cost_tier": c.cost_tier,
-        "safety": c.safety,
-        "context_length": c.context_length,
-        "regions": c.regions,
-        "modalities": c.modalities,
-        "native_reasoning": c.native_reasoning,
-        "native_tools": c.native_tools,
-        "native_vision": c.native_vision,
-        "source": c.source,
-        # v3.5.1 — surface the model-identity fields to the Hub UI so
-        # the capability admin form can show + edit them.
-        "aliases": c.aliases or [],
-        "model_family": c.model_family,
-        "model_variant": c.model_variant,
-    }

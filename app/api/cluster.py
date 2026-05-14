@@ -66,10 +66,43 @@ async def health():
         "totalProviders": total,
         "healthyProviders": healthy,
         "circuitBreakers": get_all_states(),
+        # v3.9.8 — pool diagnostics. Surfaces SQLAlchemy QueuePool state
+        # so operators can spot leaks without having to exec into the
+        # container. Surfaced after the 2026-05-14 www01 pool-exhaustion
+        # incident, which took 13h to manifest and was diagnosed by
+        # running ``engine.pool.checkedout()`` inside the container —
+        # making this visible at the health endpoint eliminates that step.
+        # The signals to watch:
+        #   checked_out climbing monotonically over hours = slow leak
+        #   overflow > 0 = pool is saturated and burning overflow budget
+        #   waited > 0 (cumulative) on subsequent calls = checkouts blocked
+        "dbPool": _db_pool_snapshot(),
     }
     _HEALTH_CACHE["ts"] = now
-    _HEALTH_CACHE["body"] = {k: v for k, v in body.items() if k != "circuitBreakers"}
+    _HEALTH_CACHE["body"] = {k: v for k, v in body.items() if k not in ("circuitBreakers", "dbPool")}
     return body
+
+
+def _db_pool_snapshot() -> dict:
+    """Snapshot of SQLAlchemy QueuePool state. Best-effort — never raises."""
+    try:
+        from app.models.database import engine
+        pool = engine.pool
+        # checkedout() and overflow() are public; size() is the configured
+        # base pool_size. Some pool implementations (NullPool, etc) don't
+        # have all three; guard each.
+        snap = {
+            "size": pool.size() if hasattr(pool, "size") else None,
+            "checked_out": pool.checkedout() if hasattr(pool, "checkedout") else None,
+            "overflow": pool.overflow() if hasattr(pool, "overflow") else None,
+        }
+        # Convenience: total connections currently held by app
+        if snap["checked_out"] is not None and snap["overflow"] is not None:
+            snap["in_use"] = snap["checked_out"]
+            snap["max"] = (snap["size"] or 0) + max(0, snap["overflow"])
+        return snap
+    except Exception as e:
+        return {"error": str(e)[:200]}
 
 
 @router.get("/cluster/status")

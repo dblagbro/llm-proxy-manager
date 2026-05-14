@@ -48,6 +48,11 @@ from app.api.tool_prober import router as tool_prober_router
 from app.api.ai_rate_limiter import router as ai_rate_limiter_router
 from app.api.blocked_ips import router as blocked_ips_router
 from app.api.memory_admin import router as memory_admin_router
+# v3.9.8 (P5 refactor) — providers.py split into 3 siblings to stay <1000 lines.
+# Each owns its own APIRouter at the same /api/providers prefix; no path
+# collisions because the endpoints don't overlap.
+from app.api.provider_lifecycle import router as provider_lifecycle_router
+from app.api.provider_capabilities import router as provider_capabilities_router
 from app.observability.otel import init_tracer
 from app.observability.prometheus import metrics_response, set_service_info, observe_circuit_breaker_state
 
@@ -445,6 +450,8 @@ app.include_router(tool_prober_router)
 app.include_router(ai_rate_limiter_router)
 app.include_router(blocked_ips_router)
 app.include_router(memory_admin_router)
+app.include_router(provider_lifecycle_router)
+app.include_router(provider_capabilities_router)
 # v3.3.0: LMRHv2 endpoints (feature-flagged via lmrh_v2_enabled).
 # Same /lmrh/* prefix as v1; new paths don't collide with existing ones.
 from app.api.lmrh_v2 import router as lmrh_v2_router  # noqa: E402

@@ -75,7 +75,7 @@ def test_cluster_sync_apply_handles_codex_fields():
 def test_toggle_endpoint_sets_manual_override_on_disable():
     """Toggling to disabled should set manual_override_until +
     set_by + set_at."""
-    src = Path("app/api/providers.py").read_text()
+    src = Path("app/api/provider_lifecycle.py").read_text()
     idx = src.index("async def toggle_provider")
     body = src[idx:idx + 3000]
     assert "manual_override_until = INDEFINITE_LOCK" in body
@@ -85,7 +85,7 @@ def test_toggle_endpoint_sets_manual_override_on_disable():
 
 def test_toggle_endpoint_clears_manual_override_on_enable():
     """Toggling to enabled should release the lock."""
-    src = Path("app/api/providers.py").read_text()
+    src = Path("app/api/provider_lifecycle.py").read_text()
     idx = src.index("async def toggle_provider")
     body = src[idx:idx + 3000]
     # The enable branch sets all 4 fields back to null
@@ -96,14 +96,14 @@ def test_toggle_endpoint_clears_manual_override_on_enable():
 
 
 def test_toggle_response_includes_manual_override_active():
-    src = Path("app/api/providers.py").read_text()
+    src = Path("app/api/provider_lifecycle.py").read_text()
     idx = src.index("async def toggle_provider")
     body = src[idx:idx + 3000]
     assert '"manual_override_active"' in body
 
 
 def test_release_manual_overrides_endpoint_exists():
-    src = Path("app/api/providers.py").read_text()
+    src = Path("app/api/provider_lifecycle.py").read_text()
     assert '@router.post("/_release-manual-overrides")' in src
     assert "async def release_manual_overrides" in src
 
@@ -111,7 +111,7 @@ def test_release_manual_overrides_endpoint_exists():
 def test_release_endpoint_clears_all_4_fields():
     """v3.8.6 — values are now built into a dict before .values(**dict),
     so the assertion shape changed from kwarg form to dict-key form."""
-    src = Path("app/api/providers.py").read_text()
+    src = Path("app/api/provider_lifecycle.py").read_text()
     idx = src.index("async def release_manual_overrides")
     body = src[idx:idx + 3000]
     assert '"manual_override_until": None' in body
@@ -131,7 +131,7 @@ def test_release_endpoint_clears_all_4_fields():
 
 
 def test_provider_serializer_surfaces_manual_override_fields():
-    src = Path("app/api/providers.py").read_text()
+    src = Path("app/api/provider_lifecycle.py").read_text()
     for field in (
         '"manual_override_active"',
         '"manual_override_until"',
