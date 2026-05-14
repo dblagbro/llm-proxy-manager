@@ -229,6 +229,17 @@ async def init_db():
             # ``9999-12-31 23:59:59`` sentinel that toggle_provider
             # writes for indefinite locks.
             "UPDATE providers SET manual_override_until='9999-12-31 23:59:59' WHERE enabled=0 AND manual_override_until IS NULL AND deleted_at IS NULL",
+            # v3.8.3 (#263) — flip native_tools=False on every Grok-Web
+            # ModelCapability row. Grok-Web is a Playwright-driven
+            # screen-scrape of grok.com chat — it has NO native function-
+            # calling support. Prior native_tools=True was a default-True
+            # assumption that the tool-emulation audit caught.
+            #
+            # Once these rows flip, has_tools requests routed to Grok-Web
+            # will engage the emulation layer (system-prompt injection +
+            # <tool_call> marker parsing) instead of pretending grok.com
+            # natively supports tools.
+            "UPDATE model_capabilities SET native_tools=0 WHERE provider_id IN (SELECT id FROM providers WHERE provider_type='grok-web')",
         ]:
             try:
                 await conn.exec_driver_sql(stmt)

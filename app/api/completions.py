@@ -386,9 +386,29 @@ async def chat_completions(
             response_text = await call_with_tool_prompt(
                 route.litellm_model, norm_msgs, None, emul_extra
             )
-            await record_outcome(db, route.provider.id, route.litellm_model, endpoint="completions", success=True,
-                                 t0=time.monotonic(), key_record_id=key_record.id)
             tool_calls = parse_tool_calls(response_text)
+            # v3.8.3 (#263) — emit telemetry with a synthetic OpenAI-shape
+            # response body so the meta extractor walks the same path it
+            # walks for native callers on /v1/chat/completions.
+            import json as _json
+            _emul_resp_body = {
+                "choices": [{
+                    "message": {
+                        "tool_calls": [
+                            {"function": {"name": tc.get("name", ""),
+                                          "arguments": _json.dumps(tc.get("input", {}))}}
+                            for tc in tool_calls
+                        ],
+                    },
+                }],
+            } if tool_calls else {"choices": [{"message": {"tool_calls": []}}]}
+            await record_outcome(
+                db, route.provider.id, route.litellm_model,
+                endpoint="completions", success=True,
+                t0=time.monotonic(), key_record_id=key_record.id,
+                response_body=_emul_resp_body,
+                tool_call_format="emulated",
+            )
             if not allow_parallel and len(tool_calls) > 1:
                 tool_calls = tool_calls[:1]
             if tool_calls:
@@ -592,6 +612,8 @@ async def chat_completions(
                 requested_model=requested_model,
                 had_lmrh_hint=bool(llm_hint),
                 lmrh_hint_raw=llm_hint or None,
+                # v3.8.3 (#263) — tool-call telemetry on native path.
+                tool_call_format=("native" if has_tools else None),
             )
             if budget_total:
                 resp_headers["X-Token-Budget-Remaining"] = str(max(0, budget_total - out_tok))
