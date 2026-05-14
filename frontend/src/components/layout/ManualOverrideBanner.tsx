@@ -35,7 +35,12 @@ export function ManualOverrideBanner() {
   const releaseAll = useMutation({
     mutationFn: () => providersApi.releaseManualOverrides(),
     onSuccess: r => {
-      toast.success(`Released ${r.released} provider lock${r.released === 1 ? '' : 's'}`)
+      // v3.8.6 — backend now ALSO re-enables by default; surface that
+      // in the toast so the operator knows their click did both things.
+      const enabledNote = (r as { re_enabled?: boolean }).re_enabled === false
+        ? ' (locks only — providers stay disabled)'
+        : ' (releases + re-enables)'
+      toast.success(`Released ${r.released} provider lock${r.released === 1 ? '' : 's'}${enabledNote}`)
       queryClient.invalidateQueries({ queryKey: ['providers'] })
       setConfirming(false)
       setExpanded(false)
@@ -73,18 +78,21 @@ export function ManualOverrideBanner() {
           <button
             onClick={() => setConfirming(true)}
             className="bg-white dark:bg-amber-900 text-amber-800 dark:text-amber-100 hover:bg-amber-100 dark:hover:bg-amber-800 px-3 py-1 rounded text-xs font-medium shrink-0 border border-amber-300 dark:border-amber-700"
+            title="Releases the manual override AND re-enables the locked providers — the inverse of the Disable click that locked them."
           >
-            Release all to AI control
+            Release &amp; re-enable all
           </button>
         ) : (
           <div className="flex items-center gap-2 shrink-0">
-            <span className="text-xs text-amber-800 dark:text-amber-200">Confirm?</span>
+            <span className="text-xs text-amber-800 dark:text-amber-200">
+              Release locks &amp; re-enable {locked.length} provider{locked.length === 1 ? '' : 's'}?
+            </span>
             <button
               onClick={() => releaseAll.mutate()}
               disabled={releaseAll.isPending}
               className="bg-amber-600 text-white hover:bg-amber-700 px-2.5 py-1 rounded text-xs font-medium"
             >
-              {releaseAll.isPending ? 'Releasing…' : 'Yes, release'}
+              {releaseAll.isPending ? 'Releasing…' : 'Yes, release & enable'}
             </button>
             <button
               onClick={() => setConfirming(false)}

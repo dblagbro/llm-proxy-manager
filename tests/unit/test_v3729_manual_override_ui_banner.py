@@ -52,10 +52,15 @@ def test_banner_invalidates_providers_query_on_success():
 
 def test_banner_requires_confirmation_before_release():
     """Release is destructive (releases ALL locks across the cluster).
-    A two-step click pattern prevents accidental clicks."""
+    A two-step click pattern prevents accidental clicks.
+
+    v3.8.6 — the confirmation prompt now spells out the action ('Release
+    locks & re-enable N provider(s)?') instead of the generic 'Confirm?'
+    that left operators unsure of what would happen."""
     src = Path("frontend/src/components/layout/ManualOverrideBanner.tsx").read_text()
     assert "confirming" in src
-    assert "Confirm?" in src
+    # New explicit confirmation phrasing
+    assert "Release locks &amp; re-enable" in src
 
 
 def test_banner_expandable_detail_view():
