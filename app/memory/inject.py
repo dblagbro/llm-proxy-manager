@@ -5,20 +5,49 @@ with an ``X-Conversation-Id`` header, this middleware reads the matching
 memory entry from the king-store and prepends it as a system-prompt
 prefix on the outgoing request body.
 
-Cross-vendor strategy: we always inject as a system-prompt prefix.
+Design decisions — RESOLVED 2026-05-14 (pre-Phase-10 flip)
+----------------------------------------------------------
+Three open questions from the original Phase 4 design were locked in
+ahead of the Phase 10 operator opt-in:
+
+**Q1: Injection scope** — fire only when caller supplies
+``X-Conversation-Id`` (NOT for every request).
+*Why*: without a conversation ID, there's no per-conv memory entry to
+inject. One-shot requests stay clean. Avoids accidental cross-pollination
+between unrelated callers. Operators who want global per-key memory can
+still get it by passing a fixed conversation_id.
+
+**Q2: Anthropic injection point** — system prompt prefix (NOT
+``memory_blocks`` field, NOT first user message).
+*Why*: ``memory_blocks`` is a feature of the Anthropic memory tool and
+only fires when the caller includes that tool definition — too narrow
+a contract for the proxy to commit to. First-user-message would conflict
+with caller-authored content and break role boundaries. System prompt
+is invisible to other roles and stable across providers — the same
+behavior translates cleanly to OpenAI-shape via #269's Fix B translator.
+
+**Q3: OpenAI injection point** — system prompt prefix on existing
+message-0, or synthesized at index 0 if no system message is present.
+*Why*: same as Q2 — keeps the cross-provider behavior identical, makes
+the OpenAI Fix B path round-trip cleanly, and doesn't pollute the
+caller's chat history with proxy-side annotations.
+
+Cross-vendor strategy summary:
 - Anthropic ``/v1/messages``: body["system"] is a string OR a list of
   blocks. We prepend a text block / string segment in either shape.
 - OpenAI ``/v1/chat/completions``: body["messages"][0] is a system
   role message OR we synthesize one at index 0.
 
-Phase 4 is read-only (no write-back). Memory writes still go through
-the admin endpoints and are populated manually until Phase 5 wires up
-Anthropic memory-tool extraction.
+Phase 4 is read-only (no write-back). Phase 5 (v3.9.0) added Anthropic
+memory-tool write-back; admin endpoints (Phase 9, v3.9.6) cover the
+operator-driven write path.
 
-Behavior rules (sensible defaults — operator can revisit later):
+Behavior rules (locked):
 - ``caller_memory_enabled=False`` → no-op (forward request unchanged).
-- No ``X-Conversation-Id`` header → no-op (we only inject in scoped flows).
+- No ``X-Conversation-Id`` header → no-op (Q1 locks scope to scoped flows).
 - No memory entry → no-op.
+- Selected provider has ``memory_disabled=True`` → no-op (Phase 8 gate
+  enforced in messages.py / completions.py — this module is unaware).
 - Store errors → silent degrade (log, forward unchanged) so a Redis
   outage never breaks live traffic.
 """

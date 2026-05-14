@@ -125,12 +125,23 @@ Redis key shape: `llmproxy:mem:{api_key_id}:{conv_id_or_default}:{tag}`.
 For every /v1/messages or /v1/chat/completions request:
 
 1. **Resolve memory key** from `api_key_id` + `X-Conversation-Id`
-   header + optional `X-Memory-Tag` header
-2. **Inject memory** into the outgoing upstream request:
-   - For Anthropic providers: inject as `memory_blocks` in body
-   - For OpenAI providers: inject as a system message prefix
-   - For Gemini / others: same system-prefix injection (translation
-     to the upstream's native shape happens at the dispatch layer)
+   header + optional `X-Memory-Tag` header.
+   - **Scope decision (locked 2026-05-14)**: injection ONLY fires when
+     `X-Conversation-Id` is set. Requests without a conversation ID
+     bypass the memory system entirely — keeps one-shot calls clean
+     and avoids accidental cross-pollination.
+2. **Inject memory** into the outgoing upstream request as a
+   **system-prompt prefix** for every provider type.
+   - **Anthropic** (locked 2026-05-14): system prompt prefix, NOT
+     `memory_blocks`. `memory_blocks` is tied to the Anthropic memory
+     tool which only fires when the caller declares the tool — too
+     narrow a contract. System-prompt is stable across providers and
+     invisible to other message roles.
+   - **OpenAI** (locked 2026-05-14): system prompt prefix on existing
+     message-0, or synthesized at index 0 if no system message exists.
+   - **Gemini / others**: same system-prefix injection (translation
+     to the upstream's native shape happens at the dispatch layer).
+   - Selected provider with `memory_disabled=True` (Phase 8): skip.
 3. **Call upstream** as usual
 4. **Capture memory updates** from response:
    - For Anthropic memory tool: parse `tool_use` blocks where
