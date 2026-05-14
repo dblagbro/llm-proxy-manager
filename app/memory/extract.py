@@ -96,8 +96,18 @@ async def maybe_extract_memory_writes(
             )
             if applied:
                 writes += 1
+        try:
+            from app.observability.prometheus import observe_memory_operation
+            observe_memory_operation("extract", "applied" if writes > 0 else "skipped")
+        except Exception:
+            pass
         return writes
     except Exception as e:
+        try:
+            from app.observability.prometheus import observe_memory_operation
+            observe_memory_operation("extract", "degraded")
+        except Exception:
+            pass
         logger.warning(
             f"caller_memory.extract: silent degrade ({e!r}) — response forwarded unchanged"
         )

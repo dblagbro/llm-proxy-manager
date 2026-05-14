@@ -110,6 +110,41 @@ SHADOW_SIMILARITY = Histogram(
     buckets=(0.50, 0.60, 0.70, 0.80, 0.85, 0.90, 0.93, 0.96, 0.98, 0.99, 1.0),
 )
 
+# v3.9.10 — caller-memory (#267) observability. Counters cover the four
+# operations the memory system runs per request: injection, extract
+# write-back, provider-flush, back-pressure recovery. Plus silent-degrade
+# counters so a Redis/SQLite outage doesn't go unnoticed in /metrics.
+MEMORY_OPERATIONS_TOTAL = Counter(
+    "llm_proxy_memory_operations_total",
+    "Caller-memory operations by kind (inject/extract/flush/recover) and outcome.",
+    ["operation", "outcome"],
+)
+
+# v3.9.10 — DB connection pool snapshot as Prometheus gauges, mirroring
+# the /health.dbPool fields. Background sampler writes these on a 30s
+# interval so dashboards can chart pool depth without polling /health.
+DB_POOL_CHECKED_OUT = Gauge(
+    "llm_proxy_db_pool_checked_out",
+    "Active SQLAlchemy connections currently held by request handlers.",
+)
+DB_POOL_OVERFLOW = Gauge(
+    "llm_proxy_db_pool_overflow",
+    "QueuePool overflow count — positive when above the base pool_size.",
+)
+DB_POOL_SIZE = Gauge(
+    "llm_proxy_db_pool_size",
+    "Configured base SQLAlchemy pool_size (capacity excluding overflow).",
+)
+
+# v3.9.10 — ExternalUsageSnapshot freshness. Gauge per provider_id holding
+# seconds since the last successful capture. Lets operators alert when a
+# scrape stalls (e.g. cookies expired) without grepping logs.
+SCRAPE_FRESHNESS_SECONDS = Gauge(
+    "llm_proxy_scrape_freshness_seconds",
+    "Age in seconds of the most-recent ExternalUsageSnapshot per provider.",
+    ["provider_id", "provider_name", "source"],
+)
+
 SERVICE_INFO = Info("llm_proxy_service", "Service metadata.")
 
 _CB_STATE_MAP = {"closed": 0, "half-open": 1, "open": 2}
@@ -186,6 +221,32 @@ def observe_verify_execution(status: str) -> None:
 
 def observe_shadow_similarity(primary_model: str, shadow_model: str, similarity: float) -> None:
     SHADOW_SIMILARITY.labels(primary_model=primary_model, shadow_model=shadow_model).observe(similarity)
+
+
+def observe_memory_operation(operation: str, outcome: str) -> None:
+    """v3.9.10 — increment the caller-memory ops counter.
+
+    operation: 'inject' | 'extract' | 'flush' | 'recover'
+    outcome:   'applied' | 'skipped' | 'degraded'  (degraded = silent
+               degrade from any path — store error, redis outage, etc.)
+    """
+    MEMORY_OPERATIONS_TOTAL.labels(operation=operation, outcome=outcome).inc()
+
+
+def observe_db_pool_snapshot(size: int, checked_out: int, overflow: int) -> None:
+    """v3.9.10 — sampled pool depth, called from background ticker."""
+    DB_POOL_SIZE.set(size)
+    DB_POOL_CHECKED_OUT.set(checked_out)
+    DB_POOL_OVERFLOW.set(overflow)
+
+
+def observe_scrape_freshness(provider_id: str, provider_name: str, source: str, age_sec: float) -> None:
+    """v3.9.10 — emit one gauge sample per provider per scrape pass."""
+    SCRAPE_FRESHNESS_SECONDS.labels(
+        provider_id=provider_id,
+        provider_name=provider_name,
+        source=source,
+    ).set(age_sec)
 
 
 async def metrics_response() -> Response:

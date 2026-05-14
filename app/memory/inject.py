@@ -79,6 +79,7 @@ async def maybe_inject_memory(
     """
     try:
         from app.config import settings
+        from app.observability.prometheus import observe_memory_operation
         if not getattr(settings, "caller_memory_enabled", False):
             return body, False
         if not conversation_id:
@@ -101,15 +102,24 @@ async def maybe_inject_memory(
             if recovered:
                 entry = await get(db, api_key_id, conversation_id, tag)
             if entry is None or not entry.content:
+                observe_memory_operation("inject", "skipped")
                 return body, False
 
         prefix = MEMORY_HEADER_PREFIX + entry.content.strip() + "\n"
         if endpoint == "messages":
+            observe_memory_operation("inject", "applied")
             return _inject_anthropic(body, prefix), True
         if endpoint == "completions":
+            observe_memory_operation("inject", "applied")
             return _inject_openai(body, prefix), True
+        observe_memory_operation("inject", "skipped")
         return body, False
     except Exception as e:
+        try:
+            from app.observability.prometheus import observe_memory_operation as _obs
+            _obs("inject", "degraded")
+        except Exception:
+            pass
         logger.warning(
             f"caller_memory.inject: silent degrade ({e!r}) — forwarding unchanged"
         )

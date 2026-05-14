@@ -138,6 +138,11 @@ async def maybe_recover_memory(
         }
         content = await handler(ctx)
         if not content:
+            try:
+                from app.observability.prometheus import observe_memory_operation
+                observe_memory_operation("recover", "skipped")
+            except Exception:
+                pass
             logger.info(
                 "caller_memory.recover: handler returned no content "
                 f"provider_type={provider_type!r} "
@@ -157,6 +162,11 @@ async def maybe_recover_memory(
         )
         marker.recovered_at = time.time()
         await db.commit()
+        try:
+            from app.observability.prometheus import observe_memory_operation
+            observe_memory_operation("recover", "applied")
+        except Exception:
+            pass
         logger.info(
             "caller_memory.recover: recovered "
             f"{len(content)} chars provider_type={provider_type!r} "
@@ -164,6 +174,11 @@ async def maybe_recover_memory(
         )
         return content
     except Exception as e:
+        try:
+            from app.observability.prometheus import observe_memory_operation
+            observe_memory_operation("recover", "degraded")
+        except Exception:
+            pass
         logger.warning(
             f"caller_memory.recover: silent degrade ({e!r}) — continuing"
         )

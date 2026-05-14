@@ -162,8 +162,18 @@ async def maybe_flush_provider_memory(
         marker.last_known_external_ref = None  # the old ref is stale now
         await db.commit()
 
+        try:
+            from app.observability.prometheus import observe_memory_operation
+            observe_memory_operation("flush", "applied" if ok else "skipped")
+        except Exception:
+            pass
         return True
     except Exception as e:
+        try:
+            from app.observability.prometheus import observe_memory_operation
+            observe_memory_operation("flush", "degraded")
+        except Exception:
+            pass
         logger.warning(
             f"caller_memory.flush: silent degrade ({e!r}) — continuing"
         )
