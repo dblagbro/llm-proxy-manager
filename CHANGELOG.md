@@ -9,6 +9,38 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.9.x — Proxy-side Caller Memory (#267) — phases 4–10 + ops fixes
 
+### v3.9.11 — Streaming Anthropic memory-tool write-back (#267 Phase 5.5, DevinGPT unblock)
+
+DevinGPT replied to the v3.9.10 adoption broadcast: blocked on streaming
+write-back because every chat completion uses `stream:true` (UX
+requirement). Without streaming extraction, adoption would have been
+read-only (inject works; the model's memory_20250818 tool_use blocks
+would silently disappear).
+
+Implementation is minimal — the existing `_stream_claude_oauth` SSE
+handler already assembles a full response_dict matching the
+non-streaming shape (top-level `content[]` with parsed tool_use blocks)
+for record_outcome / activity_log. v3.9.11 just feeds that
+assembled_response through the same `maybe_extract_memory_writes()`
+function the non-streaming path uses, gated on
+`conversation_id and api_key_id`. Silent-degrade try/except wrapper so
+a memory store error never breaks the stream's success path.
+
+Wired in both `/v1/messages` (messages.py) and `/v1/chat/completions`
+(completions.py — DevinGPT's actual endpoint, which routes through
+the OpenAI↔Anthropic translator to claude-oauth). Per-call cost is
+near-zero: the assembled_response was already being built for activity
+logging.
+
+What still doesn't write-back streaming:
+- `_stream_anthropic` (litellm path for non-claude-oauth Anthropic
+  providers) — assembles tool_calls but not a clean response_dict.
+  Defer until there's a claude-on-anthropic-direct adopter.
+- The /v1/messages litellm streaming path for other Anthropic-shape
+  providers — same reason.
+
+7 new unit tests; 1839 total green.
+
 ### v3.9.10 — Prometheus metrics for caller-memory + pool + scrape freshness
 
 Closes the observability gap for the memory feature now that it's

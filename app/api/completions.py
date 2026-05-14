@@ -301,6 +301,11 @@ async def chat_completions(
                 t0=t0,
                 provider_name=route.provider.name,
                 llm_hint=llm_hint,
+                # v3.9.11 Phase 5.5 — pass conv/tag through for stream
+                # memory write-back. Same shape as messages.py path.
+                api_key_id=key_record.id,
+                conversation_id=x_conversation_id,
+                memory_tag=x_memory_tag,
             )
             openai_sse = stream_anthropic_to_openai_sse(
                 anthropic_sse, requested_model=body.get("model") or "",

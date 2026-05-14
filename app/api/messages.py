@@ -421,6 +421,12 @@ async def messages(
                 budget_total=max_tokens,
                 provider_name=route.provider.name,
                 llm_hint=llm_hint,
+                # v3.9.11 Phase 5.5 — pass conv/tag into stream so the
+                # assembled response can be fed to maybe_extract_memory_writes
+                # after the SSE terminates.
+                api_key_id=key_record.id,
+                conversation_id=x_conversation_id,
+                memory_tag=x_memory_tag,
             )
             try:
                 first_chunk = await stream_gen.__anext__()
