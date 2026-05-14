@@ -109,28 +109,22 @@ def test_release_manual_overrides_endpoint_exists():
 
 
 def test_release_endpoint_clears_all_4_fields():
+    """v3.8.6 — values are now built into a dict before .values(**dict),
+    so the assertion shape changed from kwarg form to dict-key form."""
     src = Path("app/api/providers.py").read_text()
     idx = src.index("async def release_manual_overrides")
-    body = src[idx:idx + 1500]
-    assert "manual_override_until=None" in body
-    assert "manual_override_set_by=None" in body
-    assert "manual_override_set_at=None" in body
-    assert "manual_override_reason=None" in body
+    body = src[idx:idx + 3000]
+    assert '"manual_override_until": None' in body
+    assert '"manual_override_set_by": None' in body
+    assert '"manual_override_set_at": None' in body
+    assert '"manual_override_reason": None' in body
 
 
-def test_release_endpoint_does_not_touch_enabled():
-    """Releasing the lock does NOT re-enable the provider — that's
-    intentional. The supervisor will see ``enabled=False`` +
-    ``manual_override_until=NULL`` and treat the provider like any
-    other disabled one (it may then choose to re-enable based on
-    its verdict)."""
-    src = Path("app/api/providers.py").read_text()
-    idx = src.index("async def release_manual_overrides")
-    body = src[idx:idx + 1500]
-    # The update statement must NOT touch the enabled column
-    assert ".values(" in body
-    update_section = body[body.index(".values("):body.index(".values(") + 600]
-    assert "enabled=" not in update_section
+# v3.8.6 (#266): the original test_release_endpoint_does_not_touch_enabled
+# asserted the inverse — that release leaves enabled unchanged. Operator
+# UX feedback flipped the contract: release ALSO re-enables by default,
+# inverse of the Disable click that originally locked the provider.
+# Coverage moved to tests/unit/test_v386_release_also_enables.py.
 
 
 # ── Provider serializer ────────────────────────────────────────────

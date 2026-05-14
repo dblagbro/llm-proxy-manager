@@ -792,33 +792,48 @@ async def toggle_provider(
 
 @router.post("/_release-manual-overrides")
 async def release_manual_overrides(
+    enable: bool = True,
     db: AsyncSession = Depends(get_db),
     _: AdminUser = Depends(require_admin),
 ):
     """v3.7.28 (#252 phase 1): bulk-clear manual override on all
-    providers — the "Release all to AI control" banner button. Does
-    NOT change ``enabled``; only releases the lock so the supervisor
-    can manage the providers again. If a provider is currently
-    disabled by manual override and the operator releases it, the
-    supervisor will see ``enabled=False`` + ``manual_override_until=NULL``
-    and treat it like any other disabled provider (may re-enable
-    based on its verdict).
+    providers — the banner's "Release & re-enable all" button.
+
+    v3.8.6 behavior change: by default, ALSO sets enabled=True on the
+    affected rows. Pre-v3.8.6 the endpoint left enabled unchanged,
+    which produced an operator-confusing UX: clicking "Release" left
+    providers disabled, the provider detail then showed an "Enable"
+    button, and the operator was stuck wondering whether their click
+    had any effect.
+
+    Why this is safe: the only way a provider got into
+    ``manual_override_until=non-null AND enabled=False`` is via the
+    operator clicking Disable. Releasing the lock and re-enabling
+    is the inverse of that single user action — the natural symmetric
+    "Release & re-enable" the banner UX implies.
+
+    Caller can override with ``?enable=false`` for explicit release-only
+    behavior (e.g. operator script that wants to hand control to the
+    AI supervisor without immediately re-enabling).
     """
     from sqlalchemy import update
     from app.models.db import Provider
+    values = {
+        "manual_override_until": None,
+        "manual_override_set_by": None,
+        "manual_override_set_at": None,
+        "manual_override_reason": None,
+    }
+    if enable:
+        values["enabled"] = True
     result = await db.execute(
         update(Provider)
         .where(Provider.manual_override_until.is_not(None))
         .where(Provider.deleted_at.is_(None))
-        .values(
-            manual_override_until=None,
-            manual_override_set_by=None,
-            manual_override_set_at=None,
-            manual_override_reason=None,
-        )
+        .values(**values)
     )
     await db.commit()
-    return {"released": result.rowcount}
+    return {"released": result.rowcount, "re_enabled": enable}
 
 
 @router.post("/{provider_id}/test")
