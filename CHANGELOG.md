@@ -9,6 +9,60 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.9.x — Proxy-side Caller Memory (#267) — phases 4–10 + ops fixes
 
+### v3.9.8 — Fix quota hallucinations + pool diagnostics + providers.py & sync.py refactor
+
+Three independent fixes batched into one release.
+
+**1) WebUI quota warning fix.** The Dashboard's "subscription quota over"
+banner was showing nonsense ratios — `Devin-Anthropic-Max-Gmail weekly 643%`,
+`Devin-Anthropic-Max-VG weekly 365%` — because `/api/providers` was reading
+``ProviderUsageWindow`` (the proxy-side traffic counter). The same Pro Max
+accounts feed Claude Code / desktop / other workloads, so the proxy slice is
+~3 orders of magnitude lower than the account total. Operator-set
+``usage_weekly_limit_tokens`` (sized for the proxy slice) hit hallucination
+ratios against the rolled-up counter.
+
+Now: prefer ``ExternalUsageSnapshot.{seven_day_utilization,
+five_hour_utilization}`` (authoritative, scraped from Anthropic Console
+per v3.7.0) when available. Fall back to ``ProviderUsageWindow`` only
+for providers without snapshots (e.g. per_call OpenAI). New
+``usage_data_source`` field on the JSON shape so UI can label which
+source it's reading. Applied to ``/api/providers`` (list) and
+``/api/providers/{id}/usage`` (detail).
+
+Post-fix verification: VG=92%, Gmail=68%, Codex-Gmail=29% — actual
+Anthropic-Console / ChatGPT-Cloud-side values. No more hallucination.
+
+**2) Pool diagnostics in `/health` (P3 defense-in-depth).** New ``dbPool``
+field exposing SQLAlchemy QueuePool state from the canonical URL —
+``{size, checked_out, overflow, in_use, max}``. Excluded from the 3s
+health-cache so it's always live. Best-effort wrapper: pool query errors
+return ``{error: ...}`` instead of 500'ing /health.
+
+Surfaced after the 2026-05-14 www01 pool exhaustion which took 13h to
+manifest and was diagnosed by running ``engine.pool.checkedout()`` inside
+the container — making this visible at /health eliminates that step.
+
+**3) File-size refactor (P5).** ``providers.py`` 1213→872, ``cluster/sync.py``
+1076→800. Both now under the 1000-line ceiling; every file in ``app/`` is
+under 1000 lines.
+
+- New ``app/api/provider_lifecycle.py`` (5 endpoints: clear-auth-failure,
+  toggle, release-manual-overrides, test, scan-models)
+- New ``app/api/provider_capabilities.py`` (3 endpoints: list/upsert/infer
+  capabilities + ``_serialize_cap`` helper + ``CapabilityUpdate`` schema)
+- New ``app/cluster/sync_handlers.py`` (6 ``_apply_<table>`` handlers)
+- Re-imports in ``sync.py`` keep public surface unchanged
+- 5 stale test guards updated to point at new file locations
+
+**Tooling**: also added ``tools/cut-release.sh`` (committed before v3.9.8 as
+``ed6b5e7``) — one-shot ceremony enforcing the operator-locked rule that
+every version bump = git tag + GitHub release + Docker Hub push (versioned
++ ``:latest``) + backup tarball, same session. Prevents the 23-version drift
+that was discovered and backfilled today.
+
+1813 unit tests green.
+
 ### v3.9.7 — Lock 3 Phase-4 design decisions before Phase 10 flip (#267)
 
 The shipped Phase-4 (v3.8.9) injection behavior was originally framed as
