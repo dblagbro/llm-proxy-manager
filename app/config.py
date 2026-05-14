@@ -214,6 +214,11 @@ class Settings(BaseSettings):
     # When operator wants to opt out of provider-side memory flushing
     # (e.g. for debugging), this overrides the per-Provider auto-flush.
     caller_memory_active_flush_enabled: bool = Field(True, alias="CALLER_MEMORY_ACTIVE_FLUSH_ENABLED")
+    # v3.9.4 Phase 7 — back-pressure recovery. When a marker exists but
+    # content is gone (DB restore that lost content rows), try to
+    # reconstruct from the original upstream provider. Default ON; gated
+    # behind caller_memory_enabled overall.
+    caller_memory_recovery_enabled: bool = Field(True, alias="CALLER_MEMORY_RECOVERY_ENABLED")
     # v3.0.13: how long a provider tombstone (deleted_at non-null) is kept
     # before hard-delete. Cluster sync converges in seconds, so 7d is a
     # comfortable safety margin.

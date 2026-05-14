@@ -17,7 +17,11 @@ Modules:
   emits best-effort cleanup to the old provider. Registry-based; all
   current handlers are noop because none of the deployed providers
   expose a clean memory-clear API.
+- ``recover`` — Phase 7: back-pressure recovery. When a marker exists
+  but the content row is missing (DB restore that lost content rows
+  while markers survived), reconstruct content from the original
+  upstream provider. Registry-based; all current handlers are noop.
 
 Future:
-- ``recover`` (Phase 7) — back-pressure recovery from upstream
+- (none — Phase 8 onward is config + UI + observation)
 """
