@@ -240,6 +240,10 @@ async def init_db():
             # <tool_call> marker parsing) instead of pretending grok.com
             # natively supports tools.
             "UPDATE model_capabilities SET native_tools=0 WHERE provider_id IN (SELECT id FROM providers WHERE provider_type='grok-web')",
+            # v3.8.5 (#265) — rolling tool-call success rate column
+            # populated by the v3.8.4 tool prober. Router uses it to
+            # weight candidates on has_tools=True requests.
+            "ALTER TABLE model_capabilities ADD COLUMN tool_call_success_rate REAL",
         ]:
             try:
                 await conn.exec_driver_sql(stmt)

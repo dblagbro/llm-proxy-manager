@@ -103,3 +103,9 @@ class CapabilityProfile:
     priority: int = 10
     avg_ttft_ms: float = 0.0
     over_daily_budget: bool = False
+    # v3.8.5 (#265) — rolling tool-call success rate from the v3.8.4
+    # prober (0.0-1.0). When the request has tools=[] AND this value
+    # is non-None, the router penalizes low-success-rate candidates.
+    # None means "no probe data yet" — router falls back to the binary
+    # native_tools flag.
+    tool_call_success_rate: float | None = None

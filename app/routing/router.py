@@ -25,6 +25,43 @@ logger = logging.getLogger(__name__)
 _O_SERIES = re.compile(r"^o[0-9]")
 
 
+_TOOL_SUCCESS_HARD_SKIP_THRESHOLD = 0.3  # candidates with rate below this are -inf'd
+
+
+def _apply_tool_success_weighting(ranked: list[tuple]) -> list[tuple]:
+    """v3.8.5 (#265): de-prioritize candidates with low rolling tool-call
+    success rate when the request has tools=[].
+
+    Each tuple is (CapabilityProfile, unmet_set, score). When profile
+    has ``tool_call_success_rate`` set:
+      - rate < HARD_SKIP_THRESHOLD → score = -inf (hard skip)
+      - rate >= HARD_SKIP_THRESHOLD → score *= rate (proportional penalty)
+
+    Candidates with ``tool_call_success_rate=None`` are unaffected
+    (no probe data yet — defer to the binary native_tools flag).
+    """
+    out = []
+    for profile, unmet, score in ranked:
+        rate = getattr(profile, "tool_call_success_rate", None)
+        if rate is None:
+            out.append((profile, unmet, score))
+            continue
+        try:
+            rate_f = float(rate)
+        except (TypeError, ValueError):
+            out.append((profile, unmet, score))
+            continue
+        if rate_f < _TOOL_SUCCESS_HARD_SKIP_THRESHOLD:
+            out.append((profile, unmet, float("-inf")))
+        else:
+            # Score is currently positive (rank_candidates returns floats).
+            # Multiplying by rate (0.3-1.0) penalizes weaker tool models
+            # proportionally without losing the existing score ordering
+            # among same-rate candidates.
+            out.append((profile, unmet, score * rate_f))
+    return out
+
+
 @dataclass
 class RouteResult:
     provider: Provider
@@ -276,6 +313,11 @@ async def _load_profile(db: AsyncSession, provider: Provider) -> CapabilityProfi
             native_tools=cap.native_tools if cap.native_tools is not None else True,
             native_vision=cap.native_vision if cap.native_vision is not None else False,
             priority=provider.priority,
+            # v3.8.5 (#265): rolling tool-call success rate from the prober.
+            # None = no probe data yet → router falls back to binary
+            # native_tools. When non-None and the request has tools=[],
+            # _apply_tool_success_weighting de-prioritizes low-rate candidates.
+            tool_call_success_rate=getattr(cap, "tool_call_success_rate", None),
         )
     else:
         profile = infer_capability_profile(provider.id, provider.provider_type, model_id, provider.priority)
@@ -606,6 +648,28 @@ async def select_provider(
     ranked_scored = rank_candidates_with_scores(profiles, hint)
     if not ranked_scored:
         raise RuntimeError("No providers satisfy the required routing constraints (LLM-Hint hard constraints)")
+
+    # v3.8.5 (#265): tool-call success weighting. When the request has
+    # tools=[] AND a candidate has prober data, multiply its score by
+    # the rolling success rate. Candidates with rate < 0.3 are hard-
+    # skipped (-inf) — operators don't want fallback to lock onto a
+    # provider that can't do tools at all.
+    #
+    # Candidates with tool_call_success_rate=None are unaffected — the
+    # router falls back to the binary native_tools flag.
+    if has_tools and ranked_scored:
+        ranked_scored = _apply_tool_success_weighting(ranked_scored)
+        # Re-sort by adjusted score
+        ranked_scored.sort(key=lambda t: -t[2])
+        # Re-filter -inf candidates (would now sort to the bottom but
+        # still pollute "next provider in fallback chain" decisions)
+        ranked_scored = [t for t in ranked_scored if t[2] != float("-inf")]
+        if not ranked_scored:
+            raise RuntimeError(
+                "All candidates excluded by tool-call success weighting — "
+                "every probe-tested provider has < 30% success on tool calls. "
+                "Disable AI_TOOL_PROBER_ENABLED or lower the threshold to unblock."
+            )
 
     # v3.3.1: dry-run mode for /lmrh/quotes. Caller wants the ranked
     # candidate list — they're not actually dispatching. Return shaped
