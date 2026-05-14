@@ -267,6 +267,14 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"observability_sampler failed to start: {e}")
 
+    # v3.9.13 — caller-memory TTL sweeper. No-op when
+    # caller_memory_enabled=False or when no api_key has TTL set.
+    try:
+        from app.monitoring import caller_memory_ttl_sweeper as _ttl_sweeper
+        _ttl_sweeper.start()
+    except Exception as e:
+        logger.warning(f"caller_memory_ttl_sweeper failed to start: {e}")
+
     # v3.7.31 (#252 phase 4) — AI provider supervisor. Default disabled
     # (ai_provider_supervisor_enabled=False); worker sleeps when
     # disabled so safe to always start. Opt-in via env/setting.

@@ -219,6 +219,12 @@ class Settings(BaseSettings):
     # reconstruct from the original upstream provider. Default ON; gated
     # behind caller_memory_enabled overall.
     caller_memory_recovery_enabled: bool = Field(True, alias="CALLER_MEMORY_RECOVERY_ENABLED")
+    # v3.9.13 — TTL sweeper interval (seconds). Default 3600 (1h). The
+    # per-key opt-in itself lives on ApiKey.caller_memory_ttl_days; this
+    # is just how often the background worker checks. Set to 0 to
+    # disable the sweeper entirely (rows never auto-expire even if
+    # ttl_days is set on a key).
+    caller_memory_ttl_sweep_interval_sec: int = Field(3600, alias="CALLER_MEMORY_TTL_SWEEP_INTERVAL_SEC")
     # v3.0.13: how long a provider tombstone (deleted_at non-null) is kept
     # before hard-delete. Cluster sync converges in seconds, so 7d is a
     # comfortable safety margin.

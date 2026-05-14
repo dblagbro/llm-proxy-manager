@@ -321,6 +321,15 @@ class ApiKey(Base):
     daily_soft_cap_usd = Column(Float, nullable=True)  # warning only; X-Budget-Warning header
     daily_hard_cap_usd = Column(Float, nullable=True)  # 402 Payment Required
     hourly_cap_usd = Column(Float, nullable=True)      # burst control; 429
+    # v3.9.13 (#267 follow-up) — per-key caller_memory retention. Operator
+    # sets days; background sweeper tombstones CallerMemory rows whose
+    # ``updated_at < now - caller_memory_ttl_days * 86400``. Null = no TTL
+    # (rows persist until purged via /v1/memory or admin endpoint).
+    # Operator opt-in per key — different teams have different retention
+    # needs (hub wants room-archival-driven cleanup; tax wants year-long
+    # carryover; paperless wants per-document cycle). Default behavior
+    # unchanged for keys that don't set this.
+    caller_memory_ttl_days = Column(Integer, nullable=True)
     # Self-resetting bucket counters (reset when bucket_ts differs from current)
     day_bucket_ts = Column(DateTime, nullable=True)
     day_cost_usd = Column(Float, default=0.0)

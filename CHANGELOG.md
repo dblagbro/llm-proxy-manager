@@ -9,6 +9,41 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.9.x — Proxy-side Caller Memory (#267) — phases 4–10 + ops fixes
 
+### v3.9.13 — Per-key TTL sweeper for caller_memory (hub follow-up)
+
+Hub team asked in their v3.9.12 reply: "if you want a per-key TTL config
+later (background sweeper that tombstones rows where updated_at < now -
+N days for keys that opt in), ping me and I'll add it". This ships that.
+
+**Opt-in is per-api-key** via a new ``api_keys.caller_memory_ttl_days``
+column. NULL = no TTL (current behavior; rows persist until explicit
+purge). Positive int = background sweeper tombstones any CallerMemory
+row whose owner api_key has that TTL set AND whose ``updated_at`` is
+older than the threshold.
+
+Different teams get different retention without affecting each other:
+
+- Hub: archival-driven purge via /v1/memory + maybe a short TTL safety net
+- Tax AI: long TTL (year-over-year carryover) or null (never expire)
+- Paperless: short TTL (per-document-cycle) or null
+- DevinGPT: their call once they wire conversation_id
+
+Implementation:
+- ``app/monitoring/caller_memory_ttl_sweeper.py`` background worker
+- Runs hourly by default (``caller_memory_ttl_sweep_interval_sec``)
+- Skips when ``caller_memory_enabled=False`` (no-op)
+- Tombstone + bump ``updated_at`` for LWW cluster sync propagation
+- Redis cache invalidation on each tombstone
+- Floor at 60s interval to prevent runaway-loop misconfiguration
+
+Admin surface: existing ``PATCH /api/keys/{id}`` PUT now accepts
+``caller_memory_ttl_days`` (positive int = set; 0 or negative = clear).
+The field shows up on the list/get responses too. UI wiring in the
+React frontend deferred — admin API is enough for the operator's
+in-session use case.
+
+13 new unit tests; 1863 total green.
+
 ### v3.9.12 — API-key-scoped memory CRUD (hub-team unblock)
 
 Hub team replied to the v3.9.10 broadcast: opt-out by default, but
