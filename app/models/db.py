@@ -416,6 +416,41 @@ class ProviderAiReview(Base):
     dismissed_at = Column(DateTime, nullable=True)
 
 
+class ModelToolProbe(Base):
+    """v3.8.4 (#264) — periodic tool-call probe results.
+
+    The tool capability prober fires a standard ``get_weather(city)``
+    tool-call request at every (provider, default_model) and records
+    whether the model:
+      - returned ANY tool_call block (``called=True``)
+      - returned a parseable tool_call with the expected name + args
+        (``parseable=True``)
+      - returned the expected city argument (``correct_city=True``)
+
+    A rolling window of the last N probes drives
+    ``ModelCapability.native_tools`` via hysteresis: <60% success →
+    native_tools=False (engage emulation); >=80% → native_tools=True
+    (trust native).
+
+    Table is per-node; cluster sync optional (probe results are
+    deterministic-ish per node since the same prompt should produce
+    the same answer, but rate-limit / network-error skew can differ).
+    """
+    __tablename__ = "model_tool_probe"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    provider_id = Column(String, ForeignKey("providers.id"), nullable=False, index=True)
+    model_id = Column(String, nullable=False, index=True)
+    captured_at = Column(DateTime, server_default=func.now(), index=True)
+    # Outcome flags
+    called = Column(Boolean, default=False)         # did the response contain ANY tool_call?
+    parseable = Column(Boolean, default=False)      # was the tool_call name + JSON args parseable?
+    correct_args = Column(Boolean, default=False)   # did the args contain the expected key?
+    # Diagnostic context
+    error = Column(Text, nullable=True)             # non-null on http / network errors
+    raw_excerpt = Column(Text, nullable=True)       # first 500 chars of model output for inspection
+    response_format = Column(String, nullable=True) # "native" | "emulated" | None
+
+
 class BlockedIp(Base):
     """v3.7.11 — IP block list. Per operator Q5: AI rate limiter
     should be able to slow keys OR source IPs. v3.7.10 shipped the
