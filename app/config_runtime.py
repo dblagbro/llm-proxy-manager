@@ -382,6 +382,38 @@ SCHEMA: dict[str, dict] = {
         "label": "ChatGPT/Codex billing scrape: min gap between scrapes (0 = interval/2 heuristic)",
         "group": "Billing scrape",
     },
+
+    # v3.8.4 (#264) — tool capability prober settings, UI-tunable.
+    "ai_tool_prober_enabled": {
+        "type": "bool", "default": settings.ai_tool_prober_enabled,
+        "label": "Tool prober: fire a standard get_weather(city) probe at every (provider, default_model) periodically",
+        "group": "Tool capability prober",
+    },
+    "ai_tool_prober_interval_sec": {
+        "type": "int", "default": settings.ai_tool_prober_interval_sec,
+        "label": "Tool prober: cadence (seconds, default 86400 = daily)",
+        "group": "Tool capability prober",
+    },
+    "ai_tool_prober_internal_api_key": {
+        "type": "str", "default": settings.ai_tool_prober_internal_api_key or "",
+        "label": "Tool prober: internal API key for self-call (llmp-...)",
+        "group": "Tool capability prober",
+    },
+    "ai_tool_prober_native_threshold": {
+        "type": "float", "default": settings.ai_tool_prober_native_threshold,
+        "label": "Tool prober: success rate >= this flips native_tools=True (0.0-1.0, default 0.8)",
+        "group": "Tool capability prober",
+    },
+    "ai_tool_prober_emulate_threshold": {
+        "type": "float", "default": settings.ai_tool_prober_emulate_threshold,
+        "label": "Tool prober: success rate < this flips native_tools=False (default 0.6 — gap creates hysteresis)",
+        "group": "Tool capability prober",
+    },
+    "ai_tool_prober_success_window": {
+        "type": "int", "default": settings.ai_tool_prober_success_window,
+        "label": "Tool prober: rolling window size (probes — default 5)",
+        "group": "Tool capability prober",
+    },
 }
 
 

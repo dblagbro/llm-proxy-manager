@@ -193,6 +193,17 @@ class Settings(BaseSettings):
     ai_provider_supervisor_internal_api_key: str = Field("", alias="AI_PROVIDER_SUPERVISOR_INTERNAL_API_KEY")
     ai_provider_supervisor_max_priority_delta: int = Field(2, alias="AI_PROVIDER_SUPERVISOR_MAX_PRIORITY_DELTA")
     ai_provider_supervisor_max_auto_skip_hours: int = Field(24, alias="AI_PROVIDER_SUPERVISOR_MAX_AUTO_SKIP_HOURS")
+
+    # v3.8.4 (#264): tool-call capability prober. Fires a standard
+    # get_weather(city) probe at every (provider, default_model) on
+    # a configurable cadence; rolling success rate drives
+    # ModelCapability.native_tools via hysteresis.
+    ai_tool_prober_enabled: bool = Field(False, alias="AI_TOOL_PROBER_ENABLED")
+    ai_tool_prober_interval_sec: int = Field(86400, alias="AI_TOOL_PROBER_INTERVAL_SEC")  # daily
+    ai_tool_prober_internal_api_key: str = Field("", alias="AI_TOOL_PROBER_INTERNAL_API_KEY")
+    ai_tool_prober_native_threshold: float = Field(0.8, alias="AI_TOOL_PROBER_NATIVE_THRESHOLD")
+    ai_tool_prober_emulate_threshold: float = Field(0.6, alias="AI_TOOL_PROBER_EMULATE_THRESHOLD")
+    ai_tool_prober_success_window: int = Field(5, alias="AI_TOOL_PROBER_SUCCESS_WINDOW")
     # v3.0.13: how long a provider tombstone (deleted_at non-null) is kept
     # before hard-delete. Cluster sync converges in seconds, so 7d is a
     # comfortable safety margin.
