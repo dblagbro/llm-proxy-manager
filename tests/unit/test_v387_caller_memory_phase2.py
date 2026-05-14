@@ -132,29 +132,8 @@ def test_marker_apply_recovered_at_monotone():
 
 
 # ── No behavior change in this phase ──────────────────────────────
-
-
-def test_no_injection_middleware_yet():
-    """Phase 2 is data layer only. No memory-injection helpers should
-    exist yet (those land in Phase 4)."""
-    # The /app/memory directory shouldn't exist or shouldn't have
-    # the injection helper yet
-    p = Path("app/memory/inject.py")
-    # OK if file doesn't exist; if it does, it should be a stub
-    if p.exists():
-        content = p.read_text()
-        assert "raise NotImplementedError" in content or len(content) < 200
-
-
-def test_request_pipeline_not_injecting():
-    """Until Phase 4, /v1/messages and /v1/chat/completions should
-    NOT be reading memory state during request handling."""
-    from pathlib import Path as P
-    for f in ("app/api/messages.py", "app/api/completions.py"):
-        src = P(f).read_text()
-        assert "CallerMemory" not in src, (
-            f"{f} should not reference CallerMemory until Phase 4"
-        )
+# (v3.8.9: Phase 4 now ships injection middleware; the two guards
+# that asserted Phase 2 was data-layer-only have been retired.)
 
 
 def test_version_bumped():

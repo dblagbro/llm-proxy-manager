@@ -7,8 +7,10 @@ Modules:
 - ``store`` — read/write layer with Redis hot cache + SQLite durable
   + in-process fallback (mirrors the app/cot/session.py pattern).
 
+- ``inject`` — Phase 4: request-time memory injection middleware
+  (prepends a system-prompt prefix when ``X-Conversation-Id`` is set).
+
 Future:
-- ``inject`` (Phase 4) — request-time memory injection middleware
 - ``flush`` (Phase 6) — vendor-specific provider-side flush handlers
 - ``recover`` (Phase 7) — back-pressure recovery from upstream
 """

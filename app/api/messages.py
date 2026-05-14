@@ -104,6 +104,8 @@ async def messages(
     x_hedge: Optional[str] = Header(None, alias="x-hedge"),
     x_cot_cascade: Optional[str] = Header(None, alias="x-cot-cascade"),
     x_context_strategy: Optional[str] = Header(None, alias="x-context-strategy"),
+    x_conversation_id: Optional[str] = Header(None, alias="x-conversation-id"),
+    x_memory_tag: Optional[str] = Header(None, alias="x-memory-tag"),
 ):
     key_record = await verify_api_key(db, x_api_key)
     # v3.0.45: set tenant context for select_provider's ownership filter
@@ -140,6 +142,20 @@ async def messages(
     hint, auto_task = await build_hint_with_auto_task(llm_hint, messages_list)
     has_tools = bool(tools)
     has_images = has_images_anthropic(messages_list)
+
+    # v3.8.9 (#267) Phase 4 — proxy-side caller-memory injection.
+    # No-op unless settings.caller_memory_enabled AND request supplies
+    # X-Conversation-Id. Silent degrade on any store error.
+    from app.memory.inject import maybe_inject_memory
+    body, _mem_injected = await maybe_inject_memory(
+        db, body=body, api_key_id=key_record.id,
+        conversation_id=x_conversation_id, memory_tag=x_memory_tag,
+        endpoint="messages",
+    )
+    if _mem_injected:
+        # Re-extract system since we may have just prepended to it.
+        system = body.get("system")
+        messages_list = body.get("messages", messages_list)
 
     # v2.8.0: parse :floor / :nitro / :exacto suffix off the requested model.
     # The suffix never reaches upstream — Anthropic / OpenAI etc. would 4xx.
@@ -252,6 +268,8 @@ async def messages(
         resp_headers["X-Sort-Mode"] = parsed_slug.sort_mode
     if is_auto:
         resp_headers["X-Auto-Routed"] = f"{route.provider.name}:{route.profile.model_id}"
+    if _mem_injected:
+        resp_headers["X-Caller-Memory"] = "injected"
     # Budget visibility headers (soft-cap warning, remaining $ today/this hour)
     if key_record.budget_status is not None:
         from app.budget.tracker import warnings_for
