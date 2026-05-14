@@ -204,6 +204,16 @@ class Settings(BaseSettings):
     ai_tool_prober_native_threshold: float = Field(0.8, alias="AI_TOOL_PROBER_NATIVE_THRESHOLD")
     ai_tool_prober_emulate_threshold: float = Field(0.6, alias="AI_TOOL_PROBER_EMULATE_THRESHOLD")
     ai_tool_prober_success_window: int = Field(5, alias="AI_TOOL_PROBER_SUCCESS_WINDOW")
+
+    # v3.8.7 (#267): proxy-side caller memory store. Cluster-replicated
+    # via the same LWW pattern as Provider / ApiKeyAiReview rows.
+    # Read-cached in Redis when redis_url is set; SQLite is the durable
+    # source of truth.
+    # See docs/rfc/2026-05-proxy-memory-store.md for full design.
+    caller_memory_enabled: bool = Field(False, alias="CALLER_MEMORY_ENABLED")
+    # When operator wants to opt out of provider-side memory flushing
+    # (e.g. for debugging), this overrides the per-Provider auto-flush.
+    caller_memory_active_flush_enabled: bool = Field(True, alias="CALLER_MEMORY_ACTIVE_FLUSH_ENABLED")
     # v3.0.13: how long a provider tombstone (deleted_at non-null) is kept
     # before hard-delete. Cluster sync converges in seconds, so 7d is a
     # comfortable safety margin.

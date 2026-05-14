@@ -764,6 +764,9 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
     await _apply_ai_reviews(db, payload.get("api_key_ai_reviews", []))
     await _apply_external_usage_snapshots(db, payload.get("external_usage_snapshots", []))
     await _apply_provider_ai_reviews(db, payload.get("provider_ai_reviews", []))
+    # v3.8.7 (#267) Phase 2 — caller memory king-store
+    await _apply_caller_memory(db, payload.get("caller_memory", []))
+    await _apply_caller_memory_markers(db, payload.get("caller_memory_markers", []))
 
     await db.commit()
 
@@ -925,6 +928,110 @@ async def _apply_provider_ai_reviews(db: AsyncSession, rows: list[dict]) -> None
                     setattr(existing, field, peer_val)
             if r.get("applied_action") and not existing.applied_action:
                 existing.applied_action = r["applied_action"]
+
+
+async def _apply_caller_memory(db: AsyncSession, rows: list[dict]) -> None:
+    """v3.8.7 (#267) Phase 2 — merge incoming caller_memory rows.
+
+    Dedup by (api_key_id, conversation_id, memory_tag). LWW by
+    updated_at. Tombstones (deleted_at non-null) propagate so a
+    DELETE on one node reaches peers.
+
+    NOTE: this only manages the SQLite king-store. Redis cache
+    invalidation happens at the call site (Phase 3 ship) — apply_sync
+    must be cheap and not require Redis to be up.
+    """
+    from app.models.db import CallerMemory
+    for r in rows:
+        akid = r.get("api_key_id")
+        conv = r.get("conversation_id")  # nullable
+        tag = r.get("memory_tag") or "default"
+        if not akid:
+            continue
+        peer_ts = r.get("updated_at") or 0
+        existing = (await db.execute(
+            select(CallerMemory)
+            .where(CallerMemory.api_key_id == akid)
+            .where(CallerMemory.conversation_id.is_(None) if conv is None else CallerMemory.conversation_id == conv)
+            .where(CallerMemory.memory_tag == tag)
+        )).scalar_one_or_none()
+        if existing is None:
+            db.add(CallerMemory(
+                api_key_id=akid,
+                conversation_id=conv,
+                memory_tag=tag,
+                content=r.get("content") or "",
+                content_format=r.get("content_format") or "text",
+                updated_at=peer_ts,
+                updated_by_node=r.get("updated_by_node"),
+                source_provider_id=r.get("source_provider_id"),
+                source_request_id=r.get("source_request_id"),
+                deleted_at=r.get("deleted_at"),
+            ))
+        else:
+            # LWW: only adopt the peer's view when its timestamp is
+            # strictly newer (== keeps local stamps stable on tie).
+            if peer_ts > (existing.updated_at or 0):
+                existing.content = r.get("content") or ""
+                existing.content_format = r.get("content_format") or "text"
+                existing.updated_at = peer_ts
+                existing.updated_by_node = r.get("updated_by_node")
+                existing.source_provider_id = r.get("source_provider_id")
+                existing.source_request_id = r.get("source_request_id")
+                existing.deleted_at = r.get("deleted_at")
+
+
+async def _apply_caller_memory_markers(db: AsyncSession, rows: list[dict]) -> None:
+    """v3.8.7 (#267) Phase 2 — merge incoming caller_memory_marker
+    rows. Markers are monotonically-extending records:
+    first_seen_at never decreases, last_known_* updates with each
+    cross-provider write, recovered_at lifecycle transitions
+    None→set.
+
+    Dedup by (api_key_id, conversation_id, memory_tag).
+    """
+    from app.models.db import CallerMemoryMarker
+    for r in rows:
+        akid = r.get("api_key_id")
+        conv = r.get("conversation_id")
+        tag = r.get("memory_tag") or "default"
+        if not akid:
+            continue
+        existing = (await db.execute(
+            select(CallerMemoryMarker)
+            .where(CallerMemoryMarker.api_key_id == akid)
+            .where(CallerMemoryMarker.conversation_id.is_(None) if conv is None else CallerMemoryMarker.conversation_id == conv)
+            .where(CallerMemoryMarker.memory_tag == tag)
+        )).scalar_one_or_none()
+        if existing is None:
+            db.add(CallerMemoryMarker(
+                api_key_id=akid,
+                conversation_id=conv,
+                memory_tag=tag,
+                first_seen_at=r.get("first_seen_at") or 0,
+                last_known_provider_id=r.get("last_known_provider_id"),
+                last_known_external_ref=r.get("last_known_external_ref"),
+                recovered_at=r.get("recovered_at"),
+                deleted_at=r.get("deleted_at"),
+            ))
+        else:
+            # first_seen_at is the EARLIEST — keep the min so backups
+            # that restore older markers don't accidentally shift it
+            # forward.
+            peer_first = r.get("first_seen_at") or 0
+            if peer_first and (existing.first_seen_at is None or peer_first < existing.first_seen_at):
+                existing.first_seen_at = peer_first
+            # last_known_* picks the most recent write — but we don't
+            # have a timestamp for those; treat any non-null peer value
+            # as more authoritative than a local null.
+            if r.get("last_known_provider_id") and not existing.last_known_provider_id:
+                existing.last_known_provider_id = r["last_known_provider_id"]
+            if r.get("last_known_external_ref") and not existing.last_known_external_ref:
+                existing.last_known_external_ref = r["last_known_external_ref"]
+            # recovered_at is monotone (None→set, never reverts)
+            peer_rec = r.get("recovered_at")
+            if peer_rec and not existing.recovered_at:
+                existing.recovered_at = peer_rec
 
 
 async def _apply_external_usage_snapshots(db: AsyncSession, rows: list[dict]) -> None:

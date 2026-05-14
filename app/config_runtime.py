@@ -414,6 +414,20 @@ SCHEMA: dict[str, dict] = {
         "label": "Tool prober: rolling window size (probes — default 5)",
         "group": "Tool capability prober",
     },
+
+    # v3.8.7 (#267) — proxy-side memory store. Opt-in via the feature
+    # flag; the data layer ships disabled, so no behavior change until
+    # operator flips it.
+    "caller_memory_enabled": {
+        "type": "bool", "default": settings.caller_memory_enabled,
+        "label": "Proxy-side memory: enable cross-provider memory state (cluster-replicated)",
+        "group": "Caller memory",
+    },
+    "caller_memory_active_flush_enabled": {
+        "type": "bool", "default": settings.caller_memory_active_flush_enabled,
+        "label": "Proxy-side memory: active flush of provider-side memory when routing away (best-effort)",
+        "group": "Caller memory",
+    },
 }
 
 

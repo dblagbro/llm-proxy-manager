@@ -177,41 +177,96 @@ Reuses the existing `/cluster/sync` endpoint:
 - `DELETE /api/keys/{id}/memory` — clear all memory for a key
 - New "Memory" tab on the API Keys detail page in the UI
 
-## Open questions for operator
+## Locked decisions (2026-05-13 operator review)
 
-1. **Storage backend**: confirm Redis is fine, OR prefer SQLite-only
-   (simpler — leverages existing cluster sync; one less moving part)?
-2. **Memory keying**: is `(api_key_id, conversation_id, memory_tag)`
-   the right 3-tuple, or do you want simpler (just `api_key_id`)?
-3. **Provider flush behavior**: should the proxy actively call upstream
-   "clear memory" endpoints when we route away, OR just stop using the
-   provider-side feature (silent invalidation)?
-4. **Implicit cross-conversation memory**: some providers have an
-   account-wide memory that turns on by default. Should we:
-   (a) Refuse to use providers that can't have their memory turned off
-   (b) Disable provider-side memory at provider-config time (e.g. via
-       Anthropic's memory_blocks=[] in every request)
-   (c) Accept the risk and document it
-5. **TTL**: should memory entries auto-expire? If so, default TTL?
-   Existing CoT sessions expire at `cot_session_ttl_sec` (default 1h).
-   Memory should be MUCH longer — operator default proposal: never
-   expire automatically; admin must clear.
-6. **Header names**: `X-Conversation-Id` + `X-Memory-Tag` ok, or
-   prefer `LLM-Conv-Id` / namespaced differently?
+1. ~~Storage backend~~: **Per-node Redis + SQLite fallback**. Each node
+   has its own Redis (host.docker.internal:6379 already used by
+   cot_session). Reads local, writes go via cluster-sync to peers.
+   SQLite `caller_memory` is durable source-of-truth + cluster-sync
+   transport; Redis is hot read-cache.
+2. ~~Memory keying~~: 3-tuple `(api_key_id, conversation_id, memory_tag)`
+   (no objection from operator → proceed with proposed default).
+3. ~~Provider flush behavior~~: **Active flush** (best fidelity). Proxy
+   emits clear-memory to provider A when routing to provider B.
+   Anthropic: memory_blocks=[]. OpenAI Assistants: thread delete.
+   Cohere: /v2/chat/clear. Best-effort; log + continue on failure.
+4. ~~Implicit cross-conversation memory~~: **Disable at provider-config**.
+   When the proxy first uses a new provider's API key, attempt to
+   disable account-wide memory via the vendor's API. Re-disable
+   periodically to catch drift. Operator gets a warning if a provider
+   can't be disabled (e.g. closed-API providers).
+5. ~~TTL~~: **Never expire automatically**. Memory rows persist until
+   admin DELETE. **Plus** a new requirement (operator-added):
+   **back-pressure recovery** — if the proxy loses local memory state
+   (DB restore, upgrade with migration drop, container wipe), the
+   proxy must be able to ask the upstream provider "give me full
+   history for this conversation_id" and reconstruct what it can.
+6. Header names: proceed with `X-Conversation-Id` + `X-Memory-Tag`
+   (no operator objection → defaults stand).
+
+## Back-pressure recovery (decision 5b)
+
+**Problem**: never-expire memory means a DB restore / upgrade that
+drops the `caller_memory` rows leaves the proxy thinking each request
+is fresh, while the upstream provider may still have the memory state
+on their side. Caller's conversation continuity is silently broken.
+
+**Solution**: persistent "memory marker" row per `(api_key_id,
+conversation_id, memory_tag)` recording **that memory exists** even
+if the content blob is empty/missing. On a request where the marker
+exists but content is empty/null, the proxy triggers a recovery path:
+
+1. Look up `last_known_provider_id` from the marker
+2. Call that provider's "list / view memory" endpoint (vendor-specific):
+   - **Anthropic**: memory tool's `view` action
+   - **OpenAI Assistants**: `GET /threads/{thread_id}/messages`
+   - **Cohere**: `GET /v2/chat/conversations/{conv_id}`
+   - **Gemini**: depends on Vertex agent endpoint — TBD
+3. Reconstruct the local content from what the provider returns
+4. Mark the marker as `recovered_at=now()`
+5. Continue with the request, using the recovered content
+
+**Schema addition** for back-pressure:
+
+```python
+class CallerMemoryMarker(Base):
+    """Persistent existence-marker for back-pressure recovery.
+
+    Lives separately from the content rows so a DB restore that loses
+    `caller_memory` content rows can still recover via the marker
+    + the upstream provider's surviving state."""
+    __tablename__ = "caller_memory_marker"
+    id = Column(Integer, primary_key=True)
+    api_key_id = Column(String, ForeignKey("api_keys.id"), nullable=False, index=True)
+    conversation_id = Column(String, nullable=True, index=True)
+    memory_tag = Column(String, nullable=False, default="default")
+    first_seen_at = Column(Float, nullable=False)
+    last_known_provider_id = Column(String, nullable=True)  # for vendor-specific recovery call
+    last_known_external_ref = Column(String, nullable=True)  # provider's thread_id / conversation handle
+    recovered_at = Column(Float, nullable=True)  # set when a recovery succeeded
+```
+
+The marker is created on first memory write and updated whenever
+memory crosses to a new provider. It's INTENTIONALLY simple and
+small so it survives backups easily (one row per conversation, ~100
+bytes each). On lossy upgrades the operator would explicitly re-import
+the marker table from a snapshot if even those rows are missing.
 
 ## Effort estimate
 
 | Phase | Scope | Estimate |
 |---|---|---|
-| 1 | RFC review + lock decisions (this doc) | operator step |
-| 2 | Schema + migration + cluster sync entry | 1 ship |
-| 3 | Redis read/write layer + SQLite fallback | 1 ship |
+| 1 | RFC review + lock decisions | ✅ DONE 2026-05-13 |
+| 2 | `CallerMemory` + `CallerMemoryMarker` tables + migrations + cluster sync entry | 1 ship |
+| 3 | Redis read/write layer + SQLite fallback (`app/memory/store.py`) | 1 ship |
 | 4 | Memory-injection middleware on /v1/messages + /v1/chat/completions | 2 ships |
 | 5 | Anthropic memory-tool extraction + write-back | 1 ship |
 | 6 | Provider-side flush handlers (per-vendor) | 1-2 ships |
-| 7 | Admin API + UI panel | 2 ships |
-| 8 | Operator opt-in flag default OFF + observation period | 1 ship |
-| **Total (Phases 2-8)** | | **9-10 ships ≈ 1.5 working days** |
+| 7 | Back-pressure recovery path (vendor-specific list/view endpoints) | 1-2 ships |
+| 8 | Implicit-memory disable-at-config (per-vendor "turn off account-wide memory" calls) | 1 ship |
+| 9 | Admin API + UI panel | 2 ships |
+| 10 | Operator opt-in flag default OFF + observation period | 1 ship |
+| **Total (Phases 2-10)** | | **11-13 ships ≈ 2 working days** |
 
 ## Risks
 
