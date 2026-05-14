@@ -103,17 +103,9 @@ async def chat_completions(
     has_tools = bool(tools)
     has_images = has_images_openai(messages_list)
 
-    # v3.8.9 (#267) Phase 4 — proxy-side caller-memory injection.
-    # No-op unless settings.caller_memory_enabled AND X-Conversation-Id
-    # is set. Silent degrade on any store error.
-    from app.memory.inject import maybe_inject_memory
-    body, _mem_injected = await maybe_inject_memory(
-        db, body=body, api_key_id=key_record.id,
-        conversation_id=x_conversation_id, memory_tag=x_memory_tag,
-        endpoint="completions",
-    )
-    if _mem_injected:
-        messages_list = body.get("messages", messages_list)
+    # v3.9.5 (#267 Phase 8) — memory injection moved from here to
+    # post-route-selection so we can gate on route.provider.memory_disabled.
+    _mem_injected = False
 
     # v2.8.0: parse :floor / :nitro / :exacto suffix + auto-routing alias.
     from app.routing.model_slug import parse_model_slug, is_auto_model
@@ -158,6 +150,19 @@ async def chat_completions(
     body = resolve_auto_model_into_body(body, route, is_auto)
     # Kept as a local for downstream record_outcome calls (lines ~600-615).
     requested_model = (alias.model_id if alias else parsed_slug.bare_model) or None
+
+    # v3.8.9 (#267) Phase 4 — proxy-side caller-memory injection.
+    # Relocated here in v3.9.5 (Phase 8) so we can gate on the chosen
+    # provider's memory_disabled flag. Silent degrade on any store error.
+    if not getattr(route.provider, "memory_disabled", False):
+        from app.memory.inject import maybe_inject_memory
+        body, _mem_injected = await maybe_inject_memory(
+            db, body=body, api_key_id=key_record.id,
+            conversation_id=x_conversation_id, memory_tag=x_memory_tag,
+            endpoint="completions",
+        )
+        if _mem_injected:
+            messages_list = body.get("messages", messages_list)
 
     # OTEL GenAI span: routing-decision metadata (no-op if OTLP endpoint unset)
     with llm_span(
