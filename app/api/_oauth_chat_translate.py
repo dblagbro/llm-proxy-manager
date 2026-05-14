@@ -360,3 +360,257 @@ async def stream_anthropic_to_openai_sse(
     # Stream ended without explicit message_stop
     yield emit_chunk({}, finish_reason or "stop")
     yield b"data: [DONE]\n\n"
+
+
+# ── v3.9.1 (#269 Fix B) — Anthropic → OpenAI reverse direction ─────
+#
+# When an Anthropic-shape /v1/messages request cross-family-falls back
+# to an OpenAI-shape provider (gpt-4o via OpenRouter, etc), we need to
+# convert the body. Without this, the upstream returns "Invalid user
+# message at index N" 400s because OpenAI doesn't recognize Anthropic's
+# tool_use / tool_result content blocks.
+#
+# Companion to ``openai_request_to_anthropic`` above.
+
+
+_EMPTY_TOOL_RESULT_PLACEHOLDER = "(no output)"
+
+
+def _tool_result_content_to_str(content: Any) -> str:
+    """Anthropic tool_result.content can be: str, None, or a list of
+    content blocks (each {type: text|image, ...}). OpenAI's role:tool
+    message content must be a non-empty string."""
+    if content is None or content == "":
+        return _EMPTY_TOOL_RESULT_PLACEHOLDER
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for blk in content:
+            if not isinstance(blk, dict):
+                continue
+            if blk.get("type") == "text":
+                t = blk.get("text") or ""
+                if t:
+                    parts.append(t)
+            elif blk.get("type") == "image":
+                # OpenAI tool role doesn't support image content; drop
+                # with a placeholder so the message stays non-empty.
+                parts.append("[image]")
+        joined = "\n".join(parts).strip()
+        return joined or _EMPTY_TOOL_RESULT_PLACEHOLDER
+    # Unknown shape — coerce to str so we never return empty.
+    s = str(content).strip()
+    return s or _EMPTY_TOOL_RESULT_PLACEHOLDER
+
+
+def _anthropic_blocks_to_openai_message_parts(
+    role: str, blocks: list,
+) -> list[dict]:
+    """Convert one Anthropic message's content blocks (when the message
+    is list-shaped) into one or more OpenAI messages, preserving order.
+
+    Returns a list of OpenAI-shape messages.
+    """
+    out: list[dict] = []
+
+    if role == "assistant":
+        # Collect text + tool_use blocks into a single assistant message
+        # with optional ``content`` (text) + ``tool_calls`` (function calls).
+        text_parts: list[str] = []
+        tool_calls: list[dict] = []
+        for blk in blocks:
+            if not isinstance(blk, dict):
+                continue
+            t = blk.get("type")
+            if t == "text":
+                txt = blk.get("text") or ""
+                if txt:
+                    text_parts.append(txt)
+            elif t == "tool_use":
+                tool_calls.append({
+                    "id": blk.get("id") or "",
+                    "type": "function",
+                    "function": {
+                        "name": blk.get("name") or "",
+                        "arguments": json.dumps(blk.get("input") or {}),
+                    },
+                })
+            # Other block types (thinking, etc.) are dropped for cross-
+            # family; OpenAI has no equivalent.
+        msg: dict[str, Any] = {"role": "assistant"}
+        if text_parts:
+            msg["content"] = "\n".join(text_parts)
+        else:
+            msg["content"] = None  # OpenAI spec: null allowed when tool_calls present
+        if tool_calls:
+            msg["tool_calls"] = tool_calls
+        out.append(msg)
+        return out
+
+    if role == "user":
+        # User messages can mix text + tool_result blocks. OpenAI splits
+        # these: each tool_result becomes a ``role:tool`` message;
+        # remaining text collapses into a single ``role:user`` message
+        # AFTER the tool replies (per OpenAI's "tool-results-come-first"
+        # convention when an assistant has just emitted tool_calls).
+        tool_msgs: list[dict] = []
+        text_parts: list[str] = []
+        for blk in blocks:
+            if not isinstance(blk, dict):
+                continue
+            t = blk.get("type")
+            if t == "tool_result":
+                tool_msgs.append({
+                    "role": "tool",
+                    "tool_call_id": blk.get("tool_use_id") or "",
+                    "content": _tool_result_content_to_str(blk.get("content")),
+                })
+            elif t == "text":
+                txt = blk.get("text") or ""
+                if txt:
+                    text_parts.append(txt)
+            elif t == "image":
+                # Carry image content through as an OpenAI image_url part.
+                src = blk.get("source") or {}
+                if src.get("type") == "base64":
+                    media = src.get("media_type") or "image/jpeg"
+                    data = src.get("data") or ""
+                    text_parts.append(f"[image:{media};base64,{data[:40]}…]")
+                else:
+                    text_parts.append("[image]")
+        # Emit tool messages first (they correspond to the preceding
+        # assistant's tool_calls), then the user text if any.
+        out.extend(tool_msgs)
+        if text_parts:
+            out.append({"role": "user", "content": "\n".join(text_parts)})
+        return out
+
+    # Other roles (system handled separately above): pass through with
+    # best-effort string coercion.
+    coerced = "\n".join(
+        (b.get("text") or "") for b in blocks
+        if isinstance(b, dict) and b.get("type") == "text"
+    )
+    out.append({"role": role, "content": coerced})
+    return out
+
+
+def anthropic_messages_to_openai(
+    body_messages: list[dict],
+    body_system: Any = None,
+) -> list[dict]:
+    """Translate Anthropic ``messages[]`` + top-level ``system`` field
+    into OpenAI ChatCompletion ``messages[]`` shape.
+
+    Handles:
+    - ``system`` (str or list-of-text-blocks) prepended as role:system
+    - per-message: string content passes through as-is
+    - per-message: list-content with tool_use/tool_result/text/image
+      blocks → split into multiple OpenAI messages in order
+    """
+    out: list[dict] = []
+
+    # System field → leading role:system message
+    if body_system is not None:
+        if isinstance(body_system, str) and body_system:
+            out.append({"role": "system", "content": body_system})
+        elif isinstance(body_system, list):
+            parts = [
+                (b.get("text") or "") for b in body_system
+                if isinstance(b, dict) and b.get("type") == "text"
+            ]
+            joined = "\n".join(p for p in parts if p)
+            if joined:
+                out.append({"role": "system", "content": joined})
+
+    for m in body_messages or ():
+        if not isinstance(m, dict):
+            continue
+        role = m.get("role") or "user"
+        content = m.get("content")
+
+        if isinstance(content, str):
+            # Plain text message — straight passthrough.
+            out.append({"role": role, "content": content})
+            continue
+        if isinstance(content, list):
+            out.extend(_anthropic_blocks_to_openai_message_parts(role, content))
+            continue
+        # Unknown content shape — coerce to empty string to keep position.
+        out.append({"role": role, "content": ""})
+
+    return out
+
+
+def anthropic_tools_to_openai(tools: list[dict] | None) -> list[dict] | None:
+    """Inverse of ``openai_tools_to_anthropic``. Anthropic tools are
+    ``{name, description, input_schema}``; OpenAI expects
+    ``{type:'function', function:{name, description, parameters}}``."""
+    if not tools:
+        return None
+    out: list[dict] = []
+    for t in tools:
+        if not isinstance(t, dict):
+            continue
+        out.append({
+            "type": "function",
+            "function": {
+                "name": t.get("name") or "",
+                "description": t.get("description") or "",
+                "parameters": t.get("input_schema") or {"type": "object", "properties": {}},
+            },
+        })
+    return out or None
+
+
+def anthropic_to_openai_body(body: dict) -> dict:
+    """Translate a full Anthropic ``/v1/messages`` request body into the
+    shape an OpenAI Chat Completions upstream expects.
+
+    Preserves: ``model``, ``temperature``, ``top_p``, ``stop_sequences``,
+    ``max_tokens``. Converts ``system``+``messages`` via
+    ``anthropic_messages_to_openai`` and ``tools`` via
+    ``anthropic_tools_to_openai``.
+
+    Drops Anthropic-specific fields with no OpenAI equivalent (``thinking``,
+    ``metadata``, ``anthropic_version``) so litellm doesn't pass them
+    through and trigger upstream 4xx.
+    """
+    if not isinstance(body, dict):
+        return body
+    out: dict[str, Any] = {}
+    if "model" in body:
+        out["model"] = body["model"]
+    out["messages"] = anthropic_messages_to_openai(
+        body.get("messages") or [],
+        body_system=body.get("system"),
+    )
+    if "max_tokens" in body:
+        out["max_tokens"] = body["max_tokens"]
+    if "temperature" in body:
+        out["temperature"] = body["temperature"]
+    if "top_p" in body:
+        out["top_p"] = body["top_p"]
+    if "stop_sequences" in body:
+        # OpenAI accepts list or single string for stop.
+        out["stop"] = body["stop_sequences"]
+    if "stream" in body:
+        out["stream"] = body["stream"]
+    tools = anthropic_tools_to_openai(body.get("tools"))
+    if tools:
+        out["tools"] = tools
+        # tool_choice translation
+        tc = body.get("tool_choice")
+        if isinstance(tc, dict):
+            tc_type = tc.get("type")
+            if tc_type == "auto":
+                out["tool_choice"] = "auto"
+            elif tc_type == "any":
+                out["tool_choice"] = "required"
+            elif tc_type == "tool" and tc.get("name"):
+                out["tool_choice"] = {
+                    "type": "function",
+                    "function": {"name": tc["name"]},
+                }
+    return out

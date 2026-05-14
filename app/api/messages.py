@@ -194,6 +194,46 @@ async def messages(
         key_record=key_record, parsed_slug=parsed_slug, alias=alias,
         detailed_503=True,
     )
+
+    # v3.9.1 (#269 Fix A) — Safety net for cross-family fallback to
+    # non-OpenAI-shape providers (e.g. Gemini, Cohere) when the request
+    # carries Anthropic-shape tool_use/tool_result content. The B
+    # translator below covers OpenAI-shape targets; everything else
+    # would still 400 on the upstream, so we walk past those providers
+    # until either an OpenAI-shape provider is picked (Fix B handles it)
+    # or every cross-family path is exhausted — 503 cleanly in the
+    # latter case rather than burning upstream cost on guaranteed-400.
+    from app.routing.tool_content import has_anthropic_tool_content
+    _openai_shape_providers = {
+        "openai", "openrouter", "grok", "grok-bridge", "grok-web",
+        "groq", "mistral", "perplexity", "ollama", "deepseek", "fireworks",
+    }
+    _anthropic_types = {"anthropic", "claude-oauth"}
+    _has_tool_blocks = has_anthropic_tool_content(messages_list)
+    _cross_family_skipped: list[str] = []
+    if _has_tool_blocks:
+        while (
+            route.cross_family_fallback
+            and route.profile.provider_type not in _anthropic_types
+            and route.profile.provider_type not in _openai_shape_providers
+        ):
+            _cross_family_skipped.append(route.provider.name)
+            tried_ids = {route.provider.id, *(
+                getattr(route, "_tried_ids", []) or []
+            )}
+            try:
+                route = await _select_excluding(
+                    db, hint, has_tools, has_images, key_record.key_type,
+                    tried_ids, api_key_id=key_record.id,
+                )
+            except Exception:
+                raise HTTPException(
+                    503,
+                    "Cross-family fallback to a non-translatable upstream "
+                    "for a tool-using Anthropic request. Providers skipped: "
+                    f"{', '.join(_cross_family_skipped)}",
+                )
+
     body = resolve_auto_model_into_body(body, route, is_auto)
 
     # v3.0.36: cross-family fallback — rewrite body['model'] to the resolved
@@ -202,6 +242,35 @@ async def messages(
     # LLM-Capability response header.
     if route.cross_family_fallback and route.served_model_native:
         body = {**body, "model": route.served_model_native}
+
+    # v3.9.1 (#269 Fix B) — Anthropic→OpenAI body translation when the
+    # cross-family fallback target speaks OpenAI Chat Completions.
+    # Without this, litellm forwards Anthropic-shape tool_use/tool_result
+    # content blocks unchanged and the upstream 400s. Skip for
+    # claude-oauth (handled by its own dispatcher) and Anthropic-native
+    # (no translation needed). Set ``_openai_shape_providers`` above.
+    _cross_family_translated = False
+    if (
+        route.cross_family_fallback
+        and route.profile.provider_type in _openai_shape_providers
+    ):
+        from app.api._oauth_chat_translate import anthropic_to_openai_body
+        translated = anthropic_to_openai_body({
+            **body,
+            "messages": messages_list,
+            "system": system,
+            "tools": tools,
+        })
+        messages_list = translated.get("messages") or []
+        system = None  # Folded into messages_list as the leading role:system
+        tools = translated.get("tools")
+        body = {**body, "messages": messages_list}
+        body.pop("system", None)
+        if tools is not None:
+            body["tools"] = tools
+        else:
+            body.pop("tools", None)
+        _cross_family_translated = True
 
     # OTEL GenAI span: routing-decision metadata (no-op if OTLP endpoint unset)
     with llm_span(
@@ -270,6 +339,10 @@ async def messages(
         resp_headers["X-Auto-Routed"] = f"{route.provider.name}:{route.profile.model_id}"
     if _mem_injected:
         resp_headers["X-Caller-Memory"] = "injected"
+    if _cross_family_skipped:
+        resp_headers["X-Cross-Family-Skipped"] = ",".join(_cross_family_skipped)
+    if _cross_family_translated:
+        resp_headers["X-Cross-Family-Translated"] = "anthropic->openai"
     # Budget visibility headers (soft-cap warning, remaining $ today/this hour)
     if key_record.budget_status is not None:
         from app.budget.tracker import warnings_for
