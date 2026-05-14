@@ -48,6 +48,9 @@ from app.api.tool_prober import router as tool_prober_router
 from app.api.ai_rate_limiter import router as ai_rate_limiter_router
 from app.api.blocked_ips import router as blocked_ips_router
 from app.api.memory_admin import router as memory_admin_router
+# v3.9.12 — api-key-scoped memory CRUD (hub-team can purge memory on
+# room archival without holding an admin session)
+from app.api.memory_scoped import router as memory_scoped_router
 # v3.9.8 (P5 refactor) — providers.py split into 3 siblings to stay <1000 lines.
 # Each owns its own APIRouter at the same /api/providers prefix; no path
 # collisions because the endpoints don't overlap.
@@ -458,6 +461,7 @@ app.include_router(tool_prober_router)
 app.include_router(ai_rate_limiter_router)
 app.include_router(blocked_ips_router)
 app.include_router(memory_admin_router)
+app.include_router(memory_scoped_router)
 app.include_router(provider_lifecycle_router)
 app.include_router(provider_capabilities_router)
 # v3.3.0: LMRHv2 endpoints (feature-flagged via lmrh_v2_enabled).
