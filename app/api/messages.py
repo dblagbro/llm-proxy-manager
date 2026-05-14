@@ -243,6 +243,19 @@ async def messages(
     if route.cross_family_fallback and route.served_model_native:
         body = {**body, "model": route.served_model_native}
 
+    # v3.9.3 (#267) Phase 6 — proxy-side caller-memory provider flush.
+    # All routing decisions (incl. cross-family fallback + safety-net
+    # walking) are now final. If the memory marker shows a different
+    # provider was the last writer for this (api_key, conversation,
+    # tag), emit a best-effort flush to that old provider and bump the
+    # marker. Silent degrade on failure — never breaks live traffic.
+    from app.memory.flush import maybe_flush_provider_memory
+    await maybe_flush_provider_memory(
+        db, api_key_id=key_record.id,
+        conversation_id=x_conversation_id, memory_tag=x_memory_tag,
+        new_provider_id=route.provider.id,
+    )
+
     # v3.9.1 (#269 Fix B) — Anthropic→OpenAI body translation when the
     # cross-family fallback target speaks OpenAI Chat Completions.
     # Without this, litellm forwards Anthropic-shape tool_use/tool_result
