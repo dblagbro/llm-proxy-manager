@@ -68,6 +68,18 @@ export function DashboardPage() {
     !((p.usage_weekly_pct ?? 0) > 100 || (p.usage_session_pct ?? 0) > 100)
     && ((p.usage_weekly_pct ?? 0) >= 80 || (p.usage_session_pct ?? 0) >= 80)
   )
+  // v3.9.9 — surface which source the displayed quota came from.
+  // The v3.9.8 quota fix prefers ExternalUsageSnapshot (authoritative
+  // Anthropic Console / ChatGPT Cloud scrape) over ProviderUsageWindow
+  // (proxy-side traffic counter, ~3 OOM lower for shared accounts).
+  // After today's fix, operators need to see which source is in play
+  // so a stale snapshot or a fallback isn't misread as the new normal.
+  const quotaSources = new Set(quotaProviders.map(p => p.usage_data_source).filter(Boolean))
+  const quotaSourceLabel =
+    quotaSources.size === 0 ? null :
+    quotaSources.size > 1 ? 'mixed sources' :
+    quotaSources.has('external_scrape') ? 'Anthropic Console' :
+    'internal counter'
 
   // Build chart data from metrics buckets (last 6h from any provider)
   const chartData = buildChartData(metrics?.providers ?? [])
@@ -152,9 +164,16 @@ export function DashboardPage() {
             label="Sub Quota"
             value={`${quotaWorst.pct.toFixed(0)}%`}
             sub={
-              quotaOverLimit.length > 0 ? `${quotaOverLimit.length} over`
-              : quotaApproaching.length > 0 ? `${quotaApproaching.length} approaching`
-              : 'all healthy'
+              <>
+                {quotaOverLimit.length > 0 ? `${quotaOverLimit.length} over`
+                  : quotaApproaching.length > 0 ? `${quotaApproaching.length} approaching`
+                  : 'all healthy'}
+                {quotaSourceLabel && (
+                  <span className="block text-[10px] text-gray-400 dark:text-gray-500 mt-0.5">
+                    {quotaSourceLabel}
+                  </span>
+                )}
+              </>
             }
             icon={<Gauge className="h-5 w-5" />}
             variant={

@@ -9,6 +9,29 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.9.x — Proxy-side Caller Memory (#267) — phases 4–10 + ops fixes
 
+### v3.9.9 — Follow-up to v3.9.8 quota fix: retire dead compute + UI source badge
+
+Two small follow-ups to yesterday's v3.9.8 quota fix, both cleanup.
+
+**1) `usage_tracker` skips scraped providers (P3a).** After v3.9.8 the
+display layer ignores `ProviderUsageWindow` whenever an
+`ExternalUsageSnapshot` exists for the provider. The 60s background
+sweep was still computing those values for scraped providers — wasted
+DB work nothing reads. Now: build a set of `provider_id`s with fresh
+snapshots (captured within 2h, matching the billing-scrape freshness
+floor) and early-`continue` past them in the compute loop. Skip count
+logged at debug. Falls through to compute for providers with stale or
+absent snapshots so the rotation fallback still has something to read.
+
+**2) Dashboard source badge (P3b).** Small badge under the "Sub Quota"
+StatCard showing which source the displayed % came from:
+`Anthropic Console` (authoritative scrape), `internal counter`
+(fallback path), or `mixed sources` (heterogeneous fleet). New
+`usage_data_source` field on the `Provider` type — already exposed by
+v3.9.8's backend changes; v3.9.9 wires the frontend to read it.
+
+6 new unit tests; 1819 total green.
+
 ### v3.9.8 — Fix quota hallucinations + pool diagnostics + providers.py & sync.py refactor
 
 Three independent fixes batched into one release.
