@@ -41,6 +41,10 @@ class KeyUpdate(BaseModel):
     daily_hard_cap_usd: Optional[float] = None   # -1 to clear
     hourly_cap_usd: Optional[float] = None       # -1 to clear
     semantic_cache_enabled: Optional[bool] = None
+    # v3.9.13 — per-key caller_memory retention. None = no change;
+    # 0 or negative = clear (no TTL); positive int = days until
+    # background sweeper tombstones unused rows.
+    caller_memory_ttl_days: Optional[int] = None
 
 
 @router.get("")
@@ -119,6 +123,12 @@ async def update_key(
         k.hourly_cap_usd = None if body.hourly_cap_usd < 0 else body.hourly_cap_usd
     if body.semantic_cache_enabled is not None:
         k.semantic_cache_enabled = body.semantic_cache_enabled
+    if body.caller_memory_ttl_days is not None:
+        # 0 or negative clears the TTL; positive int sets it
+        k.caller_memory_ttl_days = (
+            None if body.caller_memory_ttl_days <= 0
+            else int(body.caller_memory_ttl_days)
+        )
     await db.commit()
     return _serialize(k)
 
@@ -280,6 +290,7 @@ def _serialize(k: ApiKey) -> dict:
         "daily_hard_cap_usd": k.daily_hard_cap_usd,
         "hourly_cap_usd": k.hourly_cap_usd,
         "semantic_cache_enabled": bool(k.semantic_cache_enabled),
+        "caller_memory_ttl_days": getattr(k, "caller_memory_ttl_days", None),
         "day_cost_usd": float(k.day_cost_usd or 0.0),
         "hour_cost_usd": float(k.hour_cost_usd or 0.0),
         "can_reveal": bool(k.encrypted_key),

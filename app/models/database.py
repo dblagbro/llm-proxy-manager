@@ -248,6 +248,10 @@ async def init_db():
             # caller-memory system. extract.py + inject.py both gate
             # on this. Default 0 = participates normally.
             "ALTER TABLE providers ADD COLUMN memory_disabled BOOLEAN DEFAULT 0",
+            # v3.9.13 (#267 follow-up) — per-key caller-memory retention.
+            # NULL = no TTL (current behavior); integer = sweeper
+            # tombstones rows older than N days.
+            "ALTER TABLE api_keys ADD COLUMN caller_memory_ttl_days INTEGER",
         ]:
             try:
                 await conn.exec_driver_sql(stmt)
