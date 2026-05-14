@@ -433,6 +433,11 @@ SCHEMA: dict[str, dict] = {
         "label": "Proxy-side memory: active flush of provider-side memory when routing away (best-effort)",
         "group": "Caller memory",
     },
+    "caller_memory_recovery_enabled": {
+        "type": "bool", "default": settings.caller_memory_recovery_enabled,
+        "label": "Proxy-side memory: back-pressure recovery — reconstruct missing content from upstream when marker exists (best-effort)",
+        "group": "Caller memory",
+    },
 }
 
 

@@ -59,7 +59,20 @@ async def maybe_inject_memory(
         from app.memory.store import get
         entry = await get(db, api_key_id, conversation_id, tag)
         if entry is None or not entry.content:
-            return body, False
+            # v3.9.4 (#267) Phase 7 — back-pressure recovery. If the
+            # marker exists but content is missing (DB restore that
+            # lost content rows), try to reconstruct from the original
+            # upstream provider. Silent degrade on any failure; the
+            # noop case is cheap (no handler registered → early return).
+            from app.memory.recover import maybe_recover_memory
+            recovered = await maybe_recover_memory(
+                db, api_key_id=api_key_id,
+                conversation_id=conversation_id, memory_tag=tag,
+            )
+            if recovered:
+                entry = await get(db, api_key_id, conversation_id, tag)
+            if entry is None or not entry.content:
+                return body, False
 
         prefix = MEMORY_HEADER_PREFIX + entry.content.strip() + "\n"
         if endpoint == "messages":
