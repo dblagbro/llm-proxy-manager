@@ -420,6 +420,20 @@ async def messages(
             # v3.6.1 — merge X-Quality-Hint header if response looks thin
             from app.api._quality_hint import merge_into_headers
             merge_into_headers(resp_headers, result, endpoint="messages")
+            # v3.9.0 (#267) Phase 5 — memory-tool write-back. Scans the
+            # Anthropic response for memory tool_use blocks and persists
+            # writes to the king-store. No-op unless caller_memory_enabled
+            # AND X-Conversation-Id is set. Silent degrade on any error.
+            from app.memory.extract import maybe_extract_memory_writes
+            mem_writes = await maybe_extract_memory_writes(
+                db, response_dict=result,
+                api_key_id=key_record.id,
+                conversation_id=x_conversation_id,
+                memory_tag_default=x_memory_tag,
+                source_provider_id=oauth_provider_id,
+            )
+            if mem_writes:
+                resp_headers["X-Caller-Memory-Writes"] = str(mem_writes)
             return JSONResponse(content=result, headers=resp_headers)
         # Defensive: should be unreachable — every branch above either returned,
         # raised, or continued. Break to avoid an accidental infinite loop.
@@ -819,8 +833,20 @@ async def messages(
 
             remaining = max(0, max_tokens - out_tok)
             resp_headers["X-Token-Budget-Remaining"] = str(remaining)
+            anthropic_result = to_anthropic_response(result)
+            # v3.9.0 (#267) Phase 5 — memory-tool write-back on litellm path.
+            from app.memory.extract import maybe_extract_memory_writes
+            mem_writes = await maybe_extract_memory_writes(
+                db, response_dict=anthropic_result,
+                api_key_id=key_record.id,
+                conversation_id=x_conversation_id,
+                memory_tag_default=x_memory_tag,
+                source_provider_id=route.provider.id,
+            )
+            if mem_writes:
+                resp_headers["X-Caller-Memory-Writes"] = str(mem_writes)
             return JSONResponse(
-                content=to_anthropic_response(result),
+                content=anthropic_result,
                 headers=resp_headers,
             )
 
