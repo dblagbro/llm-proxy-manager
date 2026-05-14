@@ -37,6 +37,8 @@ class ProviderCreate(BaseModel):
     enabled: bool = True
     timeout_sec: int = 30
     exclude_from_tool_requests: bool = False
+    # v3.9.5 (#267 Phase 8) — opt-out from the caller-memory system
+    memory_disabled: bool = False
     hold_down_sec: Optional[int] = None       # None = use global setting
     failure_threshold: Optional[int] = None   # None = use global setting
     daily_budget_usd: Optional[float] = None  # None = unlimited
@@ -1052,6 +1054,7 @@ def _serialize(p: Provider) -> dict:
         "enabled": p.enabled,
         "timeout_sec": p.timeout_sec,
         "exclude_from_tool_requests": p.exclude_from_tool_requests,
+        "memory_disabled": bool(getattr(p, "memory_disabled", False)),
         "hold_down_sec": p.hold_down_sec,
         "failure_threshold": p.failure_threshold,
         "daily_budget_usd": p.daily_budget_usd,
