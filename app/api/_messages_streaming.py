@@ -513,6 +513,14 @@ async def _stream_claude_oauth(
     cache_decision=None,
     provider_name: Optional[str] = None,
     llm_hint: Optional[str] = None,  # v3.0.58: capture in event_meta.lmrh_hint
+    # v3.9.11 Phase 5.5 — caller-memory write-back for streamed responses.
+    # When ``conversation_id`` is set, the assembled response_dict
+    # (containing tool_use blocks for memory_20250818) gets fed through
+    # the same maybe_extract_memory_writes path as non-streaming. No-op
+    # when conversation_id is None (legacy non-memory traffic).
+    api_key_id: Optional[str] = None,
+    conversation_id: Optional[str] = None,
+    memory_tag: Optional[str] = None,
 ) -> AsyncIterator[bytes]:
     """Streaming ``/v1/messages`` — platform.claude.com already emits
     Anthropic SSE, so we can forward chunks as-is and just sniff usage
@@ -699,6 +707,27 @@ async def _stream_claude_oauth(
                 requested_model=req_model_str,
                 had_lmrh_hint=bool(llm_hint), lmrh_hint_raw=llm_hint or None,
             )
+            # v3.9.11 (#267) Phase 5.5 — feed the assembled response_dict
+            # through the same memory-tool write-back path as the
+            # non-streaming branch. assembled_response is shaped exactly
+            # like a non-streaming /v1/messages response (top-level
+            # content[] with tool_use blocks already JSON-parsed), so
+            # the extractor processes it identically. Gated on
+            # conversation_id presence (caller opted in to memory).
+            if conversation_id and api_key_id:
+                try:
+                    from app.memory.extract import maybe_extract_memory_writes
+                    await maybe_extract_memory_writes(
+                        db,
+                        response_dict=assembled_response,
+                        api_key_id=api_key_id,
+                        conversation_id=conversation_id,
+                        memory_tag_default=memory_tag,
+                        source_provider_id=provider_id,
+                    )
+                except Exception:
+                    # Silent degrade — never break the stream's success path
+                    pass
             if cache_decision is not None and cache_decision.eligible:
                 try:
                     await maybe_store(cache_decision, "".join(full_text_buf))
