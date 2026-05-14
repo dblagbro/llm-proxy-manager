@@ -256,6 +256,13 @@ class Settings(BaseSettings):
     activity_log_capture_previews: bool = Field(True, alias="ACTIVITY_LOG_CAPTURE_PREVIEWS")
     activity_log_capture_bodies: bool = Field(False, alias="ACTIVITY_LOG_CAPTURE_BODIES")
     activity_log_max_body_chars: int = Field(4000, alias="ACTIVITY_LOG_MAX_BODY_CHARS")
+    # v3.9.2 (#268) — probabilistic full-body capture on bad_request
+    # rejections from upstream. Hub team wanted a way to debug the
+    # exact payload shape that an upstream 4xx'd on, without paying the
+    # full-time storage cost of activity_log_capture_bodies=True (the
+    # 2026-05-06 1 GB blowup). Default 0.01 = 1%. Tagged in event_meta
+    # as ``body_sampled=True`` so the hub UI can filter on it.
+    activity_log_body_sample_rate_4xx: float = Field(0.01, alias="ACTIVITY_LOG_BODY_SAMPLE_RATE_4XX")
 
     # v3.6.3 — LAN-egress IP rewrite map.
     # When the proxy is hairpin-NAT'd from inside a LAN, nginx sees the

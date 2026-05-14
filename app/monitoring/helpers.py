@@ -4,6 +4,7 @@ Centralises the record_success/record_failure + estimate_cost + record_request
 pattern that appears in every streaming and non-streaming handler.
 """
 import json
+import random
 import re
 import time
 from typing import Any, Optional
@@ -329,6 +330,47 @@ def _extract_tool_call_stats(response_body: Any) -> tuple[int, bool]:
     return 0, True
 
 
+def _maybe_sample_4xx_body(
+    metadata: dict, request_body: Any, error_class: Optional[str]
+) -> dict:
+    """v3.9.2 (#268) — probabilistic full request_body capture on
+    bad_request rejections from upstream.
+
+    Independent of ``activity_log_capture_bodies`` (which is OFF by
+    default since the 2026-05-06 pool-exhaustion incident). This path
+    only fires on ``error_class == "bad_request"`` so the hub team can
+    debug payload-shape rejections (the #269 class of bug) without
+    paying full-time storage cost.
+
+    When sampled, writes ``request_body`` (capped at
+    ``activity_log_max_body_chars``) and ``body_sampled=True`` to
+    ``event_meta``. ``response_body`` is intentionally NOT captured —
+    the upstream error text already lives in ``meta["error"]`` (truncated
+    to 2000 chars), and the response is what triggered this code path,
+    not the thing under investigation.
+    """
+    if error_class != "bad_request":
+        return metadata
+    rate = float(getattr(settings, "activity_log_body_sample_rate_4xx", 0.0) or 0.0)
+    if rate <= 0.0:
+        return metadata
+    if rate < 1.0 and random.random() >= rate:
+        return metadata
+    if request_body is None:
+        return metadata
+    if "request_body" in metadata:
+        # Already captured by activity_log_capture_bodies=True; just tag it.
+        metadata["body_sampled"] = True
+        return metadata
+    cap = max(1000, int(getattr(settings, "activity_log_max_body_chars", 4000) or 4000))
+    req = _serialize_body(request_body, cap)
+    if req is None:
+        return metadata
+    metadata["request_body"] = req
+    metadata["body_sampled"] = True
+    return metadata
+
+
 def _attach_bodies(metadata: dict, request_body: Any, response_body: Any) -> dict:
     """Attach captured request/response bodies + previews to metadata when enabled.
 
@@ -584,6 +626,7 @@ async def record_outcome(
         meta["error"] = error_str[:2000] if error_str else None
         meta["error_class"] = classify_error(error_str or "")
         meta = _attach_bodies(meta, request_body, response_body)
+        meta = _maybe_sample_4xx_body(meta, request_body, meta["error_class"])
         await _emit_outcome_event(
             db, is_probe=is_probe, severity="warning", msg=msg, meta=meta,
             provider_id=provider_id, key_record_id=key_record_id,

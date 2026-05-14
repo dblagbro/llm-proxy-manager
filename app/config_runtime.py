@@ -164,6 +164,11 @@ SCHEMA: dict[str, dict] = {
         "label": "Activity log: max characters per full body (only relevant when capture_bodies is on; default 4000).",
         "group": "Activity log",
     },
+    "activity_log_body_sample_rate_4xx": {
+        "type": "float", "default": settings.activity_log_body_sample_rate_4xx,
+        "label": "Activity log: sample rate (0.0-1.0) for full request_body capture on bad_request 4xx upstream rejections. Independent of activity_log_capture_bodies. Default 0.01 = 1%.",
+        "group": "Activity log",
+    },
     "circuit_breaker_threshold":    {"type": "int", "default": settings.circuit_breaker_threshold,    "label": "CB failure threshold"},
     "circuit_breaker_timeout_sec":  {"type": "int", "default": settings.circuit_breaker_timeout_sec,  "label": "CB timeout (seconds)"},
     "circuit_breaker_halfopen_sec": {"type": "int", "default": settings.circuit_breaker_halfopen_sec, "label": "CB half-open window (seconds)"},
