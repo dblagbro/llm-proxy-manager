@@ -256,6 +256,14 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"codex_billing_worker failed to start: {e}")
 
+    # v3.9.10 — Prometheus pool depth + scrape freshness sampler.
+    # Always-safe to start (no-op when there are no scraped providers).
+    try:
+        from app.monitoring import observability_sampler as _obs_sampler
+        _obs_sampler.start()
+    except Exception as e:
+        logger.warning(f"observability_sampler failed to start: {e}")
+
     # v3.7.31 (#252 phase 4) — AI provider supervisor. Default disabled
     # (ai_provider_supervisor_enabled=False); worker sleeps when
     # disabled so safe to always start. Opt-in via env/setting.

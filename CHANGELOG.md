@@ -9,6 +9,46 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.9.x — Proxy-side Caller Memory (#267) — phases 4–10 + ops fixes
 
+### v3.9.10 — Prometheus metrics for caller-memory + pool + scrape freshness
+
+Closes the observability gap for the memory feature now that it's
+flipped on cluster-wide. Three new metric primitives in
+``app/observability/prometheus.py``:
+
+- **``llm_proxy_memory_operations_total{operation, outcome}``** —
+  Counter for inject / extract / flush / recover. Outcomes: applied,
+  skipped, degraded (silent-degrade catch-all). Wired into all four
+  memory modules.
+- **``llm_proxy_db_pool_{size,checked_out,overflow}``** — Gauges
+  mirroring ``/health.dbPool``. Sampled every 30s by a new background
+  ticker so dashboards can chart pool depth without polling /health.
+- **``llm_proxy_scrape_freshness_seconds{provider_id, provider_name, source}``** —
+  Gauge per provider holding seconds since the last successful scrape.
+  Alert at >14400 (4h, the default scrape interval) for stalled scrapes.
+
+New ``app/monitoring/observability_sampler.py`` background task started
+from ``main.py`` on startup. 30s tick; emits pool + freshness gauges.
+Skips providers that have never been scraped to keep dashboards clean.
+
+Useful Prometheus queries / alert candidates:
+
+```promql
+# Slow leak: pool depth climbing for 10 min straight
+increase(llm_proxy_db_pool_checked_out[10m]) > 5
+  and llm_proxy_db_pool_checked_out > 30
+
+# Saturated: above base pool_size for 2 min
+llm_proxy_db_pool_checked_out > on() llm_proxy_db_pool_size
+
+# Stalled scrape: snapshot is older than the scrape interval
+llm_proxy_scrape_freshness_seconds > 14400
+
+# Silent-degrade rate (memory store outage)
+rate(llm_proxy_memory_operations_total{outcome="degraded"}[5m]) > 0
+```
+
+13 new unit tests; 1832 total green.
+
 ### v3.9.9 — Follow-up to v3.9.8 quota fix: retire dead compute + UI source badge
 
 Two small follow-ups to yesterday's v3.9.8 quota fix, both cleanup.
