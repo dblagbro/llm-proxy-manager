@@ -66,6 +66,8 @@ async def chat_completions(
     x_cache_ttl: Optional[str] = Header(None, alias="x-cache-ttl"),
     x_hedge: Optional[str] = Header(None, alias="x-hedge"),
     x_context_strategy: Optional[str] = Header(None, alias="x-context-strategy"),
+    x_conversation_id: Optional[str] = Header(None, alias="x-conversation-id"),
+    x_memory_tag: Optional[str] = Header(None, alias="x-memory-tag"),
 ):
     # Accept Bearer token or x-api-key
     token = x_api_key
@@ -100,6 +102,18 @@ async def chat_completions(
     hint, auto_task = await build_hint_with_auto_task(llm_hint, messages_list)
     has_tools = bool(tools)
     has_images = has_images_openai(messages_list)
+
+    # v3.8.9 (#267) Phase 4 — proxy-side caller-memory injection.
+    # No-op unless settings.caller_memory_enabled AND X-Conversation-Id
+    # is set. Silent degrade on any store error.
+    from app.memory.inject import maybe_inject_memory
+    body, _mem_injected = await maybe_inject_memory(
+        db, body=body, api_key_id=key_record.id,
+        conversation_id=x_conversation_id, memory_tag=x_memory_tag,
+        endpoint="completions",
+    )
+    if _mem_injected:
+        messages_list = body.get("messages", messages_list)
 
     # v2.8.0: parse :floor / :nitro / :exacto suffix + auto-routing alias.
     from app.routing.model_slug import parse_model_slug, is_auto_model
@@ -205,6 +219,8 @@ async def chat_completions(
         resp_headers["X-Sort-Mode"] = parsed_slug.sort_mode
     if is_auto:
         resp_headers["X-Auto-Routed"] = f"{route.provider.name}:{route.profile.model_id}"
+    if _mem_injected:
+        resp_headers["X-Caller-Memory"] = "injected"
     # Budget visibility headers (soft-cap warning, remaining $ today/this hour)
     if key_record.budget_status is not None:
         from app.budget.tracker import warnings_for
