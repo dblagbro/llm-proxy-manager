@@ -51,6 +51,13 @@ export interface Provider {
   usage_weekly_tokens?: number | null
   usage_session_limit_tokens?: number | null
   usage_weekly_limit_tokens?: number | null
+  // v3.9.8 — which source the pct values came from. ``external_scrape``
+  // = authoritative from Anthropic Console / ChatGPT Cloud. ``internal_window``
+  // = proxy-side traffic counter (only ~proxy slice of the account usage,
+  // can be wildly off for shared accounts — see CHANGELOG v3.9.8). UI
+  // shows a badge so operators can see which source is in play.
+  usage_data_source?: 'external_scrape' | 'internal_window' | null
+  usage_captured_at?: string | null
   // v3.7.0/v3.7.1/v3.7.2/v3.7.3 — Anthropic Console billing scrape +
   // auto-rotation surface. Operator pastes a captured browser cookie
   // blob; the scraper runs every 4h and writes ExternalUsageSnapshot

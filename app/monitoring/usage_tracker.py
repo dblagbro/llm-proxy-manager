@@ -164,7 +164,19 @@ from sqlalchemy import Integer  # noqa: E402  -- needed for func.cast above
 
 
 async def _sweep_once() -> int:
-    """One pass over all tracking-enabled providers. Returns count updated."""
+    """One pass over all tracking-enabled providers. Returns count updated.
+
+    v3.9.9 — skip providers whose ExternalUsageSnapshot is fresh (within
+    the freshness floor used by the billing-scrape workers, default 2h).
+    The display layer prefers the snapshot over our internal counter
+    (v3.9.8 quota fix), so computing ProviderUsageWindow values that
+    nothing reads is wasted DB work. Falls through to compute for
+    providers without snapshots OR with stale snapshots (so the rotation
+    fallback still has something to work with).
+    """
+    from datetime import datetime, timezone, timedelta
+    from app.models.db import ExternalUsageSnapshot
+
     async with AsyncSessionLocal() as db:
         res = await db.execute(
             select(Provider).where(
@@ -175,8 +187,24 @@ async def _sweep_once() -> int:
         )
         providers = list(res.scalars().all())
 
+        # Build a set of provider_ids with FRESH snapshots so we can skip
+        # them in the compute loop. Freshness threshold: 2h (matches the
+        # default ``anthropic_billing_freshness_floor_sec`` so we don't
+        # second-guess the scraper's idea of "fresh enough").
+        fresh_cutoff = datetime.now(timezone.utc) - timedelta(hours=2)
+        snap_rows = (await db.execute(
+            select(ExternalUsageSnapshot.provider_id)
+            .where(ExternalUsageSnapshot.captured_at >= fresh_cutoff.replace(tzinfo=None))
+            .where(ExternalUsageSnapshot.seven_day_utilization.is_not(None))
+        )).scalars().all()
+        fresh_scraped_ids = set(snap_rows)
+
     count = 0
+    skipped_scraped = 0
     for p in providers:
+        if p.id in fresh_scraped_ids:
+            skipped_scraped += 1
+            continue
         try:
             row = await _compute_one(p)
             if row is None:
@@ -192,6 +220,12 @@ async def _sweep_once() -> int:
             count += 1
         except Exception as e:
             logger.warning("usage_tracker.compute_failed provider=%s err=%s", p.id, e)
+    if skipped_scraped:
+        logger.debug(
+            "usage_tracker.skipped_scraped count=%s "
+            "(ExternalUsageSnapshot fresh — internal compute would be unused)",
+            skipped_scraped,
+        )
     return count
 
 
