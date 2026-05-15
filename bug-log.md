@@ -10,6 +10,115 @@ Status flow: **open** → **in-progress** → **fixed** → **verified-fixed** �
 
 ---
 
+## 2026-05-15 — bug-log audit refresh (v3.9.15)
+
+Re-checked every item from the 2026-04-24 sweep against current code
+(v3.9.14 → v3.9.15). Most issues were addressed by intermediate versions
+without bug-log status updates; this section reconciles.
+
+### Status reconciliation
+
+| Bug | New status | Fixed in / by |
+|---|---|---|
+| BUG-001 | **open / deferred** | streaming-error contract needs cross-team coordination — see notes |
+| BUG-002 | **verified-fixed** | `is_auth_error()` in `app/routing/circuit_breaker.py`; v3.7.16 #239 added DB-backed `auto_skip_until=now+24h` for persistent-auth providers |
+| BUG-003 | **verified-fixed** | `refresh_and_persist` wired into both `_complete_claude_oauth` + `_stream_claude_oauth` (7 occurrences in `_messages_streaming.py`); 401 → refresh → retry |
+| BUG-004 | **verified-fixed** | hardcoded `== "2.0.0"` removed; tests assert regex / read from `__version__.py` |
+| BUG-005 | **verified-fixed** | `only_mock_routing` in `tests/integration/conftest.py` now toggles `enabled=False` on non-mocks then restores (v2.7.8 BUG-005 note in code) |
+| BUG-006 | **verified-fixed** | injected Claude-Code marker carries `cache_control: ephemeral` (v2.7.6 BUG-006 note + 4-marker cap guard in `_count_cache_control_markers`) |
+| BUG-007 | **fixed (v3.9.15)** | renamed to `_internal_refresh_access_token`; old name is a deprecation-warning alias; only known caller (burn test) migrated |
+| BUG-008 | **verified-fixed** | same as BUG-003 — `refresh_and_persist` is the wire-up |
+| BUG-009 | **verified-fixed** | README reflects current default-cred behavior |
+| BUG-010 | **verified-fixed (backend) + UI badge present** | `normalize_priority_ties` + `_bump_priority_conflicts` in `app/api/providers.py`; UI warning per "v2.7.8 BUG-010" comment in `ProvidersPage.tsx` |
+| BUG-011 | **verified-clean** | (was already closed) |
+| BUG-012 | **fixed (v3.9.15)** | `--skip-destructive` flag added to `scripts/test_claude_oauth_live.py`; weekly automated runs can now skip refresh_token rotation |
+| BUG-013 | **verified-fixed** | `app/__version__.py` is the single source of truth; FastAPI app factory + `/health` + `/cluster/status` + OTel tags all consume it |
+| BUG-014 | **verified-fixed** | `app/api/monitoring.py` activity-log query uses `.in_(sev_list)` after `split(",")` |
+| BUG-015 | **verified-fixed** | `app/main.py` SPA catch-all returns `Cache-Control: no-cache, must-revalidate` (v2.7.6 BUG-015 note) |
+| BUG-016 | **verified-fixed** | `tests/integration/test_playwright_ui.py` locator matches actual UI text `Test OK` / `Test failed` |
+| BUG-017 | **verified-fixed** | indexes present in `app/models/database.py` (`ix_api_keys_key_hash`, activity_log, provider_metrics) |
+| BUG-018 | **verified-fixed** | `try_ranked_non_streaming` wired into both `messages.py` + `completions.py`; gated on `settings.fallback_enabled` |
+| BUG-019 | **verified-fixed** | `_TYPES_REQUIRING_API_KEY` preflight in `create_provider` + `update_provider` |
+
+**Net result**: 16 of 18 items closed. 2 remain:
+- BUG-001 (deferred — needs DevinGPT/hub design sign-off on the streaming-error contract before changing wire behavior)
+- ARCH-A new (latent DB connection leak — audit shows every `AsyncSessionLocal()` is `async with`-wrapped, so the leak isn't naive session management; needs more diagnostic data from the next live recurrence)
+
+### v3.9.15 fixes (this release)
+
+**BUG-007 — `refresh_access_token` rename**
+
+- Root cause: the safe wrapper (`refresh_and_persist`) and the destructive
+  primitive (`refresh_access_token`) shared the same module namespace with
+  the destructive one having the more discoverable name. Autocomplete or
+  casual `from app.providers.claude_oauth_flow import refresh_*` would
+  pick the wrong one.
+- Fix: renamed canonical name to `_internal_refresh_access_token`.
+  Kept the old name as a one-release back-compat alias that emits
+  `DeprecationWarning`. Migrated the one in-tree caller
+  (`scripts/test_claude_oauth_live.py`) to import the new name via
+  `as refresh_access_token` rebind so the rest of the script is
+  unchanged.
+- Static-analysis test in `test_v3915_remaining_buglog.py` walks
+  `app/**/*.py` for any `import refresh_access_token` — fails loud if
+  a future change re-introduces the bad import.
+
+**BUG-012 — burn test `--skip-destructive` flag**
+
+- Root cause: `t_refresh_and_persist` rotates the live refresh token on
+  every run. If the rotation chain breaks, the next run can't proceed
+  until admin re-auths. Operators who want a weekly read-only verify
+  can't run the suite without consuming the token.
+- Fix: `argparse` wired in the `__main__` block; `--skip-destructive`
+  marks the destructive test as `_record(name, True, "skipped")` so
+  the weekly job records a clean pass rather than a false failure.
+- Locked by tests: signature, flag parsing, the destructive-test set,
+  and the skipped-as-pass behavior.
+
+### ARCH-A — latent DB connection leak (NEW open item)
+
+- **Subsystem**: background workers + cluster sync
+- **Symptoms (observed today)**: www01 + GCP both saturated their
+  `QueuePool` after 13h / 20h respectively post-deploy. /health
+  started returning 500 from auth lookups blocked on a full pool.
+- **Audit done in this sweep**: every `AsyncSessionLocal()` call site
+  in `app/` is inside `async with`. So the leak isn't a naive
+  unmanaged-session bug.
+- **Hypotheses still in play**:
+  1. A worker that opens `engine.connect()` directly (rare pattern)
+  2. A long-lived task that holds a session across a hung `await`
+     (e.g. a Redis or upstream-API call that doesn't time out)
+  3. A streaming response that retains a session reference until SSE
+     client disconnects — and the disconnect detection has a leak path
+- **Mitigations already in place**:
+  - v3.9.8: pool state exposed in `/health.dbPool` (size/checked_out/overflow)
+  - v3.9.10: Prometheus gauges + 30s background sampler
+  - v3.9.12: `tools/cut-release.sh` for fast diagnosis-restart cycles
+- **Next investigation step**: when the next saturation event occurs,
+  capture `engine.pool.checkedout()` mid-event + `select * from
+  pg_stat_activity` equivalent (SQLite has `PRAGMA database_list` /
+  per-connection state via `sqlite_master`) to identify which
+  long-held queries are holding the connections. Filed for the next
+  recurrence.
+
+### BUG-001 — streaming error contract (DEFERRED)
+
+- **Subsystem**: `_messages_streaming.py`, `_completions_streaming.py`
+- **Root cause**: streaming dispatch returns HTTP 200 (the first SSE
+  chunk has already left), then emits a terminal `data: {"type":"error"}`
+  + `message_stop` when upstream fails. Clients that check
+  `r.status_code` see success and an empty stream.
+- **Why deferred**: changing the wire contract requires sign-off from
+  DevinGPT (just adopted streaming write-back in v3.9.11) and hub
+  (considering RMAI adoption). Two viable shapes:
+  1. Pre-stream errors return non-200 BEFORE the first chunk
+  2. Post-stream errors emit a custom `X-Stream-Error: true` header on
+     the SSE response so clients can fail-loud
+- **Plan**: file an RFC, get sign-off, ship in v3.10.x. Until then the
+  inline-SSE-error behavior remains stable (DevinGPT depends on it).
+
+---
+
 ## 2026-04-24 — post-v2.7.5 deep regression sweep
 
 Driver: comprehensive post-OAuth-rollout validation. Production cluster

@@ -1,5 +1,84 @@
 # Refactor Log
 
+## 2026-05-15 — v3.9.15: bug-log audit refresh + BUG-007 + BUG-012
+
+Bug-log items from the 2026-04-24 sweep were re-checked against current
+code. 16 of 18 had been fixed between v2.7.6 and v3.9.14 without
+updating bug-log.md statuses. This session reconciled the log + closed
+the two remaining ones plus filed one newly-discovered architectural
+item.
+
+### Closed in v3.9.15
+
+**BUG-007 — rename `refresh_access_token` → `_internal_refresh_access_token`**
+
+Surface: `app/providers/claude_oauth_flow.py`,
+`scripts/test_claude_oauth_live.py`. Discovery: the destructive primitive
+had the more discoverable name; autocomplete from new callers would pick
+the wrong one and silently consume the refresh token. Fix: renamed
+canonical to `_internal_*`, kept old name as a one-release alias that
+emits `DeprecationWarning`. Migrated the one in-tree caller (burn test)
+via `as refresh_access_token` rebind so the rest of the script is
+unchanged. Static-analysis test guards against re-introduction.
+
+**BUG-012 — burn test `--skip-destructive` flag**
+
+Surface: `scripts/test_claude_oauth_live.py`. Discovery: weekly automated
+burn-test runs would rotate the live refresh token every cycle; a single
+chain break left subsequent runs stuck until admin re-auth. Fix:
+`argparse` flag; destructive tests record as `_record(name, True,
+"skipped")` so weekly job logs a clean pass instead of a false fail.
+
+### Filed but NOT shipped in v3.9.15
+
+**BUG-001 — streaming-error contract** (deferred)
+
+Status: open / deferred pending cross-team design sign-off (DevinGPT
++ hub). DevinGPT just adopted streaming write-back in v3.9.11; changing
+the wire contract requires their concurrence. Two viable shapes drafted:
+pre-stream errors return non-200 before the first chunk, OR post-stream
+errors emit `X-Stream-Error: true` SSE header. RFC will land before
+v3.10.x.
+
+**ARCH-A — latent DB connection pool leak** (open / monitoring)
+
+New. Surface: background workers + cluster sync. Symptoms: www01 + GCP
+both saturated `QueuePool` 13h / 20h post-deploy, blocking auth on /
+health 500. Audit (this session): every `AsyncSessionLocal()` is
+`async with`-wrapped — leak isn't naive session management.
+
+Hypotheses under investigation:
+1. A worker using `engine.connect()` directly without context manager
+2. Session held across a hung `await` (Redis/upstream timeout gap)
+3. Streaming response disconnect path with leak in cleanup
+
+Mitigations already shipped (this week, before audit):
+- v3.9.8: pool stats exposed in `/health.dbPool`
+- v3.9.10: Prometheus `llm_proxy_db_pool_*` gauges + 30s sampler
+- v3.9.12: `tools/cut-release.sh` cuts diagnose-restart cycle time
+
+Plan: capture `engine.pool.checkedout()` snapshot mid-event + identify
+hung queries during next recurrence. Filed for action.
+
+### Lesson learned (mostly process)
+
+The bug-log lagged the code by ~3 weeks. Future fixes should write the
+`verified-fixed in vX.Y.Z` line in bug-log.md as part of the release
+ceremony — `tools/cut-release.sh` could prompt for it, or a CI check
+could fail if a commit message mentions BUG-### without updating
+bug-log.md. Filed as a future enhancement (not yet a ticket).
+
+### Verification surfaces locked
+
+- 9 new unit tests in `tests/unit/test_v3915_remaining_buglog.py`
+  cover BUG-007 rename + back-compat alias + deprecation warning +
+  static-analysis import guard, plus BUG-012 flag parsing + skipped-as-
+  pass behavior.
+- bug-log.md + qa-notes.md + refactor-log.md updated in the same
+  release to keep the audit-trail honest.
+
+---
+
 ## 2026-04-24 — v2.7.1 → v2.7.5: Claude Pro Max OAuth provider
 
 ### Motivation
