@@ -65,12 +65,14 @@ def test_stream_extractor_call_uses_silent_degrade():
 
 
 def test_messages_endpoint_passes_conv_id_to_stream():
-    src = Path("app/api/messages.py").read_text()
-    # The /v1/messages call site must thread x_conversation_id through
+    # v3.10.9 — the claude-oauth streaming dispatch moved out of
+    # messages.py into _messages_dispatch.py; the conv/tag/key wiring
+    # moved with it (params are named conversation_id / memory_tag there).
+    src = Path("app/api/_messages_dispatch.py").read_text()
     idx = src.index("stream_gen = _stream_claude_oauth(")
     call = src[idx:idx + 1000]
-    assert "conversation_id=x_conversation_id" in call
-    assert "memory_tag=x_memory_tag" in call
+    assert "conversation_id=conversation_id" in call
+    assert "memory_tag=memory_tag" in call
     assert "api_key_id=key_record.id" in call
 
 

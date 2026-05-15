@@ -9,6 +9,31 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.10.x — "Harden" milestone
 
+### v3.10.9 — refactor: extract claude-oauth dispatch from messages.py
+
+Incremental maintainability refactor. `messages.py`'s `messages()`
+handler had grown to a ~913-line function (file 1002 lines) — past
+`design.md`'s 800-line split trigger, and the hot path every
+`/v1/messages` feature touches.
+
+Its deepest branch — the claude-oauth provider-chain walk (streaming /
+non-streaming dispatch + 401-refresh fallback + success-path cache /
+quality-hint / memory write-back) — and its `_select_excluding`
+chain-walk helper were extracted to a new **`app/api/_messages_dispatch.py`**
+as `dispatch_claude_oauth_chain()`. It returns `(response, route)`:
+non-None response → request served; None → chain exhausted, fall through
+to litellm with the updated route. Pure behavior-preserving move.
+
+`_messages_dispatch.py` is the sibling of `_messages_streaming.py` — the
+latter holds the SSE *generators*, the former the dispatch *orchestration*.
+`messages.py`: 1002 → 816 lines.
+
+Also collapsed the duplicate `docs/architecture.md` (a stale v3.7.13
+copy) to a pointer at the canonical root `architecture.md`.
+
+`architecture.md` module map + `refactor-log.md` updated. 4 new tests
+(`test_v3109`), 1 source-grep test repointed; 1969 total green.
+
 ### v3.10.8 — API Keys page: "Copy models" per key
 
 Operator ask: a one-click way to copy the full list of models a given
