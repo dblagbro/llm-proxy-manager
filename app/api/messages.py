@@ -266,17 +266,31 @@ async def messages(
             system = body.get("system")
             messages_list = body.get("messages", messages_list)
 
-    # v3.9.1 (#269 Fix B) — Anthropic→OpenAI body translation when the
-    # cross-family fallback target speaks OpenAI Chat Completions.
-    # Without this, litellm forwards Anthropic-shape tool_use/tool_result
-    # content blocks unchanged and the upstream 400s. Skip for
-    # claude-oauth (handled by its own dispatcher) and Anthropic-native
-    # (no translation needed). Set ``_openai_shape_providers`` above.
+    # v3.10.0 (#269 Fix B, widened) — Anthropic→OpenAI body translation.
+    # The /v1/messages endpoint always receives an Anthropic-wire body,
+    # but litellm's request API is OpenAI-shaped for EVERY provider it
+    # dispatches (Gemini, OpenAI, OpenRouter, and even litellm-Anthropic
+    # all included). So a request carrying Anthropic content blocks
+    # (tool_use / tool_result / image) 400s with "Invalid user message
+    # at index N" whenever it reaches a litellm provider untranslated.
+    #
+    # v3.9.1's original Fix B only translated on ``cross_family_fallback``,
+    # which left direct ``/v1/messages`` → Gemini / → OpenRouter tool-using
+    # requests broken — the dominant fleet failure class in the
+    # 2026-05-15 audit (~69% of all warnings). Translation must run for
+    # ANY litellm-dispatched route whose body has content blocks, not
+    # just fallbacks.
+    #
+    # Skipped for: claude-oauth (its own native-Anthropic dispatcher) and
+    # tool-emulation (its own Anthropic-shape prompt path — translating
+    # here would feed OpenAI-shape messages to normalize_anthropic_messages).
     _cross_family_translated = False
-    if (
-        route.cross_family_fallback
-        and route.profile.provider_type in _openai_shape_providers
-    ):
+    _needs_openai_translation = (
+        route.profile.provider_type != "claude-oauth"
+        and not route.tool_emulation_engaged
+        and (route.cross_family_fallback or _has_tool_blocks or has_images)
+    )
+    if _needs_openai_translation:
         from app.api._oauth_chat_translate import anthropic_to_openai_body
         translated = anthropic_to_openai_body({
             **body,

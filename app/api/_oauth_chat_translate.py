@@ -419,9 +419,16 @@ def _tool_result_content_to_str(content: Any) -> str:
 
 def _anthropic_blocks_to_openai_message_parts(
     role: str, blocks: list,
+    known_tool_use_ids: Optional[set] = None,
 ) -> list[dict]:
     """Convert one Anthropic message's content blocks (when the message
     is list-shaped) into one or more OpenAI messages, preserving order.
+
+    ``known_tool_use_ids`` (when provided) is the set of every tool_use
+    id declared by an assistant turn in the whole conversation. A
+    tool_result referencing none of them is "orphaned" and emitted as
+    plain user text rather than a dangling ``role:"tool"`` message — see
+    the user branch below.
 
     Returns a list of OpenAI-shape messages.
     """
@@ -474,11 +481,24 @@ def _anthropic_blocks_to_openai_message_parts(
                 continue
             t = blk.get("type")
             if t == "tool_result":
-                tool_msgs.append({
-                    "role": "tool",
-                    "tool_call_id": blk.get("tool_use_id") or "",
-                    "content": _tool_result_content_to_str(blk.get("content")),
-                })
+                tcid = blk.get("tool_use_id") or ""
+                # v3.10.0 — a tool_result that references no tool_use
+                # declared by any assistant turn (a conversation window
+                # that begins mid-tool-exchange) has no assistant
+                # tool_call to attach to. OpenAI rejects a dangling
+                # role:"tool" message ("Invalid user message at index
+                # N"), so emit the orphan as plain user text instead.
+                if known_tool_use_ids is not None and tcid not in known_tool_use_ids:
+                    text_parts.append(
+                        "[tool result] "
+                        + _tool_result_content_to_str(blk.get("content"))
+                    )
+                else:
+                    tool_msgs.append({
+                        "role": "tool",
+                        "tool_call_id": tcid,
+                        "content": _tool_result_content_to_str(blk.get("content")),
+                    })
             elif t == "text":
                 txt = blk.get("text") or ""
                 if txt:
@@ -548,6 +568,22 @@ def anthropic_messages_to_openai(
             if joined:
                 out.append({"role": "system", "content": joined})
 
+    # v3.10.0 — pre-scan assistant turns for the tool_use ids they
+    # declare. A tool_result referencing none of them is "orphaned"
+    # (a truncated conversation window beginning mid-tool-exchange) and
+    # is emitted as plain user text by the block translator below,
+    # never as a dangling role:"tool" message.
+    known_tool_use_ids: set = set()
+    for m in body_messages or ():
+        if isinstance(m, dict) and m.get("role") == "assistant":
+            c = m.get("content")
+            if isinstance(c, list):
+                for blk in c:
+                    if (isinstance(blk, dict)
+                            and blk.get("type") == "tool_use"
+                            and blk.get("id")):
+                        known_tool_use_ids.add(blk["id"])
+
     for m in body_messages or ():
         if not isinstance(m, dict):
             continue
@@ -566,7 +602,9 @@ def anthropic_messages_to_openai(
                 out.append({"role": role, "content": content})
             continue
         if isinstance(content, list):
-            out.extend(_anthropic_blocks_to_openai_message_parts(role, content))
+            out.extend(_anthropic_blocks_to_openai_message_parts(
+                role, content, known_tool_use_ids,
+            ))
             continue
         # v3.9.16 — unknown content shape: use placeholder for user role
         # (empty string would 400 on OpenAI); empty string for other

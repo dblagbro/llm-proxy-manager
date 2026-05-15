@@ -7,6 +7,45 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ---
 
+## v3.10.x — "Harden" milestone
+
+### v3.10.0 — fix the dominant fleet failure: Anthropic content blocks reaching litellm untranslated
+
+A 2026-05-15 operational audit found **one bug accounted for ~69% of all
+fleet warnings** (945 of 1,372 over 7 days): upstream 400s reading
+`Invalid user message at index N`, spread across Gemini, OpenRouter, and
+litellm-Anthropic providers.
+
+**Root cause.** The `/v1/messages` endpoint always receives an
+Anthropic-wire body, but litellm's request API is OpenAI-shaped for
+*every* provider it dispatches. v3.9.1's "Fix B" translator only ran on
+`cross_family_fallback` routes — so a request sent *directly* to
+`/v1/messages` for a Gemini (or OpenRouter, or litellm-Anthropic) model
+skipped translation, and its Anthropic `tool_use` / `tool_result`
+content blocks reached litellm raw. litellm rejects a user message
+whose content list carries an unrecognized `tool_result` part.
+
+**Fix A — `app/api/messages.py`.** Translation now runs for *any*
+litellm-dispatched route whose body carries tool or image content
+blocks — not just cross-family fallbacks. `claude-oauth` (its own
+native-Anthropic dispatcher) and tool-emulation (its own Anthropic-shape
+prompt path) remain excluded. The gate is now
+`provider_type != "claude-oauth" and not tool_emulation_engaged and
+(cross_family_fallback or has_tool_blocks or has_images)`.
+
+**Fix B — `app/api/_oauth_chat_translate.py`.** Defensive: a
+`tool_result` whose `tool_use_id` is declared by no assistant turn in
+the conversation (a truncated history window beginning mid-tool-
+exchange) is now emitted as plain user text instead of a dangling
+`role:"tool"` message — which OpenAI also rejects. `anthropic_messages_to_openai`
+pre-scans assistant turns for declared `tool_use` ids.
+
+11 new tests in `test_v3100_translation_gate.py` (end-to-end body
+translation, orphan handling, gate wiring). 4 v3.9.1 tests updated:
+they previously asserted production of dangling `role:"tool"` messages
+(invalid OpenAI output) from tool_result-only inputs — now use
+well-formed conversations. 1931 tests green.
+
 ## v3.9.x — Proxy-side Caller Memory (#267) — phases 4–10 + ops fixes
 
 ### v3.9.19 — "Refresh Usage Stats" button for claude-oauth accounts
