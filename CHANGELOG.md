@@ -9,6 +9,28 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.10.x — "Harden" milestone
 
+### v3.10.1 — activity-log severity taxonomy
+
+Until now every failed request logged `severity="warning"`. A provider
+failing 100% of its requests and a routine rate-limit 429 were
+indistinguishable — to the activity-log UI, to the AI provider
+supervisor's stats, and to any future alerting. The v3.10.0 translation
+bug ran ~3 weeks unalerted partly for this reason.
+
+`record_outcome`'s failure path now derives severity from the classified
+`error_class`:
+- **`warning`** — expected/transient: `rate_limit` (e.g. Grok-Web 429
+  cool-off, working as designed), `timeout`, `network`.
+- **`error`** — operator-actionable: `auth`, `billing`, `bad_request`,
+  `upstream_5xx`, and unclassified `unknown` (an unrecognised failure
+  must surface, not hide).
+
+New `severity_for_error_class()` helper in `app/monitoring/helpers.py`.
+This is a data-correctness fix — no alert auto-fires on it yet; an
+aggregate error-rate alert rule keying off `severity=error` is the
+natural follow-on. 7 new tests in `test_v3101_severity_taxonomy.py`;
+1938 total green.
+
 ### v3.10.0 — fix the dominant fleet failure: Anthropic content blocks reaching litellm untranslated
 
 A 2026-05-15 operational audit found **one bug accounted for ~69% of all

@@ -378,6 +378,27 @@ def _maybe_sample_4xx_body(
     return metadata
 
 
+# v3.10.1 — activity-log severity taxonomy. Until now every failed
+# request logged ``severity="warning"``, so a provider failing 100% of
+# its requests and a routine rate-limit 429 were indistinguishable to
+# alerting and to the AI provider supervisor's stats. (The v3.10.0
+# translation bug ran ~3 weeks unalerted partly because of this.)
+# Severity now reflects whether the failure is operator-actionable:
+# ``rate_limit`` / ``timeout`` / ``network`` are expected transient
+# noise → "warning"; everything else — auth, billing, bad_request,
+# upstream_5xx, and unclassified ``unknown`` — is actionable → "error".
+_WARNING_ERROR_CLASSES = frozenset({"rate_limit", "timeout", "network"})
+
+
+def severity_for_error_class(error_class: Optional[str]) -> str:
+    """Map an ``error_class`` (see circuit_breaker.classify_error) to an
+    activity-log severity. Expected/transient failure modes are
+    ``warning``; operator-actionable ones are ``error``."""
+    if error_class in _WARNING_ERROR_CLASSES:
+        return "warning"
+    return "error"
+
+
 def _attach_bodies(metadata: dict, request_body: Any, response_body: Any) -> dict:
     """Attach captured request/response bodies + previews to metadata when enabled.
 
@@ -634,7 +655,13 @@ async def record_outcome(
         meta["error_class"] = classify_error(error_str or "")
         meta = _attach_bodies(meta, request_body, response_body)
         meta = _maybe_sample_4xx_body(meta, request_body, meta["error_class"])
+        # v3.10.1 — severity derived from the error class (see
+        # severity_for_error_class). Operator-actionable failures emit
+        # ``error``; expected transient ones (rate-limit, timeout,
+        # network) stay ``warning``.
         await _emit_outcome_event(
-            db, is_probe=is_probe, severity="warning", msg=msg, meta=meta,
+            db, is_probe=is_probe,
+            severity=severity_for_error_class(meta["error_class"]),
+            msg=msg, meta=meta,
             provider_id=provider_id, key_record_id=key_record_id,
         )
