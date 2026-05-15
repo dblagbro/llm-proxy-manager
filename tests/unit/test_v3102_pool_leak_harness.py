@@ -105,3 +105,15 @@ def test_harness_isolates_three_request_paths():
     # Pool state is read from /health (the uvicorn process's pool),
     # not a fresh in-process engine.
     assert "/health" in src and "checked_out" in src
+
+
+def test_health_cache_hit_path_includes_dbpool():
+    """v3.10.3 — the /health cache-hit branch must re-add dbPool. It
+    previously re-added only circuitBreakers, so dbPool was absent on
+    every cache hit (~2 of every 3s window) — which the ARCH-A harness
+    polls and depends on."""
+    src = Path("app/api/cluster.py").read_text()
+    idx = src.index('_HEALTH_CACHE["body"] is not None')
+    block = src[idx:idx + 1000]
+    assert '"dbPool": _db_pool_snapshot()' in block
+    assert '"circuitBreakers": get_all_states()' in block

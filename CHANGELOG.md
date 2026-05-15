@@ -9,6 +9,19 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.10.x — "Harden" milestone
 
+### v3.10.3 — fix: /health cache-hit path dropped the dbPool block
+
+Found while validating the v3.10.2 ARCH-A harness. The `/health`
+endpoint caches its body for 3s and excludes `circuitBreakers` +
+`dbPool` from the cached copy so both stay live — but the cache-hit
+branch only re-added `circuitBreakers`. `dbPool` was therefore absent
+from every cache-hit response (~2 of every 3s window) since v3.9.8.
+
+The Prometheus pool gauges were unaffected (the sampler reads the pool
+directly), but anyone polling `/health.dbPool` — including the ARCH-A
+harness — saw it intermittently missing. The cache-hit branch now
+re-adds a fresh `dbPool` snapshot alongside `circuitBreakers`.
+
 ### v3.10.2 — ARCH-A: DB connection-pool leak diagnostic toolkit
 
 The latent pool leak (www01 + GCP saturated the SQLAlchemy QueuePool
