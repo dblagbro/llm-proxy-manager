@@ -59,7 +59,17 @@ async def verify_api_key(db: AsyncSession, raw_key: Optional[str]) -> ApiKeyReco
     if not raw_key:
         raise HTTPException(401, "Missing API key")
     key_hash = _hash_key(raw_key)
-    result = await db.execute(select(ApiKey).where(ApiKey.key_hash == key_hash, ApiKey.enabled == True))
+    # v3.10.10: also exclude soft-deleted keys. ``delete_key`` sets both
+    # ``enabled=False`` and ``deleted_at``; filtering ``deleted_at IS NULL``
+    # is defence-in-depth so a key left ``enabled`` but tombstoned (e.g. a
+    # row resurrected by a cluster-sync merge) still cannot authenticate.
+    result = await db.execute(
+        select(ApiKey).where(
+            ApiKey.key_hash == key_hash,
+            ApiKey.enabled == True,
+            ApiKey.deleted_at.is_(None),
+        )
+    )
     key = result.scalar_one_or_none()
     if not key:
         raise HTTPException(401, "Invalid or disabled API key")
@@ -137,7 +147,7 @@ async def get_api_key_record(
         if authorization.lower().startswith("bearer "):
             raw_key = authorization[7:].strip()
     if not raw_key:
-        raise HTTPException(401, "missing api key")
+        raise HTTPException(401, "Missing API key")
     return await verify_api_key(db, raw_key)
 
 

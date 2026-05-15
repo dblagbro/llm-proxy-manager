@@ -10,6 +10,170 @@ Status flow: **open** → **in-progress** → **fixed** → **verified-fixed** �
 
 ---
 
+## 2026-05-15 — post-refactor deep regression sweep (v3.10.9)
+
+Deep regression / release-hardening sweep covering **v3.9.16 → v3.10.9**
+(14 releases shipped since the last QA pass, including the `messages.py`
+→ `_messages_dispatch.py` extraction). Environment: 3-node prod cluster
+all on v3.10.9, healthy. **1969/1969 unit tests pass**; integration
+(non-UI) **64 passed / 2 failed / 16 skipped**. Findings BUG-023+
+(BUG-001..022 already used). Methods: full pytest suites, adversarial
+HTTP probing of every endpoint, code-level regression audit of the
+14-release diff, live container-log inspection on all 3 nodes.
+
+> **Remediation pass (v3.10.10, 2026-05-15 PM)** — BUG-025, BUG-030,
+> BUG-034 fixed; BUG-023 re-investigated and the auth-bypass claim
+> **retracted** (see below); BUG-037 added for the real defect that the
+> `test_revoke_key_rejects_llm_calls` failure pointed at. 1973/1973 unit
+> tests pass.
+
+### BUG-023 [retracted → hardening] Revoked-key auth — "still authenticates" claim DISPROVEN
+
+- **Area**: `app/auth/keys.py::verify_api_key`
+- **Original claim (2026-05-15 sweep)**: a revoked key still authenticates (HTTP 200) for a window after deletion; attributed to a missing `deleted_at` filter + cluster-sync resurrection.
+- **Re-investigation (v3.10.10)**: **disproven.** Direct probe — create key → soft-delete it into the exact state `delete_key` produces (`enabled=False`, `deleted_at` set) → immediately re-use the key: `/v1/models` → **401 in 0.0s**, `/v1/messages` → **401 in 0.0s**. `verify_api_key` filters `enabled == True`, `delete_key` sets `enabled=False`; the soft-delete revocation path is correct and fast. The `test_revoke_key_rejects_llm_calls` failure that triggered this entry was a **read timeout**, not an auth bypass — its root cause is BUG-037 (an unregistered model id hangs the dispatch). The earlier "HTTP 200" claim was an unverified inference, not an observation.
+- **What was genuinely real**: `verify_api_key` did not filter `deleted_at IS NULL` — a gap *only* if a tombstoned row is somehow left `enabled=True` (e.g. a cluster-sync merge resurrecting it). Worth closing as defence-in-depth.
+- **Fix shipped (v3.10.10)**: `verify_api_key` query now also filters `ApiKey.deleted_at.is_(None)`, so a tombstoned row can never authenticate regardless of its `enabled` flag. Unit tests in `tests/unit/test_v31010_buglog_fixes.py` (healthy accept / disabled reject / soft-deleted-but-enabled reject).
+- **Still open**: cluster-sync ApiKey merge — confirm `delete_key` bumps the LWW timestamp the merge keys on; add a two-node delete→sync convergence test (GAP-4).
+- **Status**: fixed (hardening) in v3.10.10 — auth-bypass claim retracted; cluster-sync convergence test still owed.
+
+### BUG-024 [HIGH] Stale `extra` after OAuth→litellm fallthrough — wrong credentials on the litellm call
+
+- **Area**: `app/api/messages.py` (`extra` build vs litellm dispatch), `_messages_dispatch.py`
+- **Repro**: every claude-oauth provider 401/403s so `dispatch_claude_oauth_chain` exhausts the OAuth chain and returns `(None, route)` with `route` advanced to a litellm provider
+- **Expected**: the litellm dispatch uses the new provider's `litellm_kwargs` (api_key, base_url, headers)
+- **Actual**: `extra` is built once (`messages.py` ~line 294) from the *original* claude-oauth route's `litellm_kwargs`, before the dispatch call (~line 362). After fallthrough `route` is new but `extra` is stale → the litellm call uses `route.litellm_model` (correct) with the old route's credentials/headers (wrong).
+- **Evidence**: code audit of the v3.9.16 baseline confirms the same ordering — **pre-existing defect, NOT a v3.10.9 regression**. The v3.10.9 docstring ("caller falls through to the litellm path with that route") reads as if the fallthrough is sound, masking it.
+- **Likely cause**: `extra`/`system`/`tools` computed before the dispatch branch and never recomputed when `route` changes.
+- **Recommended fix**: after `dispatch_claude_oauth_chain` returns, if `route` changed, rebuild `extra` (and `system`/`tools`) from the new route. Needs runtime confirmation — rare path (requires all OAuth providers to fail auth).
+- **Status**: open (likely bug — confirm at runtime)
+
+### BUG-025 [MEDIUM] Malformed / empty JSON body → bare HTTP 500 on `/v1/messages` + `/v1/chat/completions`
+
+- **Area**: `app/api/messages.py`, `app/api/completions.py`
+- **Repro**: `POST /v1/messages` with body `{bad` or empty `''`
+- **Expected**: 400 with a `{"detail": ...}` JSON error
+- **Actual**: uncaught `json.decoder.JSONDecodeError` → **HTTP 500**, plain-text body. (`/api/auth/login`, which uses a Pydantic body model, handles the same input correctly with 422.)
+- **Evidence**: container log traceback — `messages.py body = await request.json() … JSONDecodeError`.
+- **Likely cause**: `body = await request.json()` is unguarded; the v3.5.8 input validator runs *after* it, so it never sees malformed input.
+- **Recommended fix**: wrap `request.json()` (or add a global `@app.exception_handler` for `JSONDecodeError`) → 400. Closes it for every raw-body endpoint at once.
+- **Fix shipped (v3.10.10)**: global `@app.exception_handler(json.JSONDecodeError)` in `app/main.py` → 400 with a `{"error": {...}}` JSON envelope; closes it for every raw-body endpoint at once. Unit-tested in `test_v31010_buglog_fixes.py`.
+- **Status**: fixed in v3.10.10
+
+### BUG-026 [MEDIUM] AI-supervisor recursion guard is inert — supervisor pollutes its own stats
+
+- **Area**: `app/monitoring/ai_provider_supervisor.py`
+- **Repro**: supervisor's `classify_with_llm` self-calls `/v1/messages` with header `X-Internal-Source: ai_provider_supervisor`
+- **Expected**: those internal classifier calls are excluded from provider stats / activity-log aggregates (the module docstring claims they are "filterable")
+- **Actual**: **no code anywhere reads `X-Internal-Source`** — grep of `messages.py`, `_request_pipeline.py`, `ai_provider_supervisor_stats.py` finds zero consumers. The classifier calls land in `activity_log` as ordinary `llm_request` rows and are counted by both `compute_provider_stats` and the v3.10.4 error-rate sampler.
+- **Evidence**: code audit. Low volume today (suggest-only, www01, 30-min cadence) but a failing classifier model would self-pollute the very stats driving its verdicts — and inflate the error-rate alert.
+- **Recommended fix**: filter `event_meta`/header `X-Internal-Source` out of `compute_provider_stats` and `_sample_error_rate`'s queries; OR tag those rows with a distinct `event_type`.
+- **Status**: open
+
+### BUG-027 [MEDIUM] Integration test `test_release_now_also_enables_v386` fails deterministically
+
+- **Area**: `tests/integration/test_manual_override_flow.py` / manual-override "release all to AI control" flow (v3.8.6)
+- **Repro**: `pytest tests/integration/test_manual_override_flow.py::test_release_now_also_enables_v386`
+- **Actual**: deterministic failure (re-ran twice). Not yet root-caused — could be a v3.8.6 behaviour regression or environmental (depends on current provider override state on the cluster).
+- **Recommended fix**: triage — capture actual vs expected; determine regression vs environment.
+- **Status**: open (needs triage)
+
+### BUG-028 [MEDIUM] Cross-family translator still mishandles two message shapes
+
+- **Area**: `app/api/_oauth_chat_translate.py`
+- **Detail**: beyond the v3.10.0 fix — (a) an Anthropic assistant block with no text and no tool_use translates to `{"role":"assistant","content":null}` with no `tool_calls`, which OpenAI rejects; (b) `tool_result` → `role:"tool"` is emitted without verifying it *immediately follows* the matching assistant `tool_calls` — a misordered (not orphaned) pair still produces an OpenAI 400. The `known_tool_use_ids` pre-scan only catches fully-orphaned ids.
+- **Evidence**: code audit.
+- **Recommended fix**: emit a placeholder for empty assistant blocks; validate tool-message adjacency (or reorder) in `anthropic_messages_to_openai`. Add regression tests with both shapes.
+- **Status**: open
+
+### BUG-029 [MEDIUM] `/lmrh/quotes?model=<unknown>` returns 200 with empty `model_id` instead of an unknown-model error
+
+- **Area**: `app/api/lmrh_v2.py`
+- **Repro**: `GET /lmrh/quotes?model=this-model-does-not-exist-xyz` (auth'd)
+- **Expected**: 4xx / explicit "unknown model" so a caller pre-flighting a typo gets a true signal
+- **Actual**: 200 with `candidates:[{"model_id":"","score":888.0,...}]` — silently falls back to auto-routing the default provider.
+- **Recommended fix**: when no capability matches the requested model, return 404/422 with a clear message.
+- **Status**: open
+
+### BUG-030 [LOW] `GET` on POST-only LLM endpoints returns 200 + SPA HTML instead of 405
+
+- **Area**: `app/main.py` SPA catch-all
+- **Repro**: `GET /v1/messages` or `GET /v1/chat/completions`
+- **Actual**: 200 with the React `index.html`. (`PUT`/`DELETE` correctly 405 — only `GET` is swallowed by `@app.get("/{full_path:path}")`.)
+- **Recommended fix**: exclude `/v1/*` (and `/api/*`) prefixes from the SPA catch-all, or register explicit 405 handlers.
+- **Fix shipped (v3.10.10)**: `spa_catch_all` now returns a JSON 404 for any path under the `v1/`, `api/`, `cluster/`, `lmrh/`, `metrics`, `health`, `version` namespaces instead of the SPA HTML shell — non-browser API clients no longer parse a 200 HTML page as a success body. (A true 405 for the wrong-method-on-an-existing-route case is not attempted; a JSON 404 is the correct-enough fix.)
+- **Status**: fixed in v3.10.10
+
+### BUG-031 [LOW] `GET /api/providers/_refresh-all-anthropic-billing` returns 404 "Provider not found" instead of 405
+
+- **Area**: `app/api/anthropic_billing.py` / `app/api/providers.py` route ordering
+- **Detail**: the literal action path `_refresh-all-anthropic-billing` (POST-only) collides with `GET /api/providers/{provider_id}`, so a wrong-method GET is treated as a provider-id lookup → 404 "Provider not found".
+- **Recommended fix**: move literal `_`-prefixed action endpoints off the `{provider_id}` namespace (e.g. `/api/providers/_actions/refresh-all-anthropic-billing`) or register the GET 405 explicitly. Low impact; a path-design smell.
+- **Note (v3.10.10)**: the BUG-030 SPA-catch-all fix does **not** cover this — the path is matched by the real `GET /api/providers/{provider_id}` route, not the catch-all. The route-redesign above is the only real fix; deferred — it would change the endpoint URL and break the v3.9.19 "Refresh Usage Stats" button, so it is not a quick win.
+- **Status**: open
+
+### BUG-032 [LOW / hardening] ASGI + pool errors bypass `activity_log` — invisible to the v3.10.4 alert
+
+- **Area**: observability — Starlette middleware errors, `sqlalchemy.pool` errors
+- **Detail**: client-disconnect `Exception in ASGI application` (CancelledError / "Connection closed") and `sqlalchemy.pool` GC errors log at full-traceback stdlib `ERROR:` level. They (a) are indistinguishable from genuine ASGI faults when scanning logs, and (b) never reach `activity_log`, so the v3.10.4 error-rate alert is **blind** to them — a pool-exhaustion incident would not alert until it caused downstream request-level `severity=error` failures.
+- **Recommended fix**: route ASGI exceptions through a handler that classifies client-disconnect as `warning` and real faults as `error`; emit a metric/alert hook for `sqlalchemy.pool` errors.
+- **Status**: open
+
+### BUG-033 [LOW] Orphan `tool_result` with image content silently drops the image
+
+- **Area**: `app/api/_oauth_chat_translate.py::_tool_result_content_to_str`
+- **Detail**: an orphaned `tool_result` whose content is an image block is flattened to the literal `"[image]"` — the image payload is silently discarded with no caller-visible signal.
+- **Recommended fix**: at minimum document it; ideally translate the image to an OpenAI `image_url` part.
+- **Status**: open
+
+### BUG-034 [LOW] Inconsistent auth-error wording + `/lmrh/quotes` status inconsistency
+
+- **Detail**: no-key responses say `"Missing API key"` on `/v1/messages` but `"missing api key"` (lowercase) on `/v1/models` and `/lmrh/*` — two `verify_api_key`/`resolve_api_key_dep` paths with divergent copy. `/lmrh/quotes` with a missing `model` → 422; with empty `model=` → 400 — same logical failure, two shapes; the `if not model` branch is partly dead (FastAPI rejects a missing required query first).
+- **Recommended fix**: unify the auth-error string; pick one status for missing/empty `model`.
+- **Fix shipped (v3.10.10)**: `resolve_api_key_dep` now raises `"Missing API key"` (was lowercase `"missing api key"`) — matches `verify_api_key`, so `/v1/models` and `/lmrh/*` no-key responses are consistent with `/v1/messages`.
+- **Status**: partially fixed in v3.10.10 — auth-error wording unified; the `/lmrh/quotes` missing-vs-empty `model` status-shape inconsistency is unchanged (still open).
+
+### BUG-035 [enhancement] `/v1/embeddings` Pydantic `list[float]` vs base64-`str` serializer warnings
+
+- **Detail**: every `/v1/embeddings` call logs `PydanticSerializationUnexpectedValue` — the `embedding` field is declared `list[float]` but receives a base64 `str`. Response is 200; this is per-request log noise from a response-model mismatch.
+- **Recommended fix**: widen the response model to `list[float] | str` (or split by `encoding_format`).
+- **Status**: open
+
+### BUG-036 [enhancement / hardening] `_messages_dispatch.py` (v3.10.9 refactor) has no behavioral test coverage
+
+- **Area**: `tests/unit/test_v3109_messages_dispatch_extract.py`
+- **Detail**: the v3.10.9 extraction moved the proxy's deepest hot path (claude-oauth chain walk, 401-refresh fallback, streaming pre-flight, empty-stream→502, network-error→next-provider, fallback-exhaustion) into `_messages_dispatch.py` (256 lines). The test file has 4 tests — 3 are source-grep wiring checks, 1 is behavioral but exercises only the trivial "route is not claude-oauth → fall through" path. **Zero behavioral coverage** of any dispatch branch. A "behaviour-preserving move" with no behavioural assertions cannot prove behaviour was preserved.
+- **Recommended fix**: add mocked-chain tests for: 401→refresh→retry, network-error→next-provider, empty-stream→502, fallback-exhaustion→HTTPException, streaming pre-flight failure.
+- **Status**: open
+
+### BUG-037 [HIGH] `/v1/messages` for an unregistered model id can hang ~40s+ (300s server-side ceiling)
+
+- **Area**: model routing / substitution + `app/api/_messages_streaming.py` (`_CLAUDE_OAUTH_TIMEOUT`)
+- **Discovered**: v3.10.10 re-investigation of the `test_revoke_key_rejects_llm_calls` failure (originally misfiled as BUG-023).
+- **Repro**: `POST /v1/messages` with a **valid** key for `model: claude-3-5-sonnet-20241022` — a model with **no `ModelCapability` rows** on this cluster. Probe result: request hung and the client timed out at 40s (it had not completed). A second observation routed the same model to `OpenRouter → openai/gpt-4o` and succeeded — i.e. the substitution target is non-deterministic, and at least one target path hangs.
+- **Expected**: an unroutable / unregistered model id should fast-fail with a 4xx, or route to a working provider within a normal completion time.
+- **Likely cause**: with no capability rows the router substitutes a provider; `_CLAUDE_OAUTH_TIMEOUT` carries a **300s read timeout** (`httpx.Timeout(connect=5.0, read=300.0, write=10.0, pool=5.0)`). If the substitute is a claude-oauth provider and the upstream hangs on the unrecognised model, the proxy can wait up to 5 minutes before failing.
+- **Why it matters**: (1) a single hung request holds its connection — and DB session — for up to 300s; under load this is a plausible **contributor to ARCH-A** (pool exhaustion). (2) the integration suite's revocation test flapped on this, not on auth.
+- **Recommended fix**: (a) fast-fail (400/404 "model not available") when a model id resolves to no capability and no deterministic route; (b) tighten the claude-oauth `read` timeout from 300s to a sane ceiling (e.g. 120s) — needs deliberate review as it touches the streaming hot path. NOT bundled into v3.10.10 (out of the "quick wins" scope).
+- **Status**: open
+
+### ARCH-A — UPDATE: leak is actively manifesting
+
+The latent DB connection-pool leak (open since the v3.9.15 sweep) is
+**live**. www01 container logs show, within a 3-hour window, **7×**
+`ERROR:sqlalchemy.pool … Exception terminating connection` /
+`The garbage collector is trying to clean up non-checked-in connection`,
+correlated with `ValueError: Connection closed` from `aiosqlite`. A
+pooled connection is escaping its `async with` and dying mid-use.
+- Tracer (`DB_POOL_TRACE=1`) is enabled on www01 + www02; **NOT on GCP**
+  — a node the v3.9.15 sweep named as historically affected. Enable it
+  there.
+- The `at`-scheduled `/cluster/db-pool-trace` capture (job #3, 2026-05-16
+  15:00 UTC) should catch the per-connection acquisition stacks.
+- **Status**: open — diagnostic toolkit in place; root cause still unknown.
+
+---
+
 ## 2026-05-15 — bug-log audit refresh (v3.9.15)
 
 Re-checked every item from the 2026-04-24 sweep against current code

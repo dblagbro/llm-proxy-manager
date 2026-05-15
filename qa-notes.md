@@ -4,6 +4,57 @@ Operational quirks, environment assumptions, flaky behavior, and risk
 notes accumulated during regression sweeps. Update freely; this file is
 deliberately less structured than `bug-log.md` or `test-plan.md`.
 
+## Post-refactor deep regression sweep (2026-05-15 PM — v3.10.9)
+
+Deep sweep covering **v3.9.16 → v3.10.9** — 14 releases shipped since
+the last QA pass. Findings BUG-023..BUG-036 in `bug-log.md`.
+
+- **The bug-log-lag pattern recurred.** Same lesson as the v3.9.15
+  audit: 14 releases (translation fix, severity taxonomy, ARCH-A
+  toolkit, error-rate alert, supervisor enablement, LMRH v2, the
+  `messages.py` refactor) shipped with no QA pass. `test-plan.md` had
+  drifted to a 633-test baseline (actual: 1969). Tighten: a QA sweep
+  per ~milestone, not per dozen releases.
+- **ARCH-A is no longer just latent — it is actively manifesting.**
+  www01 logs show 7× `sqlalchemy.pool` connection-GC / "Connection
+  closed" errors in a 3h window. Tracer is ON for www01 + www02,
+  **OFF on GCP** (a historically-affected node — enable it).
+- **`test_revoke_key_rejects_llm_calls` failure — BUG-023 retracted
+  (v3.10.10).** The sweep filed this as "a revoked key still
+  authenticates." Re-investigation **disproved** that: a direct probe
+  of a soft-deleted key (`enabled=False`, `deleted_at` set) returns
+  **401 in 0.0s** on both `/v1/models` and `/v1/messages` — the
+  revocation path is correct. The test's failure was a **read
+  timeout**: it used `claude-3-5-sonnet-20241022`, a model with no
+  capability rows on this cluster, whose dispatch can hang ~40s+
+  (BUG-037). Lesson: an "Actual: HTTP 200" line in a bug report must
+  be an *observed* status, not an inference from a test failure — a
+  timeout failure is not evidence of an auth bypass. The test now uses
+  a registered model. `verify_api_key` still gained a
+  `deleted_at IS NULL` filter as genuine defence-in-depth.
+- **Cluster-sync resurrects out-of-band hard deletes.** Scripts /
+  harnesses that `db.delete()` a row directly (including
+  `scripts/archa_pool_leak_harness.py`'s cleanup `finally`) have their
+  temp keys re-inserted by a peer and left live. Scripts must use the
+  tombstone path (`deleted_at` + `enabled=False`), not `db.delete()`.
+- **Non-repo config drift** — www01's compose carries `DB_POOL_TRACE`,
+  `AI_PROVIDER_SUPERVISOR_ENABLED`, `AI_PROVIDER_SUPERVISOR_INTERNAL_API_KEY`,
+  `LMRH_V2_NODE_OVERRIDE`; www02 has `DB_POOL_TRACE`; GCP has none.
+  These are operational flags absent from git — a fresh deploy
+  elsewhere would not have them. Documented in the v3.10.8 pause-state
+  memory.
+- **AI supervisor is enabled suggest-only on www01** — its classifier
+  self-calls carry `X-Internal-Source: ai_provider_supervisor` but
+  **nothing reads that header** (BUG-026): the supervisor counts its
+  own traffic in the stats that drive its verdicts.
+- **Environment constraint**: this sweep ran with no browser —
+  interactive Playwright UI testing was NOT exercised. UI validation
+  was limited to `tsc` + code/wiring inspection + the API behind it.
+  Declared coverage gap GAP-7.
+- `messages.py` is 816 lines post-v3.10.9-refactor — still over
+  `design.md`'s 800 trigger; the CoT/litellm dispatch-tail extraction
+  is the named next refactor.
+
 ## Audit refresh (2026-05-15)
 
 Re-checked the 2026-04-24 sweep against current code. 16 of 18 items

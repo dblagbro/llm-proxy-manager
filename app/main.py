@@ -1,6 +1,7 @@
 """
 llm-proxy v2 — FastAPI application entry point.
 """
+import json
 import logging
 import time
 from contextlib import asynccontextmanager
@@ -441,6 +442,20 @@ async def _handle_client_disconnect(request: Request, exc: _ClientDisconnect):
     return JSONResponse(status_code=499, content={"detail": "client_disconnect"})
 
 
+@app.exception_handler(json.JSONDecodeError)
+async def _handle_json_decode_error(request: Request, exc: json.JSONDecodeError):
+    # v3.10.10 BUG-025: a malformed / empty request body raised an uncaught
+    # JSONDecodeError -> bare HTTP 500. The raw-body endpoints (/v1/messages,
+    # /v1/chat/completions) call ``await request.json()`` directly with no
+    # Pydantic model to validate against; this global handler turns every
+    # such failure into a clean 400 for every raw-body endpoint at once.
+    return JSONResponse(
+        status_code=400,
+        content={"error": {"type": "invalid_request_error",
+                            "message": f"Malformed JSON in request body: {exc}"}},
+    )
+
+
 # ── Core LLM endpoints (same paths as v1) ────────────────────────────────────
 app.include_router(messages_router)
 app.include_router(completions_router)
@@ -628,6 +643,12 @@ if os.path.isdir(_static_dir):
     # SPA catch-all: return index.html for all unmatched GET paths
     @app.get("/{full_path:path}", include_in_schema=False)
     async def spa_catch_all(full_path: str):
+        # v3.10.10 BUG-030: never serve the SPA HTML shell for API
+        # namespaces. A wrong-method or unknown path under these prefixes
+        # must return a JSON 404 — a 200 + HTML page silently breaks
+        # non-browser API clients, which parse the HTML as a success body.
+        if full_path.split("/", 1)[0] in ("v1", "api", "cluster", "lmrh", "metrics", "health", "version"):
+            return JSONResponse({"detail": "Not Found"}, status_code=404)
         index = os.path.join(_static_dir, "index.html")
         if os.path.isfile(index):
             # v2.7.6 BUG-015: prevent browsers from caching the SPA shell so
