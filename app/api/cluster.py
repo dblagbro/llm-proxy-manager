@@ -37,11 +37,17 @@ async def health():
     """
     now = _time.time()
     if _HEALTH_CACHE["body"] is not None and now - _HEALTH_CACHE["ts"] < _HEALTH_CACHE_TTL_SEC:
-        # Re-evaluate CB state on every call; only the provider count is cached.
+        # Re-evaluate CB state + pool snapshot on every call; only the
+        # provider count is cached. v3.10.3 — the cache-hit path
+        # previously re-added only ``circuitBreakers``, so ``dbPool`` was
+        # absent on every cache hit (i.e. ~2 of every 3s window). Both
+        # are excluded from the cached body (line below) precisely so
+        # they stay live — both must therefore be re-added here.
         cached = _HEALTH_CACHE["body"]
         return {
             **cached,
             "circuitBreakers": get_all_states(),
+            "dbPool": _db_pool_snapshot(),
         }
 
     from app.models.database import AsyncSessionLocal
