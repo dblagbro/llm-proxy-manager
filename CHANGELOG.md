@@ -9,6 +9,26 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.9.x — Proxy-side Caller Memory (#267) — phases 4–10 + ops fixes
 
+### v3.9.18 — P4 tooling improvements (bug-log sync check + translator force-test)
+
+**tools/cut-release.sh** — added bug-log.md sync validation. Before
+creating a release, the script scans commits since the last tag for
+``BUG-###`` references. If any are found but ``bug-log.md`` was not
+updated in the commit range, the operator gets a 5-second warning with
+the bug IDs listed. Non-fatal (preserves emergency release flexibility)
+but prevents silent bug-status drift.
+
+**scripts/force_test_openrouter_translator.py** — force-validation
+script for the v3.9.16 P3a empty-content translator fix. Creates a
+temporary API key, temporarily disables Anthropic providers to force
+cross-family routing, sends a request with empty user content (the
+previously-failing shape), verifies 200 + cross-family translation
+header, then cleans up. Exit 0 = pass, 1 = fail, 2 = setup error.
+
+Post-v3.9.17 validation run: **SUCCESS** — empty content routed through
+cross-family translation (``anthropic->openai``) to Grok-Web-Devin; 200
+response with valid content. The v3.9.16 placeholder fix working as designed.
+
 ### v3.9.17 — litellm pin widened to allow 1.84.x (P4 evaluation)
 
 v3.9.14 pinned ``litellm>=1.83.0,<1.84.0`` because 1.84.0 shipped
