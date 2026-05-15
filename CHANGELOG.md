@@ -9,6 +9,29 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.10.x — "Harden" milestone
 
+### v3.10.7 — LMRH SDK: fix `most_reliable` hint (was inert)
+
+Polish before the PyPI publish. The reference SDK's
+`build_hint(prefer="most_reliable")` emitted `provider-hint=<internal
+provider id>` — but the proxy's `provider-hint` matcher
+(`app/routing/lmrh/score.py::_provider_hint_match`) keys on provider
+**name/type**, never the id. The hint was therefore **silently inert**.
+
+Fixes in `sdk/python/lmrh_client.py`:
+- `most_reliable` now emits the most-reliable provider's **type** (a
+  header-safe slug the proxy matches) — not the id, and not the name
+  (names can carry spaces, e.g. "C1 Vertex AI / Google AI", which
+  isn't safe in the hint header).
+- `most_reliable` + `model_family` no longer clobber each other:
+  `_most_reliable_provider()` takes an optional family filter, so the
+  combination picks the most reliable provider *of that family*; with
+  no qualifying provider it falls back to the family's type list.
+- New `_family_provider_types()` helper; `_provider_hint_for_family()`
+  rederived from it (output unchanged).
+
+4 new SDK tests (incl. a header-safety regression guard); 20 SDK tests
+pass. Reference-SDK-only change — no proxy runtime change.
+
 ### v3.10.6 — LMRHv2 Phase 4: downstream adoption begins
 
 LMRHv2's proxy-side endpoints + reference SDK shipped in phases 1-3

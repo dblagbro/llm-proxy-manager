@@ -219,24 +219,87 @@ def test_build_hint_fastest(mocked_proxy):
         client.stop()
 
 
+def _started(client):
+    """Start a client and block until its first snapshot lands."""
+    client.start()
+    for _ in range(10):
+        if client.snapshot() is not None:
+            return
+        time.sleep(0.1)
+
+
+def _provider_hint_value(hint: str) -> str:
+    """Extract the provider-hint dim value from a formatted hint."""
+    for dim in hint.split(","):
+        dim = dim.strip()
+        if dim.startswith("provider-hint="):
+            return dim[len("provider-hint="):]
+    return ""
+
+
 def test_build_hint_most_reliable_picks_claude(mocked_proxy):
     """claude in the fixture has 0.998×600 samples; grok-web has
     1.0×50 samples. Weighted score (samp / 1000 cap):
       claude: 0.998 × (1 + 600/1000) = 1.597
       grok-web: 1.0 × (1 + 50/1000) = 1.05
-    → claude wins."""
+    → claude wins → its provider TYPE (claude-oauth) is emitted."""
     client = mocked_proxy(_sample_payload())
     try:
-        client.start()
-        # Wait for the snapshot to populate
-        for _ in range(10):
-            if client.snapshot() is not None:
-                break
-            time.sleep(0.1)
+        _started(client)
         h = client.build_hint(prefer="most_reliable")
-        assert "provider-hint=p-claude" in h, f"got: {h}"
+        assert "provider-hint=claude-oauth" in h, f"got: {h}"
     finally:
         client.stop()
+
+
+def test_build_hint_most_reliable_emits_safe_token(mocked_proxy):
+    """Regression: pre-fix the hint pinned ``provider-hint=p-claude``
+    (the internal id, which the proxy can't match → inert). The fix
+    emits the provider TYPE — and it must be a header-safe slug: no
+    internal id, no whitespace (provider NAMES can carry spaces)."""
+    client = mocked_proxy(_sample_payload())
+    try:
+        _started(client)
+        h = client.build_hint(prefer="most_reliable")
+        ph = _provider_hint_value(h)
+        assert ph and "p-claude" not in ph and "p-grok-web" not in ph, h
+        assert " " not in ph, f"provider-hint not header-safe: {ph!r}"
+    finally:
+        client.stop()
+
+
+def test_build_hint_most_reliable_within_family(mocked_proxy):
+    """most_reliable + model_family → the most reliable provider OF
+    that family, by its type (not clobbered by the family type list)."""
+    client = mocked_proxy(_sample_payload())
+    try:
+        _started(client)
+        # grok family → only the grok-web provider qualifies
+        h = client.build_hint(prefer="most_reliable", model_family="grok")
+        assert "provider-hint=grok-web" in h, f"got: {h}"
+    finally:
+        client.stop()
+
+
+def test_build_hint_most_reliable_family_no_match_falls_back(mocked_proxy):
+    """most_reliable + a family with no qualifying provider in the
+    snapshot → falls back to the family's provider-type list."""
+    client = mocked_proxy(_sample_payload())
+    try:
+        _started(client)
+        # openai family — the fixture has no openai/codex-oauth provider
+        h = client.build_hint(prefer="most_reliable", model_family="openai")
+        assert "provider-hint=openai|codex-oauth" in h, f"got: {h}"
+    finally:
+        client.stop()
+
+
+def test_family_provider_types_helper():
+    from lmrh_client import _family_provider_types
+    assert _family_provider_types("claude") == (
+        "anthropic", "claude-oauth", "anthropic-oauth")
+    assert _family_provider_types("grok") == ("grok", "grok-web")
+    assert _family_provider_types("unknown-vendor") is None
 
 
 def test_build_hint_region_pinned(mocked_proxy):
