@@ -102,6 +102,15 @@ async def _stream_anthropic(
     db: AsyncSession, key_record_id: str, t0: float, budget_total: int = 0,
     cache_decision=None,
     llm_hint: Optional[str] = None,  # v3.0.59
+    # v3.9.14 (#267 Phase 5.5 follow-up) — memory write-back for the
+    # litellm streaming Anthropic path. Same shape as _stream_claude_oauth:
+    # when conversation_id is set, accumulate tool_use blocks across the
+    # SSE stream + feed the assembled response dict through the same
+    # maybe_extract_memory_writes() the non-streaming path uses. No-op
+    # when conversation_id is None.
+    api_key_id: Optional[str] = None,
+    conversation_id: Optional[str] = None,
+    memory_tag: Optional[str] = None,
 ) -> AsyncIterator[bytes]:
     try:
         response = await acompletion_with_retry(model=model, messages=messages, stream=True, **extra)
@@ -118,6 +127,9 @@ async def _stream_anthropic(
         tool_name: str = ""
         ttft_ms: float = 0.0
         full_text_buf: list[str] = []
+        # v3.9.14 — accumulate tool_use blocks for memory extraction at
+        # end-of-stream. tool_calls_acc[tool_id] = {id, name, input_str}
+        tool_calls_acc: dict[str, dict] = {}
 
         yield (
             f'data: {{"type":"message_start","message":{{"id":"msg_proxy","type":"message",'
@@ -159,6 +171,10 @@ async def _stream_anthropic(
                         f'"name":"{tool_name}","input":{{}}}}}}\n\n'
                     ).encode()
                     tool_started = True
+                    # v3.9.14 — seed accumulator for memory extraction
+                    tool_calls_acc.setdefault(tool_id, {
+                        "id": tool_id, "name": tool_name, "input_str": "",
+                    })
                 args_fragment = getattr(fn, "arguments", "") or ""
                 if args_fragment:
                     escaped = json.dumps(args_fragment)[1:-1]
@@ -166,6 +182,9 @@ async def _stream_anthropic(
                         f'data: {{"type":"content_block_delta","index":{index},'
                         f'"delta":{{"type":"input_json_delta","partial_json":"{escaped}"}}}}\n\n'
                     ).encode()
+                    # v3.9.14 — accumulate partial JSON for end-of-stream parse
+                    if tool_id in tool_calls_acc:
+                        tool_calls_acc[tool_id]["input_str"] += args_fragment
 
             # Text streaming
             content = getattr(delta, "content", None) or ""
@@ -208,6 +227,56 @@ async def _stream_anthropic(
                              key_record_id=key_record_id, ttft_ms=ttft_ms,
                              cache_creation=cache_creation, cache_read=cache_read,
                              had_lmrh_hint=bool(llm_hint), lmrh_hint_raw=llm_hint or None)
+        # v3.9.14 (#267 Phase 5.5 follow-up) — memory write-back for the
+        # litellm streaming path. Assemble a non-streaming-shape response
+        # dict from the accumulated tool_use blocks + feed through the
+        # same maybe_extract_memory_writes the non-streaming and
+        # claude-oauth paths use. Gated on (conversation_id, api_key_id);
+        # silent-degrade so a memory store error never breaks the stream.
+        if conversation_id and api_key_id and tool_calls_acc:
+            try:
+                content_list = []
+                for tid, tc in tool_calls_acc.items():
+                    raw = tc.get("input_str") or ""
+                    try:
+                        parsed = json.loads(raw) if raw else {}
+                    except ValueError:
+                        # malformed JSON — skip this block rather than
+                        # corrupting the extractor's view of intent
+                        continue
+                    content_list.append({
+                        "type": "tool_use",
+                        "id": tc.get("id"),
+                        "name": tc.get("name"),
+                        "input": parsed,
+                    })
+                if content_list:
+                    assembled = {
+                        "id": "msg_proxy_stream",
+                        "type": "message",
+                        "role": "assistant",
+                        "model": model,
+                        "content": content_list,
+                        "usage": {
+                            "input_tokens": input_tokens,
+                            "output_tokens": output_tokens,
+                        },
+                    }
+                    from app.memory.extract import maybe_extract_memory_writes
+                    await maybe_extract_memory_writes(
+                        db,
+                        response_dict=assembled,
+                        api_key_id=api_key_id,
+                        conversation_id=conversation_id,
+                        memory_tag_default=memory_tag,
+                        source_provider_id=provider_id,
+                    )
+            except Exception:
+                # Silent degrade — memory store errors never break the
+                # stream's success path. Per the operator-locked design
+                # (feedback_caller_memory_design_locked), all memory
+                # side effects are best-effort.
+                pass
         if cache_decision is not None and cache_decision.eligible:
             try:
                 await maybe_store(cache_decision, "".join(full_text_buf))

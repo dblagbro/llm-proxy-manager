@@ -41,15 +41,27 @@ def test_stream_claude_oauth_invokes_extractor_on_success():
 
 
 def test_stream_extractor_call_uses_silent_degrade():
-    """Memory extract errors never break the stream's success path."""
+    """Memory extract errors never break the stream's success path.
+
+    v3.9.14 added a second extract site in _stream_anthropic; this test
+    walks each occurrence and confirms ALL are wrapped in try/except
+    with the 'Silent degrade' comment locked in.
+    """
     src = Path("app/api/_messages_streaming.py").read_text()
-    # The extract call is inside a try/except
-    idx = src.index("from app.memory.extract import maybe_extract_memory_writes")
-    body = src[idx - 200:idx + 800]
-    assert "try:" in body
-    assert "except Exception:" in body
-    # The comment names the intent so a future contributor doesn't remove it
-    assert "Silent degrade" in body
+    needle = "from app.memory.extract import maybe_extract_memory_writes"
+    start = 0
+    occurrences = 0
+    while True:
+        idx = src.find(needle, start)
+        if idx < 0:
+            break
+        occurrences += 1
+        body = src[idx - 1800:idx + 1000]
+        assert "try:" in body, f"extract call #{occurrences} missing try wrapper"
+        assert "except Exception:" in body, f"extract call #{occurrences} missing except"
+        assert "Silent degrade" in body, f"extract call #{occurrences} missing 'Silent degrade' comment"
+        start = idx + len(needle)
+    assert occurrences >= 1, "no extract calls found in _messages_streaming.py"
 
 
 def test_messages_endpoint_passes_conv_id_to_stream():
