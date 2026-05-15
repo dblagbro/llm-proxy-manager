@@ -64,6 +64,43 @@ echo ""
 
 cd "$REPO_DIR"
 
+# P4 enhancement: bug-log.md sync check. If commits mention BUG-### but
+# bug-log.md wasn't updated, warn the operator so they can manually verify
+# the bug status was tracked. Non-fatal to preserve release-emergency
+# flexibility.
+LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+if [[ -n "$LAST_TAG" ]]; then
+  echo "=== Bug-log sync check (since $LAST_TAG) ==="
+
+  # Extract all BUG-### references from commit messages since last tag
+  BUG_REFS=$(git log "${LAST_TAG}..HEAD" --format='%s %b' | grep -oE 'BUG-[0-9]+' | sort -u || true)
+
+  if [[ -n "$BUG_REFS" ]]; then
+    echo "Found bug references in commits: $(echo $BUG_REFS | tr '\n' ' ')"
+
+    # Check if bug-log.md was modified in any commit since last tag
+    BUGLOG_UPDATED=$(git log "${LAST_TAG}..HEAD" --oneline --name-only | grep -q '^bug-log\.md$' && echo "yes" || echo "no")
+
+    if [[ "$BUGLOG_UPDATED" == "no" ]]; then
+      echo "⚠️  WARNING: Commits reference bugs but bug-log.md was not updated" >&2
+      echo "   Bug references found: $(echo $BUG_REFS | tr '\n' ' ')" >&2
+      echo "   Verify bug statuses are tracked before releasing." >&2
+      echo "" >&2
+
+      # Give operator 5 seconds to ctrl-C if this is wrong
+      if [[ $DRY_RUN -eq 0 ]]; then
+        echo "Continuing in 5 seconds... (ctrl-C to abort)" >&2
+        sleep 5
+      fi
+    else
+      echo "✓ bug-log.md was updated (references validated)"
+    fi
+  else
+    echo "No bug references found in commits"
+  fi
+  echo ""
+fi
+
 # Sanity: working tree (allow staged version bump; reject unstaged changes
 # in tracked files other than .pyc bytecode)
 if ! git diff --quiet -- ':(exclude)*.pyc'; then
