@@ -23,10 +23,13 @@ from pathlib import Path
 
 
 def test_litellm_pin_is_tight():
-    """Pin must explicitly exclude 1.84.0+ until breaking-change
-    patches settle."""
+    """Pin must be explicitly bounded — not the old decorative
+    ``>=1.40.0`` floor. v3.9.14 set ``<1.84.0``; v3.9.17 widened to
+    ``<1.85.0`` after the P4 evaluation found 1.84.0's breaking changes
+    are all Proxy-server features (see test_v3917_litellm_pin.py).
+    This test just guards that SOME explicit upper bound exists."""
     req = Path("requirements.txt").read_text()
-    assert ">=1.83.0,<1.84.0" in req
+    assert "litellm>=1.83.0,<1.85.0" in req
     # The old loose pin must be gone (otherwise pip resolves to >=1.40)
     assert "litellm>=1.40.0" not in req
 
