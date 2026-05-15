@@ -165,9 +165,9 @@ The latent DB connection-pool leak (open since the v3.9.15 sweep) is
 `The garbage collector is trying to clean up non-checked-in connection`,
 correlated with `ValueError: Connection closed` from `aiosqlite`. A
 pooled connection is escaping its `async with` and dying mid-use.
-- Tracer (`DB_POOL_TRACE=1`) is enabled on www01 + www02; **NOT on GCP**
-  — a node the v3.9.15 sweep named as historically affected. Enable it
-  there.
+- Tracer (`DB_POOL_TRACE=1`) is now enabled on **all 3 nodes** — www01,
+  www02, and GCP (added to the GCP compose during the v3.10.10 deploy;
+  tracer banner confirmed in the GCP container logs).
 - The `at`-scheduled `/cluster/db-pool-trace` capture (job #3, 2026-05-16
   15:00 UTC) should catch the per-connection acquisition stacks.
 - **Status**: open — diagnostic toolkit in place; root cause still unknown.

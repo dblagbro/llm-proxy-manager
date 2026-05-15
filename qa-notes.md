@@ -17,8 +17,8 @@ the last QA pass. Findings BUG-023..BUG-036 in `bug-log.md`.
   per ~milestone, not per dozen releases.
 - **ARCH-A is no longer just latent — it is actively manifesting.**
   www01 logs show 7× `sqlalchemy.pool` connection-GC / "Connection
-  closed" errors in a 3h window. Tracer is ON for www01 + www02,
-  **OFF on GCP** (a historically-affected node — enable it).
+  closed" errors in a 3h window. Tracer (`DB_POOL_TRACE=1`) is now ON
+  for all 3 nodes — GCP added during the v3.10.10 deploy.
 - **`test_revoke_key_rejects_llm_calls` failure — BUG-023 retracted
   (v3.10.10).** The sweep filed this as "a revoked key still
   authenticates." Re-investigation **disproved** that: a direct probe
