@@ -176,23 +176,36 @@ def _format_hint(parts: dict[str, str]) -> str:
     return ", ".join(f"{k}={v}" for k, v in parts.items() if v)
 
 
+# Model-family → the proxy provider_type values that serve it. The
+# proxy's provider-hint matcher (app/routing/lmrh/score.py) keys on a
+# provider's name OR type (never its opaque internal id), so these are
+# valid tokens for the provider-hint dim.
+_FAMILY_PROVIDER_TYPES: dict[str, tuple[str, ...]] = {
+    "claude":    ("anthropic", "claude-oauth", "anthropic-oauth"),
+    "anthropic": ("anthropic", "claude-oauth", "anthropic-oauth"),
+    "openai":    ("openai", "codex-oauth"),
+    "gpt":       ("openai", "codex-oauth"),
+    "gemini":    ("google", "vertex"),
+    "google":    ("google", "vertex"),
+    "grok":      ("grok", "grok-web"),
+    "cohere":    ("cohere",),
+    "embed":     ("cohere",),
+}
+
+
+def _family_provider_types(family: str) -> Optional[tuple[str, ...]]:
+    """The provider_type values that serve a model family, or None for
+    an unknown family."""
+    return _FAMILY_PROVIDER_TYPES.get(family.lower())
+
+
 def _provider_hint_for_family(family: str) -> Optional[str]:
-    """Translate a model-family preference into the proxy's
-    ``provider-hint`` dim values. Caller says "claude" → we send
-    a list that covers all the providers that can serve claude-*.
+    """Translate a model-family preference into a ``provider-hint`` dim
+    value — a ``|``-joined list of every provider type that serves the
+    family. Returns None for an unknown family (let the proxy decide).
     """
-    fam = family.lower()
-    if fam in ("claude", "anthropic"):
-        return "anthropic|claude-oauth|anthropic-oauth"
-    if fam in ("openai", "gpt"):
-        return "openai|codex-oauth"
-    if fam in ("gemini", "google"):
-        return "google|vertex"
-    if fam == "grok":
-        return "grok|grok-web"
-    if fam in ("cohere", "embed"):
-        return "cohere"
-    return None  # Unknown family — let the proxy decide
+    types = _family_provider_types(family)
+    return "|".join(types) if types else None
 
 
 # ── Client ─────────────────────────────────────────────────────────────
@@ -558,9 +571,14 @@ class LmrhClient:
                 ``"code"``, etc.
             prefer: ``"cheapest"`` → adds ``cost=economy``.
                 ``"fastest"`` → adds ``latency=interactive``.
-                ``"most_reliable"`` → derived: picks the highest
-                ``success_rate`` provider visible in the snapshot
-                and pins via ``provider-hint``.
+                ``"most_reliable"`` → picks the highest weighted-
+                ``success_rate`` provider in the snapshot and biases
+                toward its provider TYPE via ``provider-hint``. (Type,
+                not name: the proxy matches the dim on name/type but
+                type values are header-safe slugs while names can
+                carry spaces; and never on the internal id.) Combined
+                with ``model_family`` it picks the most reliable
+                provider of that family.
             model_family: ``"claude"``, ``"openai"``, etc. Translates
                 to a multi-value ``provider-hint``.
             region: ``"us"``, ``"eu"``, ``"asia"`` — pinned via the
@@ -576,15 +594,26 @@ class LmrhClient:
         parts: dict[str, str] = {}
         if task:
             parts["task"] = task
+        family_types = _family_provider_types(model_family) if model_family else None
+
         if prefer == "cheapest":
             parts["cost"] = "economy"
         elif prefer == "fastest":
             parts["latency"] = "interactive"
         elif prefer == "most_reliable":
-            best = self._most_reliable_provider()
-            if best:
-                parts["provider-hint"] = best.id
-        if model_family:
+            # Bias toward the most reliable provider — within the
+            # requested family when one is given. Emit its provider
+            # TYPE: the proxy's provider-hint matcher keys on name/type,
+            # and type values are header-safe slugs whereas names can
+            # carry spaces ("C1 Vertex AI / Google AI"). The internal
+            # id is never matched, so emitting it makes the hint inert.
+            best = self._most_reliable_provider(family_types)
+            if best and best.type:
+                parts["provider-hint"] = best.type
+        if model_family and "provider-hint" not in parts:
+            # model_family alone — or most_reliable found no qualifying
+            # provider in the family — → bias toward every provider type
+            # in the family.
             ph = _provider_hint_for_family(model_family)
             if ph:
                 parts["provider-hint"] = ph
@@ -600,10 +629,14 @@ class LmrhClient:
             parts.update(extra)
         return _format_hint(parts)
 
-    def _most_reliable_provider(self) -> Optional[ProviderEntry]:
+    def _most_reliable_provider(
+        self, family_types: Optional[tuple[str, ...]] = None,
+    ) -> Optional[ProviderEntry]:
         """Return the provider with the highest success_rate × samples
         (samples weight prevents 1.0 with 1 sample beating 0.99 with
-        500 samples). Returns None if no snapshot yet."""
+        500 samples). When ``family_types`` is given, only providers of
+        those types are considered. Returns None if there is no snapshot
+        yet, or no qualifying provider."""
         snap = self.snapshot()
         if snap is None or not snap.providers:
             return None
@@ -611,6 +644,8 @@ class LmrhClient:
         best_score = -1.0
         for p in snap.providers:
             if p.circuit != "closed":
+                continue
+            if family_types is not None and (p.type or "").lower() not in family_types:
                 continue
             for m in p.models:
                 if m.metrics.success_rate is None or m.metrics.samples < 5:
