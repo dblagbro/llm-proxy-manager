@@ -227,6 +227,13 @@ def _build_event_meta_base(
         "api_key_prefix": api_key_prefix,     # v3.2.12: caller attribution
         "api_key_id": key_record_id,          # v3.6.2: full id for cross-table joins
         "cost_class": "subscription" if is_subscription else "per_call",
+        # v3.9.16 (P3b) — which node served this request. Without this,
+        # provider_metrics is cluster-aggregate-only (LWW-replicated)
+        # and operators can't tell whether the load is balanced across
+        # www01 / www02 / GCP. Stored in event_meta (not a column) so
+        # we don't need a schema migration; per-node rollups query via
+        # `json_extract(event_meta, '$.node_id')`.
+        "node_id": getattr(settings, "cluster_node_id", None) or "unknown",
     }
     _attach_client_ip(meta)
     if requested_model:

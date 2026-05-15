@@ -374,6 +374,19 @@ async def stream_anthropic_to_openai_sse(
 
 
 _EMPTY_TOOL_RESULT_PLACEHOLDER = "(no output)"
+# v3.9.16 (P3a) — index-preserving placeholder for user messages that
+# would otherwise be empty or drop. Two failure modes the placeholder
+# closes:
+#   1. ``{role: "user", content: ""}`` — OpenAI rejects empty user
+#      content with "Invalid user message at index N"
+#   2. ``{role: "user", content: []}`` or ``[empty-blocks-only]`` —
+#      _anthropic_blocks_to_openai_message_parts returned [], silently
+#      dropping the message and SHIFTING indexing for every message
+#      that follows. The error from OpenAI then names a different
+#      index than the message that was actually malformed.
+# OpenRouter 86% failure rate post-v3.9.1 was traced to one of these
+# two patterns.
+_EMPTY_USER_CONTENT_PLACEHOLDER = "(no input)"
 
 
 def _tool_result_content_to_str(content: Any) -> str:
@@ -484,6 +497,17 @@ def _anthropic_blocks_to_openai_message_parts(
         out.extend(tool_msgs)
         if text_parts:
             out.append({"role": "user", "content": "\n".join(text_parts)})
+        # v3.9.16 — if the user message had only tool_result blocks
+        # (no text or image), tool_msgs already carries the substance.
+        # If it had NO blocks at all (or all-empty blocks), out is
+        # empty here — emit an index-preserving placeholder so we don't
+        # shift downstream message indices and confuse OpenAI's
+        # "Invalid user message at index N" diagnostic.
+        if not out:
+            out.append({
+                "role": "user",
+                "content": _EMPTY_USER_CONTENT_PLACEHOLDER,
+            })
         return out
 
     # Other roles (system handled separately above): pass through with
@@ -532,13 +556,26 @@ def anthropic_messages_to_openai(
 
         if isinstance(content, str):
             # Plain text message — straight passthrough.
-            out.append({"role": role, "content": content})
+            # v3.9.16 — empty user-string content was an OpenRouter
+            # rejection case. Substitute placeholder so the message
+            # passes OpenAI's "user message at index N" validation
+            # without shifting indices.
+            if role == "user" and content == "":
+                out.append({"role": role, "content": _EMPTY_USER_CONTENT_PLACEHOLDER})
+            else:
+                out.append({"role": role, "content": content})
             continue
         if isinstance(content, list):
             out.extend(_anthropic_blocks_to_openai_message_parts(role, content))
             continue
-        # Unknown content shape — coerce to empty string to keep position.
-        out.append({"role": role, "content": ""})
+        # v3.9.16 — unknown content shape: use placeholder for user role
+        # (empty string would 400 on OpenAI); empty string for other
+        # roles (assistant accepts null/empty when tool_calls present;
+        # system can be empty).
+        if role == "user":
+            out.append({"role": role, "content": _EMPTY_USER_CONTENT_PLACEHOLDER})
+        else:
+            out.append({"role": role, "content": ""})
 
     return out
 

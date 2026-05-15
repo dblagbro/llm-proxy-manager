@@ -158,6 +158,92 @@ async def provider_rolling_stats(
     return await get_provider_rolling_windows(db)
 
 
+@router.get("/rolling-stats-by-node")
+async def provider_rolling_stats_by_node(
+    window_hours: int = 24,
+    db: AsyncSession = Depends(get_db),
+    _: AdminUser = Depends(require_admin),
+):
+    """v3.9.16 (P3b) — per-(provider × node) rollup over a rolling window.
+
+    Backs the new Provider Summary "Per-node" toggle. Per-node breakouts
+    surface unbalanced load and let operators decide if they should route
+    more or less traffic to a specific node.
+
+    Reads from ``activity_log.event_meta.node_id`` (added in v3.9.16).
+    Pre-v3.9.16 rows have null node_id; they roll into a synthetic
+    ``"unknown"`` bucket the UI can display as legacy traffic.
+
+    Response shape:
+      [
+        {
+          "provider_id": str,
+          "provider_name": str,
+          "by_node": {
+            "<node_id>": {"requests": int, "successes": int, "success_pct": float},
+            ...
+          }
+        },
+        ...
+      ]
+    """
+    from datetime import datetime, timezone, timedelta
+    from sqlalchemy import select, func
+    from app.models.db import ActivityLog, Provider
+
+    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(
+        hours=max(1, min(window_hours, 720)),
+    )
+    # Group by (provider_id, node_id, severity) so we can compute
+    # success_pct per (provider, node). json_extract is supported by
+    # the SQLAlchemy SQLite dialect.
+    node_expr = func.json_extract(ActivityLog.event_meta, "$.node_id")
+    rows = (await db.execute(
+        select(
+            ActivityLog.provider_id,
+            node_expr.label("node_id"),
+            ActivityLog.severity,
+            func.count(),
+        )
+        .where(ActivityLog.created_at >= cutoff)
+        .where(ActivityLog.provider_id.is_not(None))
+        .group_by(ActivityLog.provider_id, "node_id", ActivityLog.severity)
+    )).all()
+
+    # Aggregate: { (provider_id, node_id) -> {info, warning, error, ...} }
+    by_pn: dict[tuple, dict] = {}
+    for prov_id, node_id, severity, count in rows:
+        key = (prov_id, node_id or "unknown")
+        bucket = by_pn.setdefault(key, {"info": 0, "warning": 0, "error": 0, "critical": 0, "total": 0})
+        bucket[severity] = bucket.get(severity, 0) + count
+        bucket["total"] += count
+
+    # Pull provider name lookup
+    provs = (await db.execute(
+        select(Provider.id, Provider.name).where(Provider.deleted_at.is_(None))
+    )).all()
+    name_by_id = {pid: name for pid, name in provs}
+
+    # Reshape into the response
+    by_provider: dict[str, dict] = {}
+    for (prov_id, node_id), bucket in by_pn.items():
+        if not prov_id:
+            continue
+        entry = by_provider.setdefault(prov_id, {
+            "provider_id": prov_id,
+            "provider_name": name_by_id.get(prov_id, "(deleted)"),
+            "by_node": {},
+        })
+        total = bucket["total"]
+        succ = bucket.get("info", 0)
+        entry["by_node"][node_id] = {
+            "requests": total,
+            "successes": succ,
+            "success_pct": (succ / total * 100) if total else 0.0,
+        }
+    return list(by_provider.values())
+
+
 @router.get("/{provider_id}/usage")
 async def provider_usage(
     provider_id: str,

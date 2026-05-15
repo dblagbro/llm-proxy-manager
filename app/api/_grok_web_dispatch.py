@@ -17,7 +17,10 @@ exception. Surfaced when the operator noticed
 from __future__ import annotations
 
 import json
+import logging
+import re
 import time
+from datetime import datetime, timezone, timedelta
 from typing import Any, AsyncIterator, Optional
 
 from fastapi import HTTPException
@@ -25,6 +28,54 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+
+logger = logging.getLogger(__name__)
+
+
+# v3.9.16 (P5) — Grok-Web rate-limit response carries "cool-off N
+# seconds remaining" when the bridge has cached a recent 429. Extracting
+# N + setting Provider.auto_skip_until = now + N tells the router to
+# avoid this provider until the cool-off expires, which is more honest
+# than letting it serve the cached 429 to every queued caller.
+_GROKWEB_COOLOFF_PATTERN = re.compile(r"cool-off\s+(\d+)s\s+remaining", re.IGNORECASE)
+
+
+async def _apply_grokweb_429_cooloff(
+    db: AsyncSession, provider_id: str, err_msg: str,
+) -> Optional[int]:
+    """Parse a GrokWebError message for cool-off-N-seconds and set
+    Provider.auto_skip_until accordingly. Returns the parsed seconds
+    if applied, None otherwise. Silent on any DB or parse error —
+    rate-limit handling must never escalate into a request failure."""
+    try:
+        match = _GROKWEB_COOLOFF_PATTERN.search(err_msg or "")
+        if not match:
+            return None
+        secs = int(match.group(1))
+        if secs <= 0 or secs > 3600:  # sanity bounds — 1h max cool-off
+            return None
+        from sqlalchemy import select
+        from app.models.db import Provider
+        p = (await db.execute(
+            select(Provider).where(Provider.id == provider_id)
+        )).scalar_one_or_none()
+        if p is None:
+            return None
+        skip_until = datetime.now(timezone.utc) + timedelta(seconds=secs)
+        # Don't shorten an existing longer skip; do extend a shorter one.
+        existing = p.auto_skip_until
+        if existing is None or existing.replace(tzinfo=timezone.utc) < skip_until:
+            p.auto_skip_until = skip_until.replace(tzinfo=None)
+            p.auto_skip_reason = f"grok-web 429 cool-off {secs}s"
+            await db.commit()
+            logger.info(
+                "grok_web.auto_skip_set provider=%s cooloff_sec=%s",
+                provider_id, secs,
+            )
+        return secs
+    except Exception as e:
+        logger.warning(f"grok_web.cooloff_set_failed err={e!r}")
+        return None
 
 
 def _user_call_timeout() -> float:
@@ -276,6 +327,9 @@ async def dispatch_grok_web_openai(
                     error_str=f"GrokWebError: {e}", endpoint="completions",
                     llm_hint=llm_hint,
                 )
+            # v3.9.16 (P5) — auto-skip on 429 cool-off
+            if e.status_code == 429:
+                await _apply_grokweb_429_cooloff(db, route.provider.id, str(e))
             raise HTTPException(e.status_code, str(e))
         except StopAsyncIteration:
             if can_record:
@@ -342,6 +396,9 @@ async def dispatch_grok_web_openai(
                 error_str=f"GrokWebError: {e}", endpoint="completions",
                 llm_hint=llm_hint,
             )
+        # v3.9.16 (P5) — auto-skip on 429 cool-off
+        if e.status_code == 429:
+            await _apply_grokweb_429_cooloff(db, route.provider.id, str(e))
         raise HTTPException(e.status_code, str(e))
 
     # Success — record with the actual token counts from upstream usage.
@@ -424,6 +481,9 @@ async def dispatch_grok_web_anthropic(
                     error_str=f"GrokWebError: {e}", endpoint="messages",
                     llm_hint=llm_hint,
                 )
+            # v3.9.16 (P5) — auto-skip on 429 cool-off
+            if e.status_code == 429:
+                await _apply_grokweb_429_cooloff(db, route.provider.id, str(e))
             raise HTTPException(e.status_code, str(e))
         except StopAsyncIteration:
             if can_record:
@@ -495,6 +555,9 @@ async def dispatch_grok_web_anthropic(
                 error_str=f"GrokWebError: {e}", endpoint="messages",
                 llm_hint=llm_hint,
             )
+        # v3.9.16 (P5) — auto-skip on 429 cool-off
+        if e.status_code == 429:
+            await _apply_grokweb_429_cooloff(db, route.provider.id, str(e))
         raise HTTPException(e.status_code, str(e))
 
     if can_record:
