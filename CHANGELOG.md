@@ -9,6 +9,29 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.10.x — "Harden" milestone
 
+### v3.10.6 — LMRHv2 Phase 4: downstream adoption begins
+
+LMRHv2's proxy-side endpoints + reference SDK shipped in phases 1-3
+(v3.3.0–v3.5.0) but stayed behind the default-off `lmrh_v2_enabled`
+flag with zero downstream callers. Phase 4 is adoption.
+
+- **v2 enabled on www01** via `LMRH_V2_NODE_OVERRIDE=on` — the v3.7.18
+  per-node staged-rollout override (no cluster-wide flag change; the
+  other nodes stay `auto`/off). www01 is the adoption target — callers
+  should pin to one node anyway for ETag stability.
+- **Validated live**: `/.well-known/lmrh-config` advertises v2.0/2.1;
+  `/lmrh/providers` (10 providers), `/lmrh/health`, `/lmrh/quotes` all
+  return 200 with sane data. The reference SDK (`sdk/python/lmrh_client.py`)
+  validated end-to-end against www01 — `is_supported()` → True, hints
+  synthesized for cheapest / fastest / most_reliable. 16 SDK tests pass.
+- Coordinator-hub (heaviest LMRH 1.x consumer, 524 req/24h) is the
+  adoption target; outreach sent 2026-05-15. When the hub is live on
+  the SDK and stable 7 days → flip the cluster-wide `lmrh_v2_enabled`
+  and publish the SDK to PyPI.
+
+Doc-only repo change (`docs/lmrh-2.0-bidirectional.md` Phase 4 status);
+the enablement is a www01 env-var change. No runtime code change.
+
 ### v3.10.5 — cross-family translation integration suite
 
 New `tests/integration/test_cross_family_translation.py` — an

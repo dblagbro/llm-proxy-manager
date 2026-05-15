@@ -436,6 +436,10 @@ a valid LMRH 1.x hint string — your inference calls keep working.
 
 ## Change log
 
+- **v3.10.6** (2026-05-15): Phase 4 begins — v2 endpoints enabled on
+  www01 via `LMRH_V2_NODE_OVERRIDE=on`; `/.well-known/lmrh-config`,
+  `/lmrh/providers`, `/lmrh/health`, `/lmrh/quotes` + the reference SDK
+  validated live; coordinator-hub adoption outreach sent.
 - **v3.3.0** (2026-05-09): Phase 1 ships — `/.well-known/lmrh-config`,
   `/lmrh/providers`, `/lmrh/providers/{id}`, `/lmrh/health`. Snapshot
   module, ETag round-trip, per-key rate limits, `Link` header,
@@ -504,12 +508,18 @@ the spec is complete, the SDK is in `sdk/python/`, but zero
 downstream callers polled `/lmrh/providers` in 24 h as of
 2026-05-10 22:00 EDT. Updating this section to reflect that.
 
-- **Phase 4 — downstream adoption** (open):
-  - Coordinator-hub is the heaviest LMRH 1.x consumer (524 req/24h).
-    Best candidate to validate v2 SDK shape end-to-end.
-  - Outreach message draft: see operator hand-off in session log.
-  - Once one downstream caller is live + stable for 7 days,
-    publish the SDK to PyPI under a stable package name.
+- **Phase 4 — downstream adoption** (in progress, 2026-05-15):
+  - v2 endpoints **enabled on www01** via `LMRH_V2_NODE_OVERRIDE=on`
+    — the v3.7.18 per-node staged-rollout mechanism. `/.well-known/
+    lmrh-config`, `/lmrh/providers`, `/lmrh/health`, `/lmrh/quotes`
+    all verified live; the reference SDK validated end-to-end against
+    www01 (`is_supported()` → True, hints synthesized for cheapest /
+    fastest / most_reliable).
+  - Coordinator-hub is the heaviest LMRH 1.x consumer (524 req/24h)
+    and the adoption target — outreach sent 2026-05-15.
+  - Once the hub is live on the v2 SDK and stable for 7 days: flip the
+    cluster-wide `lmrh_v2_enabled` flag (only the www01 node-override
+    is on today) and publish the SDK to PyPI under a stable name.
 
 - **Phase 5 — proxy→caller bidirectional metrics feedback**
   (caller-side AI rate limiter design from the 2026-05-10
