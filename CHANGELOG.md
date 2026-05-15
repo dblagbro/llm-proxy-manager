@@ -9,6 +9,24 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.10.x — "Harden" milestone
 
+### v3.10.5 — cross-family translation integration suite
+
+New `tests/integration/test_cross_family_translation.py` — an
+end-to-end regression guard for the v3.10.0 fix, run against the live
+deployment through the real router + dispatch (the unit side is
+`test_v3100_translation_gate.py`). Four tests: a tool conversation to a
+Gemini model must not 400 with the index-N error; the streaming variant
+must terminate with `message_stop`; an orphan-tool_result conversation
+must not 400; and a plain-text control must be unaffected. All four pass
+against v3.10.4 on the fleet.
+
+Test-only — no runtime change, no fleet redeploy.
+
+Note: cluster-sync integration testing remains open — it needs a
+two-node test harness (write on node A, assert on node B), which the
+current single-`BASE_URL` integration setup can't express; deferred as
+a harness extension.
+
 ### v3.10.4 — aggregate error-rate alert
 
 v3.10.1 made operator-actionable failures log as `severity=error`, but
