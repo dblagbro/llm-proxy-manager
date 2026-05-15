@@ -5,10 +5,10 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, or_
 
 from app.models.database import get_db
-from app.models.db import ApiKey
+from app.models.db import ApiKey, Provider, ModelCapability
 from app.auth.admin import require_admin, AdminUser
 from app.auth.keys import generate_api_key
 from app.auth.key_encryption import encrypt_key, decrypt_key
@@ -263,6 +263,55 @@ async def list_rate_limit_tiers(_: AdminUser = Depends(require_admin)):
         }
         for t in list_tiers()
     ]
+
+
+@router.get("/{key_id}/models")
+async def list_key_models(
+    key_id: str,
+    db: AsyncSession = Depends(get_db),
+    _: AdminUser = Depends(require_admin),
+):
+    """v3.10.8 — the effective model catalog for one API key: every
+    model offered by a provider the key is allowed to route to.
+
+    A provider with ``Provider.owned_by_key_id`` set is private to that
+    key (v3.0.45 tenant scoping); ``NULL`` = shared by all keys. So the
+    key's effective providers are the shared ones plus the ones it
+    owns, and its model list is the union of those providers'
+    ``ModelCapability`` rows (+ each provider's ``default_model``).
+
+    Powers the admin API-Keys page "Copy models" action.
+    """
+    key = await _get_or_404(db, key_id)
+    providers = (await db.execute(
+        select(Provider)
+        .where(Provider.enabled == True)  # noqa: E712
+        .where(Provider.deleted_at.is_(None))
+        .where(or_(
+            Provider.owned_by_key_id.is_(None),
+            Provider.owned_by_key_id == key_id,
+        ))
+    )).scalars().all()
+
+    models: set[str] = set()
+    provider_ids = [p.id for p in providers]
+    if provider_ids:
+        caps = (await db.execute(
+            select(ModelCapability.model_id)
+            .where(ModelCapability.provider_id.in_(provider_ids))
+            .where(ModelCapability.deleted_at.is_(None))
+        )).scalars().all()
+        models.update(m for m in caps if m)
+    for p in providers:
+        if p.default_model:
+            models.add(p.default_model)
+
+    return {
+        "key_id": key.id,
+        "key_name": key.name,
+        "count": len(models),
+        "models": sorted(models, key=str.lower),
+    }
 
 
 async def _get_or_404(db: AsyncSession, key_id: str) -> ApiKey:

@@ -168,6 +168,12 @@ export const keysApi = {
   delete: (id: string)                 => api.delete<void>(`/api/keys/${id}`),
   bulkDelete: (ids: string[])          => api.post<{ deleted: number; requested: number }>('/api/keys/bulk-delete', { ids }),
   reveal: (id: string)                 => api.get<{ id: string; raw_key: string }>(`/api/keys/${id}/reveal`),
+  // v3.10.8 — the effective model catalog for one key (models on every
+  // provider the key can route to). Powers the "Copy models" action.
+  models: (id: string) =>
+    api.get<{ key_id: string; key_name: string; count: number; models: string[] }>(
+      `/api/keys/${id}/models`,
+    ),
 }
 
 // ── Users ─────────────────────────────────────────────────────────────────────

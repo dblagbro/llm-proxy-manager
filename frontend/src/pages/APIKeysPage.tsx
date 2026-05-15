@@ -1,6 +1,6 @@
 import { useState, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Plus, Trash2, Pencil, Eye, ArrowUp, ArrowDown, ArrowUpDown, Key as KeyIcon, EyeOff } from 'lucide-react'
+import { Plus, Trash2, Pencil, Eye, ArrowUp, ArrowDown, ArrowUpDown, Key as KeyIcon, EyeOff, ClipboardList } from 'lucide-react'
 import { keysApi } from '@/api'
 import { Card, CardContent } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
@@ -54,8 +54,31 @@ export function APIKeysPage() {
   const [sortKey, setSortKey] = useState<SortKey>('created_at')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
   const [revealedKeys, setRevealedKeys] = useState<Record<string, string>>({})
+  const [modelsModalKey, setModelsModalKey] = useState<ApiKey | null>(null)
 
   const { data: keys, isLoading } = useQuery({ queryKey: ['apikeys'], queryFn: keysApi.list })
+
+  // v3.10.8 — effective model catalog for the key whose "Copy models"
+  // modal is open. Fetched only while the modal is open.
+  const { data: keyModels, isLoading: modelsLoading } = useQuery({
+    queryKey: ['apikey-models', modelsModalKey?.id],
+    queryFn: () => keysApi.models(modelsModalKey!.id),
+    enabled: !!modelsModalKey,
+  })
+
+  async function copyKeyModels(delimiter: ',' | '\n') {
+    const list = keyModels?.models ?? []
+    if (!list.length) return
+    try {
+      await navigator.clipboard.writeText(list.join(delimiter))
+      toast.success(
+        `Copied ${list.length} model${list.length !== 1 ? 's' : ''} ` +
+        `(${delimiter === ',' ? 'CSV' : 'one per line'})`,
+      )
+    } catch {
+      toast.error('Clipboard copy failed')
+    }
+  }
 
   const createMutation = useMutation({
     mutationFn: () => keysApi.create({
@@ -385,6 +408,13 @@ export function APIKeysPage() {
                   >
                     <Pencil className="h-4 w-4" />
                   </button>
+                  <button
+                    onClick={() => setModelsModalKey(k)}
+                    className="text-gray-400 hover:text-indigo-500 transition-colors shrink-0"
+                    title="Copy this key's model list"
+                  >
+                    <ClipboardList className="h-4 w-4" />
+                  </button>
                   <Button size="sm" variant="danger" onClick={() => setDeleteId(k.id)}>
                     <Trash2 className="h-3.5 w-3.5" />
                   </Button>
@@ -565,6 +595,51 @@ export function APIKeysPage() {
             <Button variant="ghost" onClick={() => setViewDetails(null)}>Close</Button>
             <Button onClick={() => { openLimitsEdit(viewDetails); setViewDetails(null) }}>
               <Pencil className="h-4 w-4 mr-1.5" />Edit limits
+            </Button>
+          </ModalFooter>
+        </Modal>
+      )}
+
+      {/* Copy-models Modal */}
+      {modelsModalKey && (
+        <Modal open onClose={() => setModelsModalKey(null)}>
+          <ModalHeader onClose={() => setModelsModalKey(null)}>
+            Models for {modelsModalKey.name || modelsModalKey.key_prefix}
+          </ModalHeader>
+          <ModalBody>
+            {modelsLoading ? (
+              <div className="flex justify-center py-8"><Spinner /></div>
+            ) : !keyModels || keyModels.models.length === 0 ? (
+              <p className="text-sm text-gray-500 dark:text-gray-400 py-4">
+                No models available to this key — it has no enabled provider
+                it's allowed to route to.
+              </p>
+            ) : (
+              <>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">
+                  {keyModels.count} model{keyModels.count !== 1 ? 's' : ''} this
+                  key can route to, across every provider it's allowed to use.
+                </p>
+                <pre className="max-h-72 overflow-auto rounded border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900 p-3 text-xs font-mono text-gray-700 dark:text-gray-300 whitespace-pre">
+                  {keyModels.models.join('\n')}
+                </pre>
+              </>
+            )}
+          </ModalBody>
+          <ModalFooter>
+            <Button variant="ghost" onClick={() => setModelsModalKey(null)}>Close</Button>
+            <Button
+              variant="outline"
+              disabled={!keyModels?.models.length}
+              onClick={() => copyKeyModels(',')}
+            >
+              Copy as CSV
+            </Button>
+            <Button
+              disabled={!keyModels?.models.length}
+              onClick={() => copyKeyModels('\n')}
+            >
+              Copy one per line
             </Button>
           </ModalFooter>
         </Modal>
