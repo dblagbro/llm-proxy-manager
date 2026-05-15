@@ -1403,3 +1403,65 @@ opening the v3.3.x LMRHv2 protocol family. Three buckets:
 4. **`coordinator-post` jq fix propagation** — local fix to the
    `--arg label` reserved-keyword collision needs to be pushed to
    other bots via the coordinator installer.
+
+---
+
+## v3.10.9 — extract the claude-oauth dispatch chain from messages.py
+
+`messages.py`'s `messages()` handler had grown into a ~913-line
+function (file: 1002 lines) — well past design.md's 800-line /
+>5-concern split trigger, and it is the hot path every `/v1/messages`
+feature touches. Its deepest, gnarliest branch was the claude-oauth
+provider-chain walk: streaming vs non-streaming dispatch, a 401/403
+refresh-then-fallback that re-selects a provider and may re-enter the
+loop, a network-error fallback, and the success path's cache-disclosure
++ quality-hint + memory write-back.
+
+That branch (~170 lines) plus its chain-walk helper `_select_excluding`
+were extracted into a new `app/api/_messages_dispatch.py` as
+`dispatch_claude_oauth_chain()`. The function returns `(response, route)`:
+a non-None response means the request was served and the caller returns
+it as-is; None means the chain is exhausted and `route` now points at a
+non-claude-oauth provider, so the caller falls through to the litellm
+path. Pure behavior-preserving move — the dispatch logic is unchanged,
+only the `return X` statements gained `, route` and the five in-loop
+lazy imports were hoisted to the module top.
+
+`_messages_dispatch.py` is the sibling of `_messages_streaming.py`: the
+latter holds the SSE *generators* (`_stream_claude_oauth` etc.), the
+former holds the *orchestration* that drives them. `messages.py` now
+delegates with a 13-line call site. Result: `messages.py` 1002 → 816
+lines; the `messages()` mega-function shed its hardest branch.
+
+Also collapsed the duplicate `docs/architecture.md` — a stale v3.7.13
+copy — to a one-line pointer at the canonical root `architecture.md`.
+One architecture document, no drift trap.
+
+### Files impacted
+- `app/api/_messages_dispatch.py` (NEW, 256 lines) — `dispatch_claude_oauth_chain` + `_select_excluding`
+- `app/api/messages.py` (1002 → 816) — claude-oauth block + `_select_excluding` removed; 13-line delegation added
+- `docs/architecture.md` — collapsed to a pointer
+- `architecture.md` — module map updated
+- `tests/unit/test_v3109_messages_dispatch_extract.py` (NEW, 4 tests)
+- `tests/unit/test_v3911_streaming_memory_writeback.py` — one source-grep test repointed to the new file
+
+### Risks
+- `messages.py` at 816 is still marginally over the 800 trigger. The
+  remaining oversized concern is the CoT / tool-emulation / litellm
+  dispatch tail. Extract it next — into the same `_messages_dispatch.py`
+  — to bring `messages.py` comfortably under 800. Kept incremental so
+  each move's behavior preservation stays verifiable.
+
+### Remaining issues / next refactor targets
+1. **messages.py litellm/CoT/tool-emulation dispatch tail** — extract
+   into `_messages_dispatch.py` (the obvious next pass).
+2. **completions.py (672 lines)** — symmetric to messages.py; check for
+   the same dispatch-orchestration shape and extract if present.
+3. **grok_web.py (866, documented as 743)** — split along the
+   manual/bridge axis.
+4. **providers.py (958)** — over 800; CRUD-heavy, lower urgency.
+
+### Tests
+1969 unit tests pass (4 new in `test_v3109`; 1 repointed). Behavior
+preserved — verified by the full suite plus the cross-family
+translation integration suite that exercises `/v1/messages`.

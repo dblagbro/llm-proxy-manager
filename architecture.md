@@ -15,9 +15,16 @@ app/
 ├── config_runtime.py        Hot-reloadable settings (editable via Admin UI / cluster sync)
 │
 ├── api/
-│   ├── messages.py              POST /v1/messages — Anthropic wire format handler (routing + cache only)
-│   ├── _messages_streaming.py   Tail: _stream_cot_anthropic / _stream_anthropic /
+│   ├── messages.py              POST /v1/messages — Anthropic wire format handler:
+│   │                              preflight, routing, cache, litellm/CoT dispatch
+│   ├── _messages_streaming.py   SSE generators: _stream_cot_anthropic / _stream_anthropic /
+│   │                              _stream_claude_oauth / _complete_claude_oauth /
 │   │                              _webhook_completion_anthropic (extracted 2026-04-23)
+│   ├── _messages_dispatch.py    Dispatch orchestration (v3.10.9): dispatch_claude_oauth_chain
+│   │                              walks the claude-oauth provider chain (streaming /
+│   │                              non-streaming + 401-refresh fallback); _select_excluding
+│   │                              chain-walk helper. Extracted from messages.py's
+│   │                              ~913-line messages() handler.
 │   ├── completions.py           POST /v1/chat/completions — OpenAI wire format handler
 │   │                              v3.0.38: claude-oauth providers reachable here via
 │   │                              the wire-format translator (was excluded by v2.8.11)
