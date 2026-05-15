@@ -156,6 +156,28 @@ export function ProvidersPage() {
     onError: (e: Error) => toast.error(e.message),
   })
 
+  // v3.9.19 — bulk-refresh Anthropic Console usage for every claude-oauth
+  // account, re-evaluating rotation rules. Used after Anthropic resets
+  // counters early so over-cap accounts drop back into service without
+  // waiting for the next 4-hour scrape cycle.
+  const refreshBillingMutation = useMutation({
+    mutationFn: () => providersApi.refreshAllBilling(),
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: ['providers'] })
+      qc.invalidateQueries({ queryKey: ['claude-oauth-snapshots'] })
+      if (data.providers === 0) {
+        toast.error('No claude-oauth accounts have billing credentials configured')
+      } else if (data.scraped_ok === 0) {
+        toast.error(`Usage refresh failed for all ${data.providers} account${data.providers !== 1 ? 's' : ''} — check session cookies`)
+      } else if (data.returned_to_service > 0) {
+        toast.success(`Refreshed ${data.scraped_ok}/${data.providers} accounts — ${data.returned_to_service} returned to service`)
+      } else {
+        toast.success(`Refreshed ${data.scraped_ok}/${data.providers} account${data.providers !== 1 ? 's' : ''} — usage stats updated`)
+      }
+    },
+    onError: (e: Error) => toast.error(e.message),
+  })
+
   function openCreate() {
     setEditing(null)
     setForm(emptyProviderForm())
@@ -262,6 +284,8 @@ export function ProvidersPage() {
     return candidates.length > 0 ? candidates[0].id : null
   })()
 
+  const hasClaudeOauth = (providers ?? []).some(p => p.provider_type === 'claude-oauth')
+
   return (
     <div className="p-6 space-y-6 max-w-6xl">
       <div className="flex items-center justify-between">
@@ -269,7 +293,20 @@ export function ProvidersPage() {
           <h1 className="text-xl font-bold text-gray-900 dark:text-gray-100">Providers</h1>
           <p className="text-sm text-gray-500 mt-0.5">{providers?.length ?? 0} configured</p>
         </div>
-        <Button onClick={openCreate} size="sm"><Plus className="h-4 w-4 mr-1.5" />Add Provider</Button>
+        <div className="flex items-center gap-2 shrink-0">
+          {hasClaudeOauth && (
+            <Button
+              onClick={() => refreshBillingMutation.mutate()}
+              loading={refreshBillingMutation.isPending}
+              size="sm"
+              variant="outline"
+              title="Scrape fresh Anthropic Console usage for every claude-oauth account and re-evaluate rotation rules. Use after Anthropic resets counters early to drop over-cap accounts back into service."
+            >
+              <RefreshCw className="h-4 w-4 mr-1.5" />Refresh Usage Stats
+            </Button>
+          )}
+          <Button onClick={openCreate} size="sm"><Plus className="h-4 w-4 mr-1.5" />Add Provider</Button>
+        </div>
       </div>
 
       <div className="flex items-center gap-3 flex-wrap">

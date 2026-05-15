@@ -121,6 +121,26 @@ export const providersApi = {
     api.post<{ evaluated: number; decisions: Array<Record<string, unknown>> }>(
       '/api/providers/_evaluate-rotation-rules', {},
     ),
+  // v3.9.19 — bulk-refresh usage stats for every credentialed claude-oauth
+  // provider; re-evaluates rotation rules so accounts return to service
+  // when usage drops (e.g. after Anthropic resets counters early).
+  refreshAllBilling: () =>
+    api.post<{
+      providers: number
+      scraped_ok: number
+      returned_to_service: number
+      results: Array<{
+        provider_id: string
+        provider_name: string
+        ok: boolean
+        error?: string
+        auth_state?: string | null
+        seven_day_utilization?: number | null
+        five_hour_utilization?: number | null
+        rotation_decision?: string | null
+        returned_to_service?: boolean
+      }>
+    }>('/api/providers/_refresh-all-anthropic-billing', {}),
   // v3.7.27 (#245) — ChatGPT Plus / Codex Cloud billing scrape admin endpoints
   setCodexBillingCredentials: (id: string, data: { endpoint_url: string; cookies: string }) =>
     api.post<{ ok: boolean; provider_id: string; endpoint_url: string; cookie_count: number; captured_at: number }>(

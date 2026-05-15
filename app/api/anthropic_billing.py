@@ -1,6 +1,6 @@
 """v3.7.0 — admin endpoints for the Anthropic Console billing scraper.
 
-Three endpoints, all admin-gated:
+All admin-gated:
 
 - ``POST /api/providers/{id}/anthropic-billing-credentials`` — paste a
   freshly-captured browser cookie blob + org UUID. Validates and
@@ -11,6 +11,14 @@ Three endpoints, all admin-gated:
 - ``POST /api/providers/{id}/anthropic-billing-refresh`` — fire one
   scrape immediately (don't wait for the next 4h cycle). Useful for
   smoke-testing a freshly-pasted credential set.
+
+- ``POST /api/providers/_refresh-all-anthropic-billing`` (v3.9.19) —
+  fire a scrape for every credentialed claude-oauth provider at once,
+  re-evaluating rotation rules so accounts drop back into service when
+  usage falls (e.g. after Anthropic resets the counters early).
+
+- ``POST /api/providers/_evaluate-rotation-rules`` — re-run the
+  auto-rotation rule evaluator across all providers without scraping.
 
 - ``GET /api/providers/{id}/external-usage`` — return the most recent
   N snapshots for a provider so the dashboard / operator can see
@@ -103,6 +111,67 @@ async def refresh_now(
     if not provider.anthropic_org_uuid or not provider.anthropic_session_cookies:
         raise HTTPException(400, "no anthropic billing credentials configured for this provider")
     return await scrape_provider_into_snapshot(db, provider)
+
+
+@router.post("/_refresh-all-anthropic-billing")
+async def refresh_all_billing(
+    db: AsyncSession = Depends(get_db),
+    _: AdminUser = Depends(require_admin),
+):
+    """v3.9.19 — fire a billing scrape for EVERY claude-oauth provider
+    that has Anthropic Console credentials, ignoring the worker's
+    freshness floor.
+
+    Each scrape re-runs the auto-rotation rule evaluator, so a provider
+    whose weekly utilization dropped below the at-capacity threshold —
+    e.g. after Anthropic resets the counters early — has its
+    ``auto_skip_until`` cleared and is returned to service immediately,
+    without waiting for the next 4-hour scrape cycle.
+
+    Returns per-provider results so the operator can see which accounts
+    were refreshed and which came back into service.
+    """
+    from app.providers.anthropic_billing import scrape_provider_into_snapshot
+
+    rs = await db.execute(
+        select(Provider)
+        .where(Provider.provider_type == "claude-oauth")
+        .where(Provider.deleted_at.is_(None))
+        .where(Provider.anthropic_org_uuid.is_not(None))
+        .where(Provider.anthropic_session_cookies.is_not(None))
+    )
+    providers = rs.scalars().all()
+
+    results: list[dict] = []
+    for provider in providers:
+        try:
+            r = await scrape_provider_into_snapshot(db, provider)
+        except Exception as exc:  # noqa: BLE001 — one bad provider must not abort the sweep
+            results.append({
+                "provider_id": provider.id,
+                "provider_name": provider.name,
+                "ok": False,
+                "error": str(exc),
+            })
+            continue
+        decision = (r.get("rotation_decision") or {}).get("decision")
+        results.append({
+            "provider_id": provider.id,
+            "provider_name": provider.name,
+            "ok": r.get("ok", False),
+            "auth_state": r.get("auth_state"),
+            "seven_day_utilization": r.get("seven_day_utilization"),
+            "five_hour_utilization": r.get("five_hour_utilization"),
+            "rotation_decision": decision,
+            "returned_to_service": decision == "skip_cleared",
+        })
+
+    return {
+        "providers": len(providers),
+        "scraped_ok": sum(1 for x in results if x.get("ok")),
+        "returned_to_service": sum(1 for x in results if x.get("returned_to_service")),
+        "results": results,
+    }
 
 
 @router.post("/_evaluate-rotation-rules")
