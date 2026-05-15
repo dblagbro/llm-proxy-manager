@@ -20,8 +20,25 @@ Modules:
 - ``recover`` — Phase 7: back-pressure recovery. When a marker exists
   but the content row is missing (DB restore that lost content rows
   while markers survived), reconstruct content from the original
-  upstream provider. Registry-based; all current handlers are noop.
+  upstream provider. Registry-based.
+
+Handler scaffolding (v3.9.16+):
+- ``handlers_openai_assistants`` — DELETE /v1/threads/{id} for flush +
+  GET /v1/threads/{id}/messages for recovery. Future-ready; never fires
+  today because no provider of type ``openai-assistants`` exists in
+  the deployment. Registered at package import so adding such a
+  provider just-works.
 
 Future:
-- (none — Phase 8 onward is config + UI + observation)
+- ``handlers_chatgpt_oauth_plan`` — blocked on CSRF token capture
+- ``handlers_anthropic_memory_view`` — blocked (caller-tool-gated)
 """
+
+# v3.9.16 (P6) — register future-ready handlers at package import time.
+# Idempotent; safe to call repeatedly.
+try:
+    from app.memory import handlers_openai_assistants as _h_oa
+    _h_oa.register()
+except Exception:
+    # Don't crash the package import if a handler module has a bug
+    pass

@@ -9,6 +9,68 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.9.x — Proxy-side Caller Memory (#267) — phases 4–10 + ops fixes
 
+### v3.9.16 — P3 (Provider Summary improvements) + P5 (Grok-Web 429 auto-skip) + P6 (Assistants scaffolding)
+
+Four independent improvements batched into one release.
+
+**P3a — OpenRouter translator gap (HIGH impact).** Investigated the
+86% failure rate on OpenRouter post-v3.9.1: 100% of failures were
+`error_class=bad_request` with "Invalid user message at index N". Two
+unhandled message shapes in `_anthropic_blocks_to_openai_message_parts`
+(`app/api/_oauth_chat_translate.py`):
+
+1. ``{role: "user", content: ""}`` — empty user string content passed
+   through unchanged; OpenAI rejects empty user content
+2. ``{role: "user", content: []}`` (or all-empty-blocks) — the
+   block-walker returned ``[]``, **silently dropping the message and
+   shifting downstream indices**. The "at index N" error was naming
+   a position that no longer corresponded to the originally-malformed
+   message.
+
+Fix: substitute ``_EMPTY_USER_CONTENT_PLACEHOLDER`` ("(no input)") for
+both cases so message position is preserved AND OpenAI sees non-empty
+content. Index-preservation replay test guards the fix.
+
+**P3b — per-node analytics.** Every activity_log row now carries
+``event_meta.node_id`` (stamped via `_build_event_meta_base` in
+`helpers.py`). New endpoint
+``GET /api/providers/rolling-stats-by-node?window_hours=24`` rolls up
+`(provider_id, node_id) → {requests, successes, success_pct}` via
+``json_extract`` — no schema migration required ("Option B" from
+the design notes).
+
+**P3c — disabled-row UI badge.** Provider Summary table on the
+Metrics page now grays + 🔒-badges rows whose corresponding provider
+has ``manual_override_until`` set. Tooltip explains the row reflects
+pre-disable cooldown traffic.
+
+**P5 — Grok-Web 429 auto-skip.** Grok-Web's failure rate (60%) is
+93% rate-limit from grok.com — not a proxy bug. The bridge caches
+429s with "cool-off N seconds remaining". v3.9.16 parses the
+cool-off duration on each catch and sets
+``Provider.auto_skip_until = now + N`` so the router naturally
+avoids the provider during cool-off (instead of cycling cached 429s
+to queued callers). Sanity-bounded 1s–1h; doesn't shorten a longer
+existing skip. Wired into all 4 ``GrokWebError`` catch sites.
+
+**P6 — OpenAI Assistants scaffolding.** Future-ready handlers:
+
+- ``flush_openai_assistants`` → DELETE /v1/threads/{id}
+- ``recover_openai_assistants`` → GET /v1/threads/{id}/messages
+
+Registered at ``app/memory/__init__.py`` import time for provider
+type ``openai-assistants``. **No provider of that type exists today**,
+so the handlers never fire — they're staged for when the operator
+adds Assistants as a provider. ChatGPT-oauth-plan handlers remain
+blocked on CSRF token capture; Anthropic memory-view remains blocked
+(caller-tool-gated, proxy can't initiate).
+
+**Cancellation note**: Paperless AI + Tax AI caller-memory adoption
+backlog notes (filed 2026-05-14) were dropped per operator direction
+on 2026-05-15. Paused projects don't accrue backlog.
+
+25 new unit tests; 1907 total green.
+
 ### v3.9.15 — Bug-log audit refresh + BUG-007 + BUG-012
 
 Re-audited the 2026-04-24 bug-log against current code. **16 of 18 items

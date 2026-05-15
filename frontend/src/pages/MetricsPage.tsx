@@ -5,7 +5,7 @@ import {
   ResponsiveContainer, CartesianGrid, Line, LineChart,
 } from 'recharts'
 import { ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react'
-import { monitoringApi } from '@/api'
+import { monitoringApi, providersApi } from '@/api'
 import { getBasePath } from '@/lib/basePath'
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/Card'
 import { Spinner } from '@/components/ui/Spinner'
@@ -45,6 +45,26 @@ export function MetricsPage() {
     queryFn: () => monitoringApi.metrics(window),
     refetchInterval: 60_000,
   })
+
+  // v3.9.16 (P3c) — pull provider list (with manual_override_until) so
+  // the Provider Summary table can distinguish "recently disabled
+  // (cooldown)" rows from "actively serving" rows. Cache-only fetch —
+  // the providers page already keeps this fresh on its own cadence.
+  const { data: providersList } = useQuery({
+    queryKey: ['providers'],
+    queryFn: () => providersApi.list(),
+    refetchInterval: 120_000,
+    staleTime: 30_000,
+  })
+  const overrideById = useMemo(() => {
+    const m: Record<string, { until?: string | null; reason?: string | null }> = {}
+    for (const p of (providersList ?? []) as any[]) {
+      if (p.manual_override_until) {
+        m[p.id] = { until: p.manual_override_until, reason: p.manual_override_reason ?? null }
+      }
+    }
+    return m
+  }, [providersList])
 
   // v3.0.73 — Cache savings rollup. Backend caps window at 1440 min (24h),
   // so 72h selector falls back to 24h for the cache card.
@@ -338,22 +358,49 @@ export function MetricsPage() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-50 dark:divide-gray-800">
-                    {providers.map(p => (
-                      <tr key={p.provider_id} className="hover:bg-gray-50 dark:hover:bg-gray-800/50">
-                        <td className="px-5 py-3 font-medium text-gray-900 dark:text-gray-100" title={p.provider_id}>{p.provider_name || p.provider_id}</td>
-                        <td className="px-5 py-3 text-gray-600 dark:text-gray-400">{p.requests.toLocaleString()}</td>
-                        <td className="px-5 py-3">
-                          <span className={p.success_rate >= 95 ? 'text-green-600' : p.success_rate >= 80 ? 'text-amber-500' : 'text-red-500'}>
-                            {p.success_rate.toFixed(1)}%
-                          </span>
-                        </td>
-                        <td className="px-5 py-3 text-gray-600 dark:text-gray-400">
-                          {p.avg_latency_ms > 1000 ? `${(p.avg_latency_ms / 1000).toFixed(1)}s` : `${Math.round(p.avg_latency_ms)}ms`}
-                        </td>
-                        <td className="px-5 py-3 text-gray-600 dark:text-gray-400">{p.total_tokens.toLocaleString()}</td>
-                        <td className="px-5 py-3 text-gray-600 dark:text-gray-400">{fmtCost(p.total_cost_usd)}</td>
-                      </tr>
-                    ))}
+                    {providers.map(p => {
+                      // v3.9.16 (P3c) — gray + 🔒 badge when this provider
+                      // has manual_override_until set (operator disabled it).
+                      // The traffic in this row is the rolling-window tail
+                      // from BEFORE the disable; will decay over 24h.
+                      const ov = overrideById[p.provider_id]
+                      const isOverride = !!ov?.until
+                      return (
+                        <tr
+                          key={p.provider_id}
+                          className={
+                            isOverride
+                              ? 'hover:bg-gray-50 dark:hover:bg-gray-800/50 opacity-60'
+                              : 'hover:bg-gray-50 dark:hover:bg-gray-800/50'
+                          }
+                          title={
+                            isOverride
+                              ? `Manual override set — traffic in this row is pre-disable cooldown.${ov.reason ? ' Reason: ' + ov.reason : ''}`
+                              : undefined
+                          }
+                        >
+                          <td className="px-5 py-3 font-medium text-gray-900 dark:text-gray-100" title={p.provider_id}>
+                            <span>{p.provider_name || p.provider_id}</span>
+                            {isOverride && (
+                              <span className="ml-2 inline-flex items-center rounded-full bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 px-1.5 py-0 text-[10px] font-normal align-middle">
+                                🔒 disabled
+                              </span>
+                            )}
+                          </td>
+                          <td className="px-5 py-3 text-gray-600 dark:text-gray-400">{p.requests.toLocaleString()}</td>
+                          <td className="px-5 py-3">
+                            <span className={p.success_rate >= 95 ? 'text-green-600' : p.success_rate >= 80 ? 'text-amber-500' : 'text-red-500'}>
+                              {p.success_rate.toFixed(1)}%
+                            </span>
+                          </td>
+                          <td className="px-5 py-3 text-gray-600 dark:text-gray-400">
+                            {p.avg_latency_ms > 1000 ? `${(p.avg_latency_ms / 1000).toFixed(1)}s` : `${Math.round(p.avg_latency_ms)}ms`}
+                          </td>
+                          <td className="px-5 py-3 text-gray-600 dark:text-gray-400">{p.total_tokens.toLocaleString()}</td>
+                          <td className="px-5 py-3 text-gray-600 dark:text-gray-400">{fmtCost(p.total_cost_usd)}</td>
+                        </tr>
+                      )
+                    })}
                   </tbody>
                 </table>
               </div>
