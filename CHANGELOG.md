@@ -9,6 +9,26 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.10.x — "Harden" milestone
 
+### v3.10.8 — API Keys page: "Copy models" per key
+
+Operator ask: a one-click way to copy the full list of models a given
+API key can route to — accounting for the fact that providers can be
+scoped to a single key (`Provider.owned_by_key_id`, v3.0.45 tenant
+scoping).
+
+- **Backend** — `GET /api/keys/{key_id}/models` (admin). Returns the
+  key's *effective* model catalog: the union of `ModelCapability` rows
+  (+ each provider's `default_model`) across enabled providers the key
+  can route to — the shared ones (`owned_by_key_id IS NULL`) plus the
+  ones it owns. Providers owned by other keys, disabled, or deleted are
+  excluded. Models are de-duped and case-insensitively sorted.
+- **Frontend** — a per-key "Copy models" button on the API Keys page
+  opens a modal showing the effective model list with two copy
+  actions: **Copy as CSV** (comma-separated) and **Copy one per line**.
+
+7 new tests in `test_v3108_key_models.py` (scoping, dedup/sort, foreign-
+key exclusion, 404); 1965 total green.
+
 ### v3.10.7 — LMRH SDK: fix `most_reliable` hint (was inert)
 
 Polish before the PyPI publish. The reference SDK's
