@@ -7,6 +7,8 @@ from app.models.db import Base
 # See _user_edit_stamp.py for design rationale.
 from app.models import _user_edit_stamp  # noqa: F401
 import logging
+import time
+import traceback
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +55,50 @@ if "sqlite" in settings.database_url:
 AsyncSessionLocal = async_sessionmaker(
     engine, class_=AsyncSession, expire_on_commit=False
 )
+
+
+# v3.10.2 (ARCH-A) — DB connection-pool checkout tracer. The latent
+# pool leak (www01 + GCP saturated QueuePool 13-20h post-deploy,
+# returning /health 500s) has an unknown root cause: every
+# ``AsyncSessionLocal()`` is ``async with``-wrapped, so it is not naive
+# session leakage. This tracer records the acquisition stack of every
+# pool checkout; a connection that never checks back in keeps its
+# entry, and its stack names the leaking code path. Default OFF
+# (``settings.db_pool_trace``) — ``format_stack()`` per checkout has
+# overhead. Enable on one node, recreate the container, then drive the
+# harness (``scripts/archa_pool_leak_harness.py``) or just wait.
+_pool_checkouts: dict[int, dict] = {}
+
+
+def get_pool_checkout_trace() -> list[dict]:
+    """Pooled connections currently checked out, oldest first. Each
+    entry is ``{age_sec, stack}``. Empty when tracing is off or the
+    pool is idle. Under the suspected leak the oldest entries — held
+    far longer than any request should take — name the culprit path."""
+    now = time.monotonic()
+    out = [
+        {"age_sec": round(now - rec["since"], 1), "stack": rec["stack"]}
+        for rec in list(_pool_checkouts.values())
+    ]
+    out.sort(key=lambda e: e["age_sec"], reverse=True)
+    return out
+
+
+if settings.db_pool_trace:
+    @event.listens_for(engine.sync_engine, "checkout")
+    def _trace_pool_checkout(_dbapi_conn, conn_record, _conn_proxy):
+        # Keep the last 18 frames — enough to identify the app code
+        # path without unbounded memory per checked-out connection.
+        stack = "".join(traceback.format_stack()[-18:])
+        _pool_checkouts[id(conn_record)] = {
+            "since": time.monotonic(), "stack": stack,
+        }
+
+    @event.listens_for(engine.sync_engine, "checkin")
+    def _trace_pool_checkin(_dbapi_conn, conn_record):
+        _pool_checkouts.pop(id(conn_record), None)
+
+    logger.warning("ARCH-A: DB pool checkout tracing ENABLED (db_pool_trace=1)")
 
 
 async def init_db():

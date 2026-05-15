@@ -9,6 +9,37 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.10.x — "Harden" milestone
 
+### v3.10.2 — ARCH-A: DB connection-pool leak diagnostic toolkit
+
+The latent pool leak (www01 + GCP saturated the SQLAlchemy QueuePool
+13-20h post-deploy, blocking auth and returning `/health` 500s) has an
+unknown root cause — every `AsyncSessionLocal()` is `async with`-wrapped,
+so it is not naive session leakage. v3.9.8/.10 shipped *detection*
+(`/health.dbPool` + Prometheus gauges) but not a way to find the
+culprit. v3.10.2 ships the root-cause toolkit:
+
+**Checkout tracer** (`app/models/database.py`, env-gated `DB_POOL_TRACE`,
+default OFF). When enabled, SQLAlchemy `checkout`/`checkin` pool events
+record the acquisition stack of every pooled connection. A connection
+that never checks back in keeps its entry — and its stack names the
+leaking code path. `get_pool_checkout_trace()` returns checked-out
+connections oldest-first.
+
+**Exposure.** `GET /cluster/db-pool-trace` (admin) returns the full
+per-connection acquisition stacks. `/health.dbPool` gains a trace
+summary (`trace_enabled`, `traced_checked_out`, `oldest_checkout_age_sec`)
+when tracing is on — readable without auth so the harness can poll it.
+
+**Harness** (`scripts/archa_pool_leak_harness.py`). Drives load to
+compress the 13-20h window and isolates *which* request path leaks by
+running three phases separately — non-streaming, streaming-consumed,
+and streaming-abandoned (connection dropped mid-stream, the
+disconnect-cleanup hypothesis) — measuring whether pool `checked_out`
+returns to its pre-phase floor after each.
+
+Tracer defaults OFF fleet-wide (zero overhead); enable on one node to
+hunt. 8 new tests; 1946 total green.
+
 ### v3.10.1 — activity-log severity taxonomy
 
 Until now every failed request logged `severity="warning"`. A provider

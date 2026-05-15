@@ -16,6 +16,13 @@ class Settings(BaseSettings):
         "sqlite+aiosqlite:////app/data/llmproxy.db", alias="DATABASE_URL"
     )
 
+    # v3.10.2 (ARCH-A) — DB connection-pool checkout tracer. When True,
+    # every pool checkout records an acquisition stack; the trace is
+    # exposed at GET /cluster/db-pool-trace (admin). Default OFF —
+    # traceback capture per checkout has overhead. Enable on ONE node
+    # while hunting the latent pool leak, then recreate that container.
+    db_pool_trace: bool = Field(False, alias="DB_POOL_TRACE")
+
     # Redis (optional — in-memory fallback when not set)
     redis_url: Optional[str] = Field(None, alias="REDIS_URL")
 
