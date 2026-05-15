@@ -121,7 +121,9 @@ async def test_failure_meta_includes_api_key_prefix(fixture_db, monkeypatch):
         )
 
     assert len(captured) == 1
-    assert captured[0]["severity"] == "warning"
+    # v3.10.1 — "upstream 502" classifies as upstream_5xx, which is
+    # operator-actionable → severity "error" (was hardcoded "warning").
+    assert captured[0]["severity"] == "error"
     assert captured[0]["metadata"]["api_key_prefix"] == "llmp-test123"
 
 
