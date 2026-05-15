@@ -245,17 +245,21 @@ async def exchange_code(
     )
 
 
-async def refresh_access_token(refresh_token: str) -> ExchangeResult:
-    """Low-level token refresh — DO NOT call from production code paths.
+async def _internal_refresh_access_token(refresh_token: str) -> ExchangeResult:
+    """v3.9.15 (BUG-007) — internal-only token refresh.
 
-    Use ``refresh_and_persist(provider, db)`` instead. Anthropic rotates
-    refresh tokens on use, so the returned ``ExchangeResult.refresh_token``
-    is different from the one passed in and MUST be persisted to the
-    Provider row. Calling this directly without persisting drops the
-    rotated token and the next refresh fails with ``invalid_grant``.
+    Renamed from ``refresh_access_token`` to discourage direct discovery
+    via autocomplete / casual imports. The old name remains as a thin
+    alias below for one release for callers (only the burn-test live
+    script today) that pin it.
 
-    This function exists for unit tests and the one-shot exchange in
-    ``refresh_and_persist`` itself.
+    DO NOT call from production code paths. Anthropic rotates refresh
+    tokens on use, so ``ExchangeResult.refresh_token`` is different from
+    the input and MUST be persisted to the Provider row. Calling this
+    without persisting drops the rotated token; next refresh fails with
+    ``invalid_grant``.
+
+    Production-safe wrapper: ``refresh_and_persist(provider, db)``.
     """
     form = {
         "grant_type": "refresh_token",
@@ -282,6 +286,23 @@ async def refresh_access_token(refresh_token: str) -> ExchangeResult:
     return ExchangeResult(
         access_token=access, refresh_token=new_refresh, expires_at=expires_at, raw=data,
     )
+
+
+# v3.9.15 (BUG-007) — back-compat alias for callers that pinned the old
+# name. Emits a DeprecationWarning on import-use so they migrate. Will
+# be removed in v3.10.x. The single known caller today is
+# ``scripts/test_claude_oauth_live.py`` (the destructive burn test),
+# which is migrated in the same release.
+async def refresh_access_token(refresh_token: str) -> ExchangeResult:
+    import warnings
+    warnings.warn(
+        "refresh_access_token is deprecated; this helper is internal-only. "
+        "Use refresh_and_persist(provider, db) for production code paths, "
+        "or _internal_refresh_access_token() for tests.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return await _internal_refresh_access_token(refresh_token)
 
 
 async def refresh_and_persist(provider, db) -> ExchangeResult:

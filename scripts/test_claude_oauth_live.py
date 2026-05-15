@@ -28,7 +28,7 @@ from sqlalchemy import select
 from app.models.database import AsyncSessionLocal
 from app.models.db import Provider
 from app.providers.claude_oauth import build_headers, PLATFORM_BASE_URL
-from app.providers.claude_oauth_flow import refresh_access_token
+from app.providers.claude_oauth_flow import _internal_refresh_access_token as refresh_access_token
 from app.providers.scanner import scan_provider_models, test_provider
 from app.api._messages_streaming import (
     _inject_claude_code_system, _complete_claude_oauth, _stream_claude_oauth,
@@ -457,13 +457,24 @@ TESTS: list[tuple[str, Callable]] = [
 ]
 
 
-async def main() -> int:
+async def main(skip_destructive: bool = False) -> int:
     print(f"Loading provider {PROVIDER_NAME!r}...")
     p = await _load_provider()
     print(f"  id={p.id} model={p.default_model} api_key_prefix={p.api_key[:14]}...")
     print()
     print("Running tests:")
+    # v3.9.15 (BUG-012) — destructive tests consume the refresh token
+    # (Anthropic rotates on every refresh). If the rotation chain is
+    # broken, the next run can't proceed until admin re-auths. Operators
+    # who just want to verify the read-side surface can pass
+    # ``--skip-destructive`` to skip those. The "weekly automated run"
+    # mentioned in qa-notes.md uses this flag.
+    _DESTRUCTIVE_TESTS = {"refresh_and_persist"}
     for name, fn in TESTS:
+        if skip_destructive and name in _DESTRUCTIVE_TESTS:
+            _record(name, True, "skipped (--skip-destructive)")
+            print(f"  {name}: SKIPPED (--skip-destructive)")
+            continue
         t0 = time.monotonic()
         try:
             await fn(p)
@@ -492,4 +503,18 @@ async def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(asyncio.run(main()))
+    import argparse
+    _parser = argparse.ArgumentParser(
+        description="Live claude-oauth burn test against Devin-VG provider.",
+    )
+    _parser.add_argument(
+        "--skip-destructive",
+        action="store_true",
+        help=(
+            "Skip tests that consume the refresh token (refresh_and_persist). "
+            "Use for weekly automated runs that should not rotate the live "
+            "refresh token. See qa-notes.md BUG-012."
+        ),
+    )
+    _args = _parser.parse_args()
+    raise SystemExit(asyncio.run(main(skip_destructive=_args.skip_destructive)))

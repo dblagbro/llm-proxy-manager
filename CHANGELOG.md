@@ -9,6 +9,45 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.9.x — Proxy-side Caller Memory (#267) — phases 4–10 + ops fixes
 
+### v3.9.15 — Bug-log audit refresh + BUG-007 + BUG-012
+
+Re-audited the 2026-04-24 bug-log against current code. **16 of 18 items
+were already fixed** between v2.7.6 and v3.9.14 without updating
+bug-log.md statuses. This release reconciles the documentation +
+closes the two remaining items + files one newly-discovered
+architectural item from today's pool-saturation incidents.
+
+**BUG-007 — `refresh_access_token` rename.** The destructive primitive
+shared the same module namespace as the safe wrapper with the more
+discoverable name; autocomplete could pick it. Renamed canonical to
+``_internal_refresh_access_token``; kept old name as a one-release
+alias that emits ``DeprecationWarning``. Only in-tree caller (live
+burn test) migrated via ``as`` rebind. Static-analysis test guards
+against re-introduction.
+
+**BUG-012 — burn test ``--skip-destructive``.** Weekly automated
+runs would rotate the live refresh token every cycle. Now: argparse
+flag; destructive tests record as ``True`` with "skipped" detail so
+the weekly job logs a clean pass instead of a false fail.
+
+**Bug-log reconciliation** (verified-fixed in this audit):
+BUG-002, BUG-003, BUG-004, BUG-005, BUG-006, BUG-008, BUG-009,
+BUG-010 (backend + UI badge), BUG-013, BUG-014, BUG-015, BUG-016,
+BUG-017, BUG-018, BUG-019. See bug-log.md for the per-item attribution.
+
+**Filed but not shipped:**
+- BUG-001 (streaming-error contract) — deferred; needs DevinGPT + hub
+  design sign-off before changing wire behavior. DevinGPT just adopted
+  streaming write-back in v3.9.11; changing now would require their
+  concurrence.
+- ARCH-A (latent DB connection leak) — open. Audit shows every
+  ``AsyncSessionLocal()`` is ``async with``-wrapped, so the leak isn't
+  naive session management. Mitigations already in place
+  (v3.9.8 dbPool + v3.9.10 Prometheus gauges); filed plan for next
+  recurrence to localize.
+
+9 new unit tests; total green.
+
 ### v3.9.14 — Litellm streaming memory write-back + tighter litellm pin (P5b)
 
 Two changes in one ship.

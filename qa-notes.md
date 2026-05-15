@@ -4,6 +4,41 @@ Operational quirks, environment assumptions, flaky behavior, and risk
 notes accumulated during regression sweeps. Update freely; this file is
 deliberately less structured than `bug-log.md` or `test-plan.md`.
 
+## Audit refresh (2026-05-15)
+
+Re-checked the 2026-04-24 sweep against current code. 16 of 18 items
+were addressed by intermediate versions without updating bug-log.md;
+bug-log.md now has the reconciled statuses. Lessons learned:
+
+- **The bug-log lagged behind the code by ~3 weeks.** When fixes ship,
+  the fixer should write a one-line `Status: verified-fixed in vX.Y.Z`
+  entry the same session — don't trust that "the commit log is the
+  bug log". Tighten the release-ceremony checklist.
+- **The recurring patterns this sweep flagged were mostly already
+  resolved**: hardcoded version strings (BUG-004/BUG-013), provider
+  auth-error lifecycle (BUG-002/BUG-003/BUG-008), comma-list filters
+  (BUG-014), DB indexes (BUG-017). All shipped between v2.7.6 and
+  v3.7.16.
+- **One thing the audit DID find new**: a latent DB connection leak
+  surfaced today on www01 and GCP (13h and 20h to saturate the pool
+  post-deploy). Every `AsyncSessionLocal()` is `async with`-wrapped
+  per the audit, so the leak isn't naive session-leak. Filed as
+  ARCH-A in bug-log.md with diagnostic plan for next recurrence.
+
+## Now-current "things to add later" list
+
+- [x] Single-source version (`app/__version__.py`) — done
+- [x] `is_auth_error()` classifier — done in `circuit_breaker.py`
+- [x] 401 handler in claude-oauth dispatch — done in `_messages_streaming.py`
+- [x] Background refresh job — done (token-refresh on 401)
+- [x] DB indexes on hot lookup columns — done in `database.py`
+- [x] "Needs re-auth" provider UI badge — done (manual_override + ai_supervisor)
+- [x] `--skip-destructive` flag on burn test — done v3.9.15 (BUG-012)
+- [ ] Streaming-error contract redesign (BUG-001) — deferred pending
+      DevinGPT/hub design sign-off
+- [ ] Pool-leak investigation (ARCH-A) — needs next recurrence to
+      localize; mitigations in place to detect (dbPool gauge + Prometheus)
+
 ## Environment assumptions (2026-04-24)
 
 - Production cluster: tmrwww01 (primary, this host) + tmrwww02 + GCP node `c1conversations-avaya-01-s23`. All on v2.7.5 as of this sweep.
