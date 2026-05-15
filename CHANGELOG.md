@@ -9,6 +9,33 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.9.x — Proxy-side Caller Memory (#267) — phases 4–10 + ops fixes
 
+### v3.9.17 — litellm pin widened to allow 1.84.x (P4 evaluation)
+
+v3.9.14 pinned ``litellm>=1.83.0,<1.84.0`` because 1.84.0 shipped
+"breaking changes". The P4 evaluation re-examined that decision:
+
+**Finding**: every documented v1.84.0 breaking change is a LiteLLM
+**Proxy-server** feature — master-key propagation, request-control
+field stripping, caller-tags behavior, pass-through-endpoint auth
+default, clientside-credential/BYOK handling, onboarding flow, CLI
+SSO login. This proxy uses litellm strictly as a **Python library**
+(``acompletion`` / ``completion`` / exception classes / streaming-
+chunk parsing / tool calls). The upstream notes explicitly state
+those library interfaces are unchanged.
+
+**Empirical confirmation**: installed litellm 1.84.0 in the test
+environment and ran the full unit suite — 1907/1907 pass, identical
+to 1.83.11.
+
+**Change**: pin widened to ``litellm>=1.83.0,<1.85.0``. The ``<1.85.0``
+ceiling is retained so a future 1.85.x bump gets the same deliberate
+evaluation rather than floating unbounded.
+
+5 new tests in test_v3917_litellm_pin.py — including a clean-subprocess
+check of litellm's library symbols (acompletion + exception classes)
+that bypasses the suite-level litellm stubbing other unit tests inject.
+Updated the now-stale v3.9.14 pin assertion. 1912 total green.
+
 ### v3.9.16 — P3 (Provider Summary improvements) + P5 (Grok-Web 429 auto-skip) + P6 (Assistants scaffolding)
 
 Four independent improvements batched into one release.

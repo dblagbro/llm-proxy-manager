@@ -2,12 +2,16 @@ fastapi>=0.115.0
 uvicorn[standard]>=0.30.0
 pydantic>=2.7.0
 pydantic-settings>=2.3.0
-# v3.9.14: tightened from `>=1.40.0`. 1.84.0 (2026-05-14) ships
-# breaking changes per upstream release notes — staying on the 1.83.x
-# stable line until community feedback + patch releases settle. The
-# previous floor was decorative; container has actually run 1.83.x for
-# months. Revisit when bumping to 1.84.x.
-litellm>=1.83.0,<1.84.0
+# v3.9.17: pin widened to allow 1.84.x. The v1.84.0 "breaking changes"
+# were evaluated (v3.9.17 P4 eval) and are ALL LiteLLM Proxy-server
+# features — master-key propagation, pass-through-endpoint auth,
+# clientside-credential handling, onboarding flow, CLI SSO. We use
+# litellm strictly as a Python library (acompletion / exception
+# classes / streaming-chunk parsing / tool calls); the upstream notes
+# explicitly state those interfaces are unchanged. Empirical check:
+# 1907/1907 unit tests pass on 1.84.0. Ceiling stays at <1.85.0 so a
+# future major bump gets the same deliberate evaluation.
+litellm>=1.83.0,<1.85.0
 sqlalchemy>=2.0.0
 alembic>=1.13.0
 aiosqlite>=0.20.0
