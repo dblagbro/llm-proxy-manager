@@ -9,6 +9,45 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.9.x — Proxy-side Caller Memory (#267) — phases 4–10 + ops fixes
 
+### v3.9.14 — Litellm streaming memory write-back + tighter litellm pin (P5b)
+
+Two changes in one ship.
+
+**1) Litellm streaming write-back.** Closes the last memory write-back
+gap: ``_stream_anthropic`` (the litellm SSE path for non-claude-oauth
+Anthropic-shape providers) now accumulates ``tool_use`` blocks across
+streamed ``content_block_delta`` events and feeds an assembled response
+dict through the same ``maybe_extract_memory_writes()`` the
+non-streaming and claude-oauth paths use.
+
+Implementation: new ``tool_calls_acc: dict[str, dict]`` accumulator
+tracks ``{id, name, input_str}`` per ``tool_id``. When the upstream
+emits ``input_json_delta`` chunks, we both forward them to the client
+(unchanged) AND append to the accumulator. At end-of-stream, parse
+each accumulated JSON, build a non-streaming-shape ``content[]``, feed
+through the extractor. Malformed JSON is skipped per-block (doesn't
+crash the stream's success path).
+
+Wired in all 3 ``_stream_anthropic`` call sites in messages.py:
+hedge primary, hedge backup, and the fallthrough path. The litellm
+contract is unchanged — we read ``tc_delta.function.name`` and
+``.arguments`` from existing streaming fields, no new API surface
+needed. (No litellm version bump required.)
+
+**2) Tighter litellm pin.** ``requirements.txt`` now pins
+``litellm>=1.83.0,<1.84.0``. v1.84.0 (released 2026-05-14) ships
+breaking changes per upstream release notes; staying on the 1.83.x
+stable line until community feedback + patch releases settle. The
+previous floor (``>=1.40.0``) was decorative — containers have run
+1.83.x for months. Revisit when 1.84.1+ stabilizes.
+
+Audit of litellm footprint (driving the decision to tighten): 14 files
+in ``app/`` import litellm with 279 usage occurrences. Core paths
+include retry, classifier, CoT pipeline, tool emulation, router,
+shadow exec, embeddings, keepalive, semantic cache. Not vestigial.
+
+10 new unit tests; 1873 total green.
+
 ### v3.9.13 — Per-key TTL sweeper for caller_memory (hub follow-up)
 
 Hub team asked in their v3.9.12 reply: "if you want a per-key TTL config

@@ -714,6 +714,9 @@ async def messages(
                             db, key_record.id, time.monotonic(), max_tokens,
                             cache_decision=cache_decision,
                             llm_hint=llm_hint,
+                            api_key_id=key_record.id,
+                            conversation_id=x_conversation_id,
+                            memory_tag=x_memory_tag,
                         )
 
                     def _backup():
@@ -728,6 +731,9 @@ async def messages(
                             db, key_record.id, time.monotonic(), max_tokens,
                             cache_decision=None,  # don't store backup output under primary's key
                             llm_hint=llm_hint,
+                            api_key_id=key_record.id,
+                            conversation_id=x_conversation_id,
+                            memory_tag=x_memory_tag,
                         )
 
                     racer, winner = await race_streams(_primary, _backup, wait_ms)
@@ -743,7 +749,10 @@ async def messages(
                 _stream_anthropic(route.litellm_model, messages_list, extra, route.provider.id,
                                   db, key_record.id, time.monotonic(), max_tokens,
                                   cache_decision=cache_decision,
-                                  llm_hint=llm_hint),
+                                  llm_hint=llm_hint,
+                                  api_key_id=key_record.id,
+                                  conversation_id=x_conversation_id,
+                                  memory_tag=x_memory_tag),
                 media_type="text/event-stream",
                 headers=resp_headers,
             )
