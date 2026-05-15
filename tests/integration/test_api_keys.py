@@ -39,10 +39,14 @@ class TestApiKeyCRUD:
         # LLM call with the key — must reach the proxy (regardless of provider outcome)
         import requests, urllib3
         urllib3.disable_warnings()
+        # claude-haiku-4-5-20251001 is a model registered on this cluster.
+        # An unregistered model id can route to a substitute provider whose
+        # dispatch hangs (see BUG-037), which made this test flap on a read
+        # timeout instead of cleanly exercising revocation.
         resp = requests.post(
             f"{BASE_URL}/v1/messages",
             headers={"x-api-key": raw_key, "Content-Type": "application/json"},
-            json={"model": "claude-3-5-sonnet-20241022", "max_tokens": 10, "messages": [{"role": "user", "content": "ping"}]},
+            json={"model": "claude-haiku-4-5-20251001", "max_tokens": 10, "messages": [{"role": "user", "content": "ping"}]},
             verify=False,
             timeout=30,
         )
@@ -56,7 +60,7 @@ class TestApiKeyCRUD:
         resp2 = requests.post(
             f"{BASE_URL}/v1/messages",
             headers={"x-api-key": raw_key, "Content-Type": "application/json"},
-            json={"model": "claude-3-5-sonnet-20241022", "max_tokens": 10, "messages": [{"role": "user", "content": "ping"}]},
+            json={"model": "claude-haiku-4-5-20251001", "max_tokens": 10, "messages": [{"role": "user", "content": "ping"}]},
             verify=False,
             timeout=10,
         )
