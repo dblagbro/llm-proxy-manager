@@ -23,6 +23,18 @@ class Settings(BaseSettings):
     # while hunting the latent pool leak, then recreate that container.
     db_pool_trace: bool = Field(False, alias="DB_POOL_TRACE")
 
+    # v3.10.4 — aggregate error-rate alert. The v3.10.1 severity
+    # taxonomy made operator-actionable failures log as severity=error;
+    # this turns that into an alert so a sustained error spike pages
+    # instead of running unnoticed (the v3.10.0 translation bug went
+    # ~3 weeks unalerted). Checked every ~5 min by observability_sampler.
+    # Fires when, within the window, err >= min_count AND error-rate >=
+    # threshold_pct. min_count is the low-traffic noise floor.
+    error_rate_alert_enabled: bool = Field(True, alias="ERROR_RATE_ALERT_ENABLED")
+    error_rate_alert_window_min: int = Field(15, alias="ERROR_RATE_ALERT_WINDOW_MIN")
+    error_rate_alert_threshold_pct: float = Field(10.0, alias="ERROR_RATE_ALERT_THRESHOLD_PCT")
+    error_rate_alert_min_count: int = Field(10, alias="ERROR_RATE_ALERT_MIN_COUNT")
+
     # Redis (optional — in-memory fallback when not set)
     redis_url: Optional[str] = Field(None, alias="REDIS_URL")
 

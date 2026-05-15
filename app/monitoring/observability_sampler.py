@@ -79,12 +79,83 @@ async def _sample_scrape_freshness() -> None:
         logger.debug(f"observability_sampler.scrape err={e!r}")
 
 
+# v3.10.4 — aggregate error-rate alert. ``_sample_error_rate`` runs
+# every _ERROR_RATE_CHECK_EVERY ticks (30s each → ~5 min).
+_ERROR_RATE_CHECK_EVERY = 10
+_tick = 0
+
+
+def _should_alert_error_rate(
+    err: int, total: int, min_count: int, threshold_pct: float,
+) -> bool:
+    """Pure decision: alert when the window has at least ``min_count``
+    operator-actionable errors AND they are at least ``threshold_pct``
+    of all requests. ``min_count`` is the low-traffic noise floor — it
+    stops a handful of errors in a near-idle window from paging."""
+    if total <= 0 or err < min_count:
+        return False
+    return (err * 100.0 / total) >= threshold_pct
+
+
+async def _sample_error_rate() -> None:
+    try:
+        from app.config import settings
+        if not getattr(settings, "error_rate_alert_enabled", True):
+            return
+        from collections import Counter
+        from datetime import timedelta
+        from sqlalchemy import select
+        from app.models.database import AsyncSessionLocal
+        from app.models.db import ActivityLog
+
+        window = int(getattr(settings, "error_rate_alert_window_min", 15))
+        threshold = float(getattr(settings, "error_rate_alert_threshold_pct", 10.0))
+        min_count = int(getattr(settings, "error_rate_alert_min_count", 10))
+        cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=window)
+
+        async with AsyncSessionLocal() as db:
+            rows = (await db.execute(
+                select(ActivityLog.severity, ActivityLog.message,
+                       ActivityLog.event_meta)
+                .where(ActivityLog.created_at >= cutoff)
+                .where(ActivityLog.event_type == "llm_request")
+            )).all()
+
+        total = err = 0
+        classes: "Counter[str]" = Counter()
+        for sev, msg, meta in rows:
+            if msg and "[probe]" in msg:
+                continue  # keepalive probes aren't user traffic
+            total += 1
+            if sev in ("error", "critical"):
+                err += 1
+                ec = meta.get("error_class") if isinstance(meta, dict) else None
+                classes[ec or "unknown"] += 1
+
+        if not _should_alert_error_rate(err, total, min_count, threshold):
+            return
+        rate = err * 100.0 / total
+        top = ", ".join(f"{c}×{n}" for c, n in classes.most_common(3)) or "n/a"
+        from app.monitoring.notifications import alert_high_error_rate
+        await alert_high_error_rate(err, total, rate, window, top)
+        logger.warning(
+            "observability_sampler.high_error_rate err=%d total=%d rate=%.1f%% top=%s",
+            err, total, rate, top,
+        )
+    except Exception as e:
+        logger.debug(f"observability_sampler.error_rate err={e!r}")
+
+
 async def _loop() -> None:
+    global _tick
     # Boot delay so we don't fight startup migrations / first scrape.
     await asyncio.sleep(15)
     while True:
         await _sample_pool()
         await _sample_scrape_freshness()
+        _tick += 1
+        if _tick % _ERROR_RATE_CHECK_EVERY == 0:
+            await _sample_error_rate()
         await asyncio.sleep(_INTERVAL_SEC)
 
 

@@ -9,6 +9,26 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.10.x — "Harden" milestone
 
+### v3.10.4 — aggregate error-rate alert
+
+v3.10.1 made operator-actionable failures log as `severity=error`, but
+nothing alerted on it — so a sustained spike could still run unnoticed
+(the v3.10.0 translation bug went ~3 weeks unalerted). v3.10.4 closes
+that loop.
+
+The `observability_sampler` loop now runs an error-rate check every
+~5 min: it counts `severity=error` requests over a rolling window
+(default 15 min, real traffic — probes excluded) and fires
+`alert_high_error_rate` when **both** `errors >= min_count` (default 10
+— the low-traffic noise floor) **and** the error rate `>= threshold_pct`
+(default 10%). The decision is a pure function, `_should_alert_error_rate`.
+The alert is `severity=error` with a `high_error_rate` throttle key, so
+a sustained incident sends one mail per throttle window, not one per
+check. All four thresholds are operator-tunable via config
+(`ERROR_RATE_ALERT_*`).
+
+11 new tests in `test_v3104_error_rate_alert.py`; 1958 total green.
+
 ### v3.10.3 — fix: /health cache-hit path dropped the dbPool block
 
 Found while validating the v3.10.2 ARCH-A harness. The `/health`

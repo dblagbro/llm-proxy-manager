@@ -127,6 +127,28 @@ async def alert_all_providers_down():
     )
 
 
+async def alert_high_error_rate(
+    error_count: int,
+    total: int,
+    rate_pct: float,
+    window_min: int,
+    top_classes: str,
+):
+    """v3.10.4 — sustained error-rate alert. Fired by the observability
+    sampler when severity=error requests exceed the configured rate over
+    the rolling window. The throttle_key keeps a sustained incident to
+    one mail per throttle window rather than one every 5-min check."""
+    await send_alert(
+        "error",
+        f"High error rate: {rate_pct:.0f}% of requests failing",
+        f"{error_count} of {total} requests in the last {window_min} min "
+        f"failed with an operator-actionable error ({rate_pct:.1f}%).\n\n"
+        f"Top error classes: {top_classes}\n\n"
+        f"Check provider health, recent deploys, and the activity log.",
+        throttle_key="high_error_rate",
+    )
+
+
 async def alert_cluster_node_down(node_id: str, node_url: str):
     await send_alert(
         "warning",
