@@ -127,20 +127,27 @@ def test_assistant_with_only_tool_use_has_null_content():
 
 
 def test_tool_result_block_in_user_becomes_role_tool():
+    # v3.10.0 — a matched tool_result (its tool_use_id is declared by a
+    # prior assistant turn) becomes role:tool. The conversation must be
+    # well-formed: a dangling role:tool with no preceding assistant
+    # tool_call is itself invalid OpenAI (see orphan test in v3.10.0).
     from app.api._oauth_chat_translate import anthropic_messages_to_openai
     msgs = [
+        {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "toolu_1", "name": "weather", "input": {}},
+        ]},
         {"role": "user", "content": [
             {"type": "tool_result", "tool_use_id": "toolu_1",
              "content": "72F sunny"},
-        ]}
+        ]},
     ]
     out = anthropic_messages_to_openai(msgs)
-    assert len(out) == 1
-    assert out[0] == {
+    tool_msgs = [m for m in out if m.get("role") == "tool"]
+    assert tool_msgs == [{
         "role": "tool",
         "tool_call_id": "toolu_1",
         "content": "72F sunny",
-    }
+    }]
 
 
 def test_empty_tool_result_content_gets_placeholder():
@@ -150,12 +157,16 @@ def test_empty_tool_result_content_gets_placeholder():
     from app.api._oauth_chat_translate import anthropic_messages_to_openai
     for empty in ("", None):
         msgs = [
+            {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "t1", "name": "f", "input": {}},
+            ]},
             {"role": "user", "content": [
                 {"type": "tool_result", "tool_use_id": "t1", "content": empty},
-            ]}
+            ]},
         ]
         out = anthropic_messages_to_openai(msgs)
-        assert out[0]["content"] == "(no output)"
+        tool_msg = [m for m in out if m.get("role") == "tool"][0]
+        assert tool_msg["content"] == "(no output)"
 
 
 def test_tool_result_content_list_collapses_to_string():
@@ -180,34 +191,40 @@ def test_user_message_mixed_tool_result_and_text_splits():
     then any remaining user text becomes a separate role:user message."""
     from app.api._oauth_chat_translate import anthropic_messages_to_openai
     msgs = [
+        {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "t1", "name": "f", "input": {}},
+            {"type": "tool_use", "id": "t2", "name": "g", "input": {}},
+        ]},
         {"role": "user", "content": [
             {"type": "tool_result", "tool_use_id": "t1", "content": "X"},
             {"type": "tool_result", "tool_use_id": "t2", "content": "Y"},
             {"type": "text", "text": "now please continue"},
-        ]}
+        ]},
     ]
     out = anthropic_messages_to_openai(msgs)
-    assert len(out) == 3
-    assert out[0]["role"] == "tool"
-    assert out[0]["tool_call_id"] == "t1"
-    assert out[1]["role"] == "tool"
-    assert out[1]["tool_call_id"] == "t2"
-    assert out[2] == {"role": "user", "content": "now please continue"}
+    tool_msgs = [m for m in out if m.get("role") == "tool"]
+    assert [m["tool_call_id"] for m in tool_msgs] == ["t1", "t2"]
+    assert out[-1] == {"role": "user", "content": "now please continue"}
 
 
 def test_five_tool_results_in_one_user_message():
-    """Spec test: 5+ blocks → 5+ role:tool messages in order."""
+    """Spec test: 5+ matched tool_result blocks → 5+ role:tool messages
+    in order, after the assistant turn that declared their ids."""
     from app.api._oauth_chat_translate import anthropic_messages_to_openai
-    blocks = [
-        {"type": "tool_result", "tool_use_id": f"t{i}", "content": f"r{i}"}
-        for i in range(5)
+    msgs = [
+        {"role": "assistant", "content": [
+            {"type": "tool_use", "id": f"t{i}", "name": "f", "input": {}}
+            for i in range(5)
+        ]},
+        {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": f"t{i}", "content": f"r{i}"}
+            for i in range(5)
+        ]},
     ]
-    out = anthropic_messages_to_openai(
-        [{"role": "user", "content": blocks}],
-    )
-    assert len(out) == 5
-    for i, msg in enumerate(out):
-        assert msg["role"] == "tool"
+    out = anthropic_messages_to_openai(msgs)
+    tool_msgs = [m for m in out if m.get("role") == "tool"]
+    assert len(tool_msgs) == 5
+    for i, msg in enumerate(tool_msgs):
         assert msg["tool_call_id"] == f"t{i}"
         assert msg["content"] == f"r{i}"
 
