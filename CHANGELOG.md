@@ -9,6 +9,37 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.9.x — Proxy-side Caller Memory (#267) — phases 4–10 + ops fixes
 
+### v3.9.19 — "Refresh Usage Stats" button for claude-oauth accounts
+
+**Operator ask**: when Anthropic resets the weekly usage counters early,
+auto-skipped (over-cap) claude-oauth accounts stay out of service until
+the next 4-hour billing scrape cycle re-evaluates them. The operator
+wanted a button to force that immediately.
+
+The per-provider "Refresh now" button already existed inside the
+provider edit modal, but it required opening each claude-oauth provider
+one at a time. v3.9.19 adds a single bulk action:
+
+**Backend** — `POST /api/providers/_refresh-all-anthropic-billing`
+scrapes every claude-oauth provider that has Anthropic Console
+credentials, ignoring the worker's freshness floor. Each scrape re-runs
+the auto-rotation rule evaluator (`scrape_provider_into_snapshot`
+already does this), so an account whose weekly utilization dropped
+below the at-capacity threshold has its `auto_skip_until` cleared and
+returns to service immediately. One failing provider does not abort the
+sweep. Returns a per-provider result list including which accounts came
+back into service.
+
+**Frontend** — a "Refresh Usage Stats" button in the Providers page
+header (shown only when claude-oauth providers exist). The result toast
+reports how many accounts were refreshed and how many returned to
+service.
+
+9 new tests in test_v3919_refresh_all_billing.py — endpoint aggregation
+logic (skip-cleared counting, one-bad-provider resilience, failed-scrape
+exclusion, empty-sweep, missing-decision safety) + source wiring. 1921
+total green.
+
 ### v3.9.18 — P4 tooling improvements (bug-log sync check + translator force-test)
 
 **tools/cut-release.sh** — added bug-log.md sync validation. Before
