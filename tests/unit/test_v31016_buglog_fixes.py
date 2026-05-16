@@ -26,14 +26,17 @@ def _gen_factory(*frames: bytes):
 
 @pytest.mark.asyncio
 async def test_bug001_hedged_preflight_catches_pre_stream_error():
-    """A hedged stream whose winning branch fails before any content is
-    detected by preflight_sse → the caller can raise a real HTTP status
-    instead of returning a 200 + error frame."""
+    """When BOTH hedged branches fail pre-stream, race_streams returns
+    primary's failed stream and preflight_sse surfaces it as a real
+    error (instead of a 200 + error frame). (v3.10.17: a single failing
+    branch no longer reaches here — the healthy branch wins the race.)"""
     primary = _gen_factory(
         b'data: {"type": "error", "error": {"message": "invalid x-api-key"}}\n\n',
         b'data: {"type":"message_stop"}\n\n',
     )
-    backup = _gen_factory(b'data: {"type":"message_start"}\n\n')
+    backup = _gen_factory(
+        b'data: {"type": "error", "error": {"message": "backup also down"}}\n\n',
+    )
 
     racer, winner = await race_streams(primary, backup, wait_ms=50)
     first, err, racer = await preflight_sse(racer)
