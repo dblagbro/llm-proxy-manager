@@ -412,9 +412,18 @@ def _tool_result_content_to_str(content: Any) -> str:
                 if t:
                     parts.append(t)
             elif blk.get("type") == "image":
-                # OpenAI tool role doesn't support image content; drop
-                # with a placeholder so the message stays non-empty.
-                parts.append("[image]")
+                # v3.10.14 BUG-033 — OpenAI tool-role messages cannot
+                # carry image content. Emit a descriptive marker (with
+                # the media type) so the dropped image is *visible* to
+                # the caller, not silently flattened to "[image]". Full
+                # preservation would require promoting the tool_result
+                # to a user-message image part — tracked separately.
+                src = blk.get("source") or {}
+                media = src.get("media_type") or "image"
+                parts.append(
+                    f"[image omitted: {media} — OpenAI tool-role "
+                    f"messages cannot carry image content]"
+                )
         joined = "\n".join(parts).strip()
         return joined or _EMPTY_TOOL_RESULT_PLACEHOLDER
     # Unknown shape — coerce to str so we never return empty.

@@ -58,15 +58,22 @@ async def _window_stats(
     latency_samples: list[float] = []
     err_classes: Counter = Counter()
     for severity, meta in rows:
+        try:
+            m = json.loads(meta) if isinstance(meta, str) else (meta or {})
+        except Exception:
+            m = {}
+        # v3.10.14 BUG-026 — exclude internal-source traffic (the AI
+        # supervisor's own /v1/messages classifier calls, tagged by
+        # record_outcome with event_meta.internal_source) from the
+        # stats that drive the supervisor's verdicts. Otherwise the
+        # supervisor counts its own calls against the provider it judges.
+        if m.get("internal_source"):
+            continue
         n += 1
         if severity == "warning":
             n_warn += 1
         elif severity == "error":
             n_err += 1
-        try:
-            m = json.loads(meta) if isinstance(meta, str) else (meta or {})
-        except Exception:
-            m = {}
         in_tok_sum += int(m.get("in_tok") or 0)
         out_tok = int(m.get("out_tok") or 0)
         out_tok_sum += out_tok

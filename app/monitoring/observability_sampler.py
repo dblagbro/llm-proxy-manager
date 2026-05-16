@@ -126,10 +126,16 @@ async def _sample_error_rate() -> None:
         for sev, msg, meta in rows:
             if msg and "[probe]" in msg:
                 continue  # keepalive probes aren't user traffic
+            m = meta if isinstance(meta, dict) else {}
+            # v3.10.14 BUG-026 — internal-source traffic (the AI
+            # supervisor's own classifier calls etc.) is not user
+            # traffic; exclude it from the error-rate alert signal.
+            if m.get("internal_source"):
+                continue
             total += 1
             if sev in ("error", "critical"):
                 err += 1
-                ec = meta.get("error_class") if isinstance(meta, dict) else None
+                ec = m.get("error_class")
                 classes[ec or "unknown"] += 1
 
         if not _should_alert_error_rate(err, total, min_count, threshold):
