@@ -157,6 +157,14 @@ HTTP probing of every endpoint, code-level regression audit of the
 - **Recommended fix**: (a) fast-fail (400/404 "model not available") when a model id resolves to no capability and no deterministic route; (b) tighten the claude-oauth `read` timeout from 300s to a sane ceiling (e.g. 120s) — needs deliberate review as it touches the streaming hot path. NOT bundled into v3.10.10 (out of the "quick wins" scope).
 - **Status**: open
 
+### BUG-038 [MEDIUM] CoT streaming path skipped caller-memory write-back
+
+- **Area**: `app/api/_messages_streaming.py::_stream_cot_anthropic`
+- **Discovered**: v3.10.11, investigating DevinGPT's "extract metric at zero" report.
+- **Detail**: streaming caller-memory write-back (v3.9.11 / v3.9.14) wired `maybe_extract_memory_writes` into `_stream_claude_oauth` and `_stream_anthropic`, but **not** `_stream_cot_anthropic` (the CoT iterative-refinement streaming path). A memory-enabled request that engaged CoT would `inject` on the request side but never `extract` on the response side — a silent half-loop.
+- **Fix shipped (v3.10.11)**: `_stream_cot_anthropic` now accepts `conversation_id`/`memory_tag`, accumulates memory-tool `tool_use` blocks from the SSE passthrough (keyed by content-block index), and feeds the assembled response through `maybe_extract_memory_writes` once the stream completes — same contract as the other two streaming paths. `messages.py` threads the params via `extra_kwargs_for_stream`. 3 behavioral tests in `tests/unit/test_v31011_cot_memory_writeback.py`.
+- **Status**: fixed in v3.10.11
+
 ### ARCH-A — UPDATE: leak is actively manifesting
 
 The latent DB connection-pool leak (open since the v3.9.15 sweep) is
