@@ -824,3 +824,55 @@ class RunIdempotency(Base):
     idempotency_key = Column(String, primary_key=True)  # caller-supplied; ≤256 chars
     run_id = Column(String, nullable=False)
     created_at = Column(Float, nullable=False)
+
+
+# ── v4.0 — AIRI rules layer ──────────────────────────────────────────────────
+# AIRI (the AI Router Interface) lets operators organise the AI Provider
+# Supervisor's policy as named, snapshot-able rule-sets. Milestone 2 ships the
+# data model + rule-set save/restore; the rules are stored config — they are
+# wired to live supervisor behaviour in a later milestone.
+
+class AiriRuleset(Base):
+    """A named snapshot of AIRI rules. Exactly one row is ``is_active``.
+    The seeded ``Default`` set mirrors the supervisor's current settings."""
+    __tablename__ = "airi_ruleset"
+
+    id = Column(String, primary_key=True, default=lambda: secrets.token_hex(8))
+    name = Column(String, nullable=False, unique=True)
+    is_default = Column(Boolean, default=False)
+    is_active = Column(Boolean, default=False)
+    description = Column(Text)
+    created_by = Column(String)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class AiriRule(Base):
+    """One policy item inside a rule-set.
+
+    ``kind`` is ``threshold`` (a supervisor tunable), ``conditional`` (a
+    deterministic trigger->action — authored in a later milestone), or
+    ``monitor`` (a read-only recurring check — later milestone). ``spec`` is
+    the kind-specific JSON body.
+    """
+    __tablename__ = "airi_rule"
+
+    id = Column(String, primary_key=True, default=lambda: secrets.token_hex(8))
+    ruleset_id = Column(String, ForeignKey("airi_ruleset.id", ondelete="CASCADE"),
+                        nullable=False, index=True)
+    name = Column(String, nullable=False)
+    kind = Column(String, nullable=False)              # threshold|conditional|monitor
+    spec = Column(JSON, default=dict)
+    mode = Column(String, default="suggest")           # suggest|auto_apply
+    enabled = Column(Boolean, default=True)
+    blast_radius_cap = Column(Integer)
+    max_runs_per_window = Column(Integer)
+    cooldown_sec = Column(Integer)
+    expiry_at = Column(DateTime)
+    last_run_at = Column(DateTime)
+    last_action = Column(String)
+    oscillation_state = Column(JSON)
+    created_by = Column(String)
+    created_via_prompt = Column(Text)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
