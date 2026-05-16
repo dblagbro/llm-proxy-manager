@@ -116,6 +116,28 @@ def wait_budget_ms(provider_id: str) -> Optional[float]:
 # ── Hedged streamer ──────────────────────────────────────────────────────────
 
 
+def _chunk_ok(chunk: Optional[bytes]) -> bool:
+    """A streamed first chunk is "healthy" — a genuine race win — only if
+    it exists and is not a terminal SSE error frame. An empty stream or a
+    pre-stream error frame counts as a FAILURE, not a win."""
+    if chunk is None:
+        return False
+    try:
+        from app.api._messages_streaming import _sse_frame_error
+        return _sse_frame_error(chunk) is None
+    except Exception:
+        # Detector unavailable — treat as healthy (never regress to worse
+        # than the pre-v3.10.17 first-to-yield behaviour).
+        return True
+
+
+async def _safe_aclose(it) -> None:
+    try:
+        await it.aclose()
+    except Exception:
+        pass
+
+
 async def race_streams(
     primary_factory,
     backup_factory,
@@ -126,47 +148,100 @@ async def race_streams(
 
     `primary_factory` and `backup_factory` are zero-arg callables that return
     the async iterator when invoked. They're not started until needed.
+
+    v3.10.17 — a stream "wins" only if its first chunk is *healthy*. A
+    first chunk that is a terminal SSE error frame (an upstream that
+    fast-failed pre-stream), or an empty stream, counts as a FAILURE — so
+    a fast-failing primary no longer beats a healthy backup in the race.
+    If both streams fail, primary's failed stream is returned so the
+    caller's ``preflight_sse`` surfaces it as a real HTTP status.
     """
     primary_iter = primary_factory()
-    # Race the first chunk
     first_task = asyncio.create_task(_first_chunk(primary_iter))
+    primary_first: Optional[bytes] = None
+    primary_settled = False
     try:
-        first = await asyncio.wait_for(asyncio.shield(first_task), timeout=wait_ms / 1000.0)
-        # Primary won on its own
-        return _replay(first, primary_iter), "primary"
+        primary_first = await asyncio.wait_for(
+            asyncio.shield(first_task), timeout=wait_ms / 1000.0
+        )
+        primary_settled = True
+        if _chunk_ok(primary_first):
+            # Primary won on its own with a healthy first chunk.
+            return _replay(primary_first, primary_iter), "primary"
+        # Primary produced an error frame / empty stream — it failed;
+        # fall through and give the backup a chance.
     except asyncio.TimeoutError:
-        pass
+        pass  # primary slow — race the backup
 
-    # Primary slow — start backup
     backup_iter = backup_factory()
-    backup_first = asyncio.create_task(_first_chunk(backup_iter))
-    # Wait for either to produce
-    done, pending = await asyncio.wait(
-        {first_task, backup_first}, return_when=asyncio.FIRST_COMPLETED
-    )
-    if first_task in done and not first_task.exception():
-        first = first_task.result()
-        # Cancel backup
-        backup_first.cancel()
+    backup_task = asyncio.create_task(_first_chunk(backup_iter))
+
+    if primary_settled:
+        # Primary already finished and failed; the backup is the only
+        # remaining candidate — await it explicitly (no race, no spin).
         try:
-            await backup_iter.aclose()
+            backup_first = await backup_task
         except Exception:
-            pass
-        return _replay(first, primary_iter), "primary"
-    else:
-        # Backup won (or primary errored)
-        try:
-            backup_first_chunk = backup_first.result()
-        except Exception as exc:
-            # Both failed — fall back to propagating primary's error
-            raise exc
-        # Cancel primary
+            backup_first = None
+        if _chunk_ok(backup_first):
+            await _safe_aclose(primary_iter)
+            return _replay(backup_first, backup_iter), "backup"
+        await _safe_aclose(backup_iter)
+        return _replay(primary_first, primary_iter), "primary"
+
+    # Primary was slow (timed out, not failed yet) — race both for the
+    # first HEALTHY chunk.
+    await asyncio.wait({first_task, backup_task}, return_when=asyncio.FIRST_COMPLETED)
+
+    def _task_chunk(task) -> Optional[bytes]:
+        if task.done() and not task.cancelled() and task.exception() is None:
+            return task.result()
+        return None
+
+    pf = _task_chunk(first_task)
+    bf = _task_chunk(backup_task)
+    if _chunk_ok(pf):
+        backup_task.cancel()
+        await _safe_aclose(backup_iter)
+        return _replay(pf, primary_iter), "primary"
+    if _chunk_ok(bf):
         first_task.cancel()
+        await _safe_aclose(primary_iter)
+        return _replay(bf, backup_iter), "backup"
+
+    # The first-completed stream failed — await whichever is still pending.
+    if not first_task.done():
         try:
-            await primary_iter.aclose()
+            pf = await first_task
         except Exception:
-            pass
-        return _replay(backup_first_chunk, backup_iter), "backup"
+            pf = None
+        if _chunk_ok(pf):
+            backup_task.cancel()
+            await _safe_aclose(backup_iter)
+            return _replay(pf, primary_iter), "primary"
+    if not backup_task.done():
+        try:
+            bf = await backup_task
+        except Exception:
+            bf = None
+        if _chunk_ok(bf):
+            first_task.cancel()
+            await _safe_aclose(primary_iter)
+            return _replay(bf, backup_iter), "backup"
+
+    # Both streams failed. Return primary's outcome (its error frame, if
+    # any) so the caller's preflight_sse surfaces a real HTTP status.
+    if pf is not None:
+        await _safe_aclose(backup_iter)
+        return _replay(pf, primary_iter), "primary"
+    if bf is not None:
+        await _safe_aclose(primary_iter)
+        return _replay(bf, backup_iter), "backup"
+    if first_task.done() and first_task.exception():
+        raise first_task.exception()
+    if backup_task.done() and backup_task.exception():
+        raise backup_task.exception()
+    raise RuntimeError("hedge race produced no stream")
 
 
 async def _first_chunk(stream: AsyncIterator[bytes]):

@@ -328,15 +328,18 @@ without bug-log status updates; this section reconciles.
   too — `messages.py` / `completions.py` run `preflight_sse` on the
   `race_streams` racer, so a pre-stream failure on the winning branch
   raises a real HTTP status (parity with the non-hedged path).
-- **Remaining hedge-correctness note (not BUG-001)**: `race_streams`
-  treats an error-frame first chunk as a "win" — a fast-failing primary
-  can beat a healthy backup in the race. Pre-flighting surfaces that as
-  an honest error rather than masking it, but making `race_streams`
-  skip error-frame first chunks (so the backup gets its chance) is a
-  separate hedging-correctness improvement, logged for later.
-- 8 tests in `test_v31013_buglog_fixes.py` + 2 hedged-path tests in
-  `test_v31016_buglog_fixes.py`.
-- **Status**: fixed in v3.10.13; hedged path covered in v3.10.16.
+- **Hedge-correctness fix (v3.10.17)**: `race_streams` previously
+  treated an error-frame first chunk as a race "win" — a fast-failing
+  primary could beat a healthy backup. It now classifies the first
+  chunk: an error frame / empty stream counts as a FAILURE, not a win,
+  so a healthy backup wins over a failing primary. If both branches
+  fail, primary's failed stream is returned so `preflight_sse` still
+  surfaces a real status.
+- Tests: 8 in `test_v31013_buglog_fixes.py`, 2 hedged-path in
+  `test_v31016_buglog_fixes.py`, 5 race-correctness in
+  `test_v31017_buglog_fixes.py`.
+- **Status**: fixed — v3.10.13 (plain) + v3.10.16 (hedged pre-flight)
+  + v3.10.17 (hedge race-correctness). Fully closed.
 
 ---
 
