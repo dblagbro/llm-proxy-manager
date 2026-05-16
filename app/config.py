@@ -213,6 +213,15 @@ class Settings(BaseSettings):
     ai_provider_supervisor_max_priority_delta: int = Field(2, alias="AI_PROVIDER_SUPERVISOR_MAX_PRIORITY_DELTA")
     ai_provider_supervisor_max_auto_skip_hours: int = Field(24, alias="AI_PROVIDER_SUPERVISOR_MAX_AUTO_SKIP_HOURS")
 
+    # v4.0 — AIRI (AI Router Interface): the conversational chat UI for the
+    # AI Provider Supervisor, on the Routing page. ``airi_enabled`` is the
+    # feature flag for the whole 4.0 arc — off by default. ``airi_model``
+    # is an optional override; empty falls back to the supervisor's model.
+    # AIRI reuses ``ai_provider_supervisor_internal_api_key`` for its own
+    # LLM calls (which route through the proxy, so they inherit fallback).
+    airi_enabled: bool = Field(False, alias="AIRI_ENABLED")
+    airi_model: str = Field("", alias="AIRI_MODEL")
+
     # v3.8.4 (#264): tool-call capability prober. Fires a standard
     # get_weather(city) probe at every (provider, default_model) on
     # a configurable cadence; rolling success rate drives

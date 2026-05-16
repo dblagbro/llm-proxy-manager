@@ -4,6 +4,7 @@ import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/Card'
 import { Badge } from '@/components/ui/Badge'
 import { Spinner } from '@/components/ui/Spinner'
 import { CopyButton } from '@/components/ui/CopyButton'
+import { AiriChatPanel } from '@/components/airi/AiriChatPanel'
 
 const LMRH_DIMS = [
   { key: 'task', label: 'task', values: 'chat, coding, reasoning, summarization, translation, classification, embedding', weight: 10 },
@@ -34,6 +35,9 @@ export function RoutingPage() {
         <h1 className="text-xl font-bold text-gray-900 dark:text-gray-100">Routing / LMRH</h1>
         <p className="text-sm text-gray-500 mt-0.5">LLM Model Routing Hint protocol — draft-blagbrough-lmrh-00</p>
       </div>
+
+      {/* v4.0 — AIRI chat (renders only when the airi_enabled flag is on) */}
+      <AiriChatPanel />
 
       {/* Protocol overview */}
       <Card>
