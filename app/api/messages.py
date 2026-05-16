@@ -507,6 +507,10 @@ async def messages(
             extra_kwargs_for_stream={
                 "requested_model": body.get("model") if isinstance(body, dict) else "",
                 "llm_hint": llm_hint,
+                # v3.10.11 — thread caller-memory context into the CoT
+                # streaming path so it runs memory write-back too.
+                "conversation_id": x_conversation_id,
+                "memory_tag": x_memory_tag,
             },
         )
         if cot_resp is not None:

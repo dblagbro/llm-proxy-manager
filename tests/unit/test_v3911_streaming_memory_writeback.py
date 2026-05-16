@@ -88,19 +88,25 @@ def test_completions_endpoint_passes_conv_id_to_stream():
 
 
 def test_assembled_response_shape_matches_extractor_contract():
-    """Smoke-check that the assembled_response dict has the keys the
-    extractor reads (content[] of tool_use blocks)."""
+    """Smoke-check that the assembled response dicts have the keys the
+    extractor reads (content[] of tool_use blocks). There are several
+    assembly sites (litellm / claude-oauth / CoT streaming paths); each
+    must build a {"type": "tool_use", "id", "name", "input"} block.
+    Contract check by key presence — not by exact variable names, which
+    differ per site and are an implementation detail."""
+    import re
     src = Path("app/api/_messages_streaming.py").read_text()
     idx = src.index("assembled_response = {")
     body = src[idx:idx + 700]
-    # The assembled dict carries content list (which the extractor walks)
+    # The assembled dict carries the content list the extractor walks.
     assert '"content": content_list' in body
-    # content_list builds {"type": "tool_use", "id": ..., "name": ..., "input": ...}
-    # for each block — same shape maybe_extract_memory_writes scans for
-    idx2 = src.index('"type": "tool_use", "id":')
-    walk = src[idx2:idx2 + 400]
-    assert '"name": blk.get("name")' in walk
-    assert '"input": parsed_input' in walk
+    # Every tool_use assembly site must carry the name + input keys.
+    sites = [m.start() for m in re.finditer(r'"type": "tool_use", "id":', src)]
+    assert sites, "no tool_use assembly site found in _messages_streaming.py"
+    for s in sites:
+        walk = src[s:s + 400]
+        assert '"name":' in walk, "a tool_use assembly block is missing the name key"
+        assert '"input":' in walk, "a tool_use assembly block is missing the input key"
 
 
 def test_extractor_called_after_record_outcome():

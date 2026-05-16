@@ -58,12 +58,24 @@ async def _stream_cot_anthropic(
     task_branch: str | None = None,
     requested_model: str = "",  # v3.0.44: caller's bare model id for activity log
     llm_hint: Optional[str] = None,  # v3.0.59: capture in event_meta.lmrh_hint
+    # v3.10.11 (#267) — caller-memory write-back for the CoT streaming
+    # path (the one streaming path that was missing it). When
+    # ``conversation_id`` is set, memory-tool tool_use blocks are
+    # accumulated across the SSE passthrough and fed through the same
+    # maybe_extract_memory_writes() the other streaming paths use.
+    conversation_id: Optional[str] = None,
+    memory_tag: Optional[str] = None,
 ) -> AsyncIterator[bytes]:
     """Pass-through wrapper around run_cot_pipeline; records metrics after completion."""
     import json as _json
     in_tok = out_tok = 0
     cache_creation = cache_read = 0
     t0 = time.monotonic()
+    # v3.10.11 — accumulate memory-tool tool_use blocks across the SSE
+    # passthrough, keyed by content-block index, so the assembled
+    # response can be fed through maybe_extract_memory_writes once the
+    # CoT stream completes.
+    tool_acc: dict = {}
     try:
         async for chunk in run_cot_pipeline(
             model, messages, session_id, extra, max_iterations, force_verify,
@@ -71,23 +83,63 @@ async def _stream_cot_anthropic(
             samples=samples, task_branch=task_branch,
         ):
             yield chunk
-            line = chunk.decode(errors="ignore").strip()
-            if line.startswith("data: "):
+            for line in chunk.decode(errors="ignore").splitlines():
+                line = line.strip()
+                if not line.startswith("data: "):
+                    continue
                 try:
                     evt = _json.loads(line[6:])
-                    if evt.get("type") == "message_delta":
-                        usage = evt.get("usage", {})
-                        in_tok = usage.get("input_tokens", in_tok)
-                        out_tok = usage.get("output_tokens", out_tok)
-                        cache_creation = usage.get("cache_creation_input_tokens", cache_creation) or cache_creation
-                        cache_read = usage.get("cache_read_input_tokens", cache_read) or cache_read
-                except (ValueError, KeyError):
-                    pass
+                except ValueError:
+                    continue
+                etype = evt.get("type")
+                if etype == "message_delta":
+                    usage = evt.get("usage", {})
+                    in_tok = usage.get("input_tokens", in_tok)
+                    out_tok = usage.get("output_tokens", out_tok)
+                    cache_creation = usage.get("cache_creation_input_tokens", cache_creation) or cache_creation
+                    cache_read = usage.get("cache_read_input_tokens", cache_read) or cache_read
+                elif etype == "content_block_start":
+                    cb = evt.get("content_block") or {}
+                    if cb.get("type") == "tool_use":
+                        tool_acc[evt.get("index")] = {
+                            "id": cb.get("id", ""), "name": cb.get("name", ""), "json": "",
+                        }
+                elif etype == "content_block_delta":
+                    delta = evt.get("delta") or {}
+                    if delta.get("type") == "input_json_delta" and evt.get("index") in tool_acc:
+                        tool_acc[evt["index"]]["json"] += delta.get("partial_json", "")
         await record_outcome(db, provider_id, model, success=True,
                              in_tok=in_tok, out_tok=out_tok, t0=t0, key_record_id=key_record_id,
                              cache_creation=cache_creation, cache_read=cache_read,
                              requested_model=requested_model or None,
                              had_lmrh_hint=bool(llm_hint), lmrh_hint_raw=llm_hint or None)
+        # v3.10.11 — caller-memory write-back. Mirror the other streaming
+        # paths: call extract whenever the caller opted into memory
+        # (conversation_id set), even with no memory-tool blocks, so the
+        # extract metric increments consistently. Silent degrade.
+        if conversation_id and key_record_id:
+            try:
+                content_blocks = []
+                for slot in tool_acc.values():
+                    try:
+                        parsed = _json.loads(slot["json"]) if slot["json"] else {}
+                    except ValueError:
+                        parsed = {}
+                    content_blocks.append({
+                        "type": "tool_use", "id": slot["id"],
+                        "name": slot["name"], "input": parsed,
+                    })
+                from app.memory.extract import maybe_extract_memory_writes
+                await maybe_extract_memory_writes(
+                    db,
+                    response_dict={"content": content_blocks},
+                    api_key_id=key_record_id,
+                    conversation_id=conversation_id,
+                    memory_tag_default=memory_tag,
+                    source_provider_id=provider_id,
+                )
+            except Exception:
+                pass  # never break the stream's success path
     except Exception as e:
         await record_outcome(db, provider_id, model, success=False,
                              key_record_id=key_record_id, error_str=_exc_str(e),
