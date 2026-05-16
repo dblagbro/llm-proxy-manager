@@ -359,6 +359,7 @@ async def messages(
     # claude-oauth and returns a Response; otherwise it returns (None, route)
     # with route advanced to a non-claude-oauth provider so we fall through
     # to the litellm path below.
+    _route_pre_dispatch = route
     _oauth_response, route = await dispatch_claude_oauth_chain(
         route,
         body=body, db=db, key_record=key_record, resp_headers=resp_headers,
@@ -368,6 +369,16 @@ async def messages(
     )
     if _oauth_response is not None:
         return _oauth_response
+    # v3.10.12 BUG-024: dispatch_claude_oauth_chain can advance `route`
+    # to a litellm provider after exhausting the claude-oauth chain.
+    # `extra` was built (above) from the pre-fallthrough route's
+    # litellm_kwargs — swap in the NEW route's so the litellm dispatch
+    # below uses the right credentials / base_url / headers, not the
+    # dead OAuth provider's.
+    if route is not _route_pre_dispatch:
+        for _k in _route_pre_dispatch.litellm_kwargs:
+            extra.pop(_k, None)
+        extra.update(route.litellm_kwargs)
 
     # ── v3.2.0: grok-web dispatch ──────────────────────────────────────────
     # Operator's grok.com web subscription. Like claude-oauth/codex-oauth,

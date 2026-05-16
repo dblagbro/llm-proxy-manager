@@ -478,10 +478,19 @@ def _inject_claude_code_system(body: dict) -> dict:
 # read / write / pool config dates from v3.0.60 (single timeout=300
 # meant DNS / TCP-connect failures held the request for 300s while
 # upstream was confirmed dead — exhausted the SQLAlchemy pool during
-# the 2026-05-05 internet outage). Read budget is generous because
-# Pro Max subscription stream responses can take a few minutes for
-# long context windows.
+# the 2026-05-05 internet outage).
+#
+# Non-streaming `read` is effectively the whole-generation budget: the
+# response body arrives only after Claude finishes generating, so a
+# large Pro Max generation legitimately needs minutes — kept at 300s.
 _CLAUDE_OAUTH_TIMEOUT = httpx.Timeout(connect=5.0, read=300.0, write=10.0, pool=5.0)
+# v3.10.12 BUG-037 — streaming `read` is the gap BETWEEN chunks, not the
+# total: a healthy SSE stream emits tokens continuously and never pauses
+# this long. A 300s per-chunk gap only ever means a hung upstream, so a
+# tight streaming ceiling bounds the hang (a hung request also pins a DB
+# connection — an ARCH-A pool-leak contributor) without cutting any real
+# stream.
+_CLAUDE_OAUTH_STREAM_TIMEOUT = httpx.Timeout(connect=5.0, read=120.0, write=10.0, pool=5.0)
 
 
 def _prepare_claude_oauth_request(body: dict, *, stream: bool) -> tuple[str, dict]:
@@ -681,7 +690,7 @@ async def _stream_claude_oauth(
         }
         try:
             async with httpx.AsyncClient(
-                timeout=_CLAUDE_OAUTH_TIMEOUT,
+                timeout=_CLAUDE_OAUTH_STREAM_TIMEOUT,
                 follow_redirects=True,
             ) as client:
                 async with client.stream("POST", url, json=body, headers=headers) as r:
