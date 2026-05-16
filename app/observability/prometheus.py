@@ -145,9 +145,31 @@ SCRAPE_FRESHNESS_SECONDS = Gauge(
     ["provider_id", "provider_name", "source"],
 )
 
+# v3.10.15 BUG-032 — infrastructure-level errors (ASGI exceptions, DB
+# connection-pool faults) tapped from the logging system. They used to
+# log as bare stdlib ERRORs that never reached activity_log, so the
+# v3.10.4 error-rate alert was blind to them. ``fault_class`` separates
+# benign client-disconnects ("disconnect") from genuine faults ("fault")
+# so a pool-exhaustion / ASGI-crash incident is distinguishable from
+# routine client churn.
+INFRA_ERRORS_TOTAL = Counter(
+    "llm_proxy_infra_errors_total",
+    "ASGI / DB-pool errors tapped from logging, classified by fault_class.",
+    ["source", "fault_class"],  # source: pool|asgi ; fault_class: disconnect|fault
+)
+
 SERVICE_INFO = Info("llm_proxy_service", "Service metadata.")
 
 _CB_STATE_MAP = {"closed": 0, "half-open": 1, "open": 2}
+
+
+def observe_infra_error(source: str, fault_class: str) -> None:
+    """Increment the infra-error counter. Never raises — called from a
+    logging handler, which must not fail."""
+    try:
+        INFRA_ERRORS_TOTAL.labels(source=source, fault_class=fault_class).inc()
+    except Exception:
+        pass
 
 
 def set_service_info(version: str, node_id: str) -> None:

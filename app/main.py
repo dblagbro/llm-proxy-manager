@@ -79,6 +79,12 @@ class _HealthAccessLogFilter(logging.Filter):
 
 logging.getLogger("uvicorn.access").addFilter(_HealthAccessLogFilter())
 
+# v3.10.15 BUG-032 — tap ASGI + DB-pool error logs into a classified
+# Prometheus counter (llm_proxy_infra_errors_total) so they are no
+# longer invisible to observability.
+from app.observability.infra_error_tap import install_infra_error_tap
+install_infra_error_tap()
+
 # v3.0.24 (#136): tone down litellm's INFO-level chatter (per-call
 # "LiteLLM completion() model=..." lines). Errors / warnings still flow.
 try:
