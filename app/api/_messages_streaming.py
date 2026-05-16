@@ -42,6 +42,69 @@ def _exc_str(e: BaseException) -> str:
     return s if s else f"{type(e).__name__} (no message)"
 
 
+def _sse_frame_error(frame: bytes):
+    """If an SSE ``data:`` frame is a terminal error event, return its
+    message string; else None. Handles both the Anthropic shape
+    (``{"type":"error","error":{"message":...}}``) and the OpenAI shape
+    (``{"error": ...}``) that the litellm streaming wrappers emit."""
+    if b"data:" not in frame:
+        return None
+    try:
+        payload = json.loads(frame.split(b"data:", 1)[1].strip())
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    # A successful first frame is message_start (Anthropic) or a
+    # chat.completion.chunk (OpenAI) — neither carries an ``error`` key.
+    if payload.get("type") == "error" or ("error" in payload and "choices" not in payload):
+        err = payload.get("error")
+        if isinstance(err, dict):
+            return err.get("message") or json.dumps(err)
+        if isinstance(err, str):
+            return err
+        return "upstream error"
+    return None
+
+
+async def preflight_sse(gen):
+    """v3.10.13 BUG-001 — pull the first SSE frame from a streaming
+    generator so a *pre-stream* upstream failure (auth, rate-limit,
+    upstream 5xx) can surface as a real HTTP status instead of an
+    HTTP 200 carrying a terminal ``{"type":"error"}`` frame (which
+    clients that check ``status_code`` read as success).
+
+    A successful litellm stream's first frame is always ``message_start``
+    / a chat-completion chunk; a pre-stream failure's first frame is the
+    terminal error event. This gives the litellm streaming paths the
+    same fail-loud contract the claude-oauth path already has via its
+    ``__anext__()`` pre-flight.
+
+    Returns ``(first_frame, err_message_or_None, gen)``. When err_message
+    is not None the upstream never produced content — the caller should
+    raise an HTTPException. Otherwise replay ``first_frame`` then
+    ``async for`` the rest of ``gen``.
+    """
+    try:
+        first = await gen.__anext__()
+    except StopAsyncIteration:
+        return b"", "upstream produced an empty stream", gen
+    return first, _sse_frame_error(first), gen
+
+
+def http_status_for_stream_error(msg: str) -> int:
+    """Best-effort HTTP status for a pre-stream upstream error string."""
+    low = (msg or "").lower()
+    if any(s in low for s in (
+        "x-api-key", "api key", "api-key", "unauthor", "invalid_grant",
+        "authenticationerror", "permissiondenied", " 401", " 403",
+    )):
+        return 401
+    if "rate limit" in low or "rate_limit" in low or "429" in low:
+        return 429
+    return 502
+
+
 async def _stream_cot_anthropic(
     model: str,
     messages: list,
@@ -493,6 +556,23 @@ _CLAUDE_OAUTH_TIMEOUT = httpx.Timeout(connect=5.0, read=300.0, write=10.0, pool=
 _CLAUDE_OAUTH_STREAM_TIMEOUT = httpx.Timeout(connect=5.0, read=120.0, write=10.0, pool=5.0)
 
 
+def _oauth_complete_timeout(max_tokens) -> httpx.Timeout:
+    """v3.10.13 BUG-037 — for the NON-streaming claude-oauth call, `read`
+    is effectively the whole-generation budget (the body arrives only
+    once Claude finishes). Scale it to the request's ``max_tokens``
+    instead of a flat 300s: a tiny request — e.g. an unregistered model
+    id that routes here and hangs — is bounded to ~90s, while a genuinely
+    large generation still gets up to the 300s ceiling. Bounds the
+    BUG-037 hang with no risk to real large completions."""
+    ceiling = _CLAUDE_OAUTH_TIMEOUT.read or 300.0
+    try:
+        budget = 90.0 + float(max_tokens or 0) * 0.035
+    except (TypeError, ValueError):
+        budget = ceiling
+    read = max(90.0, min(budget, ceiling))
+    return httpx.Timeout(connect=5.0, read=read, write=10.0, pool=5.0)
+
+
 def _prepare_claude_oauth_request(body: dict, *, stream: bool) -> tuple[str, dict]:
     """v3.5.5 R4 — pre-flight setup for a claude-oauth dispatch call.
 
@@ -580,7 +660,7 @@ async def _complete_claude_oauth(
         }
         try:
             async with httpx.AsyncClient(
-                timeout=_CLAUDE_OAUTH_TIMEOUT,
+                timeout=_oauth_complete_timeout(body.get("max_tokens", 4096)),
                 follow_redirects=True,
             ) as client:
                 r = await client.post(url, json=body, headers=headers)

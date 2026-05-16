@@ -206,6 +206,15 @@ async def review_one_provider(db, provider) -> Optional[dict]:
         )
         return None
 
+    # v3.10.13 ARCH-A — release the pooled DB connection BEFORE the LLM
+    # classification call. classify_with_llm is a network call (httpx);
+    # holding the session's connection across it pinned a pool slot for
+    # the whole multi-provider scan — the www01-only leak the pool
+    # tracer caught (a connection checked out 60+ minutes). commit()
+    # ends the read transaction and returns the connection to the pool;
+    # the review write below checks out a fresh one. expire_on_commit
+    # is False on AsyncSessionLocal, so `provider` stays usable here.
+    await db.commit()
     verdict_data = await classify_with_llm(provider.name, provider.provider_type, stats)
     if verdict_data is None:
         return None

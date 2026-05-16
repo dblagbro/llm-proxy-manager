@@ -87,9 +87,12 @@ def get_pool_checkout_trace() -> list[dict]:
 if settings.db_pool_trace:
     @event.listens_for(engine.sync_engine, "checkout")
     def _trace_pool_checkout(_dbapi_conn, conn_record, _conn_proxy):
-        # Keep the last 18 frames — enough to identify the app code
-        # path without unbounded memory per checked-out connection.
-        stack = "".join(traceback.format_stack()[-18:])
+        # v3.10.13 — keep the last 45 frames. The original 18 was too
+        # shallow: SQLAlchemy's checkout call chain is ~16 frames deep,
+        # so [-18:] captured only ORM/pool internals and never reached
+        # the app caller (the 2026-05-16 ARCH-A trace showed exactly
+        # this — an all-internal stack). 45 reliably includes app code.
+        stack = "".join(traceback.format_stack()[-45:])
         _pool_checkouts[id(conn_record)] = {
             "since": time.monotonic(), "stack": stack,
         }

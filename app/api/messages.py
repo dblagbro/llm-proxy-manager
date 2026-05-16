@@ -34,6 +34,7 @@ from app.api.image_utils import has_images_anthropic, strip_images_anthropic
 from app.routing.aliases import resolve_alias
 from app.api._messages_streaming import (
     _stream_cot_anthropic, _stream_anthropic, _webhook_completion_anthropic,
+    preflight_sse, http_status_for_stream_error,
 )
 from app.api._messages_dispatch import (
     dispatch_claude_oauth_chain, _select_excluding,
@@ -588,14 +589,36 @@ async def messages(
             elif wait_ms is not None:
                 observe_hedge_bucket_reject()
 
+            # v3.10.13 BUG-001 — pre-flight the litellm streaming path so a
+            # pre-stream upstream failure (auth, rate-limit, 5xx) surfaces
+            # as a real HTTP status instead of a 200 + terminal SSE error
+            # frame. Matches the claude-oauth streaming path, which already
+            # pre-flights. A mid-stream failure (after message_start) still
+            # degrades to an SSE error frame — the 200 is already sent.
+            _gen = _stream_anthropic(
+                route.litellm_model, messages_list, extra, route.provider.id,
+                db, key_record.id, time.monotonic(), max_tokens,
+                cache_decision=cache_decision,
+                llm_hint=llm_hint,
+                api_key_id=key_record.id,
+                conversation_id=x_conversation_id,
+                memory_tag=x_memory_tag,
+            )
+            _first, _stream_err, _gen = await preflight_sse(_gen)
+            if _stream_err is not None:
+                await _gen.aclose()
+                raise HTTPException(
+                    http_status_for_stream_error(_stream_err),
+                    f"Upstream error before streaming began: {_stream_err}",
+                )
+
+            async def _replay_anthropic_stream(_f=_first, _g=_gen):
+                yield _f
+                async for _c in _g:
+                    yield _c
+
             return StreamingResponse(
-                _stream_anthropic(route.litellm_model, messages_list, extra, route.provider.id,
-                                  db, key_record.id, time.monotonic(), max_tokens,
-                                  cache_decision=cache_decision,
-                                  llm_hint=llm_hint,
-                                  api_key_id=key_record.id,
-                                  conversation_id=x_conversation_id,
-                                  memory_tag=x_memory_tag),
+                _replay_anthropic_stream(),
                 media_type="text/event-stream",
                 headers=resp_headers,
             )
