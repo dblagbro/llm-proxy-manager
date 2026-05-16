@@ -324,11 +324,19 @@ without bug-log status updates; this section reconciles.
   `/v1/chat/completions` litellm streaming paths. **Mid-stream** errors
   (after `message_start`) still degrade to an SSE error frame — the 200
   is already committed; that is unavoidable and unchanged.
-- **Not covered**: the hedged streaming path (an opt-in perf feature)
-  still constructs its `StreamingResponse` from a race; pre-flighting a
-  race is a separate change. Tracked as a follow-up.
-- 8 tests in `tests/unit/test_v31013_buglog_fixes.py`.
-- **Status**: fixed in v3.10.13.
+- **Hedged path (v3.10.16)**: the hedged streaming path now pre-flights
+  too — `messages.py` / `completions.py` run `preflight_sse` on the
+  `race_streams` racer, so a pre-stream failure on the winning branch
+  raises a real HTTP status (parity with the non-hedged path).
+- **Remaining hedge-correctness note (not BUG-001)**: `race_streams`
+  treats an error-frame first chunk as a "win" — a fast-failing primary
+  can beat a healthy backup in the race. Pre-flighting surfaces that as
+  an honest error rather than masking it, but making `race_streams`
+  skip error-frame first chunks (so the backup gets its chance) is a
+  separate hedging-correctness improvement, logged for later.
+- 8 tests in `test_v31013_buglog_fixes.py` + 2 hedged-path tests in
+  `test_v31016_buglog_fixes.py`.
+- **Status**: fixed in v3.10.13; hedged path covered in v3.10.16.
 
 ---
 
