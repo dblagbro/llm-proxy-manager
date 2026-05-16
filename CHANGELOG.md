@@ -9,6 +9,78 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v3.10.x — "Harden" milestone
 
+### v3.10.17 — hedge-correctness: race_streams skips error-frame first chunks
+
+The hedge race treated an error-frame first chunk as a "win", so a
+fast-failing primary could beat a healthy backup. `race_streams` now
+classifies the first chunk — a terminal SSE error frame or an empty
+stream counts as a failure, not a win — so a healthy backup wins over a
+failing primary. If both branches fail, primary's failed stream is
+returned so the caller's pre-flight still surfaces a real status.
+
+### v3.10.16 — BUG-001: pre-flight the hedged streaming path
+
+The hedged streaming path built its `StreamingResponse` straight from
+the `race_streams` racer, so a pre-stream failure on the winning branch
+rode back as HTTP 200 + an SSE error frame. Both `/v1/messages` and
+`/v1/chat/completions` hedged paths now pre-flight the racer — parity
+with the non-hedged path.
+
+### v3.10.15 — BUG-032 infra-error observability + BUG-036 dispatch tests
+
+ASGI exceptions and `sqlalchemy.pool` errors logged as bare stdlib
+`ERROR`s, invisible to `activity_log` and the v3.10.4 error-rate alert.
+A logging tap now classifies them (`disconnect` vs `fault`) into the
+`llm_proxy_infra_errors_total` counter; the observability sampler warns
+when genuine faults climb. Also: 8 behavioral tests for the v3.10.9
+`_messages_dispatch.py` extraction (BUG-036).
+
+### v3.10.14 — bug-log sweep: BUG-026 / BUG-029 / BUG-033 / BUG-034
+
+BUG-026: the AI supervisor counted its own classifier calls in the
+provider stats driving its verdicts — `compute_provider_stats` and the
+error-rate sampler now exclude internal-source rows. BUG-029:
+`/lmrh/quotes` for an unregistered model returns a `model_recognized`
+flag + `warnings[]` instead of a silent empty `model_id`. BUG-033:
+tool_result images get a descriptive omission marker. BUG-034:
+`/lmrh/quotes` missing-vs-empty `model` both return 400.
+
+### v3.10.13 — BUG-001 streaming error contract + BUG-037 timeout
+
+The litellm streaming path returned HTTP 200 + a terminal SSE error
+frame on a pre-stream upstream failure — clients checking `status_code`
+saw "success". `preflight_sse` now pulls the first SSE frame before the
+`StreamingResponse` is constructed; a pre-stream error becomes a real
+HTTP status (401/429/502). BUG-037: the non-streaming claude-oauth read
+timeout now scales with `max_tokens` (~90s floor, 300s ceiling).
+
+### v3.10.12 — bug-log sweep: BUG-024 / BUG-028 / BUG-037
+
+BUG-024: after the claude-oauth chain falls through to a litellm
+provider, `extra` now carries the new provider's credentials (was
+reusing the dead OAuth provider's). BUG-028: the cross-family
+translator emits a placeholder for empty assistant turns and uses
+adjacency tracking for `tool_result` → `role:tool`. BUG-037: the
+streaming claude-oauth read timeout is split out and tightened
+300s → 120s (a per-chunk gap, never the total).
+
+### v3.10.11 — BUG-038: caller-memory write-back on the CoT streaming path
+
+`_stream_cot_anthropic` was the one streaming path that never ran
+`maybe_extract_memory_writes`. It now accumulates memory-tool blocks
+from the SSE passthrough and feeds the assembled response through the
+extractor — same contract as the other streaming paths.
+
+### v3.10.10 — bug-log sweep: BUG-023 / BUG-025 / BUG-030 / BUG-034
+
+Post-refactor regression-sweep fixes. BUG-023: `verify_api_key` also
+filters `deleted_at IS NULL` (defence-in-depth — a tombstoned key
+cannot authenticate). BUG-025: a global `JSONDecodeError` handler turns
+a malformed request body into a 400, not a 500. BUG-030: the SPA
+catch-all returns a JSON 404 for `v1/` / `api/` / `cluster/` / `lmrh/`
+namespaces instead of the HTML shell. BUG-034: auth-error wording
+unified across the API-key paths.
+
 ### v3.10.9 — refactor: extract claude-oauth dispatch from messages.py
 
 Incremental maintainability refactor. `messages.py`'s `messages()`
