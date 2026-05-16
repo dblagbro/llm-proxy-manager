@@ -33,6 +33,7 @@ from app.cot.sse import (
 from app.api._completions_streaming import (
     _stream_cot_openai, _stream_openai, _webhook_completion_openai,
 )
+from app.api._messages_streaming import preflight_sse, http_status_for_stream_error
 from app.routing.retry import acompletion_with_retry
 from app.observability.otel import llm_span
 from app.cache.middleware import maybe_store
@@ -528,10 +529,29 @@ async def chat_completions(
             elif wait_ms is not None:
                 observe_hedge_bucket_reject()
 
+            # v3.10.13 BUG-001 — pre-flight so a pre-stream upstream
+            # failure surfaces as a real HTTP status, not a 200 + a
+            # terminal SSE error frame. (Mirrors the /v1/messages path.)
+            _gen = _stream_openai(
+                route.litellm_model, messages_list, extra, route.provider.id,
+                db, key_record.id, time.monotonic(), budget_total,
+                cache_decision=cache_decision,
+            )
+            _first, _stream_err, _gen = await preflight_sse(_gen)
+            if _stream_err is not None:
+                await _gen.aclose()
+                raise HTTPException(
+                    http_status_for_stream_error(_stream_err),
+                    f"Upstream error before streaming began: {_stream_err}",
+                )
+
+            async def _replay_openai_stream(_f=_first, _g=_gen):
+                yield _f
+                async for _c in _g:
+                    yield _c
+
             return StreamingResponse(
-                _stream_openai(route.litellm_model, messages_list, extra, route.provider.id,
-                               db, key_record.id, time.monotonic(), budget_total,
-                               cache_decision=cache_decision),
+                _replay_openai_stream(),
                 media_type="text/event-stream",
                 headers=resp_headers,
             )

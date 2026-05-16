@@ -160,8 +160,9 @@ HTTP probing of every endpoint, code-level regression audit of the
 - **Why it matters**: (1) a single hung request holds its connection — and DB session — for up to 300s; under load this is a plausible **contributor to ARCH-A** (pool exhaustion). (2) the integration suite's revocation test flapped on this, not on auth.
 - **Recommended fix**: (a) fast-fail (400/404 "model not available") when a model id resolves to no capability and no deterministic route; (b) tighten the claude-oauth `read` timeout from 300s to a sane ceiling (e.g. 120s) — needs deliberate review as it touches the streaming hot path. NOT bundled into v3.10.10 (out of the "quick wins" scope).
 - **Partial fix shipped (v3.10.12)**: the claude-oauth timeout is now **split** — `_CLAUDE_OAUTH_STREAM_TIMEOUT` (streaming) has `read=120s`, `_CLAUDE_OAUTH_TIMEOUT` (non-streaming) keeps `read=300s`. Streaming `read` is the gap *between* chunks, so 120s is a safe ceiling that bounds a hung stream to 2 min (was 5) with zero risk to real traffic. Non-streaming `read` is effectively the whole-generation budget, so it is left generous.
-- **Still open**: (a) the unregistered-model fast-fail — a behaviour change (today an unknown model id is substituted, sometimes successfully) that needs a deliberate decision; and the non-streaming hang is still 300s-bounded. Tracked as the remaining BUG-037 work.
-- **Status**: partially fixed in v3.10.12 — streaming hang bounded; fast-fail + non-streaming ceiling still open.
+- **Non-streaming fix shipped (v3.10.13)**: the non-streaming claude-oauth `read` timeout is now **scaled to the request's `max_tokens`** (`_oauth_complete_timeout`) — ~90s for a tiny request (e.g. the unregistered model id that hangs), up to the 300s ceiling for a genuinely large generation. Bounds the non-streaming hang for the observed case with zero risk to real large completions.
+- **Still open**: the request-rejection fast-fail (reject an unknown model id outright in <1s) — model substitution is an intentional feature (an unregistered id often substitutes and succeeds), so rejecting it is a **product decision**, not a defect. Both hang paths are now bounded (streaming ≤120s, non-streaming ≤300s and ~90s for small requests); deferred pending an operator call on whether to keep substitution.
+- **Status**: fixed in v3.10.13 — both hang paths bounded; outright unknown-model rejection left as a product decision.
 
 ### BUG-038 [MEDIUM] CoT streaming path skipped caller-memory write-back
 
@@ -171,20 +172,34 @@ HTTP probing of every endpoint, code-level regression audit of the
 - **Fix shipped (v3.10.11)**: `_stream_cot_anthropic` now accepts `conversation_id`/`memory_tag`, accumulates memory-tool `tool_use` blocks from the SSE passthrough (keyed by content-block index), and feeds the assembled response through `maybe_extract_memory_writes` once the stream completes — same contract as the other two streaming paths. `messages.py` threads the params via `extra_kwargs_for_stream`. 3 behavioral tests in `tests/unit/test_v31011_cot_memory_writeback.py`.
 - **Status**: fixed in v3.10.11
 
-### ARCH-A — UPDATE: leak is actively manifesting
+### ARCH-A — ROOT-CAUSED + FIXED (v3.10.13)
 
-The latent DB connection-pool leak (open since the v3.9.15 sweep) is
-**live**. www01 container logs show, within a 3-hour window, **7×**
-`ERROR:sqlalchemy.pool … Exception terminating connection` /
-`The garbage collector is trying to clean up non-checked-in connection`,
-correlated with `ValueError: Connection closed` from `aiosqlite`. A
-pooled connection is escaping its `async with` and dying mid-use.
-- Tracer (`DB_POOL_TRACE=1`) is now enabled on **all 3 nodes** — www01,
-  www02, and GCP (added to the GCP compose during the v3.10.10 deploy;
-  tracer banner confirmed in the GCP container logs).
-- The `at`-scheduled `/cluster/db-pool-trace` capture (job #3, 2026-05-16
-  15:00 UTC) should catch the per-connection acquisition stacks.
-- **Status**: open — diagnostic toolkit in place; root cause still unknown.
+The latent DB connection-pool leak (open since the v3.9.15 sweep).
+- **Diagnosis (2026-05-16)**: a live `/cluster/db-pool-trace` capture
+  caught **one** connection checked out for **3864s** (~64 min) — and
+  it was **www01-only** (www02 + GCP pools clean). The one thing
+  enabled only on www01 is the **AI provider supervisor**. Root cause:
+  `ai_provider_supervisor.review_one_provider` ran
+  `compute_provider_stats` (which checks out a pooled connection on its
+  ORM query) and then `await classify_with_llm(...)` — an httpx LLM
+  call — **without releasing the connection first**. The session's
+  connection was pinned across every classification call for the whole
+  multi-provider scan; under a slow/stuck await it was held
+  indefinitely. This is exactly the v3.9.15 sweep's hypothesis #2 — "a
+  long-lived task holding a session across a hung await."
+- **Fix shipped (v3.10.13)**: `review_one_provider` now `await db.commit()`s
+  immediately after reading stats and **before** `classify_with_llm`,
+  returning the connection to the pool for the duration of the LLM
+  call (`expire_on_commit=False` keeps `provider` usable). The review
+  write afterward checks out a fresh connection. Behavioral test:
+  `test_v31013_buglog_fixes.py::test_review_one_provider_releases_db_before_llm_call`.
+- **Tooling fix (v3.10.13)**: the pool tracer captured only the last
+  18 stack frames — too shallow (SQLAlchemy's checkout chain is ~16
+  frames), so the trace showed only ORM internals, never the app
+  caller. Bumped to 45 frames so future captures name the path
+  directly.
+- Tracer (`DB_POOL_TRACE=1`) is enabled on all 3 nodes.
+- **Status**: fixed in v3.10.13 — verify pool stays flat >24h post-deploy.
 
 ---
 
@@ -279,21 +294,34 @@ without bug-log status updates; this section reconciles.
   long-held queries are holding the connections. Filed for the next
   recurrence.
 
-### BUG-001 — streaming error contract (DEFERRED)
+### BUG-001 — streaming error contract — FIXED (v3.10.13)
 
 - **Subsystem**: `_messages_streaming.py`, `_completions_streaming.py`
-- **Root cause**: streaming dispatch returns HTTP 200 (the first SSE
-  chunk has already left), then emits a terminal `data: {"type":"error"}`
-  + `message_stop` when upstream fails. Clients that check
-  `r.status_code` see success and an empty stream.
-- **Why deferred**: changing the wire contract requires sign-off from
-  DevinGPT (just adopted streaming write-back in v3.9.11) and hub
-  (considering RMAI adoption). Two viable shapes:
-  1. Pre-stream errors return non-200 BEFORE the first chunk
-  2. Post-stream errors emit a custom `X-Stream-Error: true` header on
-     the SSE response so clients can fail-loud
-- **Plan**: file an RFC, get sign-off, ship in v3.10.x. Until then the
-  inline-SSE-error behavior remains stable (DevinGPT depends on it).
+- **Root cause**: the litellm streaming dispatch returned HTTP 200 (the
+  first SSE chunk had already left), then emitted a terminal
+  `data: {"type":"error"}` + `message_stop` when upstream failed.
+  Clients that check `r.status_code` saw success and an empty stream.
+- **Why it was deferred**: a wire-contract change looked like it needed
+  DevinGPT + hub sign-off. Re-analysis closed that concern: the
+  claude-oauth streaming path **already** pre-flights (returns a real
+  HTTP status on a pre-stream error, since v2.7.6 BUG-018), and DevinGPT
+  routes claude-family traffic through that path — so it already sees
+  shape #1. The litellm path was simply inconsistent.
+- **Fix shipped (v3.10.13)**: `preflight_sse()` pulls the first SSE
+  frame before the `StreamingResponse` is constructed. If that frame is
+  a terminal error event (Anthropic `{"type":"error"}` *or* OpenAI
+  `{"error":...}` shape), the request raises an `HTTPException` with a
+  real status (`http_status_for_stream_error` → 401/429/502) instead of
+  a 200 + error-frame. A successful first frame is replayed, then the
+  rest of the stream. Applied to the plain `/v1/messages` and
+  `/v1/chat/completions` litellm streaming paths. **Mid-stream** errors
+  (after `message_start`) still degrade to an SSE error frame — the 200
+  is already committed; that is unavoidable and unchanged.
+- **Not covered**: the hedged streaming path (an opt-in perf feature)
+  still constructs its `StreamingResponse` from a race; pre-flighting a
+  race is a separate change. Tracked as a follow-up.
+- 8 tests in `tests/unit/test_v31013_buglog_fixes.py`.
+- **Status**: fixed in v3.10.13.
 
 ---
 
