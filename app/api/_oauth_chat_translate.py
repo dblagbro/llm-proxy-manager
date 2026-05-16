@@ -387,6 +387,11 @@ _EMPTY_TOOL_RESULT_PLACEHOLDER = "(no output)"
 # OpenRouter 86% failure rate post-v3.9.1 was traced to one of these
 # two patterns.
 _EMPTY_USER_CONTENT_PLACEHOLDER = "(no input)"
+# v3.10.12 BUG-028(a) — an assistant turn that produced neither text nor
+# tool_use (e.g. only `thinking` blocks, which drop in cross-family
+# translation) would emit {role:assistant, content:null} with no
+# tool_calls, which OpenAI rejects. Emit this placeholder instead.
+_EMPTY_ASSISTANT_CONTENT_PLACEHOLDER = "(no content)"
 
 
 def _tool_result_content_to_str(content: Any) -> str:
@@ -461,8 +466,12 @@ def _anthropic_blocks_to_openai_message_parts(
         msg: dict[str, Any] = {"role": "assistant"}
         if text_parts:
             msg["content"] = "\n".join(text_parts)
-        else:
+        elif tool_calls:
             msg["content"] = None  # OpenAI spec: null allowed when tool_calls present
+        else:
+            # v3.10.12 BUG-028(a): neither text nor tool_use — content:null
+            # with no tool_calls is rejected by OpenAI; use a placeholder.
+            msg["content"] = _EMPTY_ASSISTANT_CONTENT_PLACEHOLDER
         if tool_calls:
             msg["tool_calls"] = tool_calls
         out.append(msg)
@@ -568,27 +577,28 @@ def anthropic_messages_to_openai(
             if joined:
                 out.append({"role": "system", "content": joined})
 
-    # v3.10.0 — pre-scan assistant turns for the tool_use ids they
-    # declare. A tool_result referencing none of them is "orphaned"
-    # (a truncated conversation window beginning mid-tool-exchange) and
-    # is emitted as plain user text by the block translator below,
-    # never as a dangling role:"tool" message.
-    known_tool_use_ids: set = set()
-    for m in body_messages or ():
-        if isinstance(m, dict) and m.get("role") == "assistant":
-            c = m.get("content")
-            if isinstance(c, list):
-                for blk in c:
-                    if (isinstance(blk, dict)
-                            and blk.get("type") == "tool_use"
-                            and blk.get("id")):
-                        known_tool_use_ids.add(blk["id"])
-
+    # v3.10.12 BUG-028(b) — a tool_result is a valid OpenAI role:"tool"
+    # message only if it answers the IMMEDIATELY preceding assistant
+    # turn's tool_calls. Track that turn's tool_use ids and pass them to
+    # the block translator; a tool_result matching no adjacent assistant
+    # call (orphaned OR misordered / cross-turn) degrades to plain user
+    # text instead of producing an OpenAI 400. (Replaces the v3.10.0
+    # global pre-scan, which only caught fully-orphaned ids.)
+    prev_assistant_tool_ids: set = set()
     for m in body_messages or ():
         if not isinstance(m, dict):
             continue
         role = m.get("role") or "user"
         content = m.get("content")
+
+        # tool_use ids declared by THIS turn if it is an assistant
+        # message — the adjacency set the next user message answers.
+        this_assistant_ids: set = set()
+        if role == "assistant" and isinstance(content, list):
+            for blk in content:
+                if (isinstance(blk, dict) and blk.get("type") == "tool_use"
+                        and blk.get("id")):
+                    this_assistant_ids.add(blk["id"])
 
         if isinstance(content, str):
             # Plain text message — straight passthrough.
@@ -600,20 +610,21 @@ def anthropic_messages_to_openai(
                 out.append({"role": role, "content": _EMPTY_USER_CONTENT_PLACEHOLDER})
             else:
                 out.append({"role": role, "content": content})
-            continue
-        if isinstance(content, list):
+        elif isinstance(content, list):
             out.extend(_anthropic_blocks_to_openai_message_parts(
-                role, content, known_tool_use_ids,
+                role, content,
+                prev_assistant_tool_ids if role == "user" else None,
             ))
-            continue
-        # v3.9.16 — unknown content shape: use placeholder for user role
-        # (empty string would 400 on OpenAI); empty string for other
-        # roles (assistant accepts null/empty when tool_calls present;
-        # system can be empty).
-        if role == "user":
-            out.append({"role": role, "content": _EMPTY_USER_CONTENT_PLACEHOLDER})
         else:
-            out.append({"role": role, "content": ""})
+            # v3.9.16 — unknown content shape: placeholder for user role
+            # (empty string would 400 on OpenAI); empty string for other
+            # roles (assistant accepts null/empty; system can be empty).
+            if role == "user":
+                out.append({"role": role, "content": _EMPTY_USER_CONTENT_PLACEHOLDER})
+            else:
+                out.append({"role": role, "content": ""})
+
+        prev_assistant_tool_ids = this_assistant_ids if role == "assistant" else set()
 
     return out
 

@@ -46,7 +46,8 @@ HTTP probing of every endpoint, code-level regression audit of the
 - **Evidence**: code audit of the v3.9.16 baseline confirms the same ordering — **pre-existing defect, NOT a v3.10.9 regression**. The v3.10.9 docstring ("caller falls through to the litellm path with that route") reads as if the fallthrough is sound, masking it.
 - **Likely cause**: `extra`/`system`/`tools` computed before the dispatch branch and never recomputed when `route` changes.
 - **Recommended fix**: after `dispatch_claude_oauth_chain` returns, if `route` changed, rebuild `extra` (and `system`/`tools`) from the new route. Needs runtime confirmation — rare path (requires all OAuth providers to fail auth).
-- **Status**: open (likely bug — confirm at runtime)
+- **Fix shipped (v3.10.12)**: `messages.py` captures `_route_pre_dispatch` before the dispatch call; if `route` changed afterward it pops the old route's `litellm_kwargs` keys from `extra` and applies the new route's — so the litellm dispatch uses the fallthrough provider's credentials/base_url/headers. (`system`/`tools` are request-derived and unchanged by a route swap, so they don't need rebuilding.)
+- **Status**: fixed in v3.10.12 — rare path; runtime confirmation still recommended (deliberately 401 every claude-oauth provider).
 
 ### BUG-025 [MEDIUM] Malformed / empty JSON body → bare HTTP 500 on `/v1/messages` + `/v1/chat/completions`
 
@@ -76,7 +77,9 @@ HTTP probing of every endpoint, code-level regression audit of the
 - **Repro**: `pytest tests/integration/test_manual_override_flow.py::test_release_now_also_enables_v386`
 - **Actual**: deterministic failure (re-ran twice). Not yet root-caused — could be a v3.8.6 behaviour regression or environmental (depends on current provider override state on the cluster).
 - **Recommended fix**: triage — capture actual vs expected; determine regression vs environment.
-- **Status**: open (needs triage)
+- **Triage (v3.10.12)**: **environmental, not a product regression.** The test asserted a pre-staged precondition (`Devin-Anthropic-Max-VG` = `enabled=False` + locked) that it never established itself, and on success left that *live production* provider disabled. The provider is currently `enabled=True` (correctly), so the precondition assertion failed deterministically. The v3.8.6 release feature itself is fine.
+- **Fix shipped (v3.10.12)**: `test_release_now_also_enables_v386` now self-stages its own precondition (toggles the canary to disabled+locked if needed) and restores the provider's **original** state at the end — no external-state dependency, no destructive side-effect. Cannot be run in the no-browser QA env; **pending verification on the next www1 Playwright run**.
+- **Status**: fixed (test hardened) in v3.10.12 — pending Playwright re-run on www1.
 
 ### BUG-028 [MEDIUM] Cross-family translator still mishandles two message shapes
 
@@ -84,7 +87,8 @@ HTTP probing of every endpoint, code-level regression audit of the
 - **Detail**: beyond the v3.10.0 fix — (a) an Anthropic assistant block with no text and no tool_use translates to `{"role":"assistant","content":null}` with no `tool_calls`, which OpenAI rejects; (b) `tool_result` → `role:"tool"` is emitted without verifying it *immediately follows* the matching assistant `tool_calls` — a misordered (not orphaned) pair still produces an OpenAI 400. The `known_tool_use_ids` pre-scan only catches fully-orphaned ids.
 - **Evidence**: code audit.
 - **Recommended fix**: emit a placeholder for empty assistant blocks; validate tool-message adjacency (or reorder) in `anthropic_messages_to_openai`. Add regression tests with both shapes.
-- **Status**: open
+- **Fix shipped (v3.10.12)**: (a) an assistant turn with neither text nor tool_use now emits a `_EMPTY_ASSISTANT_CONTENT_PLACEHOLDER` string instead of `content:null` + no `tool_calls`. (b) the global `known_tool_use_ids` pre-scan is replaced by **adjacency tracking** — a `tool_result` becomes a `role:"tool"` message only if its id was declared by the *immediately preceding* assistant turn; orphaned OR misordered/cross-turn `tool_result`s degrade to plain user text. 5 regression tests in `tests/unit/test_v31012_buglog_fixes.py`.
+- **Status**: fixed in v3.10.12
 
 ### BUG-029 [MEDIUM] `/lmrh/quotes?model=<unknown>` returns 200 with empty `model_id` instead of an unknown-model error
 
@@ -155,7 +159,9 @@ HTTP probing of every endpoint, code-level regression audit of the
 - **Likely cause**: with no capability rows the router substitutes a provider; `_CLAUDE_OAUTH_TIMEOUT` carries a **300s read timeout** (`httpx.Timeout(connect=5.0, read=300.0, write=10.0, pool=5.0)`). If the substitute is a claude-oauth provider and the upstream hangs on the unrecognised model, the proxy can wait up to 5 minutes before failing.
 - **Why it matters**: (1) a single hung request holds its connection — and DB session — for up to 300s; under load this is a plausible **contributor to ARCH-A** (pool exhaustion). (2) the integration suite's revocation test flapped on this, not on auth.
 - **Recommended fix**: (a) fast-fail (400/404 "model not available") when a model id resolves to no capability and no deterministic route; (b) tighten the claude-oauth `read` timeout from 300s to a sane ceiling (e.g. 120s) — needs deliberate review as it touches the streaming hot path. NOT bundled into v3.10.10 (out of the "quick wins" scope).
-- **Status**: open
+- **Partial fix shipped (v3.10.12)**: the claude-oauth timeout is now **split** — `_CLAUDE_OAUTH_STREAM_TIMEOUT` (streaming) has `read=120s`, `_CLAUDE_OAUTH_TIMEOUT` (non-streaming) keeps `read=300s`. Streaming `read` is the gap *between* chunks, so 120s is a safe ceiling that bounds a hung stream to 2 min (was 5) with zero risk to real traffic. Non-streaming `read` is effectively the whole-generation budget, so it is left generous.
+- **Still open**: (a) the unregistered-model fast-fail — a behaviour change (today an unknown model id is substituted, sometimes successfully) that needs a deliberate decision; and the non-streaming hang is still 300s-bounded. Tracked as the remaining BUG-037 work.
+- **Status**: partially fixed in v3.10.12 — streaming hang bounded; fast-fail + non-streaming ceiling still open.
 
 ### BUG-038 [MEDIUM] CoT streaming path skipped caller-memory write-back
 

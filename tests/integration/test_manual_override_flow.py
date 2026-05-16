@@ -72,18 +72,35 @@ def _find_provider_id(page: Page, name: str) -> str:
 def test_release_now_also_enables_v386(page: Page):
     """Post-v3.8.6: clicking 'Release & re-enable all' should release
     the lock AND set enabled=True — matching the operator's intuition.
-    Leaves the canary in disabled+locked state at the end so the
-    operator's UI state is preserved.
+
+    v3.10.12 (BUG-027): this test now **self-stages** its own
+    precondition and **restores the provider's original state** at the
+    end. The earlier version asserted a pre-staged external state
+    (`enabled=False, locked`) and, on success, left a live production
+    provider disabled — both made it environmentally fragile (it failed
+    deterministically once the canary drifted back to enabled).
     """
     login(page)
     pid = _find_provider_id(page, TARGET_PROVIDER_NAME)
     print(f"\n>>> target provider id = {pid}")
 
-    initial = _provider_state_via_api(page, pid)
-    print(f">>> STEP 1 initial: enabled={initial['enabled']} "
-          f"manual_override_active={initial['manual_override_active']}")
-    assert initial["enabled"] is False, "expected disabled at start"
-    assert initial["manual_override_active"] is True, "expected lock at start"
+    # Capture the provider's real state so we can restore it afterward.
+    orig = _provider_state_via_api(page, pid)
+    print(f">>> original state: enabled={orig['enabled']} "
+          f"manual_override_active={orig['manual_override_active']}")
+
+    # Self-stage the precondition: the release banner only shows when the
+    # provider is disabled + locked (manual override). The toggle
+    # endpoint, applied to an enabled provider, sets enabled=False AND
+    # manual_override_until=indefinite. Stage it only if not already there.
+    staged = orig
+    if staged["enabled"] or not staged["manual_override_active"]:
+        page.request.patch(f"{BASE_URL}/api/providers/{pid}/toggle")
+        time.sleep(1)
+        staged = _provider_state_via_api(page, pid)
+    assert staged["enabled"] is False and staged["manual_override_active"] is True, (
+        "could not stage canary into disabled+locked — precondition setup failed"
+    )
 
     page.goto(f"{BASE_URL}/providers")
     page.wait_for_load_state("networkidle")
@@ -102,12 +119,12 @@ def test_release_now_also_enables_v386(page: Page):
     release_button.first.click()
     confirm_button = page.get_by_role("button", name="Yes, release & enable")
     expect(confirm_button).to_be_visible(timeout=5_000)
-    print(">>> STEP 3 click 'Yes, release & enable'")
+    print(">>> click 'Yes, release & enable'")
     confirm_button.click()
     time.sleep(3)
 
     after_release = _provider_state_via_api(page, pid)
-    print(f">>> STEP 4 after release: enabled={after_release['enabled']} "
+    print(f">>> after release: enabled={after_release['enabled']} "
           f"manual_override_active={after_release['manual_override_active']}")
     # The v3.8.6 fix: lock cleared AND provider re-enabled
     assert after_release["manual_override_active"] is False, "release should clear lock"
@@ -117,15 +134,15 @@ def test_release_now_also_enables_v386(page: Page):
     )
     print(">>> ✅ FIX CONFIRMED: provider re-enabled after release click")
 
-    # Restore canary state: disabled+locked. The toggle endpoint sets
-    # enabled=False AND manual_override_until=indefinite on Disable click.
-    r = page.request.patch(f"{BASE_URL}/api/providers/{pid}/toggle")
-    print(f">>> STEP 5 disable toggle: {r.json()}")
-    assert r.json()["enabled"] is False
-    assert r.json()["manual_override_active"] is True
-
+    # Restore the provider to its ORIGINAL state — never leave a live
+    # provider disabled as a test side-effect. After the release flow it
+    # is enabled+unlocked; if it started disabled, toggle it back.
+    if not orig["enabled"]:
+        page.request.patch(f"{BASE_URL}/api/providers/{pid}/toggle")
+        time.sleep(1)
     final = _provider_state_via_api(page, pid)
-    print(f">>> FINAL canary state: enabled={final['enabled']} "
+    print(f">>> restored state: enabled={final['enabled']} "
           f"manual_override_active={final['manual_override_active']}")
-    assert final["enabled"] is False
-    assert final["manual_override_active"] is True
+    assert final["enabled"] is orig["enabled"], (
+        "provider was not restored to its original enabled state"
+    )
