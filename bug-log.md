@@ -123,7 +123,8 @@ HTTP probing of every endpoint, code-level regression audit of the
 - **Area**: observability — Starlette middleware errors, `sqlalchemy.pool` errors
 - **Detail**: client-disconnect `Exception in ASGI application` (CancelledError / "Connection closed") and `sqlalchemy.pool` GC errors log at full-traceback stdlib `ERROR:` level. They (a) are indistinguishable from genuine ASGI faults when scanning logs, and (b) never reach `activity_log`, so the v3.10.4 error-rate alert is **blind** to them — a pool-exhaustion incident would not alert until it caused downstream request-level `severity=error` failures.
 - **Recommended fix**: route ASGI exceptions through a handler that classifies client-disconnect as `warning` and real faults as `error`; emit a metric/alert hook for `sqlalchemy.pool` errors.
-- **Status**: open
+- **Fix shipped (v3.10.15)**: a `logging.Handler` (`app/observability/infra_error_tap.py`) is attached to the `sqlalchemy.pool` (WARNING+) and `uvicorn.error` (ERROR+) loggers. It does not re-log — it classifies each record (`fault_class=disconnect` for benign client-disconnects vs `fault` for genuine faults) and increments `llm_proxy_infra_errors_total{source,fault_class}`. Infra errors are now visible on `/metrics`, and the observability sampler's new `_sample_infra_errors()` logs a warning when genuine faults climb ≥5 per 30s tick. The handler only touches an in-memory counter (no DB write from a pool-error context).
+- **Status**: fixed in v3.10.15
 
 ### BUG-033 [LOW] Orphan `tool_result` with image content silently drops the image
 
@@ -153,7 +154,8 @@ HTTP probing of every endpoint, code-level regression audit of the
 - **Area**: `tests/unit/test_v3109_messages_dispatch_extract.py`
 - **Detail**: the v3.10.9 extraction moved the proxy's deepest hot path (claude-oauth chain walk, 401-refresh fallback, streaming pre-flight, empty-stream→502, network-error→next-provider, fallback-exhaustion) into `_messages_dispatch.py` (256 lines). The test file has 4 tests — 3 are source-grep wiring checks, 1 is behavioral but exercises only the trivial "route is not claude-oauth → fall through" path. **Zero behavioral coverage** of any dispatch branch. A "behaviour-preserving move" with no behavioural assertions cannot prove behaviour was preserved.
 - **Recommended fix**: add mocked-chain tests for: 401→refresh→retry, network-error→next-provider, empty-stream→502, fallback-exhaustion→HTTPException, streaming pre-flight failure.
-- **Status**: open
+- **Fix shipped (v3.10.15)**: `tests/unit/test_v31015_buglog_fixes.py` adds 8 genuine behavioral tests for `dispatch_claude_oauth_chain` — non-oauth fall-through, oauth success→JSONResponse, 401→fallover, network-error→fallover, fallback-exhaustion→HTTPException, streaming pre-flight HTTP error→HTTPException, empty-stream→502, streaming success→StreamingResponse. The cache/disclosure/memory collaborators are mocked so each test exercises the chain-walk logic in isolation. Every dispatch branch now has a behavioral assertion.
+- **Status**: fixed in v3.10.15
 
 ### BUG-037 [HIGH] `/v1/messages` for an unregistered model id can hang ~40s+ (300s server-side ceiling)
 

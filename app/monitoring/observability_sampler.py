@@ -152,6 +152,40 @@ async def _sample_error_rate() -> None:
         logger.debug(f"observability_sampler.error_rate err={e!r}")
 
 
+_infra_fault_baseline: "float | None" = None
+
+
+async def _sample_infra_errors() -> None:
+    """v3.10.15 BUG-032 — surface a rising count of genuine ASGI / DB-pool
+    faults. The infra-error tap counts them on ``llm_proxy_infra_errors_total``;
+    this turns a sustained climb into a log warning so a pool-exhaustion or
+    ASGI-crash incident is noticed even though those errors never reach
+    ``activity_log`` (so the v3.10.4 error-rate alert cannot see them).
+    Benign client-disconnects (``fault_class="disconnect"``) are ignored."""
+    global _infra_fault_baseline
+    try:
+        from app.observability.prometheus import INFRA_ERRORS_TOTAL
+        faults = 0.0
+        for metric in INFRA_ERRORS_TOTAL.collect():
+            for s in metric.samples:
+                if s.name.endswith("_total") and s.labels.get("fault_class") == "fault":
+                    faults += s.value
+        if _infra_fault_baseline is None:
+            _infra_fault_baseline = faults
+            return
+        delta = faults - _infra_fault_baseline
+        _infra_fault_baseline = faults
+        if delta >= 5:
+            logger.warning(
+                "observability_sampler.infra_faults_climbing delta=%.0f "
+                "total=%.0f in ~%ds — check ASGI / DB-pool health "
+                "(llm_proxy_infra_errors_total)",
+                delta, faults, _INTERVAL_SEC,
+            )
+    except Exception as e:
+        logger.debug(f"observability_sampler.infra_errors err={e!r}")
+
+
 async def _loop() -> None:
     global _tick
     # Boot delay so we don't fight startup migrations / first scrape.
@@ -159,6 +193,7 @@ async def _loop() -> None:
     while True:
         await _sample_pool()
         await _sample_scrape_freshness()
+        await _sample_infra_errors()
         _tick += 1
         if _tick % _ERROR_RATE_CHECK_EVERY == 0:
             await _sample_error_rate()
