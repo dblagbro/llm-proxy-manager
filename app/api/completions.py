@@ -523,8 +523,26 @@ async def chat_completions(
                     racer, winner = await race_streams(_primary, _backup, wait_ms)
                     observe_hedge_win(winner)
                     resp_headers["X-Hedged-Winner"] = winner
+                    # v3.10.16 BUG-001 — pre-flight the hedged stream so a
+                    # pre-stream upstream failure on the winning branch
+                    # surfaces as a real HTTP status, not a 200 + SSE
+                    # error frame (parity with the non-hedged path).
+                    _hfirst, _herr, racer = await preflight_sse(racer)
+                    if _herr is not None:
+                        await racer.aclose()
+                        raise HTTPException(
+                            http_status_for_stream_error(_herr),
+                            f"Upstream error before streaming began: {_herr}",
+                        )
+
+                    async def _replay_hedged_stream(_f=_hfirst, _g=racer):
+                        yield _f
+                        async for _c in _g:
+                            yield _c
+
                     return StreamingResponse(
-                        racer, media_type="text/event-stream", headers=resp_headers,
+                        _replay_hedged_stream(),
+                        media_type="text/event-stream", headers=resp_headers,
                     )
             elif wait_ms is not None:
                 observe_hedge_bucket_reject()
