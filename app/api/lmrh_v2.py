@@ -418,7 +418,10 @@ async def get_provider_one(
 async def get_quotes(
     request: Request,
     response: Response,
-    model: str,
+    # v3.10.14 BUG-034 — Optional so a *missing* `model` and an *empty*
+    # `model=` both hit the same `if not model` -> 400 below (was 422
+    # vs 400 — two shapes for one logical failure).
+    model: Optional[str] = None,
     hint: Optional[str] = None,
     has_tools: bool = False,
     has_images: bool = False,
@@ -546,15 +549,32 @@ async def get_quotes(
             "samples": samples,
         })
 
+    # v3.10.14 BUG-029 — flag a model id that matches no registered
+    # capability. /lmrh/quotes mirrors /v1/messages, which substitutes an
+    # unknown model rather than rejecting it (operator decision under
+    # BUG-037) — so the substituted candidates are still returned, but a
+    # caller pre-flighting a typo now gets an explicit signal instead of
+    # a silent empty model_id.
+    model_recognized = any(
+        model == m.model_id or model in (getattr(m, "aliases", None) or [])
+        for p in visible.values() for m in p.models
+    )
+    warnings = [] if model_recognized else [
+        f"model '{model}' is not a registered model id — candidates below "
+        f"reflect proxy substitution / auto-routing, not an exact match"
+    ]
+
     return {
         "version": "2.0",
         "as_of": cur.as_of.isoformat() if cur else None,
         "requested": {
             "model": model,
+            "model_recognized": model_recognized,
             "hint": hint,
             "has_tools": has_tools,
             "has_images": has_images,
         },
+        "warnings": warnings,
         "candidates": candidates,
     }
 

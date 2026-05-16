@@ -69,7 +69,8 @@ HTTP probing of every endpoint, code-level regression audit of the
 - **Actual**: **no code anywhere reads `X-Internal-Source`** — grep of `messages.py`, `_request_pipeline.py`, `ai_provider_supervisor_stats.py` finds zero consumers. The classifier calls land in `activity_log` as ordinary `llm_request` rows and are counted by both `compute_provider_stats` and the v3.10.4 error-rate sampler.
 - **Evidence**: code audit. Low volume today (suggest-only, www01, 30-min cadence) but a failing classifier model would self-pollute the very stats driving its verdicts — and inflate the error-rate alert.
 - **Recommended fix**: filter `event_meta`/header `X-Internal-Source` out of `compute_provider_stats` and `_sample_error_rate`'s queries; OR tag those rows with a distinct `event_type`.
-- **Status**: open
+- **Fix shipped (v3.10.14)**: the write side was already wired — `main.py` reads the `X-Internal-Source` header into a request ContextVar and `record_outcome` records `event_meta.internal_source`. The gap was purely the read side: `compute_provider_stats` and `observability_sampler._sample_error_rate` now **skip** rows where `event_meta.internal_source` is set (same pattern `ai_rate_limiter` already used). The supervisor no longer counts its own classifier calls against the provider it judges, and internal traffic no longer feeds the error-rate alert.
+- **Status**: fixed in v3.10.14
 
 ### BUG-027 [MEDIUM] Integration test `test_release_now_also_enables_v386` fails deterministically
 
@@ -97,7 +98,8 @@ HTTP probing of every endpoint, code-level regression audit of the
 - **Expected**: 4xx / explicit "unknown model" so a caller pre-flighting a typo gets a true signal
 - **Actual**: 200 with `candidates:[{"model_id":"","score":888.0,...}]` — silently falls back to auto-routing the default provider.
 - **Recommended fix**: when no capability matches the requested model, return 404/422 with a clear message.
-- **Status**: open
+- **Fix shipped (v3.10.14)**: `/lmrh/quotes` does **not** 404 — that would make the pre-flight lie, since `/v1/messages` *substitutes* an unknown model (operator decision under BUG-037). Instead the response now carries `requested.model_recognized` (bool) and a `warnings[]` list — an unregistered model id gets an explicit "not a registered model id — candidates reflect substitution/auto-routing" signal while still returning the substituted candidates.
+- **Status**: fixed in v3.10.14
 
 ### BUG-030 [LOW] `GET` on POST-only LLM endpoints returns 200 + SPA HTML instead of 405
 
@@ -128,20 +130,23 @@ HTTP probing of every endpoint, code-level regression audit of the
 - **Area**: `app/api/_oauth_chat_translate.py::_tool_result_content_to_str`
 - **Detail**: an orphaned `tool_result` whose content is an image block is flattened to the literal `"[image]"` — the image payload is silently discarded with no caller-visible signal.
 - **Recommended fix**: at minimum document it; ideally translate the image to an OpenAI `image_url` part.
-- **Status**: open
+- **Fix shipped (v3.10.14)**: `_tool_result_content_to_str` now emits a descriptive marker — `[image omitted: <media_type> — OpenAI tool-role messages cannot carry image content]` — instead of a silent `[image]`. The image is still dropped (OpenAI `role:"tool"` messages genuinely cannot carry image parts), but it is now **visible** to the caller, not silent. Full preservation (promoting the tool_result to a user-message image part) is a larger change, tracked separately.
+- **Status**: fixed in v3.10.14 (made visible; full image preservation deferred)
 
 ### BUG-034 [LOW] Inconsistent auth-error wording + `/lmrh/quotes` status inconsistency
 
 - **Detail**: no-key responses say `"Missing API key"` on `/v1/messages` but `"missing api key"` (lowercase) on `/v1/models` and `/lmrh/*` — two `verify_api_key`/`resolve_api_key_dep` paths with divergent copy. `/lmrh/quotes` with a missing `model` → 422; with empty `model=` → 400 — same logical failure, two shapes; the `if not model` branch is partly dead (FastAPI rejects a missing required query first).
 - **Recommended fix**: unify the auth-error string; pick one status for missing/empty `model`.
 - **Fix shipped (v3.10.10)**: `resolve_api_key_dep` now raises `"Missing API key"` (was lowercase `"missing api key"`) — matches `verify_api_key`, so `/v1/models` and `/lmrh/*` no-key responses are consistent with `/v1/messages`.
-- **Status**: partially fixed in v3.10.10 — auth-error wording unified; the `/lmrh/quotes` missing-vs-empty `model` status-shape inconsistency is unchanged (still open).
+- **Fix shipped (v3.10.14)**: `/lmrh/quotes` `model` param is now `Optional[str] = None` — a *missing* `model` and an *empty* `model=` both hit the same `if not model` → **400**, the one consistent shape (was 422 vs 400).
+- **Status**: fixed in v3.10.14 — auth wording unified (v3.10.10) + `/lmrh/quotes` status shape unified (v3.10.14). Closed.
 
 ### BUG-035 [enhancement] `/v1/embeddings` Pydantic `list[float]` vs base64-`str` serializer warnings
 
 - **Detail**: every `/v1/embeddings` call logs `PydanticSerializationUnexpectedValue` — the `embedding` field is declared `list[float]` but receives a base64 `str`. Response is 200; this is per-request log noise from a response-model mismatch.
 - **Recommended fix**: widen the response model to `list[float] | str` (or split by `encoding_format`).
-- **Status**: open
+- **Re-assessment (v3.10.14)**: the tractable part is **already done** — v3.7.19 (BUG-021) made the embeddings handler call `result.model_dump(warnings="none")` and decode base64 vectors to `list[float]`. The proxy's own route has no `response_model`, so it emits no warning. Any residual `PydanticSerializationUnexpectedValue` originates **inside litellm's** `EmbeddingResponse` serialization — not our code; not fixable without patching litellm. No further proxy-side change is warranted.
+- **Status**: wont-fix (proxy side) — tractable part shipped in v3.7.19; residual is litellm-internal.
 
 ### BUG-036 [enhancement / hardening] `_messages_dispatch.py` (v3.10.9 refactor) has no behavioral test coverage
 
@@ -161,8 +166,8 @@ HTTP probing of every endpoint, code-level regression audit of the
 - **Recommended fix**: (a) fast-fail (400/404 "model not available") when a model id resolves to no capability and no deterministic route; (b) tighten the claude-oauth `read` timeout from 300s to a sane ceiling (e.g. 120s) — needs deliberate review as it touches the streaming hot path. NOT bundled into v3.10.10 (out of the "quick wins" scope).
 - **Partial fix shipped (v3.10.12)**: the claude-oauth timeout is now **split** — `_CLAUDE_OAUTH_STREAM_TIMEOUT` (streaming) has `read=120s`, `_CLAUDE_OAUTH_TIMEOUT` (non-streaming) keeps `read=300s`. Streaming `read` is the gap *between* chunks, so 120s is a safe ceiling that bounds a hung stream to 2 min (was 5) with zero risk to real traffic. Non-streaming `read` is effectively the whole-generation budget, so it is left generous.
 - **Non-streaming fix shipped (v3.10.13)**: the non-streaming claude-oauth `read` timeout is now **scaled to the request's `max_tokens`** (`_oauth_complete_timeout`) — ~90s for a tiny request (e.g. the unregistered model id that hangs), up to the 300s ceiling for a genuinely large generation. Bounds the non-streaming hang for the observed case with zero risk to real large completions.
-- **Still open**: the request-rejection fast-fail (reject an unknown model id outright in <1s) — model substitution is an intentional feature (an unregistered id often substitutes and succeeds), so rejecting it is a **product decision**, not a defect. Both hang paths are now bounded (streaming ≤120s, non-streaming ≤300s and ~90s for small requests); deferred pending an operator call on whether to keep substitution.
-- **Status**: fixed in v3.10.13 — both hang paths bounded; outright unknown-model rejection left as a product decision.
+- **Operator decision (2026-05-16)**: keep model substitution — do **not** add an outright unknown-model rejection. When a substituted model can't support a requested feature (e.g. native tool calling) the proxy already emulates it via prompt modification / prompt add-ins; monitor that emulation path and fix issues as they surface. Both hang paths are bounded (streaming ≤120s, non-streaming ≤300s, ~90s for small requests), which was the real defect.
+- **Status**: fixed in v3.10.13 — hang paths bounded; substitution kept by operator decision. Closed.
 
 ### BUG-038 [MEDIUM] CoT streaming path skipped caller-memory write-back
 
