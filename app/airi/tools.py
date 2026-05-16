@@ -54,6 +54,18 @@ TOOL_SCHEMAS = [
         },
     },
     {
+        "name": "get_rulesets",
+        "description": "List the saved AIRI rule-sets — their names, which one is "
+                       "the Default, and which is currently active.",
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "get_active_rules",
+        "description": "The currently active rule-set and all of its rules — the "
+                       "thresholds that govern the AI Provider Supervisor.",
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
         "name": "explain_routing",
         "description": "A structured explanation of how the proxy's routing actually "
                        "works — priority ordering, LMRH hints, the circuit breaker, the "
@@ -79,6 +91,10 @@ async def run_tool(name: str, args: dict) -> dict:
             return _get_routing_config()
         if name == "get_recent_routing":
             return await _get_recent_routing(_clamp_int(args.get("limit"), 20, 1, 100))
+        if name == "get_rulesets":
+            return await _get_rulesets()
+        if name == "get_active_rules":
+            return await _get_active_rules()
         if name == "explain_routing":
             return _explain_routing()
         return {"error": f"unknown tool: {name}"}
@@ -161,6 +177,18 @@ async def _get_recent_routing(limit: int) -> dict:
         for created_at, pid, severity in rows
     ]
     return {"count": len(recent), "recent": recent}
+
+
+async def _get_rulesets() -> dict:
+    from app.airi import rules
+    async with AsyncSessionLocal() as db:
+        return {"rulesets": await rules.list_rulesets(db)}
+
+
+async def _get_active_rules() -> dict:
+    from app.airi import rules
+    async with AsyncSessionLocal() as db:
+        return await rules.get_active_ruleset(db)
 
 
 def _explain_routing() -> dict:
