@@ -242,3 +242,47 @@ async def airi_revert_proposal(
     if "error" in result:
         return JSONResponse(result, status_code=400)
     return result
+
+
+# ── v4.0 milestone 4 — automation kill switch + scheduled-rule registry ───────
+
+@router.get("/automation")
+async def airi_get_automation(
+    _: AdminUser = Depends(require_admin),
+    __: None = Depends(_require_airi_enabled),
+) -> dict:
+    """Current state of the scheduled-rule automation kill switch."""
+    from app.airi import evaluator
+    return {
+        "automation_enabled": evaluator.is_automation_enabled(),
+        "evaluator_interval_sec": int(settings.airi_evaluator_interval_sec),
+    }
+
+
+@router.post("/automation")
+async def airi_set_automation(
+    request: Request,
+    user: AdminUser = Depends(require_admin),
+    __: None = Depends(_require_airi_enabled),
+):
+    """Flip the automation kill switch. Body: ``{"enabled": <bool>}``."""
+    from app.airi import evaluator
+    body = await request.json()
+    enabled = bool(body.get("enabled")) if isinstance(body, dict) else False
+    evaluator.set_automation(enabled)
+    logger.info("airi.automation set enabled=%s by=%s", enabled, user.username)
+    return {"ok": True, "automation_enabled": enabled}
+
+
+@router.post("/rules/{rule_id}/toggle")
+async def airi_toggle_rule(
+    rule_id: str,
+    _: AdminUser = Depends(require_admin),
+    __: None = Depends(_require_airi_enabled),
+    db: AsyncSession = Depends(get_db),
+):
+    """Enable / disable a scheduled or monitor rule."""
+    result = await rules.toggle_rule(db, rule_id)
+    if "error" in result:
+        return JSONResponse(result, status_code=404)
+    return result

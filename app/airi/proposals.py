@@ -204,6 +204,71 @@ async def create_rule_change(db, *, rule_id: str, value, mode: str,
     return await _finish_create(db, prop, mode, created_by)
 
 
+_RULE_TYPES = {"conditional", "monitor"}
+
+
+async def create_add_rule(db, *, rule_type: str, name: str, provider_ref: str,
+                          window_min, op: str, threshold, cadence_min,
+                          action_hours, action_mode: str,
+                          created_by: str, prompt: str) -> dict:
+    """Create an add-rule proposal — a new scheduled (conditional) or monitor
+    rule for the active rule-set. Adding automation is ALWAYS an explicit
+    operator approval; this never auto-applies."""
+    if rule_type not in _RULE_TYPES:
+        return {"error": f"rule_type must be one of {sorted(_RULE_TYPES)}"}
+    name = (name or "").strip()
+    if not name:
+        return {"error": "the rule needs a name"}
+    if op not in (">", ">=", "<", "<="):
+        return {"error": "op must be one of > >= < <="}
+    p = await _resolve_provider(db, provider_ref)
+    if p is None:
+        return {"error": f"no provider matches '{provider_ref}'"}
+    try:
+        window_min = max(1, int(window_min))
+        cadence_min = max(1, int(cadence_min))
+        threshold = float(threshold)
+    except (TypeError, ValueError):
+        return {"error": "window_min, cadence_min and threshold must be numbers"}
+
+    condition = {"metric": "error_rate_pct", "provider_id": p.id,
+                 "provider_name": p.name, "window_min": window_min,
+                 "op": op, "value": threshold}
+    spec = {"cadence_min": cadence_min, "condition": condition}
+    am = action_mode if action_mode in ("suggest", "auto_apply") else "suggest"
+    if rule_type == "conditional":
+        try:
+            hrs = max(1, int(action_hours or 1))
+        except (TypeError, ValueError):
+            return {"error": "action_hours must be an integer"}
+        spec["action"] = {"type": "auto_skip", "hours": hrs}
+        verb = (f"auto-skip {p.name} for {hrs}h "
+                + ("(auto-apply)" if am == "auto_apply"
+                   else "(proposes a change for you to approve)"))
+    else:
+        verb = "notify you"
+
+    impact = {
+        "kind": "add_rule",
+        "summary": (f"New {rule_type} rule '{name}': every {cadence_min} min, "
+                    f"check {p.name}'s error rate over the last {window_min} min; "
+                    f"if it is {op} {threshold}%, {verb}."),
+        "warnings": [],
+    }
+    prop = AiriProposal(
+        id=secrets.token_hex(8), kind="add_rule", target_id="",
+        target_label=name,
+        change={"rule_type": rule_type, "name": name, "spec": spec,
+                "action_mode": am},
+        dry_run=impact, status="pending",
+        created_by=created_by, created_via_prompt=prompt,
+    )
+    db.add(prop)
+    await db.commit()
+    # Adding automation is always an explicit approval — never auto-apply.
+    return await _finish_create(db, prop, "suggest", created_by)
+
+
 async def _finish_create(db, prop: AiriProposal, mode: str, created_by: str) -> dict:
     """Shared tail of create_* — return the proposal, auto-applying when the
     operator asked for it (mode == 'apply')."""
@@ -279,6 +344,22 @@ async def apply_proposal(db, proposal_id: str, applied_by: str) -> dict:
         spec = dict(r.spec or {})
         spec["value"] = int(prop.change["to"])
         r.spec = spec
+    elif prop.kind == "add_rule":
+        from app.airi import rules as _rules
+        active = await _rules.get_active_ruleset(db)
+        rs_id = active.get("id")
+        if not rs_id:
+            return {"error": "no active rule-set to add the rule to"}
+        ch = prop.change or {}
+        new_rule = AiriRule(
+            id=secrets.token_hex(8), ruleset_id=rs_id, name=ch.get("name"),
+            kind=ch.get("rule_type"), spec=ch.get("spec") or {},
+            mode=ch.get("action_mode", "suggest"), enabled=True,
+            created_by=prop.created_by, created_via_prompt=prop.created_via_prompt,
+        )
+        db.add(new_rule)
+        await db.flush()
+        prop.prior_state = {"created_rule_id": new_rule.id}
     else:
         return {"error": f"unknown proposal kind '{prop.kind}'"}
 
@@ -328,6 +409,12 @@ async def revert_proposal(db, proposal_id: str, decided_by: str) -> dict:
         if r is None:
             return {"error": "the rule no longer exists"}
         r.spec = dict(prior.get("spec") or {})
+    elif prop.kind == "add_rule":
+        rid = prior.get("created_rule_id")
+        if rid:
+            r = await db.get(AiriRule, rid)
+            if r is not None:
+                await db.delete(r)
 
     prop.status = "reverted"
     prop.decided_at = _now()

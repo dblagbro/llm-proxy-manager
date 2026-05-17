@@ -122,6 +122,41 @@ PROPOSE_TOOL_SCHEMAS = [
             "required": ["rule_id", "value"],
         },
     },
+    {
+        "name": "propose_add_rule",
+        "description": "Propose adding a scheduled rule to the active rule-set. A "
+                       "'conditional' rule auto-skips a provider when its error rate "
+                       "crosses a threshold; a 'monitor' rule only notifies the "
+                       "operator. Creates a PENDING proposal — adding automation "
+                       "always needs explicit operator approval. The recurring "
+                       "evaluation is deterministic — no LLM runs on the schedule.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "rule_type": {"type": "string", "enum": ["conditional", "monitor"]},
+                "name": {"type": "string", "description": "A short name for the rule."},
+                "provider": {"type": "string",
+                             "description": "Provider name/id the rule watches."},
+                "window_min": {"type": "integer",
+                               "description": "Error-rate window, in minutes."},
+                "op": {"type": "string", "enum": [">", ">=", "<", "<="]},
+                "threshold": {"type": "number",
+                              "description": "Error-rate percentage threshold."},
+                "cadence_min": {"type": "integer",
+                                "description": "How often to evaluate, in minutes."},
+                "action_hours": {"type": "integer",
+                                 "description": "conditional only — hours to "
+                                                "auto-skip the provider when it fires."},
+                "action_mode": {"type": "string", "enum": ["suggest", "auto_apply"],
+                                "description": "conditional only — 'suggest' (the "
+                                               "rule proposes the skip for approval) "
+                                               "or 'auto_apply'. Use 'auto_apply' "
+                                               "only on an explicit operator request."},
+            },
+            "required": ["rule_type", "name", "provider", "window_min", "op",
+                         "threshold", "cadence_min"],
+        },
+    },
 ]
 
 PROPOSE_TOOLS = frozenset(t["name"] for t in PROPOSE_TOOL_SCHEMAS)
@@ -172,6 +207,17 @@ async def run_propose_tool(name: str, args: dict, *, actor: str, prompt: str) ->
                 return await proposals.create_rule_change(
                     db, rule_id=str(args.get("rule_id") or ""), value=args.get("value"),
                     mode=mode, created_by=actor or "operator", prompt=prompt or "",
+                )
+            if name == "propose_add_rule":
+                return await proposals.create_add_rule(
+                    db, rule_type=str(args.get("rule_type") or ""),
+                    name=str(args.get("name") or ""),
+                    provider_ref=str(args.get("provider") or ""),
+                    window_min=args.get("window_min"), op=str(args.get("op") or ">"),
+                    threshold=args.get("threshold"), cadence_min=args.get("cadence_min"),
+                    action_hours=args.get("action_hours"),
+                    action_mode=str(args.get("action_mode") or "suggest"),
+                    created_by=actor or "operator", prompt=prompt or "",
                 )
         return {"error": f"unknown propose tool: {name}"}
     except Exception as e:
