@@ -292,6 +292,15 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"ai_provider_supervisor failed to start: {e}")
 
+    # v4.0 (AIRI) — deterministic scheduled-rule evaluator. The loop idles
+    # unless airi_enabled AND the automation kill switch are both on; no LLM
+    # ever runs in it.
+    try:
+        from app.airi import evaluator as _airi_eval
+        _airi_eval.start()
+    except Exception as e:
+        logger.warning(f"airi evaluator failed to start: {e}")
+
     # v3.8.4 (#264) — tool capability prober. Default disabled
     # (ai_tool_prober_enabled=False); worker no-ops when disabled.
     try:

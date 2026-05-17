@@ -200,3 +200,14 @@ async def update_rule(db, rule_id: str, value) -> dict:
     r.spec = spec
     await db.commit()
     return {"ok": True, "rule_id": rule_id, "value": ival}
+
+
+async def toggle_rule(db, rule_id: str) -> dict:
+    """Enable / disable a rule — used by the scheduled-rule registry (M4)."""
+    await ensure_seeded(db)
+    r = await db.get(AiriRule, rule_id)
+    if r is None:
+        return {"error": "rule not found"}
+    r.enabled = not bool(r.enabled)
+    await db.commit()
+    return {"ok": True, "rule_id": rule_id, "enabled": bool(r.enabled)}

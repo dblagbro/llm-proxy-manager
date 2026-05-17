@@ -221,6 +221,12 @@ class Settings(BaseSettings):
     # LLM calls (which route through the proxy, so they inherit fallback).
     airi_enabled: bool = Field(False, alias="AIRI_ENABLED")
     airi_model: str = Field("", alias="AIRI_MODEL")
+    # v4.0 milestone 4 — scheduled-rule automation. ``airi_automation_enabled``
+    # is the kill switch for the deterministic rule evaluator (default off —
+    # automation runs only when explicitly enabled). The evaluator never runs
+    # an LLM; it evaluates operator-authored rules on this interval.
+    airi_automation_enabled: bool = Field(False, alias="AIRI_AUTOMATION_ENABLED")
+    airi_evaluator_interval_sec: int = Field(60, alias="AIRI_EVALUATOR_INTERVAL_SEC")
 
     # v3.8.4 (#264): tool-call capability prober. Fires a standard
     # get_weather(city) probe at every (provider, default_model) on
