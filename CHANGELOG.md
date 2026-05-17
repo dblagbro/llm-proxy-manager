@@ -7,7 +7,19 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ---
 
-## v4.0.0 — "AIRI" milestone
+## v4.0.x — "AIRI" milestone
+
+### v4.0.1 — mobile app-shell: off-canvas sidebar drawer
+
+The app-shell sidebar was a fixed in-flow column with only a manual collapse
+toggle — no responsive behaviour — so on a phone it squeezed every page's
+content into a thin strip (surfaced by the AIRI v4.0 UI walkthrough). Below
+the `md` breakpoint the sidebar is now an off-canvas drawer: hidden by
+default, opened by a hamburger button in the TopBar, dismissed by a backdrop
+tap or by tapping a nav link. At `md` and up it is unchanged — the in-flow
+column with its desktop-only collapse toggle. Verified in a real browser
+(13/13). Whole-app fix; it restores AIRI design decision #7 (the mobile
+deep-link experience).
 
 ### v4.0.0 — AIRI, the AI Router Interface
 
