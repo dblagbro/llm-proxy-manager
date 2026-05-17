@@ -21,6 +21,7 @@ from app.cot.tool_emulation import (
     normalize_openai_messages,
     parse_tool_calls,
     call_with_tool_prompt,
+    strip_thinking,
 )
 from app.cot.sse import (
     openai_tool_sse,
@@ -404,7 +405,12 @@ async def chat_completions(
         if route.tool_emulation_engaged:
             # Wave 5 #23 — respect parallel_tool_calls=false from body
             allow_parallel = body.get("parallel_tool_calls", True) is not False
-            tool_prompt = build_openai_tool_prompt(tools or [], allow_parallel=allow_parallel)
+            # v4.1.1 — co-emulation: reasoning-prefix the tool prompt when
+            # CoT-E is also engaged so tools + reasoning are served together.
+            tool_prompt = build_openai_tool_prompt(
+                tools or [], allow_parallel=allow_parallel,
+                with_reasoning=route.cot_engaged,
+            )
             norm_msgs = normalize_openai_messages(messages_list)
             if norm_msgs and norm_msgs[0]["role"] == "system":
                 norm_msgs[0]["content"] = tool_prompt + "\n\n" + norm_msgs[0]["content"]
@@ -415,6 +421,8 @@ async def chat_completions(
                 route.litellm_model, norm_msgs, None, emul_extra
             )
             tool_calls = parse_tool_calls(response_text)
+            if route.cot_engaged:
+                response_text = strip_thinking(response_text)
             # v3.8.3 (#263) — emit telemetry with a synthetic OpenAI-shape
             # response body so the meta extractor walks the same path it
             # walks for native callers on /v1/chat/completions.

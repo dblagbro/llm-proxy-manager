@@ -19,6 +19,7 @@ from app.cot.tool_emulation import (
     normalize_anthropic_messages,
     parse_tool_calls,
     call_with_tool_prompt,
+    strip_thinking,
 )
 from app.cot.sse import (
     anthropic_tool_sse,
@@ -447,7 +448,13 @@ async def messages(
             allow_parallel = True
             if isinstance(tool_choice, dict) and tool_choice.get("disable_parallel_tool_use"):
                 allow_parallel = False
-            tool_system = build_anthropic_tool_prompt(tools or [], allow_parallel=allow_parallel)
+            # v4.1.1 — co-emulation: when CoT-E is also engaged on this request
+            # the tool prompt is reasoning-prefixed, so the model thinks step
+            # by step before emitting tool calls (tools + reasoning together).
+            tool_system = build_anthropic_tool_prompt(
+                tools or [], allow_parallel=allow_parallel,
+                with_reasoning=route.cot_engaged,
+            )
             merged_system = tool_system + ("\n\n" + system if system else "")
             norm_msgs = normalize_anthropic_messages(messages_list)
             emul_extra = {k: v for k, v in extra.items() if k not in ("tools", "system")}
@@ -455,6 +462,9 @@ async def messages(
                 route.litellm_model, norm_msgs, merged_system, emul_extra
             )
             tool_calls = parse_tool_calls(response_text)
+            if route.cot_engaged:
+                # drop the <thinking> block from the plain-text fallback
+                response_text = strip_thinking(response_text)
             # v3.8.3 (#263) — emit telemetry BEFORE response building so
             # the activity_log row carries the count + validation flag
             # for this emulated tool-call request. Note: response_body

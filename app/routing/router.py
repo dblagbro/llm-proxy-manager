@@ -72,18 +72,16 @@ def _capability_fit(profile, *, has_tools: bool, needs_reasoning: bool,
     'cannot' cases:
       - vision: a non-vision provider for an image request is SKIPPED, not
         silently stripped.
-      - tools+reasoning: a request needing BOTH, on a provider native in
-        neither, would silently drop the tools — router tool-emulation and
-        CoT-E are mutually exclusive — so skip it for one that is native in
-        at least one.
       - context: a request larger than the provider's context window —
         a hard physical limit, hard skip.
+
+    Note (v4.1.1): tools+reasoning is NO LONGER a skip — the co-emulation
+    path (a reasoning-prefixed tool prompt) serves both on a provider native
+    in neither, so it is emulable. ``has_tools`` / ``needs_reasoning`` are
+    kept for signature stability and future capability checks.
     """
     if has_images and not profile.native_vision:
         return "no native vision"
-    if (has_tools and needs_reasoning
-            and not profile.native_tools and not profile.native_reasoning):
-        return "tools+reasoning each need emulation (mutually exclusive)"
     if (est_input_tokens and profile.context_length
             and est_input_tokens > profile.context_length):
         return f"context window {profile.context_length} < ~{est_input_tokens} tokens"
@@ -881,7 +879,11 @@ async def select_provider(
     if best_profile.native_reasoning and not cot_engaged:
         native_params = _native_thinking_params(provider.provider_type, best_profile.model_id)
 
-    tool_emulation = has_tools and not best_profile.native_tools and not cot_engaged
+    # v4.1.1 — tool emulation engages whenever the request has tools and the
+    # provider lacks native tools. It is NO LONGER suppressed by cot_engaged:
+    # when both are true the handler runs the co-emulation path (a reasoning-
+    # prefixed tool prompt), so tools+reasoning are served together.
+    tool_emulation = has_tools and not best_profile.native_tools
     vision_stripped = has_images and not best_profile.native_vision
 
     cap_header = build_capability_header(
