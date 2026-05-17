@@ -227,6 +227,14 @@ class Settings(BaseSettings):
     # an LLM; it evaluates operator-authored rules on this interval.
     airi_automation_enabled: bool = Field(False, alias="AIRI_AUTOMATION_ENABLED")
     airi_evaluator_interval_sec: int = Field(60, alias="AIRI_EVALUATOR_INTERVAL_SEC")
+    # v4.2 — voice input. ``airi_voice_enabled`` is the feature flag (off
+    # until the v4.2.0 build is complete). Speech-to-text runs on the
+    # self-hosted whisper-bridge sidecar — audio is transcribed on our own
+    # infrastructure and never persisted. See docs/4.2-voice-design.md.
+    airi_voice_enabled: bool = Field(False, alias="AIRI_VOICE_ENABLED")
+    airi_whisper_bridge_url: str = Field(
+        "http://whisper-bridge:9000", alias="AIRI_WHISPER_BRIDGE_URL")
+    airi_whisper_bridge_token: str = Field("", alias="AIRI_WHISPER_BRIDGE_TOKEN")
 
     # v3.8.4 (#264): tool-call capability prober. Fires a standard
     # get_weather(city) probe at every (provider, default_model) on

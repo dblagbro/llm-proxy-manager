@@ -12,7 +12,8 @@ from __future__ import annotations
 import json
 import logging
 
-from fastapi import APIRouter, Request, Depends, HTTPException
+import httpx
+from fastapi import APIRouter, Request, Depends, HTTPException, UploadFile, File
 from fastapi.responses import StreamingResponse, JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -26,12 +27,64 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/airi", tags=["airi"])
 
+# v4.2 — voice input. Audio is forwarded to the whisper-bridge sidecar.
+_MAX_AUDIO_BYTES = 25 * 1024 * 1024  # ~a few minutes of opus
+_TRANSCRIBE_TIMEOUT = httpx.Timeout(connect=5.0, read=60.0, write=30.0, pool=5.0)
+
 
 @router.get("/status")
 async def airi_status(_: AdminUser = Depends(require_admin)) -> dict:
     """Feature-flag probe — the Routing-page panel calls this and renders
-    itself only when AIRI is enabled."""
-    return {"enabled": bool(settings.airi_enabled)}
+    itself only when AIRI is enabled. ``voice_enabled`` (v4.2) drives the
+    mic button."""
+    return {
+        "enabled": bool(settings.airi_enabled),
+        "voice_enabled": bool(settings.airi_enabled and settings.airi_voice_enabled),
+    }
+
+
+@router.post("/transcribe")
+async def airi_transcribe(
+    file: UploadFile = File(...),
+    _: AdminUser = Depends(require_admin),
+):
+    """Transcribe an operator's spoken chat input (v4.2 milestone 1).
+
+    Forwards the audio to the self-hosted whisper-bridge sidecar and returns
+    ``{"text": ...}``. The audio is streamed through — never persisted,
+    never logged. The operator reviews the text before sending it as a chat
+    message, so the normal PII/guard path still applies."""
+    if not settings.airi_enabled:
+        return JSONResponse({"detail": "AIRI is disabled"}, status_code=404)
+    if not settings.airi_voice_enabled:
+        return JSONResponse({"detail": "AIRI voice input is disabled"}, status_code=404)
+
+    audio = await file.read()
+    if not audio:
+        return JSONResponse({"error": "an audio 'file' is required"}, status_code=400)
+    if len(audio) > _MAX_AUDIO_BYTES:
+        return JSONResponse({"error": "audio too large"}, status_code=413)
+
+    bridge = (settings.airi_whisper_bridge_url or "").rstrip("/")
+    if not bridge:
+        return JSONResponse({"error": "voice transcription is not configured"},
+                            status_code=503)
+    try:
+        async with httpx.AsyncClient(timeout=_TRANSCRIBE_TIMEOUT) as client:
+            r = await client.post(
+                f"{bridge}/transcribe",
+                files={"file": (file.filename or "audio.webm", audio,
+                                file.content_type or "application/octet-stream")},
+                headers={"Authorization":
+                         f"Bearer {settings.airi_whisper_bridge_token}"},
+            )
+        r.raise_for_status()
+        data = r.json()
+    except Exception as e:  # never leak a stack — the panel falls back to typing
+        logger.warning("airi.transcribe failed err=%r", e)
+        return JSONResponse({"error": "transcription is unavailable right now"},
+                            status_code=502)
+    return {"text": (data.get("text") or "").strip()}
 
 
 def _sse(event: str, data: dict) -> bytes:
