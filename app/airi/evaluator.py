@@ -121,6 +121,7 @@ async def _act_conditional(db, rule: AiriRule, spec: dict, detail: str):
             f"hour (cap {cap}) and has been automatically disabled. Review it "
             f"in AIRI before re-enabling.",
             "error",
+            "automation",
         )
 
     action = spec.get("action") or {}
@@ -143,12 +144,12 @@ async def _act_conditional(db, rule: AiriRule, spec: dict, detail: str):
     if status == "applied":
         note = (f"rule '{rule.name}' auto-skipped a provider",
                 f"Scheduled rule '{rule.name}' fired ({detail}) and auto-skipped "
-                f"the provider for {hours}h.", "warning")
+                f"the provider for {hours}h.", "warning", "automation")
     else:
         note = (f"rule '{rule.name}' raised a pending proposal",
                 f"Scheduled rule '{rule.name}' fired ({detail}). A proposal to "
                 f"auto-skip the provider for {hours}h is PENDING your approval.",
-                "warning")
+                "warning", "automation")
     return "acted", note
 
 
@@ -191,6 +192,7 @@ async def evaluate_due_rules(db):
                 f"monitor '{rule.name}' fired",
                 f"Monitor rule '{rule.name}': {detail}.",
                 "warning",
+                "monitor",
             ))
             summary["notified"] += 1
             continue
@@ -237,8 +239,8 @@ async def _loop() -> None:
                 async with AsyncSessionLocal() as db:
                     _summary, notes = await evaluate_due_rules(db)
                 # ARCH-A — notify only AFTER the session is closed.
-                for subject, message, severity in notes:
-                    await airi_notify(subject, message, severity)
+                for subject, message, severity, category in notes:
+                    await airi_notify(subject, message, severity, category)
         except Exception as e:
             logger.warning("airi.evaluator tick failed: %r", e)
         await asyncio.sleep(interval)
