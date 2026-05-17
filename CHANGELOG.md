@@ -9,6 +9,33 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v4.2.x — "Voice" milestone
 
+### v4.2.2 — fix: hands-free never detected the wake word
+
+v4.2.1's hands-free shipped a **free** Vosk recognizer and matched "Airy"
+as plain text in the transcript. Vosk's small model mis-hears "Airy" as
+common words — most often **"every"** — so the wake word was never matched
+and hands-free did nothing when spoken to (the button turned on, the mic
+was live, but speaking had no effect). Confirmed by Playwright: the audio
+pipeline delivered speech to Vosk correctly, but Vosk transcribed "airy"
+as "every".
+
+The fix is a two-stage design:
+
+- **Wake** — the Vosk recognizer is now **grammar-constrained** to
+  `["airy", "[unk]"]`. It can only emit `airy` or `[unk]`, which makes
+  wake detection reliable. (Simply adding "every" to the wake list was not
+  an option — "every" is a top-100 English word and would false-trigger
+  constantly.)
+- **Command** — a grammar-constrained recognizer cannot transcribe an
+  open-ended command, so once awake the command is recorded with
+  `MediaRecorder` and transcribed by **Whisper** via `/api/airi/transcribe`
+  — the same path push-to-talk uses, and far more accurate for free speech
+  than Vosk's small model.
+
+No backend or API change — `whisper-bridge` and the proxy endpoints are
+unchanged from v4.2.1. The `whisper-bridge` image is unchanged; only
+`llm-proxy2` is rebuilt. Still gated by `airi_voice_enabled`.
+
 ### v4.2.1 — AIRI hands-free wake word ("Airy")
 
 The third and final milestone of the v4.2 voice design — voice without
