@@ -11,6 +11,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { getBasePath } from '@/lib/basePath'
 import { AiriHistory } from './AiriHistory'
 import { AiriMicButton } from './AiriMicButton'
+import { AiriHandsFree } from './AiriHandsFree'
 
 type ProposalData = {
   proposal_id: string
@@ -241,6 +242,13 @@ export function AiriChatPanel() {
     [],
   )
 
+  // Voice (push-to-talk and hands-free) drops its transcript into the input —
+  // it is never auto-sent; the operator reviews and presses Send.
+  const onVoiceTranscript = useCallback((t: string) => {
+    setMicError('')
+    setInput((cur) => (cur.trim() ? cur.trim() + ' ' + t : t))
+  }, [])
+
   if (enabled !== true) return null
 
   return (
@@ -371,14 +379,18 @@ export function AiriChatPanel() {
           )}
           <div className="border-t border-gray-200 dark:border-gray-700 p-3 flex gap-2">
             {voiceEnabled && (
-              <AiriMicButton
-                disabled={busy}
-                onTranscript={(t) => {
-                  setMicError('')
-                  setInput((cur) => (cur.trim() ? cur.trim() + ' ' + t : t))
-                }}
-                onError={setMicError}
-              />
+              <>
+                <AiriMicButton
+                  disabled={busy}
+                  onTranscript={onVoiceTranscript}
+                  onError={setMicError}
+                />
+                <AiriHandsFree
+                  disabled={busy}
+                  onTranscript={onVoiceTranscript}
+                  onError={setMicError}
+                />
+              </>
             )}
             <input
               value={input}

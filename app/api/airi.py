@@ -14,7 +14,7 @@ import logging
 
 import httpx
 from fastapi import APIRouter, Request, Depends, HTTPException, UploadFile, File
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.responses import StreamingResponse, JSONResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -85,6 +85,32 @@ async def airi_transcribe(
         return JSONResponse({"error": "transcription is unavailable right now"},
                             status_code=502)
     return {"text": (data.get("text") or "").strip()}
+
+
+@router.get("/voice-model")
+async def airi_voice_model(_: AdminUser = Depends(require_admin)):
+    """Serve the Vosk wake-word model to the browser for hands-free voice
+    (v4.2 milestone 3). Proxies the whisper-bridge's /vosk-model; the browser
+    caches it after the first load. Admin- and voice-flag-gated."""
+    if not settings.airi_enabled or not settings.airi_voice_enabled:
+        return JSONResponse({"detail": "AIRI voice input is disabled"}, status_code=404)
+    bridge = (settings.airi_whisper_bridge_url or "").rstrip("/")
+    if not bridge:
+        return JSONResponse({"error": "voice is not configured"}, status_code=503)
+    try:
+        async with httpx.AsyncClient(timeout=_TRANSCRIBE_TIMEOUT) as client:
+            r = await client.get(
+                f"{bridge}/vosk-model",
+                headers={"Authorization":
+                         f"Bearer {settings.airi_whisper_bridge_token}"},
+            )
+        r.raise_for_status()
+    except Exception as e:
+        logger.warning("airi.voice_model fetch failed err=%r", e)
+        return JSONResponse({"error": "the voice model is unavailable right now"},
+                            status_code=502)
+    return Response(content=r.content, media_type="application/gzip",
+                    headers={"Cache-Control": "private, max-age=604800"})
 
 
 def _sse(event: str, data: dict) -> bytes:

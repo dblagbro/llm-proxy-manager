@@ -12,6 +12,7 @@ import tempfile
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, File, Header, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 from faster_whisper import WhisperModel
 
 logging.basicConfig(level=logging.INFO)
@@ -20,6 +21,8 @@ logger = logging.getLogger("whisper-bridge")
 MODEL_NAME = os.environ.get("WHISPER_MODEL", "small")
 BRIDGE_TOKEN = os.environ.get("WHISPER_BRIDGE_TOKEN", "")
 MAX_BYTES = int(os.environ.get("WHISPER_MAX_BYTES", str(25 * 1024 * 1024)))
+# v4.2 hands-free — the Vosk wake-word model, baked in at build time.
+VOSK_MODEL_PATH = "/models/vosk-model-small-en-us-0.15.tar.gz"
 
 _model: "WhisperModel | None" = None
 
@@ -46,7 +49,21 @@ app = FastAPI(title="whisper-bridge", lifespan=lifespan)
 
 @app.get("/health")
 async def health() -> dict:
-    return {"status": "ok", "model": MODEL_NAME, "loaded": _model is not None}
+    return {"status": "ok", "model": MODEL_NAME, "loaded": _model is not None,
+            "vosk_model": os.path.exists(VOSK_MODEL_PATH)}
+
+
+@app.get("/vosk-model")
+async def vosk_model(authorization: str = Header(None)):
+    """Serve the Vosk wake-word model (.tar.gz) for browser-side hands-free
+    detection. Bearer-token guarded — only llm-proxy2's voice-model proxy
+    calls this. The model is static; no external fetch at runtime."""
+    if BRIDGE_TOKEN and authorization != f"Bearer {BRIDGE_TOKEN}":
+        raise HTTPException(status_code=401, detail="invalid bridge token")
+    if not os.path.exists(VOSK_MODEL_PATH):
+        raise HTTPException(status_code=404, detail="vosk model not available")
+    return FileResponse(VOSK_MODEL_PATH, media_type="application/gzip",
+                        filename="vosk-model.tar.gz")
 
 
 @app.post("/transcribe")
