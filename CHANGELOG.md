@@ -9,6 +9,29 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v4.0.x — "AIRI" milestone
 
+### v4.0.2 — AIRI grounding: activity log, capability adaptation, sticky chat
+
+AIRI was answering from static blurbs instead of real proxy state — it told an
+operator it "could not see the activity log" and that requests "could fail" on
+non-native providers. Both were wrong. This release grounds AIRI properly:
+
+- **Activity-log access** — two new read tools. `get_error_summary` is an
+  aggregate digest (error counts by class — `rate_limit` is HTTP 429 —, by
+  provider, by event type); `search_activity_log` is a filtered, free-text
+  search over every recorded event (query `"429"` / `"timeout"` finds those
+  rows). `get_recent_routing` now surfaces the error class on non-info rows.
+- **Capability adaptation grounding** — `explain_routing` was rewritten to
+  describe the real adaptation layer: tool-call emulation (incl. synthetic
+  streaming SSE), CoT emulation, vision stripping, caller memory, and the
+  honest residual gaps. A new `get_model_capabilities` tool reports, per
+  provider, whether tools / reasoning / vision are native or emulated. AIRI no
+  longer guesses that a non-native provider "fails" a request — the proxy's
+  rule is cross-emulate, don't fail.
+- **Sticky chat** — the AIRI chat panel now remembers its active conversation
+  across navigation. Leaving the Routing page and returning resumes the same
+  thread instead of starting blank (the thread was always persisted
+  server-side; only the panel forgot it).
+
 ### v4.0.1 — mobile app-shell: off-canvas sidebar drawer
 
 The app-shell sidebar was a fixed in-flow column with only a manual collapse
