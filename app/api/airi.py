@@ -35,7 +35,7 @@ async def airi_status(_: AdminUser = Depends(require_admin)) -> dict:
 
 
 @router.post("/chat")
-async def airi_chat(request: Request, _: AdminUser = Depends(require_admin)):
+async def airi_chat(request: Request, user: AdminUser = Depends(require_admin)):
     """Run one AIRI turn. Body: ``{"messages": [{role, content}, ...]}`` —
     the full conversation so far, ending with the new user message.
     Response: a ``text/event-stream`` of ``status`` / ``message`` /
@@ -50,7 +50,7 @@ async def airi_chat(request: Request, _: AdminUser = Depends(require_admin)):
 
     async def _stream():
         try:
-            async for event, data in run_airi_turn(messages):
+            async for event, data in run_airi_turn(messages, actor=user.username):
                 yield f"event: {event}\ndata: {json.dumps(data)}\n\n".encode()
         except Exception as e:  # never leak a stack into the stream
             logger.warning("airi.chat_stream_failed err=%r", e)
@@ -166,6 +166,79 @@ async def airi_update_rule(
     body = await request.json()
     value = body.get("value") if isinstance(body, dict) else None
     result = await rules.update_rule(db, rule_id, value)
+    if "error" in result:
+        return JSONResponse(result, status_code=400)
+    return result
+
+
+# ── v4.0 milestone 3 — proposals (propose -> apply / reject / revert) ─────────
+
+@router.get("/proposals")
+async def airi_list_proposals(
+    status: str | None = None,
+    _: AdminUser = Depends(require_admin),
+    __: None = Depends(_require_airi_enabled),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Recent AIRI proposals — the change audit trail. Optional ``?status=``."""
+    from app.airi import proposals
+    return {"proposals": await proposals.list_proposals(db, status=status)}
+
+
+@router.get("/proposals/{proposal_id}")
+async def airi_get_proposal(
+    proposal_id: str,
+    _: AdminUser = Depends(require_admin),
+    __: None = Depends(_require_airi_enabled),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.airi import proposals
+    p = await proposals.get_proposal(db, proposal_id)
+    if p is None:
+        return JSONResponse({"detail": "proposal not found"}, status_code=404)
+    return p
+
+
+@router.post("/proposals/{proposal_id}/apply")
+async def airi_apply_proposal(
+    proposal_id: str,
+    user: AdminUser = Depends(require_admin),
+    __: None = Depends(_require_airi_enabled),
+    db: AsyncSession = Depends(get_db),
+):
+    """Approve + apply a pending proposal."""
+    from app.airi import proposals
+    result = await proposals.apply_proposal(db, proposal_id, applied_by=user.username)
+    if "error" in result:
+        return JSONResponse(result, status_code=400)
+    return result
+
+
+@router.post("/proposals/{proposal_id}/reject")
+async def airi_reject_proposal(
+    proposal_id: str,
+    user: AdminUser = Depends(require_admin),
+    __: None = Depends(_require_airi_enabled),
+    db: AsyncSession = Depends(get_db),
+):
+    """Reject a pending proposal."""
+    from app.airi import proposals
+    result = await proposals.reject_proposal(db, proposal_id, decided_by=user.username)
+    if "error" in result:
+        return JSONResponse(result, status_code=400)
+    return result
+
+
+@router.post("/proposals/{proposal_id}/revert")
+async def airi_revert_proposal(
+    proposal_id: str,
+    user: AdminUser = Depends(require_admin),
+    __: None = Depends(_require_airi_enabled),
+    db: AsyncSession = Depends(get_db),
+):
+    """Undo an applied proposal — restore the prior-state snapshot."""
+    from app.airi import proposals
+    result = await proposals.revert_proposal(db, proposal_id, decided_by=user.username)
     if "error" in result:
         return JSONResponse(result, status_code=400)
     return result
