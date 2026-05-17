@@ -7,6 +7,31 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ---
 
+## v4.2.x — "Voice" milestone
+
+### v4.2.0 — AIRI voice input
+
+The AIRI chat panel gains voice. An operator can speak a request instead of
+typing it — push-to-talk.
+
+- **`whisper-bridge`** — a new sidecar container: FastAPI + self-hosted
+  `faster-whisper` + ffmpeg. Speech-to-text runs on our own infrastructure;
+  the locked own-the-dependency-chain rule rules out the browser Web Speech
+  API (which streams audio to Google). The Whisper model is baked into the
+  image at build time — the running container makes no external fetch.
+- **`POST /api/airi/transcribe`** — admin- and flag-gated; forwards an audio
+  blob to the sidecar and returns the transcript. Audio is transient — never
+  persisted, never logged.
+- **Push-to-talk mic button** in the AIRI chat panel — tap to record, tap to
+  stop; the transcript fills the input for the operator to **review before
+  Send**. Voice never auto-sends, so the PII/guard path still applies.
+- Feature-flagged: `airi_voice_enabled` (default off). The "Airy" hands-free
+  wake word and AIRI text-to-speech are designed but deferred (see
+  `docs/4.2-voice-design.md`).
+
+Deploying v4.2.0 adds the `whisper-bridge` container to each node — see the
+deployment section of the design doc.
+
 ## v4.1.x — "Capability routing" milestone
 
 ### v4.1.1 — tool + CoT co-emulation
