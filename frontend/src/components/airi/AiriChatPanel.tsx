@@ -10,6 +10,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { getBasePath } from '@/lib/basePath'
 import { AiriHistory } from './AiriHistory'
+import { AiriMicButton } from './AiriMicButton'
 
 type ProposalData = {
   proposal_id: string
@@ -90,13 +91,19 @@ export function AiriChatPanel() {
   // M5 — the persisted thread this panel is attached to, and the history drawer
   const [conversationId, setConversationId] = useState<string | null>(null)
   const [historyOpen, setHistoryOpen] = useState(false)
+  // v4.2 — voice input
+  const [voiceEnabled, setVoiceEnabled] = useState(false)
+  const [micError, setMicError] = useState('')
   const scrollRef = useRef<HTMLDivElement>(null)
   const restoredRef = useRef(false)
 
   useEffect(() => {
     fetch(`${getBasePath()}/api/airi/status`, { credentials: 'include' })
       .then((r) => (r.ok ? r.json() : { enabled: false }))
-      .then((d) => setEnabled(!!d.enabled))
+      .then((d) => {
+        setEnabled(!!d.enabled)
+        setVoiceEnabled(!!d.voice_enabled)
+      })
       .catch(() => setEnabled(false))
   }, [])
 
@@ -357,7 +364,22 @@ export function AiriChatPanel() {
             )}
           </div>
 
+          {micError && (
+            <div className="px-3 pt-2 text-xs text-amber-700 dark:text-amber-400">
+              {micError}
+            </div>
+          )}
           <div className="border-t border-gray-200 dark:border-gray-700 p-3 flex gap-2">
+            {voiceEnabled && (
+              <AiriMicButton
+                disabled={busy}
+                onTranscript={(t) => {
+                  setMicError('')
+                  setInput((cur) => (cur.trim() ? cur.trim() + ' ' + t : t))
+                }}
+                onError={setMicError}
+              />
+            )}
             <input
               value={input}
               onChange={(e) => setInput(e.target.value)}
@@ -368,7 +390,7 @@ export function AiriChatPanel() {
                 }
               }}
               disabled={busy}
-              placeholder="Ask AIRI…"
+              placeholder={voiceEnabled ? 'Ask AIRI — or tap the mic…' : 'Ask AIRI…'}
               className="flex-1 min-w-0 rounded-md border border-gray-300 dark:border-gray-600
                          bg-white dark:bg-gray-900 px-3 py-2 text-sm
                          text-gray-900 dark:text-gray-100 disabled:opacity-60"
