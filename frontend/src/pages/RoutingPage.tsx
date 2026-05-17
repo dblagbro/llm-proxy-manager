@@ -6,6 +6,7 @@ import { Spinner } from '@/components/ui/Spinner'
 import { CopyButton } from '@/components/ui/CopyButton'
 import { AiriChatPanel } from '@/components/airi/AiriChatPanel'
 import { AiriRulesPanel } from '@/components/airi/AiriRulesPanel'
+import { AiriChangesPanel } from '@/components/airi/AiriChangesPanel'
 
 const LMRH_DIMS = [
   { key: 'task', label: 'task', values: 'chat, coding, reasoning, summarization, translation, classification, embedding', weight: 10 },
@@ -40,6 +41,7 @@ export function RoutingPage() {
       {/* v4.0 — AIRI (renders only when the airi_enabled flag is on) */}
       <AiriChatPanel />
       <AiriRulesPanel />
+      <AiriChangesPanel />
 
       {/* Protocol overview */}
       <Card>

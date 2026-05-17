@@ -1,15 +1,28 @@
 /**
- * AIRI — AI Router Interface (v4.0 milestone 1).
+ * AIRI — AI Router Interface chat panel (v4.0).
  *
- * The conversational chat panel on the Routing / LMRH page. Milestone 1 is
- * read-only: AIRI inspects and explains routing, providers, and the AI
- * Provider Supervisor. It renders only when the `airi_enabled` feature flag
- * is on (probed via GET /api/airi/status). Mobile-responsive.
+ * The conversational panel on the Routing / LMRH page. AIRI inspects and
+ * explains routing, and (milestone 3) can PROPOSE changes — rendered inline
+ * as approve / reject cards. Renders only when the `airi_enabled` flag is on.
+ * Mobile-responsive.
  */
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { getBasePath } from '@/lib/basePath'
 
-type Msg = { role: 'user' | 'assistant'; content: string; error?: boolean }
+type ProposalData = {
+  proposal_id: string
+  kind: string
+  target: string
+  change: { field?: string; from?: unknown; to?: unknown; capped?: boolean }
+  dry_run: { summary?: string; warnings?: string[] }
+  status: string
+}
+type Msg = {
+  role: 'user' | 'assistant' | 'proposal'
+  content?: string
+  error?: boolean
+  proposal?: ProposalData
+}
 
 const SUGGESTIONS = [
   'How does routing work?',
@@ -65,6 +78,8 @@ export function AiriChatPanel() {
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
   const [status, setStatus] = useState('')
+  // proposal_id -> latest status (overrides the value the event carried)
+  const [propStatus, setPropStatus] = useState<Record<string, string>>({})
   const scrollRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -87,11 +102,16 @@ export function AiriChatPanel() {
       setInput('')
       setBusy(true)
       setStatus('thinking…')
-      const wire = history.map((m) => ({ role: m.role, content: m.content }))
+      // wire conversation = only user/assistant text turns
+      const wire = history
+        .filter((m) => m.role === 'user' || m.role === 'assistant')
+        .map((m) => ({ role: m.role, content: m.content || '' }))
       try {
         await streamChat(wire, (event, data) => {
           if (event === 'status') {
             setStatus(data.text || 'working…')
+          } else if (event === 'proposal') {
+            setMessages((m) => [...m, { role: 'proposal', proposal: data }])
           } else if (event === 'message') {
             setMessages((m) => [...m, { role: 'assistant', content: data.text || '' }])
             setStatus('')
@@ -116,22 +136,44 @@ export function AiriChatPanel() {
     [busy, messages],
   )
 
-  // Hidden entirely unless the feature flag is on.
+  const decide = useCallback(
+    async (proposalId: string, action: 'apply' | 'reject' | 'revert') => {
+      setBusy(true)
+      try {
+        const res = await fetch(
+          `${getBasePath()}/api/airi/proposals/${proposalId}/${action}`,
+          { method: 'POST', credentials: 'include' },
+        )
+        const body = await res.json().catch(() => ({}))
+        if (!res.ok) {
+          setStatus(body.error || `Could not ${action} the proposal`)
+        } else {
+          setPropStatus((m) => ({ ...m, [proposalId]: body.status || action }))
+          setStatus('')
+        }
+      } catch {
+        setStatus(`Could not ${action} the proposal — AIRI is unreachable`)
+      } finally {
+        setBusy(false)
+      }
+    },
+    [],
+  )
+
   if (enabled !== true) return null
 
   return (
     <div className="rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800">
-      {/* Header */}
       <button
         onClick={() => setExpanded((e) => !e)}
         className="w-full flex items-center justify-between px-4 py-3 text-left"
       >
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <span className="text-base font-semibold text-gray-900 dark:text-gray-100">
             AIRI
           </span>
           <span className="text-xs text-gray-500 dark:text-gray-400">
-            AI Router Interface — ask about routing
+            AI Router Interface — ask about routing, or propose a change
           </span>
         </div>
         <span className="text-gray-400 text-sm">{expanded ? '▾' : '▸'}</span>
@@ -139,16 +181,16 @@ export function AiriChatPanel() {
 
       {expanded && (
         <div className="border-t border-gray-200 dark:border-gray-700">
-          {/* Messages */}
           <div
             ref={scrollRef}
-            className="max-h-[50vh] min-h-[8rem] overflow-y-auto px-4 py-3 space-y-3"
+            className="max-h-[55vh] min-h-[8rem] overflow-y-auto px-4 py-3 space-y-3"
           >
             {messages.length === 0 && (
               <div className="space-y-2">
                 <p className="text-sm text-gray-500 dark:text-gray-400">
-                  Ask AIRI about routing, providers, or the AI Provider Supervisor.
-                  Read-only for now — it inspects and explains, it can't change anything yet.
+                  Ask AIRI about routing, or ask it to propose a change. Proposed
+                  changes appear as cards you approve — nothing is applied until you do
+                  (unless you ask AIRI to auto-apply).
                 </p>
                 <div className="flex flex-wrap gap-2">
                   {SUGGESTIONS.map((s) => (
@@ -167,25 +209,38 @@ export function AiriChatPanel() {
               </div>
             )}
 
-            {messages.map((m, i) => (
-              <div
-                key={i}
-                className={m.role === 'user' ? 'flex justify-end' : 'flex justify-start'}
-              >
+            {messages.map((m, i) => {
+              if (m.role === 'proposal' && m.proposal) {
+                return (
+                  <ProposalCard
+                    key={i}
+                    p={m.proposal}
+                    status={propStatus[m.proposal.proposal_id] ?? m.proposal.status}
+                    busy={busy}
+                    decide={decide}
+                  />
+                )
+              }
+              return (
                 <div
-                  className={
-                    'max-w-[90%] sm:max-w-[80%] rounded-lg px-3 py-2 text-sm whitespace-pre-wrap break-words ' +
-                    (m.role === 'user'
-                      ? 'bg-blue-600 text-white'
-                      : m.error
-                        ? 'bg-red-50 dark:bg-red-900/30 text-red-700 dark:text-red-300'
-                        : 'bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-gray-100')
-                  }
+                  key={i}
+                  className={m.role === 'user' ? 'flex justify-end' : 'flex justify-start'}
                 >
-                  {m.content}
+                  <div
+                    className={
+                      'max-w-[90%] sm:max-w-[80%] rounded-lg px-3 py-2 text-sm whitespace-pre-wrap break-words ' +
+                      (m.role === 'user'
+                        ? 'bg-blue-600 text-white'
+                        : m.error
+                          ? 'bg-red-50 dark:bg-red-900/30 text-red-700 dark:text-red-300'
+                          : 'bg-gray-100 dark:bg-gray-700 text-gray-900 dark:text-gray-100')
+                    }
+                  >
+                    {m.content}
+                  </div>
                 </div>
-              </div>
-            ))}
+              )
+            })}
 
             {status && (
               <div className="flex justify-start">
@@ -196,7 +251,6 @@ export function AiriChatPanel() {
             )}
           </div>
 
-          {/* Input row */}
           <div className="border-t border-gray-200 dark:border-gray-700 p-3 flex gap-2">
             <input
               value={input}
@@ -224,6 +278,90 @@ export function AiriChatPanel() {
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+function ProposalCard({
+  p,
+  status,
+  busy,
+  decide,
+}: {
+  p: ProposalData
+  status: string
+  busy: boolean
+  decide: (id: string, action: 'apply' | 'reject' | 'revert') => void
+}) {
+  const c = p.change || {}
+  const dry = p.dry_run || {}
+  const warnings = dry.warnings || []
+  return (
+    <div className="rounded-lg border border-blue-300 dark:border-blue-700 bg-blue-50 dark:bg-blue-900/20 p-3 space-y-2">
+      <div className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+        AIRI proposes — {p.kind?.replace(/_/g, ' ')} · {p.target}
+      </div>
+      <div className="text-sm font-mono text-gray-800 dark:text-gray-200">
+        {c.field}: {String(c.from)} → {String(c.to)}
+        {c.capped ? ' (capped by the active rule-set)' : ''}
+      </div>
+      {dry.summary && (
+        <div className="text-xs text-gray-600 dark:text-gray-300">{dry.summary}</div>
+      )}
+      {warnings.map((w, i) => (
+        <div
+          key={i}
+          className="text-xs text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/30
+                     rounded px-2 py-1"
+        >
+          ⚠ {w}
+        </div>
+      ))}
+      <div className="flex items-center gap-2 pt-1">
+        {status === 'pending' && (
+          <>
+            <button
+              onClick={() => decide(p.proposal_id, 'apply')}
+              disabled={busy}
+              className="rounded-md bg-blue-600 px-3 py-1 text-xs font-medium text-white
+                         hover:bg-blue-700 disabled:opacity-50"
+            >
+              Approve &amp; apply
+            </button>
+            <button
+              onClick={() => decide(p.proposal_id, 'reject')}
+              disabled={busy}
+              className="rounded-md border border-gray-300 dark:border-gray-600 px-3 py-1
+                         text-xs text-gray-700 dark:text-gray-300
+                         hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-50"
+            >
+              Reject
+            </button>
+          </>
+        )}
+        {status === 'applied' && (
+          <>
+            <span className="text-xs font-medium text-green-700 dark:text-green-400">
+              ✓ Applied
+            </span>
+            <button
+              onClick={() => decide(p.proposal_id, 'revert')}
+              disabled={busy}
+              className="rounded-md border border-gray-300 dark:border-gray-600 px-3 py-1
+                         text-xs text-gray-700 dark:text-gray-300
+                         hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-50"
+            >
+              Revert
+            </button>
+          </>
+        )}
+        {status === 'rejected' && (
+          <span className="text-xs text-gray-500">Rejected</span>
+        )}
+        {status === 'reverted' && (
+          <span className="text-xs text-gray-500">Reverted</span>
+        )}
+      </div>
     </div>
   )
 }
