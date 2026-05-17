@@ -9,6 +9,34 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v4.2.x — "Voice" milestone
 
+### v4.2.1 — AIRI hands-free wake word ("Airy")
+
+The third and final milestone of the v4.2 voice design — voice without
+touching the mic button. With hands-free enabled, the operator says **"Airy"**
+and the rest of the utterance lands in the chat input.
+
+- **In-browser wake-word detection.** `vosk-browser` (the Vosk speech engine
+  compiled to WebAssembly) runs the recognizer **entirely in the browser** —
+  no audio leaves the browser for wake detection, so a continuously-listening
+  mic never streams anywhere. Only the transcript text is used.
+- **`whisper-bridge` now also hosts the Vosk model.** The small English Vosk
+  model (~40 MB) is baked into the sidecar image at build time and served at
+  `GET /vosk-model`; `GET /api/airi/voice-model` proxies it to the browser
+  (the browser cannot reach the docker-network-only sidecar directly). The
+  browser fetches the model once and caches it. `alphacephei.com`'s TLS
+  certificate is expired upstream, so the build pins the model's **SHA256** —
+  content integrity is verified by hash, independently of the broken cert.
+- **Hands-free toggle** in the AIRI chat panel, next to the push-to-talk mic.
+  Say "Airy show me provider health" in one breath, or "Airy" then the command
+  as a second utterance — both work. As with push-to-talk, the transcript
+  **fills the input for review** and is **never auto-sent**.
+- `vosk-browser` is dynamically imported, so its ~5.8 MB WASM chunk only loads
+  when an operator turns hands-free on — the main bundle is unchanged.
+- Still gated by the existing `airi_voice_enabled` flag; no new flag.
+
+Deploying v4.2.1 ships a new `whisper-bridge` image (`dblagbro/whisper-bridge`
+bumped to `4.2.1`) — it must be pulled/recreated alongside `llm-proxy2`.
+
 ### v4.2.0 — AIRI voice input
 
 The AIRI chat panel gains voice. An operator can speak a request instead of
