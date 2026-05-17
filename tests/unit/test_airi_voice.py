@@ -99,6 +99,19 @@ def test_handsfree_component_present_and_wired():
     assert "AiriHandsFree" in (base / "AiriChatPanel.tsx").read_text()
 
 
+def test_handsfree_uses_grammar_and_whisper_for_command():
+    """v4.2.2 fix — a free Vosk recognizer mis-hears 'Airy' as 'every', so
+    wake detection is grammar-constrained, and the command is transcribed by
+    Whisper (a grammar recognizer cannot transcribe open-ended speech)."""
+    src = Path("frontend/src/components/airi/AiriHandsFree.tsx").read_text()
+    # grammar-constrained wake recognizer — only emits "airy" or "[unk]"
+    assert "WAKE_GRAMMAR" in src
+    assert '[unk]' in src
+    # the command is recorded and sent to Whisper via the transcribe endpoint
+    assert "MediaRecorder" in src
+    assert "/api/airi/transcribe" in src
+
+
 def test_vosk_browser_dependency_declared():
     pkg = json.loads(Path("frontend/package.json").read_text())
     assert "vosk-browser" in pkg.get("dependencies", {})
