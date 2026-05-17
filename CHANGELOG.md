@@ -9,6 +9,21 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v4.0.x — "AIRI" milestone
 
+### v4.0.3 — AIRI per-user notification preferences
+
+Design §9, deferred since 4.0.0, now shipped. The global alert mailbox
+(`smtp_to`) still always receives AIRI notifications; on top of that each
+operator can subscribe their own email and tune which categories
+(`monitor` / `automation`) and what minimum severity reach them.
+
+- New `AiriNotificationPref` model (per-user: email, enabled, categories,
+  min_severity) and a `notify_prefs` service (get / set / resolve).
+- `send_alert` gained a `to` recipient override; `airi_notify` now fans out
+  one email per recipient — the global mailbox plus each opted-in operator —
+  with an independent throttle key. Evaluator notifications carry a category.
+- `GET` / `PUT /api/airi/notification-prefs`; a "My notifications" panel on
+  the Routing page.
+
 ### v4.0.2 — AIRI grounding: activity log, capability adaptation, sticky chat
 
 AIRI was answering from static blurbs instead of real proxy state — it told an
