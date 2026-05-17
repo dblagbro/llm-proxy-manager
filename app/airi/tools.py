@@ -79,6 +79,54 @@ TOOL_SCHEMAS = [
 READ_ONLY_TOOLS = frozenset(t["name"] for t in TOOL_SCHEMAS)
 
 
+# v4.0 milestone 3 — mutating "propose" tools. These never apply a change
+# directly: they create a PENDING proposal (with a dry-run preview) that the
+# operator approves, unless the operator explicitly asked AIRI to apply it.
+PROPOSE_TOOL_SCHEMAS = [
+    {
+        "name": "propose_provider_change",
+        "description": "Propose a change to a provider — its routing priority, its "
+                       "enabled state, or a time-bounded auto-skip. Creates a PENDING "
+                       "proposal with an impact preview; it is NOT applied until the "
+                       "operator approves it. Set mode='apply' ONLY when the operator "
+                       "explicitly asked you to apply or auto-apply the change.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "provider": {"type": "string", "description": "Provider name or id."},
+                "field": {"type": "string",
+                          "enum": ["priority", "enabled", "auto_skip_hours"]},
+                "value": {"description": "New value — integer for priority / "
+                                         "auto_skip_hours, boolean for enabled."},
+                "mode": {"type": "string", "enum": ["suggest", "apply"],
+                         "description": "'suggest' (default) = pending proposal; "
+                                        "'apply' = apply immediately. Use 'apply' "
+                                        "only on an explicit operator request."},
+            },
+            "required": ["provider", "field", "value"],
+        },
+    },
+    {
+        "name": "propose_rule_change",
+        "description": "Propose a new value for a threshold rule in the active "
+                       "rule-set. Creates a PENDING proposal; not applied until the "
+                       "operator approves it (or mode='apply' on explicit request). "
+                       "Get rule ids from get_active_rules.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "rule_id": {"type": "string", "description": "The rule's id."},
+                "value": {"type": "integer", "description": "New integer value."},
+                "mode": {"type": "string", "enum": ["suggest", "apply"]},
+            },
+            "required": ["rule_id", "value"],
+        },
+    },
+]
+
+PROPOSE_TOOLS = frozenset(t["name"] for t in PROPOSE_TOOL_SCHEMAS)
+
+
 async def run_tool(name: str, args: dict) -> dict:
     """Dispatch a tool call. Returns a JSON-serialisable dict. Never raises —
     a failure becomes an ``error`` field so the agent can recover."""
@@ -100,6 +148,34 @@ async def run_tool(name: str, args: dict) -> dict:
         return {"error": f"unknown tool: {name}"}
     except Exception as e:  # never raise out of a tool
         logger.warning("airi.tool_failed name=%s err=%r", name, e)
+        return {"error": f"tool {name} failed: {e}"}
+
+
+async def run_propose_tool(name: str, args: dict, *, actor: str, prompt: str) -> dict:
+    """Dispatch a mutating 'propose' tool. Creates a pending proposal (and
+    applies it only when ``mode='apply'``). Never raises."""
+    from app.airi import proposals
+    from app.models.database import AsyncSessionLocal
+
+    mode = args.get("mode") or "suggest"
+    if mode not in ("suggest", "apply"):
+        mode = "suggest"
+    try:
+        async with AsyncSessionLocal() as db:
+            if name == "propose_provider_change":
+                return await proposals.create_provider_change(
+                    db, provider_ref=str(args.get("provider") or ""),
+                    field=str(args.get("field") or ""), value=args.get("value"),
+                    mode=mode, created_by=actor or "operator", prompt=prompt or "",
+                )
+            if name == "propose_rule_change":
+                return await proposals.create_rule_change(
+                    db, rule_id=str(args.get("rule_id") or ""), value=args.get("value"),
+                    mode=mode, created_by=actor or "operator", prompt=prompt or "",
+                )
+        return {"error": f"unknown propose tool: {name}"}
+    except Exception as e:
+        logger.warning("airi.propose_tool_failed name=%s err=%r", name, e)
         return {"error": f"tool {name} failed: {e}"}
 
 

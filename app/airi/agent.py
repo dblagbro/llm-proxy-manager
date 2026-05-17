@@ -1,9 +1,13 @@
 """AIRI agent loop — the conversational core of the AI Router Interface.
 
-v4.0 milestone 1 — read-only. Runs an Anthropic tool-use loop against the
-proxy's own ``/v1/messages`` endpoint, so AIRI's own calls inherit the
-routing fallback chain — AIRI keeps working if a single provider (e.g.
-Anthropic) is down. Read-only tools only; no mutation.
+Runs an Anthropic tool-use loop against the proxy's own ``/v1/messages``
+endpoint, so AIRI's own calls inherit the routing fallback chain — AIRI
+keeps working if a single provider (e.g. Anthropic) is down.
+
+v4.0 milestone 3: AIRI can now *propose* changes (provider priority /
+enabled / auto-skip, and threshold-rule values). A propose tool never
+mutates directly — it creates a PENDING proposal; applying is a separate
+explicit step unless the operator asked AIRI to auto-apply.
 """
 from __future__ import annotations
 
@@ -13,7 +17,10 @@ import logging
 import httpx
 
 from app.config import settings
-from app.airi.tools import TOOL_SCHEMAS, READ_ONLY_TOOLS, run_tool
+from app.airi.tools import (
+    TOOL_SCHEMAS, READ_ONLY_TOOLS, run_tool,
+    PROPOSE_TOOL_SCHEMAS, PROPOSE_TOOLS, run_propose_tool,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -30,11 +37,15 @@ _SYSTEM_PROMPT = """You are AIRI (the AI Router Interface), the assistant embedd
 the Routing page of llm-proxy2 — an LLM-routing gateway. You are the conversational \
 interface to the AI Provider Supervisor.
 
-In this version you are READ-ONLY: you can inspect and explain routing, providers, and \
-the supervisor, and answer an operator's questions — but you cannot change anything. If \
-the operator asks you to make a change, set a rule, or schedule something, say clearly \
-that you are read-only right now and that the ability to make changes is coming in a \
-later milestone. Do not name a version number.
+You can inspect and explain routing, providers, rule-sets, and the supervisor, and you \
+can PROPOSE changes — a provider's priority, its enabled state, an auto-skip, or a \
+threshold rule's value — using the propose_* tools. A proposal is created PENDING with \
+an impact preview and is NOT applied until the operator approves it. Set a propose \
+tool's mode to "apply" ONLY when the operator explicitly asked you to apply or \
+auto-apply the change; otherwise always use "suggest" (the default) and let the \
+operator decide. After you create a proposal, briefly tell the operator what you \
+proposed and what the dry-run shows. You cannot yet schedule recurring actions or send \
+notifications — say so if asked.
 
 GROUNDING — this is critical. Call the tools; never guess provider names, priorities, \
 counts, or settings. When you state the value of a field a tool returned, state it \
@@ -49,14 +60,25 @@ def _airi_model() -> str:
     return settings.airi_model or settings.ai_provider_supervisor_model
 
 
-async def run_airi_turn(messages: list[dict]):
+def _last_user_text(messages: list[dict]) -> str:
+    """The most recent plain-text user message — recorded on a proposal as
+    the prompt that authorised it (the audit trail)."""
+    for m in reversed(messages):
+        if m.get("role") == "user" and isinstance(m.get("content"), str):
+            return m["content"]
+    return ""
+
+
+async def run_airi_turn(messages: list[dict], actor: str | None = None):
     """Run one AIRI turn. ``messages`` is the Anthropic-shaped conversation
-    (``[{role, content}, ...]``, ending with the new user message).
+    (``[{role, content}, ...]``, ending with the new user message). ``actor``
+    is the operator's username — recorded on any proposal AIRI creates.
 
     Async generator yielding ``(event_type, data_dict)`` tuples:
-      - ``status``  — a progress note while a tool runs
-      - ``message`` — the final assistant answer (``{"text": ...}``)
-      - ``error``   — a turn-ending failure (``{"message": ...}``)
+      - ``status``   — a progress note while a tool runs
+      - ``proposal`` — a proposal AIRI just created (the UI renders a card)
+      - ``message``  — the final assistant answer (``{"text": ...}``)
+      - ``error``    — a turn-ending failure (``{"message": ...}``)
     """
     api_key = settings.ai_provider_supervisor_internal_api_key
     if not api_key:
@@ -65,6 +87,7 @@ async def run_airi_turn(messages: list[dict]):
 
     model = _airi_model()
     convo = [dict(m) for m in messages if isinstance(m, dict)]
+    user_prompt = _last_user_text(convo)
 
     for _round in range(_MAX_TOOL_ROUNDS):
         try:
@@ -94,12 +117,26 @@ async def run_airi_turn(messages: list[dict]):
         results = []
         for tu in tool_uses:
             tname = tu.get("name", "")
+            targs = tu.get("input") or {}
             yield ("status", {"text": f"checking {tname.replace('_', ' ')}…"})
-            if tname not in READ_ONLY_TOOLS:
-                # Defence-in-depth — milestone 1 exposes only read tools.
-                result = {"error": f"tool {tname} is not available"}
+            if tname in PROPOSE_TOOLS:
+                result = await run_propose_tool(
+                    tname, targs, actor=actor or "operator", prompt=user_prompt,
+                )
+                if isinstance(result, dict) and result.get("proposal_id"):
+                    yield ("proposal", {
+                        "proposal_id": result["proposal_id"],
+                        "kind": result.get("kind"),
+                        "target": result.get("target"),
+                        "change": result.get("change"),
+                        "dry_run": result.get("dry_run"),
+                        "status": result.get("status"),
+                    })
+            elif tname in READ_ONLY_TOOLS:
+                result = await run_tool(tname, targs)
             else:
-                result = await run_tool(tname, tu.get("input") or {})
+                # Defence-in-depth — the model asked for a tool we don't expose.
+                result = {"error": f"tool {tname} is not available"}
             results.append({
                 "type": "tool_result",
                 "tool_use_id": tu.get("id"),
@@ -121,7 +158,7 @@ async def _call_llm(api_key: str, model: str, messages: list[dict]) -> dict:
         "max_tokens": 1024,
         "system": _SYSTEM_PROMPT,
         "messages": messages,
-        "tools": TOOL_SCHEMAS,
+        "tools": TOOL_SCHEMAS + PROPOSE_TOOL_SCHEMAS,
     }
     async with httpx.AsyncClient(timeout=_LLM_TIMEOUT) as client:
         r = await client.post(

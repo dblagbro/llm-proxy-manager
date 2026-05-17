@@ -876,3 +876,24 @@ class AiriRule(Base):
     created_via_prompt = Column(Text)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class AiriProposal(Base):
+    """A change AIRI proposed — the unit of the propose -> dry-run -> apply
+    flow, and the audit record. ``prior_state`` snapshots what to restore on
+    revert. v4.0 milestone 3."""
+    __tablename__ = "airi_proposal"
+
+    id = Column(String, primary_key=True, default=lambda: secrets.token_hex(8))
+    kind = Column(String, nullable=False)          # provider_change | rule_change
+    target_id = Column(String, nullable=False)     # provider id or rule id
+    target_label = Column(String)                  # provider / rule name for display
+    change = Column(JSON, default=dict)            # {field, from, to, ...}
+    dry_run = Column(JSON, default=dict)           # the impact preview
+    status = Column(String, default="pending")     # pending|applied|rejected|reverted
+    prior_state = Column(JSON)                     # snapshot for revert
+    created_by = Column(String)
+    created_via_prompt = Column(Text)
+    created_at = Column(DateTime, server_default=func.now())
+    decided_at = Column(DateTime)
+    decided_by = Column(String)
