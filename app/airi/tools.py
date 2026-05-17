@@ -540,6 +540,11 @@ def _explain_routing() -> dict:
             "but it is pre-flighted so a pre-stream failure still falls back.",
             "6. Hedging (opt-in): when TTFT telemetry suggests the primary is slow, a "
             "backup stream is raced; the first stream with a healthy first chunk wins.",
+            "7. Capability-fit gate (v4.1): a provider that cannot serve a REQUIRED "
+            "capability even with emulation — no vision for an image request, the "
+            "tools+reasoning emulation collision, or a context window smaller than the "
+            "request — is SKIPPED in favour of one that can. If every provider falls "
+            "short, the best-ranked is still used (never hard-fail).",
         ],
         "adaptation_layer": {
             "principle": "Cross-emulate, don't fail — a provider that lacks a "
@@ -556,9 +561,9 @@ def _explain_routing() -> dict:
                              "is emulated (the app/cot pipeline) when the caller is a "
                              "claude-code key or sends an LMRH task=reasoning hint. "
                              "cot_enabled is on by default.",
-            "vision": "If a request has images and the provider is not vision-capable, "
-                      "the images are STRIPPED and the request proceeds text-only — "
-                      "the one lossy adaptation; it is surfaced on the response.",
+            "vision": "If a request has images, the capability-fit gate routes it to "
+                      "a vision-capable provider. Images are only stripped in the "
+                      "fallback case where NO vision-capable provider is available.",
             "memory": "Caller memory (app/memory) injects prior context per API key "
                       "when that key has opted in.",
             "translation": "An Anthropic-shaped request on an OpenAI provider (or vice "
@@ -570,14 +575,18 @@ def _explain_routing() -> dict:
                              "header naming what was emulated or left unmet.",
         },
         "residual_gaps": [
-            "Vision is stripped, not translated — a non-vision provider loses the images.",
-            "Tool emulation does NOT engage when CoT is engaged on the same request — "
-            "they are mutually exclusive in the router.",
+            "Tool emulation and CoT emulation are still mutually exclusive in the "
+            "request path — the v4.1 capability-fit gate works around this by SKIPPING "
+            "a provider native in neither when a request needs both; true tool+CoT "
+            "co-emulation is a planned deeper fix.",
             "Tool emulation depends on the model emitting well-formed <tool_call> "
             "blocks; a weak model may answer in prose instead — a soft degradation "
             "tracked by tool_call_success_rate, not a crash or a broken stream.",
             "Anthropic cache_control directives are dropped on non-Anthropic providers "
             "(a caching/perf hint, not a correctness issue).",
+            "If EVERY provider falls short of a request's required capabilities, the "
+            "gate's never-hard-fail floor still routes to the best candidate and "
+            "degrades, rather than erroring.",
         ],
         "supervisor": "The AI Provider Supervisor periodically reviews each provider's "
                       "recent stats with an LLM and can deprioritise or auto-skip a "
