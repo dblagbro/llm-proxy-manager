@@ -81,6 +81,8 @@ def _rule_dict(r: AiriRule) -> dict:
     return {
         "id": r.id, "name": r.name, "kind": r.kind, "spec": r.spec or {},
         "mode": r.mode, "enabled": bool(r.enabled),
+        "last_run_at": str(r.last_run_at) if r.last_run_at else None,
+        "last_action": r.last_action,
     }
 
 

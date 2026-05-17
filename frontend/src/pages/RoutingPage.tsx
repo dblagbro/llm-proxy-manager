@@ -6,6 +6,7 @@ import { Spinner } from '@/components/ui/Spinner'
 import { CopyButton } from '@/components/ui/CopyButton'
 import { AiriChatPanel } from '@/components/airi/AiriChatPanel'
 import { AiriRulesPanel } from '@/components/airi/AiriRulesPanel'
+import { AiriAutomationPanel } from '@/components/airi/AiriAutomationPanel'
 import { AiriChangesPanel } from '@/components/airi/AiriChangesPanel'
 
 const LMRH_DIMS = [
@@ -41,6 +42,7 @@ export function RoutingPage() {
       {/* v4.0 — AIRI (renders only when the airi_enabled flag is on) */}
       <AiriChatPanel />
       <AiriRulesPanel />
+      <AiriAutomationPanel />
       <AiriChangesPanel />
 
       {/* Protocol overview */}
