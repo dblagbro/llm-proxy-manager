@@ -9,6 +9,24 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v4.1.x — "Capability routing" milestone
 
+### v4.1.1 — tool + CoT co-emulation
+
+The deep follow-up to v4.1.0's capability gate. Tool emulation and CoT-E
+were mutually exclusive — the router suppressed tool emulation whenever CoT
+engaged — so a request needing both, on a provider native in neither, lost
+its tools, and the gate could only work around it by skipping the provider.
+
+They now compose. When both engage, the tool prompt is reasoning-prefixed:
+the model thinks step by step inside a `<thinking>` block, then emits
+`<tool_call>` blocks — one call, parsed by the existing emulator;
+`strip_thinking()` drops the block from a plain-text fallback answer. The
+router no longer suppresses tool emulation under CoT, and the capability-fit
+gate no longer skips a tools+reasoning request — it is now emulable, not a
+"cannot". Verified live: a provider native in neither served a
+tools+reasoning request and returned a real tool call. The full multi-pass
+CoT pipeline (plan / critique / verify) is still not composed into the tool
+path — that remains a heavier future option.
+
 ### v4.1.0 — capability-aware routing: simulate-or-skip
 
 A request must not silently degrade on a provider that cannot serve it.
