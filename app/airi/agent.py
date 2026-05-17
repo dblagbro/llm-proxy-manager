@@ -28,6 +28,11 @@ logger = logging.getLogger(__name__)
 # error), and a hard cap prevents a runaway turn.
 _MAX_TOOL_ROUNDS = 6
 
+# Blast-radius cap — AIRI auto-applies at most this many changes per turn;
+# anything beyond becomes a pending proposal the operator approves. A bulk
+# destructive request ("disable everything") thus cannot run away.
+_PER_TURN_APPLY_CAP = 1
+
 # AIRI's own LLM call goes to the proxy itself. read=120s is generous for
 # a tool-using turn; connect=5s fails fast on a dead proxy.
 _LLM_TIMEOUT = httpx.Timeout(connect=5.0, read=120.0, write=10.0, pool=5.0)
@@ -40,10 +45,15 @@ interface to the AI Provider Supervisor.
 You can inspect and explain routing, providers, rule-sets, and the supervisor, and you \
 can PROPOSE changes — a provider's priority, its enabled state, an auto-skip, or a \
 threshold rule's value — using the propose_* tools. A proposal is created PENDING with \
-an impact preview and is NOT applied until the operator approves it. Set a propose \
-tool's mode to "apply" ONLY when the operator explicitly asked you to apply or \
-auto-apply the change; otherwise always use "suggest" (the default) and let the \
-operator decide. After you create a proposal, briefly tell the operator what you \
+an impact preview and is NOT applied until the operator approves it.
+
+The propose tool's "mode" — this matters. ALWAYS use "suggest" (the default) unless the \
+operator's message contains an explicit apply instruction: a word like "apply", \
+"auto-apply", "do it", "go ahead", or "make the change". A bare imperative such as \
+"set X to 1", "lower X", "raise X's priority", or "disable X" is NOT an apply \
+instruction — and urgency words ("now", "right now", "immediately") do NOT make it \
+one. Propose it with mode="suggest" and let the operator approve it. When in doubt, \
+use "suggest". After you create a proposal, briefly tell the operator what you \
 proposed and what the dry-run shows. You cannot yet schedule recurring actions or send \
 notifications — say so if asked.
 
@@ -88,6 +98,7 @@ async def run_airi_turn(messages: list[dict], actor: str | None = None):
     model = _airi_model()
     convo = [dict(m) for m in messages if isinstance(m, dict)]
     user_prompt = _last_user_text(convo)
+    auto_applied = 0  # changes auto-applied this turn (blast-radius cap)
 
     for _round in range(_MAX_TOOL_ROUNDS):
         try:
@@ -120,9 +131,16 @@ async def run_airi_turn(messages: list[dict], actor: str | None = None):
             targs = tu.get("input") or {}
             yield ("status", {"text": f"checking {tname.replace('_', ' ')}…"})
             if tname in PROPOSE_TOOLS:
+                targs = dict(targs)
+                if targs.get("mode") == "apply" and auto_applied >= _PER_TURN_APPLY_CAP:
+                    # Blast-radius cap — only the first change auto-applies in
+                    # a turn; the rest become pending proposals to approve.
+                    targs["mode"] = "suggest"
                 result = await run_propose_tool(
                     tname, targs, actor=actor or "operator", prompt=user_prompt,
                 )
+                if isinstance(result, dict) and result.get("status") == "applied":
+                    auto_applied += 1
                 if isinstance(result, dict) and result.get("proposal_id"):
                     yield ("proposal", {
                         "proposal_id": result["proposal_id"],

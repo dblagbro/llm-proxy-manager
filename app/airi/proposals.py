@@ -20,7 +20,7 @@ import logging
 import secrets
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select, desc
+from sqlalchemy import select, desc, func
 
 from app.models.db import Provider, ActivityLog, AiriRule, AiriProposal
 from app.airi import dryrun, rules
@@ -212,6 +212,16 @@ async def _finish_create(db, prop: AiriProposal, mode: str, created_by: str) -> 
         "change": prop.change, "dry_run": prop.dry_run, "status": "pending",
     }
     if mode == "apply":
+        # Safety: auto-apply proceeds ONLY on a clean dry-run. A warning
+        # (high traffic share, "leaves no providers", …) means a human must
+        # look — the proposal stays pending for explicit operator approval.
+        warnings = (prop.dry_run or {}).get("warnings") or []
+        if warnings:
+            result["apply_withheld"] = (
+                "auto-apply withheld — the dry-run raised warnings; the "
+                "proposal is pending your review and explicit approval."
+            )
+            return result
         applied = await apply_proposal(db, prop.id, applied_by=created_by)
         if "error" in applied:
             result["status"] = "pending"
@@ -235,12 +245,26 @@ async def apply_proposal(db, proposal_id: str, applied_by: str) -> dict:
         p = await db.get(Provider, prop.target_id)
         if p is None:
             return {"error": "the provider no longer exists"}
+        field, to = prop.change["field"], prop.change["to"]
+        # Hard invariant — AIRI must never disable the last enabled
+        # provider (that would take the whole proxy offline, including
+        # AIRI's own LLM calls). Blocks even an explicit operator approve.
+        if field == "enabled" and bool(to) is False and bool(p.enabled):
+            others = (await db.execute(
+                select(func.count()).select_from(Provider).where(
+                    Provider.deleted_at.is_(None),
+                    Provider.enabled == True,  # noqa: E712
+                    Provider.id != p.id,
+                )
+            )).scalar() or 0
+            if others == 0:
+                return {"error": "refused — this would disable the last enabled "
+                                  "provider; the proxy must keep at least one."}
         prop.prior_state = {
             "priority": p.priority,
             "enabled": bool(p.enabled),
             "auto_skip_until": p.auto_skip_until.isoformat() if p.auto_skip_until else None,
         }
-        field, to = prop.change["field"], prop.change["to"]
         if field == "priority":
             p.priority = int(to)
         elif field == "enabled":
