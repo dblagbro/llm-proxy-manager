@@ -33,7 +33,7 @@ export function RoutingPage() {
   const { data: providers, isLoading } = useQuery({ queryKey: ['providers'], queryFn: providersApi.list })
 
   return (
-    <div className="p-6 space-y-6 max-w-5xl">
+    <div className="p-4 sm:p-6 space-y-6 max-w-5xl">
       <div>
         <h1 className="text-xl font-bold text-gray-900 dark:text-gray-100">Routing / LMRH</h1>
         <p className="text-sm text-gray-500 mt-0.5">LLM Model Routing Hint protocol — draft-blagbrough-lmrh-00</p>
