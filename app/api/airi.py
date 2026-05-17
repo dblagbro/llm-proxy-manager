@@ -18,9 +18,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.auth.admin import require_admin, AdminUser
-from app.models.database import get_db
+from app.models.database import get_db, AsyncSessionLocal
 from app.airi.agent import run_airi_turn
-from app.airi import rules
+from app.airi import rules, history
 
 logger = logging.getLogger(__name__)
 
@@ -34,12 +34,32 @@ async def airi_status(_: AdminUser = Depends(require_admin)) -> dict:
     return {"enabled": bool(settings.airi_enabled)}
 
 
+def _sse(event: str, data: dict) -> bytes:
+    return f"event: {event}\ndata: {json.dumps(data)}\n\n".encode()
+
+
+def _last_user_text(messages: list) -> str:
+    """The newest plain-text user message — the title seed + the persisted turn."""
+    for m in reversed(messages):
+        if isinstance(m, dict) and m.get("role") == "user" \
+                and isinstance(m.get("content"), str):
+            return m["content"]
+    return ""
+
+
 @router.post("/chat")
 async def airi_chat(request: Request, user: AdminUser = Depends(require_admin)):
-    """Run one AIRI turn. Body: ``{"messages": [{role, content}, ...]}`` —
-    the full conversation so far, ending with the new user message.
-    Response: a ``text/event-stream`` of ``status`` / ``message`` /
-    ``error`` events, terminated by a ``done`` event."""
+    """Run one AIRI turn. Body: ``{"messages": [{role, content}, ...],
+    "conversation_id": <str|null>}`` — the full conversation so far, ending
+    with the new user message. Response: a ``text/event-stream`` opening with
+    a ``conversation`` event (the thread id, new or continued), then
+    ``status`` / ``proposal`` / ``message`` / ``error`` events, terminated by
+    ``done``.
+
+    History is persisted (M5): the user turn before the agent runs, AIRI's
+    answer after it — each in its own short DB session, never held across the
+    LLM call (ARCH-A). A persistence failure is logged and swallowed; the
+    chat itself never breaks because history could not be written."""
     if not settings.airi_enabled:
         return JSONResponse({"detail": "AIRI is disabled"}, status_code=404)
 
@@ -47,19 +67,42 @@ async def airi_chat(request: Request, user: AdminUser = Depends(require_admin)):
     messages = body.get("messages") if isinstance(body, dict) else None
     if not isinstance(messages, list) or not messages:
         return JSONResponse({"detail": "messages[] is required"}, status_code=400)
+    conversation_id = body.get("conversation_id") if isinstance(body, dict) else None
+    user_text = _last_user_text(messages)
 
     async def _stream():
+        # 1. Persist the user turn — own session, before the agent loop.
+        conv_id = conversation_id
+        try:
+            async with AsyncSessionLocal() as db:
+                conv_id = await history.start_turn(
+                    db, user_id=user.username,
+                    conversation_id=conversation_id, user_text=user_text,
+                )
+        except Exception as e:
+            logger.warning("airi.history_start_failed err=%r", e)
+        yield _sse("conversation", {"conversation_id": conv_id})
+
+        # 2. Run the turn, streaming events through; capture the final answer.
+        answer = None
         try:
             async for event, data in run_airi_turn(messages, actor=user.username):
-                yield f"event: {event}\ndata: {json.dumps(data)}\n\n".encode()
+                if event == "message":
+                    answer = data.get("text")
+                yield _sse(event, data)
         except Exception as e:  # never leak a stack into the stream
             logger.warning("airi.chat_stream_failed err=%r", e)
-            yield (
-                b"event: error\ndata: "
-                + json.dumps({"message": "AIRI hit an internal error."}).encode()
-                + b"\n\n"
-            )
-        yield b"event: done\ndata: {}\n\n"
+            yield _sse("error", {"message": "AIRI hit an internal error."})
+
+        # 3. Persist AIRI's answer — own session, after the loop closed.
+        if conv_id and answer:
+            try:
+                async with AsyncSessionLocal() as db:
+                    await history.record_assistant(
+                        db, conversation_id=conv_id, text=answer)
+            except Exception as e:
+                logger.warning("airi.history_record_failed err=%r", e)
+        yield _sse("done", {})
 
     return StreamingResponse(
         _stream(),
@@ -286,3 +329,42 @@ async def airi_toggle_rule(
     if "error" in result:
         return JSONResponse(result, status_code=404)
     return result
+
+
+# ── v4.0 milestone 5 — conversation history (per-user) + cross-user search ────
+
+@router.get("/conversations")
+async def airi_list_conversations(
+    user: AdminUser = Depends(require_admin),
+    __: None = Depends(_require_airi_enabled),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """The calling operator's own AIRI conversations, most-recent first."""
+    return {"conversations": await history.list_conversations(db, user_id=user.username)}
+
+
+@router.get("/search")
+async def airi_search(
+    q: str = "",
+    _: AdminUser = Depends(require_admin),
+    __: None = Depends(_require_airi_enabled),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Full-text search across EVERY operator's AIRI conversations
+    (decision #5 — the shared change-coordination history)."""
+    return {"query": q, "results": await history.search_messages(db, query=q)}
+
+
+@router.get("/conversations/{conversation_id}")
+async def airi_get_conversation(
+    conversation_id: str,
+    _: AdminUser = Depends(require_admin),
+    __: None = Depends(_require_airi_enabled),
+    db: AsyncSession = Depends(get_db),
+):
+    """One conversation with its full transcript. Any operator may open any
+    conversation — history is shared for change coordination."""
+    detail = await history.get_conversation(db, conversation_id)
+    if detail is None:
+        return JSONResponse({"detail": "conversation not found"}, status_code=404)
+    return detail

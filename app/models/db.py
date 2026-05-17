@@ -897,3 +897,32 @@ class AiriProposal(Base):
     created_at = Column(DateTime, server_default=func.now())
     decided_at = Column(DateTime)
     decided_by = Column(String)
+
+
+class AiriConversation(Base):
+    """A persistent AIRI chat thread. History is per-user, but every user can
+    SEARCH every conversation (decision #5 — the shared history is the
+    cross-operator change-coordination surface). v4.0 milestone 5."""
+    __tablename__ = "airi_conversation"
+
+    id = Column(String, primary_key=True, default=lambda: secrets.token_hex(8))
+    user_id = Column(String, nullable=False, index=True)   # owning operator
+    title = Column(String)                                 # first user line, truncated
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+
+class AiriMessage(Base):
+    """One turn inside an AIRI conversation. ``content`` is searchable across
+    all users. ``tool_calls`` / ``trace_id`` are kept for forward-compat with
+    a richer transcript; v4.0 stores plain user/assistant text. M5."""
+    __tablename__ = "airi_message"
+
+    id = Column(String, primary_key=True, default=lambda: secrets.token_hex(8))
+    conversation_id = Column(String, ForeignKey("airi_conversation.id", ondelete="CASCADE"),
+                             nullable=False, index=True)
+    role = Column(String, nullable=False)                  # user|assistant
+    content = Column(Text)
+    tool_calls = Column(JSON)                              # forward-compat, unused in 4.0
+    trace_id = Column(String)                              # forward-compat, unused in 4.0
+    created_at = Column(DateTime, server_default=func.now())
