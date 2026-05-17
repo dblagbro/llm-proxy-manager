@@ -7,6 +7,29 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ---
 
+## v4.1.x — "Capability routing" milestone
+
+### v4.1.0 — capability-aware routing: simulate-or-skip
+
+A request must not silently degrade on a provider that cannot serve it.
+`select_provider` now runs a **capability-fit gate** after LMRH ranking:
+for each candidate it checks the request's *required* capabilities and
+**skips** any provider that cannot serve one even with emulation —
+
+- **vision** — a non-vision provider for an image request is skipped
+  (routed to a vision-capable one) rather than having its images stripped;
+- **tools + reasoning** — a provider native in *neither* would silently
+  drop the tools (router tool-emulation and CoT-E are mutually exclusive),
+  so it is skipped for one native in at least one;
+- **context** — a request larger than the provider's context window is a
+  hard physical limit — hard skip.
+
+**Never hard-fails:** if the gate would empty the candidate list it is
+kept unchanged and the best candidate emulates/degrades — the gate only
+*reorders toward capable providers*. Skipped providers surface on an
+`X-Capability-Skipped` response header; `explain_routing` describes the
+gate. Deeper tool+CoT *co-emulation* remains a planned follow-up.
+
 ## v4.0.x — "AIRI" milestone
 
 ### v4.0.3 — AIRI per-user notification preferences
