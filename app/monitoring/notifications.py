@@ -55,10 +55,15 @@ async def send_alert(
     message: str,
     provider_id: Optional[str] = None,
     throttle_key: Optional[str] = None,
+    to: Optional[str] = None,
 ):
+    """Send an alert email. ``to`` overrides the global ``smtp_to`` recipient
+    (used by AIRI per-user notification subscriptions); when None the global
+    mailbox is used."""
     if not settings.smtp_enabled:
         return
-    if not all([settings.smtp_host, settings.smtp_user, settings.smtp_pass, settings.smtp_to]):
+    recipient = to or settings.smtp_to
+    if not all([settings.smtp_host, settings.smtp_user, settings.smtp_pass]) or not recipient:
         return
 
     key = throttle_key or f"{severity}:{subject}"
@@ -66,16 +71,18 @@ async def send_alert(
         return
 
     try:
-        await asyncio.to_thread(_send_sync, severity, subject, message, provider_id)
+        await asyncio.to_thread(_send_sync, severity, subject, message,
+                                provider_id, recipient)
     except Exception as e:
         logger.error(f"Failed to send alert email: {e}")
 
 
-def _send_sync(severity: str, subject: str, message: str, provider_id: Optional[str]):
+def _send_sync(severity: str, subject: str, message: str,
+               provider_id: Optional[str], recipient: Optional[str] = None):
     msg = MIMEMultipart("alternative")
     msg["Subject"] = f"[llm-proxy] {subject}"
     msg["From"] = settings.smtp_from or settings.smtp_user
-    msg["To"] = settings.smtp_to
+    msg["To"] = recipient or settings.smtp_to
 
     msg.attach(MIMEText(message, "plain"))
     msg.attach(MIMEText(_build_html(severity, subject, message, provider_id), "html"))

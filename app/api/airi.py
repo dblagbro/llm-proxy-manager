@@ -368,3 +368,41 @@ async def airi_get_conversation(
     if detail is None:
         return JSONResponse({"detail": "conversation not found"}, status_code=404)
     return detail
+
+
+# ── v4.0.3 — per-user notification preferences ───────────────────────────────
+
+@router.get("/notification-prefs")
+async def airi_get_notification_pref(
+    user: AdminUser = Depends(require_admin),
+    __: None = Depends(_require_airi_enabled),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """The calling operator's own AIRI-notification subscription."""
+    from app.airi import notify_prefs
+    return await notify_prefs.get_pref(db, user.username)
+
+
+@router.put("/notification-prefs")
+async def airi_set_notification_pref(
+    request: Request,
+    user: AdminUser = Depends(require_admin),
+    __: None = Depends(_require_airi_enabled),
+    db: AsyncSession = Depends(get_db),
+):
+    """Save the calling operator's notification subscription. Body:
+    ``{email, enabled, categories: {monitor, automation}, min_severity}``."""
+    from app.airi import notify_prefs
+    body = await request.json()
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "a JSON object body is required"}, status_code=400)
+    result = await notify_prefs.set_pref(
+        db, user.username,
+        email=body.get("email"),
+        enabled=bool(body.get("enabled", True)),
+        categories=body.get("categories"),
+        min_severity=body.get("min_severity") or "warning",
+    )
+    if "error" in result:
+        return JSONResponse(result, status_code=400)
+    return result

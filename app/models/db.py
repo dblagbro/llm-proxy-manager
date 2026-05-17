@@ -926,3 +926,23 @@ class AiriMessage(Base):
     tool_calls = Column(JSON)                              # forward-compat, unused in 4.0
     trace_id = Column(String)                              # forward-compat, unused in 4.0
     created_at = Column(DateTime, server_default=func.now())
+
+
+class AiriNotificationPref(Base):
+    """A single operator's personal AIRI-notification subscription (v4.0.3).
+
+    The global alert mailbox (``settings.smtp_to``) always receives AIRI
+    notifications — this row is an ADDITIVE per-user subscription: an
+    operator opts their own address in and tunes which categories and what
+    minimum severity reach them. One row per user; absence == no personal
+    subscription."""
+    __tablename__ = "airi_notification_pref"
+
+    id = Column(String, primary_key=True, default=lambda: secrets.token_hex(8))
+    user_id = Column(String, nullable=False, unique=True, index=True)  # username
+    email = Column(String)                                 # NULL == no personal email
+    enabled = Column(Boolean, default=True)                # personal subscription on/off
+    categories = Column(JSON, default=lambda: {"monitor": True, "automation": True})
+    min_severity = Column(String, default="warning")       # info|warning|critical
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())

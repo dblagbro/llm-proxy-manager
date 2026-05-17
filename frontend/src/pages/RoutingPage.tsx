@@ -8,6 +8,7 @@ import { AiriChatPanel } from '@/components/airi/AiriChatPanel'
 import { AiriRulesPanel } from '@/components/airi/AiriRulesPanel'
 import { AiriAutomationPanel } from '@/components/airi/AiriAutomationPanel'
 import { AiriChangesPanel } from '@/components/airi/AiriChangesPanel'
+import { AiriNotificationsPanel } from '@/components/airi/AiriNotificationsPanel'
 
 const LMRH_DIMS = [
   { key: 'task', label: 'task', values: 'chat, coding, reasoning, summarization, translation, classification, embedding', weight: 10 },
@@ -44,6 +45,7 @@ export function RoutingPage() {
       <AiriRulesPanel />
       <AiriAutomationPanel />
       <AiriChangesPanel />
+      <AiriNotificationsPanel />
 
       {/* Protocol overview */}
       <Card>
