@@ -7,6 +7,50 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ---
 
+## v4.0.0 — "AIRI" milestone
+
+### v4.0.0 — AIRI, the AI Router Interface
+
+A conversational interface to the AI Provider Supervisor — a chat panel on
+the Routing/LMRH page. Operators talk to routing in plain English: inspect
+and explain it, propose changes, edit rules, save/restore named rule-sets,
+author deterministic scheduled rules, and search shared history. Voice input
+("Airy" wake word) is planned for v4.1; per-user notification preferences for
+v4.0.1. The whole feature ships behind the `airi_enabled` flag (default off).
+
+Built as five milestones, all converging into this release:
+
+- **Read-only chat** — an SSE-streamed agent loop with grounded read tools
+  (`get_supervisor_state`, `get_provider_health`, `get_routing_config`,
+  `get_recent_routing`, `explain_routing`). AIRI's own LLM calls go through
+  the proxy's `/v1/messages`, so they inherit the fallback chain and survive a
+  single-provider outage; they are tagged `X-Internal-Source: airi` and
+  excluded from provider stats.
+- **Rules + rule-sets** — `airi_ruleset` / `airi_rule`; a seeded `Default`
+  set; save-as, activate, restore-default; editable threshold rules.
+- **Propose / dry-run / apply / revert** — mutating tools never apply
+  directly: they create a *pending* proposal with an impact preview. Applying
+  is a separate explicit step. Three safety guards: dry-run warnings block
+  auto-apply, a per-turn blast-radius cap of one change, and a hard invariant
+  refusing to disable the last enabled provider. Every applied change
+  snapshots prior state for one-click revert; the `airi_proposal` row is the
+  audit record.
+- **Scheduled rules + monitors + notifier** — operator-authored rules compile
+  to deterministic `trigger → condition → action` evaluated by a background
+  loop with **no LLM in it**. Per-rule cooldown, an oscillation breaker, and a
+  global automation kill switch (fail-safe off on restart). Monitor rules
+  email the operator with deep links.
+- **Conversation history + cross-user search** — chat threads persist
+  (`airi_conversation` / `airi_message`); history is per-user but search
+  spans every operator's conversations, so two operators don't make opposing
+  changes blind. Mobile-responsive throughout.
+
+Verified by a full live QA (39/39 checks against a real LLM) plus 58 AIRI
+unit tests within the 2071-test suite. See `docs/4.0-airi-design.md` and
+`docs/4.0-airi-qa-report.md`.
+
+---
+
 ## v3.10.x — "Harden" milestone
 
 ### v3.10.17 — hedge-correctness: race_streams skips error-frame first chunks
