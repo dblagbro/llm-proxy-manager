@@ -11,6 +11,8 @@ export function Layout() {
   const [collapsed, setCollapsed] = useState(() =>
     localStorage.getItem('sidebar-collapsed') === 'true'
   )
+  // Mobile (<md) drawer state — the sidebar is off-canvas until opened.
+  const [mobileOpen, setMobileOpen] = useState(false)
 
   const toggle = () => {
     const next = !collapsed
@@ -49,14 +51,24 @@ export function Layout() {
 
   return (
     <div className="flex h-screen overflow-hidden bg-gray-50 dark:bg-gray-950">
+      {/* Mobile drawer backdrop — tap to dismiss (hidden at >=md). */}
+      {mobileOpen && (
+        <div
+          className="fixed inset-0 z-40 bg-black/50 md:hidden"
+          onClick={() => setMobileOpen(false)}
+          aria-hidden="true"
+        />
+      )}
       <Sidebar
         collapsed={collapsed}
         onToggle={toggle}
+        mobileOpen={mobileOpen}
+        onMobileClose={() => setMobileOpen(false)}
         clusterEnabled={false}  // TODO: pull from settings
         openCircuitBreakers={openCircuitBreakers}
       />
       <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
-        <TopBar />
+        <TopBar onMenuClick={() => setMobileOpen(true)} />
         <ManualOverrideBanner />
         {staleVersion && !bannerDismissed && (
           <div className="bg-indigo-600 text-white px-4 py-2 flex items-center gap-3 text-sm shrink-0">

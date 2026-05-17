@@ -1,12 +1,12 @@
 import { useQuery } from '@tanstack/react-query'
-import { Sun, Moon, LogOut, User, RefreshCw } from 'lucide-react'
+import { Sun, Moon, LogOut, User, RefreshCw, Menu } from 'lucide-react'
 import { clsx } from 'clsx'
 import { useAuth } from '@/context/AuthContext'
 import { useTheme } from '@/context/ThemeContext'
 import { clusterApi } from '@/api'
 import { Badge } from '@/components/ui/Badge'
 
-export function TopBar() {
+export function TopBar({ onMenuClick }: { onMenuClick?: () => void }) {
   const { user, logout } = useAuth()
   const { theme, toggle } = useTheme()
 
@@ -29,9 +29,17 @@ export function TopBar() {
     : `${health.healthyProviders}/${health.totalProviders} providers`
 
   return (
-    <header className="flex items-center justify-between px-6 py-3 bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800 shrink-0 gap-4">
+    <header className="flex items-center justify-between px-4 sm:px-6 py-3 bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800 shrink-0 gap-3 sm:gap-4">
       {/* Health status */}
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+        {/* Hamburger — opens the sidebar drawer on mobile only */}
+        <button
+          onClick={onMenuClick}
+          className="md:hidden -ml-1 p-2 rounded-lg text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+          aria-label="Open menu"
+        >
+          <Menu className="h-5 w-5" />
+        </button>
         <Badge variant={statusVariant} size="md">
           <span className={clsx(
             'inline-block h-1.5 w-1.5 rounded-full mr-1.5',
