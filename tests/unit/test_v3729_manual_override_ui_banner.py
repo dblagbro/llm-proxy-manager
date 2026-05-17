@@ -88,7 +88,7 @@ def test_banner_renders_inside_main_column_above_outlet():
     the Outlet (which would be inside the page) or outside the column
     (which would be next to the sidebar)."""
     src = Path("frontend/src/components/layout/Layout.tsx").read_text()
-    topbar = src.index("<TopBar />")
+    topbar = src.index("<TopBar")  # may carry props (e.g. onMenuClick)
     banner = src.index("<ManualOverrideBanner />")
     outlet = src.index("<Outlet />")
     assert topbar < banner < outlet

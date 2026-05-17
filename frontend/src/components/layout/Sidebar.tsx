@@ -19,12 +19,19 @@ interface NavItem {
 interface SidebarProps {
   collapsed: boolean
   onToggle: () => void
+  /** Mobile drawer open state (ignored at >=md, where the sidebar is in-flow). */
+  mobileOpen?: boolean
+  /** Close the mobile drawer — called on backdrop click and on nav. */
+  onMobileClose?: () => void
   clusterEnabled?: boolean
   openCircuitBreakers?: number
   liveActivity?: boolean
 }
 
-export function Sidebar({ collapsed, onToggle, openCircuitBreakers = 0, liveActivity = false }: Omit<SidebarProps, 'clusterEnabled'> & { clusterEnabled?: boolean }) {
+export function Sidebar({
+  collapsed, onToggle, mobileOpen = false, onMobileClose,
+  openCircuitBreakers = 0, liveActivity = false,
+}: Omit<SidebarProps, 'clusterEnabled'> & { clusterEnabled?: boolean }) {
   const { data: health } = useQuery({
     queryKey: ['sidebar-health'],
     queryFn: clusterApi.health,
@@ -50,21 +57,31 @@ export function Sidebar({ collapsed, onToggle, openCircuitBreakers = 0, liveActi
   ]
 
   return (
-    <aside className={clsx(
-      'flex flex-col bg-gray-900 border-r border-gray-800 transition-all duration-200 shrink-0',
-      collapsed ? 'w-14' : 'w-56'
-    )}>
+    <aside
+      className={clsx(
+        'flex flex-col bg-gray-900 border-r border-gray-800 transition-all duration-200',
+        // < md: off-canvas drawer (fixed, slides in/out, always full width).
+        // >= md: an in-flow column whose width follows `collapsed`.
+        'fixed inset-y-0 left-0 z-50 w-56 shadow-xl',
+        'md:static md:z-auto md:shadow-none md:shrink-0 md:translate-x-0',
+        mobileOpen ? 'translate-x-0' : '-translate-x-full',
+        collapsed ? 'md:w-14' : 'md:w-56',
+      )}
+    >
       {/* Logo */}
-      <div className={clsx('flex items-center gap-2 px-3 py-4 border-b border-gray-800', collapsed && 'justify-center')}>
+      <div className={clsx(
+        'flex items-center gap-2 px-3 py-4 border-b border-gray-800',
+        collapsed && 'md:justify-center',
+      )}>
         <div className="flex items-center justify-center h-8 w-8 bg-indigo-600 rounded-lg shrink-0">
           <Zap className="h-4 w-4 text-white" />
         </div>
-        {!collapsed && (
-          <div className="min-w-0">
-            <p className="text-sm font-bold text-white truncate">llm-proxy</p>
-            <p className="text-xs text-gray-400">{version}</p>
-          </div>
-        )}
+        {/* label hidden only when collapsed AND on desktop — the mobile drawer
+            always shows the full sidebar */}
+        <div className={clsx('min-w-0', collapsed && 'md:hidden')}>
+          <p className="text-sm font-bold text-white truncate">llm-proxy</p>
+          <p className="text-xs text-gray-400">{version}</p>
+        </div>
       </div>
 
       {/* Nav */}
@@ -80,9 +97,10 @@ export function Sidebar({ collapsed, onToggle, openCircuitBreakers = 0, liveActi
               key={item.to}
               to={item.to}
               end={item.to === '/'}
+              onClick={onMobileClose}
               className={({ isActive }) => clsx(
                 'flex items-center gap-2.5 px-2 py-2 rounded-lg text-sm transition-colors group',
-                collapsed && 'justify-center',
+                collapsed && 'md:justify-center',
                 isActive
                   ? 'bg-indigo-600 text-white'
                   : 'text-gray-400 hover:text-white hover:bg-gray-800'
@@ -90,28 +108,27 @@ export function Sidebar({ collapsed, onToggle, openCircuitBreakers = 0, liveActi
               title={collapsed ? item.label : undefined}
             >
               <Icon className="h-4 w-4 shrink-0" />
-              {!collapsed && (
-                <>
-                  <span className="flex-1 truncate">{item.label}</span>
-                  {item.badge && (
-                    <span className={clsx(
-                      'text-xs px-1.5 py-0.5 rounded-full font-medium shrink-0',
-                      item.badge === '●' ? 'text-green-400 text-base leading-none' : 'bg-red-500 text-white'
-                    )}>
-                      {item.badge}
-                    </span>
-                  )}
-                </>
+              <span className={clsx('flex-1 truncate', collapsed && 'md:hidden')}>
+                {item.label}
+              </span>
+              {item.badge && (
+                <span className={clsx(
+                  'text-xs px-1.5 py-0.5 rounded-full font-medium shrink-0',
+                  item.badge === '●' ? 'text-green-400 text-base leading-none' : 'bg-red-500 text-white',
+                  collapsed && 'md:hidden',
+                )}>
+                  {item.badge}
+                </span>
               )}
             </NavLink>
           )
         })}
       </nav>
 
-      {/* Collapse toggle */}
+      {/* Collapse toggle — desktop only; on mobile the drawer is the control */}
       <button
         onClick={onToggle}
-        className="flex items-center justify-center p-3 border-t border-gray-800 text-gray-500 hover:text-white hover:bg-gray-800 transition-colors"
+        className="hidden md:flex items-center justify-center p-3 border-t border-gray-800 text-gray-500 hover:text-white hover:bg-gray-800 transition-colors"
       >
         {collapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
       </button>
