@@ -220,3 +220,80 @@ async def test_agent_emits_proposal_event(db_ready, monkeypatch):
     prop = next(d for k, d in events if k == "proposal")
     assert prop["target"] == "airi-m3-alpha" and prop["status"] == "pending"
     assert events[-1][0] == "message"
+
+
+# ── M3 safety guards (found by the adversarial smoke) ────────────────────────
+
+@pytest_asyncio.fixture
+async def solo_provider():
+    """A DB with exactly ONE enabled provider — for last-provider guards."""
+    from app.models.database import engine, AsyncSessionLocal
+    from app.models.db import Base, AiriRuleset, AiriRule, AiriProposal
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    async with AsyncSessionLocal() as c:
+        await c.execute(delete(AiriProposal))
+        await c.execute(delete(AiriRule))
+        await c.execute(delete(AiriRuleset))
+        await c.execute(delete(Provider))
+        await c.commit()
+    async with AsyncSessionLocal() as c:
+        c.add(Provider(name="airi-m3-solo", provider_type="openai",
+                       priority=5, enabled=True))
+        await c.commit()
+    yield AsyncSessionLocal
+
+
+@pytest.mark.asyncio
+async def test_apply_withheld_when_dry_run_warns(solo_provider):
+    """Guard 1 — mode='apply' on a change whose dry-run warns must NOT
+    auto-apply; it stays pending for explicit operator approval."""
+    async with solo_provider() as db:
+        res = await proposals.create_provider_change(
+            db, provider_ref="airi-m3-solo", field="enabled", value=False,
+            mode="apply", created_by="t", prompt="disable it")
+    assert res["status"] == "pending", "a warned change must not auto-apply"
+    assert "apply_withheld" in res
+    assert (await _provider(solo_provider, "airi-m3-solo")).enabled is True
+
+
+@pytest.mark.asyncio
+async def test_cannot_disable_last_provider(solo_provider):
+    """Guard 2 — applying a disable of the last enabled provider is refused,
+    even via an explicit approve."""
+    async with solo_provider() as db:
+        res = await proposals.create_provider_change(
+            db, provider_ref="airi-m3-solo", field="enabled", value=False,
+            mode="suggest", created_by="t", prompt="p")
+        out = await proposals.apply_proposal(db, res["proposal_id"], applied_by="t")
+    assert "error" in out and "last enabled provider" in out["error"]
+    assert (await _provider(solo_provider, "airi-m3-solo")).enabled is True
+
+
+@pytest.mark.asyncio
+async def test_agent_per_turn_apply_cap(db_ready, monkeypatch):
+    """Guard 3 — AIRI auto-applies at most one change per turn; further
+    apply-mode changes are downgraded to pending proposals."""
+    monkeypatch.setattr(agent.settings, "ai_provider_supervisor_internal_api_key", "k")
+    calls = []
+
+    async def fake_llm(api_key, model, messages):
+        calls.append(messages)
+        if len(calls) == 1:
+            return {"content": [
+                {"type": "tool_use", "id": "a", "name": "propose_provider_change",
+                 "input": {"provider": "airi-m3-alpha", "field": "priority",
+                           "value": 6, "mode": "apply"}},
+                {"type": "tool_use", "id": "b", "name": "propose_provider_change",
+                 "input": {"provider": "airi-m3-beta", "field": "priority",
+                           "value": 11, "mode": "apply"}},
+            ], "stop_reason": "tool_use"}
+        return {"content": [{"type": "text", "text": "done"}], "stop_reason": "end_turn"}
+    monkeypatch.setattr(agent, "_call_llm", fake_llm)
+
+    events = [e async for e in agent.run_airi_turn(
+        [{"role": "user", "content": "raise both and apply"}], actor="t")]
+    statuses = sorted(d["status"] for k, d in events if k == "proposal")
+    assert statuses == ["applied", "pending"], (
+        f"expected exactly one auto-applied + one pending; got {statuses}"
+    )
