@@ -3,11 +3,13 @@
  *
  * The conversational panel on the Routing / LMRH page. AIRI inspects and
  * explains routing, and (milestone 3) can PROPOSE changes — rendered inline
- * as approve / reject cards. Renders only when the `airi_enabled` flag is on.
- * Mobile-responsive.
+ * as approve / reject cards. Milestone 5 adds persistent conversation
+ * history with a cross-user search drawer. Renders only when the
+ * `airi_enabled` flag is on. Mobile-responsive.
  */
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { getBasePath } from '@/lib/basePath'
+import { AiriHistory } from './AiriHistory'
 
 type ProposalData = {
   proposal_id: string
@@ -33,13 +35,14 @@ const SUGGESTIONS = [
 /** POST the conversation and parse the SSE response, one frame at a time. */
 async function streamChat(
   messages: { role: string; content: string }[],
+  conversationId: string | null,
   onEvent: (event: string, data: any) => void,
 ): Promise<void> {
   const res = await fetch(`${getBasePath()}/api/airi/chat`, {
     method: 'POST',
     credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ messages }),
+    body: JSON.stringify({ messages, conversation_id: conversationId }),
   })
   if (!res.ok || !res.body) {
     onEvent('error', { message: `AIRI request failed (HTTP ${res.status}).` })
@@ -80,6 +83,9 @@ export function AiriChatPanel() {
   const [status, setStatus] = useState('')
   // proposal_id -> latest status (overrides the value the event carried)
   const [propStatus, setPropStatus] = useState<Record<string, string>>({})
+  // M5 — the persisted thread this panel is attached to, and the history drawer
+  const [conversationId, setConversationId] = useState<string | null>(null)
+  const [historyOpen, setHistoryOpen] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -107,8 +113,11 @@ export function AiriChatPanel() {
         .filter((m) => m.role === 'user' || m.role === 'assistant')
         .map((m) => ({ role: m.role, content: m.content || '' }))
       try {
-        await streamChat(wire, (event, data) => {
-          if (event === 'status') {
+        await streamChat(wire, conversationId, (event, data) => {
+          if (event === 'conversation') {
+            // server tells us which persisted thread this turn landed in
+            if (data.conversation_id) setConversationId(data.conversation_id)
+          } else if (event === 'status') {
             setStatus(data.text || 'working…')
           } else if (event === 'proposal') {
             setMessages((m) => [...m, { role: 'proposal', proposal: data }])
@@ -133,7 +142,49 @@ export function AiriChatPanel() {
         setStatus('')
       }
     },
-    [busy, messages],
+    [busy, messages, conversationId],
+  )
+
+  /** Start a fresh thread — the next turn creates a new persisted conversation. */
+  const newChat = useCallback(() => {
+    if (busy) return
+    setMessages([])
+    setConversationId(null)
+    setPropStatus({})
+    setStatus('')
+    setHistoryOpen(false)
+  }, [busy])
+
+  /** Load a persisted conversation (the operator's own, or anyone's via search). */
+  const loadConversation = useCallback(
+    async (id: string) => {
+      if (busy) return
+      setHistoryOpen(false)
+      setBusy(true)
+      try {
+        const res = await fetch(
+          `${getBasePath()}/api/airi/conversations/${id}`,
+          { credentials: 'include' },
+        )
+        if (!res.ok) {
+          setStatus('Could not load that conversation.')
+          return
+        }
+        const body = await res.json()
+        const loaded: Msg[] = (body.messages || [])
+          .filter((m: any) => m.role === 'user' || m.role === 'assistant')
+          .map((m: any) => ({ role: m.role, content: m.content || '' }))
+        setMessages(loaded)
+        setConversationId(id)
+        setPropStatus({})
+        setStatus('')
+      } catch {
+        setStatus('Could not load that conversation — AIRI is unreachable.')
+      } finally {
+        setBusy(false)
+      }
+    },
+    [busy],
   )
 
   const decide = useCallback(
@@ -181,6 +232,38 @@ export function AiriChatPanel() {
 
       {expanded && (
         <div className="border-t border-gray-200 dark:border-gray-700">
+          {/* M5 toolbar — new thread + history drawer */}
+          <div className="flex items-center gap-2 px-3 py-2 flex-wrap
+                          border-b border-gray-100 dark:border-gray-700/60">
+            <button
+              onClick={newChat}
+              disabled={busy}
+              className="rounded-md border border-gray-300 dark:border-gray-600 px-3 py-1.5
+                         text-xs font-medium text-gray-700 dark:text-gray-300
+                         hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50"
+            >
+              + New chat
+            </button>
+            <button
+              onClick={() => setHistoryOpen((h) => !h)}
+              className={
+                'rounded-md border px-3 py-1.5 text-xs font-medium disabled:opacity-50 ' +
+                (historyOpen
+                  ? 'border-blue-400 bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300'
+                  : 'border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700')
+              }
+            >
+              History &amp; search {historyOpen ? '▾' : '▸'}
+            </button>
+            {conversationId && (
+              <span className="text-xs text-gray-400 dark:text-gray-500 truncate">
+                thread saved
+              </span>
+            )}
+          </div>
+
+          <AiriHistory open={historyOpen} onSelect={loadConversation} />
+
           <div
             ref={scrollRef}
             className="max-h-[55vh] min-h-[8rem] overflow-y-auto px-4 py-3 space-y-3"
