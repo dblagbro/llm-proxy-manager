@@ -52,7 +52,12 @@ TAG="v${VERSION}"
 
 run() {
   echo "+ $*"
-  [[ $DRY_RUN -eq 0 ]] && "$@"
+  # NB: an `&&` short-circuit here returns 1 when DRY_RUN=1, which trips
+  # `set -e` and aborts the dry-run after the first step. Use an explicit
+  # `if` so a skipped step returns 0.
+  if [[ $DRY_RUN -eq 0 ]]; then
+    "$@"
+  fi
 }
 
 echo "=== llm-proxy v2 release ceremony ==="
