@@ -94,16 +94,44 @@ def _describe_openai(tool: dict) -> str:
     )
 
 
-def build_anthropic_tool_prompt(tools: list[dict], allow_parallel: bool = True) -> str:
+# v4.1.1 — co-emulation. When a request needs BOTH tool-calling and reasoning
+# emulation (the chosen provider is native in neither), the tool prompt is
+# prefixed with this so the model reasons step by step before it acts. The
+# <thinking> block is parsed off the response (parse_tool_calls ignores it;
+# strip_thinking removes it from a plain-text answer).
+_COEMULATION_PREAMBLE = """\
+This request needs careful reasoning. FIRST, think through it step by step inside \
+ONE <thinking>...</thinking> block: restate the goal, note what information or \
+actions are needed, and plan your approach. AFTER the </thinking> block, follow the \
+tool-use instructions below. The <thinking> block is the only prose allowed before \
+a tool call.
+
+"""
+
+_THINKING_RE = re.compile(r"<thinking>.*?</thinking>\s*", re.DOTALL | re.IGNORECASE)
+
+
+def strip_thinking(text: str) -> str:
+    """Remove the co-emulation <thinking> block — used when the model produced
+    reasoning plus a plain-text answer (no tool call) so the caller sees a
+    clean answer."""
+    return _THINKING_RE.sub("", text or "").strip()
+
+
+def build_anthropic_tool_prompt(tools: list[dict], allow_parallel: bool = True,
+                                with_reasoning: bool = False) -> str:
     descriptions = "\n\n".join(_describe_anthropic(t) for t in tools)
     template = _TOOL_PROMPT if allow_parallel else _TOOL_PROMPT_SERIAL
-    return template.format(descriptions=descriptions)
+    prompt = template.format(descriptions=descriptions)
+    return (_COEMULATION_PREAMBLE + prompt) if with_reasoning else prompt
 
 
-def build_openai_tool_prompt(tools: list[dict], allow_parallel: bool = True) -> str:
+def build_openai_tool_prompt(tools: list[dict], allow_parallel: bool = True,
+                             with_reasoning: bool = False) -> str:
     descriptions = "\n\n".join(_describe_openai(t) for t in tools)
     template = _TOOL_PROMPT if allow_parallel else _TOOL_PROMPT_SERIAL
-    return template.format(descriptions=descriptions)
+    prompt = template.format(descriptions=descriptions)
+    return (_COEMULATION_PREAMBLE + prompt) if with_reasoning else prompt
 
 
 # ── Message normalisation (for multi-turn tool use) ───────────────────────────

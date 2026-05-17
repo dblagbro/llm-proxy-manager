@@ -541,10 +541,10 @@ def _explain_routing() -> dict:
             "6. Hedging (opt-in): when TTFT telemetry suggests the primary is slow, a "
             "backup stream is raced; the first stream with a healthy first chunk wins.",
             "7. Capability-fit gate (v4.1): a provider that cannot serve a REQUIRED "
-            "capability even with emulation — no vision for an image request, the "
-            "tools+reasoning emulation collision, or a context window smaller than the "
-            "request — is SKIPPED in favour of one that can. If every provider falls "
-            "short, the best-ranked is still used (never hard-fail).",
+            "capability even with emulation — no vision for an image request, or a "
+            "context window smaller than the request — is SKIPPED in favour of one "
+            "that can. If every provider falls short, the best-ranked is still used "
+            "(never hard-fail).",
         ],
         "adaptation_layer": {
             "principle": "Cross-emulate, don't fail — a provider that lacks a "
@@ -560,7 +560,10 @@ def _explain_routing() -> dict:
             "reasoning_cot": "If the provider lacks native reasoning, chain-of-thought "
                              "is emulated (the app/cot pipeline) when the caller is a "
                              "claude-code key or sends an LMRH task=reasoning hint. "
-                             "cot_enabled is on by default.",
+                             "cot_enabled is on by default. When a request needs BOTH "
+                             "reasoning and tools and the provider is native in "
+                             "neither, the v4.1.1 co-emulation path runs a reasoning-"
+                             "prefixed tool prompt so both are served together.",
             "vision": "If a request has images, the capability-fit gate routes it to "
                       "a vision-capable provider. Images are only stripped in the "
                       "fallback case where NO vision-capable provider is available.",
@@ -575,10 +578,10 @@ def _explain_routing() -> dict:
                              "header naming what was emulated or left unmet.",
         },
         "residual_gaps": [
-            "Tool emulation and CoT emulation are still mutually exclusive in the "
-            "request path — the v4.1 capability-fit gate works around this by SKIPPING "
-            "a provider native in neither when a request needs both; true tool+CoT "
-            "co-emulation is a planned deeper fix.",
+            "Tool+reasoning co-emulation (v4.1.1) runs as a reasoning-prefixed tool "
+            "prompt — one call where the model thinks step by step then emits tool "
+            "calls. It is lighter than the full multi-pass CoT pipeline "
+            "(plan / critique / verify), which is not composed into the tool path.",
             "Tool emulation depends on the model emitting well-formed <tool_call> "
             "blocks; a weak model may answer in prose instead — a soft degradation "
             "tracked by tool_call_success_rate, not a crash or a broken stream.",

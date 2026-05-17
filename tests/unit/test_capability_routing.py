@@ -39,10 +39,11 @@ def test_no_images_means_vision_is_irrelevant():
 
 # ── tools + reasoning collision ──────────────────────────────────────────────
 
-def test_tools_plus_reasoning_skips_provider_native_in_neither():
-    r = _fit(_profile(native_tools=False, native_reasoning=False),
-             tools=True, reasoning=True)
-    assert r is not None and "tools+reasoning" in r
+def test_tools_plus_reasoning_not_skipped_native_in_neither():
+    # v4.1.1 — co-emulation serves both; a provider native in NEITHER is
+    # no longer skipped (the old tools+reasoning 'collision' is gone).
+    assert _fit(_profile(native_tools=False, native_reasoning=False),
+                tools=True, reasoning=True) is None
 
 
 def test_tools_plus_reasoning_ok_when_native_tools():
