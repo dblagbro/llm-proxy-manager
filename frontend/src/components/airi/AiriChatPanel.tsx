@@ -74,6 +74,10 @@ async function streamChat(
   }
 }
 
+// The active thread id is remembered here so the conversation survives
+// navigating away from the Routing page and back (the panel unmounts).
+const CONV_STORAGE_KEY = 'airi.active-conversation-id'
+
 export function AiriChatPanel() {
   const [enabled, setEnabled] = useState<boolean | null>(null)
   const [expanded, setExpanded] = useState(true)
@@ -87,6 +91,7 @@ export function AiriChatPanel() {
   const [conversationId, setConversationId] = useState<string | null>(null)
   const [historyOpen, setHistoryOpen] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
+  const restoredRef = useRef(false)
 
   useEffect(() => {
     fetch(`${getBasePath()}/api/airi/status`, { credentials: 'include' })
@@ -98,6 +103,11 @@ export function AiriChatPanel() {
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight })
   }, [messages, status])
+
+  // Remember the active thread so it can be restored after navigation.
+  useEffect(() => {
+    if (conversationId) localStorage.setItem(CONV_STORAGE_KEY, conversationId)
+  }, [conversationId])
 
   const send = useCallback(
     async (text: string) => {
@@ -153,6 +163,7 @@ export function AiriChatPanel() {
     setPropStatus({})
     setStatus('')
     setHistoryOpen(false)
+    localStorage.removeItem(CONV_STORAGE_KEY)
   }, [busy])
 
   /** Load a persisted conversation (the operator's own, or anyone's via search). */
@@ -167,6 +178,8 @@ export function AiriChatPanel() {
           { credentials: 'include' },
         )
         if (!res.ok) {
+          // stale / deleted thread — drop the remembered id so it isn't retried
+          localStorage.removeItem(CONV_STORAGE_KEY)
           setStatus('Could not load that conversation.')
           return
         }
@@ -186,6 +199,16 @@ export function AiriChatPanel() {
     },
     [busy],
   )
+
+  // On mount, restore the conversation that was active before navigation.
+  useEffect(() => {
+    if (enabled !== true || restoredRef.current) return
+    restoredRef.current = true
+    const saved = localStorage.getItem(CONV_STORAGE_KEY)
+    if (saved) loadConversation(saved)
+    // run once when the feature flag resolves; loadConversation is stable enough
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enabled])
 
   const decide = useCallback(
     async (proposalId: string, action: 'apply' | 'reject' | 'revert') => {

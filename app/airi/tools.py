@@ -7,14 +7,15 @@ across the agent's LLM calls (the ARCH-A discipline).
 """
 from __future__ import annotations
 
+import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from sqlalchemy import select, desc
 
 from app.config import settings
 from app.models.database import AsyncSessionLocal
-from app.models.db import Provider, ActivityLog
+from app.models.db import Provider, ActivityLog, ModelCapability
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,52 @@ TOOL_SCHEMAS = [
         },
     },
     {
+        "name": "get_error_summary",
+        "description": "Aggregate digest of ERRORS in the activity log over a time "
+                       "window — counts grouped by error class (rate_limit means "
+                       "HTTP 429 / too-many-requests; timeout; upstream_5xx; auth; "
+                       "bad_request; …), by provider, and by event type. Use this "
+                       "FIRST for any 'are there errors / 429s / rate limits / "
+                       "timeouts lately' question. Note: keepalive_probe rows are "
+                       "background health checks, not real client traffic.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "window_minutes": {"type": "integer",
+                                   "description": "Look-back window in minutes (default 120)."},
+            },
+        },
+    },
+    {
+        "name": "search_activity_log",
+        "description": "Search the activity log — every recorded event (llm_request, "
+                       "keepalive_probe, provider_test, usage_rotation, …) with its "
+                       "severity, message and error detail. Filter by free text "
+                       "(matches the message AND the error text — so query='429' or "
+                       "'rate limit' or 'timeout' finds those errors), severity, "
+                       "event type, provider, and a time window. This is how you "
+                       "investigate an incident or confirm what happened.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string",
+                          "description": "Free-text match on the message + error detail "
+                                          "(e.g. '429', 'rate limit', 'timeout')."},
+                "errors_only": {"type": "boolean",
+                                "description": "Shortcut — only warning/error/critical rows."},
+                "severity": {"type": "string",
+                             "enum": ["info", "warning", "error", "critical"]},
+                "event_type": {"type": "string",
+                               "description": "e.g. llm_request, keepalive_probe."},
+                "provider": {"type": "string", "description": "Provider name filter."},
+                "window_minutes": {"type": "integer",
+                                   "description": "Look-back window in minutes (default 120)."},
+                "limit": {"type": "integer",
+                          "description": "Max rows returned (default 30, max 100)."},
+            },
+        },
+    },
+    {
         "name": "get_rulesets",
         "description": "List the saved AIRI rule-sets — their names, which one is "
                        "the Default, and which is currently active.",
@@ -67,9 +114,25 @@ TOOL_SCHEMAS = [
     },
     {
         "name": "explain_routing",
-        "description": "A structured explanation of how the proxy's routing actually "
-                       "works — priority ordering, LMRH hints, the circuit breaker, the "
-                       "claude-oauth chain, hedging, fallback. Use for 'how does X work'.",
+        "description": "A structured explanation of how the proxy actually works — "
+                       "priority ordering, LMRH hints, the circuit breaker, the "
+                       "claude-oauth chain, hedging, fallback, AND the capability "
+                       "adaptation layer (tool-call emulation, CoT emulation, vision "
+                       "handling, caller memory). Use for 'how does X work' and for "
+                       "'what happens to a request on a non-native provider'.",
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "get_model_capabilities",
+        "description": "Per-provider model capabilities: whether each provider's model "
+                       "NATIVELY supports tool/function calling, reasoning (CoT) and "
+                       "vision, plus its measured tool-call success rate. This tells "
+                       "you exactly which providers emulate a capability vs do it "
+                       "natively — use it to answer 'can provider X handle tools / "
+                       "reasoning / images' or 'what happens to this request on "
+                       "provider Y'. A capability the provider lacks is emulated by "
+                       "the proxy (tools, CoT) or stripped (vision) — it is not a "
+                       "hard failure.",
         "input_schema": {"type": "object", "properties": {}},
     },
     {
@@ -198,12 +261,19 @@ async def run_tool(name: str, args: dict) -> dict:
             return _get_routing_config()
         if name == "get_recent_routing":
             return await _get_recent_routing(_clamp_int(args.get("limit"), 20, 1, 100))
+        if name == "get_error_summary":
+            return await _get_error_summary(
+                _clamp_int(args.get("window_minutes"), 120, 1, 10080))
+        if name == "search_activity_log":
+            return await _search_activity_log(args)
         if name == "get_rulesets":
             return await _get_rulesets()
         if name == "get_active_rules":
             return await _get_active_rules()
         if name == "explain_routing":
             return _explain_routing()
+        if name == "get_model_capabilities":
+            return await _get_model_capabilities()
         if name == "search_conversations":
             return await _search_conversations(str(args.get("query") or ""))
         if name == "get_recent_changes":
@@ -317,16 +387,107 @@ async def _get_recent_routing(limit: int) -> dict:
     async with AsyncSessionLocal() as db:
         pmap = {p.id: p.name for p in (await db.execute(select(Provider))).scalars().all()}
         rows = (await db.execute(
-            select(ActivityLog.created_at, ActivityLog.provider_id, ActivityLog.severity)
+            select(ActivityLog.created_at, ActivityLog.provider_id,
+                   ActivityLog.severity, ActivityLog.event_meta)
             .where(ActivityLog.event_type == "llm_request")
             .order_by(desc(ActivityLog.created_at))
             .limit(limit)
         )).all()
-    recent = [
-        {"at": str(created_at), "provider": pmap.get(pid, pid or "?"), "severity": severity}
-        for created_at, pid, severity in rows
-    ]
+    recent = []
+    for created_at, pid, severity, meta in rows:
+        row = {"at": str(created_at), "provider": pmap.get(pid, pid or "?"),
+               "severity": severity}
+        # surface the error class on non-info rows so the model sees *why*
+        if severity != "info" and isinstance(meta, dict) and meta.get("error_class"):
+            row["error_class"] = meta.get("error_class")
+        recent.append(row)
     return {"count": len(recent), "recent": recent}
+
+
+_ERROR_SEVERITIES = ("warning", "error", "critical")
+
+
+def _now_naive():
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+async def _get_error_summary(window_minutes: int) -> dict:
+    """Aggregate error digest — counts by error class, provider, event type."""
+    cutoff = _now_naive() - timedelta(minutes=window_minutes)
+    async with AsyncSessionLocal() as db:
+        pmap = {p.id: p.name for p in (await db.execute(select(Provider))).scalars().all()}
+        rows = (await db.execute(
+            select(ActivityLog.provider_id, ActivityLog.event_type, ActivityLog.event_meta)
+            .where(ActivityLog.created_at >= cutoff,
+                   ActivityLog.severity.in_(_ERROR_SEVERITIES))
+        )).all()
+    by_class: dict = {}
+    by_provider: dict = {}
+    by_event_type: dict = {}
+    for pid, event_type, meta in rows:
+        meta = meta or {}
+        ec = meta.get("error_class") or "unknown"
+        by_class[ec] = by_class.get(ec, 0) + 1
+        pname = pmap.get(pid) or meta.get("provider_name") or (pid or "?")
+        by_provider[pname] = by_provider.get(pname, 0) + 1
+        by_event_type[event_type] = by_event_type.get(event_type, 0) + 1
+
+    def _sorted(d):
+        return dict(sorted(d.items(), key=lambda kv: -kv[1]))
+
+    return {
+        "window_minutes": window_minutes,
+        "total_errors": len(rows),
+        "by_error_class": _sorted(by_class),
+        "by_provider": _sorted(by_provider),
+        "by_event_type": _sorted(by_event_type),
+        "note": "rate_limit == HTTP 429. keepalive_probe rows are background "
+                "health checks, not client traffic.",
+    }
+
+
+async def _search_activity_log(args: dict) -> dict:
+    """Filtered search over the activity log — text, severity, type, provider."""
+    window = _clamp_int(args.get("window_minutes"), 120, 1, 10080)
+    limit = _clamp_int(args.get("limit"), 30, 1, 100)
+    cutoff = _now_naive() - timedelta(minutes=window)
+    async with AsyncSessionLocal() as db:
+        pmap = {p.id: p.name for p in (await db.execute(select(Provider))).scalars().all()}
+        stmt = select(ActivityLog).where(ActivityLog.created_at >= cutoff)
+        sev = args.get("severity")
+        if sev in ("info", "warning", "error", "critical"):
+            stmt = stmt.where(ActivityLog.severity == sev)
+        elif args.get("errors_only"):
+            stmt = stmt.where(ActivityLog.severity.in_(_ERROR_SEVERITIES))
+        et = (args.get("event_type") or "").strip()
+        if et:
+            stmt = stmt.where(ActivityLog.event_type == et)
+        # over-fetch — the free-text / provider filters are applied in Python
+        stmt = stmt.order_by(desc(ActivityLog.created_at)).limit(limit * 5)
+        rows = (await db.execute(stmt)).scalars().all()
+
+    q = (args.get("query") or "").strip().lower()
+    prov = (args.get("provider") or "").strip().lower()
+    events = []
+    for r in rows:
+        meta = r.event_meta if isinstance(r.event_meta, dict) else {}
+        pname = pmap.get(r.provider_id) or meta.get("provider_name") or r.provider_id
+        if prov and prov not in (pname or "").lower():
+            continue
+        if q:
+            blob = (json.dumps(meta, default=str) + " " + (r.message or "")).lower()
+            if q not in blob:
+                continue
+        events.append({
+            "at": str(r.created_at), "event_type": r.event_type,
+            "severity": r.severity, "provider": pname,
+            "message": (r.message or "")[:200],
+            "error": (meta.get("error") or "")[:300] or None,
+            "error_class": meta.get("error_class"),
+        })
+        if len(events) >= limit:
+            break
+    return {"window_minutes": window, "match_count": len(events), "events": events}
 
 
 async def _get_rulesets() -> dict:
@@ -363,28 +524,104 @@ async def _get_recent_changes() -> dict:
 
 def _explain_routing() -> dict:
     return {
-        "title": "How llm-proxy2 routes a request",
-        "steps": [
-            "1. select_provider ranks enabled providers; a lower `priority` wins. "
-            "Providers that are at-capacity (external rotation) or auto-skipped are "
-            "filtered out first.",
-            "2. LMRH hints on the request (cost, latency, region, cache, hedge) "
-            "tighten the ranking — hard constraints exclude providers, soft hints "
-            "reorder them.",
-            "3. claude-oauth providers (Claude Pro Max subscriptions) short-circuit "
-            "the pipeline: the request walks the claude-oauth chain; on a 401/403 it "
-            "fails over to the next claude-oauth provider, then falls through to the "
-            "litellm path.",
+        "title": "How llm-proxy2 routes and adapts a request",
+        "routing_steps": [
+            "1. select_provider ranks enabled providers by `priority` (lower wins). "
+            "At-capacity (external rotation) and auto-skipped providers are filtered out.",
+            "2. LMRH hints (cost, latency, region, cache, hedge, task) tighten the "
+            "ranking — hard constraints exclude providers, soft hints reorder them.",
+            "3. claude-oauth providers (Claude Pro Max subscriptions) short-circuit the "
+            "pipeline: the request walks the claude-oauth chain; a 401/403 fails over to "
+            "the next claude-oauth provider, then through to the litellm path.",
             "4. The circuit breaker opens a provider after repeated failures; an open "
             "provider is skipped until it half-opens.",
-            "5. Fallback: if a provider fails, a non-streaming request retries down the "
-            "ranked list. Streaming has no failover (it would break the SSE contract).",
-            "6. Hedging (opt-in): when a TTFT signal suggests the primary may be slow, "
-            "a backup stream is raced; the first stream with a healthy first chunk wins.",
-            "7. Cross-family translation: an Anthropic-shaped request routed to an "
-            "OpenAI provider (or vice versa) is translated automatically.",
+            "5. Fallback: a non-streaming request that fails retries down the ranked "
+            "list. A streaming request has no mid-stream failover (the SSE contract), "
+            "but it is pre-flighted so a pre-stream failure still falls back.",
+            "6. Hedging (opt-in): when TTFT telemetry suggests the primary is slow, a "
+            "backup stream is raced; the first stream with a healthy first chunk wins.",
+        ],
+        "adaptation_layer": {
+            "principle": "Cross-emulate, don't fail — a provider that lacks a "
+                         "capability the request needs has it EMULATED by the proxy, so "
+                         "any model can serve another model's request.",
+            "tool_calling": "If a request carries tools and the chosen provider is not "
+                            "native-tool-capable, the proxy injects the tool schemas as "
+                            "a system prompt, parses <tool_call> blocks from the reply, "
+                            "and emits real tool_use back to the client — in BOTH "
+                            "Anthropic and OpenAI wire formats, INCLUDING streaming SSE. "
+                            "Parallel tool calls and multi-turn tool_result history are "
+                            "handled. Engages automatically.",
+            "reasoning_cot": "If the provider lacks native reasoning, chain-of-thought "
+                             "is emulated (the app/cot pipeline) when the caller is a "
+                             "claude-code key or sends an LMRH task=reasoning hint. "
+                             "cot_enabled is on by default.",
+            "vision": "If a request has images and the provider is not vision-capable, "
+                      "the images are STRIPPED and the request proceeds text-only — "
+                      "the one lossy adaptation; it is surfaced on the response.",
+            "memory": "Caller memory (app/memory) injects prior context per API key "
+                      "when that key has opted in.",
+            "translation": "An Anthropic-shaped request on an OpenAI provider (or vice "
+                            "versa) is translated automatically; if no same-family "
+                            "model matches, the provider's default model is substituted "
+                            "and the original is reported in X-Substituted-From.",
+            "observability": "Every response carries X-Emulation-Level "
+                             "(minimal / standard / enhanced) and an LLM-Capability "
+                             "header naming what was emulated or left unmet.",
+        },
+        "residual_gaps": [
+            "Vision is stripped, not translated — a non-vision provider loses the images.",
+            "Tool emulation does NOT engage when CoT is engaged on the same request — "
+            "they are mutually exclusive in the router.",
+            "Tool emulation depends on the model emitting well-formed <tool_call> "
+            "blocks; a weak model may answer in prose instead — a soft degradation "
+            "tracked by tool_call_success_rate, not a crash or a broken stream.",
+            "Anthropic cache_control directives are dropped on non-Anthropic providers "
+            "(a caching/perf hint, not a correctness issue).",
         ],
         "supervisor": "The AI Provider Supervisor periodically reviews each provider's "
                       "recent stats with an LLM and can deprioritise or auto-skip a "
                       "degrading provider — suggest-only or auto-apply, with caps.",
+        "for_capability_questions": "Call get_model_capabilities for the per-provider "
+                                    "native-vs-emulated breakdown.",
+    }
+
+
+async def _get_model_capabilities() -> dict:
+    """Per-provider native_tools / native_reasoning / native_vision — so the
+    model can say exactly which providers emulate a capability vs do it natively."""
+    async with AsyncSessionLocal() as db:
+        provs = {p.id: p for p in (await db.execute(
+            select(Provider).where(Provider.deleted_at.is_(None)))).scalars().all()}
+        caps = (await db.execute(
+            select(ModelCapability).where(ModelCapability.deleted_at.is_(None)))
+        ).scalars().all()
+    models = []
+    for c in caps:
+        p = provs.get(c.provider_id)
+        if p is None:
+            continue
+        models.append({
+            "provider": p.name,
+            "model": c.model_id,
+            "native_tools": bool(c.native_tools),
+            "native_reasoning": bool(c.native_reasoning),
+            "native_vision": bool(c.native_vision),
+            "tool_call_success_rate": c.tool_call_success_rate,
+            "adaptation": "; ".join([
+                "tools native" if c.native_tools
+                else "tools EMULATED (proxy injects tool prompts)",
+                "reasoning native" if c.native_reasoning
+                else "reasoning EMULATED via CoT when engaged",
+                "vision native" if c.native_vision
+                else "vision STRIPPED (images dropped)",
+            ]),
+        })
+    models.sort(key=lambda r: (r["provider"], r["model"]))
+    return {
+        "count": len(models),
+        "models": models,
+        "note": "A non-native tool or reasoning capability is EMULATED by the proxy — "
+                "the request is adapted, not failed. Vision is the exception: images "
+                "are stripped for a non-vision provider.",
     }

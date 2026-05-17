@@ -35,7 +35,9 @@ async def test_get_supervisor_state_shape():
 @pytest.mark.asyncio
 async def test_explain_routing_has_steps():
     out = await run_tool("explain_routing", {})
-    assert isinstance(out.get("steps"), list) and len(out["steps"]) >= 5
+    # v4.0.2 — `steps` was split into `routing_steps` + an `adaptation_layer`
+    assert isinstance(out.get("routing_steps"), list) and len(out["routing_steps"]) >= 5
+    assert "adaptation_layer" in out
 
 
 @pytest.mark.asyncio
