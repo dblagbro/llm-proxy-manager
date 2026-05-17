@@ -62,6 +62,34 @@ def _apply_tool_success_weighting(ranked: list[tuple]) -> list[tuple]:
     return out
 
 
+def _capability_fit(profile, *, has_tools: bool, needs_reasoning: bool,
+                    has_images: bool, est_input_tokens: Optional[int]) -> Optional[str]:
+    """Capability-fit gate (v4.1). Returns None when the provider can serve
+    the request — natively or via emulation — or a short reason when it
+    CANNOT and should be skipped (operator directive 2026-05-17, "simulate
+    if we can, skip if we can't").
+
+    'cannot' cases:
+      - vision: a non-vision provider for an image request is SKIPPED, not
+        silently stripped.
+      - tools+reasoning: a request needing BOTH, on a provider native in
+        neither, would silently drop the tools — router tool-emulation and
+        CoT-E are mutually exclusive — so skip it for one that is native in
+        at least one.
+      - context: a request larger than the provider's context window —
+        a hard physical limit, hard skip.
+    """
+    if has_images and not profile.native_vision:
+        return "no native vision"
+    if (has_tools and needs_reasoning
+            and not profile.native_tools and not profile.native_reasoning):
+        return "tools+reasoning each need emulation (mutually exclusive)"
+    if (est_input_tokens and profile.context_length
+            and est_input_tokens > profile.context_length):
+        return f"context window {profile.context_length} < ~{est_input_tokens} tokens"
+    return None
+
+
 @dataclass
 class RouteResult:
     provider: Provider
@@ -74,6 +102,8 @@ class RouteResult:
     vision_stripped: bool
     capability_header: str
     native_thinking_params: dict = field(default_factory=dict)
+    # v4.1 — providers the capability-fit gate skipped (name, reason).
+    capability_skipped: list = field(default_factory=list)
     # v3.0.36: cross-family fallback signalling. When the caller asked for
     # a model in family X but no family-X provider was available, we fell
     # back to a different family. ``served_model_native`` is the native
@@ -369,6 +399,7 @@ async def select_provider(
     excluded_provider_types: Optional[set[str]] = None,
     api_key_id: Optional[str] = None,
     dry_run: bool = False,
+    est_input_tokens: Optional[int] = None,
 ) -> RouteResult:
     """
     Select the best available provider+model for this request.
@@ -671,6 +702,42 @@ async def select_provider(
                 "Disable AI_TOOL_PROBER_ENABLED or lower the threshold to unblock."
             )
 
+    # ── Capability-fit gate (v4.1) ───────────────────────────────────────────
+    # Skip providers that cannot serve a REQUIRED capability even with
+    # emulation — vision, the tools+reasoning collision, or context-window
+    # overflow (operator directive 2026-05-17: "simulate if we can, skip if
+    # we can't"). Never hard-fails: if the gate would empty the candidate
+    # list, keep it unchanged and let the best candidate emulate/degrade.
+    cot_globally_enabled = getattr(settings, "cot_enabled", True)
+    _task_hint = hint.get("task") if hint else None
+    needs_reasoning = bool(
+        cot_globally_enabled
+        and (key_type == "claude-code"
+             or (_task_hint and getattr(_task_hint, "value", None) == "reasoning"))
+    )
+    capability_skipped: list = []
+    _fit_kept = []
+    for _t in ranked_scored:
+        _reason = _capability_fit(
+            _t[0], has_tools=has_tools, needs_reasoning=needs_reasoning,
+            has_images=has_images, est_input_tokens=est_input_tokens,
+        )
+        if _reason is None:
+            _fit_kept.append(_t)
+        else:
+            capability_skipped.append(
+                (_t[0].provider_name or _t[0].provider_id, _reason))
+    if _fit_kept and len(_fit_kept) < len(ranked_scored):
+        logger.info("router.capability_gate kept=%d skipped=%s",
+                    len(_fit_kept), capability_skipped)
+        ranked_scored = _fit_kept
+    elif not _fit_kept and capability_skipped:
+        # never-hard-fail floor — every candidate fell short; keep them all
+        # and let the top one emulate/degrade rather than 503 the caller.
+        logger.warning(
+            "router.capability_gate all %d candidates fell short — degrading "
+            "instead of failing: %s", len(ranked_scored), capability_skipped)
+
     # v3.3.1: dry-run mode for /lmrh/quotes. Caller wants the ranked
     # candidate list — they're not actually dispatching. Return shaped
     # tuples (provider, profile, unmet, score) so the endpoint can
@@ -716,6 +783,7 @@ async def select_provider(
             vision_stripped=False,
             capability_header=cap_header,
             native_thinking_params={},
+            capability_skipped=capability_skipped,
         )
 
     # v2.8.0 — model-slug sort-mode overrides bypass P2C/PeakEWMA selection
@@ -790,15 +858,11 @@ async def select_provider(
             best_profile, unmet, _ = top_tier[0]
     provider = provider_map[best_profile.provider_id]
 
-    # CoT-E auto-engagement:
-    # Triggered when key_type=claude-code OR LLM-Hint task=reasoning + native_reasoning=false
-    # Can be disabled globally via the cot_enabled runtime setting.
-    cot_engaged = False
-    cot_globally_enabled = getattr(settings, "cot_enabled", True)
-    if cot_globally_enabled and not best_profile.native_reasoning:
-        task_hint = hint.get("task") if hint else None
-        if key_type == "claude-code" or (task_hint and task_hint.value == "reasoning"):
-            cot_engaged = True
+    # CoT-E auto-engagement: ``needs_reasoning`` (request-level — claude-code
+    # key or task=reasoning hint, with cot_enabled) was computed for the
+    # capability gate above. CoT-E engages only when the CHOSEN provider also
+    # lacks native reasoning.
+    cot_engaged = needs_reasoning and not best_profile.native_reasoning
 
     # v3.0.36: when the family filter empty-fell-back, the chosen provider
     # is from a different family than the caller asked for. Substitute the
@@ -862,6 +926,7 @@ async def select_provider(
         vision_stripped=vision_stripped,
         capability_header=cap_header,
         native_thinking_params=native_params,
+        capability_skipped=capability_skipped,
         cross_family_fallback=cross_family_fallback,
         requested_model=cross_family_requested if cross_family_fallback else None,
         served_model_native=(provider.default_model if cross_family_fallback else None),

@@ -73,9 +73,11 @@ def test_explain_routing_describes_adaptation():
     al_text = json.dumps(info["adaptation_layer"]).upper()
     # tool emulation incl. streaming SSE is described
     assert "EMULAT" in al_text and "SSE" in al_text
-    # the honest residual gaps are present, including vision stripping
-    gaps = " ".join(info["residual_gaps"]).lower()
-    assert "vision" in gaps and "stripped" in gaps
+    # honest residual gaps are still present
+    assert len(info["residual_gaps"]) >= 2
+    # v4.1 — the capability-fit gate is described in the routing steps
+    steps = " ".join(info["routing_steps"]).lower()
+    assert "capability-fit" in steps and "skip" in steps
 
 
 def test_capability_tools_registered_read_only():

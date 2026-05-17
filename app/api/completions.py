@@ -147,6 +147,7 @@ async def chat_completions(
         has_tools=has_tools, has_images=has_images,
         key_record=key_record, parsed_slug=parsed_slug, alias=alias,
         detailed_503=False,
+        messages=body.get("messages"),
     )
     body = resolve_auto_model_into_body(body, route, is_auto)
     # Kept as a local for downstream record_outcome calls (lines ~600-615).

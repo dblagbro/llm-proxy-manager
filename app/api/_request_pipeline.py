@@ -31,6 +31,28 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 
+def _estimate_input_tokens(messages) -> Optional[int]:
+    """Cheap, shape-tolerant input-size estimate (≈ chars / 4) for the
+    router's context-window gate. Precision is not needed — the gate only
+    fires on gross overflow. Returns None when there is nothing to measure."""
+    if not isinstance(messages, list) or not messages:
+        return None
+    chars = 0
+    for m in messages:
+        if not isinstance(m, dict):
+            continue
+        c = m.get("content")
+        if isinstance(c, str):
+            chars += len(c)
+        elif isinstance(c, list):
+            for blk in c:
+                if isinstance(blk, dict):
+                    chars += len(blk.get("text") or "")
+                elif isinstance(blk, str):
+                    chars += len(blk)
+    return (chars // 4) or None
+
+
 # ── 1. Privacy filters: guard + PII mask ─────────────────────────────────────
 
 
@@ -220,6 +242,12 @@ def build_base_response_headers(
         emul = "enhanced"
     headers["X-Emulation-Level"] = emul
 
+    # v4.1 — providers the capability-fit gate skipped (so the request
+    # routed to one that can actually serve it).
+    if getattr(route, "capability_skipped", None):
+        headers["X-Capability-Skipped"] = "; ".join(
+            f"{n} ({r})" for n, r in route.capability_skipped)[:400]
+
     if auto_task:
         headers["X-Task-Auto-Detected"] = auto_task
     if vision_routed_count:
@@ -251,6 +279,7 @@ async def select_provider_with_503(
     parsed_slug,
     alias,
     detailed_503: bool = True,
+    messages: Optional[list] = None,
 ):
     """Centralized ``select_provider`` call with RuntimeError → HTTPException(503)
     conversion and the v3.0.22 / v3.0.99 ``model_override`` plumbing both
@@ -288,6 +317,7 @@ async def select_provider_with_503(
             model_override=requested_model,
             sort_mode=parsed_slug.sort_mode,
             api_key_id=key_record.id,  # v3.0.45 tenant scoping
+            est_input_tokens=_estimate_input_tokens(messages),  # v4.1 context gate
         )
     except RuntimeError as e:
         msg = str(e)

@@ -155,6 +155,7 @@ async def messages(
         has_tools=has_tools, has_images=has_images,
         key_record=key_record, parsed_slug=parsed_slug, alias=alias,
         detailed_503=True,
+        messages=body.get("messages"),
     )
 
     # v3.9.1 (#269 Fix A) — Safety net for cross-family fallback to
