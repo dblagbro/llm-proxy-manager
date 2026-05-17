@@ -72,6 +72,30 @@ TOOL_SCHEMAS = [
                        "claude-oauth chain, hedging, fallback. Use for 'how does X work'.",
         "input_schema": {"type": "object", "properties": {}},
     },
+    {
+        "name": "search_conversations",
+        "description": "Full-text search across EVERY operator's past AIRI "
+                       "conversations — the shared change-coordination history. Use it "
+                       "to recall an earlier discussion, or to check whether another "
+                       "operator already discussed a provider before you propose a "
+                       "change to it.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string",
+                          "description": "Search terms — every term must appear."},
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "get_recent_changes",
+        "description": "Recent AIRI proposals — the change audit trail: what was "
+                       "proposed or applied, by which operator, and when. Check this "
+                       "before proposing a provider change so you can flag a recent "
+                       "change another operator already made to the same provider.",
+        "input_schema": {"type": "object", "properties": {}},
+    },
 ]
 
 # Tool names AIRI is allowed to call (defence-in-depth — the agent loop
@@ -180,6 +204,10 @@ async def run_tool(name: str, args: dict) -> dict:
             return await _get_active_rules()
         if name == "explain_routing":
             return _explain_routing()
+        if name == "search_conversations":
+            return await _search_conversations(str(args.get("query") or ""))
+        if name == "get_recent_changes":
+            return await _get_recent_changes()
         return {"error": f"unknown tool: {name}"}
     except Exception as e:  # never raise out of a tool
         logger.warning("airi.tool_failed name=%s err=%r", name, e)
@@ -311,6 +339,26 @@ async def _get_active_rules() -> dict:
     from app.airi import rules
     async with AsyncSessionLocal() as db:
         return await rules.get_active_ruleset(db)
+
+
+async def _search_conversations(query: str) -> dict:
+    from app.airi import history
+    async with AsyncSessionLocal() as db:
+        results = await history.search_messages(db, query=query, limit=15)
+    return {"query": query, "match_count": len(results), "results": results}
+
+
+async def _get_recent_changes() -> dict:
+    from app.airi import proposals
+    async with AsyncSessionLocal() as db:
+        recent = await proposals.list_proposals(db, limit=15)
+    changes = [
+        {"target": p.get("target"), "kind": p.get("kind"),
+         "change": p.get("change"), "status": p.get("status"),
+         "by": p.get("created_by"), "at": p.get("created_at")}
+        for p in recent
+    ]
+    return {"count": len(changes), "recent_changes": changes}
 
 
 def _explain_routing() -> dict:
