@@ -115,3 +115,42 @@ def test_handsfree_uses_grammar_and_whisper_for_command():
 def test_vosk_browser_dependency_declared():
     pkg = json.loads(Path("frontend/package.json").read_text())
     assert "vosk-browser" in pkg.get("dependencies", {})
+
+
+# --- v4.3 milestone 1: text-to-speech (Piper) ------------------------------
+
+def test_tts_flag_default_off():
+    assert settings.airi_tts_enabled is False           # off until v4.3.0 ships
+
+
+def test_status_exposes_tts_enabled():
+    src = Path("app/api/airi.py").read_text()
+    assert '"tts_enabled"' in src
+
+
+def test_speak_endpoint_exists_and_gated():
+    """The /speak proxy is admin- and double-flag-gated, forwards to the
+    whisper-bridge sidecar, and caps the text length."""
+    src = Path("app/api/airi.py").read_text()
+    assert '@router.post("/speak")' in src
+    assert "settings.airi_enabled" in src and "settings.airi_tts_enabled" in src
+    assert "airi_whisper_bridge_url" in src
+    assert "_MAX_TTS_CHARS" in src
+
+
+def test_whisper_bridge_speak_route():
+    appsrc = Path("whisper_bridge/app.py").read_text()
+    assert '@app.post("/speak")' in appsrc
+    assert "PIPER_BIN" in appsrc
+    # bearer-token guarded, like /transcribe
+    assert "BRIDGE_TOKEN" in appsrc
+    # synthesised audio is never persisted — temp file, deleted on exit
+    assert "NamedTemporaryFile" in appsrc
+
+
+def test_whisper_bridge_dockerfile_bakes_piper():
+    df = Path("whisper_bridge/Dockerfile").read_text()
+    assert "piper" in df.lower()
+    # the "Airy" voice and the pinned Piper binary version are baked in
+    assert "en_US-amy-medium" in df
+    assert "PIPER_VERSION" in df

@@ -30,16 +30,19 @@ router = APIRouter(prefix="/api/airi", tags=["airi"])
 # v4.2 — voice input. Audio is forwarded to the whisper-bridge sidecar.
 _MAX_AUDIO_BYTES = 25 * 1024 * 1024  # ~a few minutes of opus
 _TRANSCRIBE_TIMEOUT = httpx.Timeout(connect=5.0, read=60.0, write=30.0, pool=5.0)
+# v4.3 — voice output. Text is forwarded to the whisper-bridge sidecar (Piper).
+_MAX_TTS_CHARS = 6000  # generous for any AIRI answer
 
 
 @router.get("/status")
 async def airi_status(_: AdminUser = Depends(require_admin)) -> dict:
     """Feature-flag probe — the Routing-page panel calls this and renders
     itself only when AIRI is enabled. ``voice_enabled`` (v4.2) drives the
-    mic button."""
+    mic button; ``tts_enabled`` (v4.3) drives the speaker toggle."""
     return {
         "enabled": bool(settings.airi_enabled),
         "voice_enabled": bool(settings.airi_enabled and settings.airi_voice_enabled),
+        "tts_enabled": bool(settings.airi_enabled and settings.airi_tts_enabled),
     }
 
 
@@ -111,6 +114,42 @@ async def airi_voice_model(_: AdminUser = Depends(require_admin)):
                             status_code=502)
     return Response(content=r.content, media_type="application/gzip",
                     headers={"Cache-Control": "private, max-age=604800"})
+
+
+@router.post("/speak")
+async def airi_speak(payload: dict, _: AdminUser = Depends(require_admin)):
+    """Synthesize an AIRI answer to speech (v4.3 milestone 1).
+
+    Forwards the response text to the whisper-bridge sidecar (Piper TTS) and
+    streams back audio/wav. Text and audio are never persisted. A failed
+    read-aloud must never break the chat — the panel falls back to silent
+    text on any error."""
+    if not settings.airi_enabled or not settings.airi_tts_enabled:
+        return JSONResponse({"detail": "AIRI voice output is disabled"}, status_code=404)
+    text = (payload.get("text") or "").strip() if isinstance(payload, dict) else ""
+    if not text:
+        return JSONResponse({"error": "a 'text' field is required"}, status_code=400)
+    if len(text) > _MAX_TTS_CHARS:
+        return JSONResponse({"error": "text too long"}, status_code=413)
+    bridge = (settings.airi_whisper_bridge_url or "").rstrip("/")
+    if not bridge:
+        return JSONResponse({"error": "voice output is not configured"},
+                            status_code=503)
+    try:
+        async with httpx.AsyncClient(timeout=_TRANSCRIBE_TIMEOUT) as client:
+            r = await client.post(
+                f"{bridge}/speak",
+                json={"text": text},
+                headers={"Authorization":
+                         f"Bearer {settings.airi_whisper_bridge_token}"},
+            )
+        r.raise_for_status()
+    except Exception as e:  # never leak a stack — the panel falls back to text
+        logger.warning("airi.speak failed err=%r", e)
+        return JSONResponse({"error": "speech synthesis is unavailable right now"},
+                            status_code=502)
+    return Response(content=r.content, media_type="audio/wav",
+                    headers={"Cache-Control": "no-store"})
 
 
 def _sse(event: str, data: dict) -> bytes:
