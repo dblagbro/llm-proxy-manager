@@ -7,6 +7,38 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ---
 
+## v4.3.x — "Voice output" milestone
+
+### v4.3.0 — AIRI text-to-speech ("Airy" speaks answers back)
+
+v4.2 gave AIRI ears (push-to-talk + the "Airy" wake word); v4.3 gives it a
+voice. With the new speaker toggle on, "Airy" reads each completed answer
+aloud — so an operator can ask by voice and hear the reply hands-free.
+
+- **`whisper-bridge` gains Piper TTS.** The voice sidecar now also runs
+  Piper — the standalone prebuilt binary (self-contained: it bundles its own
+  onnxruntime, phonemizer and espeak-ng data) plus the `en_US-amy-medium`
+  voice, both baked into the image. Same own-the-dependency-chain rule that
+  ruled out the Web Speech API for v4.2: synthesis runs on our own hardware.
+- **`POST /api/airi/speak`** — admin- and flag-gated; forwards answer text to
+  the sidecar and streams back `audio/wav`. Text and audio are transient —
+  never persisted.
+- **Speaker toggle** in the AIRI chat panel, beside the mic. Off by default.
+  When on, a completed assistant message is synthesized and played; a new
+  message supersedes any in-progress playback so Airy never talks over
+  itself. Tap while speaking to stop. Proposal cards and errors are not read
+  aloud. A synthesis or playback failure is swallowed quietly — a failed
+  read-aloud never disrupts the chat.
+- Feature-flagged: `airi_tts_enabled` (default off), independent of
+  `airi_voice_enabled`.
+- **Fix** — `_bridge_headers()`: an unset whisper-bridge token produced an
+  illegal `Bearer ` header that httpx rejects. The header is now omitted
+  when no token is configured; `transcribe`, `voice-model` and `speak` all
+  use the helper. (Dormant in production, where the token is always set.)
+
+Deploying v4.3.0 ships a new `whisper-bridge` image (`dblagbro/whisper-bridge`
+bumped to `4.3.0`) — it must be recreated alongside `llm-proxy2`.
+
 ## v4.2.x — "Voice" milestone
 
 ### v4.2.2 — fix: hands-free never detected the wake word
