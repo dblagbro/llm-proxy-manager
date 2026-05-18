@@ -1,19 +1,23 @@
-# whisper-bridge — voice model sidecar for AIRI voice input (v4.2).
+# whisper-bridge — voice sidecar for AIRI (v4.2 + v4.3).
 #
-# Self-hosted faster-whisper for speech-to-text (POST /transcribe), and the
-# host for the Vosk wake-word model that the browser fetches for hands-free
-# (GET /vosk-model). Not exposed via nginx. See docs/4.2-voice-design.md.
+# Self-hosted, all on our own infrastructure, not exposed via nginx:
+#   - faster-whisper speech-to-text           POST /transcribe   (v4.2)
+#   - the Vosk wake-word model for hands-free  GET  /vosk-model   (v4.2)
+#   - Piper text-to-speech                     POST /speak        (v4.3)
+# See docs/4.2-voice-design.md and docs/4.3-tts-design.md.
 FROM python:3.13-slim
 
 ENV PYTHONUNBUFFERED=1 \
-    WHISPER_MODEL=small
+    WHISPER_MODEL=small \
+    PIPER_VOICE=en_US-amy-medium
 
 # ffmpeg — faster-whisper decodes the browser's webm/opus (and Safari mp4).
 # curl + unzip — fetch and repackage the Vosk wake-word model.
 # ca-certificates — the slim base ships without a CA store, so curl's HTTPS
 # fetch of the Vosk model fails (exit 60) without it.
+# libgomp1 — the OpenMP runtime the Piper binary's onnxruntime links against.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        ffmpeg curl unzip ca-certificates \
+        ffmpeg curl unzip ca-certificates libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
 # v4.2 hands-free — bake the Vosk small English model into the image, as a
@@ -33,6 +37,22 @@ RUN mkdir -p /models && cd /models \
     && unzip -q vosk.zip && rm vosk.zip \
     && tar czf vosk-model-small-en-us-0.15.tar.gz vosk-model-small-en-us-0.15 \
     && rm -rf vosk-model-small-en-us-0.15
+
+# v4.3 TTS — Piper. The standalone prebuilt binary is self-contained (it
+# bundles its own onnxruntime, phonemizer and espeak-ng data), which sidesteps
+# any Python wheel-compatibility concern on the 3.13 base. Binary and the
+# "Airy" voice model are baked in at build time — no external call at runtime.
+ARG PIPER_VERSION=2023.11.14-2
+RUN cd /opt \
+    && curl -fsSL -o piper.tar.gz \
+        https://github.com/rhasspy/piper/releases/download/${PIPER_VERSION}/piper_linux_x86_64.tar.gz \
+    && tar xzf piper.tar.gz && rm piper.tar.gz
+# The "Airy" voice — Piper en_US-amy-medium (HuggingFace serves a valid TLS
+# cert, so normal verification applies). The .onnx model + its .onnx.json.
+RUN mkdir -p /voices && cd /voices \
+    && base=https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/amy/medium \
+    && curl -fsSL -o en_US-amy-medium.onnx      "$base/en_US-amy-medium.onnx" \
+    && curl -fsSL -o en_US-amy-medium.onnx.json "$base/en_US-amy-medium.onnx.json"
 
 WORKDIR /app
 COPY requirements.txt .

@@ -235,6 +235,11 @@ class Settings(BaseSettings):
     airi_whisper_bridge_url: str = Field(
         "http://whisper-bridge:9000", alias="AIRI_WHISPER_BRIDGE_URL")
     airi_whisper_bridge_token: str = Field("", alias="AIRI_WHISPER_BRIDGE_TOKEN")
+    # v4.3 — voice output (text-to-speech). ``airi_tts_enabled`` is the v4.3
+    # feature flag (off until the build is complete). "Airy" reads its
+    # answers aloud; synthesis runs on the self-hosted whisper-bridge sidecar
+    # (Piper TTS) and audio is never persisted. See docs/4.3-tts-design.md.
+    airi_tts_enabled: bool = Field(False, alias="AIRI_TTS_ENABLED")
 
     # v3.8.4 (#264): tool-call capability prober. Fires a standard
     # get_weather(city) probe at every (provider, default_model) on
