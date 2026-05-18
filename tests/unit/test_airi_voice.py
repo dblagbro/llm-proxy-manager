@@ -154,3 +154,29 @@ def test_whisper_bridge_dockerfile_bakes_piper():
     # the "Airy" voice and the pinned Piper binary version are baked in
     assert "en_US-amy-medium" in df
     assert "PIPER_VERSION" in df
+
+
+# --- v4.3 milestone 2: speaker-toggle UI -----------------------------------
+
+def test_speaker_component_present_and_wired():
+    base = Path("frontend/src/components/airi")
+    sp = base / "AiriSpeaker.tsx"
+    assert sp.exists()
+    src = sp.read_text()
+    # a completed answer is synthesized via the speak endpoint
+    assert "/api/airi/speak" in src
+    # opt-in toggle that exposes speak() to the parent via a ref handle
+    assert "AiriSpeakerHandle" in src
+    # wired into the chat panel, gated by the tts flag, fed by completed messages
+    panel = (base / "AiriChatPanel.tsx").read_text()
+    assert "AiriSpeaker" in panel
+    assert "ttsEnabled" in panel and "speakerRef" in panel
+
+
+def test_bridge_headers_helper_present():
+    """An empty whisper-bridge token must not yield an illegal 'Bearer '
+    header (httpx rejects it) — _bridge_headers omits it; all three sidecar
+    calls (transcribe, voice-model, speak) route through the helper."""
+    src = Path("app/api/airi.py").read_text()
+    assert "def _bridge_headers" in src
+    assert src.count("headers=_bridge_headers()") == 3

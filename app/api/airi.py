@@ -34,6 +34,14 @@ _TRANSCRIBE_TIMEOUT = httpx.Timeout(connect=5.0, read=60.0, write=30.0, pool=5.0
 _MAX_TTS_CHARS = 6000  # generous for any AIRI answer
 
 
+def _bridge_headers() -> dict:
+    """Auth header for the whisper-bridge sidecar. Omitted when no token is
+    configured — httpx rejects an empty ``Bearer `` value, and the sidecar
+    treats a missing token as open."""
+    token = settings.airi_whisper_bridge_token
+    return {"Authorization": f"Bearer {token}"} if token else {}
+
+
 @router.get("/status")
 async def airi_status(_: AdminUser = Depends(require_admin)) -> dict:
     """Feature-flag probe — the Routing-page panel calls this and renders
@@ -78,8 +86,7 @@ async def airi_transcribe(
                 f"{bridge}/transcribe",
                 files={"file": (file.filename or "audio.webm", audio,
                                 file.content_type or "application/octet-stream")},
-                headers={"Authorization":
-                         f"Bearer {settings.airi_whisper_bridge_token}"},
+                headers=_bridge_headers(),
             )
         r.raise_for_status()
         data = r.json()
@@ -104,8 +111,7 @@ async def airi_voice_model(_: AdminUser = Depends(require_admin)):
         async with httpx.AsyncClient(timeout=_TRANSCRIBE_TIMEOUT) as client:
             r = await client.get(
                 f"{bridge}/vosk-model",
-                headers={"Authorization":
-                         f"Bearer {settings.airi_whisper_bridge_token}"},
+                headers=_bridge_headers(),
             )
         r.raise_for_status()
     except Exception as e:
@@ -140,8 +146,7 @@ async def airi_speak(payload: dict, _: AdminUser = Depends(require_admin)):
             r = await client.post(
                 f"{bridge}/speak",
                 json={"text": text},
-                headers={"Authorization":
-                         f"Bearer {settings.airi_whisper_bridge_token}"},
+                headers=_bridge_headers(),
             )
         r.raise_for_status()
     except Exception as e:  # never leak a stack — the panel falls back to text

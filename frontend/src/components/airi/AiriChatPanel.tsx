@@ -12,6 +12,7 @@ import { getBasePath } from '@/lib/basePath'
 import { AiriHistory } from './AiriHistory'
 import { AiriMicButton } from './AiriMicButton'
 import { AiriHandsFree } from './AiriHandsFree'
+import { AiriSpeaker, type AiriSpeakerHandle } from './AiriSpeaker'
 
 type ProposalData = {
   proposal_id: string
@@ -92,9 +93,11 @@ export function AiriChatPanel() {
   // M5 — the persisted thread this panel is attached to, and the history drawer
   const [conversationId, setConversationId] = useState<string | null>(null)
   const [historyOpen, setHistoryOpen] = useState(false)
-  // v4.2 — voice input
+  // v4.2 — voice input; v4.3 — voice output (text-to-speech)
   const [voiceEnabled, setVoiceEnabled] = useState(false)
+  const [ttsEnabled, setTtsEnabled] = useState(false)
   const [micError, setMicError] = useState('')
+  const speakerRef = useRef<AiriSpeakerHandle>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const restoredRef = useRef(false)
 
@@ -104,6 +107,7 @@ export function AiriChatPanel() {
       .then((d) => {
         setEnabled(!!d.enabled)
         setVoiceEnabled(!!d.voice_enabled)
+        setTtsEnabled(!!d.tts_enabled)
       })
       .catch(() => setEnabled(false))
   }, [])
@@ -142,6 +146,8 @@ export function AiriChatPanel() {
           } else if (event === 'message') {
             setMessages((m) => [...m, { role: 'assistant', content: data.text || '' }])
             setStatus('')
+            // v4.3 — read the completed answer aloud (no-op if TTS is off)
+            speakerRef.current?.speak(data.text || '')
           } else if (event === 'error') {
             setMessages((m) => [
               ...m,
@@ -391,6 +397,9 @@ export function AiriChatPanel() {
                   onError={setMicError}
                 />
               </>
+            )}
+            {ttsEnabled && (
+              <AiriSpeaker ref={speakerRef} onError={setMicError} />
             )}
             <input
               value={input}
