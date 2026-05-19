@@ -45,7 +45,48 @@ grok-web architecture.
      compose service (e.g. `curl /status` every 30 s, restart on
      unhealthy) so a crashed inner service auto-recovers without a
      human noticing manually.
-- **Status:** open — pending operator approval to restart the bridge.
+- **Update (2026-05-19 22:38 UTC) — attempted recovery did NOT succeed.**
+  Batch A of the consolidated remediation plan was authorised and executed.
+  Result: `docker restart` put the container into a crash-loop
+  (`exit 3`, `RestartCount: 11`). Root cause of the crash-loop is an
+  **image-level startup race** between Xvfb and the FastAPI lifespan —
+  Chromium launches before a usable `$DISPLAY` is available:
+  ```
+  ERROR:ozone_platform_x11.cc(244)] Missing X server or $DISPLAY
+  The platform failed to initialize. Exiting.
+  ```
+  Operator authorised the next step — clear `/data/playwright-state` and
+  start fresh. **That also did not help**: the crash recurs with the same
+  Xvfb error, confirming the issue is the image's startup orchestration,
+  not the persisted Chromium user-data-dir. The 10-day-old "Up" container
+  was the lucky win of this race on its original boot; subsequent restarts
+  lose the race. The cleared `playwright-state` was tarball-backed-up to
+  `/tmp/grok-bridge-playwright-state-bak-20260519T183844Z.tar.gz` (263 MB)
+  before deletion, available for forensic re-mount if needed.
+- **Current state (2026-05-19):** container **stopped** to halt the
+  crash-loop and the log spam. grok-web stays unavailable (same end-user
+  outcome as the original silent-zombie state; cleaner from
+  observability). Rest of the fleet is unaffected — all 3 nodes serving
+  v4.3.2, 9/10 providers each (Grok-Web-Devin CB tripped fleet-wide via
+  cluster sync; everything else healthy).
+- **Revised fix direction:** the symptom is image-level, not
+  operational. The operator's restart-to-recover assumption (and the
+  remediation plan's Batch A) was incorrect — the bridge image carries
+  a latent startup-race bug exposed only on a fresh container exit. Two
+  honest paths forward:
+  1. **Patch the grok-bridge image** — fix `start.sh` /
+     `supervisord` so Xvfb is fully ready (and `DISPLAY` propagated to
+     the FastAPI process) before the lifespan launches Chromium. A
+     real image change → rebuild → tag → push → recreate. Smallish but
+     needs grok-bridge source access.
+  2. **Defer to v4.4** — the per-node-auth architectural arc is going
+     to redesign this whole layer anyway (and may switch from a
+     persistent-context browser to a fresh-context-per-request model
+     that sidesteps Xvfb entirely). Accept that grok-web is down in
+     the meantime; grok-web is a tertiary fallback and the rest of
+     the proxy is fully healthy. **Recommended.**
+- **Status:** open — Batch A escalated rather than resolved; awaiting
+  operator decision between image-patch vs defer-to-v4.4.
 
 ### BUG-026 — v4.3.2 prober-skip patch is non-functional (wrong premise)
 
