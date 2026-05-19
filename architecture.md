@@ -170,6 +170,18 @@ app/
 - Apply: `apply_sync()` in `sync.py` merges incoming users/keys/providers/settings;
   tracks per-peer key costs in `_peer_key_costs` for global spending-cap enforcement
 
+**What syncs cluster-wide vs what stays node-local** (read before
+diagnosing a "9/10 on one node, 9/10 on another" pattern — the two
+counts often have a common cause that is itself cluster-synced):
+
+| Surface | Scope | Notes |
+|---|---|---|
+| `users`, `api_keys`, `providers` (incl. `extra_config`), `system_settings` | **synced** | merged by `apply_sync()` every 60 s; this is why `providers.extra_config.bridge_url` resolves to the same value on every node |
+| Circuit-breaker state (`provider_id` → `open/half-open/closed`, hold-down) | **synced** | a single node's upstream failures **propagate the CB state to every other node**. Operational consequence: one node thrashing a provider degrades every node's view of that provider; conversely, "9/10 healthy providers" observed on a quiet node often points to a problem somewhere *else* on the cluster (this exact pattern surfaced BUG-025 from c1conv during the v4.3.2 post-deploy QA). Intentional trade-off: fleet-wide CB visibility vs node-local CB isolation. |
+| Per-peer key costs (`_peer_key_costs`) | **synced** | needed for global spending-cap enforcement |
+| `activity_log` rows | **node-local — NOT synced** | each row's `event_meta.node_id` names the node that wrote it. A node's `/api/activity` endpoint returns only that node's history; cross-node activity comparison requires querying each node separately. Asymmetry with CB state above is intentional (rows are high-volume; sync overhead would dominate) but worth noting when triaging cluster-wide patterns. |
+| Per-process state: rate-limit counters (`auth/rate_limit_state.py`), cache (`api/_cache_inject.py`), provider scan results in flight | **node-local** | by construction — process memory. |
+
 ## Key Types
 
 | Type | Location | Purpose |
@@ -371,10 +383,34 @@ before they expire.
 @bridge_unauthorized    → 302 /llm-proxy2/?bridge_login_required=1
 ```
 
-**Cross-node reachability**: peer llm-proxy2 nodes (www02, smoke, GCP)
-call the bridge via the public URL `https://www.voipguru.org/grok-bridge`
-because `http://llm-proxy2-grok-bridge:8443` is www01-local. Provider
-records cluster-sync the public URL.
+**Sidecar topology — there is exactly ONE grok-bridge in the fleet.**
+The `llm-proxy2-grok-bridge` container runs **only on tmrwww01**; there
+is no per-node sidecar. Every node — including tmrwww01 itself —
+addresses it through the **public URL**
+(`https://www.voipguru.org/grok-bridge/...`), because the source of truth
+is `providers.extra_config.bridge_url`, and provider records cluster-sync
+across the fleet. tmrwww01 hairpins through its own public nginx →
+back into the local bridge container; tmrwww02 + c1conv reach it across
+the open internet. This is by design (cookies + Cloudflare passive
+refresh live in one volume, so one shared session is correct), but it
+has three operational consequences worth knowing:
+
+1. **No per-node auth state.** A re-login restores grok-web for *every*
+   node simultaneously, but a bridge outage breaks grok-web for *every*
+   node simultaneously. There is no graceful per-node degradation.
+2. **The CB state for grok-web is cluster-synced** (see §"Cluster sync"
+   above), so a single bridge failure trips the breaker on every node —
+   compounding consequence #1.
+3. **"Read the live provider config before targeting a sidecar fix."**
+   Because `bridge_url` is a public URL, a `_local_sidecar_reachable()`
+   helper that does a docker-internal hostname probe will trivially
+   succeed and gate nothing. The v4.3.2 release shipped exactly this
+   dead code (BUG-026) — diagnosed only after deploying. A 30-second
+   `SELECT extra_config FROM providers WHERE id='<grok-web>'` would
+   have prevented the misship.
+
+The v4.4 arc (per-node bridge auth) is the planned redesign of this
+layer — see `docs/remediation-plan.md` §5 Batch C.
 
 **Live test**: `tests/integration/` (added v3.2.x) covers the bridge
 contract; manual OAuth login is operator-driven (one-time per fresh
