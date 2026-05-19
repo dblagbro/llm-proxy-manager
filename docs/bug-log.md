@@ -6,6 +6,93 @@ Add new findings on top. When status changes, leave the row in place and update 
 
 ---
 
+## 2026-05-18 — QA pass v4.3.0 (AIRI text-to-speech surface)
+
+Deep regression + release-hardening pass on v4.3.0. 2130/2130 unit tests +
+~42 live checks pass against the released images on an isolated prod-DB copy.
+**No critical / high / medium defects.** 5 low / coverage / operational
+findings — none release-blocking. Full report: `docs/4.3-qa-report.md`.
+
+### BUG-020 — Pre-login `/api/auth/me` 401 logs a console error every load
+
+- **Severity:** low · **Category:** observability gap
+- **Area:** frontend auth bootstrap
+- **Context:** any fresh page load, all themes, v4.3.0 (pre-existing — not
+  introduced by v4.3).
+- **Repro:** open any page logged-out → DevTools console shows
+  `Failed to load resource: 401 (Unauthorized)` for `/api/auth/me`.
+- **Expected:** a clean console; the boot auth-probe is a normal "am I
+  logged in?" check and 401 is its expected negative answer.
+- **Actual:** the 401 surfaces as a red console error every load.
+- **Evidence:** 1 console error during an otherwise-clean QA UI run; it maps
+  exactly to the boot `/api/auth/me` probe.
+- **Suspected cause:** the auth-status probe uses a plain `fetch`; a 401 is
+  always logged by the browser as a failed resource load.
+- **Fix direction:** treat the boot-probe 401 as expected — it already is,
+  functionally; the noise just muddies real-error triage. Low priority.
+- **Status:** open (cosmetic).
+
+### BUG-021 — TTS message→speak wiring has no automated test
+
+- **Severity:** low · **Category:** test coverage gap
+- **Area:** `AiriChatPanel` / `AiriSpeaker` (v4.3)
+- **Context:** v4.3.0.
+- **Repro:** n/a — the only coverage of "a completed assistant message
+  triggers `speakerRef.speak()`" is the live throwaway smoke; the unit tests
+  in `test_airi_voice.py` are source-grep assertions.
+- **Expected:** an automated test exercising the integrated flow.
+- **Actual:** none; a regression here would only be caught by manual QA.
+- **Fix direction:** add a Playwright integration test (speaker on → chat
+  turn → assert `/api/airi/speak` fires).
+- **Status:** open.
+
+### BUG-022 — Audible TTS playback unverifiable in headless Chromium
+
+- **Severity:** low · **Category:** test coverage gap
+- **Area:** `AiriSpeaker` audio playback (v4.3)
+- **Context:** headless QA environment.
+- **Repro:** headless Chromium has no audio device; `audio.play()` after a
+  non-gesture `message` event cannot be confirmed to produce sound.
+- **Expected:** verification that the synthesized clip actually plays.
+- **Actual:** QA confirmed `/api/airi/speak` fires and returns a valid WAV,
+  and the `<audio>` element is fed — but not that audio is audible, nor the
+  autoplay-policy edge case (play() triggered outside a user gesture).
+- **Fix direction:** add a real-browser manual check to the release
+  checklist; consider priming the `<audio>` element inside the speaker-toggle
+  click gesture to harden against autoplay rejection.
+- **Status:** open (coverage bound).
+
+### BUG-023 — c1conv reports 9/10 healthy providers
+
+- **Severity:** low · **Category:** operational / observability
+- **Area:** fleet — c1conv node
+- **Context:** live fleet, observed during v4.3.0 QA.
+- **Repro:** `GET https://34.170.189.19/llm-proxy2/health` → `healthyProviders:9`
+  (tmrwww01 + tmrwww02 report 10/10).
+- **Expected:** 10/10, matching the other nodes.
+- **Actual:** one provider on c1conv is unhealthy (tripped circuit breaker
+  or stale credential).
+- **Suspected cause:** not v4.3-related — provider health is
+  version-independent; likely an expired OAuth token or a transient trip.
+- **Fix direction:** identify the unhealthy provider on c1conv and
+  reset/refresh it; unrelated to the v4.3.0 release.
+- **Status:** open (operational, pre-existing).
+
+### BUG-024 — Voice buttons' pulse animation ignores `prefers-reduced-motion`
+
+- **Severity:** enhancement · **Category:** accessibility
+- **Area:** `AiriSpeaker` / `AiriMicButton` / `AiriHandsFree`
+- **Context:** v4.3.0 (and pre-existing on the v4.2 mic/hands-free buttons).
+- **Repro:** the synthesizing/speaking (and recording) states use Tailwind
+  `animate-pulse` with no `motion-reduce:` guard.
+- **Expected:** respect `prefers-reduced-motion`.
+- **Actual:** the pulse animates regardless of the OS reduced-motion setting.
+- **Fix direction:** add `motion-reduce:animate-none` to the three voice
+  buttons. Minor.
+- **Status:** open (enhancement).
+
+---
+
 ## 2026-05-10 — QA pass v3.7.13 / v3.7.14 (v3.7.x surface)
 
 ### Remediation plan (priority order)

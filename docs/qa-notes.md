@@ -278,3 +278,50 @@ In rough order of bang-for-buck:
 3. **Spin up a localhost-only mock proxy** for integration tests so they stop polluting the production DB
 4. **Add Playwright tests for v3.5.x dashboard widgets** — they're complex enough to break silently
 5. **Add a "release smoke" workflow** that runs the manual probes from this QA pass automatically against a candidate release
+
+---
+
+## v4.3.0 QA pass notes (2026-05-18)
+
+### Method that worked well
+
+- **Throwaway stack on a copy of the prod DB** — `docker cp` the live
+  `llm-proxy2:/app/data/llmproxy.db` to a temp dir, run the released
+  `dblagbro/{llm-proxy2,whisper-bridge}:4.3.0` images against it on a private
+  network with `CLUSTER_ENABLED=false`. Gives realistic testing (real
+  providers, real models, real AIRI) with **zero prod pollution** — every
+  test artifact (incl. the AIRI conversation from the integrated-TTS test)
+  dies with the throwaway. The prod fleet got read-only checks only.
+
+### Gotchas hit this pass
+
+1. **Mounted-DB permissions** — the image runs as `appuser` uid 1001; a
+   host-dir bind-mount shadows the image's `chown`, so SQLite fails with
+   "attempt to write a readonly database" on `PRAGMA journal_mode=WAL`.
+   Fix: `chmod -R 777` the mounted data dir before starting the container.
+2. **`page.request` bypasses `page.route`** — Playwright's API-request
+   context does not go through `page.route` rewriting and does not inherit
+   the page's path-scoped session cookie. For authenticated API checks
+   against a no-nginx throwaway, use `page.evaluate(fetch(...))` with
+   `credentials:'include'` instead — it goes through the prefix rewrite and
+   the page cookies.
+3. **Headless audio** — Chromium headless has no audio device; TTS *audible*
+   output is unverifiable (BUG-022). The `/api/airi/speak` call + the WAV
+   payload + the `<audio>` wiring are all verified; the sound is not.
+4. **App theme ≠ OS theme** — the app has its own light/dark toggle
+   (`aria-label="Switch to light mode"` in the top bar); `emulate_media(
+   color_scheme=...)` does nothing. Click the toggle to test light mode.
+5. **Console-error counting** — a browser logs every non-2xx `fetch` as a
+   console error, so negative API probes inflate the count. Count console
+   errors only during a clean UI run with no deliberate 4xx probes.
+
+### v4.3 specifics
+
+- `/api/airi/speak` and the sidecar `/speak` both cap text at 6000 chars
+  (413 over). The proxy validates empty/oversize *before* forwarding, so the
+  sidecar's own empty/oversize checks are only reached on a direct call.
+- `_bridge_headers()` omits the `Authorization` header when no token is set
+  (httpx rejects an empty `Bearer ` value); the sidecar treats no token as
+  open. Prod always sets the token.
+- TTS audio + text are transient — never persisted (temp file, deleted on
+  context exit), so TTS testing leaves no artifacts even on a real DB.
