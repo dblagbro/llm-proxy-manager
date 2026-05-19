@@ -317,7 +317,7 @@ applicable) and **Severity: low** unless noted.
   versa). Document version-skew tolerance.
 - **Status:** open (coverage).
 
-### BUG-038 — `architecture.md` does not document CB cluster-sync semantics
+### BUG-038 — `architecture.md` does not document CB cluster-sync semantics — **CLOSED 2026-05-19 (F1)**
 
 - **Area:** `architecture.md` (and possibly `docs/lmrh-2.0-bidirectional.md`).
 - **What's missing:** the fact that **a single node's circuit-breaker
@@ -326,14 +326,13 @@ applicable) and **Severity: low** unless noted.
   documented. Operationally observed during BUG-025 (one bridge crash on
   tmrwww01 tripped grok-web's CB on all 3 nodes).
 - **Severity:** low (observability / doc gap).
-- **Fix direction:** add a short subsection to `architecture.md` under
-  the cluster-sync coverage describing CB sync semantics + the
-  intentional trade-off (fleet-wide CB visibility vs node-local CB
-  isolation), plus a brief operator-facing note that "9/10 on one node"
-  often signals a problem somewhere *else* on the cluster.
-- **Status:** open (doc).
+- **Resolution (2026-05-19, F1):** `architecture.md` §"Cluster sync"
+  now carries a "What syncs cluster-wide vs what stays node-local"
+  table that enumerates CB state as cluster-synced with the
+  "9/10 on one node often signals a problem somewhere else" operator
+  note attached.
 
-### BUG-039 — `architecture.md` does not document the grok-bridge public-URL hairpin
+### BUG-039 — `architecture.md` does not document the grok-bridge public-URL hairpin — **CLOSED 2026-05-19 (F1)**
 
 - **Area:** `architecture.md`, the providers/grok-web section.
 - **What's missing:** that `grok-web` providers have `bridge_url` set
@@ -345,16 +344,18 @@ applicable) and **Severity: low** unless noted.
   shown the real architecture.
 - **Severity:** medium (its absence cost a wasted v4.3.2 release —
   BUG-026).
-- **Fix direction:** add to `architecture.md` a "Sidecar architecture"
-  subsection that describes (a) which providers need a sidecar, (b)
-  where the sidecar lives (per-node vs cluster-shared), (c) the URL
-  shape each sidecar gets, and (d) the cluster-sync implication. This
-  is the prerequisite doc work for the v4.4 design.
-- **Status:** open (doc) — high-leverage; recommend doing this
-  *before* the v4.4 design doc so v4.4 starts from a true-current
-  baseline.
+- **Resolution (2026-05-19, F1):** the §"grok-bridge sidecar"
+  "Cross-node reachability" subsection has been replaced with
+  "Sidecar topology — there is exactly ONE grok-bridge in the fleet",
+  which makes explicit (a) only tmrwww01 runs the container, (b)
+  *every* node — including tmrwww01 itself — reaches it via the public
+  URL because `providers.extra_config.bridge_url` cluster-syncs, (c)
+  the three operational consequences (no per-node auth state, CB sync
+  amplification, the "live-config read before sidecar fix" rule that
+  would have prevented BUG-026), and (d) a pointer to the v4.4 arc as
+  the planned redesign.
 
-### BUG-040 — `architecture.md` does not document `activity_log` row scope
+### BUG-040 — `architecture.md` does not document `activity_log` row scope — **CLOSED 2026-05-19 (F1)**
 
 - **Area:** `architecture.md`, monitoring / cluster-sync coverage.
 - **What's missing:** `activity_log` rows are **per-node** (each row has
@@ -364,10 +365,10 @@ applicable) and **Severity: low** unless noted.
   diagnosis (the 5 recent c1conv probe rows all carried
   `origin_node=llm-proxy2-c1conv`, confirming local-only origin).
 - **Severity:** low (doc).
-- **Fix direction:** add a one-paragraph note to `architecture.md`
-  about activity-log scope; useful for future QA + operators triaging
-  cluster-wide issues.
-- **Status:** open (doc).
+- **Resolution (2026-05-19, F1):** the same §"Cluster sync" table
+  that closes BUG-038 also calls out `activity_log` rows as
+  node-local / NOT synced, with the asymmetry to CB state explained
+  (rows are high-volume; sync overhead would dominate).
 
 ---
 

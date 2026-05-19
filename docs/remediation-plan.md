@@ -52,7 +52,7 @@ finding** across:
 | (coverage) | LOW | TTS audible playback | headless Chromium has no audio device | only the manual `release-checklist.md` step verifies |
 | (coverage) | LOW | voice buttons keyboard / mobile | not exercised by the v4.3.0 pass | a11y / responsive gap |
 | **BUG-027..037** | LOW | (coverage) | bounded-out QA-prompt surfaces | UI pages, forms, cache, mobile, a11y, integration suite, rollback drill, version-skew test — *see §14* |
-| **BUG-038..040** | LOW/MED | (doc gap) | `architecture.md` does not document CB-sync, public-URL hairpin, activity-log scope | reader-confusion; BUG-039 already cost a wasted v4.3.2 release |
+| ~~BUG-038..040~~ | LOW/MED | (doc gap) | CB-sync, public-URL hairpin, activity-log scope | **CLOSED 2026-05-19 via F1** — `architecture.md` §"Cluster sync" + §"grok-bridge sidecar" updated |
 | (arc) | — | sidecar-dependent providers | shared single-bridge URL is fragile; no per-node auth model | v4.4 design + multi-milestone build |
 
 **Closed-and-verified (historical context):**
@@ -315,7 +315,7 @@ observed because no test has been run. They exist so:
    (BUG-038/039/040 are doc gaps that, left in place, will lead another
    diagnostician to re-make the BUG-026-class mistake).
 
-### Sub-batch F1 — doc gaps (high-leverage, prerequisite to Batch C)
+### Sub-batch F1 — doc gaps (high-leverage, prerequisite to Batch C) — **DONE 2026-05-19**
 
 | | |
 |---|---|
@@ -323,7 +323,7 @@ observed because no test has been run. They exist so:
 | **Subsystem** | `architecture.md` (3 small additions). |
 | **Effort** | ~1–2 h. **Risk:** zero (docs only). |
 | **Dependencies** | None. **Strongly recommended before Batch C starts** — the v4.4 design must start from an accurate baseline of the current grok-web architecture. |
-| **Recommended landing window** | Standalone doc commit in the next quiet period, or alongside Batch B's release. |
+| **Status** | **CLOSED 2026-05-19.** `architecture.md` §"Cluster sync" now carries a "What syncs cluster-wide vs what stays node-local" table (closes BUG-038 + BUG-040 with the asymmetry called out). §"grok-bridge sidecar" "Cross-node reachability" subsection has been replaced with "Sidecar topology — there is exactly ONE grok-bridge in the fleet" (closes BUG-039 + makes BUG-026's prevention explicit). Prerequisite for Batch C v4.4 design is satisfied. |
 
 ### Sub-batch F2 — UI / a11y / mobile coverage (multi-session)
 
