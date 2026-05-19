@@ -88,3 +88,67 @@ If a v4.3.1 ships (Groups 1+2): re-run `tests/unit/` (must stay 2130+ green),
 the new TTS integration test, and a Playwright sanity check of the AIRI panel
 in both themes (clean console, voice buttons render + animate correctly).
 A full QA pass is **not** required for a frontend-only cosmetic patch.
+
+---
+
+## 2026-05-19 — Post-v4.3.2 verification pass findings
+
+**Status: PROPOSED — awaiting operator review. No fixes implemented.**
+
+Two new bugs found verifying the v4.3.2 release. Both stem from the same
+architectural misread of grok-web (one shared public-URL bridge, not
+per-node sidecars).
+
+### Group A — release blocker / regression (BUG-025 + BUG-026)
+
+| Bug | Severity | Subsystem | Fix type |
+|---|---|---|---|
+| **BUG-025** | high | grok-bridge container on tmrwww01 | operational (restart) + hardening (compose healthcheck) |
+| **BUG-026** | medium | v4.3.2 keepalive patch (dead code) | code: revert or correct premise |
+
+### Recommended fix order
+
+1. **BUG-025 (immediate, ops, low-risk)** — `docker restart
+   llm-proxy2-grok-bridge` on tmrwww01. Single named container, no stack
+   impact. If the bridge persists its Grok cookies the session recovers
+   automatically; otherwise the v4.4 per-node-auth flow becomes urgent.
+   *Retest:* probe `http://llm-proxy2-grok-bridge:8000/status` from inside
+   `llm-proxy2`, send one grok-web probe, confirm CB closes. ETA: 1 min.
+2. **BUG-025 hardening (follow-up release, e.g. v4.3.3)** — add a compose
+   healthcheck on the grok-bridge so an internal crash (Playwright page,
+   FastAPI process) restarts the container automatically instead of the
+   bridge sitting "Up 10 days" with a dead service inside. *Retest:* kill
+   the inner process manually, watch the container restart. Bundle with
+   BUG-026 fix below.
+3. **BUG-026 (next release — v4.3.3 or rolled into the v4.4 arc)** —
+   choose:
+   - **Revert** the keepalive.py addition (recommended — once BUG-025 is
+     fixed, the noise it was trying to suppress is gone at source). The
+     `_local_sidecar_reachable` helper can be kept if useful, but the
+     gate that uses it should be removed since the premise doesn't apply
+     to grok-web's shared-bridge architecture.
+   - **Or** correct the gate — e.g. only skip on an actual `ConnectError`
+     from `complete_grok_web`, not a speculative pre-check.
+   *Retest:* unit test that drives the skip path with a stubbed unreachable
+   bridge; live verification that c1conv/tmrwww02 still probe normally.
+4. **BUG-023 status (corrected)** — the original "no local sidecar"
+   diagnosis was wrong; the real cause is BUG-025. Closing-via-BUG-025 is
+   appropriate once the bridge is restored.
+
+### Risky changes
+
+None of these are risky individually. The combination "revert v4.3.2 +
+ship v4.3.3" is two releases in quick succession — acceptable for
+defect-driven patches, but a reminder that v4.3.2 itself should have had
+the live verification this pass just did *before* cutting the release.
+That's a process gap (see qa-notes).
+
+### Backup / rollback (delta over `backup-plan.md`)
+
+- BUG-025: a `docker restart <container>` has automatic rollback (if it
+  comes up broken, restart it again or recreate from the same image).
+  Worth noting in advance: confirm the grok-bridge **image tag** is pinned
+  in compose before the restart, so a recreate uses the same code.
+- BUG-026 revert: the `v4.3.1` Docker image is on the Hub
+  (`dblagbro/llm-proxy2:4.3.1`) — rollback is one retag + recreate per
+  node, same procedure as any other llm-proxy2 release.

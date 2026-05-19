@@ -325,3 +325,40 @@ In rough order of bang-for-buck:
   open. Prod always sets the token.
 - TTS audio + text are transient — never persisted (temp file, deleted on
   context exit), so TTS testing leaves no artifacts even on a real DB.
+
+---
+
+## 2026-05-19 — Verification pass on v4.3.2 (lessons)
+
+The post-deploy verification pass exposed two defects that the original
+v4.3.0 deep QA missed:
+
+1. **BUG-025** — the grok-bridge container can appear `Up` while its
+   inner service is dead. A docker-level "container is up" check is *not*
+   a service health check. The deep v4.3.0 pass didn't probe the bridge's
+   own `/status` endpoint; the v4.3.2 verification did, and immediately
+   found a `Connection refused`. Add an explicit "sidecar inner-service
+   reachability" check to the standard post-deploy script.
+2. **BUG-026** — I shipped v4.3.2 without verifying the assumption that
+   `bridge_url` was docker-internal. The patch was theoretically correct
+   for the model I had in mind; it was a no-op for the actual model
+   (shared bridge via public nginx URL). **Lesson: before shipping a
+   targeted fix, read the live provider config**, don't infer the
+   architecture from container topology alone. A 30-second
+   `SELECT extra_config FROM providers` would have caught this.
+
+### Strengthened practice for sidecar-related fixes
+
+When a bug touches a sidecar-dispatched provider type (grok-web today;
+v4.4 will broaden to more), verify *all* of:
+
+- The provider row's `extra_config` (`bridge_url`, etc.) — what does the
+  proxy actually call?
+- DNS — what does that hostname resolve to from each node?
+- The sidecar's own health/status endpoint, not just `docker ps`.
+- That the proposed gate is reachable (does the patch actually fire
+  under the conditions you expect?).
+
+Treat a release ceremony as completing *only* after a targeted post-deploy
+verification that exercises the changed code path on a live node and
+confirms it actually fires.
