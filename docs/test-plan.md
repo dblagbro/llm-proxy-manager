@@ -169,3 +169,34 @@ When adding new tests, label severity by:
 - **release hardening**: stack-trace audit, fuzzing, cross-cluster consistency; runs ad-hoc
 
 Today's QA pass was **deep regression / release hardening**. Of the 12 open bugs found, 7 are in coverage gaps that would benefit from a smoke or standard tier test.
+
+---
+
+## v4.2 / v4.3 — AIRI voice surfaces (added 2026-05-18)
+
+### Surfaces
+
+| Surface | What it is | Test method | Coverage |
+|---|---|---|---|
+| `whisper-bridge` sidecar | self-hosted STT (faster-whisper) + Vosk wake model + TTS (Piper) | direct container tests + via the proxy | good — `/speak` auth + validation all paths; `/transcribe` + `/vosk-model` auth |
+| `POST /api/airi/transcribe` | v4.2 STT proxy | API + live smoke | good |
+| `POST /api/airi/speak` | v4.3 TTS proxy | API: happy/empty/missing/oversize/malformed/auth | good |
+| `GET /api/airi/voice-model` | serves the Vosk model to the browser | API | good |
+| push-to-talk mic / hands-free | v4.2 UI | Playwright (capture stubbed — see qa-notes) | moderate |
+| speaker toggle (`AiriSpeaker`) | v4.3 UI — reads answers aloud | Playwright: render/state/toggle + integrated flow | moderate |
+
+### Known coverage gaps (v4.3)
+
+- **BUG-021** — the message→speak wiring (`speakerRef.speak()` on the SSE
+  `message` event) has no automated test; only the live throwaway smoke.
+  A Playwright integration test should be added.
+- **BUG-022** — audible TTS output cannot be verified headless (no audio
+  device); the autoplay-policy edge case (`play()` outside a user gesture)
+  needs a real-browser manual check.
+- Mobile/responsive layout of the 3-button voice row not exercised.
+- Keyboard-accessibility of the voice buttons not deeply tested (they are
+  real `<button>`s with `aria-label` + `aria-pressed`, so baseline a11y is
+  present; `prefers-reduced-motion` is not honored — BUG-024).
+
+The v4.3.0 QA pass (2026-05-18) was **deep regression / release hardening**;
+full report in `docs/4.3-qa-report.md`.
