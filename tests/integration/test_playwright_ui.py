@@ -6,6 +6,7 @@ Run with:
     playwright install chromium
     python -m pytest tests/integration/test_playwright_ui.py -v
 """
+import re
 import time
 import pytest
 from playwright.sync_api import sync_playwright, Page, expect
@@ -702,3 +703,61 @@ class TestProviderCapabilityEditUI:
             "() => document.querySelectorAll('.fixed.inset-0').length === 0",
             timeout=5_000,
         )
+
+
+class TestAiriTTS:
+    """v4.3 — AIRI text-to-speech: a completed assistant message is read
+    aloud via the speaker toggle. Regression cover for BUG-021 (the
+    message->speak wiring previously had only a manual live smoke).
+
+    The AIRI chat SSE is stubbed so the test is deterministic and costs no
+    LLM call; /api/airi/speak is stubbed to a minimal WAV and its invocation
+    is recorded — the assertion is that a completed message triggers it.
+    Requires the deployment to have airi_tts_enabled on (v4.3.0+)."""
+
+    # a valid, empty 16-bit PCM WAV (44-byte header, zero data)
+    _WAV = (b"RIFF" + (36).to_bytes(4, "little") + b"WAVE"
+            + b"fmt " + (16).to_bytes(4, "little")
+            + (1).to_bytes(2, "little") + (1).to_bytes(2, "little")
+            + (22050).to_bytes(4, "little") + (44100).to_bytes(4, "little")
+            + (2).to_bytes(2, "little") + (16).to_bytes(2, "little")
+            + b"data" + (0).to_bytes(4, "little"))
+
+    def test_completed_message_triggers_speak(self, page: Page):
+        login(page)
+
+        speak_calls = []
+        canned_sse = (
+            'event: conversation\ndata: {"conversation_id":"qa-tts-wiring"}\n\n'
+            'event: message\ndata: {"text":"Yes, the supervisor is enabled."}\n\n'
+        )
+        page.route("**/api/airi/chat", lambda route: route.fulfill(
+            status=200, content_type="text/event-stream", body=canned_sse))
+
+        def speak_handler(route):
+            speak_calls.append(route.request.url)
+            route.fulfill(status=200, content_type="audio/wav", body=self._WAV)
+        page.route("**/api/airi/speak", speak_handler)
+
+        page.goto(f"{BASE_URL}/routing")
+        page.wait_for_load_state("networkidle")
+        page.wait_for_timeout(1500)
+
+        spk = page.get_by_role("button", name=re.compile("spoken replies", re.I))
+        assert spk.count() == 1, "speaker toggle should render when TTS is enabled"
+        spk.first.click()
+        page.wait_for_timeout(300)
+        assert spk.first.get_attribute("aria-pressed") == "true", \
+            "speaker toggle should switch on"
+
+        page.get_by_placeholder(re.compile("Ask AIRI", re.I)).fill(
+            "Is the supervisor enabled?")
+        page.get_by_role("button", name="Send").first.click()
+
+        # the completed assistant message must trigger POST /api/airi/speak
+        for _ in range(20):
+            if speak_calls:
+                break
+            page.wait_for_timeout(500)
+        assert len(speak_calls) >= 1, \
+            "a completed AIRI message must trigger /api/airi/speak (the v4.3 wiring)"

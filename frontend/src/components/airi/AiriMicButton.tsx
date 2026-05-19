@@ -120,7 +120,7 @@ export function AiriMicButton({
         'shrink-0 rounded-md px-3 py-2 flex items-center justify-center ' +
         'disabled:opacity-50 transition-colors ' +
         (state === 'recording'
-          ? 'bg-red-600 text-white hover:bg-red-700 animate-pulse'
+          ? 'bg-red-600 text-white hover:bg-red-700 animate-pulse motion-reduce:animate-none'
           : 'border border-gray-300 dark:border-gray-600 text-gray-600 ' +
             'dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700')
       }

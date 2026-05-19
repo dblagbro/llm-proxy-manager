@@ -18,8 +18,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const checkSession = useCallback(async (isInitial = false) => {
     try {
-      const me = await authApi.me()
-      setUser(me)
+      // BUG-020: /session is unauthenticated-safe (always 200) — a logged-out
+      // probe returns {authenticated:false} instead of a 401 console error.
+      const s = await authApi.session()
+      setUser(s.authenticated ? (s as AuthUser) : null)
     } catch (err: any) {
       // Only clear user on the initial session probe (no prior state) or on
       // an explicit auth-expired signal (handled by window event listener).

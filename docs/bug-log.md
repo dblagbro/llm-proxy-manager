@@ -30,7 +30,10 @@ findings — none release-blocking. Full report: `docs/4.3-qa-report.md`.
   always logged by the browser as a failed resource load.
 - **Fix direction:** treat the boot-probe 401 as expected — it already is,
   functionally; the noise just muddies real-error triage. Low priority.
-- **Status:** open (cosmetic).
+- **Status:** ✅ implemented on the `v2` branch — additive
+  `GET /api/auth/session` (always 200) + the frontend boot probe switched to
+  it; `/me` keeps its 401 contract. Verified: 0 console errors on a
+  logged-out load. Ships in v4.3.1.
 
 ### BUG-021 — TTS message→speak wiring has no automated test
 
@@ -44,7 +47,9 @@ findings — none release-blocking. Full report: `docs/4.3-qa-report.md`.
 - **Actual:** none; a regression here would only be caught by manual QA.
 - **Fix direction:** add a Playwright integration test (speaker on → chat
   turn → assert `/api/airi/speak` fires).
-- **Status:** open.
+- **Status:** ✅ implemented on the `v2` branch — `TestAiriTTS` in
+  `tests/integration/test_playwright_ui.py` (stubs the chat SSE, asserts a
+  completed message fires `/api/airi/speak`). Verified passing. Ships in v4.3.1.
 
 ### BUG-022 — Audible TTS playback unverifiable in headless Chromium
 
@@ -60,7 +65,10 @@ findings — none release-blocking. Full report: `docs/4.3-qa-report.md`.
 - **Fix direction:** add a real-browser manual check to the release
   checklist; consider priming the `<audio>` element inside the speaker-toggle
   click gesture to harden against autoplay rejection.
-- **Status:** open (coverage bound).
+- **Status:** ✅ addressed on the `v2` branch — `docs/release-checklist.md`
+  adds a manual real-browser TTS audible-playback check (and the autoplay
+  edge case to watch). The optional audio-priming code change was not taken
+  (no autoplay failure observed). Ships in v4.3.1.
 
 ### BUG-023 — c1conv reports 9/10 healthy providers
 
@@ -89,7 +97,9 @@ findings — none release-blocking. Full report: `docs/4.3-qa-report.md`.
 - **Actual:** the pulse animates regardless of the OS reduced-motion setting.
 - **Fix direction:** add `motion-reduce:animate-none` to the three voice
   buttons. Minor.
-- **Status:** open (enhancement).
+- **Status:** ✅ implemented on the `v2` branch — `motion-reduce:animate-none`
+  added alongside `animate-pulse` on `AiriSpeaker`, `AiriMicButton`,
+  `AiriHandsFree`. Ships in v4.3.1.
 
 ---
 

@@ -10,7 +10,7 @@ from app.models.database import get_db
 from app.models.db import User
 from app.auth.admin import (
     verify_password, create_session, destroy_session, touch_session,
-    require_any_user, AdminUser, _extract_token,
+    require_any_user, AdminUser, _extract_token, _get_session,
     SESSION_COOKIE_NAME, SESSION_COOKIE_PATH,
 )
 
@@ -75,6 +75,28 @@ async def me(request: Request, admin: AdminUser = Depends(require_any_user),
     return {
         "username": admin.username,
         "role": admin.role,
+        "timezone": getattr(user, "timezone", None) if user else None,
+        "time_format": getattr(user, "time_format", None) if user else None,
+    }
+
+
+@router.get("/session")
+async def session_probe(request: Request, db: AsyncSession = Depends(get_db)):
+    """Unauthenticated-safe session probe — always returns 200. The frontend
+    boot check calls this instead of /me so a logged-out page load does not
+    log a 401 "failed to load resource" console error (BUG-020). /me keeps
+    its 401 contract for authenticated callers."""
+    token = _extract_token(request)
+    sess = await _get_session(token) if token else None
+    if not sess:
+        return {"authenticated": False}
+    await touch_session(token)
+    res = await db.execute(select(User).where(User.username == sess["username"]))
+    user = res.scalar_one_or_none()
+    return {
+        "authenticated": True,
+        "username": sess["username"],
+        "role": sess["role"],
         "timezone": getattr(user, "timezone", None) if user else None,
         "time_format": getattr(user, "time_format", None) if user else None,
     }

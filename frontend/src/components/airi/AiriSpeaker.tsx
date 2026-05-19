@@ -146,7 +146,7 @@ export const AiriSpeaker = forwardRef<AiriSpeakerHandle, {
         'shrink-0 rounded-md px-3 py-2 flex items-center justify-center ' +
         'transition-colors ' +
         (busyState
-          ? 'bg-blue-600 text-white animate-pulse'
+          ? 'bg-blue-600 text-white animate-pulse motion-reduce:animate-none'
           : on
             ? 'bg-blue-50 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300 ' +
               'border border-blue-300 dark:border-blue-700'
