@@ -9,6 +9,24 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v4.3.x — "Voice output" milestone
 
+### v4.3.1 — QA remediation (v4.3.0 QA pass, Groups 1 + 2)
+
+Frontend-only patch addressing the low-severity findings from the v4.3.0 QA
+pass (`docs/4.3-qa-report.md`). No backend behavior change beyond one
+additive endpoint; `whisper-bridge` is unchanged.
+
+- **`GET /api/auth/session`** (new, additive) — an unauthenticated-safe
+  session probe that always returns 200 (`{authenticated: bool, …}`). The
+  frontend auth bootstrap now probes this instead of `/api/auth/me`, so a
+  logged-out page load no longer logs a `401` console error (BUG-020).
+  `/api/auth/me` keeps its 401 contract untouched.
+- **Reduced-motion** — the AIRI voice buttons (speaker, mic, hands-free) add
+  `motion-reduce:animate-none` so their pulse animation respects
+  `prefers-reduced-motion` (BUG-024).
+- **Tests** — `TestAiriTTS` (`tests/integration/test_playwright_ui.py`)
+  covers the v4.3 message→speak wiring; `docs/release-checklist.md` adds the
+  manual real-browser TTS audible-playback check (BUG-021, BUG-022).
+
 ### v4.3.0 — AIRI text-to-speech ("Airy" speaks answers back)
 
 v4.2 gave AIRI ears (push-to-talk + the "Airy" wake word); v4.3 gives it a
