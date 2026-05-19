@@ -9,6 +9,31 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v4.3.x — "Voice output" milestone
 
+### v4.3.2 — interim: prober skips a provider whose local sidecar is absent
+
+Interim noise fix for BUG-023 (the QA-pass finding on c1conv). A few
+providers — today only `grok-web` (served via the `grok-bridge` browser
+sidecar) — are part of the cluster-synced provider config, but the sidecar
+they need is per-node infrastructure. On a node where the sidecar isn't
+deployed, every keepalive probe was failing with a connection error,
+tripping the circuit breaker, and producing ~285 noisy `severity=error` rows
+in the activity log per day per such provider (observed on c1conv).
+
+This release lands a small, surgical fix: the keepalive prober now does a
+fast TCP-connect to a bridge-mode `grok-web` provider's `bridge_url` first.
+If the bridge isn't reachable (connection error / DNS failure), it sets a
+per-(provider, node) "no local sidecar" flag, logs the fact once at INFO,
+and **skips** the probe — no `complete_grok_web` call, no error row, no CB
+hit. When the sidecar later appears, the flag clears automatically and
+probing resumes.
+
+A new helper `keepalive.is_no_local_sidecar(provider_id)` exposes the flag
+so future routing code can consult it (the v4.4 per-node-auth-state arc
+will replace this informal flag with a proper synced cluster-wide view
+plus a guided cross-node auth flow).
+
+No backend/API contract change; `whisper-bridge` unchanged.
+
 ### v4.3.1 — QA remediation (v4.3.0 QA pass, Groups 1 + 2)
 
 Frontend-only patch addressing the low-severity findings from the v4.3.0 QA
