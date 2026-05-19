@@ -78,13 +78,29 @@ findings — none release-blocking. Full report: `docs/4.3-qa-report.md`.
 - **Repro:** `GET https://34.170.189.19/llm-proxy2/health` → `healthyProviders:9`
   (tmrwww01 + tmrwww02 report 10/10).
 - **Expected:** 10/10, matching the other nodes.
-- **Actual:** one provider on c1conv is unhealthy (tripped circuit breaker
-  or stale credential).
-- **Suspected cause:** not v4.3-related — provider health is
-  version-independent; likely an expired OAuth token or a transient trip.
-- **Fix direction:** identify the unhealthy provider on c1conv and
-  reset/refresh it; unrelated to the v4.3.0 release.
-- **Status:** open (operational, pre-existing).
+- **Actual:** the `Grok-Web-Devin` provider (id `8beb17c4bd11de26`, type
+  `grok-web`) is down on c1conv — its circuit breaker is half-open with 5
+  failures; **285/285 keepalive probes failed in the last 24 h** (every
+  ~5 min, `severity=error`).
+- **Root cause (diagnosed 2026-05-19):** c1conv has **no `grok-bridge`
+  sidecar**. `grok-web` providers are served only via the `grok-bridge`
+  browser-automation sidecar; tmrwww01 runs `llm-proxy2-grok-bridge` (and
+  its grok-web CB is *closed* — healthy). The provider config is
+  cluster-synced, so `Grok-Web-Devin` is enabled on all 3 nodes, but the
+  sidecar is per-node infrastructure and was never deployed on c1conv.
+  Not v4.3-related.
+- **Fix direction (needs an operator decision — options):**
+  1. Deploy a `grok-bridge` sidecar on c1conv. Requires a logged-in Grok
+     web session (Grok account credentials / interactive login) — outward-
+     facing, credential-laden; an operator task.
+  2. Accept that c1conv does not serve grok-web (it is a tertiary fallback;
+     the CB correctly excludes it). The cost is the 9/10 health figure and
+     ~285 failed keepalive probes/day of log noise on c1conv.
+  3. Enhancement: have the keepalive prober skip a provider whose required
+     sidecar is absent on the local node, so a node without grok-bridge
+     does not probe (and trip on) grok-web.
+- **Status:** open — diagnosed; resolution awaits an operator decision
+  among the options above. Not a v4.3 release blocker.
 
 ### BUG-024 — Voice buttons' pulse animation ignores `prefers-reduced-motion`
 
