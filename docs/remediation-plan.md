@@ -51,6 +51,8 @@ finding** across:
 | BUG-003 | LOW | `tests/integration/` | test cleanup leaves rows | prod-DB pollution with `pytest-mock` rows |
 | (coverage) | LOW | TTS audible playback | headless Chromium has no audio device | only the manual `release-checklist.md` step verifies |
 | (coverage) | LOW | voice buttons keyboard / mobile | not exercised by the v4.3.0 pass | a11y / responsive gap |
+| **BUG-027..037** | LOW | (coverage) | bounded-out QA-prompt surfaces | UI pages, forms, cache, mobile, a11y, integration suite, rollback drill, version-skew test — *see §14* |
+| **BUG-038..040** | LOW/MED | (doc gap) | `architecture.md` does not document CB-sync, public-URL hairpin, activity-log scope | reader-confusion; BUG-039 already cost a wasted v4.3.2 release |
 | (arc) | — | sidecar-dependent providers | shared single-bridge URL is fragile; no per-node auth model | v4.4 design + multi-milestone build |
 
 **Closed-and-verified (historical context):**
@@ -89,6 +91,11 @@ items run first, gating later batches.
    (live verification of code paths under the actual provider config,
    sidecar inner-service health check); add the small TTS audible-
    playback automation if practical. Pure process + tests / docs.
+6. **Batch F — coverage gaps inventory** (BUG-027..040, added 2026-05-19,
+   see §14). Sub-batch F1 (3 doc-gap fixes to `architecture.md`) is a
+   **prerequisite to Batch C** and should land before any v4.4 design
+   work starts. F2 / F3 close untested QA-prompt surfaces. Zero-risk
+   additions / drills.
 
 ## 5. Fix batches (grouped by subsystem & root cause)
 
@@ -288,3 +295,100 @@ turns out to be a deeper bug**" column for ops fixes, not just rollback
 **Batches B / D / E remain planning-only**, awaiting operator approval.
 Batch C is now the umbrella resolution path for both BUG-025 and the
 underlying grok-web architecture; the v4.4 design doc will reflect this.
+
+---
+
+## 14. Coverage gaps inventory (Batch F — added 2026-05-19)
+
+Operator-requested 2026-05-19: formally capture every QA-prompt surface
+that was *bounded out* of the v4.3.0 deep QA + the v4.3.2 post-deploy
+verification, so a future session sees explicitly what's untested and
+the bug queue is complete-by-construction. Logged in `bug-log.md` §
+2026-05-19 as **BUG-027 .. BUG-040**.
+
+These are **coverage findings**, not defects. No failure has been
+observed because no test has been run. They exist so:
+
+1. A future deep-QA pass starts from an honest baseline of what
+   *has* been tested vs not.
+2. The v4.4 design (Batch C) starts from a **correct** `architecture.md`
+   (BUG-038/039/040 are doc gaps that, left in place, will lead another
+   diagnostician to re-make the BUG-026-class mistake).
+
+### Sub-batch F1 — doc gaps (high-leverage, prerequisite to Batch C)
+
+| | |
+|---|---|
+| **Items** | BUG-038 (CB-sync semantics), BUG-039 (public-URL hairpin), BUG-040 (activity-log per-node scope). |
+| **Subsystem** | `architecture.md` (3 small additions). |
+| **Effort** | ~1–2 h. **Risk:** zero (docs only). |
+| **Dependencies** | None. **Strongly recommended before Batch C starts** — the v4.4 design must start from an accurate baseline of the current grok-web architecture. |
+| **Recommended landing window** | Standalone doc commit in the next quiet period, or alongside Batch B's release. |
+
+### Sub-batch F2 — UI / a11y / mobile coverage (multi-session)
+
+| | |
+|---|---|
+| **Items** | BUG-027 (admin UI pages: Providers, API Keys, Users, Settings, Activity Log, Metrics), BUG-028 (form-validation depth), BUG-029 (data persistence + reload), BUG-030 (cache live), BUG-031 (notifications dispatch), BUG-032 (mobile/responsive), BUG-033 (deep keyboard a11y). |
+| **Subsystem** | New Playwright tests under `tests/integration/`; new responsive sweep + keyboard-only walk-through harnesses. |
+| **Effort** | 1–2 full QA sessions; can be split per sub-area. **Risk:** zero (test additions only). |
+| **Dependencies** | None. Lands incrementally — each item is independent. |
+| **Recommended landing window** | Either (a) one consolidated "broader UI sweep" QA session prior to the v4.4 deep-QA cycle, or (b) interleaved as new release surfaces touch each area. |
+
+### Sub-batch F3 — full-suite / drill / version-skew (one focused session)
+
+| | |
+|---|---|
+| **Items** | BUG-034 (full `tests/integration/` end-to-end), BUG-035 (real-provider compatibility matrix `--run-real`), BUG-036 (rollback drill on a throwaway stack), BUG-037 (mixed-version cluster-sync skew test). |
+| **Subsystem** | Existing tests + operational drill; no new code. |
+| **Effort** | ~3–4 h focused session. **Risk:** F3a/b/d zero; F3c (rollback drill) carries the only real risk — but is run on a throwaway stack, not prod. |
+| **Dependencies** | F3b spends $ on live providers → schedule as **pre-flight to the next minor release** (v4.4-class). F3c is most valuable *before* a high-stakes release where the rollback might actually be needed. |
+
+### Local vs architectural
+
+All Batch F items are **local** (docs, tests, drills). None are architectural.
+
+### Backups required
+
+- F1: standard git commit + push. Doc-only.
+- F2: standard test-add commits. No prod-data touched.
+- F3a/b/d: no backups needed. F3c (rollback drill) is a deliberate
+  rollback exercise — back up the throwaway stack's image tags + DB
+  snapshot before starting; objective is to confirm the documented
+  procedure restores them cleanly.
+
+### Rollback expectations
+
+Trivial for F1 and F2 (revert the commit). F3 has no rollback concept —
+it either runs to completion or it doesn't.
+
+### Retest scope
+
+For F1: a future reader can follow the new `architecture.md` paragraphs
+to a correct mental model of the grok-bridge / CB-sync / activity-log
+architecture; spot-check by re-reading and seeing if BUG-026 would have
+been avoidable from the doc alone.
+
+For F2: each new Playwright test must run green on its first commit and
+on every subsequent unit-suite cycle.
+
+For F3: outcome documented in `docs/backup-plan.md` (drill timings,
+verification results) and `qa-notes.md` (any new findings).
+
+### Risky changes flagged
+
+None. All zero-risk additions or contained drills.
+
+### Stop point
+
+**No coverage gap has been filled.** This inventory captures the gaps as
+known unknowns; the actual closing of each gap waits on operator
+prioritisation, just like Batches B–E.
+
+### Why this batch matters
+
+Without F1, the v4.4 design (Batch C) risks re-baking the same wrong
+architectural assumption that produced BUG-026. Without F2/F3, the next
+deep QA pass will repeat the v4.3.0 pass's scope — leaving the same
+surfaces untested. The cost of filling these gaps is small relative to
+the cost of another wasted release or another silent 10-day failure.

@@ -160,6 +160,217 @@ v4.3.2 work was barking up the wrong tree.
 
 ---
 
+## 2026-05-19 — Coverage gaps inventory (audit of v4.3.0 + v4.3.2 QA scope)
+
+Operator-requested audit of what *was not tested* during the v4.3.0 deep
+QA pass and the v4.3.2 post-deploy verification, so the bug queue
+formally captures every bounded-out surface. These are **coverage
+findings**, not defects — no failure has been observed because no test
+has been run; they exist to make the gap visible in a future QA pass and
+to inform v4.4 / Batch C scoping.
+
+Each is recorded as a `BUG-NNN` for queue uniformity, with
+**Category: test coverage gap** (or **observability/doc gap** where
+applicable) and **Severity: low** unless noted.
+
+### BUG-027 — Broader admin-UI pages not deep-tested
+
+- **Area:** Providers (add / edit / delete / capability edit), API Keys
+  (create / revoke / rate limits / spending caps), Users (manage / RBAC),
+  Settings panel (full surface), Activity Log (filters / sort /
+  pagination), Metrics, Cluster status page.
+- **What's missing:** the v4.3.0 deep QA focused on the AIRI / Routing
+  surface + proxy core sanity. Full UI flows for these pages
+  (validation, persistence-on-reload, modal/dialog states, empty/error
+  states) were not exercised.
+- **Fix direction:** add a Playwright pass per page (smoke-level: render,
+  one happy CRUD per resource, one negative validation, console-error
+  check). Best done as a single follow-up pass before the next deep
+  regression cycle.
+- **Status:** open (coverage).
+
+### BUG-028 — Form-validation depth beyond `/api/airi/speak` + auth
+
+- **Area:** all create/edit forms (Providers, API Keys, Rules, Scheduled
+  Rules, Notification Prefs, Settings).
+- **What's missing:** empty / malformed / oversized / unsupported-value
+  inputs are only systematically tested for `/api/airi/speak` and the
+  auth endpoints; the other forms rely on their own (untested) Pydantic
+  validators.
+- **Fix direction:** a small fuzz-table per form (empty, max-length,
+  special chars, wrong types) at the API layer; one negative-validation
+  Playwright case per form.
+- **Status:** open (coverage).
+
+### BUG-029 — Data persistence + reload depth
+
+- **Area:** Routing / AIRI panels (only the AIRI sticky-chat reload was
+  covered); Settings; Provider edits; Rule-set activation; API Key
+  rate-limit + spending caps.
+- **What's missing:** "edit → save → reload page → confirm persisted"
+  flow for the surfaces above. Cluster-sync angle ("save on tmrwww01 →
+  appears on tmrwww02") also not exercised for non-AIRI surfaces.
+- **Fix direction:** one Playwright save-reload pair per editable
+  surface; one cluster-sync verification per surface known to sync.
+- **Status:** open (coverage).
+
+### BUG-030 — Cache behavior not live-exercised
+
+- **Area:** request cache (`app/api/_cache_inject.py`, the cache
+  decision in `_request_pipeline.py`).
+- **What's missing:** live verification that cache hits return the
+  prior response, cache writes happen on miss, and cache eviction /
+  invalidation work end-to-end. Unit tests (`tests/unit/test_cache_inject.py`)
+  cover the helper logic; live integration was not exercised this pass.
+- **Fix direction:** add a `tests/integration/test_cache_live.py` that
+  drives one repeat-request pair through the live proxy and asserts the
+  second is a cache hit (header `LLM-Cache: hit`).
+- **Status:** open (coverage).
+
+### BUG-031 — Notifications dispatch not live-tested
+
+- **Area:** AIRI rule-fire email path (`app/airi/notify.py` +
+  `notify_prefs.py`) — the v4.0.3 surface.
+- **What's missing:** the code is source-greped only; a real notification
+  dispatch (SMTP send) hasn't been exercised in QA since v4.0.3 shipped.
+- **Fix direction:** stage a no-op monitor rule that fires once, observe
+  the email is delivered (or captured by a stubbed SMTP); verify
+  preference filtering excludes opted-out recipients.
+- **Status:** open (coverage).
+
+### BUG-032 — Mobile / responsive layout not exercised
+
+- **Area:** the whole app, but especially the AIRI panel input row
+  (3 voice buttons + input + Send) at narrow widths, and the off-canvas
+  sidebar from v4.0.1.
+- **What's missing:** Playwright viewport-emulation runs (`375x812`
+  mobile, `768x1024` tablet) of the main pages. Quick visual contrast +
+  no-clip checks.
+- **Fix direction:** a small responsive sweep (3 viewports × 5 pages =
+  ~15 screenshots) reviewed for clipping / overflow / hidden controls.
+- **Status:** open (coverage).
+
+### BUG-033 — Deep keyboard accessibility not exercised
+
+- **Area:** all interactive surfaces. Baseline a11y is present (real
+  `<button>`s + `aria-label` + `aria-pressed` on voice buttons), but
+  full keyboard-only flow (Tab order, focus visibility, Enter/Space
+  activate, Esc dismiss for modals) wasn't driven.
+- **What's missing:** a Playwright keyboard-only walk-through of: login →
+  navigate sidebar → open AIRI panel → run a chat → manage a provider.
+- **Fix direction:** one keyboard-only Playwright test per main flow;
+  also enable `motion-reduce` emulation to confirm BUG-024's guard.
+- **Status:** open (coverage / a11y).
+
+### BUG-034 — Full integration suite not run end-to-end this pass
+
+- **Area:** `tests/integration/` outside `test_playwright_ui.py::TestAiriTTS`.
+- **What's missing:** `test_api_keys.py`, `test_auth.py`,
+  `test_compatibility_matrix.py`, `test_cross_family_translation.py`,
+  `test_manual_override_flow.py`, `test_new_features.py`,
+  `test_routing_mock.py`, `test_settings_api.py`,
+  `test_settings_permutation.py` were not run this session. The 2133
+  unit tests + `TestAiriTTS` alone don't exercise the integration paths
+  these cover.
+- **Fix direction:** run `python3 -m pytest tests/integration/ -rs
+  --timeout=60` and triage; expect BUG-001/002/003 to fire (already
+  logged), file new findings against any new failures.
+- **Status:** open (coverage / regression scope).
+
+### BUG-035 — Real-provider compatibility matrix not run
+
+- **Area:** `tests/integration/test_compatibility_matrix.py --run-real`.
+- **What's missing:** the `--run-real` flag spends money on live providers
+  and is gated as pre-release in `test-plan.md`. The v4.3.0/v4.3.2
+  releases didn't run it.
+- **Fix direction:** run it once before the next *minor* release
+  (v4.4-ish) to catch upstream-shape changes (especially Anthropic /
+  OpenAI / Codex / Grok API surfaces).
+- **Status:** open (release-pre-flight not yet performed).
+
+### BUG-036 — Rollback drill never exercised
+
+- **Area:** `docs/backup-plan.md` procedures.
+- **What's missing:** the documented rollback procedures (retag a prior
+  image → `compose up -d --force-recreate --no-deps` per node, restore
+  per-node compose `.bak-pre-v…`, etc.) have never been executed end-to-
+  end. A documented-but-unverified rollback is a hope, not a procedure.
+- **Fix direction:** one-shot drill on a throwaway stack — roll forward
+  to a candidate version, perform the documented rollback, confirm the
+  prior version is fully restored. Record outcomes + actual times in
+  `backup-plan.md`.
+- **Status:** open (process gap).
+
+### BUG-037 — Mixed-version cluster-sync (skew test) not exercised
+
+- **Area:** cluster sync paths (`app/cluster/*`, `app/api/cluster.py`,
+  the various `*cluster_sync*` test files).
+- **What's missing:** every rolling deploy this session ended with the
+  fleet uniform on one version. The intermediate window (e.g. tmrwww01
+  on `4.3.2`, tmrwww02 still on `4.3.1`) hasn't been intentionally
+  held for verification. v4.3 added the new `/api/auth/session`
+  endpoint — does a mixed-version cluster degrade cleanly when one
+  side lacks that route?
+- **Fix direction:** during the next rolling deploy, *hold* the first-
+  node-only state for ~10 minutes and exercise cluster-synced surfaces
+  (provider config update on the older node, observe on the newer; vice
+  versa). Document version-skew tolerance.
+- **Status:** open (coverage).
+
+### BUG-038 — `architecture.md` does not document CB cluster-sync semantics
+
+- **Area:** `architecture.md` (and possibly `docs/lmrh-2.0-bidirectional.md`).
+- **What's missing:** the fact that **a single node's circuit-breaker
+  state syncs to the entire cluster** — so one node's repeated upstream
+  failures degrade *every* node's view of that provider — is not
+  documented. Operationally observed during BUG-025 (one bridge crash on
+  tmrwww01 tripped grok-web's CB on all 3 nodes).
+- **Severity:** low (observability / doc gap).
+- **Fix direction:** add a short subsection to `architecture.md` under
+  the cluster-sync coverage describing CB sync semantics + the
+  intentional trade-off (fleet-wide CB visibility vs node-local CB
+  isolation), plus a brief operator-facing note that "9/10 on one node"
+  often signals a problem somewhere *else* on the cluster.
+- **Status:** open (doc).
+
+### BUG-039 — `architecture.md` does not document the grok-bridge public-URL hairpin
+
+- **Area:** `architecture.md`, the providers/grok-web section.
+- **What's missing:** that `grok-web` providers have `bridge_url` set
+  to the **public URL** (e.g. `https://www.voipguru.org/...`) and that
+  all 3 nodes route grok-web through one shared bridge on tmrwww01,
+  hairpin through public nginx, is undocumented. This gap is what led
+  me to misread BUG-023 (assumed per-node sidecars, in fact one shared
+  bridge). A 30-second `SELECT extra_config FROM providers` would have
+  shown the real architecture.
+- **Severity:** medium (its absence cost a wasted v4.3.2 release —
+  BUG-026).
+- **Fix direction:** add to `architecture.md` a "Sidecar architecture"
+  subsection that describes (a) which providers need a sidecar, (b)
+  where the sidecar lives (per-node vs cluster-shared), (c) the URL
+  shape each sidecar gets, and (d) the cluster-sync implication. This
+  is the prerequisite doc work for the v4.4 design.
+- **Status:** open (doc) — high-leverage; recommend doing this
+  *before* the v4.4 design doc so v4.4 starts from a true-current
+  baseline.
+
+### BUG-040 — `architecture.md` does not document `activity_log` row scope
+
+- **Area:** `architecture.md`, monitoring / cluster-sync coverage.
+- **What's missing:** `activity_log` rows are **per-node** (each row has
+  `event_meta.node_id`; rows are NOT cluster-synced). This contrasts
+  with CB state (synced) — an inconsistency worth calling out so a
+  diagnostician knows where to look. Observed during BUG-026's
+  diagnosis (the 5 recent c1conv probe rows all carried
+  `origin_node=llm-proxy2-c1conv`, confirming local-only origin).
+- **Severity:** low (doc).
+- **Fix direction:** add a one-paragraph note to `architecture.md`
+  about activity-log scope; useful for future QA + operators triaging
+  cluster-wide issues.
+- **Status:** open (doc).
+
+---
+
 ## 2026-05-18 — QA pass v4.3.0 (AIRI text-to-speech surface)
 
 Deep regression + release-hardening pass on v4.3.0. 2130/2130 unit tests +
