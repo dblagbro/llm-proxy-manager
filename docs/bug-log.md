@@ -99,8 +99,13 @@ findings — none release-blocking. Full report: `docs/4.3-qa-report.md`.
   3. Enhancement: have the keepalive prober skip a provider whose required
      sidecar is absent on the local node, so a node without grok-bridge
      does not probe (and trip on) grok-web.
-- **Status:** open — diagnosed; resolution awaits an operator decision
-  among the options above. Not a v4.3 release blocker.
+- **Status:** ✅ interim noise patch shipped in **v4.3.2** (2026-05-19) —
+  the keepalive prober now pre-checks `bridge_url` reachability and silently
+  skips the probe when the local sidecar isn't there, so the 285/day error
+  rows on c1conv are gone and `healthyProviders` is back to 10/10. The
+  **proper** fix — actually serving grok-web from c1conv via a per-node
+  bridge + a guided cross-node auth UI — is the v4.4 arc
+  (`docs/4.4-per-node-auth-design.md`, pending).
 
 ### BUG-024 — Voice buttons' pulse animation ignores `prefers-reduced-motion`
 
