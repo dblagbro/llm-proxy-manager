@@ -11,6 +11,9 @@ export const authApi = {
     api.post<AuthUser>('/api/auth/login', { username, password }),
   logout: () => api.post<void>('/api/auth/logout'),
   me:     () => api.get<AuthUser>('/api/auth/me'),
+  // Unauthenticated-safe boot probe — always 200, so a logged-out page load
+  // does not log a 401 console error (BUG-020). Used by the auth bootstrap.
+  session: () => api.get<Partial<AuthUser> & { authenticated: boolean }>('/api/auth/session'),
   setPreferences: (prefs: { timezone?: string | null; time_format?: '12h' | '24h' | '' | null }) =>
     api.patch<AuthUser>('/api/auth/preferences', prefs),
 }

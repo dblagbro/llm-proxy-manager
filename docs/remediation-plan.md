@@ -3,9 +3,10 @@
 Companion to `docs/bug-log.md` (findings) and `docs/4.3-qa-report.md` (full
 results). Covers the 5 findings from the v4.3.0 QA pass.
 
-**Status: NOT STARTED — awaiting review.** No fixes have been implemented.
-Per the QA process, the fix phase begins only after this plan and
-`docs/backup-plan.md` are reviewed.
+**Status (updated 2026-05-18): GROUPS 1 + 2 IMPLEMENTED** on the `v2` branch
+and verified — pending the v4.3.1 release. **Group 3** (operational, BUG-023)
+not started — it is an ops action, no code. The original plan and
+`docs/backup-plan.md` were reviewed before the fix phase began.
 
 ---
 
