@@ -6,9 +6,10 @@
 previously in this file (preserved in git history; the v4.3.0 + v4.3.2
 fix groups are consolidated below).
 
-> **Status: PLANNING ONLY — no fixes implemented.** This is the pause
-> point per the QA discipline. Each batch requires operator approval
-> before remediation begins.
+> **Status (2026-05-19): Batch A attempted and DEFERRED to Batch C
+> (v4.4 arc).** The other batches remain planning-only and await
+> operator approval before remediation begins. See §13 below for the
+> Batch A post-mortem.
 
 ---
 
@@ -242,3 +243,48 @@ specifically:
   release, or wait for a quieter window.
 - Schedule Batch C — when the v4.4 design work starts and who runs
   the empirical Grok-multi-session spike.
+
+---
+
+## 13. Batch A post-mortem (2026-05-19)
+
+Operator authorised Batch A (`docker restart llm-proxy2-grok-bridge` on
+tmrwww01) per the plan's "restart restores the bridge" expectation. The
+restart **escalated the failure rather than fixing it**:
+
+- `docker restart` → container went into a crash-loop (`exit 3`,
+  RestartCount climbing) with `ERROR:ozone_platform_x11.cc(244)] Missing
+  X server or $DISPLAY` on every cycle.
+- Follow-up operator authorisation: clear `/data/playwright-state` and
+  start fresh (cookies + Chromium profile preserved as tarball at
+  `/tmp/grok-bridge-playwright-state-bak-20260519T183844Z.tar.gz`).
+  **Same crash, same error** — the persisted state was not the cause.
+- `docker stop` issued to halt the loop. Container now `Exited (3)`,
+  cleanly stopped, no log/CPU thrash.
+
+**Revised diagnosis:** the grok-bridge image carries a latent **startup
+race** between Xvfb (display server) and the FastAPI lifespan
+(`launch_persistent_context`). The 10-day-old "Up" container had won
+that race on its original boot; every fresh container exit/restart
+loses it. The 10-day "silent inner crash" (Playwright Page.goto crashed
+during a probe) and the fresh-start crash-loop are **two distinct
+failure modes** of the same fragile orchestration.
+
+**Operator decision (2026-05-19): defer to the v4.4 arc.** The v4.4
+per-node-auth design will redesign this layer anyway and may switch to
+a fresh-context-per-request model that sidesteps Xvfb entirely; patching
+`start.sh` / supervisord ordering now is throw-away work. grok-web is a
+tertiary fallback and the rest of the proxy is fully healthy on all 3
+nodes — the cost of the deferral is grok-web stays disabled until v4.4
+ships.
+
+**Lessons** (`qa-notes.md` to be appended later — captured here for the
+moment): a plan-stated "near-zero risk" operational fix can still
+surface a latent image-level defect that the original symptom hid. The
+remediation-plan template should include a "**worst-case if this
+turns out to be a deeper bug**" column for ops fixes, not just rollback
++ retest.
+
+**Batches B / D / E remain planning-only**, awaiting operator approval.
+Batch C is now the umbrella resolution path for both BUG-025 and the
+underlying grok-web architecture; the v4.4 design doc will reflect this.

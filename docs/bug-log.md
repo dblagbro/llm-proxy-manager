@@ -85,8 +85,18 @@ grok-web architecture.
      that sidesteps Xvfb entirely). Accept that grok-web is down in
      the meantime; grok-web is a tertiary fallback and the rest of
      the proxy is fully healthy. **Recommended.**
-- **Status:** open — Batch A escalated rather than resolved; awaiting
-  operator decision between image-patch vs defer-to-v4.4.
+- **Status: DEFERRED to the v4.4 arc** (operator-decided 2026-05-19). The
+  bridge image's startup race is not worth patching as a standalone fix;
+  the v4.4 per-node-auth arc will redesign this whole layer (and may move
+  off the persistent-context-with-Xvfb model entirely). Until v4.4 lands:
+  - `llm-proxy2-grok-bridge` on tmrwww01 stays **stopped**.
+  - `Grok-Web-Devin` stays effectively disabled fleet-wide (CB tripped via
+    cluster sync; routing falls through to the higher-priority providers).
+  - The forensic playwright-state tarball at
+    `/tmp/grok-bridge-playwright-state-bak-20260519T183844Z.tar.gz` is
+    preserved for the v4.4 design work (Grok cookies + Chromium profile
+    of the 10-day-old session — may inform whether persistent-context vs
+    fresh-context is the better v4.4 choice).
 
 ### BUG-026 — v4.3.2 prober-skip patch is non-functional (wrong premise)
 
