@@ -6,6 +6,109 @@ Add new findings on top. When status changes, leave the row in place and update 
 
 ---
 
+## 2026-05-19 — Post-v4.3.2 verification pass (grok-web findings)
+
+A targeted post-deploy QA after shipping v4.3.2 (the BUG-023 interim noise
+patch) surfaced two real defects — one of which is that the v4.3.2 patch
+itself is non-functional because its premise was based on a misread of the
+grok-web architecture.
+
+### BUG-025 — `llm-proxy2-grok-bridge` on tmrwww01 has a crashed Playwright page
+
+- **Severity:** high · **Category:** confirmed defect · operational
+- **Area:** `llm-proxy2-grok-bridge` sidecar on tmrwww01.
+- **Context:** live fleet, 2026-05-19.
+- **Repro:** `docker logs --since 30m llm-proxy2-grok-bridge` shows
+  `playwright._impl._errors.Error: Page.goto: Page crashed` on every
+  `_capture_statsig_id` attempt. A TCP probe to
+  `http://llm-proxy2-grok-bridge:8000/` from inside `llm-proxy2` returns
+  `Connection refused` on `/status`, `/health`, and `/` — the FastAPI
+  process inside the container isn't accepting connections, even though
+  Docker reports the container as `Up 10 days`.
+- **Expected:** the bridge responds on port 8000; Playwright's grok.com
+  page navigates successfully.
+- **Actual:** the bridge's HTTP layer is dead; Playwright's page crashes
+  on `goto(grok.com)`. Every grok-web request and keepalive probe through
+  the public `bridge_url` (see BUG-023 correction below) fails with
+  `error_class=upstream_5xx`.
+- **Suspected cause:** Chromium ran out of memory or hit an
+  unrecoverable navigation error and the FastAPI wrapper didn't restart
+  the page; the container's outer entrypoint is alive but the inner
+  service is not (a self-monitoring gap). Possibly correlated with a
+  Grok session expiry, but the immediate symptom is a process-level crash.
+- **Fix direction:**
+  1. **Operational (immediate, low-risk):** `docker restart
+     llm-proxy2-grok-bridge` on tmrwww01 — single named container, no
+     stack impact. If the bridge persists its Grok cookies it should
+     come back logged in; otherwise re-auth.
+  2. **Hardening (follow-up):** add a healthcheck to the grok-bridge
+     compose service (e.g. `curl /status` every 30 s, restart on
+     unhealthy) so a crashed inner service auto-recovers without a
+     human noticing manually.
+- **Status:** open — pending operator approval to restart the bridge.
+
+### BUG-026 — v4.3.2 prober-skip patch is non-functional (wrong premise)
+
+- **Severity:** medium · **Category:** confirmed defect (regression in
+  the v4.3.2 release) · also a test coverage gap
+- **Area:** `app/monitoring/keepalive.py` — the `_local_sidecar_reachable`
+  short-circuit added for BUG-023.
+- **Context:** v4.3.2, live on the fleet.
+- **Repro (c1conv, 2026-05-19 post-deploy):**
+  - `docker logs llm-proxy2 | grep "no local grok-bridge"` → **0
+    matches** since the v4.3.2 recreate. The INFO line the patch logs on
+    first detection has never fired.
+  - The activity log on c1conv shows new `keepalive_probe` rows for
+    Grok-Web-Devin **with `origin_node=llm-proxy2-c1conv`** at the normal
+    ~5-minute cadence — the prober is *not* skipping; it's still
+    probing and still failing.
+- **Root cause:** the patch checks `_local_sidecar_reachable(bridge_url)`
+  expecting `bridge_url` to be a docker-internal hostname (e.g.
+  `http://llm-proxy2-grok-bridge:8000`). The actual `bridge_url` in the
+  provider config is the **public URL** (hostname `www.voipguru.org`) —
+  one shared bridge on tmrwww01, all 3 nodes reach it through public
+  nginx. A reachability HTTP GET to the public URL always succeeds (TLS
+  connect + nginx responds), so the check returns `True` and the skip
+  branch is never taken. The grok-web architecture is *shared bridge via
+  public URL*, **not** per-node sidecars — invalidating the entire
+  premise of the v4.3.2 fix.
+- **Expected:** the patch suppresses grok-web probes / noise on nodes
+  where the bridge is unreachable.
+- **Actual:** the patch is a no-op in production. The noise on c1conv
+  (BUG-023's symptom) was never the absence of a local sidecar — it was
+  upstream-5xx errors from the (now-crashed, see BUG-025) shared bridge.
+- **Suspected cause:** I diagnosed BUG-023 by inspecting the c1conv
+  containers (seeing no `grok-bridge`) and inferring "missing local
+  sidecar" — without verifying that the provider config's `bridge_url`
+  was docker-internal. It isn't.
+- **Fix direction:**
+  1. **Revert the v4.3.2 keepalive.py change** (it's dead code in
+     production and adds noise to the codebase). The interim noise
+     suppression goal will be obsolete once BUG-025 is fixed (a working
+     bridge stops the errors at source).
+  2. **OR** keep the helper (`_local_sidecar_reachable` is useful as a
+     general primitive) but make the *gate* condition correct — detect
+     a docker-internal vs public bridge URL, or skip only on explicit
+     `ConnectError` from the actual probe attempt rather than from a
+     speculative pre-check.
+  3. **Add a unit/integration test** that exercises the skip path with a
+     real public URL (or stub) so a future patch can't accidentally
+     no-op the way this one did.
+- **Status:** open — pending operator decision (revert vs. fix).
+
+### BUG-023 — diagnosis corrected (re-opened, but underlying issue is BUG-025)
+
+The earlier diagnosis ("c1conv lacks the grok-bridge sidecar") was
+**incorrect**. grok-web is a *shared* bridge architecture: one
+`llm-proxy2-grok-bridge` container on tmrwww01, all nodes reach it via
+the public URL `bridge_url=https://www.voipguru.org/...`. c1conv was
+never expected to have a local bridge — the noise it produced was
+the bridge's own upstream errors hitting the prober. With BUG-025
+(bridge crashed) addressed, BUG-023's symptom resolves naturally; the
+v4.3.2 work was barking up the wrong tree.
+
+---
+
 ## 2026-05-18 — QA pass v4.3.0 (AIRI text-to-speech surface)
 
 Deep regression + release-hardening pass on v4.3.0. 2130/2130 unit tests +
