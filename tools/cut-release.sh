@@ -136,6 +136,59 @@ if gh release view "$TAG" >/dev/null 2>&1; then
   exit 1
 fi
 
+# 0. Pre-cut live-verify (L3 / Batch E — added 2026-05-20).
+# Hits the 3 canonical health URLs before tagging. The point is to
+# catch a fleet that's silently broken at deploy time — if any node
+# is unreachable / unhealthy / on the wrong version, tagging a new
+# release would compound the problem (downstream consumers chase
+# the new image while the current one is already misbehaving).
+# Aborts the cut if any check fails; ``--skip-live-verify`` flag
+# is the explicit bypass for legitimate cases (e.g. cutting a
+# release whose deploy ITSELF fixes the broken state).
+SKIP_LIVE_VERIFY="${SKIP_LIVE_VERIFY:-0}"
+for arg in "$@"; do
+  if [ "$arg" = "--skip-live-verify" ]; then
+    SKIP_LIVE_VERIFY=1
+  fi
+done
+
+if [ "$SKIP_LIVE_VERIFY" != "1" ]; then
+  echo "=== Pre-cut live-verify ==="
+  CANONICAL_URLS=(
+    "https://www.voipguru.org/llm-proxy2/health"
+    "https://www2.voipguru.org/llm-proxy2/health"
+    "https://c1conversations-avaya-01.avaya.c1cx.com/llm-proxy2/health"
+  )
+  VERIFY_FAILED=0
+  for url in "${CANONICAL_URLS[@]}"; do
+    # Allow up to 10s per node. Look for `"status":"healthy"` AND
+    # `"version":"..."` (any value — we don't pin to current since
+    # the new tag is about to ship the new version).
+    resp=$(curl -sf --max-time 10 "$url" 2>&1) || {
+      echo "  $url: FAIL (curl exit $?)"
+      VERIFY_FAILED=1
+      continue
+    }
+    status=$(echo "$resp" | python3 -c "import sys,json; print(json.load(sys.stdin).get('status','MISSING'))" 2>/dev/null) || status="PARSE_FAIL"
+    version=$(echo "$resp" | python3 -c "import sys,json; print(json.load(sys.stdin).get('version','MISSING'))" 2>/dev/null) || version="PARSE_FAIL"
+    if [ "$status" != "healthy" ]; then
+      echo "  $url: FAIL (status=$status)"
+      VERIFY_FAILED=1
+    else
+      echo "  $url: OK (status=$status version=$version)"
+    fi
+  done
+  if [ "$VERIFY_FAILED" = "1" ]; then
+    echo ""
+    echo "ERROR: pre-cut live-verify failed on one or more canonical URLs." >&2
+    echo "  Fix the unhealthy node(s) before cutting $TAG, OR re-run with --skip-live-verify" >&2
+    echo "  if the new release ITSELF is the fix for the broken state." >&2
+    exit 1
+  fi
+  echo "All 3 canonical URLs healthy — proceeding with cut."
+  echo ""
+fi
+
 # 1. Tag
 SUBJECT=$(git log -1 --format='%s')
 BODY=$(git log -1 --format='%b')
