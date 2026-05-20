@@ -300,7 +300,7 @@ project notes — not a code bug.
   (NOT in the llm-proxy-v2 repo). Backup at
   `/home/dblagbro/docker/config/nginx/nginx.conf.bak-pre-bug046-20260520`.
 
-### BUG-047 — Anthropic→OpenAI/Cohere tool-def translation gap — ✅ **FIXED v4.3.8 (staged 2026-05-20)**
+### BUG-047 — Anthropic→OpenAI/Cohere tool-def translation gap — ✅ **LIVE v4.3.8 (2026-05-20)**
 
 - **Discovered:** 2026-05-20 by the proactive-monitoring sweep
   (`docs/proactive-sweep-2026-05-20.md` Finding 3).
