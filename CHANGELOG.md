@@ -9,6 +9,72 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v4.3.x — "Voice output" milestone
 
+### v4.3.5 — HMAC-auth read-only endpoint for coordinator-hub (`external_usage_summary`)
+
+Built for the coordinator-hub team's 2026-05-20 request. They want to
+surface per-Anthropic-account weekly utilization (the
+`external_usage_snapshot` scrape data, v3.7.0+) on the hub UI without
+holding an admin session cookie on the proxy. This release adds a
+read-only HMAC-authenticated path that lets them.
+
+**New endpoint**: `GET /api/admin/external-usage-summary`
+
+Returns the latest `external_usage_snapshot` row per provider (whether
+the scrape succeeded or failed) so the hub can surface 5-hour + 7-day
+utilization plus `auth_state` per Anthropic account:
+
+```json
+{
+  "snapshot_at": "2026-05-20T01:23:45Z",
+  "accounts": [
+    {
+      "label": "Devin-Anthropic-Max-Gmail",
+      "provider_id": "...",
+      "seven_day_utilization": 1.00,
+      "five_hour_utilization": 0.42,
+      "auth_state": "ok",
+      "last_scrape_at": "2026-05-20T01:15:00Z"
+    }
+  ]
+}
+```
+
+**Auth contract** (per the hub team's spec):
+
+```
+X-Cluster-Timestamp: <unix epoch seconds>
+X-Cluster-Auth:      <hex sha256 hmac>
+
+signed_bytes = f"{timestamp}{request.url.path}".encode() + request.body()
+expected     = hmac.new(secret_utf8, signed_bytes, sha256).hexdigest()
+```
+
+The proxy validates: (a) timestamp within ±60s of server time (replay
+protection), (b) HMAC matches via constant-time compare. Secret comes
+from `COORDINATOR_HMAC_KEY` env var — same secret the hub already
+shares with its peers, so no new credential provisioning needed.
+
+**Operator action required**: before HMAC auth activates, the operator
+must add `COORDINATOR_HMAC_KEY=<value>` to `/home/dblagbro/docker/.env`
+on tmrwww01 + tmrwww02 (and `/opt/C1/instance/.env` on c1conv) and
+recreate `llm-proxy2` on each. Until then, the endpoint returns
+**503 "Cluster HMAC auth not configured"** with a clear message.
+
+**New files**:
+- `app/auth/cluster_hmac.py` — `require_cluster_hmac` FastAPI dep
+- `app/api/admin_cluster_read.py` — the endpoint
+- `tests/unit/test_v435_cluster_hmac.py` — 11 unit tests (happy path,
+  missing-secret 503, missing-headers 401, non-numeric / stale /
+  future timestamps, wrong-secret / wrong-path / wrong-signature
+  rejects, uppercase-hex accept, ±60s boundary)
+
+**Wire-up**: `app/main.py` includes the new router. `docker-compose.yml`
+adds `COORDINATOR_HMAC_KEY=${COORDINATOR_HMAC_KEY:-}` to the
+llm-proxy2 service (passes through whatever the host shell / .env
+provides; empty by default).
+
+Unit suite: 2156 passed (was 2145; +11 new). All green.
+
 ### v4.3.4 — revert v4.3.2 dead code (BUG-026 Batch B)
 
 Closes BUG-026. The v4.3.2 release shipped an interim "skip the grok-web
