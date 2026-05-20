@@ -103,6 +103,68 @@ A targeted QA pass run immediately after the v4.4.0 release ceremony to verify t
 
 ---
 
+## 2026-05-20 — Post-v4.4.2 second QA pass (broader sweep)
+
+A second QA pass run after the v4.4.2 deploy to look beyond the
+Batch G fixes (which were verified separately). Methodology:
+post-deploy error baseline → cluster-state cross-node consistency
+on multiple tables → OAuth + scrape freshness → DB integrity / FK
+violations → frontend HTML inspection → schema parity → CB / pool /
+memory state. No critical/high defects. Three low-severity items
+filed below.
+
+### BUG-054 — Production index.html has Vite scaffold title "frontend" — ⚠ **OPEN (low, polish)**
+
+- **Severity:** low · **Category:** UX / polish
+- **Area:** `frontend/index.html` source → `/app/frontend/dist/index.html` in deployed image
+- **Repro:** loading `https://www.voipguru.org/llm-proxy2/` shows browser tab title = **frontend**. Source HTML:
+  ```html
+  <title>frontend</title>
+  ```
+- **Expected:** something meaningful like `LLM Proxy v2` or `llm-proxy2 admin`.
+- **Fix:** edit `frontend/index.html` `<title>` element + rebuild image. Trivial.
+- **Status:** queued.
+
+### BUG-055 — Cumulative orphan refs in activity_log (438 unknown provider_ids + 7,937 unknown api_key_ids) — ⚠ **OPEN (low, hygiene)**
+
+- **Severity:** low · **Category:** data hygiene
+- **Area:** `activity_log` table on www1 (likely similar on peers).
+- **Repro:** SQLite has no FK enforcement (`PRAGMA foreign_keys` not set). Orphan check:
+  ```sql
+  SELECT COUNT(*) FROM activity_log
+  WHERE provider_id NOT IN (SELECT id FROM providers);  -- 438
+  SELECT COUNT(*) FROM activity_log
+  WHERE api_key_id NOT IN (SELECT id FROM api_keys);    -- 7,937
+  ```
+  These reference IDs that have been hard-deleted from `providers` / `api_keys` (soft-delete via `deleted_at` keeps the row, so a value showing up as orphan means the row was physically removed at some point — manual cleanup, DB-restore mismatch, or pre-soft-delete-feature deletes).
+- **Why it matters:** historical activity-log queries that JOIN to providers / api_keys silently lose rows. Cost-attribution reports, audit traces, and operator forensic queries can underreport by these amounts. Not blocking, but a long-tail correctness erosion.
+- **Plus:** `caller_memory` and `caller_memory_marker` each have 1 row referencing `api_keys.id='smoke-test'` which doesn't exist (the smoke-test fixture). 2 FK violations from a stale test.
+- **Fix scope:** (a) one-shot DELETE of orphan activity_log rows older than N days; (b) explicit retention policy for activity_log (currently unbounded; 167k rows over 28d = ~135MB in this table alone); (c) the smoke-test fixtures could be hard-deleted since they're soft-deleted already.
+- **Status:** queued. Pickup is "next maintenance window" — no operational impact today.
+
+### F-OBS-002 — Tombstoned-row count drift across cluster nodes (design behavior, not a defect) — ⚠ **NOTED**
+
+- **Severity:** observation
+- **Area:** `providers` and `api_keys` tables across the cluster
+- **Repro:** total row counts:
+  - `providers`: www1=18, www2=13, c1conv=13 (active=10 on all 3 — converged)
+  - `api_keys`: www1=58, www2=29, c1conv=29 (active=13 on all 3 — converged)
+- **Root cause:** by design at `app/cluster/sync.py:327-328` — when a peer's payload carries a tombstoned row that the local node has never seen, the local node skips materializing it ("no point materializing a deleted row"). This means tombstones from a row's lifetime-on-one-node-only never reach peers. Active counts always converge because the active rows DO get materialized.
+- **Implications:** the originating node's `providers` / `api_keys` history is more complete than peers'; admin UI showing tombstoned rows will list different counts per node; audit queries that include tombstones will report different totals. Routing is unaffected.
+- **Not filed as a fix candidate** — the alternative (always materializing tombstones) would propagate dead rows forever across the cluster for no functional benefit. Documenting here so a future QA pass doesn't re-discover it as a "bug."
+
+### F-OBS-003 — Caller-memory write-back hasn't activated in 5+ days despite flag ON cluster-wide — ⚠ **NOTED (operator watch item)**
+
+- **Severity:** observation
+- **Area:** `caller_memory` + `caller_memory_marker` tables
+- **State:** `caller_memory_enabled = True`, `caller_memory_active_flush_enabled = True`, `caller_memory_recovery_enabled = True` (in `system_settings`). Per memory `project_backlog_caller_memory_live_watch.md`, DevinGPT flipped its consumer-side `proxy_memory_enabled` ON v2.74.51 on 2026-05-15.
+- **Empirical**: `caller_memory` has 1 row (`smoke-test`/`c1`/`hello world` from 2026-05-13), already soft-deleted. No new writes in 5 days. `caller_memory_marker` has 1 row, same smoke-test ref.
+- **Likely cause:** writes are gated on the inbound `X-Conversation-Id` header (per `feedback_caller_memory_design_locked.md`). No client is sending the header in production traffic. Either DevinGPT's flip hasn't started emitting the header, or the header is being filtered upstream (nginx / proxy stack).
+- **Action:** operator already has this on a watch list (`project_backlog_caller_memory_live_watch.md` — "follow-up = check llm_proxy_memory_operations_total health after a day of traffic"). Re-surfaced here because the watch is now 5 days old with no traffic.
+- **Not filed as a fix candidate** — diagnosis needed before deciding if it's a proxy bug, a consumer bug, or expected (header isn't being emitted yet because the consumer's roll-out gate hasn't fired).
+
+---
+
 ## 2026-05-19 — Post-v4.3.2 verification pass (grok-web findings)
 
 A targeted post-deploy QA after shipping v4.3.2 (the BUG-023 interim noise
