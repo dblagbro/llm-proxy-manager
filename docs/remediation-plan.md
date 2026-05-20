@@ -51,8 +51,11 @@ finding** across:
 | BUG-003 | LOW | `tests/integration/` | test cleanup leaves rows | prod-DB pollution with `pytest-mock` rows |
 | (coverage) | LOW | TTS audible playback | headless Chromium has no audio device | only the manual `release-checklist.md` step verifies |
 | (coverage) | LOW | voice buttons keyboard / mobile | not exercised by the v4.3.0 pass | a11y / responsive gap |
-| **BUG-027..037** | LOW | (coverage) | bounded-out QA-prompt surfaces | UI pages, forms, cache, mobile, a11y, integration suite, rollback drill, version-skew test — *see §14* |
+| ~~BUG-027..033~~ | LOW | (coverage) | UI pages, forms, persistence, cache, mobile, a11y | **CLOSED 2026-05-19 via F2** (BUG-031 deferred for SMTP test-mode flag) |
+| **BUG-034..037** | LOW | (coverage) | full integration suite, real-provider matrix, rollback drill, version-skew test | F3 — *see §14* |
 | ~~BUG-038..040~~ | LOW/MED | (doc gap) | CB-sync, public-URL hairpin, activity-log scope | **CLOSED 2026-05-19 via F1** — `architecture.md` §"Cluster sync" + §"grok-bridge sidecar" updated |
+| **BUG-041** | MED | `app/api/apikeys.py` | missing `ge=0` on `rate_limit_rpm` Pydantic field | API persists negative rate limit; undefined rate-limiter behavior. Discovered by F2 |
+| **BUG-042** | MED | `app/api/admin.py` (user create) | missing min-length validator on password | API persists empty-password user; auth hole. Discovered by F2 |
 | (arc) | — | sidecar-dependent providers | shared single-bridge URL is fragile; no per-node auth model | v4.4 design + multi-milestone build |
 
 **Closed-and-verified (historical context):**
@@ -92,10 +95,10 @@ items run first, gating later batches.
    sidecar inner-service health check); add the small TTS audible-
    playback automation if practical. Pure process + tests / docs.
 6. **Batch F — coverage gaps inventory** (BUG-027..040, added 2026-05-19,
-   see §14). Sub-batch F1 (3 doc-gap fixes to `architecture.md`) is a
-   **prerequisite to Batch C** and should land before any v4.4 design
-   work starts. F2 / F3 close untested QA-prompt surfaces. Zero-risk
-   additions / drills.
+   see §14). F1 (doc gaps) DONE 2026-05-19; F2 (UI/a11y/mobile)
+   DONE 2026-05-19 with BUG-031 deferred + 2 real defects (BUG-041,
+   BUG-042) surfaced. F3 (full-suite / drill / version-skew) remains
+   planning-only. Zero-risk additions / drills.
 
 ## 5. Fix batches (grouped by subsystem & root cause)
 
@@ -325,15 +328,15 @@ observed because no test has been run. They exist so:
 | **Dependencies** | None. **Strongly recommended before Batch C starts** — the v4.4 design must start from an accurate baseline of the current grok-web architecture. |
 | **Status** | **CLOSED 2026-05-19.** `architecture.md` §"Cluster sync" now carries a "What syncs cluster-wide vs what stays node-local" table (closes BUG-038 + BUG-040 with the asymmetry called out). §"grok-bridge sidecar" "Cross-node reachability" subsection has been replaced with "Sidecar topology — there is exactly ONE grok-bridge in the fleet" (closes BUG-039 + makes BUG-026's prevention explicit). Prerequisite for Batch C v4.4 design is satisfied. |
 
-### Sub-batch F2 — UI / a11y / mobile coverage (multi-session)
+### Sub-batch F2 — UI / a11y / mobile coverage (multi-session) — **DONE 2026-05-19 (BUG-031 deferred)**
 
 | | |
 |---|---|
-| **Items** | BUG-027 (admin UI pages: Providers, API Keys, Users, Settings, Activity Log, Metrics), BUG-028 (form-validation depth), BUG-029 (data persistence + reload), BUG-030 (cache live), BUG-031 (notifications dispatch), BUG-032 (mobile/responsive), BUG-033 (deep keyboard a11y). |
-| **Subsystem** | New Playwright tests under `tests/integration/`; new responsive sweep + keyboard-only walk-through harnesses. |
+| **Items** | BUG-027 (admin UI pages), BUG-028 (form-validation depth), BUG-029 (data persistence + reload), BUG-030 (cache live), BUG-031 (notifications dispatch), BUG-032 (mobile/responsive), BUG-033 (deep keyboard a11y). |
+| **Subsystem** | New Playwright tests under `tests/integration/test_playwright_ui.py`; new responsive sweep + keyboard-only walkthrough harnesses. |
 | **Effort** | 1–2 full QA sessions; can be split per sub-area. **Risk:** zero (test additions only). |
 | **Dependencies** | None. Lands incrementally — each item is independent. |
-| **Recommended landing window** | Either (a) one consolidated "broader UI sweep" QA session prior to the v4.4 deep-QA cycle, or (b) interleaved as new release surfaces touch each area. |
+| **Status** | **CLOSED 2026-05-19.** 23 new test cases added across 8 new Playwright classes — all green against live deployment. Coverage gap closed for BUG-027/028/029/030/032/033. **BUG-031 deferred** pending a `dry_run` flag in the AIRI notifier (live SMTP send would spam operator's inbox; documented inline in test file). **F2 surfaced 2 real API validation defects: BUG-041 + BUG-042** (negative `rate_limit_rpm` and empty password both persisted by API). Tests for these defects are `xfail(strict=False)` until the API validators are tightened. |
 
 ### Sub-batch F3 — full-suite / drill / version-skew (one focused session)
 
