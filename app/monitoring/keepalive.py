@@ -162,43 +162,6 @@ async def _had_recent_traffic(db: AsyncSession, provider_id: str, lookback_sec: 
     return (res.scalar() or 0) > 0
 
 
-# v4.3.2 — providers that require a docker-network sidecar (today: grok-web
-# via grok-bridge) are part of the cluster-synced provider config, but the
-# sidecar itself is per-node infrastructure. On a node where the sidecar is
-# absent, every probe to the provider fails with a connection error — noisy
-# and pointless. The interim fix here is a per-(provider_id) "no local
-# sidecar" flag the prober sets when it detects the sidecar is unreachable;
-# it suppresses further probes (logged once, not per-probe) until the
-# sidecar comes back. The v4.4 per-node-auth-state arc supersedes this with
-# a synced cluster-wide view + a guided cross-node auth flow.
-_no_local_sidecar: set[str] = set()
-
-
-def is_no_local_sidecar(provider_id: str) -> bool:
-    """True if the prober has detected that this provider's required local
-    sidecar is unreachable on this node. Routing / dispatch callers may
-    consult this to skip a provider that cannot be served locally."""
-    return provider_id in _no_local_sidecar
-
-
-async def _local_sidecar_reachable(url: str) -> bool:
-    """Quick reachability check on a sidecar URL. Returns False on a
-    connection error / DNS failure / connect timeout (i.e. the sidecar
-    isn't deployed on this node); True on any HTTP response, even an error
-    one — a response means the sidecar is there (just maybe not happy)."""
-    try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(
-                connect=2.0, read=2.0, write=2.0, pool=2.0)) as c:
-            await c.get(url)
-        return True
-    except (httpx.ConnectError, httpx.ConnectTimeout):
-        return False
-    except Exception:
-        # Any non-connection error means we reached *something* — treat as
-        # reachable so we don't suppress probes for a present-but-odd bridge.
-        return True
-
-
 async def _probe_one(provider: Provider) -> None:
     """Send one synthetic call to a provider. All errors swallowed —
     keep-alive is best-effort, doesn't block routing."""
@@ -275,30 +238,6 @@ async def _probe_one(provider: Provider) -> None:
         # path also exercises Cloudflare cookie freshness as a side
         # effect, so a probe failure here is the earliest signal that
         # the operator's session needs re-login.
-        #
-        # v4.3.2: bridge-mode providers require a local grok-bridge on the
-        # docker network. If the bridge isn't deployed on this node, every
-        # probe would fail with a connection error and trip the CB — noisy
-        # and pointless. Skip the probe silently in that case; it resumes
-        # automatically when the bridge appears.
-        _cfg = provider.extra_config or {}
-        _bridge_url = (_cfg.get("bridge_url") or "").rstrip("/")
-        if _bridge_url and not await _local_sidecar_reachable(_bridge_url):
-            if provider.id not in _no_local_sidecar:
-                _no_local_sidecar.add(provider.id)
-                logger.info(
-                    "keepalive: skipping %s (id=%s) — no local grok-bridge "
-                    "at %s; the provider is configured cluster-wide but the "
-                    "required sidecar isn't deployed on this node.",
-                    provider.name, provider.id, _bridge_url,
-                )
-            return
-        if provider.id in _no_local_sidecar:
-            _no_local_sidecar.discard(provider.id)
-            logger.info(
-                "keepalive: grok-bridge reachable for %s — resuming probes",
-                provider.name,
-            )
         from app.providers.grok_web import (
             complete_grok_web, GrokWebError, GrokWebAuthError,
         )

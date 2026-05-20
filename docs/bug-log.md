@@ -98,7 +98,7 @@ grok-web architecture.
     of the 10-day-old session — may inform whether persistent-context vs
     fresh-context is the better v4.4 choice).
 
-### BUG-026 — v4.3.2 prober-skip patch is non-functional (wrong premise)
+### BUG-026 — v4.3.2 prober-skip patch is non-functional (wrong premise) — ✅ **FIXED v4.3.4 (staged 2026-05-19)**
 
 - **Severity:** medium · **Category:** confirmed defect (regression in
   the v4.3.2 release) · also a test coverage gap
@@ -145,7 +145,20 @@ grok-web architecture.
   3. **Add a unit/integration test** that exercises the skip path with a
      real public URL (or stub) so a future patch can't accidentally
      no-op the way this one did.
-- **Status:** open — pending operator decision (revert vs. fix).
+- **Resolution (2026-05-19):** v4.3.4 takes option 1 (revert).
+  Removed: `_no_local_sidecar` set, `is_no_local_sidecar()`,
+  `_local_sidecar_reachable()`, the v4.3.2 gate branch inside
+  `_probe_one()`'s grok-web arm, and `tests/unit/test_v432_no_local_sidecar.py`
+  (3 tests). Unit suite drops 2148 → 2145; all green. No callers of
+  `is_no_local_sidecar()` existed outside the deleted test file, so the
+  revert is local in every sense.
+
+  The compose-level grok-bridge healthcheck mentioned in the Batch B
+  plan is deliberately NOT included — the bridge container is stopped
+  (BUG-025 deferred to v4.4) and the v4.4 redesign will reshape what a
+  "healthcheck" should look like for the v4.4 architecture. Adding a
+  watchdog around a known-bad startup race now would be churn.
+  ✅ **LIVE pending operator-gated release ceremony for v4.3.4.**
 
 ### BUG-023 — diagnosis corrected (re-opened, but underlying issue is BUG-025)
 
