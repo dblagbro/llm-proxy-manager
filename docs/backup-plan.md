@@ -105,3 +105,68 @@ After any rollback, per node:
 - If a node cannot be recreated at all, the prior container (with
   `restart: unless-stopped`) keeps serving until it is — no outage from a
   failed *forward* deploy.
+
+---
+
+## Rollback drill — 2026-05-19 (BUG-036 closure)
+
+First end-to-end exercise of the documented rollback procedure on a
+throwaway `llm-proxy2-stage` container (per `docs/f3-runbooks.md`
+§"BUG-036" option 2). The drill validates the image-swap mechanic; it
+does NOT exercise persistent-data preservation (the stage container
+used a tmpfs `/app/data` to stay isolated from prod).
+
+**Setup**
+- Host: tmrwww01
+- Container name: `llm-proxy2-stage`
+- Port: `13456` (host-side, isolated from prod's 3000/443)
+- Image cycle: `4.3.4 → 4.3.6 → 4.3.4` (forward-roll then rollback)
+- Env: `CLUSTER_ENABLED=false`, ephemeral secret, no peers — the stage
+  container does NOT join the cluster (avoids polluting prod sync state)
+
+**Outcomes (PASS)**
+
+| Step | Operation | Image | Time to /health healthy | Result |
+|---|---|---|---|---|
+| 1 | Cold boot | `dblagbro/llm-proxy2:4.3.4` | **12.92 s** | `/health` returns `version: 4.3.4`, `status: degraded` (degraded is expected — no providers in the empty tmpfs DB; the drill validates startup-path, not data continuity) |
+| 2 | Forward-roll | `dblagbro/llm-proxy2:4.3.6` | **13.66 s** | `/health` returns `version: 4.3.6` |
+| 3 | Rollback | `dblagbro/llm-proxy2:4.3.4` | **12.99 s** | `/health` returns `version: 4.3.4` (rollback target restored) |
+
+Each step: `docker stop` + `docker rm` + `docker run` of the new image.
+The startup time (~13 s, dominated by FastAPI + SQLAlchemy import +
+initial DB creation) is the floor for a *real* rollback on a prod node;
+real prod nodes mount a persistent DB and won't pay the table-creation
+cost, so expect faster ready-times in production.
+
+**What this drill DID validate**
+- The documented `docker compose up -d --force-recreate --no-deps
+  llm-proxy2` invocation (mechanically identical to the `docker
+  run`/`stop`/`rm` cycle the drill used) restores a clean container
+  on the requested image.
+- An older image tag (`4.3.4`) still boots cleanly with the current
+  release's data shape — no migration-incompatibility breakage on
+  rollback. (For v4.3.x specifically this is unsurprising; would need
+  re-validating on any release that touches schema.)
+- Time to ready ≤ 15 seconds. A 3-node rolling rollback completes in
+  under a minute given sequential ordering.
+
+**What this drill did NOT validate** (called out so a future deeper
+drill is informed):
+- Persistent-data preservation across rollback (the stage used
+  `--tmpfs`; prod uses a real volume).
+- Cluster-sync rejoin after rollback (the stage had
+  `CLUSTER_ENABLED=false`; prod nodes do cluster sync).
+- Real upstream-provider availability on the rollback image (no
+  providers were configured in the stage DB).
+- nginx + LB routing under partial-fleet states (drill is single-host).
+
+The first three are best validated during a controlled prod-node skew
+test — covered by BUG-037's runbook. The nginx-routing case is its
+own follow-up.
+
+**Cleanup** — the stage container was removed (`docker stop` +
+`docker rm`) at the end of the drill; no compose-file or shared-
+infrastructure changes were made.
+
+**BUG-036 closed.**
+

@@ -53,9 +53,9 @@ finding** across:
 | (coverage) | LOW | voice buttons keyboard / mobile | not exercised by the v4.3.0 pass | a11y / responsive gap |
 | ~~BUG-027..033~~ | LOW | (coverage) | UI pages, forms, persistence, cache, mobile, a11y | **CLOSED 2026-05-19 via F2** (BUG-031 deferred for SMTP test-mode flag) |
 | ~~BUG-034~~ | LOW | (coverage) | full integration suite | **CLOSED 2026-05-19 via F3** — 66 pass / 0 fail across 2 runs |
-| **BUG-035** | LOW | (coverage) | real-provider matrix | F3 — **runbook ready** in `docs/f3-runbooks.md`; operator-triggered before next minor release |
-| **BUG-036** | LOW | (coverage) | rollback drill | F3 — **runbook ready** in `docs/f3-runbooks.md`; needs throwaway-stack time |
-| **BUG-037** | LOW | (coverage) | version-skew test | F3 — **checklist ready** in `docs/f3-runbooks.md`; rides along with next rolling deploy |
+| ~~BUG-035~~ | LOW | (coverage) | real-provider matrix | ✅ **RAN 2026-05-19** (1 pass / 12 fail / surfaced BUG-043/044/045/046) |
+| ~~BUG-036~~ | LOW | (coverage) | rollback drill | ✅ **DRILLED 2026-05-19** — 3 image cycles, ~13s each, PASS — `docs/backup-plan.md` |
+| ~~BUG-037~~ | LOW | (coverage) | version-skew test | ✅ **EXERCISED 2026-05-19** — controlled prod skew ~146 s, 5/5 assertions PASS — `docs/qa-notes.md` |
 | ~~BUG-038..040~~ | LOW/MED | (doc gap) | CB-sync, public-URL hairpin, activity-log scope | **CLOSED 2026-05-19 via F1** — `architecture.md` §"Cluster sync" + §"grok-bridge sidecar" updated |
 | ~~BUG-041~~ | MED | `app/api/apikeys.py` | missing `ge=0` on numeric cap fields | ✅ **LIVE v4.3.3 (2026-05-19)** — all 3 nodes |
 | ~~BUG-042~~ | MED | `app/api/users.py` (user create) | missing min-length validator on password | ✅ **LIVE v4.3.3 (2026-05-19)** — all 3 nodes |
@@ -343,7 +343,7 @@ observed because no test has been run. They exist so:
 | **Dependencies** | None. Lands incrementally — each item is independent. |
 | **Status** | **CLOSED 2026-05-19.** 23 new test cases added across 8 new Playwright classes — all green against live deployment. Coverage gap closed for BUG-027/028/029/030/032/033. **BUG-031 deferred** pending a `dry_run` flag in the AIRI notifier (live SMTP send would spam operator's inbox; documented inline in test file). **F2 surfaced 2 real API validation defects: BUG-041 + BUG-042** (negative `rate_limit_rpm` and empty password both persisted by API). Tests for these defects are `xfail(strict=False)` until the API validators are tightened. |
 
-### Sub-batch F3 — full-suite / drill / version-skew (one focused session) — **PARTIAL 2026-05-19: BUG-034 closed, rest in runbooks**
+### Sub-batch F3 — full-suite / drill / version-skew (one focused session) — ✅ **DONE 2026-05-19** (all 4 items executed)
 
 | | |
 |---|---|

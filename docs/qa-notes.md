@@ -362,3 +362,60 @@ v4.4 will broaden to more), verify *all* of:
 Treat a release ceremony as completing *only* after a targeted post-deploy
 verification that exercises the changed code path on a live node and
 confirms it actually fires.
+
+---
+
+## Mixed-version cluster-sync skew test — 2026-05-19 (BUG-037 closure)
+
+First deliberate exercise of the BUG-037 runbook in
+`docs/f3-runbooks.md`. Manufactured a controlled prod-node skew by
+downgrading tmrwww02 to v4.3.5 while tmrwww01 + c1conv stayed on
+v4.3.6 — then re-upgrading tmrwww02 after running the assertions.
+
+**Why this version pair was safe to deliberately skew:** v4.3.5 →
+v4.3.6 was purely additive (new `POST /api/airi/notify/_test_dispatch`
+endpoint, no schema changes, no breaking protocol changes, no
+existing endpoint touched). Risk = "calls to the new endpoint on the
+older node return 4xx instead of 200"; that endpoint has zero
+production callers, so risk = zero in practice.
+
+**Skew window:** ~146 seconds wallclock (shorter than the runbook's
+conservative 10-min ceiling; all 5 assertions cleared early so the
+re-upgrade ran immediately).
+
+**Per the runbook's 5 assertions:**
+
+| # | Assertion | Result |
+|---|---|---|
+| 1 | Provider config edits propagate OLDER (4.3.5) → NEWER (4.3.6) | ✅ **PASS** — provider created on tmrwww02 observed on tmrwww01 within 30 s (sync cycle is 60 s, so well within one tick) |
+| 2 | Provider config edits propagate NEWER → OLDER | ✅ **PASS** — provider created on tmrwww01 observed on tmrwww02 within 10 s |
+| 3 | New endpoint that only exists on NEW_VERSION returns 4xx (not 5xx) on the older node | ✅ **PASS** — tmrwww01 (NEW) returned 401 on the new `POST /api/airi/notify/_test_dispatch` (route exists, requires auth); tmrwww02 (OLD) returned 405 (path matches a different route's prefix, POST not supported there — clean 4xx). No 5xx crash. |
+| 4 | `/health` returns `status:healthy` on both nodes throughout | ✅ **PASS** — both nodes `healthy` + `10/10 providers` for the entire 146 s window |
+| 5 | No error spike in `activity_log` correlated with the skew | ✅ **PASS** — 0 error/critical rows on tmrwww01 in the 3-min window; 1 row on tmrwww02 but it was a pre-existing Grok-Web probe failure (BUG-025 pattern, unrelated to the skew) |
+
+**Cluster sync was demonstrably bidirectional and prompt under
+version skew.** The 30-second OLDER→NEWER observation and 10-second
+NEWER→OLDER observation both fall well inside the 60-second sync
+cycle — confirming the sync protocol is forward-and-backward
+compatible across v4.3.5 ↔ v4.3.6.
+
+**Cleanup** — the two throwaway providers used to drive assertions
+1+2 were deleted via API at the end of the test (200/200 on both).
+The session-finish hook in `tests/conftest.py` purges any pytest-
+mock tombstones; this drill used non-prefixed names so didn't
+trigger it.
+
+**Lessons applicable to future skew tests** (worth noting):
+- The sync cycle is 60 s; observing a change after 30 s is "first
+  cycle that included the change." A test waiting only 10 s could
+  falsely report a sync failure — `wait at least 90 s` (one full
+  cycle + headroom) is the correct lower bound when failure mode
+  isn't obvious.
+- Assertion #3's distinction between 404 and 405 is informative —
+  405 means a sibling route in the same FastAPI mount accepted the
+  path but rejects the method. Either is acceptable evidence of
+  "clean degradation"; the bug would be a 500 (which would indicate
+  the older node tried to dispatch and crashed mid-handler).
+
+**BUG-037 closed.**
+
