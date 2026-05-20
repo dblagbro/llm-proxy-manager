@@ -183,6 +183,44 @@ filed below.
 - **Implications:** the originating node's `providers` / `api_keys` history is more complete than peers'; admin UI showing tombstoned rows will list different counts per node; audit queries that include tombstones will report different totals. Routing is unaffected.
 - **Not filed as a fix candidate** — the alternative (always materializing tombstones) would propagate dead rows forever across the cluster for no functional benefit. Documenting here so a future QA pass doesn't re-discover it as a "bug."
 
+### BUG-056 — Gemini providers don't emit `content_block_start` / `content_block_stop` SSE events in Anthropic streaming — ⚠ **OPEN (medium)**
+
+- **Severity:** medium · **Category:** confirmed defect · wire-protocol translation
+- **Surfaced:** 2026-05-20 by `tests/integration/test_compatibility_matrix.py::TestWireFormatPerProvider::test_anthropic_stream_all_providers` during the L1 `--run-real` matrix run.
+- **Repro:** stream `/v1/messages` with `stream=true` against any Gemini-backed provider (`C1 Vertex AI / Google AI`, `Google Generative LLM`); collect SSE events; the event-type set is missing both `content_block_start` and `content_block_stop`.
+- **Expected:** the Anthropic streaming protocol emits `message_start` → (per content block: `content_block_start` → N× `content_block_delta` → `content_block_stop`) → `message_delta` → `message_stop`. SDK clients use the `_start` / `_stop` events to know when a content block begins/ends (relevant for tool-use blocks, multi-block responses, etc.).
+- **Actual:** Gemini-translated streams skip the `_start` / `_stop` events; they emit only `content_block_delta` events. Anthropic SDK clients that wait for `content_block_stop` to finalize a block will hang or misparse.
+- **Impact:**
+  - Affects 2 of 10 active providers (both Gemini-backed).
+  - Anthropic SDK clients streaming through these providers see incomplete frame sequences.
+  - OpenAI-format streams from the same providers are likely also affected — `test_openai_stream_all_providers` passed for Gemini but failed for OpenAI ChatGPT (BUG-057), so Gemini's OpenAI-format streaming is probably OK; only the cross-family Anthropic SSE translation has the gap.
+- **Likely root cause area:** the proxy's Gemini→Anthropic streaming translator (somewhere in `app/api/messages.py` or a translation helper) emits text deltas but doesn't wrap them in `content_block_start` + `content_block_stop` envelopes.
+- **Fix scope:** locate the Gemini-streaming translator; wrap the emitted delta sequence in proper Anthropic SSE event types. Probably ~50-100 LoC + 2-3 streaming-fixture tests.
+- **Status:** queued for v4.4.5.
+
+### BUG-057 — OpenAI streaming responses missing `finish_reason` in last chunk — ⚠ **OPEN (medium)**
+
+- **Severity:** medium · **Category:** confirmed defect · wire-protocol completeness
+- **Surfaced:** 2026-05-20 by `tests/integration/test_compatibility_matrix.py::TestWireFormatPerProvider::test_openai_stream_all_providers` during the L1 matrix run.
+- **Repro:** stream `/v1/chat/completions` with `stream=true` against `Devin Personal OpenAI ChatGPT`; collect SSE chunks; the last chunk's `choices[0].finish_reason` is `null` instead of `"stop"` (or `"length"`, `"tool_calls"`, etc.).
+- **Expected:** the OpenAI streaming spec requires the final delta chunk to carry `finish_reason` (`"stop"` for normal end-of-message, `"length"` for max_tokens hit, `"tool_calls"` for tool-use, `"content_filter"` for moderation). Clients use it to detect end-of-stream cleanly.
+- **Actual:** the last chunk's `finish_reason` is null / missing. Clients that rely on it to terminate stream loops will block waiting for the `[DONE]` sentinel or time out.
+- **Impact:**
+  - Affects 1 of 10 active providers (`Devin Personal OpenAI ChatGPT` — the OpenAI ChatGPT subscription-OAuth provider, not the API-key OpenRouter path).
+  - Strict OpenAI SDK clients (`openai-python` ≥ 1.0) parse `finish_reason` for completion-state machines — would hang or misreport.
+- **Likely root cause area:** the OpenAI ChatGPT OAuth streaming translator in `app/api/_oauth_chat_translate.py` or similar — the upstream subscription endpoint emits a slightly different end-of-stream format than the API-key endpoint, and our translator misses the `finish_reason` field on the synthesized last chunk.
+- **Fix scope:** locate the ChatGPT-OAuth stream translator; ensure `finish_reason` is populated on the final chunk before `[DONE]`. Probably ~10-20 LoC + 1 streaming-fixture test.
+- **Status:** queued for v4.4.5.
+
+### BUG-058 — Matrix test assertions too tight for Gemini's verbose response prefix — ⚠ **OPEN (low, test-side)**
+
+- **Severity:** low · **Category:** test-side defect
+- **Surfaced:** 2026-05-20 (L1 matrix run, `test_multi_turn_context` + `test_stream_non_stream_content_equivalent` failing for Gemini providers only).
+- **Repro:** `multi_turn_context` asks "Define a Python class named \`Stack\` with push and pop" with `max_tokens=150`. Gemini responds "Okay, here's a Python class named Stack..." — but the test polls the first 200 chars and looks for "Stack" literal. With Gemini's "Okay, here's a..." preamble + the Stack code itself, the literal "Stack" word appears past character 200 in some responses. Similar for `stream_non_stream_content_equivalent` asking "How many letters in 'banana'? Just say the number." with max_tokens=20; Gemini answers "It returns 6" or "It returns the number 6" — the "6" digit lands past token 20 truncation.
+- **Expected behavior:** test should accept "Okay, here's..." preambles OR raise max_tokens enough to fit Gemini's verbose style.
+- **Fix scope:** either (a) widen the assertion to scan the full response text instead of the first 200 chars, (b) prompt-engineer the question to suppress preambles ("Reply with ONLY the class definition, no preamble"), or (c) raise `max_tokens` from 150→256 and from 20→64 for the stream-consistency test. ~10 LoC + 0 new tests.
+- **Status:** queued; bundled with BUG-056/057 in v4.4.5 since they were all surfaced in the same L1 run.
+
 ### F-OBS-004 — Containers run with unbounded memory + CPU limits — ✅ **CLOSED 2026-05-20 (fleet-wide compose edit)**
 
 - **Severity:** observation (defensive engineering)
