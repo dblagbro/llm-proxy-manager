@@ -346,24 +346,27 @@ project notes — not a code bug.
   stopped pending BUG-025/v4.4 anyway, so the 47 errors will
   naturally drop once v4.4 redesigns the bridge layer.
 
-### CONFIG-001 — Operator action items surfaced during the 2026-05-20 sweep
+### CONFIG-001 — Operator action items surfaced during the 2026-05-20 sweep — **WITHDRAWN 2026-05-20**
 
-Three operator-time items, all surfaced by `docs/proactive-sweep-2026-05-20.md`:
+Original entry filed 3 operator items. Operator clarified 2026-05-20:
 
-1. **Devin-Codex-Gmail OAuth scope insufficient** (Finding 1). 25
-   errors/24h. ChatGPT OAuth refresh token is missing the
-   `model.request` scope. Action: re-authorize the provider in the
-   admin UI; confirm the requested scope set during the OAuth grant.
+1. ~~**Devin-Codex-Gmail OAuth scope insufficient**~~ — WAI fixture
+   (intentional negative-test). Errors are the success signal that
+   auth-failure detection works. See
+   `reference_intentional_failing_provider_fixtures.md`. Do not
+   flag.
 
-2. **C1 Anthropic Claude API key invalid + 0 model_capabilities**
-   (Finding 2; combines with BUG-045's downstream 503 cause). Action:
-   refresh API key AND click "Scan Models" on the provider.
+2. ~~**C1 Anthropic Claude API key invalid + 0 model_capabilities**~~ —
+   WAI fixture (same pattern as #1). The `"invalid x-api-key"`
+   from Anthropic + the 0 scanned capabilities are the success
+   signal. Do not propose re-auth, Scan Models, or any fix.
 
-3. **system_settings rows with literal "None" string** — fixed in
-   v4.3.7 staged; load() tolerates them so no urgent action needed,
-   but the cleanup query is one-liner per node:
-   `UPDATE system_settings SET value = ''
-    WHERE value = 'None' AND value_type = 'str';`
+3. **system_settings rows with literal "None" string** — also
+   withdrawn as actionable: fixed in v4.3.7 (now LIVE in v4.3.8);
+   `_coerce()` converts legacy "None" strings to Python None on
+   load. No cleanup query needed.
+
+**Net: CONFIG-001 has zero outstanding items.** Withdrawn entirely.
 
 ---
 
