@@ -169,6 +169,15 @@ filed below.
 - **Implications:** the originating node's `providers` / `api_keys` history is more complete than peers'; admin UI showing tombstoned rows will list different counts per node; audit queries that include tombstones will report different totals. Routing is unaffected.
 - **Not filed as a fix candidate** — the alternative (always materializing tombstones) would propagate dead rows forever across the cluster for no functional benefit. Documenting here so a future QA pass doesn't re-discover it as a "bug."
 
+### F-OBS-004 — Containers run with unbounded memory + CPU limits — ⚠ **NOTED (hardening opportunity)**
+
+- **Severity:** observation (defensive engineering)
+- **Area:** `/home/dblagbro/docker/docker-compose.yml` — `llm-proxy2` + `llm-proxy2-grok-bridge` service definitions.
+- **Repro:** `docker inspect llm-proxy2 --format='{{.HostConfig.Memory}}'` returns `0` (unlimited); same for `NanoCpus`. Same for the bridge container.
+- **Why it matters:** the host has 31 GB RAM shared with multiple containers (paperless, transcriber, hub, etc.). A memory leak in llm-proxy2 (historical examples: the ARCH-A DB pool leak that saturated at 13-20h post-deploy in v3.x, the activity_log growth that hit 1 GB pre-BUG-091) could starve every other container before the OOM-killer picks the right victim. With explicit limits, the offending container would be killed first.
+- **Suggested values:** `mem_limit: 4g` and `cpus: '4'` on `llm-proxy2`; `mem_limit: 2g` and `cpus: '2'` on the bridge. The proxy currently runs ~630 MB; the bridge ~250-500 MB. Both have ~5× headroom in those limits.
+- **Not filed as a fix candidate** — the docker-compose.yml lives in the shared infrastructure repo (`/home/dblagbro/docker/`), not the `llm-proxy-v2/` repo. Editing the shared stack requires operator authorization. This entry exists so an operator-led hardening sweep has the recommendation pre-written.
+
 ### F-OBS-003 — Caller-memory write-back hasn't activated in 5+ days despite flag ON cluster-wide — ⚠ **NOTED (operator watch item)**
 
 - **Severity:** observation
