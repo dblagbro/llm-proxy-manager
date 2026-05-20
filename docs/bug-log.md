@@ -13,7 +13,7 @@ patch) surfaced two real defects — one of which is that the v4.3.2 patch
 itself is non-functional because its premise was based on a misread of the
 grok-web architecture.
 
-### BUG-025 — `llm-proxy2-grok-bridge` on tmrwww01 has a crashed Playwright page
+### BUG-025 — `llm-proxy2-grok-bridge` on tmrwww01 has a crashed Playwright page — ✅ **MECHANICALLY CLOSED 2026-05-20 (v4.4 M-1)**
 
 - **Severity:** high · **Category:** confirmed defect · operational
 - **Area:** `llm-proxy2-grok-bridge` sidecar on tmrwww01.
@@ -85,18 +85,43 @@ grok-web architecture.
      that sidesteps Xvfb entirely). Accept that grok-web is down in
      the meantime; grok-web is a tertiary fallback and the rest of
      the proxy is fully healthy. **Recommended.**
-- **Status: DEFERRED to the v4.4 arc** (operator-decided 2026-05-19). The
-  bridge image's startup race is not worth patching as a standalone fix;
-  the v4.4 per-node-auth arc will redesign this whole layer (and may move
-  off the persistent-context-with-Xvfb model entirely). Until v4.4 lands:
-  - `llm-proxy2-grok-bridge` on tmrwww01 stays **stopped**.
-  - `Grok-Web-Devin` stays effectively disabled fleet-wide (CB tripped via
-    cluster sync; routing falls through to the higher-priority providers).
-  - The forensic playwright-state tarball at
-    `/tmp/grok-bridge-playwright-state-bak-20260519T183844Z.tar.gz` is
-    preserved for the v4.4 design work (Grok cookies + Chromium profile
-    of the 10-day-old session — may inform whether persistent-context vs
-    fresh-context is the better v4.4 choice).
+- **Original status: DEFERRED to the v4.4 arc** (operator-decided 2026-05-19).
+  The expectation was that the broader v4.4 redesign would land before
+  the bridge image's startup race got patched. That deferral has been
+  superseded by the v4.4 **M-1 image-hardening milestone** which lands
+  the same root-cause fix without the larger v4.4 commitment.
+- **Resolution (2026-05-20, v4.4 M-1)**: image hardening shipped:
+  1. `grok_bridge/Dockerfile` — adds `x11-utils` (for `xdpyinfo`).
+  2. `grok_bridge/start.sh` — Xvfb readiness now probed with an actual
+     X11 query (`xdpyinfo -display :99`) instead of a socket-file
+     existence check. The race that produced `Missing X server or
+     $DISPLAY` (the socket file appeared before Xvfb finished init →
+     Chromium connection raced into the half-open server) is
+     mechanically prevented. Wait window bumped 6s → 30s + finer
+     polling + diagnostic dump on timeout.
+  3. `docker-compose.yml` — `healthcheck` block on the bridge service
+     probes `:8443/healthz` every 30s with `start_period: 60s`. The
+     `docker ps "Up"` status now reflects the **inner FastAPI**, not
+     just supervisord. This catches the BUG-025-class hidden-failure
+     pattern within one health interval.
+- **Verification on tmrwww01 (live 2026-05-20)**:
+  - Bridge container recreated cleanly with the new image.
+  - Startup log: `Xvfb display :99 responsive after 20ds` (2s), then
+    `playwright ready; bridge listening` — **no `Missing X server`
+    error**.
+  - Healthcheck: `starting → healthy` after first 30s probe.
+  - `docker inspect` shows `restart_count=0`, `health=healthy`.
+  - Proxy fleet `/health` reports `healthyProviders=10/10`; grok-web
+    CB `8beb17c4bd11de26` is `closed/failures=0` — provider
+    effectively back in routing across the cluster (CB state syncs).
+- **Path A vs Path B (v4.4) still applies** for the per-node auth
+  + cross-node re-auth UX work, but is no longer crisis-driven —
+  M-1 took grok-web from "disabled fleet-wide" to "working again on
+  the existing shared-bridge topology." The empirical Grok
+  multi-session spike can run on the operator's own schedule.
+- **Forensic tarball** at `/tmp/grok-bridge-playwright-state-bak-20260519T183844Z.tar.gz`
+  is no longer load-bearing — the bridge regenerated its own state.
+  Operator may delete at leisure.
 
 ### BUG-026 — v4.3.2 prober-skip patch is non-functional (wrong premise) — ✅ **LIVE v4.3.4 (2026-05-19)**
 

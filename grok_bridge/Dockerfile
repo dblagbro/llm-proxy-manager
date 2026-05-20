@@ -26,6 +26,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 RUN apt-get update && apt-get install -y --no-install-recommends \
         xvfb \
         x11vnc \
+        x11-utils \
         novnc \
         websockify \
         fluxbox \
@@ -35,6 +36,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         curl \
         supervisor \
     && rm -rf /var/lib/apt/lists/*
+# v4.4-M-1 (BUG-025): x11-utils added for `xdpyinfo`, used in start.sh
+# to verify the X server is RESPONSIVE (not just that its socket file
+# exists). The socket-file-only readiness check in the pre-M-1 image
+# raced with Chromium's connection attempt and produced
+# `Missing X server or $DISPLAY` on every fresh container boot.
 
 WORKDIR /app
 
