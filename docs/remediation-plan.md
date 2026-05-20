@@ -45,7 +45,7 @@ finding** across:
 | ID | Severity | Subsystem | Root-cause area | Surface area / blast radius |
 |---|---|---|---|---|
 | **BUG-025** | HIGH | grok-bridge sidecar | container outer process alive, **inner service dead** (no healthcheck) | grok-web requests + probes fail fleet-wide (cluster-synced CB state) |
-| ~~BUG-026~~ | MEDIUM | `app/monitoring/keepalive.py` | wrong architectural premise (per-node sidecar vs shared public bridge) | ✅ **FIXED v4.3.4 (staged 2026-05-19)** — Batch B revert option taken; pending release ceremony |
+| ~~BUG-026~~ | MEDIUM | `app/monitoring/keepalive.py` | wrong architectural premise (per-node sidecar vs shared public bridge) | ✅ **LIVE v4.3.4 (2026-05-19)** — Batch B revert option, all 3 nodes |
 | BUG-001 | LOW | `tests/unit/` mock fixture | shared mock state not drained between tests | 1 flaky test in full-suite runs |
 | BUG-002 | LOW | `tests/mock_llm_server.py` | static port binding | 13 errors in concurrent suite runs |
 | BUG-003 | LOW | `tests/integration/` | test cleanup leaves rows | prod-DB pollution with `pytest-mock` rows |

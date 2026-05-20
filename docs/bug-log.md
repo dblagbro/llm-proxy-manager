@@ -98,7 +98,7 @@ grok-web architecture.
     of the 10-day-old session — may inform whether persistent-context vs
     fresh-context is the better v4.4 choice).
 
-### BUG-026 — v4.3.2 prober-skip patch is non-functional (wrong premise) — ✅ **FIXED v4.3.4 (staged 2026-05-19)**
+### BUG-026 — v4.3.2 prober-skip patch is non-functional (wrong premise) — ✅ **LIVE v4.3.4 (2026-05-19)**
 
 - **Severity:** medium · **Category:** confirmed defect (regression in
   the v4.3.2 release) · also a test coverage gap
@@ -158,7 +158,8 @@ grok-web architecture.
   (BUG-025 deferred to v4.4) and the v4.4 redesign will reshape what a
   "healthcheck" should look like for the v4.4 architecture. Adding a
   watchdog around a known-bad startup race now would be churn.
-  ✅ **LIVE pending operator-gated release ceremony for v4.3.4.**
+  ✅ **LIVE on all 3 nodes 2026-05-19 (v4.3.4)** — fleet on `version: 4.3.4`,
+  `status: healthy`, 10/10 providers each.
 
 ### BUG-023 — diagnosis corrected (re-opened, but underlying issue is BUG-025)
 
