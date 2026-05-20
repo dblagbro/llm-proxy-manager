@@ -21,12 +21,16 @@ router = APIRouter(prefix="/api/keys", tags=["api-keys"])
 class KeyCreate(BaseModel):
     name: str
     key_type: str = "standard"  # standard | claude-code | admin | admin-readonly-catalog
-    spending_cap_usd: Optional[float] = None
-    rate_limit_rpm: Optional[int] = None
+    # BUG-041 fix: reject negative numeric values at the boundary. The
+    # KeyUpdate (PATCH) path treats negatives as "clear the limit/cap"
+    # (documented sentinel); creation has no such semantic — a brand-new
+    # key has nothing to clear.
+    spending_cap_usd: Optional[float] = Field(default=None, ge=0)
+    rate_limit_rpm: Optional[int] = Field(default=None, ge=0)
     rate_limit_tier: Optional[str] = None  # Wave 6: named tier
-    daily_soft_cap_usd: Optional[float] = None
-    daily_hard_cap_usd: Optional[float] = None
-    hourly_cap_usd: Optional[float] = None
+    daily_soft_cap_usd: Optional[float] = Field(default=None, ge=0)
+    daily_hard_cap_usd: Optional[float] = Field(default=None, ge=0)
+    hourly_cap_usd: Optional[float] = Field(default=None, ge=0)
     semantic_cache_enabled: bool = False
 
 

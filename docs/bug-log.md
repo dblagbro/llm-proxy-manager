@@ -167,7 +167,7 @@ broader UI + form-validation Playwright pass), two real validation
 defects surfaced. Both are persisted to the DB via the live API, so
 they are server-side validation gaps, not UI-only issues.
 
-### BUG-041 — `/api/keys` accepts negative `rate_limit_rpm`
+### BUG-041 — `/api/keys` accepts negative `rate_limit_rpm` — **FIXED v4.3.3 (staged 2026-05-19)**
 
 - **Discovered:** 2026-05-19 by `TestFormValidationNegatives::
   test_create_api_key_rejects_malformed_rate_limit` (F2 pass).
@@ -190,9 +190,15 @@ they are server-side validation gaps, not UI-only issues.
   test_create_api_key_rejects_malformed_rate_limit` is currently
   `xfail(strict=False)` documenting the bug — when the fix lands,
   remove the decorator and the test becomes a regression guard.
-- **Status:** open.
+- **Resolution (2026-05-19):** v4.3.3 adds `Field(default=None, ge=0)`
+  to every numeric cap/limit field on `KeyCreate` in
+  `app/api/apikeys.py`. `KeyUpdate`'s documented "-1 to clear"
+  sentinel is preserved (PATCH path unchanged). 15 unit tests in
+  `tests/unit/test_v433_create_validation.py` cover both fix +
+  preserved semantics. F2 Playwright xfail decorator removed.
+  **Pending operator-gated release ceremony for v4.3.3 deploy.**
 
-### BUG-042 — `/api/users` accepts empty password
+### BUG-042 — `/api/users` accepts empty password — **FIXED v4.3.3 (staged 2026-05-19)**
 
 - **Discovered:** 2026-05-19 by `TestFormValidationNegatives::
   test_create_user_form_rejects_empty_password` (F2 pass).
@@ -217,7 +223,14 @@ they are server-side validation gaps, not UI-only issues.
   test_create_user_form_rejects_empty_password` is currently
   `xfail(strict=False)` documenting the bug — when the fix lands,
   remove the decorator and the test becomes a regression guard.
-- **Status:** open.
+- **Resolution (2026-05-19):** v4.3.3 adds `Field(..., min_length=8)`
+  to `UserCreate.password` and `Field(..., min_length=1)` to
+  `UserCreate.username` in `app/api/users.py`. `UserUpdate`'s
+  "empty password = no change" semantic is preserved (PATCH path
+  unchanged — the route-level `if body.password:` check still
+  governs partial updates). 15 unit tests cover both fix + preserved
+  semantics; F2 Playwright xfail decorator removed.
+  **Pending operator-gated release ceremony for v4.3.3 deploy.**
 
 ---
 
@@ -718,7 +731,7 @@ Files touched (highest-impact, sample):
 
 ## 2026-05-09 — Open findings (QA pass v3.5.7)
 
-### BUG-001 — Test isolation failure: `TestVisionStripping::test_text_only_request_passes_through_unchanged`
+### BUG-001 — Test isolation failure: `TestVisionStripping::test_text_only_request_passes_through_unchanged` — ✅ FIXED v3.5.11
 
 - **Severity**: medium (test infrastructure, not production)
 - **Area**: `tests/integration/test_new_features.py`
@@ -734,7 +747,7 @@ Files touched (highest-impact, sample):
 - **Status**: **OPEN** — needs root-cause investigation
 - **Owner**: TBD
 
-### BUG-002 — 13 integration test errors from "Address already in use" on mock LLM server
+### BUG-002 — 13 integration test errors from "Address already in use" on mock LLM server — ✅ FIXED v3.5.9
 
 - **Severity**: high (blocks running integration suite cleanly)
 - **Area**: `tests/integration/conftest.py` + `tests/mock_llm_server.py`
@@ -748,7 +761,7 @@ Files touched (highest-impact, sample):
 - **Recommended fix**: use `socket.bind(("", 0))` to grab an OS-assigned port, OR session-scope the mock server fixture, OR add proper teardown
 - **Status**: **OPEN**
 
-### BUG-003 — Integration tests pollute the production DB
+### BUG-003 — Integration tests pollute the production DB — ✅ FIXED v3.5.11
 
 - **Severity**: high (test contamination of live system)
 - **Area**: `tests/integration/conftest.py`
@@ -766,7 +779,7 @@ Files touched (highest-impact, sample):
   2. Production fix: in `app/cluster/sync.py` (or wherever soft-delete propagates), call `circuit_breaker.force_close(provider_id)` + remove from `_local_states` on tombstone propagation
 - **Status**: **OPEN**
 
-### BUG-004 — `/v1/chat/completions` accepts requests without `model` field, returns upstream 502
+### BUG-004 — `/v1/chat/completions` accepts requests without `model` field, returns upstream 502 — ✅ FIXED v3.5.8
 
 - **Severity**: medium (poor error UX; can mislead clients into thinking proxy is broken)
 - **Area**: `app/api/completions.py` (request validation)
@@ -783,7 +796,7 @@ Files touched (highest-impact, sample):
 - **Recommended fix**: add a Pydantic `ChatCompletionsRequest` model with `model: str` required, `messages: list = Field(min_length=1)` — let FastAPI return 422 automatically. Add similar validation in `messages.py`.
 - **Status**: **OPEN**
 
-### BUG-005 — `/v1/messages` accepts empty POST body, returns 200 with auto-substituted model
+### BUG-005 — `/v1/messages` accepts empty POST body, returns 200 with auto-substituted model — ✅ FIXED v3.5.8
 
 - **Severity**: high (silently spends real provider budget on empty client requests; potential DoS amplification)
 - **Area**: `app/api/messages.py` (request validation)
@@ -800,7 +813,7 @@ Files touched (highest-impact, sample):
 - **Severity rationale**: an unauthenticated denial-of-wallet vector — anyone with a leaked API key (with any quota) can issue empty requests and burn provider quota at no cost to themselves. The 401 gate works, but a stolen key is much more dangerous than expected.
 - **Status**: **OPEN**
 
-### BUG-006 — Unknown model name silently routes to a default; substitution disclosed only in `LLM-Capability` header
+### BUG-006 — Unknown model name silently routes to a default; substitution disclosed only in `LLM-Capability` header — ✅ FIXED v3.5.10
 
 - **Severity**: medium (works as designed, but client SDKs reading `response.model` get wrong value)
 - **Area**: `app/routing/router.py` (`cross_family_fallback`)
@@ -816,7 +829,7 @@ Files touched (highest-impact, sample):
 - **Recommended fix**: rewrite the response body's `model` field to the originally-requested name when `cross_family_fallback=True`, OR add an explicit top-level `X-Substituted-From: totally-fake-xyz` response header that's easier for clients to inspect than parsing `LLM-Capability`
 - **Status**: **OPEN**
 
-### BUG-007 — Stack-trace leak on invalid `role` value
+### BUG-007 — Stack-trace leak on invalid `role` value — ✅ FIXED v3.5.8
 
 - **Severity**: high (information disclosure)
 - **Area**: `app/api/messages.py` error handling on litellm exceptions
@@ -832,7 +845,7 @@ Files touched (highest-impact, sample):
 - **Recommended fix**: in the exception handler, call `circuit_breaker.classify_error()` on the message; for `bad_request` class, return HTTP 400 with a sanitized message. Never return raw stack traces from upstream SDKs.
 - **Status**: **OPEN**
 
-### BUG-008 — Stack-trace leak on negative `max_tokens`
+### BUG-008 — Stack-trace leak on negative `max_tokens` — ✅ FIXED v3.5.8
 
 - **Severity**: high (information disclosure)
 - **Area**: same as BUG-007
@@ -845,7 +858,7 @@ Files touched (highest-impact, sample):
 - **Recommended fix**: same as BUG-007 — sanitize all upstream error returns. Better yet, validate `max_tokens > 0` at the input layer.
 - **Status**: **OPEN**
 
-### BUG-009 — SDK `LmrhClient.subscribe()` thread doesn't exit promptly on `stop()`
+### BUG-009 — SDK `LmrhClient.subscribe()` thread doesn't exit promptly on `stop()` — ✅ FIXED v3.5.9
 
 - **Severity**: medium (graceful-shutdown UX; not a leak)
 - **Area**: `sdk/python/lmrh_client.py:_sse_session`
@@ -868,7 +881,7 @@ Files touched (highest-impact, sample):
   3. Accept the limitation and document it (heartbeat_sec is the worst-case stop latency)
 - **Status**: **OPEN**
 
-### BUG-010 — 3 alias/canonical collisions in `model_capabilities` (cleanup smell)
+### BUG-010 — 3 alias/canonical collisions in `model_capabilities` (cleanup smell) — ✅ FIXED v3.5.10
 
 - **Severity**: low (de-dup logic in /v1/models handles it; no runtime bug)
 - **Area**: `app/providers/scanner.py` + leftover pre-v3.4.1 capability rows
@@ -882,7 +895,7 @@ Files touched (highest-impact, sample):
 - **Recommended fix**: add a v3.5.x maintenance migration that deletes capability rows whose `model_id` appears as an alias on another row's canonical (same provider). Or trigger via "Scan Models" button after operator review.
 - **Status**: **OPEN**
 
-### BUG-011 — Cross-cluster ETag drift on `/lmrh/providers`
+### BUG-011 — Cross-cluster ETag drift on `/lmrh/providers` — ✅ FIXED v3.5.10 (documented)
 
 - **Severity**: hardening / documentation gap (NOT a runtime bug, but caller-confusing)
 - **Area**: `app/routing/lmrh/snapshot.py` cluster behavior
@@ -900,7 +913,7 @@ Files touched (highest-impact, sample):
   2. **Optional protocol enhancement**: emit a separate `LMRH-Snapshot-ID` header derived from cluster-replicated config (Provider rows + ModelCapability rows) — would match across nodes and let clients cache cross-node
 - **Status**: **OPEN**
 
-### BUG-012 — `/health` returns stale circuit-breaker state for soft-deleted providers
+### BUG-012 — `/health` returns stale circuit-breaker state for soft-deleted providers — ✅ FIXED v3.5.9
 
 - **Severity**: medium (operator-confusing, no functional impact)
 - **Area**: `app/cluster/sync.py` provider-tombstone propagation + `app/routing/circuit_breaker.py` `_local_states` lifecycle

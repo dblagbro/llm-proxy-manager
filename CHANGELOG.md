@@ -9,6 +9,39 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v4.3.x — "Voice output" milestone
 
+### v4.3.3 — input validation: reject negative caps + empty passwords at the API boundary
+
+Closes BUG-041 + BUG-042 (both surfaced by the F2 coverage-gaps pass on
+2026-05-19). Two small Pydantic field-constraint additions on the
+*create* endpoints:
+
+- `POST /api/keys` (`KeyCreate`) now rejects negative values for any
+  numeric cap/limit field (`rate_limit_rpm`, `spending_cap_usd`,
+  `daily_soft_cap_usd`, `daily_hard_cap_usd`, `hourly_cap_usd`) — `ge=0`.
+  Pre-fix, an admin (or buggy client) could persist `rate_limit_rpm:-5`
+  on a brand-new key, leaving the rate limiter's behavior undefined.
+  `PATCH /api/keys/{id}` (`KeyUpdate`) **retains** its documented
+  `-1 = clear the limit` sentinel — that path has a real reason to
+  accept negatives.
+- `POST /api/users` (`UserCreate`) now requires `username` to be
+  non-empty and `password` to be at least 8 characters. Pre-fix, an
+  admin could create a user with an empty password and the account
+  was persisted (an authentication hole — see BUG-042). `PATCH
+  /api/users/{id}` (`UserUpdate`) **retains** its "empty password =
+  no change" semantic (the route uses a falsy check after schema
+  validation).
+
+15 new unit tests in `tests/unit/test_v433_create_validation.py`
+cover the constraint at the schema layer (negative rejected;
+omitted-or-zero accepted; -1 sentinel preserved on PATCH; password
+boundary at exactly 8 chars; UserUpdate empty-password skip intact).
+The two F2 Playwright tests
+(`TestFormValidationNegatives::test_create_user_form_rejects_empty_password`
+and `…::test_create_api_key_rejects_malformed_rate_limit`) lose their
+`@pytest.mark.xfail` decorators and become regression guards.
+
+Total unit-test count: **2148** (was 2133); all green.
+
 ### v4.3.2 — interim: prober skips a provider whose local sidecar is absent
 
 Interim noise fix for BUG-023 (the QA-pass finding on c1conv). A few
