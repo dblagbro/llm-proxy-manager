@@ -412,7 +412,7 @@ applicable) and **Severity: low** unless noted.
   fix-direction note's `LLM-Cache` to the actual `X-Cache-Status`
   (set in `app/api/_request_pipeline.py:432-438`).
 
-### BUG-031 — Notifications dispatch not live-tested — ✅ **FIXED v4.3.6 (staged 2026-05-19)**
+### BUG-031 — Notifications dispatch not live-tested — ✅ **LIVE v4.3.6 (2026-05-19)**
 
 - **Area:** AIRI rule-fire email path (`app/airi/notify.py` +
   `notify_prefs.py`) — the v4.0.3 surface.
@@ -437,7 +437,15 @@ applicable) and **Severity: low** unless noted.
   recipients) with NO SMTP send. 14 new unit tests in
   `tests/unit/test_v436_notify_dry_run.py` cover both paths (param +
   env var), production-path regression guard, and the truthy / falsy
-  parametrized matrix. Pending operator-gated release ceremony.
+  parametrized matrix. ✅ **LIVE on all 3 nodes 2026-05-19 (v4.3.6).**
+  Verified end-to-end: `POST /api/airi/notify/_test_dispatch` with a
+  test payload returned 200 with the full planned-dispatch dict
+  (subject, body with `/routing` deep link, recipients) and the
+  operator's inbox saw no email — confirming the dry_run path
+  exercises the full notifier without SMTP. Side observation: the
+  `recipients` array showed `["None"]` (literal string) rather than
+  empty, which means `settings.smtp_to` is currently the literal
+  string `"None"` in prod — small separate finding worth follow-up.
 
 ### BUG-032 — Mobile / responsive layout not exercised — **CLOSED 2026-05-19 (F2)**
 
