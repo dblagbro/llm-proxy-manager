@@ -280,6 +280,59 @@ async def _apply_caller_memory_markers(db: AsyncSession, rows: list[dict]) -> No
                 existing.recovered_at = peer_rec
 
 
+async def _apply_provider_node_auth_states(db: AsyncSession, rows: list[dict]) -> None:
+    """v4.4 M-2 — merge incoming ``provider_node_auth_state`` rows.
+
+    PK is composite ``(provider_id, node_id)``. Each node OWNS its
+    own rows (the row for ``node_id == settings.cluster_node_id``)
+    and writes them locally; cluster sync propagates them to peers
+    for cluster-wide visibility (admin UI + downstream tooling).
+
+    LWW conflict resolution: prefer the row with the most recent
+    ``last_check_at``. If a peer's row arrives with a newer
+    timestamp than what we have, we accept it. If our local row is
+    newer, we keep it. A peer should NEVER be writing for OUR
+    node_id, but if it happens (clock skew, accidental write), the
+    LWW comparison still favours the newest observation.
+    """
+    from app.models.db import ProviderNodeAuthState
+    for r in rows:
+        provider_id = r.get("provider_id")
+        node_id = r.get("node_id")
+        if not (provider_id and node_id):
+            continue
+        last_check_at = _parse_iso_or_none(r.get("last_check_at"))
+        existing = (await db.execute(
+            select(ProviderNodeAuthState)
+            .where(ProviderNodeAuthState.provider_id == provider_id)
+            .where(ProviderNodeAuthState.node_id == node_id)
+            .limit(1)
+        )).scalar_one_or_none()
+        if existing is not None:
+            # LWW: skip if our local row is newer than the incoming one.
+            if (
+                existing.last_check_at
+                and last_check_at
+                and existing.last_check_at >= last_check_at
+            ):
+                continue
+            existing.auth_state = r.get("auth_state") or "never_authed"
+            existing.last_ok_at = _parse_iso_or_none(r.get("last_ok_at"))
+            existing.last_check_at = last_check_at
+            existing.reauth_url = r.get("reauth_url")
+            existing.last_error = (r.get("last_error") or None)
+            continue
+        db.add(ProviderNodeAuthState(
+            provider_id=provider_id,
+            node_id=node_id,
+            auth_state=r.get("auth_state") or "never_authed",
+            last_ok_at=_parse_iso_or_none(r.get("last_ok_at")),
+            last_check_at=last_check_at,
+            reauth_url=r.get("reauth_url"),
+            last_error=r.get("last_error"),
+        ))
+
+
 async def _apply_external_usage_snapshots(db: AsyncSession, rows: list[dict]) -> None:
     """v3.7.15 — merge incoming external_usage_snapshot rows. Each row
     represents one provider's latest snapshot at peer-capture-time.
