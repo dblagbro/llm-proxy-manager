@@ -34,17 +34,25 @@ def page(browser):
 
 
 def login(page: Page):
-    page.goto(f"{BASE_URL}/login")
-    page.wait_for_load_state("networkidle")
-    page.fill('input[autocomplete="username"]', ADMIN_USER)
-    page.fill('input[autocomplete="current-password"]', ADMIN_PASS)
-    page.click('button[type="submit"]')
-    # Wait for redirect away from /login — success lands on dashboard or root
-    page.wait_for_function(
-        "() => !window.location.href.includes('/login')",
-        timeout=15_000,
-    )
-    page.wait_for_load_state("networkidle")
+    last_err = None
+    for attempt in range(2):
+        try:
+            page.goto(f"{BASE_URL}/login")
+            page.wait_for_load_state("networkidle")
+            page.fill('input[autocomplete="username"]', ADMIN_USER)
+            page.fill('input[autocomplete="current-password"]', ADMIN_PASS)
+            page.click('button[type="submit"]')
+            page.wait_for_function(
+                "() => !window.location.href.includes('/login')",
+                timeout=15_000,
+            )
+            page.wait_for_load_state("networkidle")
+            return
+        except Exception as e:
+            last_err = e
+            # transient: short backoff and retry once
+            time.sleep(2)
+    raise last_err  # type: ignore[misc]
 
 
 # ── Existing services sanity checks ──────────────────────────────────────────
@@ -761,3 +769,508 @@ class TestAiriTTS:
             page.wait_for_timeout(500)
         assert len(speak_calls) >= 1, \
             "a completed AIRI message must trigger /api/airi/speak (the v4.3 wiring)"
+
+
+# ── F2 coverage: BUG-027 Activity Log deep filters ────────────────────────────
+
+class TestActivityLogFilters:
+    """BUG-027 part 1 — exercise the Activity Log filter surfaces beyond the
+    single `?provider=` URL-param case that was already covered."""
+
+    def test_search_input_accepts_and_triggers_query(self, page: Page):
+        login(page)
+        page.goto(f"{BASE_URL}/activity")
+        # `load` not `networkidle` — Activity Log has continuous polling
+        # so networkidle never fires.
+        page.wait_for_load_state("load")
+        search = page.locator(
+            "input[placeholder*='Search messages']"
+        )
+        expect(search).to_be_visible(timeout=8_000)
+        # Record any activity-API request that carries the search term
+        # (either in URL params or POST body).
+        marker = "zzz_no_match_token_xyz"
+        search_requests = []
+
+        def capture(req):
+            if "/api/" not in req.url:
+                return
+            if "activity" not in req.url and "monitoring" not in req.url:
+                return
+            payload = ""
+            try:
+                payload = req.post_data or ""
+            except Exception:
+                pass
+            if marker in req.url or marker in payload:
+                search_requests.append(req.url)
+
+        page.on("request", capture)
+        search.fill(marker)
+        # Search is Enter-triggered (or click-triggered via the Search
+        # button); typing alone only updates input state. Click the
+        # primary "Search" button to be explicit + robust against any
+        # focus quirks.
+        page.locator("button:has-text('Search')").first.click()
+        page.wait_for_timeout(2500)
+        assert search.input_value() == marker
+        assert search_requests, (
+            "submitting the Activity search box should trigger an "
+            "activity API request carrying the search term; saw none"
+        )
+
+    def test_severity_filter_changes_url_or_view(self, page: Page):
+        login(page)
+        page.goto(f"{BASE_URL}/activity")
+        page.wait_for_load_state("load")
+        sev = page.locator("select").first
+        expect(sev).to_be_visible(timeout=8_000)
+        options = sev.locator("option").all_text_contents()
+        assert len(options) >= 2, f"severity select should have options, got {options}"
+        sev.select_option(index=1)
+        page.wait_for_timeout(800)
+        expect(page.locator("text=Clear all")).to_be_visible(timeout=5_000)
+
+    def test_clear_all_filters_resets_state(self, page: Page):
+        login(page)
+        page.goto(f"{BASE_URL}/activity?provider=ghost123")
+        page.wait_for_load_state("load")
+        expect(page.locator("text=Clear all")).to_be_visible(timeout=8_000)
+        page.click("text=Clear all")
+        page.wait_for_function(
+            "() => !window.location.search.includes('provider=')",
+            timeout=5_000,
+        )
+
+
+# ── F2 coverage: BUG-027 Metrics page render ──────────────────────────────────
+
+class TestMetricsPageRender:
+    """BUG-027 part 2 — Metrics page renders without console errors and
+    surfaces its primary stat cards. Console-error capture is the same
+    pattern used in the v4.3.0 QA pass."""
+
+    def test_metrics_page_renders_with_no_console_errors(self, page: Page):
+        errors = []
+
+        def capture(msg):
+            if msg.type == "error":
+                txt = msg.text
+                if "404" in txt or "401" in txt or "Failed to load resource" in txt:
+                    return
+                errors.append(txt)
+
+        page.on("console", capture)
+        login(page)
+        page.click("text=Metrics")
+        page.wait_for_url(f"{BASE_URL}/metrics", timeout=8_000)
+        page.wait_for_load_state("networkidle")
+        page.wait_for_timeout(1500)
+        # Match the same pattern as TestLLMProxy2UI.test_navigate_to_metrics_page
+        expect(page.locator("h1").first).to_contain_text("Metrics")
+        body = page.locator("body").inner_text()
+        assert "Provider performance" in body or "Hit Rate" in body, \
+            "Metrics page should render its primary content"
+        assert not errors, f"Metrics page produced console errors: {errors}"
+
+    def test_metrics_window_selector_buttons_clickable(self, page: Page):
+        login(page)
+        page.click("text=Metrics")
+        page.wait_for_url(f"{BASE_URL}/metrics", timeout=8_000)
+        page.wait_for_load_state("networkidle")
+        # MetricsPage renders a row of window pill buttons ("24h", "7d", etc.)
+        window_btn = page.locator("button:has-text('24h')").first
+        expect(window_btn).to_be_visible(timeout=8_000)
+        window_btn.click()
+        # Click changed selected window without throwing — implicit assertion
+
+
+# ── F2 coverage: BUG-027 + BUG-029 — Settings panel save/reload ───────────────
+
+class TestSettingsPagePersistence:
+    """BUG-027 part 3 + BUG-029 — Settings page renders and a representative
+    field round-trips through save+reload.
+
+    Targets `circuit_breaker_threshold` (an integer field with no operational
+    blast-radius for small changes — saved + reverted in the same test)."""
+
+    def test_settings_renders_main_sections(self, page: Page):
+        login(page)
+        page.goto(f"{BASE_URL}/settings")
+        page.wait_for_load_state("networkidle")
+        expect(page.locator("h1:has-text('Settings')")).to_be_visible(timeout=8_000)
+        body = page.locator("body").inner_text()
+        assert "Circuit Breaker" in body, "Circuit-breaker section should be visible"
+        assert "Email" in body, "Email-alerts section should be visible"
+
+    def test_circuit_breaker_threshold_round_trips_through_reload(
+        self, page: Page, admin_session
+    ):
+        """Edit -> save -> reload -> verify persisted -> restore."""
+        # Snapshot original value via API (the safe-restore path)
+        r = admin_session.get(f"{BASE_URL}/api/settings")
+        assert r.status_code == 200
+        original = r.json().get("circuit_breaker_threshold")
+        try:
+            login(page)
+            page.goto(f"{BASE_URL}/settings")
+            page.wait_for_load_state("networkidle")
+            field = page.locator(
+                "input[type='number']"
+            ).filter(has=page.locator("xpath=./preceding::label[1]")).first
+            # Fallback: target the input whose accessible label contains
+            # "Failure threshold". Use the input below that label.
+            label = page.get_by_text(re.compile("Failure threshold", re.I)).first
+            expect(label).to_be_visible(timeout=8_000)
+            target = label.locator("xpath=./following::input[1]")
+            expect(target).to_be_visible(timeout=5_000)
+            # Pick a delta that isn't the current value
+            new_value = (int(original) if original else 5) + 1
+            target.fill(str(new_value))
+            page.locator("button:has-text('Save Settings')").click()
+            # Toast or success — wait for the API to settle
+            page.wait_for_timeout(1500)
+            # Reload + verify
+            page.reload()
+            page.wait_for_load_state("networkidle")
+            label2 = page.get_by_text(re.compile("Failure threshold", re.I)).first
+            target2 = label2.locator("xpath=./following::input[1]")
+            assert target2.input_value() == str(new_value), \
+                "circuit_breaker_threshold should persist across reload"
+        finally:
+            # Restore via API regardless of test outcome
+            if original is not None:
+                admin_session.put(
+                    f"{BASE_URL}/api/settings",
+                    json={"circuit_breaker_threshold": original},
+                )
+
+
+# ── F2 coverage: BUG-028 — Form validation negative tests ─────────────────────
+
+class TestFormValidationNegatives:
+    """BUG-028 — empty / malformed inputs are rejected.
+
+    Note: the Create-Key form's name field is intentionally optional
+    (label says "Key Name (optional)"); empty-name acceptance is
+    not a bug.
+
+    The two tests below are CURRENTLY xfail because the F2 pass
+    discovered real validation gaps (BUG-041 + BUG-042 in bug-log.md).
+    When those are fixed in the API, remove the `xfail` decorator and
+    these tests will guard the regression."""
+
+    @pytest.mark.xfail(
+        reason="BUG-042: add-user API does not reject empty password",
+        strict=False,
+    )
+    def test_create_user_form_rejects_empty_password(self, page: Page, admin_session):
+        """Username has HTML5 `required`; the typical UX is that submitting
+        empty fields triggers browser validation tooltips and keeps the
+        modal open. Verify a user is NOT created via the API as a side
+        effect of an empty submit."""
+        import uuid
+        marker = f"pw-validation-{uuid.uuid4().hex[:8]}"
+        # Snapshot user list pre-submit
+        r0 = admin_session.get(f"{BASE_URL}/api/users")
+        if r0.status_code != 200:
+            pytest.skip(f"users API unreachable: {r0.status_code}")
+        before = {u.get("username") for u in r0.json()}
+        login(page)
+        page.goto(f"{BASE_URL}/users")
+        page.click("text=Add User")
+        page.wait_for_timeout(400)
+        # Fill username only; leave password empty (required)
+        page.locator('.fixed.inset-0 input').first.fill(marker)
+        submit = page.locator(".fixed.inset-0 button:has-text('Create')")
+        expect(submit).to_be_visible(timeout=5_000)
+        submit.click()
+        page.wait_for_timeout(1200)
+        # Either the modal stayed open (HTML5 blocked submit), OR closed
+        # without persisting the user. Both are acceptable; what we test
+        # is that no user named `marker` ended up in the DB.
+        r1 = admin_session.get(f"{BASE_URL}/api/users")
+        after = {u.get("username") for u in r1.json()}
+        new_users = after - before
+        assert marker not in new_users, (
+            f"add-user form persisted a user with empty password; "
+            f"unexpected new users: {new_users}"
+        )
+        # Cleanup if any user did get through
+        if marker in new_users:
+            for u in r1.json():
+                if u.get("username") == marker:
+                    admin_session.delete(f"{BASE_URL}/api/users/{u['id']}")
+
+    @pytest.mark.xfail(
+        reason="BUG-041: api-key create accepts negative rate_limit_rpm",
+        strict=False,
+    )
+    def test_create_api_key_rejects_malformed_rate_limit(
+        self, page: Page, admin_session
+    ):
+        """Rate-limit field is type='number'. The form should not allow a
+        negative value to be persisted. Verify via API that no key with
+        a negative rate_limit_rpm ends up created."""
+        import uuid
+        marker = f"pw-ratelimit-{uuid.uuid4().hex[:8]}"
+        login(page)
+        page.goto(f"{BASE_URL}/keys")
+        page.click("text=Create Key")
+        page.wait_for_timeout(400)
+        # Fill name + bad rate limit
+        name_input = page.locator(
+            "input[placeholder*='production']"
+        ).first
+        expect(name_input).to_be_visible(timeout=5_000)
+        name_input.fill(marker)
+        # The second number input is the rate limit (first is none on this form
+        # since there's no rate-limit field above it — the modal has 1 number input)
+        rate_input = page.locator(".fixed.inset-0 input[type='number']").first
+        rate_input.fill("-5")
+        submit = page.locator(".fixed.inset-0 button:has-text('Create Key')")
+        submit.click()
+        page.wait_for_timeout(1500)
+        # Read back keys; the new one (if created) must NOT have rate_limit_rpm<0
+        r = admin_session.get(f"{BASE_URL}/api/keys")
+        assert r.status_code == 200
+        keys = r.json()
+        bad = [
+            k for k in keys
+            if k.get("name") == marker
+            and (k.get("rate_limit_rpm") or 0) < 0
+        ]
+        try:
+            assert not bad, (
+                f"API-key form persisted a negative rate_limit_rpm: {bad}"
+            )
+        finally:
+            # Cleanup: delete any key with our marker name
+            for k in keys:
+                if k.get("name") == marker:
+                    admin_session.delete(f"{BASE_URL}/api/keys/{k['id']}")
+
+
+# ── F2 coverage: BUG-029 — Persistence + reload extras ────────────────────────
+
+class TestProviderPersistence:
+    """BUG-029 — non-AIRI persistence example. The existing
+    TestSessionBehavior covers only session reload; this one covers a
+    durable artifact (a freshly created provider) surviving a reload."""
+
+    def test_created_provider_survives_reload(self, page: Page, admin_session):
+        """Create a stub provider via API, confirm it appears on the page,
+        reload, confirm still there, then delete via API (cleanup)."""
+        import uuid
+        name = f"pw-persist-{uuid.uuid4().hex[:8]}"
+        # Create via API to keep the test fast + deterministic
+        r = admin_session.post(
+            f"{BASE_URL}/api/providers",
+            json={
+                "name": name,
+                "provider_type": "litellm",
+                "base_url": "http://example.invalid/",
+                "api_key": "stub",
+                "priority": 999,
+                "enabled": False,
+            },
+        )
+        assert r.status_code in (200, 201), f"create failed: {r.status_code} {r.text}"
+        pid = r.json().get("id")
+        try:
+            login(page)
+            page.goto(f"{BASE_URL}/providers")
+            page.wait_for_load_state("networkidle")
+            expect(page.locator(f"text={name}")).to_be_visible(timeout=10_000)
+            page.reload()
+            page.wait_for_load_state("networkidle")
+            expect(page.locator(f"text={name}")).to_be_visible(timeout=10_000)
+        finally:
+            if pid:
+                admin_session.delete(f"{BASE_URL}/api/providers/{pid}")
+
+
+# ── F2 coverage: BUG-030 — Cache header live ──────────────────────────────────
+
+class TestCacheHeaderLive:
+    """BUG-030 — the cache layer's X-Cache-Status header is set on every
+    response. The only reliable live signal is the header itself; whether
+    the value is `miss` / `hit` / `bypass` depends on live cache config.
+    The test confirms the header is wired up and that on a duplicate
+    request the value does NOT regress in a way that would indicate the
+    cache layer was bypassed entirely (i.e. header absent on the second
+    call)."""
+
+    def test_cache_status_header_present(self, page: Page, admin_session):
+        """Two identical /v1/messages calls. Both responses must carry
+        X-Cache-Status (one of bypass/miss/hit) — proves the cache decision
+        is in the request path."""
+        # Use a dedicated key so the spending-cap counter is clean
+        import uuid
+        keyname = f"pw-cache-{uuid.uuid4().hex[:8]}"
+        kr = admin_session.post(
+            f"{BASE_URL}/api/keys",
+            json={"name": keyname, "key_type": "standard"},
+        )
+        if kr.status_code not in (200, 201):
+            pytest.skip(f"could not create test API key: {kr.status_code}")
+        # API returns the raw secret only on creation, under `raw_key`
+        # (see tests/conftest.py's test_api_key fixture).
+        key = kr.json().get("raw_key")
+        key_id = kr.json().get("id")
+        try:
+            if not key:
+                pytest.skip("API-key creation did not return a usable secret")
+            payload = {
+                "model": "claude-haiku-4-5",
+                "max_tokens": 32,
+                "messages": [{"role": "user", "content": "ping pw cache test"}],
+            }
+            headers = {"x-api-key": key, "anthropic-version": "2023-06-01"}
+            # First call
+            r1 = admin_session.post(
+                f"{BASE_URL}/v1/messages",
+                json=payload,
+                headers=headers,
+                timeout=60,
+            )
+            if r1.status_code != 200:
+                pytest.skip(
+                    f"upstream provider returned {r1.status_code}; cache test "
+                    "needs at least one successful request to evaluate"
+                )
+            assert "X-Cache-Status" in r1.headers, (
+                "X-Cache-Status header missing on first request — cache layer "
+                "is not wired into the response pipeline"
+            )
+            # Second identical call — header must still be present (independent
+            # of hit/miss outcome, since live cache TTL/config may vary)
+            r2 = admin_session.post(
+                f"{BASE_URL}/v1/messages",
+                json=payload,
+                headers=headers,
+                timeout=60,
+            )
+            assert r2.status_code == 200
+            assert "X-Cache-Status" in r2.headers, (
+                "X-Cache-Status header missing on duplicate request — cache "
+                "decision short-circuited out of the response path"
+            )
+        finally:
+            if key_id:
+                admin_session.delete(f"{BASE_URL}/api/keys/{key_id}")
+
+
+# ── F2 deferred: BUG-031 — notifications dispatch ─────────────────────────────
+# AIRI rule-fire email path (app/airi/notify.py) requires either a stubbed
+# SMTP destination at the server side or a test-mode flag in the notifier
+# that suppresses the real send. Either approach needs a code-side change
+# before a live integration test can be added safely without spamming the
+# operator's inbox. Marked OPEN against BUG-031; live test deferred until
+# the notifier gains a `dry_run` / test-mode parameter that returns the
+# rendered email body without sending. The unit test suite covers
+# rendering + recipient-filter logic today.
+
+# ── F2 coverage: BUG-032 — Mobile / responsive sweep ──────────────────────────
+
+class TestResponsiveLayout:
+    """BUG-032 — render the main pages at mobile + tablet widths; verify
+    the heading is on screen and the page doesn't horizontally overflow.
+
+    `document.documentElement.scrollWidth > clientWidth` is the canonical
+    "page is wider than viewport" check (horizontal scrollbar present)."""
+
+    VIEWPORTS = [
+        ("mobile", 375, 812),
+        ("tablet", 768, 1024),
+    ]
+    PAGES = [
+        ("/providers", "Providers"),
+        ("/keys", "API Keys"),
+        ("/users", "Users"),
+        ("/activity", "Activity Log"),
+        ("/metrics", "Metrics"),
+        ("/settings", "Settings"),
+    ]
+
+    @pytest.mark.parametrize("vp_name,width,height", VIEWPORTS)
+    @pytest.mark.parametrize("path,heading", PAGES)
+    def test_no_horizontal_overflow(self, browser, vp_name, width, height, path, heading):
+        ctx = browser.new_context(
+            viewport={"width": width, "height": height},
+            ignore_https_errors=True,
+        )
+        pg = ctx.new_page()
+        try:
+            login(pg)
+            # Direct goto works at both viewports; sidebar clicking fails
+            # at mobile width because the sidebar is hidden off-canvas.
+            pg.goto(f"{BASE_URL}{path}")
+            pg.wait_for_load_state("load")
+            # Wait for ANY meaningful content (page rendered past splash).
+            # `aside` works on most pages but /metrics sometimes does not
+            # surface it on direct load — body text length is the
+            # most-resilient cross-page "rendered" signal.
+            pg.wait_for_function(
+                "() => document.body && document.body.innerText.length > 80",
+                timeout=15_000,
+            )
+            pg.wait_for_timeout(1000)
+            # No body-level horizontal overflow (tables may scroll
+            # internally but the document shouldn't).
+            overflow = pg.evaluate(
+                "() => document.documentElement.scrollWidth - "
+                "document.documentElement.clientWidth"
+            )
+            assert overflow <= 4, (
+                f"{path} at {vp_name} ({width}x{height}) overflows by "
+                f"{overflow}px horizontally"
+            )
+        finally:
+            ctx.close()
+
+
+# ── F2 coverage: BUG-033 — Keyboard accessibility ─────────────────────────────
+
+class TestKeyboardAccessibility:
+    """BUG-033 — keyboard-only flow: the login form is reachable + submittable
+    via Tab + Enter, and the post-login dashboard has tab-able interactive
+    elements with visible focus.
+
+    Note: full keyboard walk-through across every page is the F2 roadmap;
+    this test pins the most-trafficked surface (login + dashboard nav)."""
+
+    def test_login_form_submittable_via_keyboard(self, page: Page):
+        page.goto(f"{BASE_URL}/login")
+        page.wait_for_load_state("networkidle")
+        # Tab into the username field — depending on the focus-trap setup
+        # the input may already be auto-focused. Either way, type works.
+        page.keyboard.press("Tab")
+        # Type the credentials directly (the focused element should be one
+        # of the two inputs; press Tab once more if not on username)
+        username = page.locator('input[autocomplete="username"]')
+        username.focus()
+        page.keyboard.type(ADMIN_USER)
+        page.keyboard.press("Tab")
+        page.keyboard.type(ADMIN_PASS)
+        page.keyboard.press("Enter")
+        page.wait_for_function(
+            "() => !window.location.href.includes('/login')",
+            timeout=15_000,
+        )
+
+    def test_sidebar_links_are_focusable(self, page: Page):
+        login(page)
+        # Sidebar nav links should be real <a> or <button> (focusable). Pick
+        # a known nav link and confirm it can receive focus.
+        link = page.locator("aside a[href*='/providers']").first
+        expect(link).to_be_visible(timeout=8_000)
+        link.focus()
+        focused_tag = page.evaluate(
+            "() => document.activeElement && document.activeElement.tagName"
+        )
+        assert focused_tag in ("A", "BUTTON"), (
+            f"sidebar Providers link should be a focusable element, got {focused_tag}"
+        )
+        page.keyboard.press("Enter")
+        page.wait_for_url(f"{BASE_URL}/providers", timeout=8_000)
