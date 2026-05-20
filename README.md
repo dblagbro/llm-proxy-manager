@@ -2,16 +2,22 @@
 
 Self-hosted LLM routing gateway — Python/FastAPI rewrite of llm-proxy v1.
 
-**LMRH semantic routing · circuit breaker failover · CoT-E augmentation · cluster sync · Run runtime · per-provider keep-alive probes · proxy-side caller memory (#267) · React dashboard**
+**LMRH semantic routing · circuit breaker failover · CoT-E augmentation · cluster sync · Run runtime · per-provider keep-alive probes · proxy-side caller memory (#267) · AIRI conversational config (v4.0+) · voice IO (v4.2+v4.3) · React dashboard**
 
-Current version: **v3.10.17** (see [CHANGELOG.md](CHANGELOG.md))
+Current version: **v4.4.0** (see [CHANGELOG.md](CHANGELOG.md))
 
-The proxy-side caller memory system shipped in phases 2–10 today (2026-05-14).
-Gated by the `X-Conversation-Id` request header — opt-in per caller; zero
-impact on callers that don't pass it. See
-[`docs/rfc/2026-05-proxy-memory-store.md`](docs/rfc/2026-05-proxy-memory-store.md)
-for the design + [`app/memory/`](app/memory/) for the implementation
-(inject / extract / flush / recover / store).
+## v4 highlights
+
+- **v4.0** — AIRI (AI Router Interface): conversational supervisor UI on the Routing page; cross-user-searchable chat history; named rule-sets (`Default` / `Save as` / `Restore`); proactive email outreach. Design in [`docs/4.0-airi-design.md`](docs/4.0-airi-design.md).
+- **v4.1** — capability-aware routing decisions live in the chat.
+- **v4.2** — Voice input: whisper-bridge sidecar (faster-whisper + Vosk wake model "Airy"); push-to-talk + hands-free mode. Design in [`docs/4.2-voice-design.md`](docs/4.2-voice-design.md).
+- **v4.3** — Voice output: Piper TTS via the whisper-bridge sidecar; per-user `airi_tts_enabled` flag. Design in [`docs/4.3-tts-design.md`](docs/4.3-tts-design.md).
+- **v4.3.5** — `GET /api/admin/external-usage-summary` — HMAC-auth read-only surface for cross-team consumers (coordinator-hub uses this to render Anthropic-account utilization on the hub UI). Auth via `COORDINATOR_HMAC_KEY` shared secret.
+- **v4.3.6** — `airi_notify(..., dry_run=True)` + `POST /api/airi/notify/_test_dispatch` — live-test the AIRI rule-fire SMTP path without spamming inboxes.
+- **v4.3.7** — `system_settings` no longer persists Python `None` as the literal string `"None"`.
+- **v4.3.8** — Anthropic→OpenAI/Cohere tool-def translation gate widened to cover first-turn requests with `body.tools`.
+- **v4.3.9** — `circuit_breaker.classify_error` gained 404/grok-bridge-prose patterns.
+- **v4.4.0** — grok-bridge **image hardening** (BUG-025 mechanically closed via `xdpyinfo` Xvfb readiness probe + compose `/healthz` healthcheck) **plus the full Path A backend scaffolding (M-2..M-5) shipped dormant** after the live empirical spike found grok.com enforces single-account-session semantics. The dormant code stays in the codebase for any future Grok-policy change that revives multi-IP sessions. Design + spike results: [`docs/4.4-per-node-bridge-design.md`](docs/4.4-per-node-bridge-design.md).
 
 ## Access
 
@@ -19,7 +25,7 @@ for the design + [`app/memory/`](app/memory/) for the implementation
 |------|-----|
 | tmrwww01 | https://www.voipguru.org/llm-proxy2/ |
 | tmrwww02 | https://www2.voipguru.org/llm-proxy2/ |
-| c1conversations-avaya-01-s23 | https://www.c1cx.com/llm-proxy2/ |
+| c1conversations-avaya-01-s23 | https://c1conversations-avaya-01.avaya.c1cx.com/llm-proxy2/ |
 | Joint-smoke target | https://www.voipguru.org/llm-proxy2-smoke/ (pinned version, hub-team test target) |
 
 **Default login on first boot**: `admin` / `admin` — change immediately after first login via the Users page.
