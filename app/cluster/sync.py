@@ -159,14 +159,29 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
             local_updated = existing.updated_at
             local_deleted = existing.deleted_at
 
-            # If peer has a tombstone and it's newer than our local state,
-            # propagate the soft-delete locally.
-            if peer_deleted_at and (
-                local_updated is None or peer_deleted_at >= local_updated
-            ):
+            # If peer has a tombstone, propagate the soft-delete locally
+            # whenever we don't already have one. The original v2.8.2
+            # gate was ``peer_deleted_at >= local_updated`` — but that
+            # failed to propagate tombstones when background activity
+            # on the receiver (sync cycles, OAuth refresh, scrapes)
+            # bumped local.updated_at past the originator's
+            # ``deleted_at`` timestamp. BUG-053 surfaced 2026-05-20:
+            # ``skew-from-new-41a9d6`` was tombstoned on www1 at
+            # 03:33 UTC but remained active on www2 + c1conv for
+            # 18 hours despite ongoing sync cycles. Tombstones are
+            # terminal (no undelete UI), so "peer has one, local
+            # doesn't" is reason enough to converge. v4.4.2.
+            #
+            # When BOTH sides already carry a tombstone, fall through
+            # to the (unchanged) local-tombstone-wins branch below —
+            # the older delete is preserved, the only relevant ordering
+            # there.
+            if peer_deleted_at and not local_deleted:
                 existing.deleted_at = peer_deleted_at
                 existing.enabled = False
-                if peer_updated_at:
+                if peer_updated_at and (
+                    local_updated is None or peer_updated_at > local_updated
+                ):
                     existing.updated_at = peer_updated_at
                 # v3.5.9 BUG-012 fix — clear local CB state on inbound
                 # tombstone propagation. Same cleanup as the admin

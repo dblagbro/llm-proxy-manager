@@ -49,16 +49,52 @@ A targeted QA pass run immediately after the v4.4.0 release ceremony to verify t
 - **No fix today** — file is healthy, checkpoint is working, autocheckpoint at 1000 pages. Optional: periodic `wal_checkpoint(TRUNCATE)` to reclaim the file. Not worth a release.
 - **Status:** monitor — flag if it grows past 2 GB without a corresponding burst explanation.
 
-### CLEANUP-001 — stale Playwright + version-skew test fixture providers in production DB — ⚠ **OPEN (housekeeping)**
+### CLEANUP-001 — stale Playwright + version-skew test fixture providers in production DB — ✅ **CLOSED 2026-05-20 (mostly auto-deleted; 1 manual reconcile)**
 
 - **Severity:** low · **Category:** housekeeping
 - **Area:** `providers` table in production DB.
-- **Findings:** 18 total provider rows; 10 are real (8 live + 2 intentional negative-test fixtures `C1 Anthropic Claude` and `Devin-Codex-Gmail` per operator-locked memory). The other 8 are test leftovers:
-  - 6× `pw-persist-*` (Playwright UI test artefacts)
-  - 2× `skew-from-old-*` / `skew-from-new-*` (BUG-037 version-skew test artefacts)
-- **Why it matters:** the activity-log / metrics views, the `/api/admin` dashboards, and the cluster-sync push payload all carry these dead rows. Push-sync wastes bandwidth on them; the UI provider list shows 18 entries to operators who only have 10.
-- **Fix:** soft-delete (`deleted_at = NOW()`) the 8 test fixtures. Each one's `enabled=0` already (verify), so they aren't being routed against. The sync layer respects `deleted_at`.
-- **Status:** queued for next maintenance window.
+- **Findings (revised on re-investigation 2026-05-20):** the QA pass reported 18 rows but did not filter on `deleted_at IS NULL`. The actual state: **on www1, all 8 test fixtures already had `deleted_at` set** (between 00:23 and 03:33 UTC today — within hours of each Playwright/skew run completing). So CLEANUP-001 was *already done* by the test fixtures themselves on www1.
+- **Cluster-sync drift discovered during cleanup verification (BUG-053 — see below).** www2 + c1conv both still showed `skew-from-new-41a9d6` as active (`deleted_at = NULL`) even though `last_user_edit_at` matched www1's value. The tombstone never propagated. Manually re-applied with a fresh `last_user_edit_at` on both peers — all 3 nodes converged to `active=10`.
+- **Status:** **CLOSED 2026-05-20** for the cleanup outcome (all 3 nodes at 10 active providers, 8 tombstones). The underlying cluster-sync issue tracked as `BUG-053`.
+
+### BUG-053 — cluster sync does not replicate `deleted_at` field tombstones when `last_user_edit_at` is unchanged — ✅ **CLOSED 2026-05-20 (v4.4.2)**
+
+- **Severity:** medium · **Category:** confirmed defect · cluster-sync correctness
+- **Area:** `app/cluster/manager.py` (push payload for providers) + `app/cluster/sync_handlers.py` (apply handler).
+- **Repro:** observed 2026-05-20 21:18 UTC during CLEANUP-001 verification.
+  - Provider `391dc40f03f904c4` (`skew-from-new-41a9d6`) on www1: `deleted_at = '2026-05-20 03:33:40.721163'`, `last_user_edit_at = 1779248020.721197`.
+  - Same row on www2: `deleted_at = NULL`, `last_user_edit_at = 1779248020.721197` (**identical timestamp**).
+  - Same row on c1conv: same as www2.
+  - The tombstone has been set on www1 for ~18 hours but has not propagated.
+- **Plausible root causes (need code-side confirmation):**
+  - (a) The push-sync payload for providers doesn't include `deleted_at` (provider serializer omits soft-deleted columns).
+  - (b) The apply handler does include `deleted_at` but uses LWW on `last_user_edit_at`; equal timestamps tie → no update.
+  - (c) Both: the LWW comparison correctly skips equal timestamps, but `deleted_at` isn't in the payload anyway.
+- **Why it matters:**
+  - **Today:** zero routing impact — the row is `enabled=0` everywhere, so peers don't dispatch to it even though they consider it "active".
+  - **If we ever soft-delete a real provider** (e.g. operator decommissions an LLM provider via UI without bumping any other column): the tombstone could fail to propagate, and the peer would happily keep routing to the dead provider.
+  - **Cluster-state divergence** is a latent failure mode for the cluster's correctness story; a sync that silently drops a column is the kind of bug that hides for months.
+- **Symptom workaround (this case):** manually re-applied the tombstone on peers with a fresh `last_user_edit_at` (UNIX time of the SQL UPDATE). LWW now sees a strictly-newer timestamp and won't roll it back from www1.
+- **Fix:** read the provider push-sync serializer to confirm (a) vs (b); add `deleted_at` to the payload if missing; if the apply handler uses strict-`>` LWW, change to `>=` or always-merge for tombstone columns. Add a unit test that pushes a tombstone with equal `last_user_edit_at` and asserts the peer's `deleted_at` updates.
+- **Root cause confirmed (post-fix investigation):** hypothesis (b)
+  — the v2.8.2 tombstone branch gated on
+  ``peer_deleted_at >= local_updated``. When background activity
+  on the receiver bumped ``local.updated_at`` past the originator's
+  ``deleted_at`` timestamp, the branch short-circuited. The
+  general LWW field-update path (the "fall-through" for tied
+  ``last_user_edit_at`` + strict-greater on ``updated_at``)
+  doesn't include ``deleted_at`` in its column set, so there was
+  no second path for the tombstone to propagate.
+- **Status:** **CLOSED v4.4.2 2026-05-20.** Fix shipped in
+  `app/cluster/sync.py:162-200`: tombstone branch now triggers on
+  ``peer_deleted_at and not local_deleted`` unconditionally. 3
+  regression tests added at `tests/unit/test_cluster_sync_lww.py`:
+  `test_bug053_tombstone_propagates_when_local_updated_at_is_newer`,
+  `test_bug053_tombstone_propagates_with_tied_user_edit_at`,
+  `test_bug053_local_tombstone_not_overwritten_by_peer_tombstone`.
+  Unit suite 2265. The original symptom case was already manually
+  reconciled in v4.4.1's session, so the fix is preventive — no
+  fleet-wide reconcile needed.
 
 ### F-OBS-001 — nginx config has 2 pre-existing warnings (informational) — ⚠ **NOTED**
 

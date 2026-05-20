@@ -185,3 +185,141 @@ async def test_peer_user_edit_older_rejects(fresh_db):
 
         local = (await db.execute(select(Provider).where(Provider.id == "p4"))).scalar_one()
         assert local.priority == 42, "older user-edit must not overwrite even with newer updated_at"
+
+
+# ── v4.4.2 BUG-053 — tombstone propagation regression guard ─────────
+
+
+@pytest.mark.asyncio
+async def test_bug053_tombstone_propagates_when_local_updated_at_is_newer(fresh_db):
+    """v4.4.2 BUG-053. The pre-fix gate was
+    ``peer_deleted_at >= local_updated`` — when background activity
+    (sync cycles, OAuth refresh, scrapes) bumped local.updated_at
+    past the originator's deleted_at, the tombstone never propagated.
+    Live evidence 2026-05-20: skew-from-new-41a9d6 tombstoned on www1
+    at 03:33 UTC, still active on www2 + c1conv 18 hours later
+    despite ongoing sync cycles.
+
+    Fix: tombstone always wins when local doesn't have one. Tombstones
+    are terminal in this app (no undelete UI), so "peer has one, local
+    doesn't" is sufficient signal to converge."""
+    from app.cluster.sync import apply_sync
+    from app.models.db import Provider
+
+    # Peer deleted the row at T0; local row's updated_at was later
+    # bumped to T0 + 1 hour by background activity (e.g. OAuth refresh).
+    deleted_at = datetime.now(timezone.utc) - timedelta(hours=2)
+    local_updated_later = deleted_at + timedelta(hours=1)
+
+    async with fresh_db() as db:
+        db.add(Provider(
+            id="p_bug053_a", name="ghost", provider_type="openai",
+            priority=10, enabled=True, extra_config={},
+            last_user_edit_at=500.0, updated_at=local_updated_later,
+            deleted_at=None,  # local doesn't know it's dead yet
+        ))
+        await db.commit()
+
+        # Peer payload: same user-edit stamp, OLDER updated_at, but
+        # carries the tombstone.
+        await apply_sync(db, {"providers": [_provider_payload(
+            id="p_bug053_a", name="ghost",
+            last_user_edit_at=500.0,
+            updated_at=deleted_at,
+            deleted_at=deleted_at,
+        )]})
+        await db.commit()
+
+        local = (await db.execute(
+            select(Provider).where(Provider.id == "p_bug053_a")
+        )).scalar_one()
+        assert local.deleted_at is not None, \
+            "BUG-053: peer's tombstone must propagate even when " \
+            "local.updated_at is newer than peer.deleted_at"
+        assert local.enabled is False, \
+            "tombstone propagation must also flip enabled=False"
+
+
+@pytest.mark.asyncio
+async def test_bug053_tombstone_propagates_with_tied_user_edit_at(fresh_db):
+    """Exact reproduction of the live 2026-05-20 case: peer + local
+    share the same last_user_edit_at (e.g. peer's tombstone was set
+    without bumping last_user_edit_at, then both sides did sync
+    cycles that converged everything except deleted_at). The legacy
+    LWW path's strict-greater check on user_edit_at + the tombstone
+    branch's pre-fix gate combined to lock peers out of the
+    tombstone entirely."""
+    from app.cluster.sync import apply_sync
+    from app.models.db import Provider
+
+    deleted_at = datetime.now(timezone.utc) - timedelta(hours=18)
+    local_updated = deleted_at + timedelta(hours=12)  # 12h of bg activity
+
+    async with fresh_db() as db:
+        db.add(Provider(
+            id="p_bug053_b", name="skew-from-new", provider_type="openai",
+            priority=10, enabled=False,  # admin had already disabled
+            extra_config={},
+            last_user_edit_at=1779248020.721197,
+            updated_at=local_updated,
+            deleted_at=None,
+        ))
+        await db.commit()
+
+        await apply_sync(db, {"providers": [_provider_payload(
+            id="p_bug053_b", name="skew-from-new",
+            enabled=False,
+            last_user_edit_at=1779248020.721197,  # tied
+            updated_at=deleted_at,                # peer's older
+            deleted_at=deleted_at,
+        )]})
+        await db.commit()
+
+        local = (await db.execute(
+            select(Provider).where(Provider.id == "p_bug053_b")
+        )).scalar_one()
+        assert local.deleted_at is not None, \
+            "BUG-053: tied user-edit + older peer updated_at must " \
+            "still propagate the tombstone"
+
+
+@pytest.mark.asyncio
+async def test_bug053_local_tombstone_not_overwritten_by_peer_tombstone(fresh_db):
+    """Symmetric guard: when both sides already have a tombstone, the
+    fix must NOT clobber local's deleted_at with peer's. The
+    pre-existing 'local tombstone wins' branch (line 189-192) handles
+    this — the new short-circuit must defer to it. Without this guard,
+    the fix could regress into "any peer tombstone overwrites any
+    local tombstone", which would cause the deletion timestamp to
+    flap during sync cycles."""
+    from app.cluster.sync import apply_sync
+    from app.models.db import Provider
+
+    local_deleted = datetime.now(timezone.utc) - timedelta(hours=1)
+    peer_deleted_later = local_deleted + timedelta(minutes=30)
+
+    async with fresh_db() as db:
+        db.add(Provider(
+            id="p_bug053_c", name="dead-twice", provider_type="openai",
+            priority=10, enabled=False, extra_config={},
+            last_user_edit_at=600.0, updated_at=local_deleted,
+            deleted_at=local_deleted,
+        ))
+        await db.commit()
+
+        await apply_sync(db, {"providers": [_provider_payload(
+            id="p_bug053_c", name="dead-twice",
+            enabled=False,
+            last_user_edit_at=600.0,
+            updated_at=peer_deleted_later,
+            deleted_at=peer_deleted_later,
+        )]})
+        await db.commit()
+
+        local = (await db.execute(
+            select(Provider).where(Provider.id == "p_bug053_c")
+        )).scalar_one()
+        # Local tombstone should remain — first-delete-wins semantics.
+        # The peer's later deleted_at must not clobber it.
+        assert local.deleted_at == local_deleted.replace(tzinfo=None), \
+            "local tombstone must not be replaced by a later peer tombstone"

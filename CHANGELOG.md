@@ -9,6 +9,54 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v4.3.x — "Voice output" milestone
 
+### v4.4.2 — BUG-053 cluster-sync tombstone propagation fix (2026-05-20)
+
+Closes BUG-053 (medium, latent cluster-state correctness defect).
+Surfaced 2026-05-20 21:18 UTC during v4.4.1's `CLEANUP-001`
+verification: provider `391dc40f03f904c4` (`skew-from-new-41a9d6`)
+was tombstoned on www1 at 03:33 UTC but remained `deleted_at=NULL`
+on www2 + c1conv for **18 hours** despite ongoing sync cycles.
+
+**Root cause** (`app/cluster/sync.py:164-185`): the v2.8.2 tombstone
+propagation branch gated on `peer_deleted_at >= local_updated`.
+When background activity on the receiver (sync cycles, OAuth
+refresh, billing scrapes) bumped `local.updated_at` past the
+originator's `deleted_at` timestamp, the tombstone branch
+short-circuited — and the general LWW field-update path (lines
+244-322) doesn't include `deleted_at` in its column set, so
+the tombstone had no other route to propagate.
+
+**Fix**: tombstones are terminal in this app (no undelete UI), so
+"peer has a tombstone, local doesn't" is sufficient signal to
+converge. The branch now triggers on `peer_deleted_at and not
+local_deleted` unconditionally. The pre-existing "both sides
+have a tombstone → local wins" branch (lines 189-192) is
+preserved, so the fix can't cause a tombstone to flap.
+
+**Tests** (`tests/unit/test_cluster_sync_lww.py`, +3 tests):
+- `test_bug053_tombstone_propagates_when_local_updated_at_is_newer`
+  — direct repro: peer tombstone, local has no tombstone but
+  newer updated_at; tombstone must still propagate.
+- `test_bug053_tombstone_propagates_with_tied_user_edit_at` —
+  exact reproduction of the live skew-from-new-41a9d6 case.
+- `test_bug053_local_tombstone_not_overwritten_by_peer_tombstone`
+  — symmetric guard: when both sides already have a tombstone,
+  the fix must not clobber local with a later peer value.
+
+**Impact**: today's fleet is consistent (manual reconcile applied
+in v4.4.1's session), but the fix removes the underlying defect
+so future soft-deletes propagate cluster-wide on the next sync
+cycle. Real impact today: a soft-deleted provider could remain
+"active" on peer nodes for an indefinite period, allowing peer
+routing to dispatch to a row the operator believed retired.
+
+**Test counts**
+
+- Unit suite: **2265 passed** (was 2262 in v4.4.1; +3 BUG-053
+  regression tests).
+
+**Operator action — none required.** Patch-class release.
+
 ### v4.4.1 — BUG-051 M-3 rate-limit mapping fix (2026-05-20)
 
 Closes BUG-051. The v4.4.0 post-release QA pass found that M-3's
