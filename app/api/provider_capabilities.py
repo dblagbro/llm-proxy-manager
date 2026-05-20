@@ -47,6 +47,46 @@ class CapabilityUpdate(BaseModel):
     model_variant: Optional[str] = None
 
 
+@router.get("/{provider_id}/node-auth-states")
+async def get_node_auth_states(
+    provider_id: str,
+    db: AsyncSession = Depends(get_db),
+    _: AdminUser = Depends(require_admin),
+):
+    """v4.4 M-5 — return every node's auth state for this provider.
+
+    The admin UI consumes this for the per-node bridge status display
+    (Path A: green/amber/red badge per node + per-node [Re-auth]
+    button). For providers without ``node_local_session=True`` set
+    in extra_config (the no-op case), the response is the empty list
+    if no rows have been written.
+
+    Response shape:
+        [{
+            "node_id": "llm-proxy2-www1",
+            "auth_state": "ok" | "expired" | "needs_reauth" |
+                           "never_authed" | "bridge_down",
+            "last_ok_at": "<ISO-8601>" | null,
+            "last_check_at": "<ISO-8601>" | null,
+            "reauth_url": "<URL>" | null,
+            "last_error": "<string>" | null
+        }, ...]
+    """
+    from app.routing.node_auth_state import read_all_states
+    rows = await read_all_states(db, provider_id)
+    return [
+        {
+            "node_id": r.node_id,
+            "auth_state": r.auth_state,
+            "last_ok_at": r.last_ok_at.isoformat() if r.last_ok_at else None,
+            "last_check_at": r.last_check_at.isoformat() if r.last_check_at else None,
+            "reauth_url": r.reauth_url,
+            "last_error": r.last_error,
+        }
+        for r in rows
+    ]
+
+
 @router.get("/{provider_id}/model-capabilities")
 async def list_capabilities(
     provider_id: str,
