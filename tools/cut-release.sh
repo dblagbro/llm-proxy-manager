@@ -25,8 +25,20 @@
 #   6. sudo docker push dblagbro/llm-proxy2:X.Y.Z
 #   7. sudo docker tag dblagbro/llm-proxy2:X.Y.Z dblagbro/llm-proxy2:latest
 #   8. sudo docker push dblagbro/llm-proxy2:latest
-#   9. Backup tarball to /home/dblagbro/backups/
-#  10. Print verification commands
+#   9. sudo docker tag dblagbro/llm-proxy2:X.Y.Z llm-proxy2:latest
+#       — local-name retag so the on-host compose pickup is correct on
+#         tmrwww01 (its compose uses the unqualified `llm-proxy2:latest`).
+#         Was the v4.3.3 release-deploy footgun: without this step the
+#         first `docker compose up -d --force-recreate` on tmrwww01
+#         silently kept the prior container's image.
+#  10. Backup tarball to /home/dblagbro/backups/
+#  11. Print verification + per-node redeploy commands
+#
+# Fleet compose-image-reference inconsistency (read once and remember):
+#   - tmrwww01 + tmrwww02 compose : `image: llm-proxy2:latest`        (local tag)
+#   - c1conv compose              : `image: dblagbro/llm-proxy2:latest` (Hub tag)
+#   The redeploy hints printed at the end of this script use the right
+#   per-node form (pull+retag on tmrwww02; pull on c1conv).
 
 set -euo pipefail
 
@@ -141,9 +153,18 @@ run gh release create "$TAG" --title "$TAG — ${SUBJECT#*: }" --notes "$NOTES" 
 run sudo docker build -t "${DOCKER_REPO}:${VERSION}" "$REPO_DIR"
 run sudo docker push "${DOCKER_REPO}:${VERSION}"
 
-# 5. Retag + push :latest
+# 5. Retag + push :latest (Hub-qualified)
 run sudo docker tag "${DOCKER_REPO}:${VERSION}" "${DOCKER_REPO}:latest"
 run sudo docker push "${DOCKER_REPO}:latest"
+
+# 5b. Local-name retag for the on-host compose pickup.
+#     Without this step, tmrwww01's `docker compose up -d
+#     --force-recreate llm-proxy2` keeps the OLD container's image —
+#     because tmrwww01's compose references `image: llm-proxy2:latest`
+#     (unqualified) and that local tag wasn't updated by the Hub push
+#     above. Silently re-runs the previous version. (Was the v4.3.3
+#     release-deploy footgun on 2026-05-19.)
+run sudo docker tag "${DOCKER_REPO}:${VERSION}" "llm-proxy2:latest"
 
 # 6. Backup tarball
 TS=$(date -u +%Y%m%dT%H%M%SZ)
@@ -163,6 +184,33 @@ echo "  gh release view $TAG"
 echo "  curl -s https://hub.docker.com/v2/repositories/${DOCKER_REPO}/tags?page_size=5 | python3 -m json.tool | grep -A1 \\\"name\\\""
 echo "  ls -lh $TARBALL"
 echo ""
-echo "To redeploy on fleet (rolling):"
-echo "  sudo docker compose --project-directory /home/dblagbro/docker up -d --force-recreate --no-deps llm-proxy2"
-echo "  for h in tmrwww02; do ssh \$h 'sudo docker compose --project-directory /home/dblagbro/docker up -d --force-recreate --no-deps llm-proxy2'; done"
+echo "To redeploy on fleet (rolling, one node at a time):"
+echo ""
+echo "  # Node 1 — tmrwww01 (this host): local llm-proxy2:latest tag was"
+echo "  # already updated in step 5b above. Plain compose recreate is enough."
+echo "  sudo docker compose --project-directory /home/dblagbro/docker \\"
+echo "    up -d --force-recreate --no-deps llm-proxy2"
+echo ""
+echo "  # Verify before proceeding:"
+echo "  curl -s https://www.voipguru.org/llm-proxy2/health | python3 -m json.tool | head -6"
+echo ""
+echo "  # Node 2 — tmrwww02: same compose pattern as tmrwww01 (local-tag"
+echo "  # reference), so the recreate must be preceded by a pull + local retag."
+echo "  ssh tmrwww02 \"sudo docker pull ${DOCKER_REPO}:${VERSION} && \\"
+echo "    sudo docker tag ${DOCKER_REPO}:${VERSION} llm-proxy2:latest && \\"
+echo "    sudo docker compose --project-directory /home/dblagbro/docker \\"
+echo "    up -d --force-recreate --no-deps llm-proxy2\""
+echo ""
+echo "  # Verify:"
+echo "  curl -s https://www2.voipguru.org/llm-proxy2/health | python3 -m json.tool | head -6"
+echo ""
+echo "  # Node 3 — c1conv (GCP): compose uses the Hub-qualified name"
+echo "  # ${DOCKER_REPO}:latest, so pull is enough — no local retag needed."
+echo "  gcloud compute ssh c1conversations-avaya-01-s23 \\"
+echo "    --project=feature-preview-c1convs --zone=us-central1-a \\"
+echo "    --command='sudo docker pull ${DOCKER_REPO}:latest && \\"
+echo "      cd /opt/C1/instance && \\"
+echo "      sudo docker compose up -d --force-recreate --no-deps llm-proxy2'"
+echo ""
+echo "  # Verify:"
+echo "  curl -s https://c1conversations-avaya-01.avaya.c1cx.com/llm-proxy2/health | python3 -m json.tool | head -6"
