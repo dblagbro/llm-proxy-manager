@@ -167,7 +167,9 @@ async def messages(
     # until either an OpenAI-shape provider is picked (Fix B handles it)
     # or every cross-family path is exhausted — 503 cleanly in the
     # latter case rather than burning upstream cost on guaranteed-400.
-    from app.routing.tool_content import has_anthropic_tool_content
+    from app.routing.tool_content import (
+        has_anthropic_tool_content, has_anthropic_tool_defs,
+    )
     _openai_shape_providers = {
         "openai", "openrouter", "grok", "grok-bridge", "grok-web",
         "groq", "mistral", "perplexity", "ollama", "deepseek", "fireworks",
@@ -255,11 +257,24 @@ async def messages(
     # Skipped for: claude-oauth (its own native-Anthropic dispatcher) and
     # tool-emulation (its own Anthropic-shape prompt path — translating
     # here would feed OpenAI-shape messages to normalize_anthropic_messages).
+    # BUG-047 (v4.3.8): also fire translation when the request carries
+    # Anthropic-shape tool DEFINITIONS at the top level (``body.tools``)
+    # but no tool-use/tool-result message blocks yet (first turn). Pre-
+    # fix, those defs reached litellm untranslated and 400'd on
+    # OpenAI/Cohere/etc. with "missing required field: 'type'" —
+    # observed multiple times/day on Devin-Cohere + Devin Personal
+    # OpenAI ChatGPT in the 2026-05-20 monitoring sweep.
+    _has_anthropic_tool_defs = has_anthropic_tool_defs(body.get("tools"))
     _cross_family_translated = False
     _needs_openai_translation = (
         route.profile.provider_type != "claude-oauth"
         and not route.tool_emulation_engaged
-        and (route.cross_family_fallback or _has_tool_blocks or has_images)
+        and (
+            route.cross_family_fallback
+            or _has_tool_blocks
+            or has_images
+            or _has_anthropic_tool_defs
+        )
     )
     if _needs_openai_translation:
         from app.api._oauth_chat_translate import anthropic_to_openai_body

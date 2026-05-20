@@ -212,11 +212,22 @@ def test_plain_text_conversation_passes_through():
 
 def test_gate_no_longer_limited_to_cross_family_fallback():
     """The Fix-B translation gate must fire for direct (non-fallback)
-    litellm routes that carry tool/image content blocks."""
+    litellm routes that carry tool/image content blocks.
+
+    v4.3.8 (BUG-047): also fires when request-level ``tools`` carries
+    Anthropic-shape tool defs even on a first turn with no blocks.
+    The gate's OR set is now {fallback, tool blocks, images, tool defs}.
+    """
     src = Path("app/api/messages.py").read_text()
     assert "_needs_openai_translation" in src
-    # Trigger is fallback OR tool blocks OR images — not fallback alone
-    assert "route.cross_family_fallback or _has_tool_blocks or has_images" in src
+    # Each of the four trigger clauses must be a substring of the gate
+    # condition; the literal one-line form was rewritten multi-line in
+    # v4.3.8 to accommodate the fourth clause.
+    assert "route.cross_family_fallback" in src
+    assert "_has_tool_blocks" in src
+    assert "has_images" in src
+    # v4.3.8: the new clause
+    assert "_has_anthropic_tool_defs" in src
 
 
 def test_gate_excludes_claude_oauth_and_tool_emulation():
