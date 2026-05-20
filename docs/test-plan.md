@@ -10,8 +10,8 @@ Created 2026-05-09 during the post-v3.5.7 deep QA pass. Update this doc when add
 
 ### Layer 1 — unit tests (`tests/unit/`)
 
-- **Count**: ~1029 tests across 70+ files
-- **Speed**: full suite runs in ~17s
+- **Count**: 2260 tests across 100+ files (verified 2026-05-20, v4.4.0)
+- **Speed**: full suite runs in ~52s (2260 tests, 2026-05-20 wall time)
 - **Scope**: pure-Python module behavior, no network, no DB except SQLite test DB at `/tmp/llmproxy-unit-test.db`
 - **Coverage**: routing, provider scoring, LMRH parse/build, cache decision, CoT pipeline, schema migrations, OAuth flows (mocked), monitoring helpers, model identity (canonical / aliases / family / variant), refactor pass helpers (R1+R2+R3+R4)
 - **Strength**: high coverage of pure logic

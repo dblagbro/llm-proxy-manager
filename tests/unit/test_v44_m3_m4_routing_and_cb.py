@@ -139,8 +139,8 @@ def test_probe_outcome_mapping_matches_classifier_buckets():
     """Source-level wiring guard for the keepalive→node_auth_state
     hook. The probe outcome maps to one of {ok, needs_reauth,
     bridge_down}; the classify_error buckets drive the failure
-    cases (auth→needs_reauth, network/timeout/5xx→bridge_down,
-    else→needs_reauth)."""
+    cases (auth→needs_reauth; network/timeout/5xx/rate_limit→
+    bridge_down; else→needs_reauth)."""
     from pathlib import Path
     src = Path("app/monitoring/keepalive.py").read_text()
     # The hook block has these unique markers
@@ -149,7 +149,63 @@ def test_probe_outcome_mapping_matches_classifier_buckets():
     # The classify_error → auth_state map
     assert '"auth"' in src and '"needs_reauth"' in src
     assert '"bridge_down"' in src
-    assert '"network", "timeout", "upstream_5xx"' in src
+    # v4.4.1 BUG-051: rate_limit joins the transient bucket
+    assert '"network", "timeout", "upstream_5xx", "rate_limit"' in src
+
+
+def test_bug051_rate_limit_maps_to_bridge_down():
+    """v4.4.1 BUG-051 regression guard. A 429 from upstream is
+    transient throttling — it must map to ``bridge_down``
+    (auto-clears on next successful probe), NOT to ``needs_reauth``
+    (which is the operator-time signal). Pre-fix evidence: a live
+    c1conv probe row got stamped ``needs_reauth`` for an upstream
+    ``grok-web bridge 429: Too many requests``, which (under any
+    future Path A activation) would semi-permanently gate the
+    node out of routing."""
+    from app.routing.circuit_breaker import classify_error
+    # The classifier returns "rate_limit" for these strings:
+    samples = [
+        'grok-web bridge 429: {"detail":"grok.com 429 (cached, cool-off 24s remaining)..."}',
+        "HTTP 429 Too Many Requests from upstream",
+        "RateLimitError: rate_limit_exceeded",
+        "ratelimit hit; throttled",
+    ]
+    for s in samples:
+        assert classify_error(s) == "rate_limit", \
+            f"classifier should bucket {s!r} as rate_limit"
+
+    # And the M-3 mapping branches rate_limit into bridge_down (not
+    # needs_reauth). We assert the source contains the explicit
+    # branch because the hook itself is buried in record_outcome's
+    # try-block and is hard to call directly without a probe context.
+    from pathlib import Path
+    src = Path("app/monitoring/keepalive.py").read_text()
+    # The new branch line — rate_limit appended to the transient set.
+    assert 'in ("network", "timeout", "upstream_5xx", "rate_limit")' in src
+    # And the BUG-051 inline comment to make grep find the rationale.
+    assert "BUG-051" in src
+
+
+def test_bug051_billing_and_bad_request_still_needs_reauth():
+    """The fix narrowly adds rate_limit to the transient bucket. It
+    must NOT change the policy for billing / bad_request / unknown
+    — those remain ``needs_reauth`` (the operator-time signal) by
+    design. Source-level guard so a future refactor doesn't
+    accidentally widen the fix into a regression."""
+    from app.routing.circuit_breaker import classify_error
+    # billing/bad_request bucketing is unchanged:
+    assert classify_error("HTTP 402 Payment Required") == "billing"
+    assert classify_error("HTTP 400 bad json") == "bad_request"
+    # And the else-branch comment in keepalive.py still names them:
+    from pathlib import Path
+    src = Path("app/monitoring/keepalive.py").read_text()
+    # Source comment names billing and bad_request as needs_reauth.
+    assert "bad_request" in src and "billing" in src
+    # The else: branch must still set needs_reauth.
+    # Locate the M-3 mapping block and assert the else branch lands.
+    block_start = src.index("# Classify the probe error into an auth_state")
+    block = src[block_start: block_start + 1500]
+    assert "else:" in block and '_new_state = "needs_reauth"' in block
 
 
 def test_probe_hook_writes_local_state_best_effort_swallow():

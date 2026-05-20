@@ -9,6 +9,56 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v4.3.x — "Voice output" milestone
 
+### v4.4.1 — BUG-051 M-3 rate-limit mapping fix (2026-05-20)
+
+Closes BUG-051. The v4.4.0 post-release QA pass found that M-3's
+keepalive→`provider_node_auth_state` writer was mapping the
+`classify_error` result `"rate_limit"` into the catch-all branch
+(`needs_reauth`) instead of the transient-failure branch
+(`bridge_down`). Live evidence: c1conv's local row for the grok-web
+provider was stamped `auth_state="needs_reauth"` for an upstream 429
+(`Too many requests`) — which would, on any future Path A
+activation, semi-permanently gate the throttled node out of routing
+until an operator clicked [Re-auth] for nothing.
+
+**Fix** (`app/monitoring/keepalive.py:283-294`):
+
+```diff
+-elif _cls in ("network", "timeout", "upstream_5xx"):
++elif _cls in ("network", "timeout", "upstream_5xx", "rate_limit"):
++    # rate_limit added v4.4.1 (BUG-051): a 429 is transient
++    # throttling, not a re-auth signal. Self-clears on next probe.
+     _new_state = "bridge_down"
+```
+
+Policy for the other 4 classifier outcomes is unchanged: `auth` →
+`needs_reauth`; `billing`, `bad_request`, `unknown` → `needs_reauth`
+(operator-time signal, by design).
+
+**Tests** (`tests/unit/test_v44_m3_m4_routing_and_cb.py`):
+
+- `test_bug051_rate_limit_maps_to_bridge_down` — asserts the
+  classifier buckets common 429 strings as `rate_limit` AND that
+  the M-3 mapping has the explicit `rate_limit` branch with the
+  inline BUG-051 comment.
+- `test_bug051_billing_and_bad_request_still_needs_reauth` —
+  guards against the fix accidentally widening into a regression
+  for `billing` / `bad_request` / `unknown`.
+- `test_probe_outcome_mapping_matches_classifier_buckets` —
+  updated to assert the new branch literal.
+
+**Impact**: M-4 is dormant in v4.4.x (0/18 providers have
+`node_local_session=True`), so the mis-stamped state has no
+production effect today. The fix removes a latent bug that would
+have re-activated on any Path A retry. Pure scaffolding-correctness.
+
+**Test counts**
+
+- Unit suite: **2262 passed** (was 2260 in v4.4.0; +2 BUG-051
+  regression tests).
+
+**Operator action — none required.** Patch-class release.
+
 ### v4.4.0 — grok-bridge hardening + dormant Path A scaffolding (2026-05-20)
 
 Closes BUG-025 mechanically. The v4.4 milestone arc resolves with

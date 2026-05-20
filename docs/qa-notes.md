@@ -419,3 +419,41 @@ trigger it.
 
 **BUG-037 closed.**
 
+---
+
+## 2026-05-20 — v4.4.0 release-readiness QA pass
+
+A post-release QA pass executed immediately after the v4.4.0 ceremony to verify operational health. Findings: 3 low-severity items (`BUG-051`, `BUG-052`, `CLEANUP-001`) filed in `bug-log.md`; no critical/high defects. Documenting environmental quirks discovered here so future passes don't waste time re-discovering them.
+
+### `/v1/models` requires `Authorization: Bearer <key>` — not anonymous
+
+A common QA assumption is that `/v1/models` is anonymously listable (OpenAI's public endpoint shape). In this proxy it requires an API key. Smoke tests should preflight with `Authorization: Bearer llmp-...`. Both 401s observed during this pass had clean human-readable messages (`{"detail":"Missing API key"}` / `{"detail":"Invalid or disabled API key"}`).
+
+### Cluster status endpoint is under `/cluster/status`, not `/api/...`
+
+There is no `/api/cluster/*` route family. The single cluster status endpoint is at `/cluster/status` and requires admin session-cookie auth (not API-key auth). The HMAC endpoints are under `/api/admin/` for cross-cluster (peer-to-peer) auth.
+
+### Bridge state is the source of truth for grok-web; check `/api/status` on the bridge container
+
+To inspect grok-web live state, exec inside `llm-proxy2-grok-bridge` and curl `http://127.0.0.1:8443/api/status`. Reports `logged_in`, the 4 critical cookies (`cf_clearance`, `__cf_bm`, `sso`, `x-userid`), `last_refresh_status`, current conversation ID, and the 429 cooldown state. **The proxy's CB / activity log does NOT have this fidelity** — only the bridge does.
+
+### The DB lives at `/app/data/llmproxy.db` (inside the container)
+
+`/data/` is a vestigial empty directory from an older container image; the actual SQLite DB is at `/app/data/llmproxy.db`, and its WAL + SHM siblings sit alongside. The host-side mount is `/home/dblagbro/docker/volumes/llm-proxy2-data/...` (per compose).
+
+### M-2 table is populated from M-3 probes even though M-4 is dormant
+
+`provider_node_auth_state` is silently populated by the keepalive probe writer (M-3) regardless of whether any provider has `node_local_session=True`. Today's content (verified on www1) shows 3 rows for the grok-web provider — one from each node — proving cluster sync of the new key works. The routing filter (M-4) ignores those rows for all 18 providers (none flagged), so the population is informational. For Path A retry, this means activation is "flip one flag" rather than "backfill the table first."
+
+### Unit suite count: 2260 (excluding integration), 2415 collected, 52s wall time
+
+When collected with `pytest --collect-only -q tests/`, the count is 2415 — the difference is 155 integration tests that depend on the live deployment URL. With `--ignore=tests/integration`, the suite is 2260/2260 passing, 7 warnings, ~52s.
+
+### Activity log error events: filter on `event_type='llm_request'` + `severity='error'`; column is `message` (not `error_message`)
+
+The schema is `(id, event_type, severity, message, provider_id, api_key_id, event_meta, created_at)`. Common 24h baseline (verified 2026-05-20) is 80-120 errored `llm_request` events, ~80% of which come from intentional negative-test fixtures (`C1 Anthropic Claude` + `Devin-Codex-Gmail`) or expected upstream 429s on grok-web. **DO NOT flag those as defects** — see `~/.claude/projects/-home-dblagbro/memory/reference_intentional_failing_provider_fixtures.md`.
+
+### Test-fixture providers are not garbage-collected
+
+`pw-persist-*` (Playwright UI) and `skew-from-*` (BUG-037 drill) test runs leave provider rows behind. They're `enabled=0` so they don't route, but they inflate provider counts and push-sync payloads. Periodic soft-delete is in the v4.4.x backlog as `CLEANUP-001`.
+

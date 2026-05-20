@@ -284,11 +284,14 @@ async def _probe_one(provider: Provider) -> None:
                 _cls = classify_error(err_str or "")
                 if _cls == "auth":
                     _new_state = "needs_reauth"
-                elif _cls in ("network", "timeout", "upstream_5xx"):
+                elif _cls in ("network", "timeout", "upstream_5xx", "rate_limit"):
+                    # rate_limit added v4.4.1 (BUG-051): a 429 is
+                    # transient throttling, not a re-auth signal.
+                    # Self-clears on the next successful probe.
                     _new_state = "bridge_down"
                 else:
                     # bad_request (e.g. "Conversation 'X' was not
-                    # found") or anything else → needs_reauth.
+                    # found"), billing, unknown → needs_reauth.
                     # Operator-time signal; routing won't pick it.
                     _new_state = "needs_reauth"
                 _last_error = err_str

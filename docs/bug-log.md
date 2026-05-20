@@ -6,6 +6,67 @@ Add new findings on top. When status changes, leave the row in place and update 
 
 ---
 
+## 2026-05-20 — v4.4.0 release-readiness QA pass (post-release)
+
+A targeted QA pass run immediately after the v4.4.0 release ceremony to verify the new dormant M-2..M-5 scaffolding is correct, the M-1 hardened bridge is operating cleanly across the fleet, and the v4.3.x recent surfaces survived the version bump. Methodology: doc/code consistency → live fleet state → dormant-scaffolding integrity (M-2 table populated, M-3 writer firing, M-4 wired but no-op, M-5 endpoint live + bundled UI) → cluster sync → wire-path smoke → 24h activity-log baseline.
+
+**Result**: no critical/high defects introduced by v4.4.0. Two low-severity items + one cleanup candidate filed below.
+
+### BUG-051 — M-3 keepalive→auth_state mapping defaults to `needs_reauth` for `rate_limit`/`billing`/`bad_request`/`unknown` — ✅ **CLOSED 2026-05-20 (v4.4.1)**
+
+- **Severity:** low · **Category:** confirmed defect · latent (only fires when Path A is reactivated)
+- **Area:** `app/monitoring/keepalive.py:283-293` (M-3 probe→state writer).
+- **Repro:** the live row for `(provider_id=8beb17c4bd11de26, node_id=llm-proxy2-c1conv)` in `provider_node_auth_state` shows `auth_state="needs_reauth"` with `last_error` containing a grok.com 429 (`"Too many requests"`). The bridge isn't actually un-authenticated — it's being throttled.
+- **Root cause:** the mapping has 4 branches:
+  ```
+  classify_error == "auth"                              → "needs_reauth"
+  classify_error in ("network","timeout","upstream_5xx") → "bridge_down"
+  anything else                                         → "needs_reauth"
+  ```
+  The `classify_error` function returns 8 classes (`auth`, `billing`, `rate_limit`, `timeout`, `network`, `upstream_5xx`, `bad_request`, `unknown`). Four of those eight (`rate_limit`, `billing`, `bad_request`, `unknown`) fall into the catch-all and get stamped as the operator-actionable `needs_reauth` instead of a transient state.
+- **Expected:** a 429 from upstream is a transient rate-limit event, not a re-auth ask. It should map to a transient state (e.g. `bridge_down`) so the routing filter (M-4) un-gates the node automatically when the next probe succeeds.
+- **Actual today (no impact):** M-4 is dormant in v4.4.0 (0/18 providers have `node_local_session=True`), so the mis-stamped state never gates routing. The row is informational only.
+- **Actual on any Path A retry:** the mis-stamped `needs_reauth` would gate the throttled node from routing semipermanently — operator would need to click [Re-auth] for nothing.
+- **Fix:** add explicit branch for `rate_limit` → `bridge_down` (it's transient and self-clears on next successful probe); decide policy for `billing`/`bad_request` (probably `needs_reauth` is correct for those); leave `unknown` as `needs_reauth` (conservative).
+- **Status:** **CLOSED v4.4.1 2026-05-20.** Fix shipped in
+  `app/monitoring/keepalive.py:283-294`: `rate_limit` joined the
+  transient bucket (`bridge_down`). Two regression tests added at
+  `tests/unit/test_v44_m3_m4_routing_and_cb.py`
+  (`test_bug051_rate_limit_maps_to_bridge_down`,
+  `test_bug051_billing_and_bad_request_still_needs_reauth`).
+  Policy for `billing`/`bad_request`/`unknown` unchanged by design
+  (operator-time signal). Latent — no production impact today
+  (M-4 dormant); removes the bug from re-activating on any
+  future Path A retry.
+
+### BUG-052 — SQLite WAL high-water of 1.097 GB on www1 — ⚠ **OPEN (low, monitoring)**
+
+- **Severity:** low · **Category:** observation · operational
+- **Area:** `/app/data/llmproxy.db-wal` on llm-proxy2 www1 (volume-mounted, persists across container restarts).
+- **Repro:** `stat /app/data/llmproxy.db-wal` shows 1,097,077,752 bytes (1.022 GiB).
+- **Diagnosis:** `wal_checkpoint(PASSIVE)` returned `(0, 800, 800)` — busy=0, log_size=800 pages, checkpointed_pages=800. The WAL has been checkpointed cleanly; the 1GB is high-water-mark file space SQLite is preserving for re-use, not active log content. This is normal SQLite behavior when a past burst expanded the WAL and the file wasn't `TRUNCATE`d.
+- **Why it matters:** 1 GB of un-truncated WAL means a past write burst was unusually large. The most plausible source is the v3.x.y → 4.4.0 deploy chain's per-version backfills/migrations + heavy cluster-sync activity, but the burst is not currently reproducible.
+- **No fix today** — file is healthy, checkpoint is working, autocheckpoint at 1000 pages. Optional: periodic `wal_checkpoint(TRUNCATE)` to reclaim the file. Not worth a release.
+- **Status:** monitor — flag if it grows past 2 GB without a corresponding burst explanation.
+
+### CLEANUP-001 — stale Playwright + version-skew test fixture providers in production DB — ⚠ **OPEN (housekeeping)**
+
+- **Severity:** low · **Category:** housekeeping
+- **Area:** `providers` table in production DB.
+- **Findings:** 18 total provider rows; 10 are real (8 live + 2 intentional negative-test fixtures `C1 Anthropic Claude` and `Devin-Codex-Gmail` per operator-locked memory). The other 8 are test leftovers:
+  - 6× `pw-persist-*` (Playwright UI test artefacts)
+  - 2× `skew-from-old-*` / `skew-from-new-*` (BUG-037 version-skew test artefacts)
+- **Why it matters:** the activity-log / metrics views, the `/api/admin` dashboards, and the cluster-sync push payload all carry these dead rows. Push-sync wastes bandwidth on them; the UI provider list shows 18 entries to operators who only have 10.
+- **Fix:** soft-delete (`deleted_at = NOW()`) the 8 test fixtures. Each one's `enabled=0` already (verify), so they aren't being routed against. The sync layer respects `deleted_at`.
+- **Status:** queued for next maintenance window.
+
+### F-OBS-001 — nginx config has 2 pre-existing warnings (informational) — ⚠ **NOTED**
+
+- **Severity:** observation only (informational, not a defect introduced by v4.4.0)
+- `nginx -t` emits `the "listen ... http2" directive is deprecated` (lines 56, 110) and `protocol options redefined for 0.0.0.0:443` (line 152). These are pre-existing in the main nginx stack at `/home/dblagbro/docker/config/nginx/nginx.conf`, NOT in the `llm-proxy2` repo. Not in scope for this proxy's release-readiness review; flagged here only so future passes don't waste time re-discovering.
+
+---
+
 ## 2026-05-19 — Post-v4.3.2 verification pass (grok-web findings)
 
 A targeted post-deploy QA after shipping v4.3.2 (the BUG-023 interim noise
