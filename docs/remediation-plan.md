@@ -57,8 +57,8 @@ finding** across:
 | **BUG-036** | LOW | (coverage) | rollback drill | F3 — **runbook ready** in `docs/f3-runbooks.md`; needs throwaway-stack time |
 | **BUG-037** | LOW | (coverage) | version-skew test | F3 — **checklist ready** in `docs/f3-runbooks.md`; rides along with next rolling deploy |
 | ~~BUG-038..040~~ | LOW/MED | (doc gap) | CB-sync, public-URL hairpin, activity-log scope | **CLOSED 2026-05-19 via F1** — `architecture.md` §"Cluster sync" + §"grok-bridge sidecar" updated |
-| ~~BUG-041~~ | MED | `app/api/apikeys.py` | missing `ge=0` on numeric cap fields | **FIXED v4.3.3 (staged 2026-05-19)** — pending release ceremony |
-| ~~BUG-042~~ | MED | `app/api/users.py` (user create) | missing min-length validator on password | **FIXED v4.3.3 (staged 2026-05-19)** — pending release ceremony |
+| ~~BUG-041~~ | MED | `app/api/apikeys.py` | missing `ge=0` on numeric cap fields | ✅ **LIVE v4.3.3 (2026-05-19)** — all 3 nodes |
+| ~~BUG-042~~ | MED | `app/api/users.py` (user create) | missing min-length validator on password | ✅ **LIVE v4.3.3 (2026-05-19)** — all 3 nodes |
 | (arc) | — | sidecar-dependent providers | shared single-bridge URL is fragile; no per-node auth model | v4.4 design + multi-milestone build |
 
 **Closed-and-verified (historical context):**
