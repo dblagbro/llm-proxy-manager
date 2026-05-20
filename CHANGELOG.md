@@ -9,6 +9,46 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v4.3.x — "Voice output" milestone
 
+### v4.3.4 — revert v4.3.2 dead code (BUG-026 Batch B)
+
+Closes BUG-026. The v4.3.2 release shipped an interim "skip the grok-web
+probe when the local sidecar is unreachable" patch built on a wrong
+architectural premise: the grok-bridge isn't a *per-node* docker-internal
+sidecar — there is exactly **one** bridge in the fleet, on tmrwww01, and
+every node reaches it through the public URL stored in
+`providers.extra_config.bridge_url` (cluster-synced). A
+`_local_sidecar_reachable()` helper that probes that public URL trivially
+succeeds, so the gate never fires in production — the patch was non-
+functional dead code from the moment it deployed.
+
+This release removes the dead artefacts:
+
+- `app/monitoring/keepalive.py` — the `_no_local_sidecar: set[str]` flag,
+  the public `is_no_local_sidecar()` helper, the
+  `_local_sidecar_reachable()` reachability probe, and the v4.3.2 branch
+  inside `_probe_one()`'s `grok-web` arm that consulted them are all gone.
+  The `grok-web` arm now falls straight through to the dispatcher (the
+  v3.2.10 behaviour, which is the correct one — the bridge IS reachable
+  from every node when it's running; when it's not running, the CB +
+  per-probe error suppression elsewhere handle the noise correctly).
+
+- `tests/unit/test_v432_no_local_sidecar.py` — the 3 unit tests that
+  exercised the dead helpers. Removed in full.
+
+No callers consulted the public `is_no_local_sidecar()` helper (grep
+across `app/` + `tests/` confirms), so the deletion is local in every
+sense. `httpx` import in `keepalive.py` stays — used by the actual
+provider probe path (see `_probe_one()` line ~350).
+
+The compose-level grok-bridge healthcheck that was part of Batch B's
+plan is **not** included here: the bridge container is currently stopped
+(BUG-025 deferred to v4.4), and the v4.4 redesign will reshape what a
+"healthcheck" should look like. Punting now avoids configuring a
+watchdog around a known-bad startup race.
+
+Unit suite drops from 2148 → 2145 (the 3 BUG-026 tests removed); all
+green. Frontend bundle unchanged.
+
 ### v4.3.3 — input validation: reject negative caps + empty passwords at the API boundary
 
 Closes BUG-041 + BUG-042 (both surfaced by the F2 coverage-gaps pass on
