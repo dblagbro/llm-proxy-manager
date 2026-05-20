@@ -538,7 +538,7 @@ applicable) and **Severity: low** unless noted.
      same session via variable-based proxy_pass in nginx.conf — see
      BUG-046 entry.
 
-### BUG-036 — Rollback drill never exercised — **RUNBOOK READY 2026-05-19 (F3)**
+### BUG-036 — Rollback drill never exercised — ✅ **CLOSED 2026-05-19**
 
 - **Area:** `docs/backup-plan.md` procedures.
 - **What's missing:** the documented rollback procedures (retag a prior
@@ -554,8 +554,17 @@ applicable) and **Severity: low** unless noted.
   environment options (single VM / second container on same host /
   second VM in network), and explicit PASS/FAIL criteria. Closes once
   a drill is run + recorded in `backup-plan.md`. Operator-triggered.
+- **Execution (2026-05-19):** ran the drill on a stage container
+  (`llm-proxy2-stage`, port 13456, `CLUSTER_ENABLED=false`, tmpfs
+  /app/data). Three image cycles `4.3.4 → 4.3.6 → 4.3.4`, ready-times
+  12.92 / 13.66 / 12.99 seconds. PASS — rollback target restored
+  cleanly. Persistent-data preservation + cluster-sync rejoin are NOT
+  exercised by this drill (stage container is isolated); those cases
+  are covered by BUG-037's separate controlled-skew runbook. Full
+  outcomes captured in `docs/backup-plan.md` §"Rollback drill —
+  2026-05-19 (BUG-036 closure)".
 
-### BUG-037 — Mixed-version cluster-sync (skew test) not exercised — **CHECKLIST READY 2026-05-19 (F3)**
+### BUG-037 — Mixed-version cluster-sync (skew test) not exercised — ✅ **CLOSED 2026-05-19**
 
 - **Area:** cluster sync paths (`app/cluster/*`, `app/api/cluster.py`,
   the various `*cluster_sync*` test files).
@@ -574,6 +583,14 @@ applicable) and **Severity: low** unless noted.
   rolling deploy (no separate session required; this rides along with
   whatever the next minor release is). Closes once the next deploy
   records its outcomes in `qa-notes.md`.
+- **Execution (2026-05-19):** manufactured a controlled prod-node
+  skew by downgrading tmrwww02 to v4.3.5 while tmrwww01 + c1conv
+  stayed on v4.3.6. Held the skew ~146 seconds. All 5 assertions
+  PASS: sync OLD→NEW in 30 s, sync NEW→OLD in 10 s, new endpoint
+  returned 4xx (not 5xx) on the older node, both nodes healthy
+  throughout, no skew-correlated error spike. tmrwww02 re-upgraded
+  cleanly. Full outcomes in `docs/qa-notes.md` §"Mixed-version
+  cluster-sync skew test — 2026-05-19 (BUG-037 closure)".
 
 ### BUG-038 — `architecture.md` does not document CB cluster-sync semantics — **CLOSED 2026-05-19 (F1)**
 
