@@ -7,6 +7,7 @@ import type { ProviderType, Provider } from '@/types'
 import { GrokWebProviderFields } from './GrokWebProviderFields'
 import { AnthropicBillingPanel } from './AnthropicBillingPanel'
 import { CodexBillingPanel } from './CodexBillingPanel'
+import { NodeBridgeStatusPanel } from './NodeBridgeStatusPanel'
 
 const PROVIDER_TYPES: ProviderType[] = [
   'anthropic', 'openai', 'google', 'vertex', 'grok', 'ollama', 'compatible',
@@ -417,6 +418,16 @@ export function ProviderForm({ form, onChange, editing, provider, onProviderUpda
           provider={provider}
           onUpdated={onProviderUpdated}
         />
+      )}
+
+      {/* v4.4 M-5 (Path A) — per-node bridge auth status panel.
+          Renders only when the provider's extra_config has
+          `node_local_session=true` set; today only configured for
+          grok-web when running the v4.4 per-node-bridge topology.
+          For all other providers the component returns null and
+          adds no UI footprint. */}
+      {editing && provider && (
+        <NodeBridgeStatusPanel provider={provider} />
       )}
 
       {/* v3.0.64: Per-provider usage-based rotation (Phase 2 — config UI).

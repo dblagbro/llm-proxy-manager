@@ -136,6 +136,26 @@ export interface TestResult {
   model: string
 }
 
+// v4.4 M-5 (Path A) — per-node bridge auth state for providers that
+// maintain a node-local credentialed session (today only grok-web
+// when running on the per-node-bridge topology; the type is reused
+// for any future per-node-session provider).
+export type NodeAuthStateValue =
+  | 'ok'
+  | 'expired'
+  | 'needs_reauth'
+  | 'never_authed'
+  | 'bridge_down'
+
+export interface NodeAuthState {
+  node_id: string
+  auth_state: NodeAuthStateValue
+  last_ok_at: string | null
+  last_check_at: string | null
+  reauth_url: string | null
+  last_error: string | null
+}
+
 export interface ScannedModel {
   model_id: string
   tasks: string[]

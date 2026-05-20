@@ -3,6 +3,7 @@ import type {
   AuthUser, Provider, ProviderFormData, ModelCapability, TestResult, ScannedModel,
   ApiKey, User, ActivityEvent, MetricsSummary, MetricBucket,
   ClusterStatus, HealthStatus, ExternalStatus, CacheStats,
+  NodeAuthState,
 } from '@/types'
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
@@ -40,6 +41,10 @@ export const providersApi = {
   test:       (id: string)               => api.post<TestResult>(`/api/providers/${id}/test`),
   scanModels: (id: string)               => api.post<{ scanned: number; models: ScannedModel[]; warning?: string }>(`/api/providers/${id}/scan-models`),
   capabilities: (id: string)             => api.get<ModelCapability[]>(`/api/providers/${id}/model-capabilities`),
+  // v4.4 M-5 (Path A): per-node bridge auth state for this provider.
+  // Empty array when no rows exist (typical for non-grok-web providers
+  // and for grok-web providers before the first probe has run).
+  nodeAuthStates: (id: string)           => api.get<NodeAuthState[]>(`/api/providers/${id}/node-auth-states`),
   updateCapability: (id: string, modelId: string, data: Partial<ModelCapability>) =>
     api.put<ModelCapability>(`/api/providers/${id}/model-capabilities/${encodeURIComponent(modelId)}`, data),
   inferCapabilities: (id: string)        => api.post<{ updated: number }>(`/api/providers/${id}/model-capabilities/infer`),
