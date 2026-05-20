@@ -257,6 +257,65 @@ async def _prune_probe_events(keep_days: int) -> int:
             return deleted
 
 
+async def _prune_activity_log_orphans() -> int:
+    """v4.4.3 BUG-055 — delete activity_log rows whose ``provider_id``
+    or ``api_key_id`` no longer points at a real row. Provider /
+    api_key tombstones get hard-deleted after
+    ``provider_tombstone_retention_days`` (default 7); any activity
+    log row that referenced that id then becomes a dangling
+    foreign key (SQLite has no enforcement, so they silently
+    accumulate). Pre-fix audit on 2026-05-20 found 438 + 7937 such
+    rows on www1 — historical cost-attribution / forensic queries
+    that JOIN to providers / api_keys silently lose those rows.
+
+    Runs daily as part of ``_sweep_once``, after the severity /
+    probe / tombstone prune steps so we're operating on the
+    post-prune set. Batched at ``_BATCH_SIZE`` like the other
+    prunes."""
+    deleted = 0
+    # Two separate DELETEs (one per FK column) — easier to read and
+    # easier to interpret in the sweep log line. Each loop uses the
+    # same NOT IN scalar subquery pattern as the rest of the prune
+    # helpers in this module.
+    while True:
+        async with AsyncSessionLocal() as db:
+            id_res = await db.execute(
+                select(ActivityLog.id)
+                .where(ActivityLog.provider_id.is_not(None))
+                .where(~ActivityLog.provider_id.in_(select(Provider.id)))
+                .limit(_BATCH_SIZE)
+            )
+            ids = [r[0] for r in id_res.all()]
+            if not ids:
+                break
+            await db.execute(delete(ActivityLog).where(ActivityLog.id.in_(ids)))
+            await db.commit()
+            deleted += len(ids)
+        if len(ids) < _BATCH_SIZE:
+            break
+        await asyncio.sleep(0.5)
+
+    while True:
+        async with AsyncSessionLocal() as db:
+            id_res = await db.execute(
+                select(ActivityLog.id)
+                .where(ActivityLog.api_key_id.is_not(None))
+                .where(~ActivityLog.api_key_id.in_(select(ApiKey.id)))
+                .limit(_BATCH_SIZE)
+            )
+            ids = [r[0] for r in id_res.all()]
+            if not ids:
+                break
+            await db.execute(delete(ActivityLog).where(ActivityLog.id.in_(ids)))
+            await db.commit()
+            deleted += len(ids)
+        if len(ids) < _BATCH_SIZE:
+            break
+        await asyncio.sleep(0.5)
+
+    return deleted
+
+
 async def _sweep_once() -> dict:
     """One full prune pass across activity_log + provider_metrics +
     run_events. Returns counts so the log line is interpretable."""
@@ -270,6 +329,7 @@ async def _sweep_once() -> dict:
            "error_keep_days": error_keep_days,
            "activity_log": 0, "activity_log_probes": 0,
            "activity_log_warnings": 0, "activity_log_errors": 0,
+           "activity_log_orphans": 0,
            "provider_metrics": 0, "run_events": 0,
            "provider_tombstones": 0,
            "apikey_tombstones": 0,
@@ -347,6 +407,16 @@ async def _sweep_once() -> dict:
     except Exception as e:
         logger.warning("prune.apikey_tombstones_failed err=%s", e)
 
+    # v4.4.3 BUG-055 — orphan activity_log refs. MUST run after the
+    # provider/apikey tombstone prunes above, because the orphan
+    # query identifies "activity_log rows whose FK no longer
+    # exists" — and the tombstone prunes are what create new
+    # orphans on each sweep.
+    try:
+        out["activity_log_orphans"] = await _prune_activity_log_orphans()
+    except Exception as e:
+        logger.warning("prune.activity_log_orphans_failed err=%s", e)
+
     return out
 
 
@@ -361,12 +431,14 @@ async def _prune_loop() -> None:
             logger.info(
                 "prune.swept activity_log=%d activity_log_probes=%d "
                 "activity_log_warnings=%d activity_log_errors=%d "
+                "activity_log_orphans=%d "
                 "provider_metrics=%d run_events=%d provider_tombstones=%d "
                 "keep_days=%d probe_keep_days=%d warning_keep_days=%d "
                 "error_keep_days=%d tombstone_keep_days=%d",
                 counts["activity_log"], counts.get("activity_log_probes", 0),
                 counts.get("activity_log_warnings", 0),
                 counts.get("activity_log_errors", 0),
+                counts.get("activity_log_orphans", 0),
                 counts["provider_metrics"], counts["run_events"],
                 counts["provider_tombstones"], counts["keep_days"],
                 counts.get("probe_keep_days", _DEFAULT_PROBE_RETENTION_DAYS),
