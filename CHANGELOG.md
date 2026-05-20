@@ -9,6 +9,162 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v4.3.x — "Voice output" milestone
 
+### v4.4.0 — grok-bridge hardening + dormant Path A scaffolding (2026-05-20)
+
+Closes BUG-025 mechanically. The v4.4 milestone arc resolves with
+**Path A empirically rejected** by a live multi-node spike and **Path B
+as the operative topology** (single shared bridge, hardened).
+
+The arc went M-1 (image hardening) → M-2..M-5 (backend +
+admin-API + UI scaffolding for the per-node-bridge architecture) →
+M-6 (live spike with the deployed per-node bridges). The spike found
+that grok.com enforces single-account-session semantics — a second
+concurrent IP got silently de-authed mid-flow; a third got
+"You have been blocked" before login completed. Path A is not
+feasible with the current Grok account-safety model. Path B
+(single bridge, hardened) is what stays live.
+
+**M-1 (LIVE) — grok-bridge image hardening**
+
+The latent failure mode behind BUG-025 was an Xvfb startup race:
+`start.sh` polled for `/tmp/.X11-unix/X99` to exist (which the
+kernel creates very early in Xvfb init), but Chromium's connection
+attempt (during the FastAPI lifespan's `launch_persistent_context`)
+raced into a half-open X server and failed with
+`Missing X server or $DISPLAY`. Every fresh container start hit
+this; the 10-day-old "Up" container on tmrwww01 had won the race
+on its original boot. v4.4-M-1 ships:
+
+- `grok_bridge/Dockerfile` — adds `x11-utils` (for `xdpyinfo`).
+- `grok_bridge/start.sh` — replaces the socket-file existence
+  check with an actual X11 query (`xdpyinfo -display :99`). The
+  loop polls every 0.5s up to 30s. On timeout, dumps supervisord
+  status + `/tmp/.X11-unix` listing + Xvfb stderr to make
+  post-mortems trivial.
+- `docker-compose.yml` on tmrwww01 — `healthcheck` block probes
+  the inner FastAPI `/healthz` every 30s with `start_period: 60s`.
+  The `docker ps "Up"` status now reflects the bridge service,
+  not just supervisord — closes the BUG-025-class hidden-failure
+  pattern within one health interval.
+
+**Verification on tmrwww01**: bridge container recreated cleanly
+with the new image — log line `Xvfb display :99 responsive after
+20ds` followed by `playwright ready; bridge listening`. No
+`Missing X server` error. Healthcheck transitions to `healthy`
+within the first 30s probe. Restart count = 0. The fleet's
+grok-web CB (`8beb17c4bd11de26`) returned to
+`closed/failures=0` immediately.
+
+**Image artefact**: `dblagbro/llm-proxy2-grok-bridge:v4.4-rc1` +
+`:latest` on Docker Hub.
+
+**M-2 (STAGED, dormant) — `ProviderNodeAuthState` schema + cluster sync**
+
+New table for per-(provider_id, node_id) auth state, intended for
+the per-node bridge architecture. Each node owns its own rows
+(writes locally, peers read for visibility). Cluster sync uses LWW
+on `last_check_at`. Path B doesn't need this active — but the
+table can be re-used as Path B's single-bridge state tracking if
+desired (one row per provider, written by the host with the
+bridge, visible to all nodes via sync).
+
+New files / changes:
+
+- `app/models/db.py` — `ProviderNodeAuthState` ORM model.
+- `app/routing/node_auth_state.py` — read/write helpers
+  (`write_local_state`, `read_state`, `read_all_states`,
+  `is_local_node_routable`).
+- `app/cluster/manager.py` — `push_sync()` payload extended with
+  `provider_node_auth_states` key.
+- `app/cluster/sync_handlers.py` — `_apply_provider_node_auth_states`
+  with LWW.
+- `app/cluster/sync.py` — apply-dispatch wiring.
+
+13 unit tests in `tests/unit/test_v44_m2_provider_node_auth_state.py`
+cover schema, helpers (insert + upsert + last_ok_at preservation +
+validation + error truncation), routing gate, sync LWW (older
+incoming skipped, newer accepted), defensive malformed-row
+handling, and a push-payload regression guard.
+
+**M-3 (STAGED, dormant) — probe → state writer**
+
+`app/monitoring/keepalive.py` grok-web probe branch now writes the
+local node's row on each probe outcome:
+- success → `auth_state="ok"`
+- classify_error → `"auth"` → `"needs_reauth"`
+- classify_error → `"network"`/`"timeout"`/`"upstream_5xx"` → `"bridge_down"`
+- anything else → `"needs_reauth"`
+
+Best-effort: any exception in the write path is swallowed so it
+can't corrupt the probe's own `record_outcome` flow.
+
+**M-4 (STAGED, dormant) — routing filter + CB-sync exemption**
+
+`app/routing/router.py:select_provider()` now consults the local
+auth-state row for any provider tagged
+`extra_config.node_local_session=True`; if not OK, the provider is
+filtered out of this node's routing for the request. Other cluster
+nodes whose state IS OK can still serve it via their own routing
+decisions.
+
+`app/routing/circuit_breaker.py:_persist_auto_skip()` exempts
+node_local_session-tagged providers from the persistent-auth-
+failure auto-skip path. The per-node auth_state rows are the
+cluster-visible signal instead.
+
+Both branches are **no-ops** for any provider without the
+`node_local_session=True` flag in `extra_config`. With Path A
+rejected, that flag is **never going to be flipped**, so M-4
+stays inert in production. The scaffolding survives the release
+for any future Path A retry.
+
+**M-5 (STAGED, dormant) — admin API + UI**
+
+New `GET /api/providers/{id}/node-auth-states` returns the per-
+node bridge state list. Empty when no rows exist (typical for
+non-bridge providers, or for grok-web before the first probe has
+run after a Path A retry).
+
+`frontend/src/components/providers/NodeBridgeStatusPanel.tsx`
+renders the per-node table with badges (ok / re-auth-needed /
+bridge-down / never-auth'd), last_ok_at and last_check_at
+timestamps (relative), and a `[Re-auth]` button when needed +
+`reauth_url` is populated. Polls every 30s. Wired into
+`ProviderForm.tsx` in edit mode.
+
+**Path B operational state**
+
+- Single shared bridge on tmrwww01 (the M-1-hardened image).
+- `providers.extra_config.bridge_url` keeps the public URL
+  (`https://www.voipguru.org/grok-bridge/...`); cluster-synced to
+  all 3 nodes.
+- Cleanup of the M-6 spike artefacts: tmrwww02 + c1conv bridge
+  containers + images removed; nginx `/grok-bridge/` location
+  blocks removed from tmrwww02 + c1conv (route returns 404 / 401-
+  catch-all respectively); tmrwww02's compose service definition
+  removed. Data volumes RETAINED per the operator-locked
+  `docker volume rm` ban.
+
+**Test counts**
+
+- Unit suite: **2260 passed** (was 2241; +19 across M-2 (13) +
+  M-3/M-4 (6) unit tests).
+- Frontend: TypeScript clean.
+
+**Architecture / doc updates**
+
+- `docs/4.4-per-node-bridge-design.md` — status header flipped to
+  "Path A rejected, Path B operative", §3.2 added with the live
+  spike result data.
+- `architecture.md` — small subsection on the v4.4 scaffolding (see
+  next commit).
+- `docs/bug-log.md` — BUG-025 final-status entry updated with the
+  v4.4-M-1 resolution paragraph; BUG-046 cross-references the new
+  bridge-stable state.
+
+**Operator action — none required.** The release is operationally a
+patch (proxy behavior unchanged from v4.3.9 for any caller).
+
 ### v4.3.9 — classify_error coverage for grok-web bridge errors (BUG-048)
 
 Closes BUG-048 (low-pri classifier gap). Root-cause inspection of the

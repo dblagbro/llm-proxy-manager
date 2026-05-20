@@ -416,6 +416,52 @@ layer — see `docs/remediation-plan.md` §5 Batch C.
 contract; manual OAuth login is operator-driven (one-time per fresh
 volume).
 
+### v4.4 dormant per-node-bridge scaffolding
+
+v4.4 attempted a Path A redesign — per-node bridge container on each
+of the 3 proxy hosts, each holding its own logged-in Chromium for
+the same Grok account. The 2026-05-20 live spike found grok.com
+enforces single-account-session semantics: a second concurrent IP
+got silently de-authed; a third got "You have been blocked" before
+login completed. Path A was rejected; Path B (single shared bridge,
+hardened) is the operative topology. See
+`docs/4.4-per-node-bridge-design.md` §3.2 for the spike data.
+
+What stays in the codebase as **dormant scaffolding** (no behavior
+change without an explicit operator opt-in):
+
+- **`ProviderNodeAuthState` table** (`app/models/db.py`) — composite
+  PK `(provider_id, node_id)`; cluster-synced LWW on `last_check_at`;
+  each node writes its own rows.
+- **`app/routing/node_auth_state.py`** — `write_local_state` upsert,
+  `read_state` / `read_all_states`, `is_local_node_routable` gate.
+- **`app/monitoring/keepalive.py`** grok-web probe branch — best-
+  effort writes a row on every probe outcome (mapping success→ok,
+  auth→needs_reauth, network/timeout/5xx→bridge_down, else→
+  needs_reauth).
+- **`app/routing/router.py:select_provider()`** — per-node filter
+  triggered ONLY by `extra_config.node_local_session=True`. No-op
+  for every provider in production today.
+- **`app/routing/circuit_breaker.py:_persist_auto_skip()`** — exempts
+  node_local_session-tagged providers from the cluster-wide auto-
+  skip path. Same no-op without the flag.
+- **`GET /api/providers/{id}/node-auth-states`** + the React
+  `NodeBridgeStatusPanel` — returns/renders the per-node states.
+  Renders only when `node_local_session=True` is set on the
+  provider's extra_config (so the panel is invisible today on
+  every provider).
+
+If a future Grok policy change makes Path A viable, flipping
+`node_local_session=True` on the grok-web provider's `extra_config`
++ updating `bridge_url` to a per-host docker-internal name +
+restoring the per-node bridge containers (image
+`dblagbro/llm-proxy2-grok-bridge:v4.4-rc1` on Docker Hub) activates
+the entire pipeline. No code change required for the flip.
+
+Until then: M-1 image hardening (the `xdpyinfo` Xvfb readiness
+probe + compose `/healthz` healthcheck) is the durable production
+win — BUG-025 is mechanically prevented in Path B too.
+
 ## LMRHv2 — bidirectional metrics feedback (v3.3.0+)
 
 LMRH 1.x was one-way: client sends `LLM-Hint` → proxy decides. v2
