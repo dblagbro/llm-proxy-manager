@@ -9,6 +9,62 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v4.3.x — "Voice output" milestone
 
+### v4.3.7 — stop persisting Python None as the literal string "None" in system_settings
+
+Closes a small but operationally annoying defect surfaced during BUG-031's
+live verification on 2026-05-19: the dry-run AIRI notifier returned
+``recipients: ["None"]`` (the **literal string** "None"). Investigation
+showed ``system_settings.smtp_to = 'None'``, plus the same pattern for
+``smtp_from`` + ``smtp_host``.
+
+**Root cause**: ``app/config_runtime.py:save()`` line ~499 did
+``raw = str(val)``. When ``val`` was Python ``None`` (operator clears
+the field via Settings UI; or a settings cluster-sync pushes a None
+value), it persisted the literal string ``"None"``. On load,
+``_coerce(raw, "str")`` returned the string as-is. Result:
+``settings.smtp_to == "None"`` (a truthy string), which then passed
+downstream guards like ``if settings.smtp_to:`` and got added to
+recipient sets. SMTP-side, alerts addressed to a literal user named
+"None" silently bounce — operator never noticed because the proxy
+considered the alert "sent."
+
+**Operational impact in prod**: alerts going to the global mailbox
+``settings.smtp_to`` were silently bouncing for some duration (since
+whenever the bad value got persisted; the live DB had ``smtp_to``,
+``smtp_from``, ``smtp_host`` all set to ``"None"``). Per-user
+notification subscriptions (v4.0.3) still worked because they store
+real email addresses; the global mailbox is the bug surface.
+
+**Fix** (``app/config_runtime.py``):
+
+1. ``save()`` now writes empty string ``""`` when ``val is None``
+   instead of ``str(None) == "None"``. Same for the in-memory
+   ``apply()`` projection — None values land as None on the live
+   settings singleton, not as "None".
+2. ``_coerce()`` for ``str``-typed fields treats both the empty
+   string and the legacy literal ``"None"`` as Python ``None``. This
+   preserves Optional[str] semantics on load AND tolerates pre-fix
+   data on un-migrated nodes during a rolling deploy (no migration
+   step required).
+3. ``"Nones"``, ``"None@example.com"``, etc. continue to pass
+   through unchanged — only the exact strings ``""`` and ``"None"``
+   coerce to None.
+
+**Operator action after deploy**: rows currently holding the literal
+``"None"`` will be tolerated by the load path (treated as None), but
+cleaning them up is one ``UPDATE system_settings SET value = ''
+WHERE value = 'None' AND value_type = 'str';`` per node — optional,
+since the load path already handles them.
+
+**New unit tests** in ``tests/unit/test_v437_smtp_to_none_string.py``
+(11 cases): _coerce truthy/falsy/legacy-None matrix; save→DB writes
+empty string for None; save with real string unchanged;
+save→load round-trip yields Python None on the live singleton;
+legacy ``value="None"`` row tolerated on load.
+
+Unit suite: 2204 passed (was 2193; +11 new). All green except the
+pre-existing flaky chaos test (passes in isolation; unrelated).
+
 ### v4.3.6 — dry_run mode for the AIRI notifier (BUG-031)
 
 Closes BUG-031. Until v4.3.6 the AIRI rule-fire email path had no
