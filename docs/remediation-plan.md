@@ -401,3 +401,29 @@ architectural assumption that produced BUG-026. Without F2/F3, the next
 deep QA pass will repeat the v4.3.0 pass's scope — leaving the same
 surfaces untested. The cost of filling these gaps is small relative to
 the cost of another wasted release or another silent 10-day failure.
+
+---
+
+## 16. Batch G — v4.4.0 post-release findings (2026-05-20)
+
+Filed after the v4.4.0 release-readiness QA pass (see `bug-log.md` §2026-05-20).
+**No fix work is started.** This section is the operator-prioritised plan, awaiting approval.
+
+| | |
+|---|---|
+| **Items** | BUG-051 (M-3 mapping gap for `rate_limit`/`billing`/`bad_request`/`unknown`); BUG-052 (WAL high-water observation); CLEANUP-001 (stale test-fixture providers). |
+| **Subsystems** | `app/monitoring/keepalive.py` (BUG-051); `/app/data/llmproxy.db-wal` ops (BUG-052); `providers` table (CLEANUP-001). |
+| **Root cause** | BUG-051: incomplete case mapping at M-3 design time (only 4 of 8 classifier outcomes considered explicitly). BUG-052: past write burst expanded WAL; SQLite preserves the file size by design. CLEANUP-001: test runs (Playwright UI + version-skew drill) leak provider rows that aren't garbage-collected. |
+| **Recommended fix scope** | BUG-051: add explicit `rate_limit → bridge_down` branch in `keepalive.py:283-293`; leave `billing`/`bad_request`/`unknown` mapping policy as-is unless a re-auth signal would be wrong for them. ~5 LoC + 2 unit tests. BUG-052: optional one-shot `wal_checkpoint(TRUNCATE)` to reclaim file space (no code change; ad-hoc op). CLEANUP-001: soft-delete the 8 test rows via a one-shot SQL UPDATE, verify cluster sync picks up the tombstones. |
+| **Effort** | BUG-051: 10 min code + 5 min review. BUG-052: 30s SQL pragma + monitor. CLEANUP-001: 5 min SQL + 5 min verify on peers. |
+| **Risk** | All three are very low risk. BUG-051 only changes a dormant code path (M-4 is no-op for all 18 providers); the test will be a unit test, not a production probe. BUG-052 is a write to a single SQLite pragma. CLEANUP-001 uses soft-delete which is already supported by the sync layer. |
+| **Dependencies** | None. All three independent of each other and of any other open batch. |
+| **Backups required** | Standard release backup tarball + DB snapshot before CLEANUP-001 (the only one that mutates rows). BUG-051 covered by unit tests; BUG-052 doesn't change data. |
+| **Rollback** | BUG-051: revert the commit. BUG-052: no rollback needed (file size is non-functional). CLEANUP-001: `UPDATE providers SET deleted_at = NULL WHERE name LIKE 'pw-persist-%' OR name LIKE 'skew-from-%';`. |
+| **Retest** | BUG-051: new unit test asserts `rate_limit → bridge_down`; integration: run the c1conv probe with a 429 in flight and observe the row's `auth_state`. BUG-052: re-stat the WAL file after a TRUNCATE — should drop to <1MB. CLEANUP-001: verify `SELECT COUNT(*) FROM providers WHERE deleted_at IS NULL` drops to 10 (matches the legitimate provider count) on all 3 nodes. |
+| **Stop point** | None of these are release-blockers. v4.4.0 is shipped and operationally healthy. Operator can defer indefinitely; recommended pickup point is the next minor-release class (v4.4.x). |
+| **Status** | **PLANNED 2026-05-20.** Awaits operator approval before any code change. |
+
+### Why this batch is small
+
+The v4.4.0 release ceremony was thorough (rolling deploy, full doc update, fleet validated). The post-release QA pass found exactly what a healthy release should: three low-severity items that don't block anything and can be picked up at leisure. The absence of higher-severity findings is itself a release-quality signal.
