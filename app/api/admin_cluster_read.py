@@ -43,6 +43,17 @@ async def external_usage_summary(
     Includes failure rows (``auth_state != 'ok'``) so the operator can
     see when cookies expired or the scraper hit Cloudflare without
     scrolling through the activity log.
+
+    **Utilization scale (v4.3.5 contract clarification, 2026-05-20):**
+    ``seven_day_utilization`` and ``five_hour_utilization`` are
+    **percent values (0.0 – 100.0)**, NOT ratios. This matches the
+    DB column convention (``Float, # percent 0-100`` in
+    ``ExternalUsageSnapshot``) and the rest of the codebase
+    (``external_rotation`` rules + the proxy admin UI all treat the
+    value as percent). The original v4.3.5 hub-team memo described
+    ratios — that was a documentation error in the memo; the
+    endpoint never emitted ratios. Hub-side consumers should display
+    the value as ``f"{value:.1f}%"`` (no ×100 step).
     """
     # latest snapshot id per provider via group-by-then-join
     latest_subq = (
