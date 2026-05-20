@@ -529,3 +529,63 @@ async def airi_set_notification_pref(
     if "error" in result:
         return JSONResponse(result, status_code=400)
     return result
+
+
+@router.post("/notify/_test_dispatch")
+async def airi_test_dispatch(
+    payload: dict,
+    _: AdminUser = Depends(require_admin),
+    __: None = Depends(_require_airi_enabled),
+) -> dict:
+    """Dry-run the AIRI notifier — render body + resolve recipients but
+    DO NOT actually send SMTP. Returns the planned dispatch so a live
+    integration test (or an operator manually) can verify recipient
+    resolution + body rendering without spamming inboxes.
+
+    Body:
+        {
+            "subject":  "<short string>",                  (required)
+            "message":  "<body text>",                     (required)
+            "severity": "info" | "warning" | "critical",   default "warning"
+            "category": "monitor" | "automation"           default "monitor"
+        }
+
+    Returns the dict from ``airi_notify(..., dry_run=True)``.
+
+    Closes BUG-031 (v4.3.6) — AIRI notifications were never live-tested
+    because doing so used to spam the operator's inbox.
+    """
+    from app.airi.notify import airi_notify
+    subject = (payload.get("subject") or "").strip()
+    message = (payload.get("message") or "").strip()
+    if not subject or not message:
+        return JSONResponse(
+            {"error": "subject and message are required"}, status_code=400
+        )
+    severity = (payload.get("severity") or "warning").strip()
+    if severity not in ("info", "warning", "critical"):
+        return JSONResponse(
+            {"error": "severity must be one of info|warning|critical"},
+            status_code=400,
+        )
+    category = (payload.get("category") or "monitor").strip()
+    if category not in ("monitor", "automation"):
+        return JSONResponse(
+            {"error": "category must be monitor or automation"},
+            status_code=400,
+        )
+    result = await airi_notify(
+        subject=subject,
+        message=message,
+        severity=severity,
+        category=category,
+        dry_run=True,
+    )
+    if result is None:
+        # airi_notify swallows exceptions and returns None — surface that
+        # as a 500 so a live test sees the failure.
+        return JSONResponse(
+            {"error": "airi_notify raised internally; check logs"},
+            status_code=500,
+        )
+    return result

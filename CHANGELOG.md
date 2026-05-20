@@ -9,6 +9,72 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v4.3.x — "Voice output" milestone
 
+### v4.3.6 — dry_run mode for the AIRI notifier (BUG-031)
+
+Closes BUG-031. Until v4.3.6 the AIRI rule-fire email path had no
+way to be live-tested without spamming the operator's inbox; the F2
+coverage pass on 2026-05-19 surfaced this as a coverage gap that
+needed a code-side change before live testing was safe.
+
+**Change** (`app/airi/notify.py`):
+`airi_notify(...)` gains a `dry_run: bool = False` parameter. When
+true (or when the `AIRI_NOTIFY_DRY_RUN` env var is truthy), the
+function still:
+
+- builds the full email body (including the `Open AIRI` deep link),
+- resolves recipients (the global `settings.smtp_to` PLUS each
+  operator whose per-user subscription opts into this category +
+  severity),
+
+…but **skips the SMTP send** and instead returns a dict of the
+planned dispatch:
+
+```json
+{
+  "dry_run": true,
+  "subject":  "AIRI: <subject>",
+  "body":     "...body with deep link...",
+  "severity": "warning",
+  "category": "monitor",
+  "recipients": ["alice@example.com", "ops@example.com"]
+}
+```
+
+Production callers (today only `app/airi/evaluator.py`) ignore the
+return value, so this is non-breaking.
+
+**New admin-only endpoint** (`POST /api/airi/notify/_test_dispatch`):
+HTTP front-door for the dry-run path. Lets a live integration test
+(or an operator manually, from the proxy admin UI session) verify
+recipient resolution + body rendering against the live deployment
+without spamming inboxes. Body:
+
+```json
+{
+  "subject":  "string",      // required
+  "message":  "string",      // required
+  "severity": "info|warning|critical",  // default warning
+  "category": "monitor|automation"      // default monitor
+}
+```
+
+Returns the dry-run dict above on success; 400 on missing fields /
+bad enum; 500 if `airi_notify` raised internally.
+
+**New unit tests** in `tests/unit/test_v436_notify_dry_run.py` (14
+cases):
+- `dry_run=True` skips `send_alert` + returns the planned-dispatch dict
+- `AIRI_NOTIFY_DRY_RUN=1` env var flips the same behaviour globally
+- Both case-insensitive and the canonical truthy set
+  (`1`, `true`, `TRUE`, `yes`, `on`) accepted
+- Falsy values (`0`, `false`, `no`, `off`, `anything-else`, empty)
+  do NOT activate dry-run
+- Production path (`dry_run=False`, env unset) still calls
+  `send_alert` for every recipient and returns `None`
+  (regression guard for v4.0 behaviour)
+
+Unit suite: 2170 passed (was 2156; +14 new). All green.
+
 ### v4.3.5 — HMAC-auth read-only endpoint for coordinator-hub (`external_usage_summary`)
 
 Built for the coordinator-hub team's 2026-05-20 request. They want to

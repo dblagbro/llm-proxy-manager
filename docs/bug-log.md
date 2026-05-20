@@ -412,7 +412,7 @@ applicable) and **Severity: low** unless noted.
   fix-direction note's `LLM-Cache` to the actual `X-Cache-Status`
   (set in `app/api/_request_pipeline.py:432-438`).
 
-### BUG-031 — Notifications dispatch not live-tested — **DEFERRED 2026-05-19 (F2)**
+### BUG-031 — Notifications dispatch not live-tested — ✅ **FIXED v4.3.6 (staged 2026-05-19)**
 
 - **Area:** AIRI rule-fire email path (`app/airi/notify.py` +
   `notify_prefs.py`) — the v4.0.3 surface.
@@ -429,6 +429,15 @@ applicable) and **Severity: low** unless noted.
   suite continues to cover rendering + recipient-filter logic.
   Inline TODO marker placed in `tests/integration/test_playwright_ui.py`
   above the `TestResponsiveLayout` class.
+- **Resolution (2026-05-19, v4.3.6):** `airi_notify(...)` gains
+  `dry_run: bool = False` (also honors `AIRI_NOTIFY_DRY_RUN` env var).
+  New admin-only endpoint `POST /api/airi/notify/_test_dispatch` is
+  the HTTP front door — body `{subject, message, severity, category}`,
+  response is the planned-dispatch dict (subject + body + resolved
+  recipients) with NO SMTP send. 14 new unit tests in
+  `tests/unit/test_v436_notify_dry_run.py` cover both paths (param +
+  env var), production-path regression guard, and the truthy / falsy
+  parametrized matrix. Pending operator-gated release ceremony.
 
 ### BUG-032 — Mobile / responsive layout not exercised — **CLOSED 2026-05-19 (F2)**
 
