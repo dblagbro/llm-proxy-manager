@@ -360,7 +360,7 @@ applicable) and **Severity: low** unless noted.
   walkthrough per main flow is the next a11y arc; `motion-reduce`
   Playwright emulation also pending.
 
-### BUG-034 — Full integration suite not run end-to-end this pass
+### BUG-034 — Full integration suite not run end-to-end this pass — **CLOSED 2026-05-19 (F3)**
 
 - **Area:** `tests/integration/` outside `test_playwright_ui.py::TestAiriTTS`.
 - **What's missing:** `test_api_keys.py`, `test_auth.py`,
@@ -373,9 +373,14 @@ applicable) and **Severity: low** unless noted.
 - **Fix direction:** run `python3 -m pytest tests/integration/ -rs
   --timeout=60` and triage; expect BUG-001/002/003 to fire (already
   logged), file new findings against any new failures.
-- **Status:** open (coverage / regression scope).
+- **Resolution (2026-05-19, F3):** suite run end-to-end twice
+  consecutively, ignoring `test_playwright_ui.py` (covered by F2).
+  Result: **66 passed / 16 skipped / 0 failed**, both runs. Earlier
+  BUG-001/002/003 did not reproduce — BUG-002 cannot reproduce here
+  because `pytest-xdist` is not installed; BUG-001 + BUG-003 stayed
+  green across both runs. Detailed results in `docs/f3-runbooks.md`.
 
-### BUG-035 — Real-provider compatibility matrix not run
+### BUG-035 — Real-provider compatibility matrix not run — **OPERATOR-TRIGGERED 2026-05-19 (F3)**
 
 - **Area:** `tests/integration/test_compatibility_matrix.py --run-real`.
 - **What's missing:** the `--run-real` flag spends money on live providers
@@ -384,9 +389,13 @@ applicable) and **Severity: low** unless noted.
 - **Fix direction:** run it once before the next *minor* release
   (v4.4-ish) to catch upstream-shape changes (especially Anthropic /
   OpenAI / Codex / Grok API surfaces).
-- **Status:** open (release-pre-flight not yet performed).
+- **F3 disposition (2026-05-19):** invocation runbook + cost estimate
+  (~$1 / ~5 min runtime) + pre-flight checklist captured in
+  `docs/f3-runbooks.md` §"BUG-035". Operator-triggered before the
+  next minor release — does not block F3 closure for the rest of the
+  inventory.
 
-### BUG-036 — Rollback drill never exercised
+### BUG-036 — Rollback drill never exercised — **RUNBOOK READY 2026-05-19 (F3)**
 
 - **Area:** `docs/backup-plan.md` procedures.
 - **What's missing:** the documented rollback procedures (retag a prior
@@ -397,9 +406,13 @@ applicable) and **Severity: low** unless noted.
   to a candidate version, perform the documented rollback, confirm the
   prior version is fully restored. Record outcomes + actual times in
   `backup-plan.md`.
-- **Status:** open (process gap).
+- **F3 disposition (2026-05-19):** drill runbook captured in
+  `docs/f3-runbooks.md` §"BUG-036" — step-by-step bash, three staging-
+  environment options (single VM / second container on same host /
+  second VM in network), and explicit PASS/FAIL criteria. Closes once
+  a drill is run + recorded in `backup-plan.md`. Operator-triggered.
 
-### BUG-037 — Mixed-version cluster-sync (skew test) not exercised
+### BUG-037 — Mixed-version cluster-sync (skew test) not exercised — **CHECKLIST READY 2026-05-19 (F3)**
 
 - **Area:** cluster sync paths (`app/cluster/*`, `app/api/cluster.py`,
   the various `*cluster_sync*` test files).
@@ -413,7 +426,11 @@ applicable) and **Severity: low** unless noted.
   node-only state for ~10 minutes and exercise cluster-synced surfaces
   (provider config update on the older node, observe on the newer; vice
   versa). Document version-skew tolerance.
-- **Status:** open (coverage).
+- **F3 disposition (2026-05-19):** 5-assertion checklist captured in
+  `docs/f3-runbooks.md` §"BUG-037" — exercised during the **next**
+  rolling deploy (no separate session required; this rides along with
+  whatever the next minor release is). Closes once the next deploy
+  records its outcomes in `qa-notes.md`.
 
 ### BUG-038 — `architecture.md` does not document CB cluster-sync semantics — **CLOSED 2026-05-19 (F1)**
 
