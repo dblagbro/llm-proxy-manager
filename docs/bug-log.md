@@ -113,7 +113,7 @@ violations → frontend HTML inspection → schema parity → CB / pool /
 memory state. No critical/high defects. Three low-severity items
 filed below.
 
-### BUG-054 — Production index.html has Vite scaffold title "frontend" — ⚠ **OPEN (low, polish)**
+### BUG-054 — Production index.html has Vite scaffold title "frontend" — ✅ **CLOSED 2026-05-20 (v4.4.3)**
 
 - **Severity:** low · **Category:** UX / polish
 - **Area:** `frontend/index.html` source → `/app/frontend/dist/index.html` in deployed image
@@ -123,9 +123,11 @@ filed below.
   ```
 - **Expected:** something meaningful like `LLM Proxy v2` or `llm-proxy2 admin`.
 - **Fix:** edit `frontend/index.html` `<title>` element + rebuild image. Trivial.
-- **Status:** queued.
+- **Status:** **CLOSED v4.4.3 2026-05-20.** `frontend/index.html` line 7
+  now reads `<title>llm-proxy v2</title>`. Source-level regression
+  guard at `tests/unit/test_v443_bug054_bug055.py::test_bug054_frontend_html_title_is_not_vite_scaffold`.
 
-### BUG-055 — Cumulative orphan refs in activity_log (438 unknown provider_ids + 7,937 unknown api_key_ids) — ⚠ **OPEN (low, hygiene)**
+### BUG-055 — Cumulative orphan refs in activity_log (438 unknown provider_ids + 7,937 unknown api_key_ids) — ✅ **CLOSED 2026-05-20 (v4.4.3)**
 
 - **Severity:** low · **Category:** data hygiene
 - **Area:** `activity_log` table on www1 (likely similar on peers).
@@ -140,7 +142,21 @@ filed below.
 - **Why it matters:** historical activity-log queries that JOIN to providers / api_keys silently lose rows. Cost-attribution reports, audit traces, and operator forensic queries can underreport by these amounts. Not blocking, but a long-tail correctness erosion.
 - **Plus:** `caller_memory` and `caller_memory_marker` each have 1 row referencing `api_keys.id='smoke-test'` which doesn't exist (the smoke-test fixture). 2 FK violations from a stale test.
 - **Fix scope:** (a) one-shot DELETE of orphan activity_log rows older than N days; (b) explicit retention policy for activity_log (currently unbounded; 167k rows over 28d = ~135MB in this table alone); (c) the smoke-test fixtures could be hard-deleted since they're soft-deleted already.
-- **Status:** queued. Pickup is "next maintenance window" — no operational impact today.
+- **Status:** **CLOSED v4.4.3 2026-05-20.** Root cause was the
+  tombstone-prune step (which is correct + intentional design)
+  leaving dangling FK refs in `activity_log`. Fix shipped
+  `_prune_activity_log_orphans()` in `app/monitoring/prune.py`,
+  wired into the daily sweep AFTER the tombstone-prune step
+  (the orphan-creation source). New `activity_log_orphans` counter
+  in `_LAST_SWEEP_RESULT` + the `prune.swept` log line.
+  +7 regression tests at
+  `tests/unit/test_v443_bug054_bug055.py` (incl end-to-end seed +
+  prune + verify, no-op-when-clean, source-level ordering guard).
+  **Existing accumulated orphans on www1 will be cleaned on the
+  first scheduled sweep ~24h after the v4.4.3 deploy.**
+  Activity_log retention itself (item (b)) was already in place —
+  info=30d / warning=365d / error=1825d — the orphan accumulation
+  was a separate gap.
 
 ### F-OBS-002 — Tombstoned-row count drift across cluster nodes (design behavior, not a defect) — ⚠ **NOTED**
 

@@ -9,6 +9,72 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v4.3.x — "Voice output" milestone
 
+### v4.4.3 — BUG-054 frontend title + BUG-055 activity_log orphan prune (2026-05-20)
+
+Closes two low-severity findings from the post-v4.4.2 QA pass.
+
+**BUG-054 — frontend `<title>` was the Vite scaffold default "frontend"**
+
+`frontend/index.html` was the unedited Vite template; the production
+build inherited the literal title `frontend` into every browser tab.
+Fix is a one-token change to `<title>llm-proxy v2</title>`. Rebuild
+of the docker image picks up the new title in `frontend/dist/index.html`.
+
+**BUG-055 — activity_log accumulates orphan FK references**
+
+Audit on 2026-05-20 found 438 dangling `provider_id` refs + 7,937
+dangling `api_key_id` refs in www1's `activity_log` table. Root
+cause: provider / api_key tombstones get hard-deleted after
+`provider_tombstone_retention_days` (default 7), but the
+`activity_log` rows that referenced those IDs survive — SQLite has
+no FK enforcement (`PRAGMA foreign_keys` is off). Audit / cost-
+attribution queries that JOIN to providers / api_keys silently
+lose those rows.
+
+Fix (`app/monitoring/prune.py`):
+
+- New `_prune_activity_log_orphans()` helper. Two `DELETE` passes
+  (one per FK column) using the same `NOT IN (SELECT id FROM ...)`
+  + `_BATCH_SIZE` paging pattern as the existing prune helpers.
+- Wired into `_sweep_once()` AFTER the
+  `_prune_provider_tombstones` + `_prune_apikey_tombstones`
+  steps — the orphan-creation step that produces new orphans each
+  sweep. Running the orphan prune first would leave the tombstone-
+  prune's new orphans uncleaned for an extra day.
+- New `activity_log_orphans` counter in `_LAST_SWEEP_RESULT` +
+  the `prune.swept` log line for operator visibility.
+- Failure-isolated like the other prune steps (`try` + warn-log on
+  exception, never blocks the rest of the sweep).
+
+**Tests** (`tests/unit/test_v443_bug054_bug055.py`, +7 tests):
+
+- `test_bug054_frontend_html_title_is_not_vite_scaffold` — guards
+  against ever re-introducing the Vite default.
+- `test_bug055_orphan_prune_helper_exists` — `_prune_activity_log_orphans`
+  is defined.
+- `test_bug055_orphan_prune_wired_into_sweep` — ordering guard:
+  orphan prune runs after the tombstone prune.
+- `test_bug055_sweep_output_dict_has_orphan_counter` — the new
+  counter is in the result dict.
+- `test_bug055_sweep_log_line_includes_orphan_count` — the
+  `prune.swept` log line emits the new counter.
+- `test_bug055_orphan_prune_deletes_dangling_refs` — end-to-end
+  behavior: seeds 3 live-FK rows + 5 orphan rows + 1 dual-orphan
+  row, calls the helper, asserts 5 deletes (no double-count for
+  the dual-orphan) and only live-FK rows survive.
+- `test_bug055_orphan_prune_no_op_when_clean` — returns 0 when
+  nothing to prune (doesn't hammer the DB needlessly).
+
+**Test counts**
+
+- Unit suite: **2272 passed** (was 2265 in v4.4.2; +7 BUG-054 + BUG-055
+  regression tests).
+
+**Operator action — none required.** Patch-class release. The new
+prune step runs as part of the existing daily sweep (24h after
+container start, then every 24h). Pre-existing accumulated orphans
+will be cleaned on the first sweep after v4.4.3 deploy.
+
 ### v4.4.2 — BUG-053 cluster-sync tombstone propagation fix (2026-05-20)
 
 Closes BUG-053 (medium, latent cluster-state correctness defect).
