@@ -188,6 +188,52 @@ class ProviderUsageWindow(Base):
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
 
+class ProviderNodeAuthState(Base):
+    """v4.4 M-2 — per-node auth state for providers that maintain a
+    node-local credentialed session (currently only ``grok-web`` via
+    its per-node bridge container, but the table is generic enough
+    to cover any future per-node-session provider type).
+
+    Why this table exists: pre-v4.4 grok-web ran on a shared bridge
+    on tmrwww01 only, and the CB state cluster-synced like every
+    other provider. When the shared bridge crashed (BUG-025), grok-
+    web went down fleet-wide. The v4.4 per-node-bridge design
+    (`docs/4.4-per-node-bridge-design.md` Path A) gives each proxy
+    node its own bridge with its own logged-in session for the same
+    operator account — but then the cluster needs a *cluster-synced
+    view of the per-node states*, written by each node about its own
+    bridge, read by every node to inform routing + UI display.
+
+    Schema:
+    - ``(provider_id, node_id)`` composite PK.
+    - ``auth_state`` is one of ``ok | expired | needs_reauth |
+      never_authed | bridge_down``. The router consults this to
+      filter grok-web routing per-node (Path A §4.3 of the design).
+    - ``last_ok_at`` / ``last_check_at`` are operator-facing
+      timestamps; ``reauth_url`` is the pre-signed deep link the UI
+      gives the operator when ``auth_state != "ok"``.
+
+    Cluster-sync direction: each node writes ONLY its own row(s),
+    cluster sync propagates ALL rows. Other nodes' rows are read-
+    only on this node — never overwrite a peer's row even if our
+    sync sees a stale timestamp.
+    """
+    __tablename__ = "provider_node_auth_state"
+    provider_id = Column(String, ForeignKey("providers.id"), primary_key=True)
+    node_id = Column(String, primary_key=True)
+    auth_state = Column(String, nullable=False, default="never_authed")
+    last_ok_at = Column(DateTime, nullable=True)
+    last_check_at = Column(DateTime, server_default=func.now(), index=True)
+    # Optional pre-signed re-auth deep link. The bridge populates this
+    # when it transitions to needs_reauth (e.g. cookies expired); the
+    # admin UI surfaces it as the per-node [Re-auth] button target.
+    reauth_url = Column(String, nullable=True)
+    # Optional last error string for operator-facing diagnostics —
+    # capped at ~400 chars at write time to keep the cluster sync
+    # payload bounded.
+    last_error = Column(String, nullable=True)
+
+
 class ExternalUsageSnapshot(Base):
     """v3.7.0 — authoritative external usage view scraped from the
     Anthropic Console (``claude.ai/api/organizations/{uuid}/usage``).

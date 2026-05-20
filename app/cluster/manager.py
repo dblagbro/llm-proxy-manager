@@ -266,7 +266,7 @@ async def _build_sync_payload(db) -> dict:
     # v3.7.15 — BUG-016: replicate the three v3.7.x tables that landed
     # in a hurry without sync entries. LWW conflict resolution: latest
     # added_at / captured_at wins.
-    from app.models.db import BlockedIp, ApiKeyAiReview, ExternalUsageSnapshot, ProviderAiReview, CallerMemory, CallerMemoryMarker
+    from app.models.db import BlockedIp, ApiKeyAiReview, ExternalUsageSnapshot, ProviderAiReview, CallerMemory, CallerMemoryMarker, ProviderNodeAuthState
     # Include tombstoned rows so peers learn about deletions.
     blocked_rs = await db.execute(select(BlockedIp))
     blocked_ips_payload = [
@@ -373,6 +373,23 @@ async def _build_sync_payload(db) -> dict:
          "deleted_at": r.deleted_at}
         for r in memory_rs.scalars().all()
     ]
+    # v4.4 M-2 — per-node bridge auth state (Path A foundation).
+    # Send ALL rows on every push; the table is small (≤ providers ×
+    # nodes; today ≤ 10 × 3 = 30 rows) and LWW resolution on apply
+    # handles ordering. No time-window filter — we want late joiners
+    # to immediately see the full per-node-state picture.
+    pnas_rs = await db.execute(select(ProviderNodeAuthState))
+    provider_node_auth_states_payload = [
+        {"provider_id": r.provider_id,
+         "node_id": r.node_id,
+         "auth_state": r.auth_state,
+         "last_ok_at": r.last_ok_at.isoformat() if r.last_ok_at else None,
+         "last_check_at": r.last_check_at.isoformat() if r.last_check_at else None,
+         "reauth_url": r.reauth_url,
+         "last_error": r.last_error}
+        for r in pnas_rs.scalars().all()
+    ]
+
     # Markers are smaller + lower-frequency; send all non-deleted rows
     # so back-pressure recovery has full visibility cluster-wide.
     marker_rs = await db.execute(
@@ -406,6 +423,11 @@ async def _build_sync_payload(db) -> dict:
         "blocked_ips": blocked_ips_payload,
         "api_key_ai_reviews": ai_reviews_payload,
         "external_usage_snapshots": external_usage_payload,
+        # v4.4 M-2 — per-node grok-bridge (or other per-node-session
+        # provider) auth state. Each node owns the rows where
+        # node_id == settings.cluster_node_id; cluster sync gives
+        # everyone a global picture for routing + UI display.
+        "provider_node_auth_states": provider_node_auth_states_payload,
         # v3.7.31 (#252 phase 4) — provider supervisor reviews follow
         # the same posture as api_key_ai_reviews: last 7 days, PK is
         # (provider_id, captured_at).

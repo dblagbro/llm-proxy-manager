@@ -763,6 +763,8 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
     blocked_ips_changed = await _apply_blocked_ips(db, payload.get("blocked_ips", []))
     await _apply_ai_reviews(db, payload.get("api_key_ai_reviews", []))
     await _apply_external_usage_snapshots(db, payload.get("external_usage_snapshots", []))
+    # v4.4 M-2 — per-node bridge auth state (Path A foundation).
+    await _apply_provider_node_auth_states(db, payload.get("provider_node_auth_states", []))
     await _apply_provider_ai_reviews(db, payload.get("provider_ai_reviews", []))
     # v3.8.7 (#267) Phase 2 — caller memory king-store
     await _apply_caller_memory(db, payload.get("caller_memory", []))
@@ -797,4 +799,5 @@ from app.cluster.sync_handlers import (  # noqa: E402,F401
     _apply_caller_memory,
     _apply_caller_memory_markers,
     _apply_external_usage_snapshots,
+    _apply_provider_node_auth_states,
 )
