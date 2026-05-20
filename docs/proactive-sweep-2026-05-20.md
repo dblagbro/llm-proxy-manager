@@ -13,7 +13,22 @@ event_meta inspection.
   bridge failures — already deferred to v4.4 arc)
 - Non-BUG-025 errors: **53** spread across 5 providers — all worth a look
 
-## Finding 1 — `Devin-Codex-Gmail` OAuth scope insufficient (25 errors/24h)
+## Finding 1 — `Devin-Codex-Gmail` OAuth scope insufficient (25 errors/24h) — **NOT A FINDING; WAI fixture**
+
+**Retracted 2026-05-20** per operator: intentional negative-test
+fixture. The 400 / missing-scope failures are the success signal
+that the proxy's auth-failure path engages correctly. The account
+will not be re-credentialed.
+
+See `reference_intentional_failing_provider_fixtures.md`.
+
+CONFIG-001 (a) is **withdrawn**.
+
+---
+
+(Original write-up retained below for historical context — should
+not have been filed as a finding in the first place; my sweep
+template lacked a "skip known-fixture providers" pre-filter.)
 
 **Symptom:** every request to this provider with `model: gpt-5.5`
 returns `bad_request` with body:
@@ -52,23 +67,19 @@ specific 403/scope error class and surface a clearer "OAuth scope
 needs refresh" banner in the admin UI instead of a generic
 bad_request. Low priority.
 
-## Finding 2 — `C1 Anthropic Claude` x-api-key invalid (3 errors/24h)
+## Finding 2 — `C1 Anthropic Claude` x-api-key invalid (3 errors/24h) — **NOT A FINDING; WAI fixture**
 
-**Symptom:**
+**Retracted 2026-05-20** per operator: this is an intentional
+negative-test fixture, exactly like Finding 1's Devin-Codex-Gmail.
+The `"invalid x-api-key"` from Anthropic + the 0 scanned
+`model_capabilities` are the **success signal** that the proxy's
+auth-failure-detection + capability-filter-excludes-broken-providers
+paths work. The account will not be re-credentialed; it stays as-is.
 
-```
-litellm.AuthenticationError: AnthropicException -
-{"type":"error","error":{"type":"authentication_error",
-"message":"invalid x-api-key"}}
-```
+See `reference_intentional_failing_provider_fixtures.md` (operator
+memory).
 
-**Severity:** medium. Same fall-through dynamic as Finding 1 — callers
-get routed to a working anthropic provider, but this one is dead.
-
-**Already filed as CONFIG-001** alongside the 0-model_capabilities gap
-that surfaced in BUG-045. The fix is one operator action that addresses
-both: refresh the API key on this provider AND click "Scan Models" so
-the capability rows populate.
+CONFIG-001 (b) and (c) are **withdrawn**.
 
 ## Finding 3 — Anthropic→OpenAI/Cohere tool-def translation drops `type` field ⚠ CODE-SIDE BUG
 
@@ -151,15 +162,17 @@ UPDATE system_settings SET value = ''
  WHERE value = 'None' AND value_type = 'str';
 ```
 
-## Summary table
+## Summary table (corrected 2026-05-20)
 
 | # | Finding | Owner | Sev | Action |
 |---|---|---|---|---|
-| 1 | Devin-Codex-Gmail OAuth scope insufficient (25 errors/24h) | operator | medium | re-authorize OAuth on the provider; confirm `model.request` scope |
-| 2 | C1 Anthropic Claude API key invalid + 0 capabilities | operator | medium | CONFIG-001 — refresh key + Scan Models |
-| 3 | Anthropic→OpenAI/Cohere tool-def translation drops `type` | proxy code | medium-high | **BUG-047** — fix translator |
-| 4 | error_class=unknown for grok-web errors | proxy code | low | **BUG-048** — extend classifier |
-| 5 | smtp_to=`"None"` literal string | proxy code | medium | fixed v4.3.7 (staged) — pending deploy |
+| ~~1~~ | Devin-Codex-Gmail OAuth scope insufficient | — | — | **WAI** intentional fixture — see `reference_intentional_failing_provider_fixtures.md` |
+| ~~2~~ | C1 Anthropic Claude API key invalid | — | — | **WAI** intentional fixture — same memory note |
+| 3 | Anthropic→OpenAI/Cohere tool-def translation drops `type` | proxy code | medium-high | **BUG-047** — fixed v4.3.8 LIVE 2026-05-20 |
+| 4 | error_class=unknown for grok-web errors | proxy code | low | **BUG-048** — extend classifier (defer to v4.4; grok-bridge stops anyway) |
+| 5 | smtp_to=`"None"` literal string | proxy code | medium | fixed v4.3.7 (bundled into v4.3.8 LIVE) |
+
+**Real findings net of the WAI corrections**: 3 (only BUG-047 needed code).
 
 ## What's NOT a finding (intentional null result)
 
