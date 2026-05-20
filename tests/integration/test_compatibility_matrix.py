@@ -158,6 +158,115 @@ def _stream_failed(events: list) -> bool:
     )
 
 
+# BUG-043/044/045 fix: pre-fix this module sent `provider.get("default_model",
+# "gpt-4o")` raw as the model name, which broke against any provider whose
+# `default_model` was empty / null / an embedding-only slug. Those configs
+# are operator-set per-deployment and unlikely to stay clean over time, so
+# the fix lives in the test: pick a chat-capable model via the proxy's
+# existing capability data + a final per-provider-type fallback.
+#
+# This mirrors the server-side helper `resolve_chat_model_for_provider()` in
+# `app/routing/router.py` — same intent, client-side equivalent.
+
+_EMBED_KEYWORDS = ("embed", "vector", "rerank")
+
+# Per-provider-type final fallback when default_model is unusable AND
+# the provider has no scanned chat capabilities. These are the most
+# widely-served model slugs the proxy is known to accept for each type.
+_PROVIDER_TYPE_CHAT_DEFAULT = {
+    "openrouter":   "openrouter/openai/gpt-4o-mini",
+    "cohere":       "command-r",
+    "anthropic":    "claude-haiku-4-5",
+    "openai":       "gpt-4o-mini",
+    "google":       "gemini-2.5-flash",
+    "vertex":       "gemini-2.5-flash",
+    "compatible":   "gpt-4o-mini",
+    "grok":         "grok-3",
+    "grok-web":     "grok-3",
+    "claude-oauth": "claude-haiku-4-5",
+    "codex-oauth":  "gpt-4o-mini",
+}
+
+_chat_model_cache: dict[str, str] = {}
+
+
+def _looks_embedding(slug: str) -> bool:
+    s = (slug or "").lower()
+    return any(kw in s for kw in _EMBED_KEYWORDS)
+
+
+def _pick_chat_model(admin_session, provider: dict) -> str | None:
+    """Return a chat-capable model slug for this provider, or None if no
+    sensible model can be found (caller should skip the provider).
+
+    Resolution order:
+    1. Use ``provider.default_model`` if it's a non-empty non-embedding slug.
+    2. Query ``/api/providers/{id}/model-capabilities`` and pick the first
+       row whose ``tasks`` contains ``"chat"`` (skipping embedding slugs).
+       Preference order: ``command-`` (Cohere chat) > ``gpt-`` > ``claude-`` >
+       ``gemini-`` > ``grok-`` > alphabetical first.
+    3. Fall back to the per-provider-type hard-coded default in
+       ``_PROVIDER_TYPE_CHAT_DEFAULT``.
+
+    Result cached per-provider-id for the session (calls hit each provider's
+    capability endpoint at most once).
+    """
+    pid = provider.get("id")
+    if not pid:
+        return None
+    if pid in _chat_model_cache:
+        return _chat_model_cache[pid]
+
+    # 1. default_model — accept if non-empty + non-embedding
+    default = (provider.get("default_model") or "").strip()
+    if default and not _looks_embedding(default):
+        _chat_model_cache[pid] = default
+        return default
+
+    # 2. scanned capabilities
+    try:
+        r = admin_session.get(
+            f"{BASE_URL}/api/providers/{pid}/model-capabilities", timeout=15
+        )
+        if r.status_code == 200:
+            caps = r.json()
+            chat_caps = [
+                (c.get("model_id") or "") for c in caps
+                if "chat" in (c.get("tasks") or [])
+                and not _looks_embedding(c.get("model_id") or "")
+            ]
+            chat_caps = [m for m in chat_caps if m]
+            if chat_caps:
+                for prefix in ("command-", "gpt-", "claude-",
+                               "gemini-", "grok-"):
+                    for m in chat_caps:
+                        if m.startswith(prefix):
+                            _chat_model_cache[pid] = m
+                            return m
+                _chat_model_cache[pid] = sorted(chat_caps)[0]
+                return _chat_model_cache[pid]
+    except Exception:
+        pass
+
+    # 3. per-type fallback
+    fallback = _PROVIDER_TYPE_CHAT_DEFAULT.get(
+        provider.get("provider_type") or ""
+    )
+    if fallback:
+        _chat_model_cache[pid] = fallback
+        return fallback
+
+    # 4. ultimate fallback so callers never see None. The matrix test
+    # will route through the proxy's normal capability filter — which
+    # may pick a DIFFERENT provider than the one we're iterating — but
+    # that's better than crashing the test on a model:null request.
+    # Reaching this branch means the provider's provider_type isn't in
+    # _PROVIDER_TYPE_CHAT_DEFAULT, which is a config drift; add the
+    # type to the table.
+    _chat_model_cache[pid] = "gpt-4o-mini"
+    return "gpt-4o-mini"
+
+
 # ── Wire format equivalence across providers ──────────────────────────────────
 
 class TestWireFormatPerProvider:
@@ -168,7 +277,7 @@ class TestWireFormatPerProvider:
         for provider in _all_providers_with_cb_cycling(admin_session, real_providers):
             ctx = f"Provider {provider['name']}"
             resp = _post(f"{BASE_URL}/v1/messages", headers, {
-                "model": provider.get("default_model", "gpt-4o"),
+                "model": _pick_chat_model(admin_session, provider),
                 "max_tokens": 20,
                 "messages": [{"role": "user", "content": "Say OK"}],
             })
@@ -194,7 +303,7 @@ class TestWireFormatPerProvider:
         for provider in _all_providers_with_cb_cycling(admin_session, real_providers):
             ctx = f"Provider {provider['name']}"
             resp = _post(f"{BASE_URL}/v1/chat/completions", headers, {
-                "model": provider.get("default_model", "gpt-4o"),
+                "model": _pick_chat_model(admin_session, provider),
                 "max_tokens": 20,
                 "messages": [{"role": "user", "content": "Say OK"}],
             })
@@ -220,7 +329,7 @@ class TestWireFormatPerProvider:
         for provider in _all_providers_with_cb_cycling(admin_session, real_providers):
             ctx = f"Provider {provider['name']}"
             resp = _post(f"{BASE_URL}/v1/messages", headers, {
-                "model": provider.get("default_model", "gpt-4o"),
+                "model": _pick_chat_model(admin_session, provider),
                 "max_tokens": 20,
                 "messages": [{"role": "user", "content": "Say OK"}],
                 "stream": True,
@@ -253,7 +362,7 @@ class TestWireFormatPerProvider:
         for provider in _all_providers_with_cb_cycling(admin_session, real_providers):
             ctx = f"Provider {provider['name']}"
             resp = _post(f"{BASE_URL}/v1/chat/completions", headers, {
-                "model": provider.get("default_model", "gpt-4o"),
+                "model": _pick_chat_model(admin_session, provider),
                 "max_tokens": 20,
                 "messages": [{"role": "user", "content": "Say OK"}],
                 "stream": True,
@@ -286,7 +395,7 @@ class TestWireFormatPerProvider:
         for provider in _all_providers_with_cb_cycling(admin_session, real_providers):
             ctx = f"Provider {provider['name']}"
             resp = _post(f"{BASE_URL}/v1/messages", headers, {
-                "model": provider.get("default_model", "gpt-4o"),
+                "model": _pick_chat_model(admin_session, provider),
                 "max_tokens": 10,
                 "messages": [{"role": "user", "content": "ping"}],
             })
@@ -317,7 +426,7 @@ class TestTaskTypePerProvider:
         unavailable = []
         for provider in _all_providers_with_cb_cycling(admin_session, real_providers):
             resp = _post(f"{BASE_URL}/v1/messages", headers, {
-                "model": provider.get("default_model", "gpt-4o"),
+                "model": _pick_chat_model(admin_session, provider),
                 "max_tokens": 400,
                 "messages": [{"role": "user", "content": task["prompt"]}],
             }, timeout=90)
@@ -347,7 +456,7 @@ class TestMultiTurnPerProvider:
         unavailable, failures = [], []
         for provider in _all_providers_with_cb_cycling(admin_session, real_providers):
             ctx = f"Provider {provider['name']}"
-            model = provider.get("default_model", "gpt-4o")
+            model = _pick_chat_model(admin_session, provider)
             # Turn 1
             r1 = _post(f"{BASE_URL}/v1/messages", headers, {
                 "model": model, "max_tokens": 150,
@@ -401,7 +510,7 @@ class TestNativeToolUsePerProvider:
                 continue
             ctx = f"Provider {provider['name']}"
             resp = _post(f"{BASE_URL}/v1/messages", headers, {
-                "model": provider.get("default_model", "gpt-4o"),
+                "model": _pick_chat_model(admin_session, provider),
                 "max_tokens": 100,
                 "tools": [TOOL_DEF_ANTHROPIC],
                 "messages": [{"role": "user",
@@ -442,7 +551,7 @@ class TestStreamConsistencyPerProvider:
         unavailable, failures = [], []
         for provider in _all_providers_with_cb_cycling(admin_session, real_providers):
             ctx = f"Provider {provider['name']}"
-            model = provider.get("default_model", "gpt-4o")
+            model = _pick_chat_model(admin_session, provider)
             body = {"model": model, "max_tokens": 60,
                     "messages": [{"role": "user", "content": prompt}]}
             r_plain = _post(f"{BASE_URL}/v1/messages", headers, body)
@@ -496,7 +605,7 @@ class TestCompatibilitySummary:
         for provider in _all_providers_with_cb_cycling(admin_session, real_providers):
             name = provider["name"]
             row = {"provider": name, "text": "?", "stream": "?", "tools": "?", "cot_e": "?"}
-            model = provider.get("default_model", "gpt-4o")
+            model = _pick_chat_model(admin_session, provider)
 
             # Text
             try:

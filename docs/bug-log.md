@@ -176,7 +176,7 @@ v4.3.2 work was barking up the wrong tree.
 
 ## 2026-05-19 (later) — F3 compat-matrix + nginx-restart findings
 
-### BUG-043 — `OpenRouter-Devin-Personal` returns HTTP 400 on standard request — **OPEN**
+### BUG-043 — `OpenRouter-Devin-Personal` returns HTTP 400 on standard request — ✅ **FIXED 2026-05-19** (test-side; was bad input)
 
 - **Discovered:** 2026-05-19 by `test_compatibility_matrix.py --run-real`
   (BUG-035 execution). Every one of the 12 matrix wire-format tests
@@ -198,20 +198,70 @@ v4.3.2 work was barking up the wrong tree.
 - **Severity:** medium. Likely also affects any external caller that
   sends this exact shape — but no production caller has reported it,
   so impact is bounded.
+- **Resolution (2026-05-19):** root cause was **bad test input**, not
+  a proxy defect. Diagnostic curl confirmed the 400 body:
+  `"messages: 'model' field is required and must be a non-empty
+  string."` — i.e. the proxy's pre-routing validator correctly
+  rejected the empty model name. The provider's `default_model`
+  field is the empty string, and the matrix test passed it through
+  raw. The proxy's behaviour is correct (and is the same v3.5.8
+  validator that closes BUG-004/005). Fix lives in the test: new
+  `_pick_chat_model(admin_session, provider)` helper in
+  `tests/integration/test_compatibility_matrix.py` resolves a
+  chat-capable model via `default_model` → scanned capabilities →
+  per-provider-type fallback. 24 unit tests in
+  `tests/unit/test_compat_matrix_chat_model_picker.py` pin each
+  branch + caching. Live re-run: provider no longer in the 400
+  failure list.
 
-### BUG-044 — `Devin-Cohere` returns HTTP 400 on standard request — **OPEN**
+### BUG-044 — `Devin-Cohere` returns HTTP 400 on standard request — ✅ **FIXED 2026-05-19** (test-side; was bad input)
 
 Same shape and provenance as BUG-043, against the Cohere provider.
 Cohere has historically required different request fields than the
 OpenAI-shape default; the matrix test's generic shape may not match.
 
-### BUG-045 — `C1 Anthropic Claude` returns HTTP 400 on standard request — **OPEN**
+**Resolution (2026-05-19):** root cause was the provider's
+`default_model` set to `embed-english-v3.0` (a Cohere embedding
+model). The proxy's pre-routing validator correctly rejected:
+`"Model 'embed-english-v3.0' is an embeddings model. Use POST
+/v1/embeddings instead of /v1/messages."` Fix lives in the
+matrix test (same `_pick_chat_model` helper as BUG-043). Live
+re-run: provider no longer in the 400 failure list.
+
+### BUG-045 — `C1 Anthropic Claude` returns HTTP 400 on standard request — ✅ **400 FIXED 2026-05-19** (test-side); ⚠ **503 EXPOSES CONFIG GAP**
 
 Same shape and provenance as BUG-043. This one is most suspicious
 because the matrix tests an Anthropic-wire-format request against an
 Anthropic-backed provider — the failure suggests something specific
 to the C1 Anthropic provider's config (alias map? model name?) is
 rejecting otherwise-valid requests.
+
+**Diagnosis (2026-05-19):** root cause was the provider's
+`default_model` set to **null**. The proxy's validator returned the
+same `"'model' field is required and must be a non-empty string"`
+400 as BUG-043. The `_pick_chat_model` helper now resolves
+`claude-haiku-4-5` for this provider (via the anthropic-type
+fallback table, because the provider has **zero scanned
+`model_capabilities` rows**).
+
+**400 closed but 503 remains** — with a valid model name now passing
+the validator, the matrix re-run shows HTTP 503 instead. Cause:
+because C1 Anthropic Claude has 0 capability rows, the proxy's
+capability-based router doesn't consider it as a route candidate
+for `claude-haiku-4-5`. The matrix test force-opens the CBs on the
+*other* anthropic providers as it cycles, so by the time it tries
+to exercise C1 Anthropic Claude, every anthropic-capable route is
+CB-tripped and the request returns 503.
+
+**The 503 is the correct proxy behaviour** given the config. The
+remaining issue is an operator-time **config gap** — C1 Anthropic
+Claude was never scanned for model capabilities. Click "Scan
+Models" on this provider in the admin UI (or POST
+`/api/providers/{id}/model-capabilities/infer`) to populate the
+capability rows, then the matrix will route through it cleanly.
+
+Filed separately as **CONFIG-001 (operator action)** in the
+project notes — not a code bug.
 
 ### BUG-046 — nginx restart loop when `llm-proxy2-grok-bridge` upstream is stopped — ✅ **FIXED 2026-05-19**
 
