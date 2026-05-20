@@ -174,6 +174,84 @@ v4.3.2 work was barking up the wrong tree.
 
 ---
 
+## 2026-05-19 (later) — F3 compat-matrix + nginx-restart findings
+
+### BUG-043 — `OpenRouter-Devin-Personal` returns HTTP 400 on standard request — **OPEN**
+
+- **Discovered:** 2026-05-19 by `test_compatibility_matrix.py --run-real`
+  (BUG-035 execution). Every one of the 12 matrix wire-format tests
+  failed against this provider with HTTP 400 — but `activity_log` has
+  NO error rows for the provider in the test window.
+- **Hypothesis:** the proxy's pre-routing validation rejects the
+  matrix's request shape before reaching the upstream — possibly the
+  matrix sends a model name (`default_model`) that doesn't match any
+  capability/alias on this provider, and the 400 comes from the
+  capability filter rather than from OpenRouter.
+- **Repro:** `curl -X POST https://www.voipguru.org/llm-proxy2/v1/messages
+  -H "x-api-key: $KEY" -H "Content-Type: application/json"
+  -d '{"model":"<default_model>","max_tokens":20,"messages":[{"role":"user","content":"Say OK"}]}'`
+  using OpenRouter-Devin-Personal's configured `default_model`.
+- **Fix direction:** one diagnostic session — capture the 400's `detail`,
+  trace it back to the proxy code path that rejected it, decide whether
+  the validation is correct (then update the matrix test's request) or
+  wrong (then fix the validator).
+- **Severity:** medium. Likely also affects any external caller that
+  sends this exact shape — but no production caller has reported it,
+  so impact is bounded.
+
+### BUG-044 — `Devin-Cohere` returns HTTP 400 on standard request — **OPEN**
+
+Same shape and provenance as BUG-043, against the Cohere provider.
+Cohere has historically required different request fields than the
+OpenAI-shape default; the matrix test's generic shape may not match.
+
+### BUG-045 — `C1 Anthropic Claude` returns HTTP 400 on standard request — **OPEN**
+
+Same shape and provenance as BUG-043. This one is most suspicious
+because the matrix tests an Anthropic-wire-format request against an
+Anthropic-backed provider — the failure suggests something specific
+to the C1 Anthropic provider's config (alias map? model name?) is
+rejecting otherwise-valid requests.
+
+### BUG-046 — nginx restart loop when `llm-proxy2-grok-bridge` upstream is stopped — ✅ **FIXED 2026-05-19**
+
+- **Discovered:** 2026-05-19 during the BUG-035 matrix test window.
+  Watched the test run for ~7 min, then API calls started returning
+  ConnectionRefusedError. Investigation: nginx had restarted **7 times**
+  in the same window, each cycle failing at startup with `[emerg] host
+  not found in upstream "llm-proxy2-grok-bridge" in nginx.conf:1041`.
+- **Root cause:** the 3 grok-bridge `proxy_pass` directives used literal
+  hostnames, which nginx resolves at config-parse time. With the bridge
+  container stopped (BUG-025 deferred to v4.4), every nginx reload /
+  restart hits an unresolvable upstream and aborts. The vhost is then
+  serving on the last successful master config (briefly) until docker
+  policy restarts the container — and each restart re-attempts parse
+  and fails again. A trigger that reloads nginx (cert renewal hook,
+  config-watcher service, signal from elsewhere) makes the bug fire.
+- **Severity:** high (any nginx reload event would break the entire
+  vhost — not just llm-proxy2 routes, every project sharing this nginx).
+- **Fix:** convert the 3 `proxy_pass` directives to **variable-based**
+  form (`set $grok_bridge_host llm-proxy2-grok-bridge;` +
+  `proxy_pass http://$grok_bridge_host:8443/...`). This defers DNS
+  resolution to *request* time via the existing `resolver 127.0.0.11`
+  directive (already in scope in the surrounding server block). When
+  grok-bridge is stopped, the routes return 502 on request — but
+  nginx itself starts cleanly. The third location (`/grok-bridge/`)
+  also gains a `rewrite ^/grok-bridge(/.*)$ $1 break;` to preserve
+  the prefix-stripping behaviour that literal-form `proxy_pass`
+  would have done automatically.
+- **Verification:**
+  - `nginx -t` clean.
+  - `nginx -s reload` clean.
+  - nginx container restart count returned to 0 after recreate.
+  - All llm-proxy2 routes still 200; grok-bridge auth-gated routes
+    still 302 (the new config still serves them when the bridge is up).
+- **Edit location:** `/home/dblagbro/docker/config/nginx/nginx.conf`
+  (NOT in the llm-proxy-v2 repo). Backup at
+  `/home/dblagbro/docker/config/nginx/nginx.conf.bak-pre-bug046-20260520`.
+
+---
+
 ## 2026-05-19 — F2 coverage-pass findings (real validation gaps)
 
 While implementing Sub-batch F2 of the coverage-gaps inventory (the
@@ -407,7 +485,7 @@ applicable) and **Severity: low** unless noted.
   because `pytest-xdist` is not installed; BUG-001 + BUG-003 stayed
   green across both runs. Detailed results in `docs/f3-runbooks.md`.
 
-### BUG-035 — Real-provider compatibility matrix not run — **OPERATOR-TRIGGERED 2026-05-19 (F3)**
+### BUG-035 — Real-provider compatibility matrix not run — ✅ **RAN 2026-05-19 (F3); surfaced BUG-043 + BUG-044 + BUG-045 + BUG-046**
 
 - **Area:** `tests/integration/test_compatibility_matrix.py --run-real`.
 - **What's missing:** the `--run-real` flag spends money on live providers
@@ -421,6 +499,27 @@ applicable) and **Severity: low** unless noted.
   `docs/f3-runbooks.md` §"BUG-035". Operator-triggered before the
   next minor release — does not block F3 closure for the rest of the
   inventory.
+- **Execution (2026-05-19):** **1 passed / 12 failed / 0 skipped**, ~7.7
+  min runtime. Two failure classes surfaced:
+  1. **3 providers return HTTP 400** consistently across all 12 wire-
+     format tests: OpenRouter-Devin-Personal (BUG-043), Devin-Cohere
+     (BUG-044), C1 Anthropic Claude (BUG-045). The proxy's
+     activity_log has NO error rows for these providers in the test
+     window, which suggests the 400 is coming from the proxy's
+     pre-routing validation layer, not the upstream — i.e. the
+     request shape the matrix sends is being rejected before
+     reaching the provider. Worth one focused diagnostic session.
+  2. **Content-truncation failures** on Vertex / Google Generative
+     (`max_tokens=20` clips the response before the model can
+     emit the keyword the test asserts). This is test-side
+     brittleness, not a product defect — file as test-infra cleanup.
+  3. **BUG-046 (nginx restart loop)** also surfaced during the test
+     window: while the matrix was hammering the proxy, nginx tried
+     to reload (probably for cert-renewal or a daemon hook) and the
+     reload aborted because `llm-proxy2-grok-bridge` was unresolvable.
+     7 restarts in succession before the bridge came back up. Fixed
+     same session via variable-based proxy_pass in nginx.conf — see
+     BUG-046 entry.
 
 ### BUG-036 — Rollback drill never exercised — **RUNBOOK READY 2026-05-19 (F3)**
 
