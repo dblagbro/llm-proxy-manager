@@ -167,7 +167,7 @@ broader UI + form-validation Playwright pass), two real validation
 defects surfaced. Both are persisted to the DB via the live API, so
 they are server-side validation gaps, not UI-only issues.
 
-### BUG-041 — `/api/keys` accepts negative `rate_limit_rpm` — **FIXED v4.3.3 (staged 2026-05-19)**
+### BUG-041 — `/api/keys` accepts negative `rate_limit_rpm` — ✅ **LIVE v4.3.3 (2026-05-19)**
 
 - **Discovered:** 2026-05-19 by `TestFormValidationNegatives::
   test_create_api_key_rejects_malformed_rate_limit` (F2 pass).
@@ -196,9 +196,9 @@ they are server-side validation gaps, not UI-only issues.
   sentinel is preserved (PATCH path unchanged). 15 unit tests in
   `tests/unit/test_v433_create_validation.py` cover both fix +
   preserved semantics. F2 Playwright xfail decorator removed.
-  **Pending operator-gated release ceremony for v4.3.3 deploy.**
+  ✅ **LIVE on all 3 nodes 2026-05-19 (v4.3.3)** — regression test passes against the deployed fleet.
 
-### BUG-042 — `/api/users` accepts empty password — **FIXED v4.3.3 (staged 2026-05-19)**
+### BUG-042 — `/api/users` accepts empty password — ✅ **LIVE v4.3.3 (2026-05-19)**
 
 - **Discovered:** 2026-05-19 by `TestFormValidationNegatives::
   test_create_user_form_rejects_empty_password` (F2 pass).
@@ -230,7 +230,7 @@ they are server-side validation gaps, not UI-only issues.
   unchanged — the route-level `if body.password:` check still
   governs partial updates). 15 unit tests cover both fix + preserved
   semantics; F2 Playwright xfail decorator removed.
-  **Pending operator-gated release ceremony for v4.3.3 deploy.**
+  ✅ **LIVE on all 3 nodes 2026-05-19 (v4.3.3)** — regression test passes against the deployed fleet.
 
 ---
 
