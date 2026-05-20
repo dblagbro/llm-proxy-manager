@@ -52,7 +52,10 @@ finding** across:
 | (coverage) | LOW | TTS audible playback | headless Chromium has no audio device | only the manual `release-checklist.md` step verifies |
 | (coverage) | LOW | voice buttons keyboard / mobile | not exercised by the v4.3.0 pass | a11y / responsive gap |
 | ~~BUG-027..033~~ | LOW | (coverage) | UI pages, forms, persistence, cache, mobile, a11y | **CLOSED 2026-05-19 via F2** (BUG-031 deferred for SMTP test-mode flag) |
-| **BUG-034..037** | LOW | (coverage) | full integration suite, real-provider matrix, rollback drill, version-skew test | F3 — *see §14* |
+| ~~BUG-034~~ | LOW | (coverage) | full integration suite | **CLOSED 2026-05-19 via F3** — 66 pass / 0 fail across 2 runs |
+| **BUG-035** | LOW | (coverage) | real-provider matrix | F3 — **runbook ready** in `docs/f3-runbooks.md`; operator-triggered before next minor release |
+| **BUG-036** | LOW | (coverage) | rollback drill | F3 — **runbook ready** in `docs/f3-runbooks.md`; needs throwaway-stack time |
+| **BUG-037** | LOW | (coverage) | version-skew test | F3 — **checklist ready** in `docs/f3-runbooks.md`; rides along with next rolling deploy |
 | ~~BUG-038..040~~ | LOW/MED | (doc gap) | CB-sync, public-URL hairpin, activity-log scope | **CLOSED 2026-05-19 via F1** — `architecture.md` §"Cluster sync" + §"grok-bridge sidecar" updated |
 | **BUG-041** | MED | `app/api/apikeys.py` | missing `ge=0` on `rate_limit_rpm` Pydantic field | API persists negative rate limit; undefined rate-limiter behavior. Discovered by F2 |
 | **BUG-042** | MED | `app/api/admin.py` (user create) | missing min-length validator on password | API persists empty-password user; auth hole. Discovered by F2 |
@@ -97,8 +100,10 @@ items run first, gating later batches.
 6. **Batch F — coverage gaps inventory** (BUG-027..040, added 2026-05-19,
    see §14). F1 (doc gaps) DONE 2026-05-19; F2 (UI/a11y/mobile)
    DONE 2026-05-19 with BUG-031 deferred + 2 real defects (BUG-041,
-   BUG-042) surfaced. F3 (full-suite / drill / version-skew) remains
-   planning-only. Zero-risk additions / drills.
+   BUG-042) surfaced. F3 partial: BUG-034 DONE 2026-05-19 (suite is
+   clean); BUG-035 / BUG-036 / BUG-037 have step-by-step runbooks in
+   `docs/f3-runbooks.md` awaiting operator-time. Zero-risk
+   additions / drills.
 
 ## 5. Fix batches (grouped by subsystem & root cause)
 
@@ -338,7 +343,7 @@ observed because no test has been run. They exist so:
 | **Dependencies** | None. Lands incrementally — each item is independent. |
 | **Status** | **CLOSED 2026-05-19.** 23 new test cases added across 8 new Playwright classes — all green against live deployment. Coverage gap closed for BUG-027/028/029/030/032/033. **BUG-031 deferred** pending a `dry_run` flag in the AIRI notifier (live SMTP send would spam operator's inbox; documented inline in test file). **F2 surfaced 2 real API validation defects: BUG-041 + BUG-042** (negative `rate_limit_rpm` and empty password both persisted by API). Tests for these defects are `xfail(strict=False)` until the API validators are tightened. |
 
-### Sub-batch F3 — full-suite / drill / version-skew (one focused session)
+### Sub-batch F3 — full-suite / drill / version-skew (one focused session) — **PARTIAL 2026-05-19: BUG-034 closed, rest in runbooks**
 
 | | |
 |---|---|
@@ -346,6 +351,7 @@ observed because no test has been run. They exist so:
 | **Subsystem** | Existing tests + operational drill; no new code. |
 | **Effort** | ~3–4 h focused session. **Risk:** F3a/b/d zero; F3c (rollback drill) carries the only real risk — but is run on a throwaway stack, not prod. |
 | **Dependencies** | F3b spends $ on live providers → schedule as **pre-flight to the next minor release** (v4.4-class). F3c is most valuable *before* a high-stakes release where the rollback might actually be needed. |
+| **Status** | **PARTIAL 2026-05-19.** BUG-034 closed — 2 consecutive clean runs (66 pass / 16 skipped / 0 failed); BUG-001/002/003 did not reproduce under current invocation (BUG-002 unreachable without `pytest-xdist`). BUG-035 / BUG-036 / BUG-037 each have a step-by-step runbook in `docs/f3-runbooks.md`; they close when the operator runs them (BUG-035: ~$1 / ~5 min before next release; BUG-036: ~30 min on a throwaway stack; BUG-037: 10-minute hold during next rolling deploy — no extra session needed). The session-time burden for closing F3 is therefore minimal: 1 invocation, 1 drill, 1 rolling-deploy ride-along. |
 
 ### Local vs architectural
 
