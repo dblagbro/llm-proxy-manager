@@ -448,6 +448,15 @@ def _coerce(raw: str, typ: str) -> Any:
         return int(raw)
     if typ == "float":
         return float(raw)
+    # str — v4.3.7 (smtp_to="None" finding): treat empty string and the
+    # legacy literal "None" (pre-fix data from `str(None)` in save()) as
+    # Python None so Optional[str] fields don't end up holding a string
+    # that passes truthy checks. This matters for downstream code that
+    # gates behaviour on `if settings.smtp_to:` etc. Tolerating the
+    # legacy "None" sentinel here makes the fix backward-compatible
+    # for un-migrated nodes during a rolling deploy.
+    if raw == "" or raw == "None":
+        return None
     return raw
 
 
@@ -496,7 +505,16 @@ async def save(db: AsyncSession, updates: dict[str, Any], timestamp: float | Non
         # v3.0.8 (item 4): use canonical_type so the row's stored value_type
         # matches what the pydantic field expects on next load.
         typ = canonical_type(key, schema)
-        raw = str(val)
+        # v4.3.7 (smtp_to="None" finding): when val is Python None, never
+        # write the literal string "None" — that string passes truthy
+        # checks downstream (e.g. notify.py's `if settings.smtp_to:`) and
+        # silently sets the alert recipient to "None", causing alerts to
+        # bounce without surfacing. Store empty string instead; the load
+        # path converts empty strings back to None for str-typed fields.
+        if val is None:
+            raw = ""
+        else:
+            raw = str(val)
         result = await db.execute(select(SystemSetting).where(SystemSetting.key == key))
         row = result.scalar_one_or_none()
         if row:
@@ -507,7 +525,10 @@ async def save(db: AsyncSession, updates: dict[str, Any], timestamp: float | Non
             db.add(SystemSetting(key=key, value=raw, value_type=typ, updated_at=now))
     await db.commit()
     # Apply to live settings singleton
-    coerced = {k: _coerce(str(v), SCHEMA[k]["type"]) for k, v in updates.items() if k in SCHEMA}
+    coerced = {
+        k: _coerce("" if v is None else str(v), SCHEMA[k]["type"])
+        for k, v in updates.items() if k in SCHEMA
+    }
     apply(coerced)
 
 
