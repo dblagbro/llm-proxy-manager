@@ -356,7 +356,7 @@ project notes — not a code bug.
   OpenAI ChatGPT bad_request rates expected to drop to ~0 on tool-
   using requests; activity log will confirm.
 
-### BUG-048 — `error_class=unknown` for Grok-Web bridge errors (classifier coverage gap) — **OPEN (low priority)**
+### BUG-048 — `error_class=unknown` for Grok-Web bridge errors (classifier coverage gap) — ✅ **FIXED v4.3.9 (staged 2026-05-20)**
 
 - **Discovered:** 2026-05-20 proactive-sweep Finding 4. 47 errors in
   24h classified as `unknown` — all are Grok-Web-Devin bridge
@@ -370,6 +370,24 @@ project notes — not a code bug.
 - **Not picked up this session** — low priority + grok-bridge is
   stopped pending BUG-025/v4.4 anyway, so the 47 errors will
   naturally drop once v4.4 redesigns the bridge layer.
+- **Resolution (2026-05-20, v4.3.9):** root-cause inspection of the
+  actual "unknown" error strings revealed two missing patterns:
+  1. **`grok-web bridge 404: ...'Conversation' with ID 'X' was not
+     found`** (~80% of unknowns) — stale operator-configured Grok
+     conversation ID. The bridge keeps trying a conversation that
+     was deleted upstream. Fix: added 4xx codes 404/405/409/410/
+     413/415/422 + the phrase "not found" to `_BAD_REQUEST_PATTERNS`.
+  2. **`grok-web bridge unreachable: Server disconnected without
+     sending a response`** — formatted httpx `RemoteProtocolError`
+     prose. The existing classifier had the exception NAME
+     (`remoteprotocolerror`) but the bridge wrapper surfaces the
+     formatted message instead. Fix: added "server disconnected",
+     "without sending a response", "bridge unreachable" to
+     `_NETWORK_PATTERNS`.
+  24 new unit tests in `tests/unit/test_v439_classifier_grok_bridge_coverage.py`
+  pin both prod-observed strings + regression tests for existing
+  classifications (auth wins over 404, 429 stays rate_limit,
+  401/403 stay auth, etc.). Unit suite: 2241 passed (was 2217).
 
 ### CONFIG-001 — Operator action items surfaced during the 2026-05-20 sweep — **WITHDRAWN 2026-05-20**
 

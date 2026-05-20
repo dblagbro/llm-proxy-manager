@@ -9,6 +9,44 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v4.3.x — "Voice output" milestone
 
+### v4.3.9 — classify_error coverage for grok-web bridge errors (BUG-048)
+
+Closes BUG-048 (low-pri classifier gap). Root-cause inspection of the
+24h "unknown" rows showed two patterns the existing
+`circuit_breaker.classify_error()` regex set didn't recognise.
+
+**Pattern 1 — `grok-web bridge 404: "Conversation 'X' not found"`**
+(~80% of unknowns): the bridge keeps trying a conversation ID that
+no longer exists at grok.com. 404 wasn't in any pattern list.
+
+**Pattern 2 — `grok-web bridge unreachable: Server disconnected
+without sending a response`** (the remaining ~20%): httpx's
+`RemoteProtocolError` documented message. The classifier had the
+exception NAME (`remoteprotocolerror`) but the bridge wrapper
+surfaces the formatted prose, not the camelcase name.
+
+**Changes** (`app/routing/circuit_breaker.py`):
+
+- `_BAD_REQUEST_PATTERNS` gains `404`, `405`, `409`, `410`, `413`,
+  `415`, `422`, and the literal `"not found"`. (`401`/`403` stay
+  routed to `auth`, `402` to `billing`, `429` to `rate_limit` —
+  those buckets run earlier in the chain.)
+- `_NETWORK_PATTERNS` gains `"server disconnected"`,
+  `"without sending a response"`, `"bridge unreachable"`.
+
+**New unit tests** in
+`tests/unit/test_v439_classifier_grok_bridge_coverage.py` — 24 cases:
+- Both prod-observed strings (exact, with their nested-JSON shape)
+- Parametrized 4xx-codes-other-than-401/402/403/429 → bad_request
+- Network-prose additions
+- Regression guards: 502/503 still upstream_5xx; 429 still
+  rate_limit; 401/403 still auth (via is_auth_error); 402 still
+  billing; ReadError/RemoteProtocolError camelcase still network;
+  empty string still unknown; ordering invariant holds (auth wins
+  over 404).
+
+Unit suite: 2241 passed (was 2217; +24 new). All green.
+
 ### v4.3.8 — fix Anthropic→OpenAI/Cohere tool-def translation gap (BUG-047)
 
 Closes BUG-047 surfaced during the 2026-05-20 proactive-monitoring sweep

@@ -288,6 +288,14 @@ _NETWORK_PATTERNS = [
     "remoteprotocolerror",
     "localprotocolerror",
     "proxyerror",
+    # BUG-048 (v4.3.9 / 2026-05-20): the FORMATTED prose for the same
+    # httpx-class errors (not the exception name) was falling through
+    # to ``unknown``. Seen on grok-web bridge errors when grok-bridge
+    # closes a connection mid-response; httpx surfaces it as the prose
+    # below, not the camelcase exception name.
+    "server disconnected",
+    "without sending a response",
+    "bridge unreachable",  # grok_bridge wrapper formatted-prose
 ]
 
 _UPSTREAM_5XX_PATTERNS = [
@@ -312,6 +320,23 @@ _UPSTREAM_5XX_PATTERNS = [
 
 _BAD_REQUEST_PATTERNS = [
     "400",
+    # BUG-048 (v4.3.9 / 2026-05-20): 4xx codes that aren't already
+    # routed to a more-specific bucket (401/403 → auth, 402 →
+    # billing, 429 → rate_limit) all express "this request can't be
+    # served" — client-side semantics. Most-seen in the activity log
+    # was 404 from grok-web bridge ("'Conversation' with ID '…' was
+    # not found") which represents a stale operator-configured
+    # conversation ID, not an upstream defect; bad_request is the
+    # honest bucket. 405/409/410/413/415/422 added prophylactically
+    # to prevent the same fall-through on future surface.
+    "404",
+    "405",
+    "409",
+    "410",
+    "413",
+    "415",
+    "422",
+    "not found",
     "invalid_request",
     "invalid request",
     "validation error",
