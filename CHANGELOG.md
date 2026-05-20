@@ -9,6 +9,60 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v4.3.x — "Voice output" milestone
 
+### v4.3.8 — fix Anthropic→OpenAI/Cohere tool-def translation gap (BUG-047)
+
+Closes BUG-047 surfaced during the 2026-05-20 proactive-monitoring sweep
+(``docs/proactive-sweep-2026-05-20.md``). The cross-family translation
+gate in ``app/api/messages.py`` was firing for tool-use *content blocks*
+in messages but NOT for tool *definitions* in ``body.tools`` on a
+first-turn request. The 24h activity log showed steady upstream 400s
+on Devin-Cohere + Devin Personal OpenAI ChatGPT with identical error
+shapes:
+
+```
+litellm.BadRequestError: CohereException -
+  "invalid tool at tools[0]: missing required field: 'type'"
+litellm.BadRequestError: OpenAIException -
+  "Missing required parameter: 'tools[0].type'."
+```
+
+Root cause: ``has_anthropic_tool_content(messages)`` only checks for
+``tool_use``/``tool_result`` blocks; on first-turn requests where the
+caller provides Anthropic-shape tool defs (``{name, description,
+input_schema}``) but the conversation has no tool-use blocks yet, the
+gate evaluated False and the raw Anthropic-shape tools reached litellm
+untranslated. OpenAI/Cohere rejected them on the missing top-level
+``type: "function"`` field.
+
+**Fix**:
+
+- **New helper** ``has_anthropic_tool_defs(tools)`` in
+  ``app/routing/tool_content.py`` returns True iff any tool in the
+  request-level ``tools`` list is Anthropic-shape (has ``input_schema``
+  OR lacks the OpenAI ``{type:"function", function:{...}}`` envelope).
+  Defensive against mixed-shape lists and non-dict items.
+- **Gate widened** in ``app/api/messages.py`` — ``_needs_openai_translation``
+  now also fires when ``has_anthropic_tool_defs(body.get("tools"))`` is
+  True. The existing claude-oauth and tool-emulation exclusions remain.
+
+**New unit tests** in ``tests/unit/test_v438_anthropic_tool_defs_translation.py``
+(12 cases): None / empty / Anthropic-shape / OpenAI-shape / partial-OpenAI
+/ missing-type / wrong-type / mixed / non-dict / empty-input_schema; plus
+a regression guard that the two helpers (``has_anthropic_tool_content`` for
+blocks vs ``has_anthropic_tool_defs`` for defs) remain orthogonal.
+
+The pre-existing ``test_v3100_translation_gate.py`` was doing a literal
+one-line source-grep on the old gate condition; updated to assert each
+clause as a substring (``cross_family_fallback`` + ``_has_tool_blocks``
++ ``has_images`` + the new ``_has_anthropic_tool_defs``) instead.
+
+Unit suite: 2217 passed (was 2204; +13 net). All green.
+
+Expected operational impact post-deploy:
+- Devin-Cohere bad_request rate (7/24h pre-fix) drops to ~0
+- Devin Personal OpenAI ChatGPT bad_request rate (6/24h pre-fix) drops to ~0
+- Net error volume reduction across the non-anthropic providers
+
 ### v4.3.7 — stop persisting Python None as the literal string "None" in system_settings
 
 Closes a small but operationally annoying defect surfaced during BUG-031's

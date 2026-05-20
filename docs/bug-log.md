@@ -300,6 +300,71 @@ project notes — not a code bug.
   (NOT in the llm-proxy-v2 repo). Backup at
   `/home/dblagbro/docker/config/nginx/nginx.conf.bak-pre-bug046-20260520`.
 
+### BUG-047 — Anthropic→OpenAI/Cohere tool-def translation gap — ✅ **FIXED v4.3.8 (staged 2026-05-20)**
+
+- **Discovered:** 2026-05-20 by the proactive-monitoring sweep
+  (`docs/proactive-sweep-2026-05-20.md` Finding 3).
+- **Symptom:** identical upstream 400s on two different non-anthropic
+  providers receiving requests with Anthropic-shape tool definitions:
+  Cohere returned `"invalid tool at tools[0]: missing required field:
+  'type'"`; OpenAI returned `"Missing required parameter:
+  'tools[0].type'."`. Both providers had ~6-7 errors/24h in steady
+  state — small but persistent.
+- **Root cause:** the cross-family translation gate at
+  `app/api/messages.py:259-263` fires on `cross_family_fallback OR
+  _has_tool_blocks OR has_images`. None catches a **first-turn**
+  request with Anthropic-shape tool DEFINITIONS in `body.tools` but
+  no `tool_use`/`tool_result` blocks in messages yet — so the raw
+  Anthropic-shape tools reached litellm untranslated and 400'd
+  upstream on the missing `type: "function"` envelope.
+- **Severity:** medium-to-high. Any caller sending Anthropic-shape
+  tool defs to a non-anthropic provider got a 400 instead of a
+  tool-call response — a real proxy translation hole.
+- **Fix (v4.3.8 staged 2026-05-20):** new helper
+  `has_anthropic_tool_defs(tools)` in `app/routing/tool_content.py`
+  detects Anthropic-shape entries (have `input_schema` OR lack the
+  OpenAI `{type:"function", function:{...}}` envelope). Gate widened
+  to also fire on this signal. 12 new unit tests; existing
+  v3.10.0-translation-gate-wiring test updated to assert each clause
+  as a substring instead of a literal one-line form.
+- **Operational impact post-deploy:** Devin-Cohere + Devin Personal
+  OpenAI ChatGPT bad_request rates expected to drop to ~0 on tool-
+  using requests; activity log will confirm.
+
+### BUG-048 — `error_class=unknown` for Grok-Web bridge errors (classifier coverage gap) — **OPEN (low priority)**
+
+- **Discovered:** 2026-05-20 proactive-sweep Finding 4. 47 errors in
+  24h classified as `unknown` — all are Grok-Web-Devin bridge
+  failures with nested-JSON shape `grok-web bridge XXX: grok.com YYY:
+  {...}` that the circuit-breaker classifier's regex doesn't match.
+- **Severity:** low — classifier behaviour (CB still trips correctly);
+  affects operator dashboard grouping but not routing decisions.
+- **Recommended fix:** Pre-strip the "grok-web bridge XXX:" prefix
+  in `app/routing/circuit_breaker.py:classify_error()`, then
+  re-classify the inner error using the existing regexes. ~10 lines.
+- **Not picked up this session** — low priority + grok-bridge is
+  stopped pending BUG-025/v4.4 anyway, so the 47 errors will
+  naturally drop once v4.4 redesigns the bridge layer.
+
+### CONFIG-001 — Operator action items surfaced during the 2026-05-20 sweep
+
+Three operator-time items, all surfaced by `docs/proactive-sweep-2026-05-20.md`:
+
+1. **Devin-Codex-Gmail OAuth scope insufficient** (Finding 1). 25
+   errors/24h. ChatGPT OAuth refresh token is missing the
+   `model.request` scope. Action: re-authorize the provider in the
+   admin UI; confirm the requested scope set during the OAuth grant.
+
+2. **C1 Anthropic Claude API key invalid + 0 model_capabilities**
+   (Finding 2; combines with BUG-045's downstream 503 cause). Action:
+   refresh API key AND click "Scan Models" on the provider.
+
+3. **system_settings rows with literal "None" string** — fixed in
+   v4.3.7 staged; load() tolerates them so no urgent action needed,
+   but the cleanup query is one-liner per node:
+   `UPDATE system_settings SET value = ''
+    WHERE value = 'None' AND value_type = 'str';`
+
 ---
 
 ## 2026-05-19 — F2 coverage-pass findings (real validation gaps)
