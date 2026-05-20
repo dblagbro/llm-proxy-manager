@@ -200,3 +200,75 @@ async def test_bug055_orphan_prune_no_op_when_clean(fresh_db):
 
     deleted = await _prune_activity_log_orphans()
     assert deleted == 0
+
+
+# ── v4.4.4 BUG-052 — WAL checkpoint truncate ────────────────────
+
+
+def test_bug052_wal_truncate_helper_exists():
+    """`_wal_checkpoint_truncate()` is exposed from prune.py."""
+    from app.monitoring import prune
+    assert hasattr(prune, "_wal_checkpoint_truncate")
+
+
+def test_bug052_wal_truncate_wired_into_sweep_last():
+    """Source-level: the WAL checkpoint runs LAST in _sweep_once,
+    AFTER all the prune steps that write to the DB. Running earlier
+    would leave the just-pruned rows in WAL pages that the
+    subsequent prunes' writes would re-extend."""
+    src = Path("app/monitoring/prune.py").read_text()
+    body = src[src.index("async def _sweep_once"):src.index("async def _prune_loop")]
+    assert "_wal_checkpoint_truncate" in body, \
+        "_sweep_once must call _wal_checkpoint_truncate"
+    # Ordering check: WAL truncate comes after orphan prune (and
+    # therefore after all the prune steps that precede it)
+    orphan_idx = body.index("_prune_activity_log_orphans")
+    wal_idx = body.index("_wal_checkpoint_truncate")
+    assert wal_idx > orphan_idx, \
+        "WAL TRUNCATE must run AFTER all prune writes — running " \
+        "earlier would leave the prune writes in WAL pages " \
+        "extending the file"
+
+
+def test_bug052_sweep_output_dict_has_wal_block():
+    """The ``out`` dict in _sweep_once includes the wal_truncated
+    block with its sub-fields so monitoring tooling + get_last_sweep
+    surface the WAL reclaim activity."""
+    src = Path("app/monitoring/prune.py").read_text()
+    sweep_body = src[src.index("async def _sweep_once"):src.index("async def _wal_checkpoint")]
+    assert '"wal_truncated"' in sweep_body
+
+
+def test_bug052_sweep_log_line_includes_wal_reclaim():
+    """The post-sweep INFO log line emits wal_reclaimed_bytes so
+    operators see how much was reclaimed each sweep — useful for
+    spotting a future high-water episode after another storm."""
+    src = Path("app/monitoring/prune.py").read_text()
+    idx = src.index('"prune.swept activity_log=%d')
+    body = src[idx:idx + 1500]
+    assert "wal_reclaimed_bytes" in body
+    assert "wal_busy" in body
+
+
+@pytest.mark.asyncio
+async def test_bug052_wal_truncate_returns_dict_shape(fresh_db):
+    """End-to-end: against a real SQLite DB the helper returns a
+    dict with the documented sub-fields. Even if no WAL pages are
+    pending (clean DB), busy=0 and the keys must all be present so
+    log-line formatting doesn't KeyError."""
+    from app.monitoring.prune import _wal_checkpoint_truncate
+
+    # Touch the DB so a WAL file exists
+    from app.models.db import ActivityLog
+    async with fresh_db() as db:
+        db.add(ActivityLog(
+            event_type="x", severity="info", message="touch",
+            created_at=datetime.now(timezone.utc),
+        ))
+        await db.commit()
+
+    result = await _wal_checkpoint_truncate()
+    for k in ("busy", "log_pages", "ckpt_pages", "size_before", "size_after"):
+        assert k in result, f"missing key {k!r} in result {result!r}"
+    # busy should be 0 (no concurrent readers in a unit test)
+    assert result["busy"] == 0

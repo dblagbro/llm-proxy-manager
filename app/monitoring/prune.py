@@ -333,7 +333,9 @@ async def _sweep_once() -> dict:
            "provider_metrics": 0, "run_events": 0,
            "provider_tombstones": 0,
            "apikey_tombstones": 0,
-           "tombstone_keep_days": tombstone_days}
+           "tombstone_keep_days": tombstone_days,
+           "wal_truncated": {"busy": 0, "log_pages": 0, "ckpt_pages": 0,
+                             "size_before": 0, "size_after": 0}}
 
     # v3.0.98: probes first (shorter retention, high volume).
     try:
@@ -417,7 +419,72 @@ async def _sweep_once() -> dict:
     except Exception as e:
         logger.warning("prune.activity_log_orphans_failed err=%s", e)
 
+    # v4.4.4 BUG-052 — WAL high-water reclaim. SQLite reuses WAL pages
+    # in place across PASSIVE checkpoints, so a past burst (e.g. the
+    # 2026-05-13 RMAI 1.04B-token amplifier loop that drove 27× normal
+    # proxy volume) leaves the WAL file at its high-water indefinitely.
+    # MUST run LAST in the sweep because the prune steps above are
+    # exactly the heavy writes that re-populate the WAL — checkpoint
+    # them out so the TRUNCATE can fully reclaim the file.
+    try:
+        out["wal_truncated"] = await _wal_checkpoint_truncate()
+    except Exception as e:
+        logger.warning("prune.wal_checkpoint_failed err=%s", e)
+
     return out
+
+
+async def _wal_checkpoint_truncate() -> dict:
+    """v4.4.4 BUG-052 — TRUNCATE-mode WAL checkpoint at end of each
+    sweep. Reclaims any high-water WAL file space left over from a
+    write burst (e.g. the 2026-05-13 RMAI amplifier on www1 left the
+    WAL at 1.097 GB until manually truncated 2026-05-20).
+
+    Returns ``{busy, log_pages, ckpt_pages, size_before, size_after}``
+    so the prune.swept log line shows what was reclaimed.
+
+    Safety: TRUNCATE mode blocks if any reader is mid-transaction
+    (returns busy=1). The sweep runs once daily and is a no-op when
+    busy — the next sweep will retry, and a long-running reader is
+    its own anomaly worth investigating separately."""
+    from sqlalchemy import text
+    import os
+    sizes = {"size_before": 0, "size_after": 0}
+    # Best-effort file-size capture; if the path resolution fails
+    # (test DBs, in-memory, etc.) the function still attempts the
+    # checkpoint with the size deltas as 0.
+    try:
+        db_url = str(getattr(settings, "database_url", "") or "")
+        # sqlite+aiosqlite:////app/data/llmproxy.db → /app/data/llmproxy.db
+        if "sqlite" in db_url:
+            path = db_url.split("///")[-1]
+            wal_path = path + "-wal"
+            if os.path.exists(wal_path):
+                sizes["size_before"] = os.path.getsize(wal_path)
+    except Exception:
+        pass
+    busy = log_pages = ckpt_pages = 0
+    async with AsyncSessionLocal() as db:
+        try:
+            r = await db.execute(text("PRAGMA wal_checkpoint(TRUNCATE)"))
+            row = r.first()
+            if row:
+                busy, log_pages, ckpt_pages = row[0], row[1], row[2]
+        except Exception as e:
+            logger.warning("prune.wal_checkpoint_execute_failed err=%s", e)
+    try:
+        if sizes["size_before"]:
+            wal_path = db_url.split("///")[-1] + "-wal"
+            if os.path.exists(wal_path):
+                sizes["size_after"] = os.path.getsize(wal_path)
+    except Exception:
+        pass
+    return {
+        "busy": busy,
+        "log_pages": log_pages,
+        "ckpt_pages": ckpt_pages,
+        **sizes,
+    }
 
 
 async def _prune_loop() -> None:
@@ -428,11 +495,14 @@ async def _prune_loop() -> None:
             counts = await _sweep_once()
             _LAST_SWEEP_RESULT.update(counts)
             _LAST_SWEEP_RESULT["last_sweep_ts"] = time.time()
+            wal = counts.get("wal_truncated", {}) or {}
+            wal_reclaimed = max(0, (wal.get("size_before") or 0) - (wal.get("size_after") or 0))
             logger.info(
                 "prune.swept activity_log=%d activity_log_probes=%d "
                 "activity_log_warnings=%d activity_log_errors=%d "
                 "activity_log_orphans=%d "
                 "provider_metrics=%d run_events=%d provider_tombstones=%d "
+                "wal_reclaimed_bytes=%d wal_busy=%d "
                 "keep_days=%d probe_keep_days=%d warning_keep_days=%d "
                 "error_keep_days=%d tombstone_keep_days=%d",
                 counts["activity_log"], counts.get("activity_log_probes", 0),
@@ -440,7 +510,9 @@ async def _prune_loop() -> None:
                 counts.get("activity_log_errors", 0),
                 counts.get("activity_log_orphans", 0),
                 counts["provider_metrics"], counts["run_events"],
-                counts["provider_tombstones"], counts["keep_days"],
+                counts["provider_tombstones"],
+                wal_reclaimed, wal.get("busy", 0),
+                counts["keep_days"],
                 counts.get("probe_keep_days", _DEFAULT_PROBE_RETENTION_DAYS),
                 counts.get("warning_keep_days", _DEFAULT_WARNING_RETENTION_DAYS),
                 counts.get("error_keep_days", _DEFAULT_ERROR_RETENTION_DAYS),

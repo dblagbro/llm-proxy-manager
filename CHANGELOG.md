@@ -9,6 +9,72 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v4.3.x — "Voice output" milestone
 
+### v4.4.4 — BUG-052 WAL TRUNCATE in prune sweep + Batch E release-verify (2026-05-20)
+
+**BUG-052 — WAL high-water reclaim**
+
+Root cause traced 2026-05-20: the 2026-05-13 RMAI 1.04B-token
+amplifier loop drove 27× normal proxy volume (32,142 requests on
+2026-05-13 vs 1,201 on 2026-05-10 baseline). The WAL grew during
+that burst and stayed at the 1.097 GB high-water through every
+subsequent container restart — SQLite preserves the WAL file size
+in place across PASSIVE checkpoints; only TRUNCATE mode reclaims.
+
+**Fix** (`app/monitoring/prune.py`):
+
+- New `_wal_checkpoint_truncate()` helper. Reads pre/post WAL file
+  size, runs `PRAGMA wal_checkpoint(TRUNCATE)`, returns dict with
+  `busy / log_pages / ckpt_pages / size_before / size_after` so
+  the sweep log line shows what was reclaimed.
+- Wired into `_sweep_once()` LAST — must run after all prune
+  steps, because those are exactly the heavy writes that re-extend
+  the WAL. Running earlier would let subsequent prune writes
+  re-grow it before the TRUNCATE.
+- New `wal_reclaimed_bytes` + `wal_busy` fields in the
+  `prune.swept` INFO log line for operator visibility after any
+  future storm-class burst.
+- Best-effort: any exception in the path is logged at WARNING and
+  swallowed, never blocks the rest of the sweep.
+
+**L3 — Pre-cut live-verify in `tools/cut-release.sh`** (Batch E
+hardening)
+
+Adds a pre-flight step 0 to the release ceremony: before tagging,
+hit all 3 canonical `/health` URLs (voipguru.org, www2.voipguru.org,
+c1conversations-avaya-01.avaya.c1cx.com) and require `status: healthy`
+on each. If any fails, abort the cut with a clear message.
+
+Rationale: the prior v4.3.3 footgun left tmrwww01 stuck on v4.3.2
+because the local image tag wasn't updated; this verify step would
+have caught that exact class of "fleet silently broken at cut
+time" before tagging. Escape hatch: `--skip-live-verify` for the
+legitimate case where the new release ITSELF is the fix for the
+broken state.
+
+**Tests** (`tests/unit/test_v443_bug054_bug055.py`, +5 tests):
+
+- `test_bug052_wal_truncate_helper_exists` — `_wal_checkpoint_truncate`
+  is exposed.
+- `test_bug052_wal_truncate_wired_into_sweep_last` — source-level
+  ordering guard: WAL truncate runs AFTER the orphan prune (and
+  therefore after every prune step that writes).
+- `test_bug052_sweep_output_dict_has_wal_block` — the new
+  `wal_truncated` block is in `_LAST_SWEEP_RESULT`.
+- `test_bug052_sweep_log_line_includes_wal_reclaim` — log line
+  emits `wal_reclaimed_bytes` + `wal_busy`.
+- `test_bug052_wal_truncate_returns_dict_shape` — end-to-end
+  against a real SQLite test DB: the helper returns a dict with
+  all expected keys, busy=0 in a clean test env.
+
+**Test counts**
+
+- Unit suite: **2277 passed** (was 2272 in v4.4.3; +5 BUG-052 tests).
+
+**Operator action — none required.** Patch-class release. The new
+WAL truncate runs daily as part of the existing sweep. The first
+post-deploy sweep (~24h after deploy) reclaims any high-water left
+in the WAL.
+
 ### v4.4.3 — BUG-054 frontend title + BUG-055 activity_log orphan prune (2026-05-20)
 
 Closes two low-severity findings from the post-v4.4.2 QA pass.

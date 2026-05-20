@@ -39,15 +39,29 @@ A targeted QA pass run immediately after the v4.4.0 release ceremony to verify t
   (M-4 dormant); removes the bug from re-activating on any
   future Path A retry.
 
-### BUG-052 — SQLite WAL high-water of 1.097 GB on www1 — ⚠ **OPEN (low, monitoring)**
+### BUG-052 — SQLite WAL high-water of 1.097 GB on www1 — ✅ **CLOSED 2026-05-20 (v4.4.4)**
 
 - **Severity:** low · **Category:** observation · operational
 - **Area:** `/app/data/llmproxy.db-wal` on llm-proxy2 www1 (volume-mounted, persists across container restarts).
 - **Repro:** `stat /app/data/llmproxy.db-wal` shows 1,097,077,752 bytes (1.022 GiB).
 - **Diagnosis:** `wal_checkpoint(PASSIVE)` returned `(0, 800, 800)` — busy=0, log_size=800 pages, checkpointed_pages=800. The WAL has been checkpointed cleanly; the 1GB is high-water-mark file space SQLite is preserving for re-use, not active log content. This is normal SQLite behavior when a past burst expanded the WAL and the file wasn't `TRUNCATE`d.
 - **Why it matters:** 1 GB of un-truncated WAL means a past write burst was unusually large. The most plausible source is the v3.x.y → 4.4.0 deploy chain's per-version backfills/migrations + heavy cluster-sync activity, but the burst is not currently reproducible.
-- **No fix today** — file is healthy, checkpoint is working, autocheckpoint at 1000 pages. Optional: periodic `wal_checkpoint(TRUNCATE)` to reclaim the file. Not worth a release.
-- **Status:** monitor — flag if it grows past 2 GB without a corresponding burst explanation.
+- **Root cause traced 2026-05-20:** the 2026-05-13 RMAI 1.04B-token
+  amplifier loop drove 27× normal proxy volume (32,142 requests
+  vs 1,201 baseline). The WAL grew during that burst and stayed
+  at the 1.097 GB high-water through every subsequent container
+  restart — SQLite reuses WAL pages in place across PASSIVE
+  checkpoints, only TRUNCATE mode reclaims the file.
+- **One-shot manual TRUNCATE** during Batch G work (v4.4.1)
+  reclaimed the 1.097 GB on www1; v4.4.3 deploy chain naturally
+  kept it low.
+- **Status:** **CLOSED v4.4.4 2026-05-20.** Fix shipped
+  `_wal_checkpoint_truncate()` in `app/monitoring/prune.py`,
+  wired LAST in the daily sweep so any future storm-class
+  high-water is reclaimed automatically. New `wal_reclaimed_bytes`
+  + `wal_busy` fields in the `prune.swept` INFO log line for
+  visibility. +5 regression tests at
+  `tests/unit/test_v443_bug054_bug055.py`.
 
 ### CLEANUP-001 — stale Playwright + version-skew test fixture providers in production DB — ✅ **CLOSED 2026-05-20 (mostly auto-deleted; 1 manual reconcile)**
 
