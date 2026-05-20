@@ -502,6 +502,27 @@ async def _persist_auto_skip(provider_id: str, error_text: str) -> None:
         p = rs.scalar_one_or_none()
         if not p:
             return
+        # v4.4 M-4 (Path A) — exempt providers tagged
+        # ``node_local_session=True`` from the auto-skip cluster-wide
+        # propagation. Pre-fix, a persistent-auth failure on ONE node
+        # set Provider.auto_skip_until which then cluster-synced to
+        # every node — fleet-wide grok-web outage. With Path A the
+        # per-node bridge state in provider_node_auth_state is the
+        # right signal (and is NOT cluster-amplifying: each row is
+        # owned by its node). The provider-level auto_skip path here
+        # is bypassed entirely for these providers; in-memory
+        # _auth_failed still tracks the local view for this node's
+        # own short-term routing decisions.
+        ec = p.extra_config or {}
+        if ec.get("node_local_session"):
+            logger.info(
+                "circuit_breaker.auto_skip_skipped_for_node_local_session "
+                "provider=%s (Path A semantic: per-node "
+                "provider_node_auth_state rows are the authoritative "
+                "view; not setting Provider.auto_skip_until)",
+                provider_id,
+            )
+            return
         # Skip if already auto-skipped further out
         if p.auto_skip_until and p.auto_skip_until > new_until.replace(tzinfo=None):
             return

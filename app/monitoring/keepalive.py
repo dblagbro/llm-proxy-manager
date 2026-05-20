@@ -260,6 +260,51 @@ async def _probe_one(provider: Provider) -> None:
         except Exception as e:
             err_str = f"{type(e).__name__}: {str(e) or 'no message'}"
         litellm_model = model  # for the activity_log message string below
+        # v4.4 M-3 — record this node's view of the bridge into
+        # ProviderNodeAuthState. The probe is the canonical "can this
+        # node serve grok-web right now?" signal; mapping its outcome
+        # to a per-(provider_id, node_id) auth_state row gives M-4's
+        # routing filter + M-5's UI the data they need without adding
+        # a new endpoint or HTTP hop. Best-effort: any failure here
+        # is swallowed so it doesn't corrupt the probe's own
+        # record_outcome path below.
+        try:
+            from app.routing import node_auth_state as _nas
+            if success:
+                _new_state = "ok"
+                _last_error = None
+            else:
+                # Classify the probe error into an auth_state. Use the
+                # existing circuit_breaker classifier (BUG-048 widened
+                # it for grok-bridge prose) to decide between
+                # "needs_reauth" (auth/bad_request — operator action)
+                # and "bridge_down" (network/timeout/upstream_5xx —
+                # transient).
+                from app.routing.circuit_breaker import classify_error
+                _cls = classify_error(err_str or "")
+                if _cls == "auth":
+                    _new_state = "needs_reauth"
+                elif _cls in ("network", "timeout", "upstream_5xx"):
+                    _new_state = "bridge_down"
+                else:
+                    # bad_request (e.g. "Conversation 'X' was not
+                    # found") or anything else → needs_reauth.
+                    # Operator-time signal; routing won't pick it.
+                    _new_state = "needs_reauth"
+                _last_error = err_str
+            async with AsyncSessionLocal() as _nas_db:
+                await _nas.write_local_state(
+                    _nas_db,
+                    provider.id,
+                    _new_state,
+                    last_error=_last_error,
+                )
+                await _nas_db.commit()
+        except Exception as _e:
+            logger.debug(
+                "keepalive.m3_node_auth_state_write_failed provider=%s err=%r",
+                provider.id, _e,
+            )
     elif provider.provider_type == "ChatGPT-oauth-plan":
         # v3.0.19: codex-oauth probes were going through litellm.acompletion
         # (openai/gpt-5.5), which routes to api.openai.com — that endpoint

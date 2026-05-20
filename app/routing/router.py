@@ -440,6 +440,48 @@ async def select_provider(
     )
     pre_filter_count = len(providers)
     providers = [p for p in providers if not is_currently_at_capacity(p)]
+
+    # v4.4 M-4 (Path A) — per-node bridge auth filter. For providers
+    # tagged ``node_local_session=True`` in extra_config (today only
+    # grok-web when running on the per-node-bridge topology), each
+    # node consults its OWN row in provider_node_auth_state. If the
+    # local row is not ``auth_state="ok"``, skip this provider on
+    # THIS node. The cluster-sync layer ensures peers see the same
+    # row eventually; their own routing then independently decides.
+    #
+    # When the provider's ``node_local_session`` flag is absent or
+    # False (the default for all providers today), this filter is a
+    # no-op — the routing path is unchanged.
+    #
+    # Backward-compatible: the table may be empty (M-3's writer not
+    # yet wired or running on this node), in which case
+    # ``is_local_node_routable(None) == False`` → the provider gets
+    # filtered. That's deliberate: a node with no auth-state
+    # observation hasn't proven itself capable yet, so don't route
+    # to it. M-3 starts filling rows immediately on probe outcome.
+    from app.routing.node_auth_state import read_state as _read_local_auth_state
+    from app.routing.node_auth_state import is_local_node_routable as _is_node_routable
+    _kept: list = []
+    _node_filtered: list[tuple[str, str]] = []
+    for _p in providers:
+        _ec = _p.extra_config or {}
+        if not _ec.get("node_local_session"):
+            _kept.append(_p)
+            continue
+        try:
+            _state = await _read_local_auth_state(db, _p.id)
+        except Exception:
+            _state = None
+        if _is_node_routable(_state):
+            _kept.append(_p)
+        else:
+            _node_filtered.append((_p.name, (_state.auth_state if _state else "never_authed")))
+    if _node_filtered:
+        import logging as _log
+        _log.getLogger(__name__).debug(
+            "router.node_local_session_filter skipped=%s", _node_filtered,
+        )
+    providers = _kept
     # v3.7.4 — utilization-weighted preference for claude-oauth providers.
     # Among claude-oauth entries, rank by (utilization_bucket,
     # operator_priority). The lowest-util account in each bucket
