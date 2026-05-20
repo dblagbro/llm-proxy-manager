@@ -955,15 +955,10 @@ class TestFormValidationNegatives:
     (label says "Key Name (optional)"); empty-name acceptance is
     not a bug.
 
-    The two tests below are CURRENTLY xfail because the F2 pass
-    discovered real validation gaps (BUG-041 + BUG-042 in bug-log.md).
-    When those are fixed in the API, remove the `xfail` decorator and
-    these tests will guard the regression."""
+    BUG-041 + BUG-042 (originally surfaced as xfail markers in F2) are
+    now fixed at the Pydantic-validator layer; these tests are
+    regression guards."""
 
-    @pytest.mark.xfail(
-        reason="BUG-042: add-user API does not reject empty password",
-        strict=False,
-    )
     def test_create_user_form_rejects_empty_password(self, page: Page, admin_session):
         """Username has HTML5 `required`; the typical UX is that submitting
         empty fields triggers browser validation tooltips and keeps the
@@ -1002,10 +997,6 @@ class TestFormValidationNegatives:
                 if u.get("username") == marker:
                     admin_session.delete(f"{BASE_URL}/api/users/{u['id']}")
 
-    @pytest.mark.xfail(
-        reason="BUG-041: api-key create accepts negative rate_limit_rpm",
-        strict=False,
-    )
     def test_create_api_key_rejects_malformed_rate_limit(
         self, page: Page, admin_session
     ):

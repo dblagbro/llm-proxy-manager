@@ -3,7 +3,7 @@ import secrets
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 
@@ -16,8 +16,12 @@ router = APIRouter(prefix="/api/users", tags=["users"])
 
 
 class UserCreate(BaseModel):
-    username: str
-    password: str
+    # BUG-042 fix: reject empty username + short password at the boundary.
+    # UserUpdate (PATCH) intentionally treats falsy password as "no change"
+    # (see update_user below — `if body.password:`); creation has no such
+    # semantic — a brand-new account must have a real credential.
+    username: str = Field(..., min_length=1)
+    password: str = Field(..., min_length=8)
     role: str = "user"
 
 
