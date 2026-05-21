@@ -9,6 +9,14 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v4.3.x — "Voice output" milestone
 
+### v4.4.9 — BUG-058 turn-2 follow-up (multi-turn test) (2026-05-20)
+
+Follow-up to v4.4.8. The initial BUG-058 fix addressed `test_multi_turn_context` turn 1, but the test still failed on turn 2 with the same Gemini-preamble pattern ("Okay, here's the..."/"Okay, let's add..."). v4.4.9 extends the no-preamble directive + max_tokens raise to the turn-2 follow-up prompt (`"Now add a peek method..."`).
+
+**Live verification post-deploy**: `test_multi_turn_context` PASSES against deployed v4.4.9.
+
+Test-only release; proxy behavior unchanged from v4.4.6.
+
 ### v4.4.8 — BUG-058 matrix test assertions widened for Gemini-style verbose preambles (2026-05-20)
 
 Closes BUG-058 (test-side polish from the L1 `--run-real` matrix
