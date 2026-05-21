@@ -183,7 +183,7 @@ filed below.
 - **Implications:** the originating node's `providers` / `api_keys` history is more complete than peers'; admin UI showing tombstoned rows will list different counts per node; audit queries that include tombstones will report different totals. Routing is unaffected.
 - **Not filed as a fix candidate** — the alternative (always materializing tombstones) would propagate dead rows forever across the cluster for no functional benefit. Documenting here so a future QA pass doesn't re-discover it as a "bug."
 
-### BUG-056 — Gemini providers don't emit `content_block_start` / `content_block_stop` SSE events in Anthropic streaming — ⚠ **OPEN (medium)**
+### BUG-056 — Gemini providers don't emit `content_block_start` / `content_block_stop` SSE events in Anthropic streaming — ✅ **CLOSED 2026-05-20 (v4.4.5)**
 
 - **Severity:** medium · **Category:** confirmed defect · wire-protocol translation
 - **Surfaced:** 2026-05-20 by `tests/integration/test_compatibility_matrix.py::TestWireFormatPerProvider::test_anthropic_stream_all_providers` during the L1 `--run-real` matrix run.
@@ -196,7 +196,20 @@ filed below.
   - OpenAI-format streams from the same providers are likely also affected — `test_openai_stream_all_providers` passed for Gemini but failed for OpenAI ChatGPT (BUG-057), so Gemini's OpenAI-format streaming is probably OK; only the cross-family Anthropic SSE translation has the gap.
 - **Likely root cause area:** the proxy's Gemini→Anthropic streaming translator (somewhere in `app/api/messages.py` or a translation helper) emits text deltas but doesn't wrap them in `content_block_start` + `content_block_stop` envelopes.
 - **Fix scope:** locate the Gemini-streaming translator; wrap the emitted delta sequence in proper Anthropic SSE event types. Probably ~50-100 LoC + 2-3 streaming-fixture tests.
-- **Status:** queued for v4.4.5.
+- **Root cause traced 2026-05-20:** litellm's Gemini integration sometimes
+  emits a single chunk with `delta.content=None` and only `finish_reason`
+  set (especially when truncating at `max_tokens` before any text is
+  generated, or when a short response buffers into the terminator chunk).
+  The proxy's `_stream_anthropic` loop never flips `text_started=True`,
+  and the post-loop guard `if text_started or tool_started:` short-
+  circuits — so no content_block events fire.
+- **Status:** **CLOSED v4.4.5 2026-05-20.** Fix shipped at
+  `app/api/_messages_streaming.py::_stream_anthropic`: synthetic empty
+  text block (`content_block_start` + `content_block_stop` for `text=""`)
+  emitted when neither text nor tool content was streamed. Real-content
+  path unchanged. +5 regression tests at
+  `tests/unit/test_v445_bug056_empty_stream.py` (source-level guards +
+  end-to-end with mock litellm stream). Unit suite 2282.
 
 ### BUG-057 — OpenAI streaming responses missing `finish_reason` in last chunk — ⚠ **OPEN (medium)**
 

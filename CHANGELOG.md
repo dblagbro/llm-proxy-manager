@@ -9,6 +9,40 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v4.3.x — "Voice output" milestone
 
+### v4.4.5 — BUG-056 Anthropic streaming protocol compliance for empty-content providers (2026-05-20)
+
+Closes BUG-056. Surfaced 2026-05-20 by `tests/integration/test_compatibility_matrix.py::test_anthropic_stream_all_providers` during the L1 `--run-real` matrix run. Both Gemini-backed providers (`C1 Vertex AI / Google AI`, `Google Generative LLM`) emitted streams missing `content_block_start` + `content_block_stop` SSE events — leaving Anthropic SDK clients unable to construct the assistant message object.
+
+**Root cause** (`app/api/_messages_streaming.py::_stream_anthropic`): litellm's Gemini integration sometimes emits a single chunk with `delta.content=None` and only `finish_reason` set (especially when the response truncates at `max_tokens` before any text is generated, or when the entire short response buffers into the terminator chunk). The proxy's loop never flips `text_started=True`, so the post-loop guard `if text_started or tool_started: yield content_block_stop` short-circuits to a no-op, leaving the resulting SSE stream as `message_start → message_delta → message_stop` with no content_block events in between.
+
+**Live capture** (the diagnostic that confirmed the shape):
+
+```
+Provider: Google Generative LLM
+chunk #1: ModelResponseStream
+  delta.content=None
+  finish_reason='stop'
+Total chunks: 1
+```
+
+The Anthropic streaming protocol requires every message to have at least one content block framed by `content_block_start` + `content_block_stop`. SDK clients (`anthropic-python`, `anthropic-sdk-typescript`) rely on `content_block_start` to construct the assistant message object; without it they emit empty/null content even when `message_delta` indicates the model ran.
+
+**Fix**: when neither text nor tool content was streamed, emit a synthetic empty text block (`content_block_start` with `text=""` immediately followed by `content_block_stop`). The existing in-loop path is unchanged — `content_block_start` still fires on first content chunk, `content_block_stop` still fires at end-of-loop. Only the previously-no-op case (`not text_started and not tool_started`) gains the synthetic pair.
+
+**Tests** (`tests/unit/test_v445_bug056_empty_stream.py`, +5):
+
+- `test_bug056_empty_stream_fix_present_in_source` — source-level guard for the BUG-056 marker + the `if not text_started and not tool_started` branch.
+- `test_bug056_existing_content_path_still_emits_stop` — the else-branch (real content was streamed) still emits `content_block_stop` exactly once.
+- `test_bug056_empty_stream_emits_synthetic_content_block` — **end-to-end**: mock litellm with the Gemini empty-stream shape (single chunk, `delta.content=None`, `finish_reason='stop'`); assert the produced SSE stream contains all 5 required event types including the synthetic content_block start/stop pair.
+- `test_bug056_text_stream_still_emits_normally` — regression guard: a 2-chunk content stream produces exactly ONE `content_block_start` (in-loop emission, not double-emit) + the expected delta + stop sequence.
+- `test_bug056_empty_stream_does_not_break_other_envelope` — exact ordering check: `[message_start, content_block_start, content_block_stop, message_delta, message_stop]` for the empty case.
+
+**Test counts**
+
+- Unit suite: **2282 passed** (was 2277 in v4.4.4; +5 BUG-056 tests).
+
+**Operator action — none required.** Affects 2 of 10 active providers (both Gemini-backed) for streaming requests only. Non-streaming traffic was always compliant. Fix is structural — no consumer changes needed.
+
 ### v4.4.4 — BUG-052 WAL TRUNCATE in prune sweep + Batch E release-verify (2026-05-20)
 
 **BUG-052 — WAL high-water reclaim**

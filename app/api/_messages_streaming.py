@@ -314,7 +314,20 @@ async def _stream_anthropic(
                 escaped = json.dumps(content)[1:-1]
                 yield f'data: {{"type":"content_block_delta","index":{index},"delta":{{"type":"text_delta","text":"{escaped}"}}}}\n\n'.encode()
 
-        if text_started or tool_started:
+        # v4.4.5 BUG-056 — ensure the Anthropic streaming protocol
+        # always emits at least one content_block_start/_stop pair.
+        # Gemini (and any provider that truncates at max_tokens or
+        # returns an empty body) can emit a stream where no chunk
+        # ever carries delta.content — leaving the stream with
+        # message_start + message_delta + message_stop but no
+        # content block events. Anthropic SDK clients depend on
+        # content_block_start to construct the assistant message
+        # object; without it they emit empty / null content. Emit
+        # an explicit empty text block in that case.
+        if not text_started and not tool_started:
+            yield f'data: {{"type":"content_block_start","index":{index},"content_block":{{"type":"text","text":""}}}}\n\n'.encode()
+            yield f'data: {{"type":"content_block_stop","index":{index}}}\n\n'.encode()
+        else:
             yield f'data: {{"type":"content_block_stop","index":{index}}}\n\n'.encode()
 
         if output_tokens == 0 and streamed_chars > 0:

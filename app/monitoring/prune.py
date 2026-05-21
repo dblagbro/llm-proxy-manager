@@ -441,7 +441,7 @@ async def _wal_checkpoint_truncate() -> dict:
     WAL at 1.097 GB until manually truncated 2026-05-20).
 
     Returns ``{busy, log_pages, ckpt_pages, size_before, size_after}``
-    so the prune.swept log line shows what was reclaimed.
+    so the daily sweep log line shows what was reclaimed.
 
     Safety: TRUNCATE mode blocks if any reader is mid-transaction
     (returns busy=1). The sweep runs once daily and is a no-op when
