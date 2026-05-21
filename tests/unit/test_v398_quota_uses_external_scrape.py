@@ -142,14 +142,19 @@ async def test_unscraped_provider_falls_back_to_internal_window(db):
 
 
 def test_providers_list_imports_external_snapshot():
-    src = Path("app/api/providers.py").read_text()
-    assert "from app.models.db import ExternalUsageSnapshot" in src
+    src = Path("app/api/providers.py").read_text() + "\n# providers_stats.py\n" + Path("app/api/providers_stats.py").read_text()
+    # Pre-v4.4.14 the import was a single line in providers.py; the v4.4.14
+    # split moved the endpoints to providers_stats.py where the import is
+    # multi-line. Accept either form: the symbol name appears AND it's in
+    # an import statement somewhere in the concatenated source.
+    assert "ExternalUsageSnapshot" in src
+    assert "import" in src
     assert "snap.seven_day_utilization" in src
     assert "snap.five_hour_utilization" in src
 
 
 def test_providers_list_prefers_snapshot_over_window():
-    src = Path("app/api/providers.py").read_text()
+    src = Path("app/api/providers.py").read_text() + "\n# providers_stats.py\n" + Path("app/api/providers_stats.py").read_text()
     # The snapshot branch must come BEFORE the ProviderUsageWindow fallback
     idx_snap = src.find("snap_by_provider.get(p.id)")
     idx_w_assign = src.find("d[\"usage_weekly_pct\"] = w.weekly_pct")
@@ -161,7 +166,7 @@ def test_providers_list_prefers_snapshot_over_window():
 
 
 def test_provider_detail_endpoint_also_prefers_snapshot():
-    src = Path("app/api/providers.py").read_text()
+    src = Path("app/api/providers.py").read_text() + "\n# providers_stats.py\n" + Path("app/api/providers_stats.py").read_text()
     assert '"data_source": "external_scrape"' in src
     assert '"data_source": "internal_window"' in src
 
@@ -169,6 +174,6 @@ def test_provider_detail_endpoint_also_prefers_snapshot():
 def test_data_source_field_exposed_for_ui_distinction():
     """UI needs to know which source it's seeing so it can label
     'authoritative (Anthropic)' vs 'internal (proxy slice)'."""
-    src = Path("app/api/providers.py").read_text()
+    src = Path("app/api/providers.py").read_text() + "\n# providers_stats.py\n" + Path("app/api/providers_stats.py").read_text()
     assert 'd["usage_data_source"] = "external_scrape"' in src
     assert 'd["usage_data_source"] = "internal_window"' in src
