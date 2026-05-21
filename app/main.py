@@ -59,6 +59,8 @@ from app.api.memory_scoped import router as memory_scoped_router
 # collisions because the endpoints don't overlap.
 from app.api.provider_lifecycle import router as provider_lifecycle_router
 from app.api.provider_capabilities import router as provider_capabilities_router
+# v4.4.14: 4th sibling for the read-side / stats endpoints
+from app.api.providers_stats import router as providers_stats_router
 from app.observability.otel import init_tracer
 from app.observability.prometheus import metrics_response, set_service_info, observe_circuit_breaker_state
 
@@ -506,6 +508,7 @@ app.include_router(memory_admin_router)
 app.include_router(memory_scoped_router)
 app.include_router(provider_lifecycle_router)
 app.include_router(provider_capabilities_router)
+app.include_router(providers_stats_router)  # v4.4.14 — read-side / stats
 # v3.3.0: LMRHv2 endpoints (feature-flagged via lmrh_v2_enabled).
 # Same /lmrh/* prefix as v1; new paths don't collide with existing ones.
 from app.api.lmrh_v2 import router as lmrh_v2_router  # noqa: E402

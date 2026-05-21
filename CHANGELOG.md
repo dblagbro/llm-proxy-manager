@@ -9,6 +9,44 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v4.3.x — "Voice output" milestone
 
+### v4.4.14 — `providers.py` 4th sibling split (read-side / stats endpoints) (2026-05-21)
+
+Third preventive refactor in the v4.4.x cycle, same pattern as v4.4.11 (`db.py`) and v4.4.12 (`_messages_streaming.py`). Pre-refactor: `app/api/providers.py` was 958 LOC and on the watch list. Notable: this is its **second** split — v3.9.8 had already extracted `provider_lifecycle.py` + `provider_capabilities.py` from it; the file grew back over time.
+
+**Split**: extracted the 4 read-side / stats endpoints into a new sibling `app/api/providers_stats.py`:
+- `GET /api/providers` — list (with usage merge)
+- `GET /api/providers/rolling-stats` — per-provider rolling windows
+- `GET /api/providers/rolling-stats-by-node` — per-(provider, node) breakout
+- `GET /api/providers/{id}/usage` — per-provider usage snapshot
+
+`providers.py` keeps the mutation/CRUD endpoints (`create_provider`, `get_provider`, `get_rate_limit_state`, `update_provider`, `delete_provider`, `purge_test_tombstones`), the Pydantic models (`ProviderCreate`, `ProviderUpdate`), the priority-tie helpers (`normalize_priority_ties`, `_bump_priority_conflicts`), and the canonical `_serialize` helper.
+
+**Sizes**:
+```
+Before: 958 LOC in one file
+After:  684 LOC (providers.py) + 312 LOC (providers_stats.py) = 996 total
+```
+
+**Back-compat**: zero blast radius for callers. `providers_stats.py` owns its own `APIRouter(prefix="/api/providers")` and is mounted separately in `main.py` (same pattern v3.9.8 used). FastAPI routes by `(path, method)` so the GET `/api/providers` (list, in stats) and POST `/api/providers` (create, in providers) coexist cleanly.
+
+**Special handling — `_serialize` lazy import**: the stats file imports `_serialize` from `providers.py` lazily inside `list_providers()` rather than at module load. Not strictly required (providers.py doesn't import providers_stats.py), but defensive against a future change that adds a back-import. Locked in by `test_stats_file_uses_lazy_serialize_import`.
+
+**Tests** (`tests/unit/test_v4414_providers_stats_split.py`, +6):
+- `test_both_files_load_cleanly` — basic smoke
+- `test_stats_endpoints_register_on_stats_router` — 4 endpoint paths visible on stats router
+- `test_mutation_endpoints_stay_on_providers_router` — CRUD path assertion + stats paths NOT leaking back
+- `test_main_includes_providers_stats_router` — source-level guard for the `include_router` call
+- `test_neither_file_exceeds_800_loc` — soft ceiling per split file
+- `test_stats_file_uses_lazy_serialize_import` — pins the lazy-import defensive pattern
+
+**Updated pre-existing tests**: 5 source-level tests in `test_v398_quota_uses_external_scrape.py` and `test_v3916_p3_p5.py` were reading just `providers.py` for code that's now in `providers_stats.py`. Updated them to read both files concatenated (same pattern v4.4.12's split applied to `test_v3911_streaming_memory_writeback.py`).
+
+**Test counts**
+
+- Unit suite: **2314 passed** (was 2308 in v4.4.13; +6 split-invariant tests).
+
+**Operator action — none.** Pure refactor; no behavior change. The deployed container's API surface is identical.
+
 ### v4.4.13 — cluster-sync quality: ai-review prune + 45s timeout + log-message fix (2026-05-21)
 
 Surfaced by a routine "check recent logs" sweep: container logs showed `Sync to llm-proxy2-www2 failed:` repeating **39× in 1h** with **0 successes** and **no error text after the colon**. Live diagnostic revealed three stacked issues, all fixed here:

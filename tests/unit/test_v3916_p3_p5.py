@@ -126,16 +126,19 @@ def test_event_meta_includes_node_id():
 
 
 def test_rolling_stats_by_node_endpoint_registered():
-    """New /api/providers/rolling-stats-by-node endpoint exists."""
-    from app.api.providers import router
-    paths = {r.path for r in router.routes}
+    """New /api/providers/rolling-stats-by-node endpoint exists. v4.4.14
+    moved this endpoint from providers.py to providers_stats.py — check
+    both routers."""
+    from app.api.providers import router as providers_router
+    from app.api.providers_stats import router as stats_router
+    paths = {r.path for r in providers_router.routes} | {r.path for r in stats_router.routes}
     assert "/api/providers/rolling-stats-by-node" in paths
 
 
 def test_rolling_stats_by_node_queries_json_extract_node_id():
     """Endpoint uses json_extract on event_meta.node_id — Option B
     approach (no schema migration)."""
-    src = Path("app/api/providers.py").read_text()
+    src = Path("app/api/providers.py").read_text() + "\n" + Path("app/api/providers_stats.py").read_text()
     assert 'json_extract(ActivityLog.event_meta, "$.node_id")' in src
     assert "by_node" in src
 
@@ -143,8 +146,15 @@ def test_rolling_stats_by_node_queries_json_extract_node_id():
 def test_rolling_stats_by_node_handles_null_node_id_as_unknown():
     """Pre-v3.9.16 rows have null node_id; they roll into an "unknown"
     bucket so the UI can still display them as legacy traffic."""
-    src = Path("app/api/providers.py").read_text()
-    idx = src.index("rolling_stats_by_node")
+    # v4.4.14: endpoint moved to providers_stats.py. Read both files and
+    # search the concatenated source.
+    src = (
+        Path("app/api/providers.py").read_text()
+        + "\n# providers_stats.py\n"
+        + Path("app/api/providers_stats.py").read_text()
+    )
+    # The function name appears as the route handler in providers_stats.py.
+    idx = src.index("provider_rolling_stats_by_node(")
     fn = src[idx:idx + 4000]
     assert 'node_id or "unknown"' in fn
 
