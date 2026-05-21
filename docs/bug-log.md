@@ -110,10 +110,15 @@ A targeted QA pass run immediately after the v4.4.0 release ceremony to verify t
   reconciled in v4.4.1's session, so the fix is preventive — no
   fleet-wide reconcile needed.
 
-### F-OBS-001 — nginx config has 2 pre-existing warnings (informational) — ⚠ **NOTED**
+### F-OBS-001 — nginx config has 2 pre-existing warnings + bind-mount inode pinning — ⚠ **DEFERRED**
 
-- **Severity:** observation only (informational, not a defect introduced by v4.4.0)
-- `nginx -t` emits `the "listen ... http2" directive is deprecated` (lines 56, 110) and `protocol options redefined for 0.0.0.0:443` (line 152). These are pre-existing in the main nginx stack at `/home/dblagbro/docker/config/nginx/nginx.conf`, NOT in the `llm-proxy2` repo. Not in scope for this proxy's release-readiness review; flagged here only so future passes don't waste time re-discovering.
+- **Severity:** observation only (informational; not a defect introduced by v4.4.0)
+- `nginx -t` emits `the "listen ... http2" directive is deprecated` (lines 56, 110) and `protocol options redefined for 0.0.0.0:443` (line 152). The fix is mechanical (replace `listen 443 ssl http2;` with `listen 443 ssl; / http2 on;`).
+- **Attempted fix v4.4.12 session — DEFERRED**: edited the host file `/home/dblagbro/docker/config/nginx/nginx.conf`, but the change didn't take effect on the running nginx container.
+- **Root cause discovered**: the nginx container's bind mount is **pinned to an old inode** of the host file. Past atomic edits (via `mv tmp file` — which Edit tool does internally) replaced the host file's inode, leaving the container reading a detached inode. The bind mount target's inode 7,109,103 ≠ the current host file's inode 7,109,539. `docker exec nginx cat /etc/nginx/nginx.conf` returns the PRE-edit content despite the host file showing the post-edit content.
+- **Resolution required**: container restart (`sudo docker compose up -d --force-recreate --no-deps nginx`) re-binds to the current host inode. This briefly interrupts all proxy traffic served by nginx (~1-3s); should be coordinated with operator presence.
+- **Companion gotcha worth recording**: this inode pinning explains why some past nginx config edits have appeared to "not stick" — the container kept reading the old inode until the next nginx container restart. Future nginx config edits should either use truncate-in-place (`cat > file`) instead of atomic-write, OR be followed by a coordinated nginx container restart.
+- **Status:** deferred. Apply the listen-http2 fix + restart nginx during the next coordinated maintenance window.
 
 ---
 

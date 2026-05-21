@@ -9,6 +9,44 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v4.3.x — "Voice output" milestone
 
+### v4.4.12 — `_messages_streaming.py` claude-oauth section extracted (2026-05-21)
+
+Second preventive refactor in the v4.4.x cycle, same pattern as v4.4.11's `db.py` split. Pre-refactor: `app/api/_messages_streaming.py` was 979 LOC — the largest file in the codebase post-v4.4.11 and on the watch list as the next refactor candidate.
+
+**Split**: the claude-oauth dispatch section (the largest cohesive chunk — ~525 LOC) extracted into `app/api/_messages_streaming_oauth.py`. The parent file keeps the litellm-backed Anthropic-streaming path (`_stream_anthropic`), the CoT path (`_stream_cot_anthropic`), the webhook variant, and the shared SSE / error helpers.
+
+**Sizes**:
+```
+Before: 979 LOC in one file
+After:  471 LOC parent + 562 LOC oauth = 1033 total
+        (the +54 overhead is module docstring + re-export block;
+         the actual function code is unchanged)
+```
+
+**Back-compat shim**: the 11 claude-oauth symbols (`_inject_claude_code_system`, `_complete_claude_oauth`, `_stream_claude_oauth`, etc.) are re-exported from `_messages_streaming.py` so the 5 existing external import sites (`scanner.py`, `hedging.py`, `completions.py`, `_messages_dispatch.py`, `keepalive.py`) work unchanged.
+
+**Special handling — `_exc_str` duplication**: this helper is needed by both the litellm path (in the parent) and the claude-oauth path (in the new module). Importing it from the parent into the new module would create a circular import via the re-export shim. The 7-line helper is therefore duplicated; an invariant test (`test_exc_str_duplicate_is_identical`) compares the two copies' behavior across 6 exception types so any drift fails loudly.
+
+**Tests** (`tests/unit/test_v4412_streaming_split.py`, +7):
+
+- `test_both_streaming_modules_load_cleanly`
+- `test_oauth_symbols_still_importable_from_parent_module` — back-compat re-exports
+- `test_litellm_path_still_lives_in_parent_module`
+- `test_oauth_path_lives_in_new_module`
+- `test_exc_str_duplicate_is_identical` — the 6-case behavioral comparison
+- `test_neither_streaming_file_exceeds_700_loc` — soft ceiling per post-split file
+- `test_external_callers_still_resolve_oauth_symbols` — spot-check the 5 import sites
+
+Also updated `tests/unit/test_v3911_streaming_memory_writeback.py` — its 5 source-level tests now read BOTH files (concatenated) so the assertions still cover the same surface area post-split.
+
+**Test counts**
+
+- Unit suite: **2299 passed** (was 2292 in v4.4.11; +7 BUG-... wait, this is a refactor, no BUG — +7 split-invariant tests).
+
+**Operator action — none.** Pure refactor; no application behaviour change; no DB schema change. The deployed container's behavior is identical to v4.4.11.
+
+**Note on F-OBS-001 (nginx http2 deprecation)**: attempted to fix in this session but found the nginx container is bind-pinned to an old inode of `/etc/nginx/nginx.conf` (atomic edits via `mv` left the container reading a detached file). Host-side edits don't reach the running container without a nginx container restart, which would briefly interrupt all proxy traffic. Deferred to operator coordination. Discovery itself is worth recording — it explains why some past nginx config edits have appeared to "not stick".
+
 ### v4.4.11 — `app/models/db.py` split into 10 domain modules (2026-05-20)
 
 Pre-split the file was **994 LOC** — one new ORM table away from the
