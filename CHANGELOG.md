@@ -9,6 +9,35 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v4.3.x — "Voice output" milestone
 
+### v4.4.10 — full doc update + v4.4.x release-readiness wrap-up (2026-05-20)
+
+Doc-only release wrapping the v4.4.0 → v4.4.9 fix cycle. No application
+or test code changes.
+
+- `README.md` — `v4 highlights` section extended through v4.4.9 (was
+  ending at v4.4.0). Each release now has a one-line summary linking
+  to the closed bug ID.
+- `docs/test-plan.md` — test count updated 2260 → 2288 (+28 across
+  the v4.4.1-v4.4.9 fix cycle); wall-time updated.
+- `docs/remediation-plan.md` — Batch G status flipped from PLANNED
+  to CLOSED with the explicit list of all v4.4.x closures (BUG-051..058
+  + F-OBS-004 + CLEANUP-001).
+- `docs/qa-notes.md` — appended a "v4.4.x fix-cycle wrap-up"
+  section capturing the durable lessons: pre-cut live-verify catches
+  the v4.3.3 footgun class; WAL TRUNCATE auto-reclaims storm-class
+  high-water; container limits bound blast radius; orphan prune
+  closes the SQLite-no-FK-enforcement gap; tombstone-propagation
+  fix is now branch-on-`not local_deleted`; streaming-protocol
+  completeness fixes for Anthropic + OpenAI; `--run-real` is
+  destructive-to-monitoring.
+- `docs/release-readiness-v4.4.x.md` — new consolidated wrap-up
+  artefact superseding `release-readiness-v4.4.0.md` (which is
+  preserved). Captures: full release chain table (9 versions),
+  defect status (0 open), fleet state (3 nodes at 4.4.9), verified
+  surfaces, operator follow-up items, backup artefacts, verdict.
+
+**Operator action — none.** Doc-only.
+
 ### v4.4.9 — BUG-058 turn-2 follow-up (multi-turn test) (2026-05-20)
 
 Follow-up to v4.4.8. The initial BUG-058 fix addressed `test_multi_turn_context` turn 1, but the test still failed on turn 2 with the same Gemini-preamble pattern ("Okay, here's the..."/"Okay, let's add..."). v4.4.9 extends the no-preamble directive + max_tokens raise to the turn-2 follow-up prompt (`"Now add a peek method..."`).
