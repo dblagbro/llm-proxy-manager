@@ -28,7 +28,9 @@ from sqlalchemy import delete, func, select
 
 from app.config import settings
 from app.models.database import AsyncSessionLocal
-from app.models.db import ActivityLog, ApiKey, Provider, RunEvent
+from app.models.db import (
+    ActivityLog, ApiKey, ApiKeyAiReview, Provider, ProviderAiReview, RunEvent,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -257,6 +259,44 @@ async def _prune_probe_events(keep_days: int) -> int:
             return deleted
 
 
+def _ai_review_retention_days() -> int:
+    """v4.4.13 — admin-tunable AI-review retention; default 30 days,
+    minimum 1 day."""
+    try:
+        v = int(getattr(settings, "ai_review_retention_days", 30))
+        return max(1, v)
+    except Exception:
+        return 30
+
+
+async def _prune_ai_review(model_cls, keep_days: int) -> int:
+    """v4.4.13 — delete rows from an AI-review table older than
+    ``keep_days``. Same batched pattern as the other prune helpers
+    (capped by ``_BATCH_SIZE``; sleep between batches to avoid
+    holding the WAL). Generic over either ``ApiKeyAiReview`` or
+    ``ProviderAiReview`` since both have a ``captured_at`` DATETIME
+    column and an integer ``id`` PK."""
+    deleted = 0
+    while True:
+        async with AsyncSessionLocal() as db:
+            cutoff_expr = func.datetime("now", f"-{keep_days} days")
+            id_res = await db.execute(
+                select(model_cls.id)
+                .where(model_cls.captured_at < cutoff_expr)
+                .limit(_BATCH_SIZE)
+            )
+            ids = [r[0] for r in id_res.all()]
+            if not ids:
+                return deleted
+            await db.execute(delete(model_cls).where(model_cls.id.in_(ids)))
+            await db.commit()
+            deleted += len(ids)
+        if len(ids) >= _BATCH_SIZE:
+            await asyncio.sleep(0.5)
+        else:
+            return deleted
+
+
 async def _prune_activity_log_orphans() -> int:
     """v4.4.3 BUG-055 — delete activity_log rows whose ``provider_id``
     or ``api_key_id`` no longer points at a real row. Provider /
@@ -334,6 +374,8 @@ async def _sweep_once() -> dict:
            "provider_tombstones": 0,
            "apikey_tombstones": 0,
            "tombstone_keep_days": tombstone_days,
+           "provider_ai_reviews": 0, "api_key_ai_reviews": 0,
+           "ai_review_keep_days": _ai_review_retention_days(),
            "wal_truncated": {"busy": 0, "log_pages": 0, "ckpt_pages": 0,
                              "size_before": 0, "size_after": 0}}
 
@@ -419,6 +461,25 @@ async def _sweep_once() -> dict:
     except Exception as e:
         logger.warning("prune.activity_log_orphans_failed err=%s", e)
 
+    # v4.4.13 — prune the AI supervisor review tables. Unbounded
+    # growth surfaced 2026-05-21: 1561 rows on www1 + 1384 on www2 in
+    # ~6 days, bloating the cluster-sync payload to 2.78 MB and
+    # causing www2 to time out (the sync timeout was raised 15→45s
+    # in the same release as belt-and-braces). Default retention is
+    # ``ai_review_retention_days`` (30d).
+    try:
+        out["provider_ai_reviews"] = await _prune_ai_review(
+            ProviderAiReview, _ai_review_retention_days()
+        )
+    except Exception as e:
+        logger.warning("prune.provider_ai_reviews_failed err=%s", e)
+    try:
+        out["api_key_ai_reviews"] = await _prune_ai_review(
+            ApiKeyAiReview, _ai_review_retention_days()
+        )
+    except Exception as e:
+        logger.warning("prune.api_key_ai_reviews_failed err=%s", e)
+
     # v4.4.4 BUG-052 — WAL high-water reclaim. SQLite reuses WAL pages
     # in place across PASSIVE checkpoints, so a past burst (e.g. the
     # 2026-05-13 RMAI 1.04B-token amplifier loop that drove 27× normal
@@ -502,21 +563,26 @@ async def _prune_loop() -> None:
                 "activity_log_warnings=%d activity_log_errors=%d "
                 "activity_log_orphans=%d "
                 "provider_metrics=%d run_events=%d provider_tombstones=%d "
+                "provider_ai_reviews=%d api_key_ai_reviews=%d "
                 "wal_reclaimed_bytes=%d wal_busy=%d "
                 "keep_days=%d probe_keep_days=%d warning_keep_days=%d "
-                "error_keep_days=%d tombstone_keep_days=%d",
+                "error_keep_days=%d tombstone_keep_days=%d "
+                "ai_review_keep_days=%d",
                 counts["activity_log"], counts.get("activity_log_probes", 0),
                 counts.get("activity_log_warnings", 0),
                 counts.get("activity_log_errors", 0),
                 counts.get("activity_log_orphans", 0),
                 counts["provider_metrics"], counts["run_events"],
                 counts["provider_tombstones"],
+                counts.get("provider_ai_reviews", 0),
+                counts.get("api_key_ai_reviews", 0),
                 wal_reclaimed, wal.get("busy", 0),
                 counts["keep_days"],
                 counts.get("probe_keep_days", _DEFAULT_PROBE_RETENTION_DAYS),
                 counts.get("warning_keep_days", _DEFAULT_WARNING_RETENTION_DAYS),
                 counts.get("error_keep_days", _DEFAULT_ERROR_RETENTION_DAYS),
                 counts["tombstone_keep_days"],
+                counts.get("ai_review_keep_days", 30),
             )
         except Exception as e:
             logger.warning("prune.sweep_failed err=%s", e)

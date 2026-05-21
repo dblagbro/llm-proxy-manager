@@ -277,6 +277,15 @@ class Settings(BaseSettings):
     # comfortable safety margin.
     provider_tombstone_retention_days: int = Field(7, alias="PROVIDER_TOMBSTONE_RETENTION_DAYS")
 
+    # v4.4.13: retention for the AI supervisor review tables. These
+    # accumulate ~250 rows/day on a 30-min cadence × 10 providers and
+    # ARE included in the cluster sync push payload — left unbounded
+    # they bloat the payload (observed 2026-05-21: 1561 rows on www1 +
+    # 1384 on www2, payload at 2.78 MB, www2 sync timing out at 15s).
+    # 30d retention preserves operator-meaningful history while
+    # bounding the table to ~7,500 rows. Tunable per env.
+    ai_review_retention_days: int = Field(30, alias="AI_REVIEW_RETENTION_DAYS")
+
     # Cluster
     cluster_enabled: bool = Field(False, alias="CLUSTER_ENABLED")
     cluster_node_id: Optional[str] = Field(None, alias="CLUSTER_NODE_ID")

@@ -445,7 +445,14 @@ async def push_sync(peer: PeerNode, db_factory):
     sig = sign_payload(body)
 
     try:
-        async with httpx.AsyncClient(timeout=15, verify=False) as client:
+        # v4.4.13: timeout raised 15→45s. The 15s ceiling held while the
+        # sync payload was ~500 KB but with unbounded ai-review tables it
+        # grew to ~2.8 MB; live measurement 2026-05-21 showed c1conv at
+        # 10.7s and www2 timing out at 15s. v4.4.13 also adds the
+        # ai_review prune to bound the table, but the timeout bump is a
+        # belt-and-braces hedge — a transiently slow peer shouldn't get
+        # falsely logged as failed.
+        async with httpx.AsyncClient(timeout=45, verify=False) as client:
             await client.post(
                 f"{peer.url.rstrip('/')}/cluster/sync",
                 content=body,
@@ -453,7 +460,17 @@ async def push_sync(peer: PeerNode, db_factory):
                          "Content-Type": "application/json"},
             )
     except Exception as e:
-        logger.warning(f"Sync to {peer.id} failed: {e}")
+        # v4.4.13: render the exception with both class name AND str(),
+        # because empty-message exceptions like ``httpx.ReadTimeout()`` and
+        # ``ConnectError("")`` rendered as a bare "Sync to X failed: "
+        # — exactly the diagnostic gap the ``_exc_str`` helper was created
+        # for in ``_messages_streaming.py``. Duplicated here to avoid a
+        # cross-package import; v4.4.12's split-invariant test pattern is
+        # not warranted for a 3-line helper. If the message ever drifts,
+        # operators will notice because both paths surface in the same
+        # activity-log search.
+        msg = str(e) if str(e) else f"{type(e).__name__} (no message)"
+        logger.warning("Sync to %s failed: %s: %s", peer.id, type(e).__name__, msg)
 
 
 _push_sync = push_sync

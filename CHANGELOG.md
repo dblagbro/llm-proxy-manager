@@ -9,6 +9,46 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v4.3.x — "Voice output" milestone
 
+### v4.4.13 — cluster-sync quality: ai-review prune + 45s timeout + log-message fix (2026-05-21)
+
+Surfaced by a routine "check recent logs" sweep: container logs showed `Sync to llm-proxy2-www2 failed:` repeating **39× in 1h** with **0 successes** and **no error text after the colon**. Live diagnostic revealed three stacked issues, all fixed here:
+
+**Issue 1: `provider_ai_review` + `api_key_ai_review` never pruned**
+
+These tables accumulate ~250 rows/day (30-min cadence × 10 providers, both verdict types) and ARE included in the cluster sync push payload. Live audit 2026-05-21: 1,561 rows on www1 + 1,384 on www2 since 2026-05-15, growing the sync payload to **2.78 MB**. Without retention this would hit ~91k rows / ~90 MB per year. New config field `ai_review_retention_days` (default 30, env override `AI_REVIEW_RETENTION_DAYS`). New helper `_prune_ai_review(model_cls, keep_days)` wired into the daily sweep for both tables.
+
+**Issue 2: 15s sync timeout too tight for the current payload**
+
+Live measurement: c1conv processed the 2.78 MB payload in 10.7s (barely passing); www2 timed out at 15s (`httpx.ReadTimeout`). Raised the push_sync timeout from 15s → 45s. Belt-and-braces while the ai-review prune (Issue 1) shrinks the payload.
+
+**Issue 3: empty exception strings render as bare colon-blank**
+
+`httpx.ReadTimeout('')` has `str(e) == ""`, so `f"Sync to {peer.id} failed: {e}"` rendered as literally `Sync to www2 failed: ` with no diagnostic. Same class issue `_exc_str` solves in `_messages_streaming.py`. Inline fallback added: `msg = str(e) if str(e) else f"{type(e).__name__} (no message)"`. Log line now uses both the type name AND the message: `Sync to www2 failed: ReadTimeout: ReadTimeout (no message)`.
+
+**Why bundle three fixes**: they all surface the same incident (sync to www2 failing invisibly) and they all need to be real to fully close the loop. Just the timeout hides the symptom; just the prune doesn't help while the table is still 2.78 MB at deploy time; just the log fix surfaces real timeouts but the timeouts keep happening.
+
+**Files**:
+- `app/config.py` — new `ai_review_retention_days` field
+- `app/monitoring/prune.py` — new `_prune_ai_review` helper + sweep wiring + `_ai_review_retention_days()` getter; result dict + log line updated
+- `app/cluster/manager.py:441-465` — timeout 15→45s; log line uses `type(e).__name__` + non-empty `str(e)` fallback
+
+**Tests** (`tests/unit/test_v4413_cluster_sync_quality.py`, +9):
+- `test_ai_review_retention_setting_exists` — config field present with 30d default
+- `test_ai_review_retention_helper_clamps_minimum` — defensive min=1
+- `test_prune_ai_review_helper_exists` — signature + works for both model classes
+- `test_ai_review_prune_wired_into_sweep` — source-level ordering
+- `test_sweep_output_dict_has_ai_review_counters` — counters added to `_LAST_SWEEP_RESULT`
+- `test_sweep_log_line_includes_ai_review_counts` — visible in operator log tail
+- `test_push_sync_timeout_raised` — 15→45s
+- `test_push_sync_log_message_handles_empty_exception_str` — source-level for the fallback
+- `test_push_sync_log_falls_back_for_empty_exception` — behavioral: `httpx.ReadTimeout("")` renders as `ReadTimeout (no message)`; real messages pass through unchanged
+
+**Test counts**
+
+- Unit suite: **2308 passed** (was 2299 in v4.4.12; +9 cluster-sync-quality tests).
+
+**Operator action — none required.** Patch-class release. The first scheduled prune sweep (~24h after deploy) will tombstone ~30 days of old ai-review rows; cluster sync payload will shrink dramatically and the 45s timeout becomes effectively redundant.
+
 ### v4.4.12 — `_messages_streaming.py` claude-oauth section extracted (2026-05-21)
 
 Second preventive refactor in the v4.4.x cycle, same pattern as v4.4.11's `db.py` split. Pre-refactor: `app/api/_messages_streaming.py` was 979 LOC — the largest file in the codebase post-v4.4.11 and on the watch list as the next refactor candidate.
