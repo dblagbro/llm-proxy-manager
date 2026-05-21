@@ -134,6 +134,21 @@ async def _stream_openai(
     ttft_ms: float = 0.0
     first_chunk = True
     full_text_buf: list[str] = []
+    # v4.4.6 BUG-057 — buffer one chunk so we can patch the FINAL
+    # chunk before emit. Modern OpenAI streaming (when usage is
+    # included, which litellm defaults to ON in 1.83.x) emits an
+    # extra "usage chunk" AFTER the finish_reason chunk: chunk N-1
+    # has finish_reason='stop' / content=None, chunk N has
+    # usage={...} / finish_reason=null. The proxy used to pass
+    # through verbatim, so the LAST emitted chunk had no
+    # finish_reason — breaking OpenAI SDK clients that read the
+    # last chunk to detect end-of-stream. Buffer-and-patch: track
+    # the most recent finish_reason seen; on end-of-stream, if the
+    # last chunk lacks finish_reason and we saw one earlier, copy
+    # it onto the last chunk before serializing. Preserves usage
+    # info AND end-of-stream signal.
+    prev_chunk = None
+    last_finish: str | None = None
     try:
         response = await acompletion_with_retry(model=model, messages=messages, stream=True, **extra)
         async for chunk in response:
@@ -144,13 +159,30 @@ async def _stream_openai(
                 in_tok = getattr(chunk.usage, "prompt_tokens", in_tok)
                 out_tok = getattr(chunk.usage, "completion_tokens", out_tok)
             try:
-                delta = chunk.choices[0].delta if chunk.choices else None
+                choice0 = chunk.choices[0] if chunk.choices else None
+                if choice0 and getattr(choice0, "finish_reason", None):
+                    last_finish = choice0.finish_reason
+                delta = getattr(choice0, "delta", None) if choice0 else None
                 text = getattr(delta, "content", None) if delta else None
                 if text:
                     full_text_buf.append(text)
             except Exception:
                 pass
-            yield f"data: {chunk.model_dump_json()}\n\n".encode()
+            # Emit the previously-buffered chunk; hold the current
+            # one in case it's the last.
+            if prev_chunk is not None:
+                yield f"data: {prev_chunk.model_dump_json()}\n\n".encode()
+            prev_chunk = chunk
+        # End-of-stream: patch the final chunk if needed, then emit.
+        if prev_chunk is not None:
+            try:
+                if prev_chunk.choices and last_finish:
+                    c0 = prev_chunk.choices[0]
+                    if not getattr(c0, "finish_reason", None):
+                        c0.finish_reason = last_finish
+            except Exception:
+                pass  # best-effort; never break the stream
+            yield f"data: {prev_chunk.model_dump_json()}\n\n".encode()
         if budget_total > 0:
             remaining = max(0, budget_total - out_tok)
             yield (
