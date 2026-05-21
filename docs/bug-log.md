@@ -240,14 +240,24 @@ filed below.
   pattern, classic stream, and no-finish-anywhere defensive case).
   Unit suite 2288.
 
-### BUG-058 — Matrix test assertions too tight for Gemini's verbose response prefix — ⚠ **OPEN (low, test-side)**
+### BUG-058 — Matrix test assertions too tight for Gemini's verbose response prefix — ✅ **CLOSED 2026-05-20 (v4.4.8)**
 
 - **Severity:** low · **Category:** test-side defect
 - **Surfaced:** 2026-05-20 (L1 matrix run, `test_multi_turn_context` + `test_stream_non_stream_content_equivalent` failing for Gemini providers only).
 - **Repro:** `multi_turn_context` asks "Define a Python class named \`Stack\` with push and pop" with `max_tokens=150`. Gemini responds "Okay, here's a Python class named Stack..." — but the test polls the first 200 chars and looks for "Stack" literal. With Gemini's "Okay, here's a..." preamble + the Stack code itself, the literal "Stack" word appears past character 200 in some responses. Similar for `stream_non_stream_content_equivalent` asking "How many letters in 'banana'? Just say the number." with max_tokens=20; Gemini answers "It returns 6" or "It returns the number 6" — the "6" digit lands past token 20 truncation.
 - **Expected behavior:** test should accept "Okay, here's..." preambles OR raise max_tokens enough to fit Gemini's verbose style.
 - **Fix scope:** either (a) widen the assertion to scan the full response text instead of the first 200 chars, (b) prompt-engineer the question to suppress preambles ("Reply with ONLY the class definition, no preamble"), or (c) raise `max_tokens` from 150→256 and from 20→64 for the stream-consistency test. ~10 LoC + 0 new tests.
-- **Status:** queued; bundled with BUG-056/057 in v4.4.5 since they were all surfaced in the same L1 run.
+- **Status:** **CLOSED v4.4.8 2026-05-20.** Three-pronged fix in
+  `tests/integration/test_compatibility_matrix.py`:
+  - `test_multi_turn_context`: prompt now includes "Output only the
+    code, no preamble or explanation"; `max_tokens` 150 → 256;
+    assertion widened to accept push/pop/def as well as Stack/class.
+  - `test_stream_non_stream_content_equivalent`: prompt now reads
+    "Reply with the digit alone, then a brief sentence"; `max_tokens`
+    60 → 100.
+  No new unit tests (this is a test-side polish; the existing matrix
+  tests validate via `--run-real`). Skipped v4.4.7 per operator
+  direction.
 
 ### F-OBS-004 — Containers run with unbounded memory + CPU limits — ✅ **CLOSED 2026-05-20 (fleet-wide compose edit)**
 
