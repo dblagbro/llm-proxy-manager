@@ -4,7 +4,7 @@ Self-hosted LLM routing gateway — Python/FastAPI rewrite of llm-proxy v1.
 
 **LMRH semantic routing · circuit breaker failover · CoT-E augmentation · cluster sync · Run runtime · per-provider keep-alive probes · proxy-side caller memory (#267) · AIRI conversational config (v4.0+) · voice IO (v4.2+v4.3) · React dashboard**
 
-Current version: **v4.4.9** (see [CHANGELOG.md](CHANGELOG.md))
+Current version: **v4.4.10** (see [CHANGELOG.md](CHANGELOG.md))
 
 ## v4 highlights
 
@@ -18,6 +18,13 @@ Current version: **v4.4.9** (see [CHANGELOG.md](CHANGELOG.md))
 - **v4.3.8** — Anthropic→OpenAI/Cohere tool-def translation gate widened to cover first-turn requests with `body.tools`.
 - **v4.3.9** — `circuit_breaker.classify_error` gained 404/grok-bridge-prose patterns.
 - **v4.4.0** — grok-bridge **image hardening** (BUG-025 mechanically closed via `xdpyinfo` Xvfb readiness probe + compose `/healthz` healthcheck) **plus the full Path A backend scaffolding (M-2..M-5) shipped dormant** after the live empirical spike found grok.com enforces single-account-session semantics. The dormant code stays in the codebase for any future Grok-policy change that revives multi-IP sessions. Design + spike results: [`docs/4.4-per-node-bridge-design.md`](docs/4.4-per-node-bridge-design.md).
+- **v4.4.1** — BUG-051: M-3 keepalive probe writer maps upstream 429 (`rate_limit`) to `bridge_down` (transient) instead of `needs_reauth`. Latent fix — only matters if Path A is ever re-activated.
+- **v4.4.2** — BUG-053: cluster-sync now always propagates a tombstone when the peer has one and local doesn't, regardless of `local.updated_at`. The old gate (`peer_deleted_at >= local_updated`) silently dropped tombstones when background activity bumped the local row's `updated_at` past the originator's delete time — observed 2026-05-20 with a tombstone stranded on www1 for 18 hours.
+- **v4.4.3** — BUG-054 (frontend `<title>llm-proxy v2`) + BUG-055 (`_prune_activity_log_orphans()` wired into the daily sweep — reclaims `activity_log` rows whose `provider_id` / `api_key_id` were hard-deleted by tombstone retention; one-shot cleanup deleted 21,230 orphans across the fleet).
+- **v4.4.4** — BUG-052: `PRAGMA wal_checkpoint(TRUNCATE)` shipped as the last step of the daily prune sweep. SQLite WAL pages are reused in place across PASSIVE checkpoints; any past write burst (e.g. the 2026-05-13 RMAI 1.04B-token amplifier loop that drove 27× normal proxy volume) used to leave the WAL file at its high-water indefinitely. Now auto-reclaimed. Also ships **L3 pre-cut live-verify** in `tools/cut-release.sh` — hits the 3 canonical `/health` URLs before tagging; aborts the cut if any fails.
+- **v4.4.5** — BUG-056: Anthropic streaming protocol now always emits at least one `content_block_start` / `content_block_stop` pair, even when the upstream provider returns no `delta.content` (Gemini's max_tokens-truncation pattern). Synthesized empty text block satisfies SDK clients' assistant-message construction.
+- **v4.4.6** — BUG-057: OpenAI streaming `_stream_openai` now buffers one chunk and patches the FINAL chunk's `finish_reason` before serializing — modern OpenAI emits a usage-only chunk AFTER the finish chunk, which used to leave the last emitted chunk without `finish_reason` and break SDK clients' end-of-stream detection.
+- **v4.4.8 / .9** — BUG-058: matrix test prompts now ask Gemini to skip preamble + raise `max_tokens` to give verbose models room. Test-side polish; no application behavior changed.
 
 ## Access
 

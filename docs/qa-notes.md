@@ -455,5 +455,44 @@ The schema is `(id, event_type, severity, message, provider_id, api_key_id, even
 
 ### Test-fixture providers are not garbage-collected
 
-`pw-persist-*` (Playwright UI) and `skew-from-*` (BUG-037 drill) test runs leave provider rows behind. They're `enabled=0` so they don't route, but they inflate provider counts and push-sync payloads. Periodic soft-delete is in the v4.4.x backlog as `CLEANUP-001`.
+`pw-persist-*` (Playwright UI) and `skew-from-*` (BUG-037 drill) test runs leave provider rows behind. They're `enabled=0` so they don't route, but they inflate provider counts and push-sync payloads. CLEANUP-001 closed 2026-05-20 — all 8 test-fixture rows tombstoned; BUG-053 then surfaced and was closed in v4.4.2 to prevent future tombstone-propagation gaps.
+
+---
+
+## 2026-05-20 — v4.4.x fix-cycle wrap-up
+
+Nine releases in one session (v4.4.0 → .1 → .2 → .3 → .4 → .5 → .6 → .8 → .9; v4.4.7 skipped per operator direction). All previously-open defects (BUG-051..058 + CLEANUP-001 + F-OBS-004) closed. The session's structural lessons worth keeping:
+
+### `tools/cut-release.sh` now has a pre-cut live-verify step (v4.4.4 — L3)
+
+Before tagging, it hits all 3 canonical `/health` URLs and aborts if any returns non-healthy. **This catches the entire "fleet silently broken at cut time" class of footgun** — exactly the v4.3.3 issue where tmrwww01 stayed on v4.3.2 because its compose used a local `llm-proxy2:latest` tag that hadn't been retagged after the docker-hub push. Escape hatch: `--skip-live-verify` for the case where the new release ITSELF is the fix for the broken state.
+
+### `wal_checkpoint(TRUNCATE)` is now part of the daily prune sweep (v4.4.4)
+
+Past observation: a write burst on 2026-05-13 (the RMAI 1.04B-token amplifier loop driving 27× normal proxy volume) inflated the WAL on www1 to 1.097 GB. SQLite reuses WAL pages in place across PASSIVE checkpoints — only TRUNCATE actually shrinks the file. Manual one-shot reclaimed it that day; v4.4.4 made it automatic for future bursts.
+
+### Container resource limits are applied fleet-wide (F-OBS-004 / v4.4.x session)
+
+Each `llm-proxy2` runs with `deploy.resources.limits: {cpus: 4, memory: 4G}`; the www1 grok-bridge gets `{cpus: 2, memory: 2G}`. A memory leak in either container will now OOM-kill the offending container rather than starve the host's other workloads. The historical ARCH-A pool leak (saturating at 13-20h post-deploy) is the canonical "why this matters" case.
+
+### Activity log orphan FK refs are now cleaned in the daily sweep (BUG-055 / v4.4.3)
+
+Provider / api_key tombstones get hard-deleted after `provider_tombstone_retention_days` (default 7), but the activity_log rows that referenced them survive. SQLite has no FK enforcement. Pre-fix audit found **438 orphan provider_ids + 7,937 orphan api_key_ids** on www1; one-shot cleanup deleted 21,230 dangling refs across the 3-node fleet. v4.4.3's `_prune_activity_log_orphans()` runs daily after the tombstone-prune step.
+
+### Cluster-sync tombstone propagation is now branch-on-`not local_deleted` (BUG-053 / v4.4.2)
+
+The old gate `peer_deleted_at >= local_updated` silently dropped tombstones when background activity on the receiver bumped `local.updated_at` past the originator's `deleted_at` timestamp. New gate is "peer has tombstone, local doesn't → accept" — tombstones are terminal in this app, so the "fresher updated_at on the receiver" concern is moot. The original symptom (`skew-from-new-41a9d6` stranded on www1 for 18 hours) was already manually reconciled in v4.4.1's session; the v4.4.2 fix is preventive.
+
+### Streaming-protocol completeness: BUG-056 (Anthropic) + BUG-057 (OpenAI)
+
+Two surface-level streaming-translator gaps that surfaced together in the L1 `--run-real` matrix run:
+
+- **BUG-056 (v4.4.5)**: Gemini providers sometimes emit a stream with no `delta.content` chunks at all (Gemini buffers a short response into the terminator chunk). The proxy used to skip `content_block_start` / `content_block_stop` in that case — leaving the stream structurally invalid per the Anthropic streaming protocol. Fix: emit a synthetic empty text block when neither text nor tool content was seen.
+- **BUG-057 (v4.4.6)**: modern OpenAI streaming (litellm 1.83.x default) emits a usage chunk AFTER the finish_reason chunk. The proxy used to pass through verbatim, so the LAST emitted chunk had `finish_reason=null` — breaking SDK clients' end-of-stream detection. Fix: buffer-and-patch — track most recent finish_reason; patch the last chunk in place before serializing.
+
+Both fixes were verified live against the deployed image via the `--run-real` matrix tests.
+
+### `--run-real` matrix tests are destructive-to-monitoring while running
+
+The `_all_providers_with_cb_cycling` helper deliberately force-opens every provider's CB to test routing fall-through. Mid-test, the UI on the running node shows N providers in `open` state simultaneously. Cleanup restores them at `StopIteration` of the iterator, but operators watching the UI mid-run will see "every provider tripped" for a few minutes. **Coordinate before running `--run-real`** — warn the operator that the UI will look broken for ~5 min, or run during quiet hours.
 
