@@ -19,9 +19,19 @@ from __future__ import annotations
 
 from pathlib import Path
 
+# v4.4.12 split: claude-oauth dispatch moved to _messages_streaming_oauth.py.
+# Source-level tests that used to read just _messages_streaming.py now read
+# both files (concatenated) so they continue to check the same surface area.
+def _read_streaming_src() -> str:
+    return (
+        Path("app/api/_messages_streaming.py").read_text()
+        + "\n\n# ── _messages_streaming_oauth.py ──\n\n"
+        + Path("app/api/_messages_streaming_oauth.py").read_text()
+    )
+
 
 def test_stream_claude_oauth_accepts_conversation_id_kwarg():
-    src = Path("app/api/_messages_streaming.py").read_text()
+    src = _read_streaming_src()
     # The new kwargs land in the _stream_claude_oauth signature
     idx = src.index("async def _stream_claude_oauth")
     sig_window = src[idx:idx + 2000]
@@ -33,7 +43,7 @@ def test_stream_claude_oauth_accepts_conversation_id_kwarg():
 def test_stream_claude_oauth_invokes_extractor_on_success():
     """After assembling response_dict on stream success, the extractor
     is called when conversation_id is set."""
-    src = Path("app/api/_messages_streaming.py").read_text()
+    src = _read_streaming_src()
     assert "from app.memory.extract import maybe_extract_memory_writes" in src
     # The call is gated on conversation_id presence
     assert "if conversation_id and api_key_id:" in src
@@ -45,9 +55,10 @@ def test_stream_extractor_call_uses_silent_degrade():
 
     v3.9.14 added a second extract site in _stream_anthropic; this test
     walks each occurrence and confirms ALL are wrapped in try/except
-    with the 'Silent degrade' comment locked in.
+    with the 'Silent degrade' comment locked in. v4.4.12 split adds a
+    third occurrence in the new _messages_streaming_oauth.py module.
     """
-    src = Path("app/api/_messages_streaming.py").read_text()
+    src = _read_streaming_src()
     needle = "from app.memory.extract import maybe_extract_memory_writes"
     start = 0
     occurrences = 0
@@ -61,7 +72,7 @@ def test_stream_extractor_call_uses_silent_degrade():
         assert "except Exception:" in body, f"extract call #{occurrences} missing except"
         assert "Silent degrade" in body, f"extract call #{occurrences} missing 'Silent degrade' comment"
         start = idx + len(needle)
-    assert occurrences >= 1, "no extract calls found in _messages_streaming.py"
+    assert occurrences >= 1, "no extract calls found in streaming source"
 
 
 def test_messages_endpoint_passes_conv_id_to_stream():
@@ -95,14 +106,14 @@ def test_assembled_response_shape_matches_extractor_contract():
     Contract check by key presence — not by exact variable names, which
     differ per site and are an implementation detail."""
     import re
-    src = Path("app/api/_messages_streaming.py").read_text()
+    src = _read_streaming_src()
     idx = src.index("assembled_response = {")
     body = src[idx:idx + 700]
     # The assembled dict carries the content list the extractor walks.
     assert '"content": content_list' in body
     # Every tool_use assembly site must carry the name + input keys.
     sites = [m.start() for m in re.finditer(r'"type": "tool_use", "id":', src)]
-    assert sites, "no tool_use assembly site found in _messages_streaming.py"
+    assert sites, "no tool_use assembly site found in streaming source"
     for s in sites:
         walk = src[s:s + 400]
         assert '"name":' in walk, "a tool_use assembly block is missing the name key"
@@ -113,7 +124,7 @@ def test_extractor_called_after_record_outcome():
     """Ordering: record_outcome (which writes to activity_log) runs
     BEFORE the memory extract. That way a memory store error doesn't
     block the metrics record."""
-    src = Path("app/api/_messages_streaming.py").read_text()
+    src = _read_streaming_src()
     idx_record = src.index("await record_outcome(")
     # Find the record_outcome after the success-path assembled_response
     # (there are multiple record_outcome calls; we want the one on the
