@@ -1,994 +1,136 @@
-from sqlalchemy import (
-    Column, String, Integer, Boolean, Float, DateTime, Text, JSON, ForeignKey
+"""ORM model registry — re-exports every model from its domain module.
+
+Refactor history: in v4.4.11 (2026-05-20) this file was split into 10
+``db_*.py`` modules along natural domain boundaries (`db_base`,
+`db_provider`, `db_apikey`, `db_user`, `db_activity`, `db_run`,
+`db_lmrh`, `db_oauth`, `db_caller_memory`, `db_airi`). Pre-split the
+file was 994 LOC — one new ORM table away from the project's de-facto
+1,000-LOC ceiling.
+
+This file is now a backwards-compat shim: it imports every model so
+the SQLAlchemy registry on ``Base.metadata`` is populated (the
+``create_all`` call in ``models/database.py`` only sees tables whose
+classes have been imported), and re-exports them all so existing
+callers using ``from app.models.db import Provider, ApiKey, ...``
+keep working unchanged.
+
+When adding a new ORM table, put it in the appropriate ``db_*.py``
+module (or create a new one for a new domain). Then add an import +
+re-export here so:
+  1. The table is registered on ``Base.metadata`` at app boot.
+  2. Existing ``from app.models.db import X`` imports keep working.
+"""
+# Re-export Base + auth Session
+from app.models.db_base import Base, Session
+
+# Provider domain — heaviest module
+from app.models.db_provider import (
+    Provider,
+    ProviderUsageWindow,
+    ProviderNodeAuthState,
+    ExternalUsageSnapshot,
+    ModelCapability,
+    ProviderAiReview,
+    ModelToolProbe,
+    ProviderMetric,
+    ModelAlias,
 )
-from sqlalchemy.orm import DeclarativeBase, relationship
-from sqlalchemy.sql import func
-import secrets
 
-
-class Base(DeclarativeBase):
-    pass
-
-
-class Session(Base):
-    """Persisted login sessions — survives container restarts."""
-    __tablename__ = "sessions"
-
-    token = Column(String, primary_key=True)
-    user_id = Column(String, nullable=False)
-    username = Column(String, nullable=False)
-    role = Column(String, nullable=False)
-    created_at = Column(Float, nullable=False)   # Unix timestamp
-    last_seen_at = Column(Float, nullable=False)  # updated on each /me call
-
-
-class Provider(Base):
-    __tablename__ = "providers"
-
-    id = Column(String, primary_key=True, default=lambda: secrets.token_hex(8))
-    name = Column(String, nullable=False)
-    provider_type = Column(String, nullable=False)  # anthropic|openai|google|ollama|compatible|vertex|grok|claude-oauth
-    api_key = Column(String)                         # for OAuth providers: stores the access_token
-    base_url = Column(String)
-    default_model = Column(String)
-    priority = Column(Integer, default=10)
-    enabled = Column(Boolean, default=True)
-    timeout_sec = Column(Integer, default=30)
-    exclude_from_tool_requests = Column(Boolean, default=False)
-    # v3.9.5 (#267 Phase 8) — opt-out from the proxy's caller-memory
-    # system. When True: extract.py skips memory writes from this
-    # provider's responses AND inject.py skips memory injection when
-    # this provider is selected by the router. Use cases: keep certain
-    # providers "pure" for testing, avoid memory tool surcharge on
-    # specific accounts, or comply with per-provider data-residency
-    # rules. Default False = participates in memory normally. Gated
-    # behind caller_memory_enabled overall.
-    memory_disabled = Column(Boolean, default=False)
-    # Per-provider CB overrides (null = use global setting)
-    hold_down_sec = Column(Integer, nullable=True)
-    failure_threshold = Column(Integer, nullable=True)
-    daily_budget_usd = Column(Float, nullable=True)  # None = unlimited
-    extra_config = Column(JSON, default=dict)
-    # v2.7.0: OAuth-specific fields. Only populated when provider_type
-    # is *-oauth (claude-oauth in v2.7.0). refresh_token lets us auto-
-    # refresh before expires_at without admin intervention.
-    oauth_refresh_token = Column(String, nullable=True)    # encrypted Fernet
-    oauth_expires_at = Column(Float, nullable=True)        # unix timestamp
-    created_at = Column(DateTime, server_default=func.now())
-    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
-    # v3.0.11: Unix timestamp set ONLY by user-facing admin edits. Cluster
-    # sync LWW compares this in preference to ``updated_at`` so that
-    # auto-refresh of OAuth tokens, deprecation auto-migrations, priority
-    # tie-break bumps, etc. on one node cannot clobber a real rename or
-    # config edit made on another node. updated_at still bumps on every
-    # write — it just no longer gates which write wins across the cluster.
-    last_user_edit_at = Column(Float, nullable=True)
-    # v2.8.2: tombstone for soft-delete. When non-null, the provider has been
-    # deleted on this node but the row stays so cluster sync can propagate the
-    # delete to peers (last-write-wins on updated_at). Garbage-collected after
-    # all peers have replicated the tombstone.
-    deleted_at = Column(DateTime, nullable=True)
-    # v3.0.45: provider ownership scoping (root-cause fix for the
-    # 2026-05-02 paperless-ai-analyzer burn — paperless ran 17,000
-    # gpt-4o calls in 48h on the operator's personal ChatGPT account
-    # because there was no tenant boundary on which keys could route to
-    # which providers). When ``owned_by_key_id`` is non-null, only that
-    # api_key is allowed to route to this provider. Other keys are
-    # filtered out at select_provider time and fall back to a different
-    # compatible provider — or 503 if none. Null preserves the legacy
-    # "shared by all keys" behavior, so this is opt-in per provider.
-    owned_by_key_id = Column(String, ForeignKey("api_keys.id"), nullable=True)
-    # v3.0.57: cost_class — explicit per-provider billing model. Replaces
-    # the previously hardcoded SUBSCRIPTION_TIER_PROVIDER_TYPES set in
-    # monitoring/helpers.py. Supports the case where a non-OAuth provider
-    # is on a flat-rate enterprise contract (cost_class="subscription"
-    # even though provider_type="anthropic-direct"), and the inverse —
-    # an OAuth provider on per-call billing if Anthropic ever ships such
-    # a tier. NULL preserves the v3.0.50 default behavior: derive from
-    # provider_type (claude-oauth/codex-oauth/anthropic-oauth = subscription,
-    # everything else = per_call).
-    cost_class = Column(String, nullable=True)  # "subscription" | "per_call" | NULL (auto)
-    # v3.0.62: per-provider usage-based rotation. Operator-tunable so any
-    # OAuth-style "session + weekly quota" provider (claude-oauth, codex-
-    # oauth, future grok/azure-oauth) can be tracked. NULL/False fields
-    # leave behavior unchanged.
-    usage_tracking_enabled = Column(Boolean, default=False)
-    usage_session_window_sec = Column(Integer, nullable=True)        # e.g. 18000 = 5h (claude.ai default)
-    usage_weekly_reset_dow = Column(Integer, nullable=True)          # 0=Mon … 6=Sun (claude.ai = 6)
-    usage_weekly_reset_hour = Column(Integer, nullable=True)         # 0..23 local hour (claude.ai = 16, 4pm)
-    usage_session_limit_tokens = Column(Integer, nullable=True)      # operator's estimate of plan ceiling
-    usage_weekly_limit_tokens = Column(Integer, nullable=True)
-    usage_rotation_threshold_pct = Column(Integer, nullable=True)    # rotate when max/min ratio exceeds this; default 30
-
-    # v3.7.0 — external billing scrape (Anthropic Console).
-    # When the operator pastes a captured browser session, store the
-    # cookies (JSON string) + organization UUID here. The 4-hourly
-    # billing worker reads these and calls
-    # ``GET https://claude.ai/api/organizations/{uuid}/usage`` to
-    # get authoritative weekly/per-model usage that includes ALL
-    # consumption on the account (not just the proxy's slice — see
-    # ``project_backlog_anthropic_billing_scrape.md`` for the why).
-    # Cookies expire (typically 30+ days for ``sessionKey``); when
-    # the worker hits 401/403/Cloudflare it logs a re-auth-needed
-    # event and the operator pastes a fresh capture via the admin
-    # endpoint at ``POST /api/providers/{id}/anthropic-billing-credentials``.
-    anthropic_org_uuid = Column(String, nullable=True)
-    anthropic_session_cookies = Column(String, nullable=True)        # JSON dict: {sessionKey, sessionKeyLC, routingHint, lastActiveOrg, cf_clearance, __cf_bm, ...}
-    anthropic_session_captured_at = Column(Float, nullable=True)     # unix ts of last operator paste; for "cookies are N days old" UI
-
-    # v3.7.27 (#245) — Codex / ChatGPT Plus usage scrape. Same problem
-    # as the Anthropic Pro Max case: the same ChatGPT Plus subscription
-    # is also used outside this proxy (mobile app, chat UI, etc.), so
-    # the proxy's local counters undercount the account's actual usage
-    # against its weekly cap. The Codex Cloud analytics page at
-    # ``https://chatgpt.com/codex/cloud/settings/analytics`` shows the
-    # authoritative weekly figure; we scrape it every 4h and store
-    # snapshots so the router can use real account totals for
-    # rotation decisions.
-    #
-    # ``codex_usage_endpoint_url`` is operator-supplied because the
-    # actual XHR endpoint behind the analytics page is not in any
-    # public docs — the operator captures it from browser DevTools
-    # (Network panel) on the analytics page and pastes it along with
-    # the session cookies. The scraper fires a GET against that URL.
-    #
-    # ``codex_session_cookies`` is a JSON dict captured the same way:
-    # operator copies the chatgpt.com cookies from DevTools →
-    # Application → Cookies into a JSON blob and pastes both via
-    # ``POST /api/providers/{id}/codex-billing-credentials``.
-    codex_session_cookies = Column(String, nullable=True)            # JSON dict of chatgpt.com session cookies
-    codex_usage_endpoint_url = Column(String, nullable=True)         # full URL captured from DevTools
-    codex_session_captured_at = Column(Float, nullable=True)         # unix ts of last operator paste
-
-    # v3.7.28 (#252 phase 1) — manual override escape hatch for the
-    # upcoming AI provider supervisor. When non-null, the supervisor
-    # MUST skip this provider entirely (no stats compute, no LLM call,
-    # no review row written, no enabled/auto_skip_until mutations).
-    # Operator-set via the Disable button in the UI; cleared via
-    # Enable. The sentinel string "9999-12-31T23:59:59" represents
-    # an indefinite lock; a real DateTime represents a time-bounded
-    # lock (reserved — not used in the current UI).
-    #
-    # Cluster sync replicates these fields via the existing Provider
-    # sync path (LWW conflict resolution applies).
-    manual_override_until = Column(DateTime, nullable=True)
-    manual_override_set_by = Column(String, nullable=True)           # admin user id for audit
-    manual_override_set_at = Column(DateTime, nullable=True)
-    manual_override_reason = Column(Text, nullable=True)             # optional operator note
-
-    # v3.7.1 — auto-rotation: when an external snapshot reports a
-    # provider above the at-capacity threshold (default 95% weekly
-    # utilization), the rule evaluator sets ``auto_skip_until`` to
-    # the snapshot's ``seven_day_resets_at``. The router skips this
-    # provider until that timestamp passes — at which point the next
-    # scrape produces a fresh snapshot whose utilization will drop
-    # post-reset, and the rule evaluator clears the field. Operator
-    # configured ``Provider.priority`` is preserved unchanged.
-    # ``auto_skip_reason`` is a short human-readable string for the
-    # admin UI / activity log so the operator sees WHY a provider is
-    # being skipped automatically.
-    auto_skip_until = Column(DateTime, nullable=True)
-    auto_skip_reason = Column(String, nullable=True)
-
-    capabilities = relationship("ModelCapability", back_populates="provider", cascade="all, delete-orphan")
-
-
-class ProviderUsageWindow(Base):
-    """v3.0.62: cached per-provider rolling usage totals. Recomputed every
-    60s from ``activity_log`` by the usage_tracker task; serves
-    ``GET /api/providers/{id}/usage`` reads in O(1)."""
-    __tablename__ = "provider_usage_windows"
-    provider_id = Column(String, ForeignKey("providers.id"), primary_key=True)
-    session_tokens = Column(Integer, default=0)
-    session_window_start = Column(DateTime, nullable=True)
-    session_pct = Column(Float, nullable=True)        # session_tokens / usage_session_limit_tokens × 100; null if no limit set
-    weekly_tokens = Column(Integer, default=0)
-    weekly_reset_at = Column(DateTime, nullable=True)  # next reset (last reset + 7 days)
-    weekly_pct = Column(Float, nullable=True)
-    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
-
-
-class ProviderNodeAuthState(Base):
-    """v4.4 M-2 — per-node auth state for providers that maintain a
-    node-local credentialed session (currently only ``grok-web`` via
-    its per-node bridge container, but the table is generic enough
-    to cover any future per-node-session provider type).
-
-    Why this table exists: pre-v4.4 grok-web ran on a shared bridge
-    on tmrwww01 only, and the CB state cluster-synced like every
-    other provider. When the shared bridge crashed (BUG-025), grok-
-    web went down fleet-wide. The v4.4 per-node-bridge design
-    (`docs/4.4-per-node-bridge-design.md` Path A) gives each proxy
-    node its own bridge with its own logged-in session for the same
-    operator account — but then the cluster needs a *cluster-synced
-    view of the per-node states*, written by each node about its own
-    bridge, read by every node to inform routing + UI display.
-
-    Schema:
-    - ``(provider_id, node_id)`` composite PK.
-    - ``auth_state`` is one of ``ok | expired | needs_reauth |
-      never_authed | bridge_down``. The router consults this to
-      filter grok-web routing per-node (Path A §4.3 of the design).
-    - ``last_ok_at`` / ``last_check_at`` are operator-facing
-      timestamps; ``reauth_url`` is the pre-signed deep link the UI
-      gives the operator when ``auth_state != "ok"``.
-
-    Cluster-sync direction: each node writes ONLY its own row(s),
-    cluster sync propagates ALL rows. Other nodes' rows are read-
-    only on this node — never overwrite a peer's row even if our
-    sync sees a stale timestamp.
-    """
-    __tablename__ = "provider_node_auth_state"
-    provider_id = Column(String, ForeignKey("providers.id"), primary_key=True)
-    node_id = Column(String, primary_key=True)
-    auth_state = Column(String, nullable=False, default="never_authed")
-    last_ok_at = Column(DateTime, nullable=True)
-    last_check_at = Column(DateTime, server_default=func.now(), index=True)
-    # Optional pre-signed re-auth deep link. The bridge populates this
-    # when it transitions to needs_reauth (e.g. cookies expired); the
-    # admin UI surfaces it as the per-node [Re-auth] button target.
-    reauth_url = Column(String, nullable=True)
-    # Optional last error string for operator-facing diagnostics —
-    # capped at ~400 chars at write time to keep the cluster sync
-    # payload bounded.
-    last_error = Column(String, nullable=True)
-
-
-class ExternalUsageSnapshot(Base):
-    """v3.7.0 — authoritative external usage view scraped from the
-    Anthropic Console (``claude.ai/api/organizations/{uuid}/usage``).
-
-    Why this exists: ``ProviderUsageWindow`` (above) tracks tokens
-    consumed THROUGH THE PROXY only. The same Anthropic Pro Max
-    accounts are used by other channels (Claude Code, mobile app,
-    other tools), so the proxy slice ≠ the account total. Rotation
-    decisions based on the proxy slice trigger at the wrong time.
-
-    This table stores 4-hourly snapshots of the authoritative weekly
-    + per-model utilization figures Anthropic itself reports. The
-    cascade / rotation logic consults the latest snapshot before
-    falling back to the proxy slice.
-
-    Schema mirrors the captured response shape from 2026-05-10:
-
-      five_hour:                  {utilization, resets_at}
-      seven_day:                  {utilization, resets_at}
-      seven_day_oauth_apps:       null | {utilization, resets_at}
-      seven_day_opus:             null | {utilization, resets_at}
-      seven_day_sonnet:           {utilization, resets_at}
-      seven_day_cowork:           null | {utilization, resets_at}
-      seven_day_omelette:         {utilization, resets_at}
-      tangelo / iguana_necktie /
-      omelette_promotional:       null | conditional objects
-      extra_usage:                {is_enabled, monthly_limit, used_credits, utilization, currency}
-
-    We extract the columnar fields below for easy querying; full
-    body is preserved as ``raw_response`` JSON for forward-compat
-    with response-shape changes Anthropic ships.
-    """
-    __tablename__ = "external_usage_snapshot"
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    provider_id = Column(String, ForeignKey("providers.id"), nullable=False, index=True)
-    captured_at = Column(DateTime, server_default=func.now(), index=True)
-    source = Column(String, default="anthropic_console_v1")
-    # Capture diagnostics
-    http_status = Column(Integer, nullable=True)
-    error = Column(Text, nullable=True)              # non-null when scrape failed
-    auth_state = Column(String, nullable=True)       # "ok" | "session_expired" | "cf_blocked" | "network_error"
-    # Core utilization fields (percent 0-100)
-    five_hour_utilization = Column(Float, nullable=True)
-    five_hour_resets_at = Column(DateTime, nullable=True)
-    seven_day_utilization = Column(Float, nullable=True)
-    seven_day_resets_at = Column(DateTime, nullable=True)
-    seven_day_sonnet_utilization = Column(Float, nullable=True)
-    seven_day_sonnet_resets_at = Column(DateTime, nullable=True)
-    seven_day_opus_utilization = Column(Float, nullable=True)
-    seven_day_opus_resets_at = Column(DateTime, nullable=True)
-    # Overage / consumer-pricing
-    extra_usage_is_enabled = Column(Boolean, nullable=True)
-    extra_usage_monthly_limit = Column(Float, nullable=True)
-    extra_usage_used_credits = Column(Float, nullable=True)
-    extra_usage_utilization = Column(Float, nullable=True)
-    extra_usage_currency = Column(String, nullable=True)
-    # Forward-compat catch-all so we can decode new fields without a
-    # migration each time Anthropic adds one
-    raw_response = Column(Text, nullable=True)
-
-
-class ModelCapability(Base):
-    __tablename__ = "model_capabilities"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    provider_id = Column(String, ForeignKey("providers.id"), nullable=False)
-    model_id = Column(String, nullable=False)
-    # v3.0.97: tombstone for cluster-replicated soft delete. Same pattern
-    # as Provider/ApiKey/LmrhDim — without this, a hard delete on one
-    # node is silently re-inserted by the next sync push from a peer
-    # that still has the row.
-    deleted_at = Column(DateTime, nullable=True, index=True)
-    tasks = Column(JSON, default=list)          # ["reasoning","code","chat",...]
-    latency = Column(String, default="medium")  # low|medium|high
-    cost_tier = Column(String, default="standard")  # economy|standard|premium
-    safety = Column(Integer, default=3)         # 1-5
-    context_length = Column(Integer, default=128000)
-    regions = Column(JSON, default=list)        # ["us","eu",...]
-    modalities = Column(JSON, default=list)     # ["text","vision","audio"]
-    native_reasoning = Column(Boolean, default=False)
-    native_tools = Column(Boolean, default=True)
-    native_vision = Column(Boolean, default=True)
-    # v3.8.5 (#265) — rolling tool-call success rate from the v3.8.4
-    # prober. Null = no probe data yet (router falls back to binary
-    # native_tools). Populated by ai_tool_prober's
-    # update_native_tools_from_rolling() helper.
-    tool_call_success_rate = Column(Float, nullable=True)
-    source = Column(String, default="inferred") # inferred|manual
-    # v3.4.1 — alternate spellings the router will accept and route to
-    # this same capability row. Solves the "grok-3 vs x-ai/grok-3"
-    # leak in /v1/models (same physical model showing as two list
-    # entries because both names were registered as separate rows).
-    # The router now matches on model_id OR (X IN aliases) so a request
-    # for any spelling resolves to the same canonical capability.
-    # Empty list means "this entry only matches its bare model_id".
-    aliases = Column(JSON, default=list)
-    # v3.5.0 (LMRHv2.1) — family / variant grouping for multi-route
-    # disambiguation. ``family`` is the upstream model identity
-    # (e.g. "grok-3" — same physical model regardless of which
-    # provider serves it); ``variant`` is the route flavour
-    # (e.g. "web" for the bridge, "openrouter" for the marketplace,
-    # "direct" for the vendor API). Both are NULL when not
-    # operator-classified — readers should fall back to deriving
-    # family from the canonical model_id (strip provider prefix).
-    model_family = Column(String, nullable=True)
-    model_variant = Column(String, nullable=True)
-    created_at = Column(DateTime, server_default=func.now())
-    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
-
-    provider = relationship("Provider", back_populates="capabilities")
-
-
-class ApiKey(Base):
-    __tablename__ = "api_keys"
-
-    id = Column(String, primary_key=True, default=lambda: secrets.token_hex(8))
-    name = Column(String, nullable=False)
-    key_hash = Column(String, nullable=False, unique=True)
-    key_prefix = Column(String, nullable=False)  # first 8 chars for display
-    encrypted_key = Column(String, nullable=True)  # Fernet-encrypted full key; NULL for legacy pre-encryption keys
-    key_type = Column(String, default="standard")  # standard|claude-code|admin|admin-readonly-catalog
-    enabled = Column(Boolean, default=True)
-    total_requests = Column(Integer, default=0)
-    total_tokens = Column(Integer, default=0)
-    total_cost_usd = Column(Float, default=0.0)
-    spending_cap_usd = Column(Float, nullable=True)  # lifetime hard cap; None = unlimited
-    rate_limit_rpm = Column(Integer, nullable=True)   # None = unlimited (explicit override)
-    rate_limit_tier = Column(String, nullable=True)   # Wave 6: named tier (free/starter/pro/enterprise/unlimited). None = custom/rate_limit_rpm only.
-    semantic_cache_enabled = Column(Boolean, default=False)  # Wave 1 #3 opt-in
-    # Wave 1 #5 — tiered budget caps (None = unlimited at that tier)
-    daily_soft_cap_usd = Column(Float, nullable=True)  # warning only; X-Budget-Warning header
-    daily_hard_cap_usd = Column(Float, nullable=True)  # 402 Payment Required
-    hourly_cap_usd = Column(Float, nullable=True)      # burst control; 429
-    # v3.9.13 (#267 follow-up) — per-key caller_memory retention. Operator
-    # sets days; background sweeper tombstones CallerMemory rows whose
-    # ``updated_at < now - caller_memory_ttl_days * 86400``. Null = no TTL
-    # (rows persist until purged via /v1/memory or admin endpoint).
-    # Operator opt-in per key — different teams have different retention
-    # needs (hub wants room-archival-driven cleanup; tax wants year-long
-    # carryover; paperless wants per-document cycle). Default behavior
-    # unchanged for keys that don't set this.
-    caller_memory_ttl_days = Column(Integer, nullable=True)
-    # Self-resetting bucket counters (reset when bucket_ts differs from current)
-    day_bucket_ts = Column(DateTime, nullable=True)
-    day_cost_usd = Column(Float, default=0.0)
-    hour_bucket_ts = Column(DateTime, nullable=True)
-    hour_cost_usd = Column(Float, default=0.0)
-    last_used_at = Column(DateTime)
-    created_at = Column(DateTime, server_default=func.now())
-    # v3.0.20: tombstone for soft-delete. Same shape as Provider.deleted_at —
-    # without this, hard-DELETE on one node was reversed by the next cluster
-    # sync push from a peer that still had the row, indistinguishable from
-    # a fresh insert. Soft-delete + sync-aware merge fixes the resurrection.
-    # Garbage collection of old tombstones is handled by the daily prune sweep.
-    deleted_at = Column(DateTime, nullable=True)
-    # v3.3.0 LMRHv2 polling-rate overrides. Null on either column means
-    # use defaults (4/min providers, 60/min quotes per design doc §4.1).
-    # Operators can set these for high-volume orchestrator keys that
-    # need tighter polling, or zero them out to disable v2 access for
-    # a specific tenant without touching the global flag.
-    lmrh_polling_rpm = Column(Integer, nullable=True)
-    lmrh_quotes_rpm = Column(Integer, nullable=True)
-
-
-class ApiKeyAiReview(Base):
-    """v3.7.10 — operator-requested proactive rate limiter. A background
-    worker scans recent activity for each api_key every 5 min, computes
-    a stats summary, sends it to an LLM for classification, and writes
-    a row here. Operator reviews via admin endpoints (suggest-only by
-    default; ``ai_rate_limiter_auto_apply=True`` flips to auto-action).
-
-    Verdict enum:
-      - ``normal``     — healthy traffic pattern; no action
-      - ``watch``      — slightly elevated; record but don't act
-      - ``throttle``   — recommend lowering ``rate_limit_rpm`` to floor
-      - ``block``      — recommend disabling the key entirely
-
-    Suggested-action enum:
-      - ``none``           — verdict is normal/watch; just log
-      - ``throttle_rpm``   — lower rate_limit_rpm to throttle_floor
-      - ``disable``        — set enabled=False (requires operator unblock)
-
-    When ``applied_at`` is set, the suggestion was applied (manually or
-    auto). ``prior_rate_limit_rpm`` lets us revert to the operator-set
-    value when the throttle is lifted.
-    """
-    __tablename__ = "api_key_ai_review"
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    api_key_id = Column(String, ForeignKey("api_keys.id"), nullable=False, index=True)
-    captured_at = Column(DateTime, server_default=func.now(), index=True)
-    llm_model = Column(String, nullable=True)  # which model was called for classification
-    llm_verdict = Column(String, nullable=False)
-    llm_reasoning = Column(Text, nullable=True)
-    suggested_action = Column(String, nullable=False, default="none")
-    stats_summary = Column(JSON, nullable=True)  # dict of input stats — for diagnostics
-    # Lifecycle: applied / dismissed / reverted
-    applied_at = Column(DateTime, nullable=True)
-    applied_action = Column(String, nullable=True)
-    prior_rate_limit_rpm = Column(Integer, nullable=True)  # for revert
-    reverted_at = Column(DateTime, nullable=True)
-    dismissed_at = Column(DateTime, nullable=True)
-    # v3.7.12 — when verdict == "block_ip", the LLM names the
-    # specific IP it thinks should be blocked. Stored here so the
-    # ``apply`` endpoint knows which IP to insert into
-    # ``blocked_ips`` and ``revert`` knows which one to remove.
-    suggested_block_ip = Column(String, nullable=True)
-
-
-class ProviderAiReview(Base):
-    """v3.7.30 (#252 phase 3) — provider-level mirror of ``ApiKeyAiReview``.
-
-    A background worker (Phase 4) scans recent activity for each
-    provider on a configurable cadence (default 30 min), computes a
-    stats summary including TTFT p50/p95 and response-length trends,
-    sends it to an LLM for classification, and writes a row here.
-
-    Operator reviews via admin endpoints (Phase 5). When
-    ``ai_provider_supervisor_auto_apply=True``, deprioritize/disable
-    verdicts mutate Provider.priority / auto_skip_until — but ONLY
-    for providers without ``manual_override_until`` set (Phase 1
-    escape hatch).
-
-    Verdict enum:
-      - ``normal``       — healthy; no action
-      - ``watch``        — slightly elevated; record but don't act
-      - ``deprioritize`` — recommend Provider.priority += N
-      - ``disable``      — recommend Provider.enabled = False
-      - ``investigate``  — anomaly detected, operator should look manually
-
-    Cluster sync replicates this table via the BUG-016 pattern (added
-    in Phase 4/5 ship).
-    """
-    __tablename__ = "provider_ai_review"
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    provider_id = Column(String, ForeignKey("providers.id"), nullable=False, index=True)
-    captured_at = Column(DateTime, server_default=func.now(), index=True)
-    llm_model = Column(String, nullable=True)
-    llm_verdict = Column(String, nullable=False)
-    llm_reasoning = Column(Text, nullable=True)
-    suggested_priority_delta = Column(Integer, nullable=True)
-    suggested_auto_skip_hours = Column(Integer, nullable=True)
-    stats_summary = Column(JSON, nullable=True)  # input stats for diagnostics
-    # Lifecycle: applied / dismissed / reverted (mirrors ApiKeyAiReview)
-    applied_at = Column(DateTime, nullable=True)
-    applied_action = Column(String, nullable=True)
-    prior_priority = Column(Integer, nullable=True)             # for revert
-    prior_auto_skip_until = Column(DateTime, nullable=True)     # for revert
-    reverted_at = Column(DateTime, nullable=True)
-    dismissed_at = Column(DateTime, nullable=True)
-
-
-class ModelToolProbe(Base):
-    """v3.8.4 (#264) — periodic tool-call probe results.
-
-    The tool capability prober fires a standard ``get_weather(city)``
-    tool-call request at every (provider, default_model) and records
-    whether the model:
-      - returned ANY tool_call block (``called=True``)
-      - returned a parseable tool_call with the expected name + args
-        (``parseable=True``)
-      - returned the expected city argument (``correct_city=True``)
-
-    A rolling window of the last N probes drives
-    ``ModelCapability.native_tools`` via hysteresis: <60% success →
-    native_tools=False (engage emulation); >=80% → native_tools=True
-    (trust native).
-
-    Table is per-node; cluster sync optional (probe results are
-    deterministic-ish per node since the same prompt should produce
-    the same answer, but rate-limit / network-error skew can differ).
-    """
-    __tablename__ = "model_tool_probe"
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    provider_id = Column(String, ForeignKey("providers.id"), nullable=False, index=True)
-    model_id = Column(String, nullable=False, index=True)
-    captured_at = Column(DateTime, server_default=func.now(), index=True)
-    # Outcome flags
-    called = Column(Boolean, default=False)         # did the response contain ANY tool_call?
-    parseable = Column(Boolean, default=False)      # was the tool_call name + JSON args parseable?
-    correct_args = Column(Boolean, default=False)   # did the args contain the expected key?
-    # Diagnostic context
-    error = Column(Text, nullable=True)             # non-null on http / network errors
-    raw_excerpt = Column(Text, nullable=True)       # first 500 chars of model output for inspection
-    response_format = Column(String, nullable=True) # "native" | "emulated" | None
-
-
-class CallerMemory(Base):
-    """v3.8.7 (#267) Phase 2 — proxy-side caller memory store.
-
-    Persistent memory state scoped per (api_key_id, conversation_id,
-    memory_tag). King-store: the proxy's source of truth for memory
-    content, regardless of which upstream provider served the most
-    recent request. Cluster-replicated via the existing LWW pattern.
-
-    Cached in Redis (`llmproxy:mem:{api_key_id}:{conv}:{tag}`) for
-    hot read perf; this SQLite row is the durable copy.
-
-    See ``docs/rfc/2026-05-proxy-memory-store.md`` for full design.
-    Default OFF (operator opt-in via ``caller_memory_enabled``).
-    """
-    __tablename__ = "caller_memory"
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    api_key_id = Column(String, ForeignKey("api_keys.id"), nullable=False, index=True)
-    conversation_id = Column(String, nullable=True, index=True)
-    memory_tag = Column(String, nullable=False, default="default")
-    content = Column(Text, nullable=False, default="")
-    content_format = Column(String, default="text")   # "text" | "json" | "anthropic_memory_blocks"
-    updated_at = Column(Float, nullable=False)        # unix ts for LWW
-    updated_by_node = Column(String, nullable=True)
-    # Optional provenance for back-pressure recovery + flush logic
-    source_provider_id = Column(String, nullable=True)
-    source_request_id = Column(String, nullable=True)
-    # Soft-delete tombstone for cluster-sync propagation (mirrors
-    # the v3.7.15 BlockedIp.deleted_at pattern)
-    deleted_at = Column(Float, nullable=True)
-
-
-class CallerMemoryMarker(Base):
-    """v3.8.7 (#267) Phase 2 — persistent existence-marker for memory
-    back-pressure recovery.
-
-    Lives separately from CallerMemory so a DB restore that loses
-    content rows can still recover from the upstream provider's
-    surviving state. Lossy upgrades that ALSO lose markers require
-    operator-driven re-import from snapshot.
-
-    On a request where the marker exists but ``caller_memory.content``
-    is empty/missing, the proxy triggers a vendor-specific recovery:
-    Anthropic memory-tool ``view``, OpenAI Assistants
-    ``GET /threads/{id}/messages``, etc. Reconstructed content
-    populates CallerMemory + sets ``recovered_at`` on the marker.
-    """
-    __tablename__ = "caller_memory_marker"
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    api_key_id = Column(String, ForeignKey("api_keys.id"), nullable=False, index=True)
-    conversation_id = Column(String, nullable=True, index=True)
-    memory_tag = Column(String, nullable=False, default="default")
-    first_seen_at = Column(Float, nullable=False)
-    last_known_provider_id = Column(String, nullable=True)
-    last_known_external_ref = Column(String, nullable=True)  # provider's thread_id / conversation handle
-    recovered_at = Column(Float, nullable=True)
-    deleted_at = Column(Float, nullable=True)
-
-
-class BlockedIp(Base):
-    """v3.7.11 — IP block list. Per operator Q5: AI rate limiter
-    should be able to slow keys OR source IPs. v3.7.10 shipped the
-    key-level controls; v3.7.11 adds the IP-level layer.
-
-    Middleware (``app/middleware/ip_block.py``) reads this table into
-    an in-memory set (refreshed every 30s) and returns 403 early for
-    any matching client_ip OR client_ip_inside. Operator manages via
-    admin endpoints; auto-population by the AI rate limiter is a
-    deferred follow-up (v3.7.12+).
-    """
-    __tablename__ = "blocked_ips"
-    ip = Column(String, primary_key=True)
-    reason = Column(String, nullable=True)
-    added_at = Column(DateTime, server_default=func.now())
-    added_by = Column(String, nullable=True)
-    # v3.7.15 — soft-delete tombstone for cluster-sync propagation. The
-    # admin-DELETE endpoint sets ``deleted_at`` rather than hard-deleting
-    # so peer nodes can learn about the removal on next sync push. The
-    # middleware filters ``deleted_at IS NULL`` so tombstoned rows
-    # don't block traffic. A periodic janitor (or manual op) can hard-
-    # delete tombstoned rows older than N days.
-    deleted_at = Column(DateTime, nullable=True, index=True)
-
-
-class User(Base):
-    __tablename__ = "users"
-
-    id = Column(String, primary_key=True, default=lambda: secrets.token_hex(8))
-    username = Column(String, nullable=False, unique=True)
-    password_hash = Column(String, nullable=False)
-    role = Column(String, default="user")  # admin|user
-    created_at = Column(DateTime, server_default=func.now())
-    timezone = Column(String, nullable=True)      # IANA name; NULL = browser default
-    time_format = Column(String, nullable=True)   # '12h'|'24h'|NULL = locale default
-
-
-class SystemSetting(Base):
-    """Key/value store for runtime-tunable settings (overlays env-var defaults)."""
-    __tablename__ = "system_settings"
-
-    key = Column(String, primary_key=True)
-    value = Column(Text, nullable=False)        # always stored as string
-    value_type = Column(String, default="str")  # str|int|float|bool
-    updated_at = Column(Float, default=0.0)     # Unix timestamp — used for last-write-wins sync
-
-
-class ActivityLog(Base):
-    __tablename__ = "activity_log"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    event_type = Column(String, nullable=False)
-    severity = Column(String, default="info")  # info|warning|error|critical
-    message = Column(Text)
-    provider_id = Column(String)
-    api_key_id = Column(String)
-    event_meta = Column(JSON, default=dict)
-    created_at = Column(DateTime, server_default=func.now())
-
-
-class ProviderMetric(Base):
-    """Time-series health/usage data per provider (5-minute buckets)."""
-    __tablename__ = "provider_metrics"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    provider_id = Column(String, nullable=False)
-    bucket_ts = Column(DateTime, nullable=False)   # floored to 5-min
-    requests = Column(Integer, default=0)
-    successes = Column(Integer, default=0)
-    failures = Column(Integer, default=0)
-    total_tokens = Column(Integer, default=0)
-    total_cost_usd = Column(Float, default=0.0)
-    avg_latency_ms = Column(Float, default=0.0)
-    avg_ttft_ms = Column(Float, default=0.0)
-    ttft_requests = Column(Integer, default=0)
-    circuit_state = Column(String, default="closed")  # closed|open|half-open
-    # v3.4.0 — per-direction cost + token split. total_cost_usd /
-    # total_tokens stay as combined sums for back-compat; the new
-    # columns let LMRHv2 callers and operators see input-vs-output
-    # rates independently (e.g. summarization is output-cheap; context
-    # stuffing is input-expensive). Default 0 so older rows still load.
-    input_cost_usd = Column(Float, default=0.0)
-    output_cost_usd = Column(Float, default=0.0)
-    input_tokens = Column(Integer, default=0)
-    output_tokens = Column(Integer, default=0)
-
-
-class ModelAlias(Base):
-    """Client-facing model name → specific provider + model mapping."""
-    __tablename__ = "model_aliases"
-
-    alias = Column(String, primary_key=True)
-    provider_id = Column(String, ForeignKey("providers.id", ondelete="CASCADE"), nullable=True)
-    model_id = Column(String, nullable=False)
-    description = Column(String, nullable=True)
-    created_at = Column(DateTime, server_default=func.now())
-    # v3.0.97: tombstone for cluster-replicated soft delete.
-    deleted_at = Column(DateTime, nullable=True, index=True)
-
-
-class LmrhDim(Base):
-    """v3.0.25: registered LMRH dimension. The protocol's self-extension
-    mechanism — apps can register new dims via POST /lmrh/register; the
-    proxy collision-resolves (suffix -2/-3 on conflict) and replicates
-    the registry to peers via cluster sync. Once registered, both sides
-    agree on the canonical name and the proxy stops emitting unknown-dim
-    warnings for it.
-
-    Built-in dims (task, cost, latency, safety-min, etc.) are NOT in this
-    table — they live in code. This table is for dims registered AT RUNTIME
-    by integrating apps. Read of merged-set goes through ``known_dim_names()``
-    which combines both.
-    """
-    __tablename__ = "lmrh_dims"
-
-    name = Column(String, primary_key=True)
-    owner_app = Column(String, nullable=True)         # free-form ("paperless-ai-analyzer")
-    owner_key_id = Column(String, nullable=True)      # api_keys.id of submitter
-    semantics = Column(Text, nullable=True)           # one-paragraph description
-    value_type = Column(String, nullable=True)        # "string|int|enum:a,b,c|float"
-    kind = Column(String, default="advisory")        # hard|soft|advisory
-    examples = Column(JSON, default=list)             # ["task=foo;exclude=bar"]
-    requested_name = Column(String, nullable=True)    # what was originally requested
-    registered_at = Column(Float, nullable=False)
-    registered_by_node = Column(String, nullable=True)
-    # v3.0.29: tombstone for cluster-replicated soft delete. Without this,
-    # hard-DELETE on one node was reversed by the next sync push from a peer
-    # that still had the row. Mirrors the same pattern used for Provider
-    # (v2.8.2) and ApiKey (v3.0.20). Stores Unix-epoch float for parity
-    # with registered_at.
-    deleted_at = Column(Float, nullable=True)
-
-
-class LmrhProposal(Base):
-    """v3.0.25: free-form proposals for dims that the submitter wants
-    OPERATOR-REVIEWED before official adoption (vs the auto-register
-    path). Distinct from the registry — proposals are read-only-by-admins
-    until promoted to a registry entry.
-    """
-    __tablename__ = "lmrh_proposals"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    proposed_name = Column(String, nullable=False)
-    rationale = Column(Text, nullable=True)
-    proposer_app = Column(String, nullable=True)
-    proposer_key_id = Column(String, nullable=True)
-    proposed_at = Column(Float, nullable=False)
-    status = Column(String, default="pending")        # pending|accepted|rejected
-    review_note = Column(Text, nullable=True)
-    # v3.0.29: tombstone for cluster-replicated soft delete (see LmrhDim).
-    deleted_at = Column(Float, nullable=True)
-
-
-class OAuthCaptureProfile(Base):
-    """A named OAuth capture configuration. Each profile has its own upstream
-    host(s), secret, and enabled flag so multiple CLIs (claude-code, codex,
-    gh copilot, …) can be captured concurrently without interference.
-
-    Added in v2.5.0 — replaces the former single-upstream settings model.
-    """
-    __tablename__ = "oauth_capture_profiles"
-
-    name = Column(String, primary_key=True)  # "claude-code", "codex", "gh-copilot", etc.
-    preset = Column(String, nullable=True)   # matches PRESETS key in oauth_capture.py
-    upstream_urls = Column(JSON, default=list)  # list[str], typically 1-2 hosts
-    secret = Column(String, nullable=True)   # per-profile capture secret
-    enabled = Column(Boolean, default=False)
-    notes = Column(Text, nullable=True)
-    created_at = Column(DateTime, server_default=func.now())
-    # v3.0.97: tombstone for cluster-replicated soft delete.
-    deleted_at = Column(DateTime, nullable=True, index=True)
-
-
-class OAuthCaptureLog(Base):
-    """Recorded request+response pairs from the OAuth-passthrough endpoint.
-    Used to reverse-engineer vendor OAuth flows (claude-code, codex, gh copilot,
-    etc.) before implementing a direct `*-oauth` provider.
-    """
-    __tablename__ = "oauth_capture_log"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    profile_name = Column(String, nullable=True, index=True)  # v2.5.0: which capture profile
-    capture_session = Column(String, nullable=True, index=True)  # optional client-tag
-    method = Column(String, nullable=False)
-    path = Column(String, nullable=False)          # the subpath of /api/oauth-capture/<profile>/
-    upstream_url = Column(String, nullable=False)  # where we actually sent it
-    req_headers = Column(JSON, default=dict)
-    req_body = Column(Text, nullable=True)         # raw body; may be JSON or form-urlencoded
-    req_query = Column(String, nullable=True)
-    resp_status = Column(Integer, nullable=True)
-    resp_headers = Column(JSON, default=dict)
-    resp_body = Column(Text, nullable=True)
-    latency_ms = Column(Float, default=0.0)
-    error = Column(Text, nullable=True)
-    created_at = Column(DateTime, server_default=func.now())
-
-
-# ── Run runtime (v3.0 — coordinator-hub spec, R1) ───────────────────────────
-
-
-class Run(Base):
-    """A server-mediated agent loop scoped to one hub task.
-
-    State machine (per spec B.1):
-      queued → running → requires_tool → running → ... → completed
-              ↘ failed  ↘ expired  ↘ cancelled
-
-    See app/runs/state.py for the FSM. Persistence is per-row; transitions
-    bump ``updated_at`` so cluster sync can replicate via last-write-wins.
-    """
-    __tablename__ = "runs"
-
-    id = Column(String, primary_key=True)         # 'run_' + 16 hex chars
-    api_key_id = Column(String, nullable=False, index=True)
-    owner_node_id = Column(String, nullable=False)  # which node spawned the worker
-    status = Column(String, nullable=False, default="queued")
-    current_step = Column(String, nullable=True)    # model_call|tool_dispatch|tool_wait|complete|fail
-    deadline_ts = Column(Float, nullable=False)
-    max_turns = Column(Integer, nullable=False)
-    model_preference = Column(JSON, default=list)   # ordered list of model ids
-    compaction_model = Column(String, nullable=True)
-    system_prompt = Column(Text, nullable=True)
-    tools_spec = Column(JSON, default=list)         # Anthropic-format tool schemas
-    metadata_json = Column(JSON, default=dict)
-    trace_id = Column(String, nullable=True)        # OTEL parent span id (top-level on create)
-    # Counters / accounting
-    model_calls = Column(Integer, default=0)
-    tool_calls = Column(Integer, default=0)
-    tokens_in = Column(Integer, default=0)
-    tokens_out = Column(Integer, default=0)
-    last_provider_id = Column(String, nullable=True)
-    context_summarized_at_turn = Column(Integer, nullable=True)
-    # Pending tool_use waiting for /tool_result
-    current_tool_use_id = Column(String, nullable=True)
-    current_tool_name = Column(String, nullable=True)
-    current_tool_input = Column(JSON, nullable=True)
-    # Terminal payloads
-    result_text = Column(Text, nullable=True)
-    error_kind = Column(String, nullable=True)      # error_provider|tool_loop_exceeded|context_exhausted|...
-    error_message = Column(Text, nullable=True)
-    created_at = Column(Float, nullable=False)      # Unix; matches idempotency TTL anchor
-    updated_at = Column(Float, nullable=False)      # bumped on every transition
-    completed_at = Column(Float, nullable=True)
-
-
-class RunMessage(Base):
-    """Conversation history for a Run, ordered by ``seq``.
-
-    Stored verbatim in Anthropic Messages format (role + content blocks).
-    Compaction replaces a span of messages with a single 'assistant'
-    summary message — see ``compacted_from_seq``/``compacted_to_seq``."""
-    __tablename__ = "run_messages"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    run_id = Column(String, ForeignKey("runs.id", ondelete="CASCADE"), nullable=False, index=True)
-    seq = Column(Integer, nullable=False)           # monotonic per run, dense
-    role = Column(String, nullable=False)           # system|user|assistant
-    content = Column(JSON, nullable=False)          # str or list[block]
-    tokens = Column(Integer, default=0)             # estimate, for compaction trigger
-    compacted_from_seq = Column(Integer, nullable=True)  # if this row is a summary
-    compacted_to_seq = Column(Integer, nullable=True)
-    created_at = Column(Float, nullable=False)
-
-
-class RunEvent(Base):
-    """SSE event ring buffer for a Run. Last 1000 per run kept; older pruned.
-
-    ``seq`` is monotonic per run; SSE clients resume via ``Last-Event-ID``.
-    Event ``kind`` matches the spec table (run_started, model_call_start, ...).
-    """
-    __tablename__ = "run_events"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    run_id = Column(String, ForeignKey("runs.id", ondelete="CASCADE"), nullable=False, index=True)
-    seq = Column(Integer, nullable=False)
-    kind = Column(String, nullable=False)
-    payload = Column(JSON, default=dict)
-    ts = Column(Float, nullable=False)
-
-
-class RunIdempotency(Base):
-    """``(api_key_id, idempotency_key)`` → ``run_id`` map.
-
-    24h TTL from ``created_at``; lookups beyond TTL miss and a new Run is
-    created. Domain is per-API-key per the locked Q1 decision.
-    """
-    __tablename__ = "run_idempotency"
-
-    api_key_id = Column(String, primary_key=True)
-    idempotency_key = Column(String, primary_key=True)  # caller-supplied; ≤256 chars
-    run_id = Column(String, nullable=False)
-    created_at = Column(Float, nullable=False)
-
-
-# ── v4.0 — AIRI rules layer ──────────────────────────────────────────────────
-# AIRI (the AI Router Interface) lets operators organise the AI Provider
-# Supervisor's policy as named, snapshot-able rule-sets. Milestone 2 ships the
-# data model + rule-set save/restore; the rules are stored config — they are
-# wired to live supervisor behaviour in a later milestone.
-
-class AiriRuleset(Base):
-    """A named snapshot of AIRI rules. Exactly one row is ``is_active``.
-    The seeded ``Default`` set mirrors the supervisor's current settings."""
-    __tablename__ = "airi_ruleset"
-
-    id = Column(String, primary_key=True, default=lambda: secrets.token_hex(8))
-    name = Column(String, nullable=False, unique=True)
-    is_default = Column(Boolean, default=False)
-    is_active = Column(Boolean, default=False)
-    description = Column(Text)
-    created_by = Column(String)
-    created_at = Column(DateTime, server_default=func.now())
-    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
-
-
-class AiriRule(Base):
-    """One policy item inside a rule-set.
-
-    ``kind`` is ``threshold`` (a supervisor tunable), ``conditional`` (a
-    deterministic trigger->action — authored in a later milestone), or
-    ``monitor`` (a read-only recurring check — later milestone). ``spec`` is
-    the kind-specific JSON body.
-    """
-    __tablename__ = "airi_rule"
-
-    id = Column(String, primary_key=True, default=lambda: secrets.token_hex(8))
-    ruleset_id = Column(String, ForeignKey("airi_ruleset.id", ondelete="CASCADE"),
-                        nullable=False, index=True)
-    name = Column(String, nullable=False)
-    kind = Column(String, nullable=False)              # threshold|conditional|monitor
-    spec = Column(JSON, default=dict)
-    mode = Column(String, default="suggest")           # suggest|auto_apply
-    enabled = Column(Boolean, default=True)
-    blast_radius_cap = Column(Integer)
-    max_runs_per_window = Column(Integer)
-    cooldown_sec = Column(Integer)
-    expiry_at = Column(DateTime)
-    last_run_at = Column(DateTime)
-    last_action = Column(String)
-    oscillation_state = Column(JSON)
-    created_by = Column(String)
-    created_via_prompt = Column(Text)
-    created_at = Column(DateTime, server_default=func.now())
-    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
-
-
-class AiriProposal(Base):
-    """A change AIRI proposed — the unit of the propose -> dry-run -> apply
-    flow, and the audit record. ``prior_state`` snapshots what to restore on
-    revert. v4.0 milestone 3."""
-    __tablename__ = "airi_proposal"
-
-    id = Column(String, primary_key=True, default=lambda: secrets.token_hex(8))
-    kind = Column(String, nullable=False)          # provider_change | rule_change
-    target_id = Column(String, nullable=False)     # provider id or rule id
-    target_label = Column(String)                  # provider / rule name for display
-    change = Column(JSON, default=dict)            # {field, from, to, ...}
-    dry_run = Column(JSON, default=dict)           # the impact preview
-    status = Column(String, default="pending")     # pending|applied|rejected|reverted
-    prior_state = Column(JSON)                     # snapshot for revert
-    created_by = Column(String)
-    created_via_prompt = Column(Text)
-    created_at = Column(DateTime, server_default=func.now())
-    decided_at = Column(DateTime)
-    decided_by = Column(String)
-
-
-class AiriConversation(Base):
-    """A persistent AIRI chat thread. History is per-user, but every user can
-    SEARCH every conversation (decision #5 — the shared history is the
-    cross-operator change-coordination surface). v4.0 milestone 5."""
-    __tablename__ = "airi_conversation"
-
-    id = Column(String, primary_key=True, default=lambda: secrets.token_hex(8))
-    user_id = Column(String, nullable=False, index=True)   # owning operator
-    title = Column(String)                                 # first user line, truncated
-    created_at = Column(DateTime, server_default=func.now())
-    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
-
-
-class AiriMessage(Base):
-    """One turn inside an AIRI conversation. ``content`` is searchable across
-    all users. ``tool_calls`` / ``trace_id`` are kept for forward-compat with
-    a richer transcript; v4.0 stores plain user/assistant text. M5."""
-    __tablename__ = "airi_message"
-
-    id = Column(String, primary_key=True, default=lambda: secrets.token_hex(8))
-    conversation_id = Column(String, ForeignKey("airi_conversation.id", ondelete="CASCADE"),
-                             nullable=False, index=True)
-    role = Column(String, nullable=False)                  # user|assistant
-    content = Column(Text)
-    tool_calls = Column(JSON)                              # forward-compat, unused in 4.0
-    trace_id = Column(String)                              # forward-compat, unused in 4.0
-    created_at = Column(DateTime, server_default=func.now())
-
-
-class AiriNotificationPref(Base):
-    """A single operator's personal AIRI-notification subscription (v4.0.3).
-
-    The global alert mailbox (``settings.smtp_to``) always receives AIRI
-    notifications — this row is an ADDITIVE per-user subscription: an
-    operator opts their own address in and tunes which categories and what
-    minimum severity reach them. One row per user; absence == no personal
-    subscription."""
-    __tablename__ = "airi_notification_pref"
-
-    id = Column(String, primary_key=True, default=lambda: secrets.token_hex(8))
-    user_id = Column(String, nullable=False, unique=True, index=True)  # username
-    email = Column(String)                                 # NULL == no personal email
-    enabled = Column(Boolean, default=True)                # personal subscription on/off
-    categories = Column(JSON, default=lambda: {"monitor": True, "automation": True})
-    min_severity = Column(String, default="warning")       # info|warning|critical
-    created_at = Column(DateTime, server_default=func.now())
-    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+# API key domain
+from app.models.db_apikey import (
+    ApiKey,
+    ApiKeyAiReview,
+)
+
+# User + system settings
+from app.models.db_user import (
+    User,
+    SystemSetting,
+)
+
+# Activity log + blocked IPs
+from app.models.db_activity import (
+    BlockedIp,
+    ActivityLog,
+)
+
+# Run runtime (v3.0)
+from app.models.db_run import (
+    Run,
+    RunMessage,
+    RunEvent,
+    RunIdempotency,
+)
+
+# LMRH protocol
+from app.models.db_lmrh import (
+    LmrhDim,
+    LmrhProposal,
+)
+
+# OAuth capture
+from app.models.db_oauth import (
+    OAuthCaptureProfile,
+    OAuthCaptureLog,
+)
+
+# Caller memory (#267 Phase 2)
+from app.models.db_caller_memory import (
+    CallerMemory,
+    CallerMemoryMarker,
+)
+
+# AIRI rule layer (v4.0)
+from app.models.db_airi import (
+    AiriRuleset,
+    AiriRule,
+    AiriProposal,
+    AiriConversation,
+    AiriMessage,
+    AiriNotificationPref,
+)
+
+__all__ = [
+    "Base",
+    "Session",
+    # Provider domain
+    "Provider",
+    "ProviderUsageWindow",
+    "ProviderNodeAuthState",
+    "ExternalUsageSnapshot",
+    "ModelCapability",
+    "ProviderAiReview",
+    "ModelToolProbe",
+    "ProviderMetric",
+    "ModelAlias",
+    # API key domain
+    "ApiKey",
+    "ApiKeyAiReview",
+    # User + settings
+    "User",
+    "SystemSetting",
+    # Activity / IP block
+    "BlockedIp",
+    "ActivityLog",
+    # Run runtime
+    "Run",
+    "RunMessage",
+    "RunEvent",
+    "RunIdempotency",
+    # LMRH
+    "LmrhDim",
+    "LmrhProposal",
+    # OAuth capture
+    "OAuthCaptureProfile",
+    "OAuthCaptureLog",
+    # Caller memory
+    "CallerMemory",
+    "CallerMemoryMarker",
+    # AIRI
+    "AiriRuleset",
+    "AiriRule",
+    "AiriProposal",
+    "AiriConversation",
+    "AiriMessage",
+    "AiriNotificationPref",
+]
