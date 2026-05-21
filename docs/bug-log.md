@@ -110,7 +110,7 @@ A targeted QA pass run immediately after the v4.4.0 release ceremony to verify t
   reconciled in v4.4.1's session, so the fix is preventive — no
   fleet-wide reconcile needed.
 
-### F-OBS-001 — nginx config has 2 pre-existing warnings + bind-mount inode pinning — ⚠ **DEFERRED**
+### F-OBS-001 — nginx config has 2 pre-existing warnings + bind-mount inode pinning — ✅ **CLOSED 2026-05-21**
 
 - **Severity:** observation only (informational; not a defect introduced by v4.4.0)
 - `nginx -t` emits `the "listen ... http2" directive is deprecated` (lines 56, 110) and `protocol options redefined for 0.0.0.0:443` (line 152). The fix is mechanical (replace `listen 443 ssl http2;` with `listen 443 ssl; / http2 on;`).
@@ -118,7 +118,7 @@ A targeted QA pass run immediately after the v4.4.0 release ceremony to verify t
 - **Root cause discovered**: the nginx container's bind mount is **pinned to an old inode** of the host file. Past atomic edits (via `mv tmp file` — which Edit tool does internally) replaced the host file's inode, leaving the container reading a detached inode. The bind mount target's inode 7,109,103 ≠ the current host file's inode 7,109,539. `docker exec nginx cat /etc/nginx/nginx.conf` returns the PRE-edit content despite the host file showing the post-edit content.
 - **Resolution required**: container restart (`sudo docker compose up -d --force-recreate --no-deps nginx`) re-binds to the current host inode. This briefly interrupts all proxy traffic served by nginx (~1-3s); should be coordinated with operator presence.
 - **Companion gotcha worth recording**: this inode pinning explains why some past nginx config edits have appeared to "not stick" — the container kept reading the old inode until the next nginx container restart. Future nginx config edits should either use truncate-in-place (`cat > file`) instead of atomic-write, OR be followed by a coordinated nginx container restart.
-- **Status:** deferred. Apply the listen-http2 fix + restart nginx during the next coordinated maintenance window.
+- **Status:** **CLOSED 2026-05-21.** Applied edit to `/home/dblagbro/docker/config/nginx/nginx.conf` lines 56 + 110 (`listen 443 ssl;` + `http2 on;` directive pair). Pre-validated config in a sidecar nginx container before touching the live one. Recreated `nginx` via `sudo docker compose up -d --force-recreate --no-deps nginx`. Total proxy downtime: ~3-5s during container recreate; both `https://www.voipguru.org/llm-proxy2/health` and `https://c1conversations-avaya-01.avaya.c1cx.com/llm-proxy2/health` returned v4.4.12 healthy=10/10 immediately after. Post-restart `nginx -t` no longer emits any `listen ... http2 deprecated` or `protocol options redefined` warnings. Only remaining nginx-t output is a pre-existing pair of `duplicate MIME type "text/html"` warnings on lines 599/662 (in the `types {}` block, harmless, NOT in scope here).
 
 ---
 
