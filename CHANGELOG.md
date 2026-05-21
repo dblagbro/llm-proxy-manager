@@ -9,6 +9,52 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v4.3.x — "Voice output" milestone
 
+### v4.4.11 — `app/models/db.py` split into 10 domain modules (2026-05-20)
+
+Pre-split the file was **994 LOC** — one new ORM table away from the
+project's de-facto 1,000-LOC ceiling (matches the Hub team's
+`project_v160071_oversize_pass` rule). v4.4.11 splits it along
+natural domain boundaries:
+
+| New module | Models |
+|---|---|
+| `app/models/db_base.py` | `Base` (DeclarativeBase) + `Session` (auth) |
+| `app/models/db_provider.py` | `Provider`, `ProviderUsageWindow`, `ProviderNodeAuthState`, `ExternalUsageSnapshot`, `ModelCapability`, `ProviderAiReview`, `ModelToolProbe`, `ProviderMetric`, `ModelAlias` (heaviest — 467 LOC) |
+| `app/models/db_apikey.py` | `ApiKey`, `ApiKeyAiReview` |
+| `app/models/db_user.py` | `User`, `SystemSetting` |
+| `app/models/db_activity.py` | `BlockedIp`, `ActivityLog` |
+| `app/models/db_run.py` | `Run`, `RunMessage`, `RunEvent`, `RunIdempotency` |
+| `app/models/db_lmrh.py` | `LmrhDim`, `LmrhProposal` |
+| `app/models/db_oauth.py` | `OAuthCaptureProfile`, `OAuthCaptureLog` |
+| `app/models/db_caller_memory.py` | `CallerMemory`, `CallerMemoryMarker` |
+| `app/models/db_airi.py` | `AiriRuleset`, `AiriRule`, `AiriProposal`, `AiriConversation`, `AiriMessage`, `AiriNotificationPref` |
+
+`app/models/db.py` becomes a **136 LOC re-export shim** — every model is imported at module-load (so the SQLAlchemy registry on `Base.metadata` is fully populated), then re-exported in `__all__`. Existing callers (`from app.models.db import Provider, ...`) work unchanged — **zero blast radius for the rest of the codebase**.
+
+**Sizes before / after**:
+
+```
+Before: 994 LOC in 1 file
+After : 467 LOC max (db_provider.py); 1269 LOC total across 11 files
+        (the +275 overhead is module docstrings + import statements
+         — the actual model code is unchanged)
+```
+
+**Invariants under test** (`tests/unit/test_v4411_db_split.py`, +4 tests):
+
+- `test_all_domain_modules_load_cleanly` — each of the 10 new modules imports without errors.
+- `test_re_export_shim_includes_every_model_class` — `app.models.db.__all__` includes every model class from every domain module. Catches the future "added a new model but forgot to re-export it" gotcha.
+- `test_registry_has_all_32_tables` — `Base.metadata.tables` contains all 32 tables after importing `db.py`. Catches a domain module that's not imported by the shim.
+- `test_no_domain_module_exceeds_500_loc` — soft ceiling per new domain file. If any future addition pushes a module past 500 LOC, the test fails and signals "re-split this domain."
+
+**Risk profile**: very low. SQLAlchemy `relationship()` calls use string references (`relationship("ModelCapability", back_populates="provider", ...)`) — these resolve lazily via `Base.registry` at first query, so they don't care which module a model is defined in as long as both modules are imported before the first query fires.
+
+**Test counts**
+
+- Unit suite: **2292 passed** (was 2288 in v4.4.10; +4 split-invariant tests).
+
+**Operator action — none.** Pure refactor; no application behaviour change. The DB schema is identical; the deployed container's behavior is identical.
+
 ### v4.4.10 — full doc update + v4.4.x release-readiness wrap-up (2026-05-20)
 
 Doc-only release wrapping the v4.4.0 → v4.4.9 fix cycle. No application
