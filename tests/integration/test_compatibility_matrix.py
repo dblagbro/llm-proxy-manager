@@ -511,14 +511,20 @@ class TestMultiTurnPerProvider:
             if not any(k in t1_lower for k in ("stack", "class", "push", "pop", "def ")):
                 failures.append(f"{ctx}: turn1 didn't mention Stack or class methods. Got: {t1_text[:200]}")
                 continue
-            # Turn 2 — reference prior context
+            # Turn 2 — reference prior context.
+            # v4.4.8 BUG-058 (turn 2 follow-up) — same Gemini
+            # preamble pattern applies here. Raise max_tokens +
+            # tell the model to skip preamble.
             r2 = _post(f"{BASE_URL}/v1/messages", headers, {
-                "model": model, "max_tokens": 150,
+                "model": model, "max_tokens": 256,
                 "messages": [
                     {"role": "user",
-                     "content": "Define a Python class named `Stack` with push and pop."},
+                     "content": "Define a Python class named `Stack` with push and pop methods. "
+                                "Output only the code, no preamble or explanation."},
                     {"role": "assistant", "content": t1_text},
-                    {"role": "user", "content": "Now add a `peek` method to the Stack class."},
+                    {"role": "user",
+                     "content": "Now add a `peek` method to the Stack class. "
+                                "Output only the updated code, no preamble."},
                 ],
             }, timeout=60)
             if r2.status_code == 429 or 500 <= r2.status_code < 600:
