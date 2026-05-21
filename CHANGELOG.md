@@ -9,6 +9,53 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v4.3.x — "Voice output" milestone
 
+### v4.4.6 — BUG-057 OpenAI streaming `finish_reason` on the last chunk (2026-05-20)
+
+Closes BUG-057. Surfaced 2026-05-20 by `test_compatibility_matrix.py::test_openai_stream_all_providers` during the L1 `--run-real` matrix run. The OpenAI ChatGPT path emitted streams whose final chunk had `finish_reason=null`, breaking OpenAI SDK clients that read the last chunk to detect end-of-stream.
+
+**Root cause**: modern OpenAI streaming (with usage stats included, which litellm enables by default in the 1.83.x line) emits TWO chunks at end-of-stream:
+
+```
+chunk N-1: { finish_reason: "stop", delta: { content: null }, ... }
+chunk N  : { finish_reason: null,   delta: { content: null }, usage: {...} }
+```
+
+The proxy used to pass through litellm's chunks verbatim, so the LAST emitted chunk carried only the usage info — no `finish_reason`. OpenAI SDK clients that look at the last chunk's `finish_reason` to detect end-of-stream block or misreport.
+
+**Live capture** (Devin Personal OpenAI ChatGPT, gpt-4o, "Say OK", max_tokens=20):
+
+```
+chunk #1: finish_reason=None,  delta.content=''
+chunk #2: finish_reason=None,  delta.content='OK'
+chunk #3: finish_reason='stop', delta.content=None      ← old "last" chunk
+chunk #4: finish_reason=None,  delta.content=None, usage={completion_tokens: 1, ...}  ← new last
+```
+
+**Fix** (`app/api/_completions_streaming.py::_stream_openai`): buffer one chunk so the FINAL chunk can be patched before serializing. Track the most recent `finish_reason` seen across the stream; on end-of-stream, if the last chunk lacks `finish_reason` and we saw one earlier, copy it onto the last chunk's `choices[0].finish_reason`. Preserves the usage info AND restores the end-of-stream signal.
+
+Approach trade-off considered:
+- ❌ Strip the usage chunk — would lose token-count info in the stream.
+- ❌ Disable `stream_options.include_usage` upstream — same problem.
+- ❌ Emit a synthetic third chunk — would surprise legacy clients that stop on first finish_reason.
+- ✅ Buffer-and-patch — preserves the chunk count, preserves the usage info, restores the spec-compliant end-of-stream signal.
+
+Latency impact: the buffer-and-emit adds 1-chunk delay only to the FINAL chunk emission (real content chunks emit immediately on the next chunk's arrival). Negligible UX impact.
+
+**Tests** (`tests/unit/test_v446_bug057_openai_finish_reason.py`, +6):
+
+- `test_bug057_fix_marker_present` — source-level marker guard.
+- `test_bug057_buffer_strategy_in_source` — source-level: `prev_chunk` + `last_finish` + the in-place patch.
+- `test_bug057_existing_first_chunk_ttft_path_preserved` — the TTFT instrumentation still runs.
+- `test_bug057_usage_chunk_pattern_patches_finish_reason` — **end-to-end**: mock litellm with the modern OpenAI usage-chunk pattern; assert the LAST emitted chunk has `finish_reason='stop'` AND preserves the usage info.
+- `test_bug057_classic_stream_unaffected` — regression guard: old-style streams (no usage chunk) emit unchanged.
+- `test_bug057_no_finish_reason_anywhere_emits_as_is` — defensive: if upstream emits no `finish_reason` on any chunk, we don't invent one (faithfully report broken).
+
+**Test counts**
+
+- Unit suite: **2288 passed** (was 2282 in v4.4.5; +6 BUG-057 tests).
+
+**Operator action — none required.** Affects OpenAI-style streaming through any provider using litellm's standard OpenAI path (1 of 10 active providers today: Devin Personal OpenAI ChatGPT). Non-streaming requests were always compliant.
+
 ### v4.4.5 — BUG-056 Anthropic streaming protocol compliance for empty-content providers (2026-05-20)
 
 Closes BUG-056. Surfaced 2026-05-20 by `tests/integration/test_compatibility_matrix.py::test_anthropic_stream_all_providers` during the L1 `--run-real` matrix run. Both Gemini-backed providers (`C1 Vertex AI / Google AI`, `Google Generative LLM`) emitted streams missing `content_block_start` + `content_block_stop` SSE events — leaving Anthropic SDK clients unable to construct the assistant message object.

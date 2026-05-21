@@ -211,7 +211,7 @@ filed below.
   `tests/unit/test_v445_bug056_empty_stream.py` (source-level guards +
   end-to-end with mock litellm stream). Unit suite 2282.
 
-### BUG-057 — OpenAI streaming responses missing `finish_reason` in last chunk — ⚠ **OPEN (medium)**
+### BUG-057 — OpenAI streaming responses missing `finish_reason` in last chunk — ✅ **CLOSED 2026-05-20 (v4.4.6)**
 
 - **Severity:** medium · **Category:** confirmed defect · wire-protocol completeness
 - **Surfaced:** 2026-05-20 by `tests/integration/test_compatibility_matrix.py::TestWireFormatPerProvider::test_openai_stream_all_providers` during the L1 matrix run.
@@ -223,7 +223,22 @@ filed below.
   - Strict OpenAI SDK clients (`openai-python` ≥ 1.0) parse `finish_reason` for completion-state machines — would hang or misreport.
 - **Likely root cause area:** the OpenAI ChatGPT OAuth streaming translator in `app/api/_oauth_chat_translate.py` or similar — the upstream subscription endpoint emits a slightly different end-of-stream format than the API-key endpoint, and our translator misses the `finish_reason` field on the synthesized last chunk.
 - **Fix scope:** locate the ChatGPT-OAuth stream translator; ensure `finish_reason` is populated on the final chunk before `[DONE]`. Probably ~10-20 LoC + 1 streaming-fixture test.
-- **Status:** queued for v4.4.5.
+- **Root cause refined 2026-05-20:** not actually the ChatGPT-OAuth
+  path — this provider has `provider_type='openai'` and goes through
+  the standard litellm OpenAI streaming. The defect is general
+  OpenAI-streaming: modern OpenAI emits a usage chunk AFTER the
+  finish_reason chunk (when `stream_options.include_usage=true`,
+  which litellm defaults to). The usage chunk has `finish_reason=null`,
+  so the LAST emitted chunk lacks the end-of-stream signal.
+- **Status:** **CLOSED v4.4.6 2026-05-20.** Fix shipped at
+  `app/api/_completions_streaming.py::_stream_openai`: buffer-and-
+  patch — track most recent finish_reason across the stream, patch
+  the last chunk in place before serializing. Preserves usage info
+  AND restores end-of-stream signal. +6 regression tests at
+  `tests/unit/test_v446_bug057_openai_finish_reason.py` (source-
+  level guards + end-to-end mock streams for the usage-chunk
+  pattern, classic stream, and no-finish-anywhere defensive case).
+  Unit suite 2288.
 
 ### BUG-058 — Matrix test assertions too tight for Gemini's verbose response prefix — ⚠ **OPEN (low, test-side)**
 
