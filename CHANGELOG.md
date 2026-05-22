@@ -9,6 +9,32 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v4.3.x — "Voice output" milestone
 
+### v4.4.16 — log-quality fixes from the 2026-05-22 log audit (2026-05-22)
+
+A second log audit (the cadence that found the v4.4.13 cluster-sync issue) surfaced two log-quality items. The v4.4.13 cluster-sync repair is confirmed holding — no more "Sync to www2 failed" spam.
+
+**A — `cluster/manager.py` heartbeat: empty-exception-string log**
+
+The peer-reachability heartbeat logged `f"Cluster peer {peer.id} unreachable: {e}"`. Same bug class as the `push_sync` line fixed in v4.4.13, but in a *different function* so it was missed: `str(httpx.ReadTimeout())` / `ConnectError("")` render blank, so the line was `Cluster peer llm-proxy2-c1conv unreachable: ` with no diagnostic. Fixed identically — surface `type(e).__name__` + a non-empty-message fallback.
+
+**B — `auth/admin.py`: session-expiry logged at WARNING (noise)**
+
+`session_not_found` + `session_expired` were logged at WARNING. But session expiry is an EXPECTED condition — a browser tab with a stale cookie (after a container restart wipes in-flight sessions, or after the row ages out) polls an auth endpoint, gets a 401, and re-logs-in. The audit found **207 identical `session_not_found` lines in 12h from ONE dead cookie** (token prefix `eyJfZnJl`), burying real warnings. The 401 response is the actual signal; the log line is noise. Both downgraded to DEBUG (detail preserved for auth debugging).
+
+**Investigated, NOT a bug**: the doubled `anthropic/anthropic/` model prefix in the logs appears *only* for `C1 Anthropic Claude` — the intentional negative-test fixture (per operator-locked memory). No real provider is affected; the malformed model-id is part of why that fixture fails by design. Left alone.
+
+**Files**:
+- `app/cluster/manager.py` — heartbeat log uses type-name + non-empty fallback
+- `app/auth/admin.py` — `session_not_found` + `session_expired` → DEBUG
+
+**Tests** (`tests/unit/test_v4416_log_quality.py`, +5): source-level guards for both fixes + a behavioral check that the empty-exception fallback renders `ConnectError (no message)` for blank exceptions and passes real messages through.
+
+**Test counts**
+
+- Unit suite: **2324 passed + 2 skipped** (was 2319 in v4.4.15; +5 log-quality tests).
+
+**Operator action — none.** Patch-class release. The `session_not_found` WARNING spam will stop; future cluster-peer-unreachable events will carry a real diagnostic string.
+
 ### v4.4.15 — F-OBS-003 caller-memory gating-header telemetry (2026-05-21)
 
 Closes the observability gap on F-OBS-003. Caller-memory write-back is gated on the inbound `X-Conversation-Id` header; the feature flag has been ON cluster-wide since 2026-05-15 but `caller_memory` has had **0 production writes** — because no consumer is sending the header yet. Rather than periodically diff the `caller_memory` table to check, this adds direct telemetry so the operator can see the moment a consumer (e.g. DevinGPT) starts sending it.
