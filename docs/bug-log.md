@@ -281,7 +281,7 @@ filed below.
 - **Method:** rolling per-node `docker compose up -d --force-recreate --no-deps <name>` — no other containers touched, no volumes destroyed.
 - **No code change required** in the `llm-proxy-v2/` repo itself; this was purely an infra-side hardening.
 
-### F-OBS-003 — Caller-memory write-back hasn't activated in 5+ days despite flag ON cluster-wide — ⚠ **NOTED (operator watch item)**
+### F-OBS-003 — Caller-memory write-back hasn't activated in 5+ days despite flag ON cluster-wide — ⚠ **NOTED + TELEMETRY ADDED v4.4.15**
 
 - **Severity:** observation
 - **Area:** `caller_memory` + `caller_memory_marker` tables
@@ -290,6 +290,7 @@ filed below.
 - **Likely cause:** writes are gated on the inbound `X-Conversation-Id` header (per `feedback_caller_memory_design_locked.md`). No client is sending the header in production traffic. Either DevinGPT's flip hasn't started emitting the header, or the header is being filtered upstream (nginx / proxy stack).
 - **Action:** operator already has this on a watch list (`project_backlog_caller_memory_live_watch.md` — "follow-up = check llm_proxy_memory_operations_total health after a day of traffic"). Re-surfaced here because the watch is now 5 days old with no traffic.
 - **Not filed as a fix candidate** — diagnosis needed before deciding if it's a proxy bug, a consumer bug, or expected (header isn't being emitted yet because the consumer's roll-out gate hasn't fired).
+- **Telemetry added v4.4.15**: rather than periodically diff the `caller_memory` table, the proxy now records `llm_proxy_conversation_id_requests_total{endpoint, has_conversation_id}` on every `/v1/messages` + `/v1/chat/completions` request, and exposes a glanceable admin endpoint `GET /api/monitoring/conversation-id-stats` with a `header_seen` boolean. **How to resolve F-OBS-003**: watch `header_seen`. While `false`, no consumer is sending `X-Conversation-Id` and the dormancy is expected (consumer-side rollout pending). The instant it flips `true`, caller-memory write-back is live — confirm `caller_memory` row count climbs + `llm_proxy_memory_operations_total{operation="extract"}` increments. If `header_seen=true` but `caller_memory` stays empty, THEN it's a proxy-side bug worth filing.
 
 ---
 

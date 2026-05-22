@@ -634,3 +634,55 @@ async def probe_state(
         "providers_in_backoff": get_backoff_state(),
         "as_of": datetime.now(timezone.utc).isoformat(),
     }
+
+
+@router.get("/conversation-id-stats")
+async def conversation_id_stats(_: AdminUser = Depends(require_admin)):
+    """v4.4.15 (F-OBS-003) — glanceable view of the caller-memory gating
+    header. Caller-memory write-back is gated on the inbound
+    ``X-Conversation-Id`` header; the feature flag has been ON
+    cluster-wide since 2026-05-15 but ``caller_memory`` has had 0
+    production writes because no consumer is sending the header yet.
+
+    This reads the ``llm_proxy_conversation_id_requests_total`` counter
+    so the operator can see — without grepping /metrics — whether any
+    request has arrived WITH the header. The moment ``with_header`` goes
+    non-zero, a consumer (e.g. DevinGPT) has started sending it and
+    caller-memory write-back is live.
+
+    Response shape::
+
+        {
+          "by_endpoint": {
+            "messages":    {"with_header": 0, "without_header": 1234},
+            "completions": {"with_header": 0, "without_header": 56}
+          },
+          "total_with_header": 0,
+          "header_seen": false,
+          "note": "..."
+        }
+    """
+    from prometheus_client import REGISTRY
+    by_endpoint: dict[str, dict] = {}
+    for metric in REGISTRY.collect():
+        if metric.name != "llm_proxy_conversation_id_requests":
+            continue
+        for s in metric.samples:
+            if not s.name.endswith("_total"):
+                continue
+            ep = s.labels.get("endpoint", "unknown")
+            has = s.labels.get("has_conversation_id", "false")
+            bucket = by_endpoint.setdefault(ep, {"with_header": 0, "without_header": 0})
+            key = "with_header" if has == "true" else "without_header"
+            bucket[key] = int(s.value)
+    total_with = sum(b["with_header"] for b in by_endpoint.values())
+    return {
+        "by_endpoint": by_endpoint,
+        "total_with_header": total_with,
+        "header_seen": total_with > 0,
+        "note": (
+            "header_seen=false means no consumer is sending X-Conversation-Id "
+            "yet; caller-memory write-back stays dormant until it does. "
+            "Counters reset on container restart (Prometheus in-process)."
+        ),
+    }
