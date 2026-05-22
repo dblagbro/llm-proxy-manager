@@ -79,9 +79,42 @@ async def _ping_peer(peer: PeerNode, notify_fn=None):
         async with httpx.AsyncClient(timeout=10, verify=False) as client:
             resp = await client.get(url, headers={"X-Cluster-Node": settings.cluster_node_id or ""})
         latency_ms = (time.monotonic() - start) * 1000
-        data = resp.json()
 
-        was_unreachable = peer.status == "unreachable"
+        # v4.4.17 (F4) — distinguish "peer responded but isn't serving
+        # normally" (non-200, or a non-JSON body — e.g. an nginx 502/504
+        # HTML page while the peer's container is mid-restart) from "peer
+        # truly unreachable" (connection refused / timeout — the except
+        # block below). Pre-fix, a deploy-window 502 hit ``resp.json()``,
+        # raised JSONDecodeError, and got logged identically to a dead
+        # peer + fired the all-providers-down notifier. Now it's
+        # classified as ``degraded`` (transient), logged at INFO, and does
+        # NOT page — only genuine connection failures mark ``unreachable``
+        # and notify.
+        if resp.status_code != 200:
+            was = peer.status
+            peer.status = "degraded"
+            peer.last_heartbeat = time.time()
+            if was != "degraded":
+                logger.info(
+                    "Cluster peer %s degraded: HTTP %s (likely restarting)",
+                    peer.id, resp.status_code,
+                )
+            return
+        try:
+            data = resp.json()
+        except Exception as je:
+            was = peer.status
+            peer.status = "degraded"
+            peer.last_heartbeat = time.time()
+            if was != "degraded":
+                logger.info(
+                    "Cluster peer %s degraded: 200 but non-JSON body (%s) "
+                    "— likely restarting / behind an error page",
+                    peer.id, type(je).__name__,
+                )
+            return
+
+        was_unreachable = peer.status in ("unreachable", "degraded")
         peer.latency_ms = latency_ms
         peer.last_heartbeat = time.time()
         peer.healthy_providers = data.get("healthyProviders", 0)
@@ -97,6 +130,10 @@ async def _ping_peer(peer: PeerNode, notify_fn=None):
             # v4.4.13. ``str(httpx.ReadTimeout())`` / ``ConnectError("")``
             # render blank, so "Cluster peer X unreachable: " lost the
             # diagnostic. Surface the exception class + non-empty message.
+            # v4.4.17 (F4): this except now only catches CONNECTION-level
+            # failures (refused/timeout/DNS) — non-200 + non-JSON are
+            # handled above as ``degraded``, so reaching here means the
+            # peer is genuinely unreachable and a page is warranted.
             msg = str(e) if str(e) else f"{type(e).__name__} (no message)"
             logger.warning("Cluster peer %s unreachable: %s: %s", peer.id, type(e).__name__, msg)
             peer.status = "unreachable"

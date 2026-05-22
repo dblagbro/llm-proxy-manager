@@ -9,6 +9,29 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v4.3.x — "Voice output" milestone
 
+### v4.4.17 — cluster heartbeat: degraded vs unreachable (research F4) (2026-05-22)
+
+From the 2026-05-22 routing-cost research session (`docs/research-2026-05-22-routing-cost-efficiency.md`, finding F4 — the one item actionable without crossing the hub-team boundary).
+
+The cluster heartbeat (`app/cluster/manager.py::_ping_peer`) did `data = resp.json()` without first checking status code or content-type. When a peer returned a non-JSON body — e.g. an nginx 502/504 HTML error page while that peer's container was mid-restart — the `JSONDecodeError` was caught by the generic `except`, logged as "unreachable", and **fired the all-providers-down notifier** for what was just a routine deploy blip. (Surfaced concretely when v4.4.16 made the previously-blank log line legible: `Cluster peer llm-proxy2-c1conv unreachable: JSONDecodeError`.)
+
+**Fix** — three distinct classifications:
+- **200 + valid JSON** → `healthy` (parse providers/status; existing path)
+- **non-200, OR 200 + non-JSON body** → `degraded` (peer responded but isn't serving normally — likely restarting): logged at INFO, **does NOT page**
+- **connection-level exception** (refused / timeout / DNS) → `unreachable`: logged WARNING + fires notifier (genuine outage)
+
+A peer recovering from `degraded` → `healthy` logs recovery, same as recovering from `unreachable`.
+
+**Why it matters:** alerting accuracy. A peer mid-deploy should not read identically to a peer that's actually down, and shouldn't trigger an all-providers-down page. This removes a class of false-positive alerts tied to routine rolling deploys.
+
+**Tests** (`tests/unit/test_v4417_heartbeat_degraded.py`, +6): 200+JSON→healthy (no notify), non-200→degraded (no notify), 200+non-JSON→degraded (no notify — the exact JSONDecodeError case), ConnectError→unreachable+notify, degraded→healthy recovery, source-level three-bucket guard.
+
+**Test counts**
+
+- Unit suite: **2330 passed + 2 skipped** (was 2324 in v4.4.16; +6 heartbeat tests).
+
+**Operator action — none.** Patch-class release. Rolling deploys will no longer false-page peers as "unreachable" during the brief window each node is restarting.
+
 ### v4.4.16 — log-quality fixes from the 2026-05-22 log audit (2026-05-22)
 
 A second log audit (the cadence that found the v4.4.13 cluster-sync issue) surfaced two log-quality items. The v4.4.13 cluster-sync repair is confirmed holding — no more "Sync to www2 failed" spam.
