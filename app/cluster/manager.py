@@ -93,7 +93,12 @@ async def _ping_peer(peer: PeerNode, notify_fn=None):
 
     except Exception as e:
         if peer.status != "unreachable":
-            logger.warning(f"Cluster peer {peer.id} unreachable: {e}")
+            # v4.4.16: same empty-exception-string fix as push_sync got in
+            # v4.4.13. ``str(httpx.ReadTimeout())`` / ``ConnectError("")``
+            # render blank, so "Cluster peer X unreachable: " lost the
+            # diagnostic. Surface the exception class + non-empty message.
+            msg = str(e) if str(e) else f"{type(e).__name__} (no message)"
+            logger.warning("Cluster peer %s unreachable: %s: %s", peer.id, type(e).__name__, msg)
             peer.status = "unreachable"
             if notify_fn:
                 await notify_fn(peer.id, peer.url)

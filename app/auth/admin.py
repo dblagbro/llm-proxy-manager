@@ -74,11 +74,21 @@ async def _get_session(token: str) -> Optional[dict]:
         result = await db.execute(select(Session).where(Session.token == token))
         s = result.scalar_one_or_none()
         if not s:
-            logger.warning("session_not_found token_prefix=%s", token[:8])
+            # v4.4.16: downgraded WARNING→DEBUG. A token that isn't in the
+            # sessions table is an EXPECTED condition — a browser tab with a
+            # stale cookie (after a container restart wipes in-flight sessions,
+            # or after the row aged out) polls an auth endpoint and gets a
+            # 401, prompting re-login. Logged at WARNING this produced 207
+            # identical lines in 12h from one dead cookie, burying real
+            # warnings. The 401 response is the actual signal; the log line
+            # is just noise. DEBUG keeps it available for auth debugging.
+            logger.debug("session_not_found token_prefix=%s", token[:8])
             return None
         # Expire sessions idle > SESSION_TTL_SEC since last seen
         if now - s.last_seen_at > SESSION_TTL_SEC:
-            logger.warning("session_expired username=%s idle_sec=%s", s.username, int(now - s.last_seen_at))
+            # v4.4.16: also DEBUG — idle-expiry is normal lifecycle, not an
+            # anomaly. (Kept the username + idle_sec detail for debugging.)
+            logger.debug("session_expired username=%s idle_sec=%s", s.username, int(now - s.last_seen_at))
             await db.delete(s)
             await db.commit()
             return None
