@@ -120,6 +120,25 @@ MEMORY_OPERATIONS_TOTAL = Counter(
     ["operation", "outcome"],
 )
 
+# v4.4.15 (F-OBS-003) — caller-memory is gated on the inbound
+# ``X-Conversation-Id`` header. The feature flag has been ON
+# cluster-wide since 2026-05-15 but ``caller_memory`` has had 0
+# production writes — because no consumer is sending the header yet.
+# This counter makes the gating header VISIBLE: it increments on
+# every /v1/messages + /v1/chat/completions request, labeled by
+# whether the header was present + which endpoint. The moment a
+# consumer (e.g. DevinGPT) starts sending X-Conversation-Id, the
+# ``has_conversation_id="true"`` series climbs and the operator
+# knows caller-memory write-back has begun — without having to
+# diff the caller_memory table or read consumer-side logs.
+CONVERSATION_ID_REQUESTS_TOTAL = Counter(
+    "llm_proxy_conversation_id_requests_total",
+    "Requests to /v1/messages + /v1/chat/completions, labeled by whether "
+    "the X-Conversation-Id header (the caller-memory write-back gate) was "
+    "present.",
+    ["endpoint", "has_conversation_id"],
+)
+
 # v3.9.10 — DB connection pool snapshot as Prometheus gauges, mirroring
 # the /health.dbPool fields. Background sampler writes these on a 30s
 # interval so dashboards can chart pool depth without polling /health.

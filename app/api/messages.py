@@ -83,6 +83,19 @@ async def messages(
     from app.routing.tenant import current_api_key_id
     current_api_key_id.set(key_record.id)
 
+    # v4.4.15 (F-OBS-003) — record whether the caller-memory gating
+    # header is present, so the operator can see when a consumer
+    # starts sending it (caller_memory write-back has had 0 prod
+    # writes despite the flag being ON since 2026-05-15).
+    try:
+        from app.observability.prometheus import CONVERSATION_ID_REQUESTS_TOTAL
+        CONVERSATION_ID_REQUESTS_TOTAL.labels(
+            endpoint="messages",
+            has_conversation_id="true" if x_conversation_id else "false",
+        ).inc()
+    except Exception:
+        pass  # telemetry must never break the request path
+
     body = await request.json()
     # v3.5.8 BUG-005 fix — validate request shape at the input boundary.
     # Pre-fix the proxy treated `{}` and `{"model":"x"}` (no messages)

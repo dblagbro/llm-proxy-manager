@@ -80,6 +80,17 @@ async def chat_completions(
     from app.routing.tenant import current_api_key_id
     current_api_key_id.set(key_record.id)
 
+    # v4.4.15 (F-OBS-003) — caller-memory gating-header visibility.
+    # See messages.py for the rationale.
+    try:
+        from app.observability.prometheus import CONVERSATION_ID_REQUESTS_TOTAL
+        CONVERSATION_ID_REQUESTS_TOTAL.labels(
+            endpoint="completions",
+            has_conversation_id="true" if x_conversation_id else "false",
+        ).inc()
+    except Exception:
+        pass  # telemetry must never break the request path
+
     body = await request.json()
     # v3.5.8 BUG-004 fix — validate request shape at the input boundary
     # so missing model/messages return 400 instead of cascading to a

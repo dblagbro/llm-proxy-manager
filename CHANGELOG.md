@@ -9,6 +9,45 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v4.3.x — "Voice output" milestone
 
+### v4.4.15 — F-OBS-003 caller-memory gating-header telemetry (2026-05-21)
+
+Closes the observability gap on F-OBS-003. Caller-memory write-back is gated on the inbound `X-Conversation-Id` header; the feature flag has been ON cluster-wide since 2026-05-15 but `caller_memory` has had **0 production writes** — because no consumer is sending the header yet. Rather than periodically diff the `caller_memory` table to check, this adds direct telemetry so the operator can see the moment a consumer (e.g. DevinGPT) starts sending it.
+
+**New Prometheus counter** `llm_proxy_conversation_id_requests_total{endpoint, has_conversation_id}`:
+- Incremented on every `/v1/messages` + `/v1/chat/completions` request, right after auth.
+- Labeled by endpoint (`messages` / `completions`) and whether the header was present (`true` / `false`).
+- Wrapped in try/except — telemetry never breaks the request path.
+- Surfaces automatically in `/metrics`.
+
+**New admin endpoint** `GET /api/monitoring/conversation-id-stats` — glanceable JSON for operators who don't want to grep `/metrics`:
+```json
+{
+  "by_endpoint": {
+    "messages":    {"with_header": 0, "without_header": 1234},
+    "completions": {"with_header": 0, "without_header": 56}
+  },
+  "total_with_header": 0,
+  "header_seen": false,
+  "note": "header_seen=false means no consumer is sending X-Conversation-Id yet..."
+}
+```
+When `header_seen` flips to `true`, a consumer has started sending the gate and caller-memory write-back is live — no need to diff the table or read consumer-side logs.
+
+**Files**:
+- `app/observability/prometheus.py` — new `CONVERSATION_ID_REQUESTS_TOTAL` counter
+- `app/api/messages.py` + `app/api/completions.py` — increment right after auth
+- `app/api/monitoring.py` — new `conversation_id_stats` admin endpoint
+
+**Tests** (`tests/unit/test_v4415_conversation_id_telemetry.py`, +7): counter declaration (source-level, pollution-proof), increment+readback (skips when prometheus is stubbed by sibling tests), both entry points record it, admin endpoint registered + computes `header_seen` + returns documented shape.
+
+Note: 2 of the 7 tests `skip` rather than fail when run in the full suite, because `test_claude_oauth.py` / `test_priority_bump.py` install a `_Noop` prometheus stub into `sys.modules` that persists for the process. The value-based assertions skip gracefully in that case; the source-level assertions always run. (Pre-existing test-infra quirk, not introduced here.)
+
+**Test counts**
+
+- Unit suite: **2319 passed + 2 skipped** (was 2314 in v4.4.14; +7 telemetry tests, 2 conditionally skipped).
+
+**Operator action — none required.** Watch `header_seen` on `GET /api/monitoring/conversation-id-stats` (or the `llm_proxy_conversation_id_requests_total{has_conversation_id="true"}` series in Grafana). When it goes non-zero, the consumer-side rollout has begun and F-OBS-003 resolves itself.
+
 ### v4.4.14 — `providers.py` 4th sibling split (read-side / stats endpoints) (2026-05-21)
 
 Third preventive refactor in the v4.4.x cycle, same pattern as v4.4.11 (`db.py`) and v4.4.12 (`_messages_streaming.py`). Pre-refactor: `app/api/providers.py` was 958 LOC and on the watch list. Notable: this is its **second** split — v3.9.8 had already extracted `provider_lifecycle.py` + `provider_capabilities.py` from it; the file grew back over time.
