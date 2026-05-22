@@ -166,7 +166,23 @@ async def _build_sync_payload(db) -> dict:
          "spending_cap_usd": k.spending_cap_usd,
          "rate_limit_rpm": k.rate_limit_rpm,
          "total_cost_usd": k.total_cost_usd or 0.0,
-         "deleted_at": k.deleted_at.isoformat() if k.deleted_at else None}
+         "deleted_at": k.deleted_at.isoformat() if k.deleted_at else None,
+         # v4.4.18 — broader field coverage. Pre-fix the apply handler
+         # only wrote ``spending_cap_usd`` + ``rate_limit_rpm`` on update,
+         # and the push omitted all the other operator-settable fields,
+         # so flipping ``semantic_cache_enabled`` (or any of the budget /
+         # LMRH / retention overrides) on one node never reached peers.
+         # Surfaced 2026-05-22 when F3 from the routing-cost research
+         # asked us to enable semantic cache on the coordinator-hub key
+         # and only www1 picked it up.
+         "semantic_cache_enabled": bool(getattr(k, "semantic_cache_enabled", False)),
+         "daily_soft_cap_usd": getattr(k, "daily_soft_cap_usd", None),
+         "daily_hard_cap_usd": getattr(k, "daily_hard_cap_usd", None),
+         "hourly_cap_usd": getattr(k, "hourly_cap_usd", None),
+         "rate_limit_tier": getattr(k, "rate_limit_tier", None),
+         "caller_memory_ttl_days": getattr(k, "caller_memory_ttl_days", None),
+         "lmrh_polling_rpm": getattr(k, "lmrh_polling_rpm", None),
+         "lmrh_quotes_rpm": getattr(k, "lmrh_quotes_rpm", None)}
         for k in keys_result.scalars().all()
     ]
     # v2.8.2: include tombstoned (soft-deleted) rows so peers learn about deletes.

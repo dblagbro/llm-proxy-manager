@@ -9,6 +9,37 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v4.3.x — "Voice output" milestone
 
+### v4.4.18 — api_keys cluster-sync field coverage (research F3 follow-up) (2026-05-22)
+
+Surfaced 2026-05-22 by F3 from the routing-cost research: the operator-forwarded hub-team request to flip `semantic_cache_enabled=1` on the coordinator-hub key succeeded on www1 but **did not propagate** to peers via cluster sync. Investigation found:
+
+- The push payload (`manager.py`) only included 9 of the 26 `api_keys` columns.
+- The apply handler (`sync.py`) only wrote 2 fields on update (`spending_cap_usd`, `rate_limit_rpm`).
+
+Same class of bug as v3.0.10's provider-field coverage fix — operator edits a field on one node, peers stay stale.
+
+**Fix**: expanded both push + apply to cover the operator-settable fields. Apply uses the membership-test pattern (`if "X" in k_data: existing.X = ...`) so a pre-v4.4.18 peer omitting a field doesn't clobber local values with `None`.
+
+**Fields now syncing**:
+- `enabled` (was sent but not applied)
+- `semantic_cache_enabled` (the F3 trigger)
+- `daily_soft_cap_usd`, `daily_hard_cap_usd`, `hourly_cap_usd` (budget caps)
+- `rate_limit_tier`
+- `caller_memory_ttl_days`
+- `lmrh_polling_rpm`, `lmrh_quotes_rpm`
+
+**Open follow-up**: `api_keys` has no `last_user_edit_at` column, so this is effectively "last sync wins" — same property the pre-fix 2-field path had; not made worse. A proper LWW gate (per the v3.0.11 pattern on providers) would need a schema migration. Filed as a future improvement.
+
+**Operational note**: while shipping this fix, the F3 flag flip was applied manually via direct SQL on all 3 nodes to get the hub-team trial unblocked immediately. v4.4.18 makes future flag flips propagate automatically.
+
+**Tests** (`tests/unit/test_v4418_apikey_sync_coverage.py`, +6): source guard on push payload (all 8 new fields present); behavioral tests for semantic_cache, budget caps, caller_memory_ttl, enabled-flag propagation; defensive test that a payload omitting a field does NOT clobber the local value (validates the membership-test pattern).
+
+**Test counts**
+
+- Unit suite: **2336 passed + 2 skipped** (was 2330 in v4.4.17; +6 sync-coverage tests).
+
+**Operator action — none.** Patch-class release. Future flag changes on any operator-settable API key field will propagate cluster-wide on the next sync cycle (~60s).
+
 ### v4.4.17 — cluster heartbeat: degraded vs unreachable (research F4) (2026-05-22)
 
 From the 2026-05-22 routing-cost research session (`docs/research-2026-05-22-routing-cost-efficiency.md`, finding F4 — the one item actionable without crossing the hub-team boundary).
