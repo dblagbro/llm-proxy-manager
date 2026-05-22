@@ -89,6 +89,33 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
                 existing.spending_cap_usd = k_data["spending_cap_usd"]
             if "rate_limit_rpm" in k_data:
                 existing.rate_limit_rpm = k_data["rate_limit_rpm"]
+            # v4.4.18 — broader operator-settable field coverage. See the
+            # matching push-payload block in ``manager.py`` for context.
+            # Membership-test pattern so a peer running an older build
+            # (which omits the field) doesn't clobber the local value
+            # with ``None``. NOTE: api_keys has no per-row last-edit
+            # timestamp, so this is effectively "last sync wins" — same
+            # property the pre-fix ``spending_cap_usd`` + ``rate_limit_rpm``
+            # path had. Adding a ``last_user_edit_at`` column for proper
+            # LWW is deferred as a separate (larger) follow-up.
+            if "enabled" in k_data:
+                existing.enabled = k_data["enabled"]
+            if "semantic_cache_enabled" in k_data:
+                existing.semantic_cache_enabled = bool(k_data["semantic_cache_enabled"])
+            if "daily_soft_cap_usd" in k_data:
+                existing.daily_soft_cap_usd = k_data["daily_soft_cap_usd"]
+            if "daily_hard_cap_usd" in k_data:
+                existing.daily_hard_cap_usd = k_data["daily_hard_cap_usd"]
+            if "hourly_cap_usd" in k_data:
+                existing.hourly_cap_usd = k_data["hourly_cap_usd"]
+            if "rate_limit_tier" in k_data:
+                existing.rate_limit_tier = k_data["rate_limit_tier"]
+            if "caller_memory_ttl_days" in k_data:
+                existing.caller_memory_ttl_days = k_data["caller_memory_ttl_days"]
+            if "lmrh_polling_rpm" in k_data:
+                existing.lmrh_polling_rpm = k_data["lmrh_polling_rpm"]
+            if "lmrh_quotes_rpm" in k_data:
+                existing.lmrh_quotes_rpm = k_data["lmrh_quotes_rpm"]
         else:
             # No local row. Don't materialize a peer's tombstone — just skip.
             if peer_deleted_at is not None:
