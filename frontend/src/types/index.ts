@@ -248,6 +248,21 @@ export interface MetricsSummary {
   hours: number
   providers: ProviderSummary[]
   circuit_breakers: Record<string, CircuitBreakerInfo>
+  // v4.4.21 — added so the UI can label which node served this slice.
+  node_id?: string
+}
+
+// v4.4.21 — per-node Provider Summary: GET /api/monitoring/metrics-by-node
+export interface MetricsByNodeNode {
+  node_id: string
+  ok: boolean
+  providers?: ProviderSummary[]
+  error?: string
+}
+
+export interface MetricsByNodeResponse {
+  hours: number
+  nodes: MetricsByNodeNode[]
 }
 
 // v3.0.73 — /api/monitoring/cache-stats response shape (rolling window).

@@ -2,6 +2,7 @@ import { api } from './client'
 import type {
   AuthUser, Provider, ProviderFormData, ModelCapability, TestResult, ScannedModel,
   ApiKey, User, ActivityEvent, MetricsSummary, MetricBucket,
+  MetricsByNodeResponse,
   ClusterStatus, HealthStatus, ExternalStatus, CacheStats,
   NodeAuthState,
 } from '@/types'
@@ -224,6 +225,7 @@ export const monitoringApi = {
   activityCount:   (q: Omit<ActivityQuery, 'limit' | 'before_id'> = {}) =>
     api.get<{ total: number }>(`/api/monitoring/activity/count?${_activityQs(q)}`),
   metrics:         (hours = 24) => api.get<MetricsSummary>(`/api/monitoring/metrics?hours=${hours}`),
+  metricsByNode:   (hours = 24) => api.get<MetricsByNodeResponse>(`/api/monitoring/metrics-by-node?hours=${hours}`),
   providerMetrics: (id: string, hours = 24) =>
     api.get<{ provider_id: string; hours: number; buckets: MetricBucket[] }>(
       `/api/monitoring/metrics/${id}?hours=${hours}`

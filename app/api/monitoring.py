@@ -209,7 +209,100 @@ async def metrics_summary(
 ):
     summary = await get_all_provider_summary(db, hours=hours)
     circuit_states = get_all_states()
-    return {"hours": hours, "providers": summary, "circuit_breakers": circuit_states}
+    # v4.4.21 — label which node served this response so the UI can
+    # distinguish the local view from a peer-fanned one.
+    from app.config import settings as _settings
+    return {
+        "hours": hours,
+        "providers": summary,
+        "circuit_breakers": circuit_states,
+        "node_id": _settings.cluster_node_id or "",
+    }
+
+
+@router.get("/metrics-by-node")
+async def metrics_summary_by_node(
+    hours: int = Query(24, le=720),
+    db: AsyncSession = Depends(get_db),
+    _: AdminUser = Depends(require_admin),
+):
+    """v4.4.21 — per-node Provider Summary across the cluster.
+
+    ``provider_metrics`` is per-node (not cluster-replicated), so the
+    operator can't see "did www1 vs www2 vs c1conv each handle a fair
+    share of OpenRouter calls" from any single node's existing
+    ``/metrics`` view. This endpoint fans out to peers via the
+    HMAC-signed ``/cluster/local-metrics`` and returns one entry per
+    node.
+
+    Returns shape:
+        {
+          "hours": 24,
+          "nodes": [
+            {"node_id": "llm-proxy2-www1", "ok": true,
+             "providers": [...]},
+            {"node_id": "llm-proxy2-www2", "ok": false,
+             "error": "timeout"},
+            ...
+          ]
+        }
+
+    Unreachable peers return ``ok=false`` rather than failing the
+    whole call — partial views are better than nothing during a
+    rolling deploy.
+    """
+    # Local node first (no HTTP hop needed).
+    from app.config import settings as _settings
+    own_summary = await get_all_provider_summary(db, hours=hours)
+    nodes = [{
+        "node_id": _settings.cluster_node_id or "local",
+        "ok": True,
+        "providers": own_summary,
+    }]
+
+    if not _settings.cluster_enabled:
+        return {"hours": hours, "nodes": nodes}
+
+    # Fan out to peers. Same HMAC-of(node_id) shape as oauth-pull.
+    import httpx
+    from app.cluster.auth import sign_payload
+    from app.cluster.manager import _parse_peers
+    peers = _parse_peers()
+    if not peers:
+        return {"hours": hours, "nodes": nodes}
+
+    node_id_bytes = (_settings.cluster_node_id or "").encode()
+    headers = {
+        "X-Cluster-Node": _settings.cluster_node_id or "",
+        "X-Cluster-Sig": sign_payload(node_id_bytes),
+    }
+    # Skip our own URL if it happens to be listed (defensive).
+    own_id = _settings.cluster_node_id or ""
+    async with httpx.AsyncClient(timeout=8.0, verify=False) as client:
+        for peer in peers:
+            if peer.id == own_id:
+                continue
+            url = f"{peer.url.rstrip('/')}/cluster/local-metrics"
+            try:
+                r = await client.get(url, headers=headers, params={"hours": hours})
+                if r.status_code != 200:
+                    nodes.append({
+                        "node_id": peer.id, "ok": False,
+                        "error": f"HTTP {r.status_code}",
+                    })
+                    continue
+                data = r.json()
+                nodes.append({
+                    "node_id": data.get("node_id") or peer.id,
+                    "ok": True,
+                    "providers": data.get("providers", []),
+                })
+            except Exception as e:
+                nodes.append({
+                    "node_id": peer.id, "ok": False,
+                    "error": f"{type(e).__name__}: {e}"[:120],
+                })
+    return {"hours": hours, "nodes": nodes}
 
 
 @router.get("/metrics/{provider_id}")
