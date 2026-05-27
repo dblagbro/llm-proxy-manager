@@ -9,6 +9,39 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v4.3.x — "Voice output" milestone
 
+### v4.4.19 — ARCH-A pool-trace slicing direction fix (2026-05-26)
+
+Resumed the ARCH-A connection-pool leak dig — the tracer (deployed v3.10.2, widened v3.10.13) **did catch a leak**: 59.6h-old stuck checkout on www01. But the captured stack was *all SQLAlchemy internals* — zero app frames — so the leaking codepath couldn't be named.
+
+**Root cause** — slicing direction bug in `app/models/database.py::_trace_pool_checkout`:
+
+```python
+stack = "".join(traceback.format_stack()[-45:])  # BUG
+```
+
+`traceback.format_stack()` returns frames **outermost-first / innermost-last**. `[-45:]` keeps the *innermost* 45 = the SQLA pool-checkout chain + the hook itself. The app caller (the part that names the leak) lives in the *outer* frames — exactly what the slice discarded.
+
+Both the v3.10.13 bump (18→45) and the original `[-18:]` had the direction wrong. The 2026-05-26 dig produced an all-SQLA stack despite a real 59h leak, which surfaced it.
+
+**Fix** — drop the slice; keep the full stack minus the trivial trailing `format_stack` frame:
+
+```python
+stack = "".join(traceback.format_stack()[:-1])
+```
+
+**Secondary observation** — the historical "full pool saturation in 13-20h" pattern is *not* reproducing. www01 has been up 3 days with only 1 stuck connection (1/50 utilisation). v4.x appears to have largely fixed the leak; we're now hunting a much slower variant. Worth shipping the tracer fix because the next leak will have a useful stack.
+
+**Tests** (`tests/unit/test_v4419_pool_trace_direction.py`, +3):
+- Source guard: `format_stack()[-45:]` / `[-18:]` must not return; `[:-1]` must be present
+- Direction assumption test: locks in `format_stack()` outermost-first ordering (would catch a future Python change)
+- Synthetic deep-stack test: exercises the fix's slice shape and asserts the outer-most "app caller" frame survives (regression risk made concrete)
+
+**Test counts**
+
+- Unit suite: **2339 passed + 2 skipped** (was 2336+2 in v4.4.18; +3).
+
+**Operator action — none.** Patch-class release. After deploy, the next pool checkout that leaks will include the app frame that initiated it.
+
 ### v4.4.18 — api_keys cluster-sync field coverage (research F3 follow-up) (2026-05-22)
 
 Surfaced 2026-05-22 by F3 from the routing-cost research: the operator-forwarded hub-team request to flip `semantic_cache_enabled=1` on the coordinator-hub key succeeded on www1 but **did not propagate** to peers via cluster sync. Investigation found:
