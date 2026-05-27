@@ -202,6 +202,43 @@ async def cluster_oauth_pull(
     }
 
 
+@router.get("/cluster/local-metrics")
+async def cluster_local_metrics(
+    request: Request,
+    hours: int = 24,
+    db: AsyncSession = Depends(get_db),
+):
+    """v4.4.21 — peer-pull endpoint for per-node Provider Summary.
+
+    ``provider_metrics`` is NOT cluster-replicated (one row per
+    bucket_ts on each node), so the existing
+    ``/api/monitoring/metrics`` shows only the local node's own
+    traffic. The Provider Summary UI needs cross-node visibility so
+    the operator can see whether load is balanced across the fleet —
+    e.g. "did www1 serve 95% of OpenRouter calls while c1conv served
+    5%?" — without SSHing to each node.
+
+    Same HMAC-of(node_id) auth as ``/cluster/oauth-pull`` and
+    ``/cluster/settings``. Read-only, cheap (~50ms aggregate query).
+    The fan-out wrapper lives at ``/api/monitoring/metrics-by-node``.
+    """
+    if not settings.cluster_enabled:
+        raise HTTPException(403, "Cluster mode not enabled")
+    node_id = request.headers.get("X-Cluster-Node", "")
+    sig = request.headers.get("X-Cluster-Sig", "")
+    if not node_id or not verify_payload(node_id.encode(), sig):
+        raise HTTPException(403, "Invalid cluster signature")
+    # Cap to the same range the admin endpoint allows (30d).
+    hours = max(1, min(int(hours), 720))
+    from app.monitoring.metrics import get_all_provider_summary
+    summary = await get_all_provider_summary(db, hours=hours)
+    return {
+        "node_id": settings.cluster_node_id or "",
+        "hours": hours,
+        "providers": summary,
+    }
+
+
 @router.get("/cluster/settings")
 async def cluster_settings(request: Request):
     """

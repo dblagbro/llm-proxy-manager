@@ -29,6 +29,11 @@ export function MetricsPage() {
   const [sortKey, setSortKey] = useState<SortKey>('requests')
   const [sortDir, setSortDir] = useState<SortDir>('desc')
   const [cacheGroupBy, setCacheGroupBy] = useState<CacheGroupBy>('provider')
+  // v4.4.21 — per-node Provider Summary toggle. Default off so the
+  // existing aggregate view is the landing experience; clicking
+  // "Show per-node" reveals a second card with one row per
+  // (provider, node). Useful for spotting load imbalance.
+  const [showPerNode, setShowPerNode] = useState(false)
 
   function toggleSort(col: SortKey) {
     if (col === sortKey) {
@@ -43,6 +48,16 @@ export function MetricsPage() {
   const { data: metrics, isLoading } = useQuery({
     queryKey: ['metrics', window],
     queryFn: () => monitoringApi.metrics(window),
+    refetchInterval: 60_000,
+  })
+
+  // v4.4.21 — per-node breakdown is fetched lazily, only when the
+  // operator clicks "Show per-node". Saves an extra cluster fan-out
+  // round-trip on every dashboard load.
+  const { data: byNode, isLoading: byNodeLoading } = useQuery({
+    queryKey: ['metricsByNode', window],
+    queryFn: () => monitoringApi.metricsByNode(window),
+    enabled: showPerNode,
     refetchInterval: 60_000,
   })
 
@@ -326,7 +341,16 @@ export function MetricsPage() {
 
           {/* Per-provider table */}
           <Card>
-            <CardHeader><CardTitle>Provider Summary</CardTitle></CardHeader>
+            <CardHeader className="flex flex-row items-center justify-between">
+              <CardTitle>Provider Summary{metrics?.node_id ? ` — ${metrics.node_id}` : ''}</CardTitle>
+              <button
+                onClick={() => setShowPerNode(s => !s)}
+                className="text-xs px-2 py-1 rounded border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800"
+                title="Toggle per-node breakdown across the cluster"
+              >
+                {showPerNode ? 'Hide per-node' : 'Show per-node'}
+              </button>
+            </CardHeader>
             <CardContent className="p-0">
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
@@ -406,6 +430,100 @@ export function MetricsPage() {
               </div>
             </CardContent>
           </Card>
+
+          {/* v4.4.21 — per-node Provider Summary, lazy-loaded */}
+          {showPerNode && (
+            <Card>
+              <CardHeader><CardTitle>Provider Summary — Per-node Breakdown</CardTitle></CardHeader>
+              <CardContent className="p-0">
+                {byNodeLoading ? (
+                  <div className="flex justify-center py-8"><Spinner /></div>
+                ) : !byNode || byNode.nodes.length === 0 ? (
+                  <p className="text-center text-gray-500 py-8">No per-node data available</p>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b border-gray-100 dark:border-gray-700">
+                          <th className="text-left px-5 py-3 text-xs text-gray-400 font-medium">Provider</th>
+                          <th className="text-left px-5 py-3 text-xs text-gray-400 font-medium">Node</th>
+                          <th className="text-left px-5 py-3 text-xs text-gray-400 font-medium">Requests</th>
+                          <th className="text-left px-5 py-3 text-xs text-gray-400 font-medium">Success %</th>
+                          <th className="text-left px-5 py-3 text-xs text-gray-400 font-medium">Tokens</th>
+                          <th className="text-left px-5 py-3 text-xs text-gray-400 font-medium">Cost</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-50 dark:divide-gray-800">
+                        {(() => {
+                          // Flatten by-node into one row per (provider, node).
+                          // Group by provider so the operator can scan
+                          // load-imbalance visually.
+                          type Row = {
+                            providerId: string; providerName: string;
+                            nodeId: string; requests: number;
+                            successRate: number; tokens: number; cost: number;
+                            err?: string
+                          }
+                          const rows: Row[] = []
+                          for (const n of byNode.nodes) {
+                            if (!n.ok) {
+                              rows.push({
+                                providerId: '_err_', providerName: '(node unreachable)',
+                                nodeId: n.node_id, requests: 0,
+                                successRate: 0, tokens: 0, cost: 0,
+                                err: n.error,
+                              })
+                              continue
+                            }
+                            for (const p of (n.providers ?? [])) {
+                              rows.push({
+                                providerId: p.provider_id,
+                                providerName: p.provider_name || p.provider_id,
+                                nodeId: n.node_id,
+                                requests: p.requests,
+                                successRate: p.success_rate,
+                                tokens: p.total_tokens,
+                                cost: p.total_cost_usd,
+                              })
+                            }
+                          }
+                          // Sort: provider name asc, then requests desc
+                          rows.sort((a, b) => {
+                            const an = a.providerName.toLowerCase()
+                            const bn = b.providerName.toLowerCase()
+                            if (an !== bn) return an < bn ? -1 : 1
+                            return b.requests - a.requests
+                          })
+                          return rows.map((r, i) => (
+                            <tr
+                              key={`${r.providerId}-${r.nodeId}-${i}`}
+                              className="hover:bg-gray-50 dark:hover:bg-gray-800/50"
+                              title={r.err ?? undefined}
+                            >
+                              <td className="px-5 py-3 font-medium text-gray-900 dark:text-gray-100">{r.providerName}</td>
+                              <td className="px-5 py-3 text-gray-500 dark:text-gray-400 text-xs">{r.nodeId}</td>
+                              <td className="px-5 py-3 text-gray-600 dark:text-gray-400">{r.requests.toLocaleString()}</td>
+                              <td className="px-5 py-3">
+                                {r.err ? (
+                                  <span className="text-red-500 text-xs">{r.err}</span>
+                                ) : (
+                                  <span className={r.successRate >= 95 ? 'text-green-600' : r.successRate >= 80 ? 'text-amber-500' : 'text-red-500'}>
+                                    {r.successRate.toFixed(1)}%
+                                  </span>
+                                )}
+                              </td>
+                              <td className="px-5 py-3 text-gray-600 dark:text-gray-400">{r.tokens.toLocaleString()}</td>
+                              <td className="px-5 py-3 text-gray-600 dark:text-gray-400">{fmtCost(r.cost)}</td>
+                            </tr>
+                          ))
+                        })()}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          )}
         </>
       )}
     </div>

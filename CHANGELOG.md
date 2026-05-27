@@ -9,6 +9,39 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v4.3.x — "Voice output" milestone
 
+### v4.4.21 — per-node Provider Summary (2026-05-27)
+
+The dashboard's Provider Summary has always shown only the local node's traffic, because `provider_metrics` is per-node (not cluster-replicated — a 2026-05-15 backlog memo claimed otherwise but the cluster-sync code path doesn't reference the table). So an operator wanting to see "is OpenRouter load balanced across the fleet" had to SSH into each node and eyeball.
+
+**Backend** — two new endpoints:
+
+- `GET /cluster/local-metrics` — HMAC-authed peer-pull endpoint; returns this node's summary plus its `node_id`. Same auth pattern as `/cluster/oauth-pull` and `/cluster/settings`.
+- `GET /api/monitoring/metrics-by-node` — admin-authed fan-out. Calls `/cluster/local-metrics` on each peer in parallel, aggregates into `{nodes: [{node_id, ok, providers}, …]}`. Partial-view tolerant — unreachable peers return `ok=false` with the error rather than failing the whole call.
+
+Existing `/api/monitoring/metrics` now also returns `node_id` so the UI can label which node's data the aggregate view is showing.
+
+**Frontend** — MetricsPage:
+
+- Provider Summary card header gains a "Show per-node / Hide per-node" toggle. Lazy-loaded — the fan-out only runs when the operator opens the breakdown, not on every dashboard load.
+- A new card below the aggregate Provider Summary renders one row per (provider, node), sorted by provider name + requests desc.
+- Unreachable peers surface as a labeled row ("(node unreachable)") with the error in the title attribute; doesn't crash.
+
+**Smoke verification** (live, 2026-05-27): the fan-out returned 4/3/2 providers across www1/www2/c1conv. Top providers (Vertex, Devin-Anthropic-Max-Gmail) are nearly balanced (~500/~300 reqs each per node); Grok-Web is www1-only; the C1 Anthropic intentional negative-test fixture is www2-only. Exactly the load-imbalance visibility this was filed for.
+
+**Tests** (`tests/unit/test_v4421_metrics_by_node.py`, +8):
+
+- 4 backend source/shape guards (cluster endpoint exists + HMAC-authed; payload has node_id; fan-out uses sign_payload + _parse_peers + tolerates ok=false; existing /metrics endpoint adds node_id)
+- 3 frontend source guards (types, api client, toggle state + lazy-load gate)
+- 1 render-path guard (per-node table handles unreachable peer rows)
+
+The cross-cluster HTTP shape itself is exercised by the existing `/cluster/oauth-pull` integration tests — same auth + transport.
+
+**Test counts**
+
+- Unit suite: **2358 passed + 2 skipped** (was 2350+2 in v4.4.20; +8).
+
+**Operator action — none.** Patch-class release. Click "Show per-node" on the Metrics page to use the new view.
+
 ### v4.4.20 — api_keys cluster-sync gains proper LWW gate (2026-05-26)
 
 Closes the explicit follow-up from v4.4.18. That release expanded api_keys push/apply coverage to all operator-settable fields but couldn't add a proper LWW gate — `api_keys` had no per-row admin-edit timestamp, so the merge was effectively "last sync wins." This is the same shape `providers` had pre-v3.0.11.
