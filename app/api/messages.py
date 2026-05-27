@@ -96,6 +96,21 @@ async def messages(
     except Exception:
         pass  # telemetry must never break the request path
 
+    # v4.4.23 — set the per-request contextvars so the activity_log
+    # row for this request can record verifiable header presence.
+    # Surfaced 2026-05-27 by a DevinGPT follow-up asking us to confirm
+    # whether two specific historical events had the header — we
+    # couldn't, because event_meta never captured it. Counter-only
+    # telemetry resets on restart; the contextvar bridges to per-row.
+    try:
+        from app.observability.request_context import set_caller_memory_headers
+        set_caller_memory_headers(
+            has_conversation_id=bool(x_conversation_id),
+            has_memory_tag=bool(x_memory_tag),
+        )
+    except Exception:
+        pass
+
     body = await request.json()
     # v3.5.8 BUG-005 fix — validate request shape at the input boundary.
     # Pre-fix the proxy treated `{}` and `{"model":"x"}` (no messages)

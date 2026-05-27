@@ -236,6 +236,23 @@ def _build_event_meta_base(
         "node_id": getattr(settings, "cluster_node_id", None) or "unknown",
     }
     _attach_client_ip(meta)
+    # v4.4.23 — record verifiable per-event presence of the caller-memory
+    # gating headers. The Prometheus counter (F-OBS-003, v4.4.15) gives
+    # only in-process running totals; this puts the bool on each
+    # activity_log row so historical events can be re-sampled. Two-key
+    # convention: ``had_x_conversation_id`` (matches ``had_lmrh_hint``
+    # naming above) + ``had_x_memory_tag``. Stamp only when True so
+    # the schema stays lean — absent key implies False.
+    try:
+        from app.observability.request_context import (
+            get_had_x_conversation_id, get_had_x_memory_tag,
+        )
+        if get_had_x_conversation_id():
+            meta["had_x_conversation_id"] = True
+        if get_had_x_memory_tag():
+            meta["had_x_memory_tag"] = True
+    except Exception:
+        pass
     if requested_model:
         meta["requested_model"] = requested_model
     if had_lmrh_hint:
