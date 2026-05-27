@@ -108,12 +108,22 @@ def _db_pool_snapshot() -> dict:
             snap["max"] = (snap["size"] or 0) + max(0, snap["overflow"])
         # v3.10.2 (ARCH-A) — checkout-tracer summary when enabled. Full
         # per-connection acquisition stacks at GET /cluster/db-pool-trace.
+        # v4.4.22 — async-side session-tracer summary (the one whose
+        # stacks reach app code; sync side stops at SQLA internals
+        # because of the greenlet boundary).
         if getattr(settings, "db_pool_trace", False):
-            from app.models.database import get_pool_checkout_trace
+            from app.models.database import (
+                get_pool_checkout_trace, get_async_session_trace,
+            )
             trace = get_pool_checkout_trace()
             snap["trace_enabled"] = True
             snap["traced_checked_out"] = len(trace)
             snap["oldest_checkout_age_sec"] = trace[0]["age_sec"] if trace else 0.0
+            async_trace = get_async_session_trace()
+            snap["traced_async_sessions"] = len(async_trace)
+            snap["oldest_async_session_age_sec"] = (
+                async_trace[0]["age_sec"] if async_trace else 0.0
+            )
         return snap
     except Exception as e:
         return {"error": str(e)[:200]}
@@ -129,20 +139,33 @@ async def cluster_db_pool_trace(_: AdminUser = Depends(require_admin)):
     """v3.10.2 (ARCH-A) — per-connection acquisition stacks for every
     pooled DB connection currently checked out, oldest first.
 
-    Returns an empty list when ``db_pool_trace`` is off. Under the
-    latent pool leak the oldest entries — checked out far longer than
-    any request should run — name the leaking code path in their stack.
+    v4.4.22 — also returns ``async_sessions``: stacks captured on the
+    async side (``AsyncSession.__aenter__``) where the app caller IS
+    in the frame chain. Read THIS list to identify the leaking code
+    path — the sync ``checked_out`` list dead-ends at SQLAlchemy
+    internals because the greenlet boundary clips the async caller.
+
+    Returns empty lists when ``db_pool_trace`` is off.
     """
     if not getattr(settings, "db_pool_trace", False):
         return {
             "trace_enabled": False,
             "count": 0,
             "checked_out": [],
+            "async_sessions": [],
             "hint": "set DB_POOL_TRACE=1 on this node and recreate the container",
         }
-    from app.models.database import get_pool_checkout_trace
+    from app.models.database import (
+        get_pool_checkout_trace, get_async_session_trace,
+    )
     trace = get_pool_checkout_trace()
-    return {"trace_enabled": True, "count": len(trace), "checked_out": trace}
+    async_trace = get_async_session_trace()
+    return {
+        "trace_enabled": True,
+        "count": len(trace),
+        "checked_out": trace,
+        "async_sessions": async_trace,
+    }
 
 
 @router.post("/cluster/sync")

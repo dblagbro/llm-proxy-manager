@@ -52,11 +52,6 @@ if "sqlite" in settings.database_url:
         except Exception as e:
             logger.warning(f"SQLite PRAGMA setup failed: {e}")
 
-AsyncSessionLocal = async_sessionmaker(
-    engine, class_=AsyncSession, expire_on_commit=False
-)
-
-
 # v3.10.2 (ARCH-A) — DB connection-pool checkout tracer. The latent
 # pool leak (www01 + GCP saturated QueuePool 13-20h post-deploy,
 # returning /health 500s) has an unknown root cause: every
@@ -69,12 +64,32 @@ AsyncSessionLocal = async_sessionmaker(
 # harness (``scripts/archa_pool_leak_harness.py``) or just wait.
 _pool_checkouts: dict[int, dict] = {}
 
+# v4.4.22 (ARCH-A redux) — async-side session tracer. The v4.4.19 fix
+# corrected the slicing direction but the captured stack was STILL
+# all SQLAlchemy internals: ``format_stack()`` walks the sync stack,
+# but SQLAlchemy's async adapter dispatches DB ops via a greenlet,
+# and the greenlet has its own stack separate from the async caller.
+# The 2026-05-27 dig confirmed this — py-spy showed 10 aiosqlite
+# worker threads (one per pooled conn) but the pool-event hook
+# captured stacks ended at ``session.execute()`` with no app frames
+# above. To see app code, we have to capture on the async side —
+# specifically in ``AsyncSession.__aenter__``, which runs on the
+# caller's coroutine where ``await db = AsyncSessionLocal()`` lives.
+_async_session_traces: dict[str, dict] = {}
+
 
 def get_pool_checkout_trace() -> list[dict]:
     """Pooled connections currently checked out, oldest first. Each
     entry is ``{age_sec, stack}``. Empty when tracing is off or the
     pool is idle. Under the suspected leak the oldest entries — held
-    far longer than any request should take — name the culprit path."""
+    far longer than any request should take — name the culprit path.
+
+    v4.4.22 NOTE: this is the SYNC tracer; its stacks lose app frames
+    due to the greenlet boundary. ``get_async_session_trace()`` is the
+    one to read for "which app code is holding the session." This one
+    is kept because the pool *checkout* events fire on the sync side
+    and ``id(conn_record)`` is the only stable identifier that
+    survives connection re-use across sessions."""
     now = time.monotonic()
     out = [
         {"age_sec": round(now - rec["since"], 1), "stack": rec["stack"]}
@@ -82,6 +97,76 @@ def get_pool_checkout_trace() -> list[dict]:
     ]
     out.sort(key=lambda e: e["age_sec"], reverse=True)
     return out
+
+
+def get_async_session_trace() -> list[dict]:
+    """Async-side companion to the pool checkout trace.
+
+    Each entry is ``{age_sec, session_id, stack}``. The stack is
+    captured at ``AsyncSession.__aenter__``, so it includes the app
+    code that opened the session — unlike the sync pool tracer
+    whose stacks dead-end at SQLAlchemy internals because the
+    greenlet boundary clips the async caller's frames.
+
+    Sorted oldest-first. Sessions held across an unexpected ``await``
+    will show up here with their originating ``async with``."""
+    now = time.monotonic()
+    out = [
+        {"age_sec": round(now - rec["since"], 1),
+         "session_id": rec["session_id"],
+         "stack": rec["stack"]}
+        for rec in list(_async_session_traces.values())
+    ]
+    out.sort(key=lambda e: e["age_sec"], reverse=True)
+    return out
+
+
+# Choose the AsyncSession class the sessionmaker hands out: a traced
+# subclass when ``db_pool_trace`` is on, plain AsyncSession otherwise.
+if settings.db_pool_trace:
+    import secrets as _secrets
+
+    class _TracedAsyncSession(AsyncSession):
+        """Captures the async-side calling stack at ``__aenter__`` and
+        clears the entry on ``__aexit__``.
+
+        The capture happens on the coroutine running the
+        ``async with AsyncSessionLocal()`` — i.e. the app code, where
+        ``format_stack()`` walks the real Python stack and includes
+        the caller. Compare with the sync pool-event hook, whose
+        ``format_stack()`` runs inside a SQLAlchemy greenlet and
+        sees only internals."""
+
+        async def __aenter__(self):
+            self._traced_session_id = _secrets.token_hex(8)
+            try:
+                stack = "".join(traceback.format_stack()[:-1])
+                _async_session_traces[self._traced_session_id] = {
+                    "session_id": self._traced_session_id,
+                    "since": time.monotonic(),
+                    "stack": stack,
+                }
+            except Exception:
+                # Tracing must never fail the actual DB use.
+                pass
+            return await super().__aenter__()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            try:
+                sid = getattr(self, "_traced_session_id", None)
+                if sid:
+                    _async_session_traces.pop(sid, None)
+            except Exception:
+                pass
+            return await super().__aexit__(exc_type, exc, tb)
+
+    _session_class = _TracedAsyncSession
+else:
+    _session_class = AsyncSession
+
+AsyncSessionLocal = async_sessionmaker(
+    engine, class_=_session_class, expire_on_commit=False
+)
 
 
 if settings.db_pool_trace:
@@ -97,6 +182,10 @@ if settings.db_pool_trace:
         # trace on www01 returned an all-SQLA stack despite a 59h
         # leaked checkout, which is what surfaced it.) Drop the
         # trailing ``format_stack`` frame only.
+        # v4.4.22 NOTE: the greenlet boundary defeats this whichever
+        # way we slice — it's kept for sync-side coverage but the
+        # async-side ``_TracedAsyncSession`` is the one whose stacks
+        # actually name app code. See ``get_async_session_trace()``.
         stack = "".join(traceback.format_stack()[:-1])
         _pool_checkouts[id(conn_record)] = {
             "since": time.monotonic(), "stack": stack,
