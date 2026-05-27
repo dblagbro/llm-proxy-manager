@@ -1,5 +1,6 @@
 """API key management endpoints."""
 import secrets
+import time
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -133,6 +134,11 @@ async def update_key(
             None if body.caller_memory_ttl_days <= 0
             else int(body.caller_memory_ttl_days)
         )
+    # v4.4.20 — stamp the LWW gate. Mirror of provider PATCH: only
+    # operator-initiated edits bump this; cost-bucket / last_used_at
+    # writes from request hot-paths do NOT, so background traffic
+    # can't ping-pong a real edit on a peer.
+    k.last_user_edit_at = time.time()
     await db.commit()
     return _serialize(k)
 

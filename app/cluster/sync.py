@@ -70,6 +70,16 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
 
     for k_data in payload.get("api_keys", []):
         peer_deleted_at = _parse_iso_kt(k_data.get("deleted_at"))
+        # v4.4.20 — per-row admin-edit timestamp. Mirrors the v3.0.11
+        # provider LWW gate; closes the v4.4.18 follow-up where api_keys
+        # sync was effectively "last sync wins" for lack of a per-row
+        # edit timestamp.
+        peer_user_edit_at = k_data.get("last_user_edit_at")
+        if peer_user_edit_at is not None:
+            try:
+                peer_user_edit_at = float(peer_user_edit_at)
+            except (TypeError, ValueError):
+                peer_user_edit_at = None
         result = await db.execute(select(ApiKey).where(ApiKey.key_hash == k_data["key_hash"]))
         existing = result.scalar_one_or_none()
         if existing:
@@ -85,6 +95,41 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
             # tombstoned — the delete was authoritative on this node.
             if existing.deleted_at is not None and peer_deleted_at is None:
                 continue
+            # v4.4.20 — LWW gate. Decide BEFORE touching any field
+            # whether to accept the peer payload.
+            #
+            # Branch rules (mirror provider v3.0.11 + v3.0.63 +
+            # v3.2.7 semantics):
+            #   - both sides have stamp + peer > local: accept
+            #   - both sides have stamp + peer == local: tie → KEEP
+            #     local (api_keys has no updated_at fallback, so the
+            #     provider "fall through to legacy LWW on updated_at"
+            #     branch reduces to "keep local"); same anti-ping-pong
+            #     property as the v3.0.63 strict-greater fix
+            #   - both sides have stamp + peer < local: reject
+            #   - local has stamp, peer doesn't: KEEP local (peer is
+            #     pre-v4.4.20 OR background-only mutation; conservative)
+            #   - peer has stamp, local doesn't: accept (we haven't
+            #     stamped yet — a fresh edit on peer should win)
+            #   - neither has stamp: legacy "last sync wins" — same
+            #     behavior as v4.4.18 + v4.4.19 had pre-LWW. Smooth
+            #     upgrade path; the very first PATCH on either side
+            #     stamps both rows on the next sync round-trip.
+            local_user_edit = existing.last_user_edit_at
+            if peer_user_edit_at is not None and local_user_edit is not None:
+                if peer_user_edit_at == local_user_edit:
+                    accept = False  # tie → keep local
+                else:
+                    accept = peer_user_edit_at > local_user_edit
+            elif local_user_edit is not None and peer_user_edit_at is None:
+                accept = False  # conservative: local edit wins over unstamped peer
+            else:
+                # peer stamped + we don't, OR neither stamped → accept
+                # peer payload (matches pre-LWW behavior, also lets a
+                # peer's first stamped edit propagate to legacy rows).
+                accept = True
+            if not accept:
+                continue
             if "spending_cap_usd" in k_data:
                 existing.spending_cap_usd = k_data["spending_cap_usd"]
             if "rate_limit_rpm" in k_data:
@@ -93,11 +138,7 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
             # matching push-payload block in ``manager.py`` for context.
             # Membership-test pattern so a peer running an older build
             # (which omits the field) doesn't clobber the local value
-            # with ``None``. NOTE: api_keys has no per-row last-edit
-            # timestamp, so this is effectively "last sync wins" — same
-            # property the pre-fix ``spending_cap_usd`` + ``rate_limit_rpm``
-            # path had. Adding a ``last_user_edit_at`` column for proper
-            # LWW is deferred as a separate (larger) follow-up.
+            # with ``None``. v4.4.20 — gated by the LWW decision above.
             if "enabled" in k_data:
                 existing.enabled = k_data["enabled"]
             if "semantic_cache_enabled" in k_data:
@@ -116,6 +157,10 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
                 existing.lmrh_polling_rpm = k_data["lmrh_polling_rpm"]
             if "lmrh_quotes_rpm" in k_data:
                 existing.lmrh_quotes_rpm = k_data["lmrh_quotes_rpm"]
+            # v4.4.20 — stamp the local row with the peer's edit time
+            # so subsequent round-trips converge instead of pinging.
+            if peer_user_edit_at is not None:
+                existing.last_user_edit_at = peer_user_edit_at
         else:
             # No local row. Don't materialize a peer's tombstone — just skip.
             if peer_deleted_at is not None:
@@ -129,6 +174,10 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
                 enabled=k_data.get("enabled", True),
                 spending_cap_usd=k_data.get("spending_cap_usd"),
                 rate_limit_rpm=k_data.get("rate_limit_rpm"),
+                # v4.4.20 — carry the peer's edit-stamp on first
+                # materialization so subsequent sync cycles can use
+                # the LWW gate immediately.
+                last_user_edit_at=peer_user_edit_at,
             ))
         key_id = k_data.get("id")
         if key_id and "total_cost_usd" in k_data:

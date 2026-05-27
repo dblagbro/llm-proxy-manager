@@ -45,6 +45,17 @@ class ApiKey(Base):
     # carryover; paperless wants per-document cycle). Default behavior
     # unchanged for keys that don't set this.
     caller_memory_ttl_days = Column(Integer, nullable=True)
+    # v4.4.20 — per-row admin-edit timestamp (Unix float). Mirrors the
+    # v3.0.11 ``Provider.last_user_edit_at`` pattern: background
+    # mutations (cost-bucket bumps, last_used_at writes, etc.) do NOT
+    # touch this field; only operator-initiated edits via the PATCH
+    # endpoint do. The cluster-sync apply handler uses it as the LWW
+    # gate so a background bump on one node can't revert a real
+    # operator edit on another. Null = legacy row created before
+    # v4.4.20; falls through to the legacy "last sync wins" merge
+    # path. Same retro-compat shape ``Provider`` had during its v3.0.11
+    # rollout.
+    last_user_edit_at = Column(Float, nullable=True)
     # Self-resetting bucket counters (reset when bucket_ts differs from current)
     day_bucket_ts = Column(DateTime, nullable=True)
     day_cost_usd = Column(Float, default=0.0)

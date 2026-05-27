@@ -153,6 +153,11 @@ async def init_db():
             "ALTER TABLE users ADD COLUMN time_format TEXT",
             # v3.0.11 — sync LWW now prefers user-edit timestamp over updated_at
             "ALTER TABLE providers ADD COLUMN last_user_edit_at REAL",
+            # v4.4.20 — same LWW gate, now for api_keys. The v4.4.18
+            # field-coverage fix was effectively "last sync wins"
+            # because api_keys had no per-row admin-edit timestamp;
+            # this column closes the gap.
+            "ALTER TABLE api_keys ADD COLUMN last_user_edit_at REAL",
             # v3.0.20 — ApiKey soft-delete tombstone for cluster-sync resurrection bug
             "ALTER TABLE api_keys ADD COLUMN deleted_at DATETIME",
             # v3.0.25 — LMRH self-extension protocol tables

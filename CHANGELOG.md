@@ -9,6 +9,45 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v4.3.x — "Voice output" milestone
 
+### v4.4.20 — api_keys cluster-sync gains proper LWW gate (2026-05-26)
+
+Closes the explicit follow-up from v4.4.18. That release expanded api_keys push/apply coverage to all operator-settable fields but couldn't add a proper LWW gate — `api_keys` had no per-row admin-edit timestamp, so the merge was effectively "last sync wins." This is the same shape `providers` had pre-v3.0.11.
+
+**The risk in "last sync wins"**: any background mutation on a peer (cluster-sync echo, future migration writes, etc.) could revert a fresh operator PATCH on another node, silently. The provider side hit this concretely in 2026-05-08 (`bridge_url change in extra_config on www01 didn't propagate to peers for hours`).
+
+**Schema change** — new nullable column:
+
+- `ALTER TABLE api_keys ADD COLUMN last_user_edit_at REAL`
+
+Idempotent ALTER lands via `init_db()` on first boot of any node running v4.4.20.
+
+**Push payload + apply LWW gate** — mirror of v3.0.11 + v3.0.63 + v3.2.7 provider semantics, simplified by the fact that `api_keys` has no `updated_at` fallback:
+
+| local stamp | peer stamp | outcome |
+|---|---|---|
+| has | has, peer > local | **accept**, adopt peer's stamp |
+| has | has, peer == local | **reject** (tie — keep local; anti-ping-pong) |
+| has | has, peer < local | **reject** |
+| has | none | **reject** (legacy peer; conservative) |
+| none | has | **accept** (legacy local upgrades) |
+| none | none | **accept** (preserves pre-LWW behavior for mixed-version fleet) |
+
+**Bump site**: `app/api/apikeys.py::update_key` — the PATCH endpoint stamps `last_user_edit_at = time.time()` (wall-clock, cross-node comparable). Background hot-path writes (cost-bucket bumps, `last_used_at`, `total_cost_usd`) deliberately do NOT bump — that's the whole point of separating user-edit time from generic-update time.
+
+**Mixed-version safety**: pre-v4.4.20 peers' payloads omit the field. The apply handler treats that absence as "legacy peer" and falls through to last-sync-wins (same as v4.4.18/19 behavior). The first PATCH on either side stamps the row; subsequent sync round-trips converge on the LWW path.
+
+**Tests** (`tests/unit/test_v4420_apikey_lww.py`, +11):
+
+- 4 source guards (model column, push-payload field, PATCH bump, wall-clock not monotonic)
+- 6 LWW branch-matrix tests (newer wins, older rejected, tie keeps local, local-stamped/peer-unstamped keeps local, peer-stamped/local-unstamped accepts, neither-stamped legacy path)
+- 1 insert-path test (peer stamp carries on first materialization)
+
+**Test counts**
+
+- Unit suite: **2350 passed + 2 skipped** (was 2339+2 in v4.4.19; +11).
+
+**Operator action — none.** Patch-class release. Future operator edits via the API Keys UI propagate under the LWW gate; legacy rows upgrade on first PATCH.
+
 ### v4.4.19 — ARCH-A pool-trace slicing direction fix (2026-05-26)
 
 Resumed the ARCH-A connection-pool leak dig — the tracer (deployed v3.10.2, widened v3.10.13) **did catch a leak**: 59.6h-old stuck checkout on www01. But the captured stack was *all SQLAlchemy internals* — zero app frames — so the leaking codepath couldn't be named.
