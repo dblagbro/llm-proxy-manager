@@ -182,7 +182,11 @@ async def _build_sync_payload(db) -> dict:
          "rate_limit_tier": getattr(k, "rate_limit_tier", None),
          "caller_memory_ttl_days": getattr(k, "caller_memory_ttl_days", None),
          "lmrh_polling_rpm": getattr(k, "lmrh_polling_rpm", None),
-         "lmrh_quotes_rpm": getattr(k, "lmrh_quotes_rpm", None)}
+         "lmrh_quotes_rpm": getattr(k, "lmrh_quotes_rpm", None),
+         # v4.4.20 — LWW gate, mirrors providers. Pre-v4.4.20 peers
+         # omit this; apply handler treats absence as "legacy peer"
+         # and falls through to last-sync-wins, same as today.
+         "last_user_edit_at": getattr(k, "last_user_edit_at", None)}
         for k in keys_result.scalars().all()
     ]
     # v2.8.2: include tombstoned (soft-deleted) rows so peers learn about deletes.
