@@ -9,6 +9,32 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v4.3.x — "Voice output" milestone
 
+### v4.4.22 — async-side session tracer (ARCH-A real fix) (2026-05-27)
+
+The latent ARCH-A pool leak's investigation has been stuck for two releases because the captured stacks were useless. v3.10.2 added a sync pool-event hook with `traceback.format_stack()`. v4.4.19 fixed the slicing direction. **Neither one ever captured app frames** — and the 2026-05-27 dig finally explained why.
+
+SQLAlchemy's async adapter dispatches every DB op via a **greenlet**. The pool-event hook fires synchronously inside that greenlet, where `format_stack()` walks the greenlet's stack — which is separate from the async caller's stack. So the captured frames always end at `session.execute()` with nothing above. py-spy confirmed: 10 aiosqlite worker threads, all running their own loops, no app code anywhere in their reported stacks.
+
+**Fix** — capture on the async side, where the app caller IS in the stack.
+
+- New `_TracedAsyncSession` subclass of `AsyncSession` overrides `__aenter__` and `__aexit__` to capture `format_stack()` on the async caller's coroutine. The session-maker hands out this subclass when `db_pool_trace=1`, so every `async with AsyncSessionLocal() as db:` site is automatically traced — no call-site changes.
+- New `get_async_session_trace()` reader returns the in-flight async sessions, oldest first, each with `{age_sec, session_id, stack}`.
+- `/cluster/db-pool-trace` now returns `async_sessions: [...]` alongside the existing (still-useful for connection-level visibility) `checked_out: [...]`. Read `async_sessions` to identify the leaker.
+- `/health` `dbPool` block gains `traced_async_sessions` + `oldest_async_session_age_sec` for at-a-glance check without auth.
+- Tracer capture/clear is wrapped in `try/except` so a bug in instrumentation never blocks real DB use.
+
+**Behavioral test** (`test_async_trace_captures_app_frames_when_enabled`) — exercises the capture mechanism inside a test function and asserts the test function's own name appears in the captured stack. This is exactly the property v4.4.19's sync tracer failed in production. Test passes here; the production validation will land when the next leaked session shows up with a non-internal stack.
+
+**Coexistence**: both tracers run when enabled. The sync one keeps connection-level identity (id of `conn_record` survives session reuse); the async one names the calling code path. They surface in distinct lists on the endpoint.
+
+**Tests** (`tests/unit/test_v4422_async_session_tracer.py`, +8): 6 source/shape guards + 2 behavioral (capture-on-enter / clear-on-exit, including exception path). Also bumped the v3.9.8 source-window test that the new tracer body outgrew.
+
+**Test counts**
+
+- Unit suite: **2366 passed + 2 skipped** (was 2358+2 in v4.4.21; +8).
+
+**Operator action — none.** Patch-class release. Once a session leaks in production, `/cluster/db-pool-trace`'s `async_sessions` list will name the codepath that opened it. Container has `DB_POOL_TRACE=1` set on www1 + www2; will activate immediately after deploy.
+
 ### v4.4.21 — per-node Provider Summary (2026-05-27)
 
 The dashboard's Provider Summary has always shown only the local node's traffic, because `provider_metrics` is per-node (not cluster-replicated — a 2026-05-15 backlog memo claimed otherwise but the cluster-sync code path doesn't reference the table). So an operator wanting to see "is OpenRouter load balanced across the fleet" had to SSH into each node and eyeball.

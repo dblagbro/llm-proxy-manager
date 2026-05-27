@@ -30,7 +30,14 @@ def test_dbPool_snapshot_never_raises():
     endpoint never 500s on a pool query error."""
     src = Path("app/api/cluster.py").read_text()
     idx = src.find("def _db_pool_snapshot")
-    fn = src[idx:idx + 1500]
+    # v4.4.22 — extract the full function body, not a fixed 1500-char
+    # slice. The prior slice was outgrown by the v4.4.22 async-tracer
+    # surfacing added inside the try block, pushing the matching
+    # ``except Exception`` past the window and breaking this test.
+    end = src.find("\n\n\n", idx)
+    if end == -1:
+        end = idx + 4000
+    fn = src[idx:end]
     assert "try:" in fn
     assert "except Exception" in fn
 
