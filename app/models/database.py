@@ -87,12 +87,17 @@ def get_pool_checkout_trace() -> list[dict]:
 if settings.db_pool_trace:
     @event.listens_for(engine.sync_engine, "checkout")
     def _trace_pool_checkout(_dbapi_conn, conn_record, _conn_proxy):
-        # v3.10.13 — keep the last 45 frames. The original 18 was too
-        # shallow: SQLAlchemy's checkout call chain is ~16 frames deep,
-        # so [-18:] captured only ORM/pool internals and never reached
-        # the app caller (the 2026-05-16 ARCH-A trace showed exactly
-        # this — an all-internal stack). 45 reliably includes app code.
-        stack = "".join(traceback.format_stack()[-45:])
+        # v4.4.19 — was ``[-45:]``, dropped. ``format_stack()`` returns
+        # outermost-first / innermost-last, so ``[-45:]`` keeps the
+        # *innermost* 45 frames = the SQLAlchemy pool-checkout chain +
+        # this hook. The app caller lives in the *outer* frames, which
+        # is what we want for leak hunting — exactly the part the slice
+        # was discarding. (Both v3.10.13's bump 18→45 and the original
+        # ``[-18:]`` had this direction wrong; the 2026-05-26 ARCH-A
+        # trace on www01 returned an all-SQLA stack despite a 59h
+        # leaked checkout, which is what surfaced it.) Drop the
+        # trailing ``format_stack`` frame only.
+        stack = "".join(traceback.format_stack()[:-1])
         _pool_checkouts[id(conn_record)] = {
             "since": time.monotonic(), "stack": stack,
         }
