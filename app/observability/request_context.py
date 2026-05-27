@@ -76,6 +76,28 @@ _internal_source: ContextVar[Optional[str]] = ContextVar(
     "internal_source", default=None,
 )
 
+# v4.4.23 — per-request gating-header presence flags. Set at the
+# /v1/messages + /v1/completions entry points; read by
+# ``_build_outcome_meta`` so every activity_log row carries the
+# verifiable bool of "did this request carry X-Conversation-Id".
+#
+# Why: 2026-05-27 DevinGPT follow-up asked us to confirm whether two
+# specific 2026-05-17 events had the header. We couldn't — activity_log
+# event_meta didn't capture header presence at all, only request body
+# fields. The Prometheus counter does (F-OBS-003, v4.4.15) but it's
+# in-process and resets on restart, so it can't tell us about
+# historical individual events. This contextvar closes the gap.
+#
+# Stored as bool (presence only), NOT the header value — the value can
+# be a privacy-sensitive client identifier (conversation id) so we
+# keep the activity-log row schema-stable + privacy-clean.
+_had_x_conversation_id: ContextVar[bool] = ContextVar(
+    "had_x_conversation_id", default=False,
+)
+_had_x_memory_tag: ContextVar[bool] = ContextVar(
+    "had_x_memory_tag", default=False,
+)
+
 
 # v3.6.3 — DNS cache for the LAN-egress hostname rewrite. Map keys are
 # hostnames; values are ``(resolved_ip_or_none, expiry_at_monotonic)``.
@@ -237,6 +259,29 @@ def get_internal_source() -> Optional[str]:
     """v3.7.15 — read the current internal-source tag, or None if the
     request is from an external caller."""
     return _internal_source.get()
+
+
+def set_caller_memory_headers(
+    has_conversation_id: bool, has_memory_tag: bool = False,
+) -> None:
+    """v4.4.23 — capture which caller-memory gating headers this
+    request carried. Set at the /v1/messages + /v1/completions entry
+    points so activity_log can verifiably record the per-event
+    presence — the Prometheus counter (v4.4.15 F-OBS-003) only gives
+    in-process running totals."""
+    _had_x_conversation_id.set(bool(has_conversation_id))
+    _had_x_memory_tag.set(bool(has_memory_tag))
+
+
+def get_had_x_conversation_id() -> bool:
+    """v4.4.23 — was X-Conversation-Id present on the current request?
+    False outside a request scope (probes, internal calls)."""
+    return _had_x_conversation_id.get()
+
+
+def get_had_x_memory_tag() -> bool:
+    """v4.4.23 — was X-Memory-Tag present on the current request?"""
+    return _had_x_memory_tag.get()
 
 
 def _clear_dns_cache_for_tests() -> None:

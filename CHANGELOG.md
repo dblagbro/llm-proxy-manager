@@ -9,6 +9,34 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v4.3.x — "Voice output" milestone
 
+### v4.4.23 — per-event caller-memory header capture in activity_log (2026-05-27)
+
+Surfaced today by a DevinGPT follow-up to the caller-memory observability memo. They asked us to re-sample two specific 2026-05-17 events and confirm whether `X-Conversation-Id` was present.
+
+**We couldn't** — `activity_log.event_meta` never captured request headers. It only logs body-derived fields (model, in_tok, request_preview, …). The Prometheus counter from v4.4.15 (F-OBS-003) does capture header presence — but it's in-process and resets on container restart, so it can't answer "did this specific historical event carry the header." My earlier "57 reqs, zero header" finding in the memo was reading the absence of a field that was **never logged in the first place**.
+
+DevinGPT's reply was right to push back: they intentionally don't send the header on auxiliary subcalls (refusal-judge probes, image-prompt refinement, auto-title, embedding queries, deep-research sub-calls, sub-agent spawn, image-gen probe). Of the ~57 sampled requests in the window, only ~4 were user-facing chats that should have carried the header, and we have no way to verify presence on those specific records.
+
+**Fix** — close the observability gap:
+
+- Two new contextvars in `app/observability/request_context.py`: `had_x_conversation_id` and `had_x_memory_tag`. Set at the entry points of `/v1/messages` and `/v1/completions` (alongside the existing F-OBS-003 Prometheus counter), default False outside a request scope so probes / internal traffic don't get misleading flags.
+- `_build_event_meta_base` reads the contextvars and stamps `meta["had_x_conversation_id"] = True` / `meta["had_x_memory_tag"] = True` on each activity_log row. Boolean only — never the value (it's a privacy-sensitive client identifier). Absent key implies False so the schema stays lean.
+- Same try/except containment as the prometheus counter — instrumentation failures never break a request.
+
+**Why a contextvar, not plumb through `record_outcome`?** `record_outcome` has ~14 call sites across messages.py, completions.py, keepalive.py, _messages_streaming.py, _completions_streaming.py, _grok_web_dispatch.py, etc. Threading a new parameter through all of them is high-churn for a per-request side-channel value. ContextVars were designed for exactly this — the same pattern v3.6.2 used for `client_ip` and v3.7.15 for `internal_source`.
+
+**What this means for the DevinGPT memo**: I owe them a correction. The "57 requests, zero header" claim was based on a field we don't log. We can't retroactively verify the 2026-05-17 events. Going forward, every `/v1/messages` and `/v1/completions` row will carry the bool, so the next time we have a question like this, the answer is one SQL query.
+
+**Tests** (`tests/unit/test_v4423_caller_memory_headers_in_meta.py`, +9):
+- 6 source guards: contextvar exists with False default; both entry points set it; `_build_event_meta_base` reads it; stamps `True` literal, never the value; instrumentation wrapped in try/except.
+- 3 behavioral: default-False outside request scope; setter round-trips bool; setter coerces truthy `str` (FastAPI Header() param shape) to bool.
+
+**Test counts**
+
+- Unit suite: **2375 passed + 2 skipped** (was 2366+2 in v4.4.22; +9).
+
+**Operator action — none.** Patch-class release. Next sweep will show `had_x_conversation_id: true` (or its absence) on every user-chat event, providing exactly the forensic evidence the DevinGPT memo back-and-forth asked for.
+
 ### v4.4.22 — async-side session tracer (ARCH-A real fix) (2026-05-27)
 
 The latent ARCH-A pool leak's investigation has been stuck for two releases because the captured stacks were useless. v3.10.2 added a sync pool-event hook with `traceback.format_stack()`. v4.4.19 fixed the slicing direction. **Neither one ever captured app frames** — and the 2026-05-27 dig finally explained why.

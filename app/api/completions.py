@@ -91,6 +91,18 @@ async def chat_completions(
     except Exception:
         pass  # telemetry must never break the request path
 
+    # v4.4.23 — per-request header-presence contextvars, mirror of
+    # the equivalent block in messages.py. See request_context.py for
+    # the rationale (DevinGPT 2026-05-27 follow-up).
+    try:
+        from app.observability.request_context import set_caller_memory_headers
+        set_caller_memory_headers(
+            has_conversation_id=bool(x_conversation_id),
+            has_memory_tag=bool(x_memory_tag),
+        )
+    except Exception:
+        pass
+
     body = await request.json()
     # v3.5.8 BUG-004 fix — validate request shape at the input boundary
     # so missing model/messages return 400 instead of cascading to a
