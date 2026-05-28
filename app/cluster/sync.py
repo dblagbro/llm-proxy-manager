@@ -165,6 +165,19 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
             # No local row. Don't materialize a peer's tombstone — just skip.
             if peer_deleted_at is not None:
                 continue
+            # v4.4.25 (BUG-084) — materialize the FULL operator-settable
+            # field set on insert, not just the base columns. Pre-fix the
+            # insert path carried only id/name/hash/prefix/type/enabled/
+            # spending_cap/rate_limit_rpm + the stamp. A key created +
+            # PATCHed on the origin (semantic_cache, budget caps, tier,
+            # ttl, lmrh rates) propagated to peers as a base row with
+            # those fields at their defaults — AND because the insert also
+            # set last_user_edit_at to the origin's stamp, the next sync
+            # cycle hit the LWW tie (peer stamp == origin stamp → keep
+            # local) and the UPDATE path never backfilled them. Net: a
+            # new key's extended fields silently never reached peers
+            # unless the operator PATCHed a second time. Same field-
+            # coverage gap class as v4.4.18 (which fixed the UPDATE path).
             db.add(ApiKey(
                 id=k_data["id"],
                 name=k_data["name"],
@@ -174,6 +187,14 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
                 enabled=k_data.get("enabled", True),
                 spending_cap_usd=k_data.get("spending_cap_usd"),
                 rate_limit_rpm=k_data.get("rate_limit_rpm"),
+                semantic_cache_enabled=bool(k_data.get("semantic_cache_enabled", False)),
+                daily_soft_cap_usd=k_data.get("daily_soft_cap_usd"),
+                daily_hard_cap_usd=k_data.get("daily_hard_cap_usd"),
+                hourly_cap_usd=k_data.get("hourly_cap_usd"),
+                rate_limit_tier=k_data.get("rate_limit_tier"),
+                caller_memory_ttl_days=k_data.get("caller_memory_ttl_days"),
+                lmrh_polling_rpm=k_data.get("lmrh_polling_rpm"),
+                lmrh_quotes_rpm=k_data.get("lmrh_quotes_rpm"),
                 # v4.4.20 — carry the peer's edit-stamp on first
                 # materialization so subsequent sync cycles can use
                 # the LWW gate immediately.

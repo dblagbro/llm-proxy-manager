@@ -9,6 +9,22 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v4.3.x — "Voice output" milestone
 
+### v4.4.25 — api_keys cluster-sync INSERT field coverage (2026-05-28)
+
+Follow-on fix found while verifying v4.4.24's BUG-079 repair. The row + LWW stamp propagated to peers correctly (BUG-079 confirmed fixed), but a newly created+PATCHed api_key arrived at peers with `semantic_cache_enabled=0` and `daily_hard_cap_usd=NULL` — the operator's PATCHed values were lost.
+
+**Root cause (BUG-084):** `apply_sync`'s api_keys INSERT path (`app/cluster/sync.py`) materialized only base columns + the v4.4.20 stamp. The 8 extended operator-settable fields that v4.4.18 added to the *UPDATE* push/apply were never added to the *INSERT*. Worse, the insert sets `last_user_edit_at` to the origin's stamp, so the next sync hits the LWW tie (equal stamps → keep local) and the UPDATE path never backfills them. A new key's extended fields therefore never reached peers unless the operator PATCHed a second time.
+
+**Fix:** the INSERT now carries all 8 extended fields (`semantic_cache_enabled`, `daily_soft_cap_usd`, `daily_hard_cap_usd`, `hourly_cap_usd`, `rate_limit_tier`, `caller_memory_ttl_days`, `lmrh_polling_rpm`, `lmrh_quotes_rpm`).
+
+**Tests** (`tests/unit/test_v4425_apikey_insert_field_coverage.py`, +3): source guard on insert coverage; behavioral repro (new key materializes extended fields); insert-then-tie consistency (a second sync at equal stamp is a no-op and doesn't revert).
+
+**Test counts**
+
+- Unit suite: **2383 passed + 2 skipped** (was 2380+2 in v4.4.24; +3).
+
+**Operator action — none.** Completes the cluster-sync field-coverage arc: create + edit on any node now fully propagates on the first sync cycle.
+
 ### v4.4.24 — cluster-sync apply robustness (QA-pass remediation) (2026-05-28)
 
 Fixes the headline finding of the 2026-05-27 deep QA pass: **cluster sync had been silently broken for ~6 days** (BUG-079). A single duplicate `(provider_id, captured_at)` row in `provider_ai_review` made `_apply_provider_ai_reviews` raise `MultipleResultsFound`, aborting the *entire* `apply_sync` transaction on inbound `/cluster/sync` to www2 + c1conv. Nothing propagated from www1 — api_keys, providers, settings, the lot. Heartbeat still reported "healthy" so it went undetected. The v4.4.18 field-coverage fix and v4.4.20 LWW gate were both functionally dead the whole time.

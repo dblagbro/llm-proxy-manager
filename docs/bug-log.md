@@ -6,6 +6,29 @@ Add new findings on top. When status changes, leave the row in place and update 
 
 ---
 
+## 2026-05-28 — QA-pass remediation (v4.4.24 + v4.4.25)
+
+The 2026-05-27 findings below were remediated. Status updates:
+
+- **BUG-079** (cluster sync broken) — ✅ **CLOSED v4.4.24.** `.limit(1)` guard + de-dup data fix on www2/c1conv. Verified live: minted+PATCHed api_key on www1 propagated to both peers in <80s (the exact test that found it). Peer `/cluster/sync` returns 200, not 500.
+- **BUG-080** (5 vulnerable handlers) — ✅ **CLOSED v4.4.24.** All 5 got `.limit(1)`. Source-guard test prevents regression on future handlers.
+- **BUG-081** (push_sync ignores response) — ✅ **CLOSED v4.4.24.** Response status now inspected + logged on non-200.
+- **BUG-083** (negative hours) — ✅ **CLOSED v4.4.24.** `Query(hours, ge=1, le=720)`.
+- **F-INFRA-001** (non-hermetic unit suite) — ✅ **CLOSED v4.4.24.** Session-finish purge gated behind `LLMPROXY_TEST_PURGE_LIVE=1`.
+- **F-OBS-004** (contrast) — DEFERRED to a visual-review session (blind sweep too risky; one existing `dark:` edge case would corrupt).
+- **F-OBS-005** (a11y) — still open, enhancement.
+
+### BUG-084 — api_keys cluster-sync INSERT path drops extended operator fields — ✅ **CLOSED v4.4.25 (2026-05-28)**
+
+- **Severity:** medium · **Category:** confirmed defect · cluster-sync field coverage (insert path)
+- **Surfaced:** 2026-05-28 during post-v4.4.24 verification of the BUG-079 fix. The row + LWW stamp propagated to peers (BUG-079 confirmed fixed), but `semantic_cache_enabled` arrived `0` and `daily_hard_cap_usd` arrived `NULL` — the PATCHed values were lost.
+- **Root cause:** `apply_sync`'s api_keys INSERT path (`app/cluster/sync.py:168`) materialized only base columns (id/name/hash/prefix/type/enabled/spending_cap/rate_limit_rpm) + the v4.4.20 stamp. The 8 extended fields added to the UPDATE push/apply in v4.4.18 were never added to the INSERT. Compounding it: the insert sets `last_user_edit_at` to the origin's stamp, so the *next* sync hits the LWW tie (equal stamps → keep local) and the UPDATE path never backfills the extended fields. Net: a newly created+patched key's extended fields silently never reached peers unless the operator PATCHed a *second* time (bumping the stamp past the peer's).
+- **Fix:** v4.4.25 adds all 8 extended fields to the INSERT path.
+- **Tests** (`tests/unit/test_v4425_apikey_insert_field_coverage.py`, +3): source guard on insert coverage; behavioral repro (new key materializes extended fields); insert-then-tie consistency (second sync at equal stamp is a no-op, doesn't revert).
+- **Status:** CLOSED v4.4.25.
+
+---
+
 ## 2026-05-27 — Deep QA pass (post v4.4.23, fleet 3/3)
 
 Comprehensive QA pass covering the v4.4.20→.23 release arc plus broader regression. Methodology: discovery → planning → test design → execution across unit + cluster contract + auth boundaries + LWW behavioral + schema + per-event header capture + async tracer + cron watchers + frontend (Playwright in-flight) + theme contrast spot. Result: **one HIGH severity (cluster sync silently broken)**, one MEDIUM (input validation), several low/hardening items. The HIGH finding is the headline — six days of cluster sync data divergence undetected by heartbeat-only health checks.
