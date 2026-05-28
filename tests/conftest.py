@@ -53,7 +53,19 @@ def pytest_sessionfinish(session, exitstatus):
     which hard-deletes rows whose name matches a test pattern AND whose
     ``deleted_at`` is older than 60s (cluster-sync convergence buffer).
     Best-effort — failures don't fail the session.
+
+    v4.4.24 (F-INFRA-001) — gated behind ``LLMPROXY_TEST_PURGE_LIVE=1``.
+    This hook POSTs to the LIVE production deployment, which made the
+    pure unit suite non-hermetic: ``pytest tests/unit/`` hit
+    ``www.voipguru.org`` at session-finish even with no integration
+    tests selected, breaking CI portability and tripping ``-W error``
+    on the InsecureRequestWarning. Integration runs that create
+    test-scoped tombstones still want this cleanup, so set the env var
+    in those contexts. Default OFF keeps unit runs self-contained.
     """
+    import os
+    if os.environ.get("LLMPROXY_TEST_PURGE_LIVE") != "1":
+        return
     try:
         s = _api_session()
         r = s.post(f"{BASE_URL}/api/keys/_purge-test-tombstones", timeout=10)

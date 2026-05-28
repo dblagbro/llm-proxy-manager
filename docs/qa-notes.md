@@ -6,6 +6,52 @@ Created 2026-05-09 during the deep QA pass. Append-only ledger.
 
 ---
 
+## 2026-05-27 — Deep QA pass operational observations
+
+### Cluster heartbeat health is misleading when apply_sync is broken
+
+`/cluster/status` reports peers as `status=healthy` based on a separate heartbeat path (`_ping_peer` in `app/cluster/manager.py`). The heartbeat exercises a different code path than `apply_sync`. Until BUG-079 is fixed, **never assume heartbeat = data sync working**. To verify actual cluster sync is functional, mint a test row + observe its propagation to peers' DBs (or check apply_sync status in peer logs).
+
+### `push_sync` swallows peer non-200 responses
+
+Per BUG-081 — `app/cluster/manager.py:518` calls `await client.post(...)` and ignores the response. Network exceptions log; HTTP errors don't. This combined with the heartbeat-health blind spot is why BUG-079 went ~6 days undetected. When debugging cluster issues, **inspect peer-side `/cluster/sync` logs directly** rather than trusting the originating node's logs.
+
+### Cron auto-watchers — how they self-suppress
+
+Three cron entries armed during this session:
+- `/home/dblagbro/bin/f2_cache_verify.sh` (every 30 min)
+- `/home/dblagbro/bin/devingpt_header_verify.sh` (every 15 min)
+- `/home/dblagbro/bin/c1conv_v4423_retry.sh` (every 30 min — already self-suppressed)
+
+Each writes a `.done` sentinel to `/home/dblagbro/log/<name>.done` once its verdict fires; subsequent invocations early-exit when the sentinel exists. To **re-arm** any of them: `rm /home/dblagbro/log/<name>.done`. Verdict text lives in `/home/dblagbro/log/<name>.verdict`.
+
+### Provider AI Review duplicate rows — diagnosing
+
+Quick check from any node's container:
+```python
+import sqlite3
+c = sqlite3.connect('/app/data/llmproxy.db').cursor()
+for r in c.execute("SELECT provider_id, captured_at, COUNT(*) AS n FROM provider_ai_review GROUP BY provider_id, captured_at HAVING n > 1").fetchall():
+    print(r)
+```
+A non-empty result on a peer = `apply_sync` from www1 (or any peer) will 500 on that peer. Same pattern applicable to `_apply_blocked_ips` / `_apply_ai_reviews` / `_apply_caller_memory*` if duplicates ever occur (BUG-080).
+
+### Test-infra: pytest sessionfinish hits live production
+
+Per F-INFRA-001 — running `pytest tests/unit/` from a clean checkout still POSTs to `https://www.voipguru.org/llm-proxy2/api/keys/_purge-test-tombstones` at the end. Affects CI portability. The unit suite is NOT hermetic in its current shape.
+
+### Frontend contrast: `text-gray-400` on light backgrounds
+
+Per F-OBS-004. Stat-card labels and table helper text use `text-gray-400` which fails WCAG AA on white. Not a UX blocker but a real readability issue for low-vision operators.
+
+### `gcloud compute ssh` to c1conv is flaky under CPU pressure
+
+Documented previously in `reference_avaya01_ssh_hang_is_overload.md`, observed again 2026-05-27 — three back-to-back failures on the v4.4.23 deploy attempt. The auto-retry script (`/home/dblagbro/bin/c1conv_v4423_retry.sh`) caught up automatically within minutes. For routine deploys, set up the cron retry path BEFORE attempting the manual hop.
+
+
+
+---
+
 ## 2026-05-12 — Querying cluster-replicated tables (operator/agent runbook)
 
 ### The trap

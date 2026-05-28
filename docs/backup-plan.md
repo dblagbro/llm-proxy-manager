@@ -6,6 +6,96 @@ until this plan is reviewed.** Written for the v4.3.0 QA-pass remediation
 
 ---
 
+## 2026-05-27 — Backup plan addendum for v4.4.24 (cluster-sync robustness)
+
+The 2026-05-27 deep QA pass surfaced BUG-079..083 (see `docs/bug-log.md`). The remediation (`docs/remediation-plan.md` 2026-05-27 section) requires:
+
+1. **Code changes** — 5 `.limit(1)` adds in `app/cluster/sync_handlers.py`; 1 line in `app/cluster/manager.py::push_sync`; 1 line in `app/api/monitoring.py` (Query bound). Code-only changes are recoverable via git tag — `git tag v4.4.23` once we cut it.
+2. **Data fix on peers** — hard-DELETE the 2 duplicate rows on www2 + c1conv. **Irreversible without a DB snapshot.**
+3. **Schema migration** (deferred to v4.4.25) — full table rewrite for UNIQUE constraint on `provider_ai_review` (+ potentially `api_key_ai_review`, `caller_memory`, `caller_memory_markers`, `blocked_ips`). Highest backup risk in the arc.
+
+### What to back up before v4.4.24 deploy
+
+#### 1. Code
+
+- `git tag v4.4.23` to pin the pre-fix release (a tag at the current `e50276e` commit on branch `v2`).
+- Branch from the tag for the v4.4.24 work: `git checkout -b v4.4.24-prep v4.4.23`.
+
+#### 2. Database snapshots BEFORE the data fix
+
+This is the new requirement vs the v4.3.0 plan. The data fix HARD-DELETES rows; we need point-in-time recovery.
+
+```bash
+# Each peer node — snapshot the affected table before delete.
+# Run inside the container OR copy the WAL-aware DB file.
+sudo docker exec llm-proxy2 sqlite3 /app/data/llmproxy.db \
+    ".backup /app/data/llmproxy.db.pre-v4424.bak"
+# Then docker cp it out to the host for redundancy:
+sudo docker cp llm-proxy2:/app/data/llmproxy.db.pre-v4424.bak \
+    /home/dblagbro/backups/llmproxy.db.pre-v4424.www1.$(date -Iseconds).bak
+```
+
+Do this on **all 3 nodes** before the data fix runs. Total per-node footprint is ~30 MB.
+
+#### 3. Application state
+
+- `data/` directory in the container hosts the SQLite DB. The container restart writes WAL → DB; the snapshot above is post-checkpoint and self-consistent.
+- Cron sentinels under `/home/dblagbro/log/*.done` should NOT be backed up — they're per-session and re-arming is intentional.
+
+### Schema-migration backup (when v4.4.25 ships)
+
+The `provider_ai_review` UNIQUE-constraint migration requires the SQLite shadow-table pattern:
+
+```sql
+BEGIN;
+CREATE TABLE provider_ai_review__new AS SELECT * FROM provider_ai_review;
+CREATE UNIQUE INDEX ix_pai_provider_captured_uniq ON provider_ai_review__new(provider_id, captured_at);
+DROP TABLE provider_ai_review;
+ALTER TABLE provider_ai_review__new RENAME TO provider_ai_review;
+-- re-create any other indices that lived on the original table
+COMMIT;
+```
+
+**Before running this:**
+1. Full DB snapshot (per the data-fix backup above).
+2. Confirm zero duplicates: `SELECT COUNT(*) FROM (SELECT 1 FROM provider_ai_review GROUP BY provider_id, captured_at HAVING COUNT(*) > 1)` returns 0.
+3. Hold a read-lock window (~1s for ~3580 rows).
+
+### Rollback procedure
+
+If the v4.4.24 deploy goes wrong:
+
+1. **Code rollback** — `sudo docker pull dblagbro/llm-proxy2:v4.4.23 && sudo docker tag dblagbro/llm-proxy2:v4.4.23 llm-proxy2:latest && sudo docker compose -f /home/dblagbro/docker/docker-compose.yml --project-directory /home/dblagbro/docker up -d --force-recreate --no-deps llm-proxy2`. The tag pins the binary state.
+2. **Data rollback** — if the hard-delete of duplicates introduced a real problem, restore the per-node snapshot taken in step #2 above. Procedure:
+   ```bash
+   sudo docker exec llm-proxy2 cp /app/data/llmproxy.db /app/data/llmproxy.db.corrupted
+   sudo docker cp /home/dblagbro/backups/llmproxy.db.pre-v4424.<NODE>.<TS>.bak llm-proxy2:/app/data/llmproxy.db
+   sudo docker compose restart llm-proxy2  # forces SQLAlchemy to reload the file
+   ```
+   Restore verification: re-run the duplicate-detection query; should match the pre-fix count.
+
+### Restore verification
+
+After a rollback:
+1. `/health` returns 200 with correct `version`
+2. Three-node `/cluster/status` shows healthy peers
+3. The duplicate-detection probe matches the pre-fix counts (proving the snapshot is the right one)
+4. Drive a live LWW test (the same test BUG-079 was found with): mint api_key, wait 70s, query peers. Should still show **broken sync** (we're back to pre-fix state).
+
+### Who/what systems are affected
+
+- llm-proxy2 service on www1 / www2 / c1conv
+- coordinator-hub (depends on llm-proxy2 for routing — should be unaffected by sync internals)
+- DevinGPT (depends on the proxy for memory write-back — unaffected by sync internals)
+
+### Risks if rollback fails
+
+- **Data**: the snapshot must be taken BEFORE the data fix. If the fix runs first and the snapshot fails after, the duplicate row is gone forever. **Sequence matters.**
+- **Code**: rollback to v4.4.23 reintroduces BUG-079 — the cluster will resume the silently-broken state. Acceptable as a last resort but not a "fix."
+- **Partial rollback**: if one peer is rolled back but not the others, the cluster runs mixed-version. Sync direction matrix in BUG-079's "Scope" section is the reference. Roll all peers together OR none.
+
+
+
 ## Scope of the planned fixes
 
 The v4.3.0 remediation (`remediation-plan.md`) is **frontend-only product

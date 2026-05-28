@@ -515,11 +515,23 @@ async def push_sync(peer: PeerNode, db_factory):
         # belt-and-braces hedge — a transiently slow peer shouldn't get
         # falsely logged as failed.
         async with httpx.AsyncClient(timeout=45, verify=False) as client:
-            await client.post(
+            resp = await client.post(
                 f"{peer.url.rstrip('/')}/cluster/sync",
                 content=body,
                 headers={"X-Cluster-Node": settings.cluster_node_id or "", "X-Cluster-Sig": sig,
                          "Content-Type": "application/json"},
+            )
+        # v4.4.24 (BUG-081) — inspect the peer response. Pre-fix this was a
+        # fire-and-forget POST: a peer 500-ing on apply_sync (e.g. BUG-079's
+        # MultipleResultsFound) was completely invisible to the originator,
+        # which is why a fully-broken cluster sync went undetected for ~6
+        # days while heartbeat still reported "healthy". A non-200 here is
+        # the peer rejecting our payload — surface it loudly.
+        if resp.status_code != 200:
+            body_preview = resp.text[:300] if resp.text else "(empty body)"
+            logger.warning(
+                "Sync to %s REJECTED: HTTP %s — %s",
+                peer.id, resp.status_code, body_preview,
             )
     except Exception as e:
         # v4.4.13: render the exception with both class name AND str(),

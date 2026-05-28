@@ -125,7 +125,13 @@ def test_push_sync_log_message_handles_empty_exception_str():
     (fallback-aware) message so future timeouts produce a useful
     line."""
     src = Path("app/cluster/manager.py").read_text()
-    push_body = src[src.index("async def push_sync("):src.index("async def push_sync(") + 2500]
+    # v4.4.24 — extract the full function body (to the next top-level def),
+    # not a fixed slice. The v4.4.24 BUG-081 response-status block grew the
+    # function past the old 2500-char window, pushing the failed-log line
+    # out of view. Same brittleness class as the v3.9.8 source-window test.
+    start = src.index("async def push_sync(")
+    nxt = src.index("\n_push_sync = push_sync", start)
+    push_body = src[start:nxt]
     # Source-level: the log line uses both type name and str.
     assert "type(e).__name__" in push_body
     assert "(no message)" in push_body

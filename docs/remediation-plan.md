@@ -1,10 +1,80 @@
-# Remediation Plan — consolidated (2026-05-19)
+# Remediation Plan — consolidated (last updated 2026-05-27)
 
 **Source documents:** `docs/bug-log.md` · `docs/test-plan.md` · `docs/qa-notes.md` ·
 `architecture.md` · `design.md` · `refactor-log.md`. **Companion:**
 `docs/backup-plan.md`. **Supersedes** the per-pass remediation entries
 previously in this file (preserved in git history; the v4.3.0 + v4.3.2
 fix groups are consolidated below).
+
+## 2026-05-27 — new findings from deep QA pass
+
+**Source:** `docs/bug-log.md` 2026-05-27 section (BUG-079..BUG-083 + F-OBS-004..006 + F-INFRA-001).
+**Status:** PLANNING ONLY — pause before fixes per QA-pass protocol.
+
+### Priority 0 — release blocker (data correctness)
+
+| ID | Title | Severity | Fix scope | Notes |
+|---|---|---|---|---|
+| BUG-079 | Cluster sync silently broken for ~6d on www2 + c1conv | HIGH | hotfix code + data fix + schema migration | Critical-path for v4.4.18+ cluster-sync arc to actually do anything |
+| BUG-080 | 5 of 7 apply handlers share the same vulnerability pattern | HIGH | hotfix code (5 `.limit(1)` adds) | Best fixed in the same release as BUG-079 |
+| BUG-081 | `push_sync` doesn't inspect peer response status | MEDIUM | one-line code change + 1 unit test | Hardening that prevents the next BUG-079-class incident from going undetected |
+
+**Suggested release**: v4.4.24 — "cluster-sync apply robustness". Three commits:
+
+1. Hotfix: `.limit(1)` on all 5 vulnerable handlers + regression tests
+2. Data fix: 2-step SQL script de-duping the existing duplicate rows on www2 + c1conv (run manually after deploy, not embedded in the migration — surgical)
+3. Hardening: `push_sync` response-status check + warning log on non-200
+4. Schema migration: idempotent ALTER chain to add UNIQUE indexes via the SQLite "shadow table" pattern. **DEFERRED to v4.4.25** — schema changes carry separate backup needs.
+
+**Retest scope after v4.4.24:**
+- Drive the same live LWW test (mint key on www1, observe propagation to peers in <70s)
+- Verify peer logs show `200` on incoming `/cluster/sync` post-deploy
+- Run the duplicate-detection probe across all 3 nodes; counts should converge over the next 60s post-sync
+
+### Priority 1 — operational + cross-team
+
+| ID | Title | Severity | Fix scope |
+|---|---|---|---|
+| BUG-082 | F2 cache_control breakpoint not producing upstream cache hits | MEDIUM (cross-team) | draft memo for hub team |
+| BUG-083 | `Query(hours)` accepts negative values | LOW | `ge=1` add + 1 test |
+
+**Suggested handling:**
+- BUG-082: draft memo for operator to forward to hub team. No proxy-side change needed unless hub asks for help.
+- BUG-083: small one-line fix that can ride in v4.4.24.
+
+### Priority 2 — hardening / a11y / test infra
+
+| ID | Title | Severity | Fix scope |
+|---|---|---|---|
+| F-OBS-004 | Light-mode contrast smell on `text-gray-400` labels | LOW (a11y) | sed pass on `frontend/src/pages/` |
+| F-OBS-005 | Light a11y attribute coverage on shared UI | enhancement | dedicated a11y pass on `frontend/src/components/ui/` |
+| F-INFRA-001 | Unit-test conftest hits live prod at sessionfinish | LOW | scope to integration only OR gate behind env var |
+
+**Suggested handling:** combine into a single "v4.4.x hardening" PR. Low-risk.
+
+### Priority 3 — informational / tracking
+
+| ID | Title | Status |
+|---|---|---|
+| F-OBS-006 | Async-session tracer is live but unverified live (no leaks yet) | tracking — needs a real leak |
+| F-OBS-002 | Tombstoned-row count drift across nodes | design behavior, will get worse if BUG-079 stays open |
+| F-OBS-003 | Caller-memory write-back gated on `X-Conversation-Id` | watching cron `/home/dblagbro/bin/devingpt_header_verify.sh` |
+
+### Dependencies between fixes
+
+- BUG-081 (response status check) should ship BEFORE BUG-079's data fix is applied — so if anything goes wrong during the de-dup, sync errors surface immediately.
+- BUG-079 data fix has 2 nodes affected; do **www2 first**, verify sync works to www2, **then c1conv**. Don't batch.
+- UNIQUE-constraint migration depends on the data fix completing — duplicates must be gone before the constraint is enforceable.
+- Backup-plan.md update needs to land before v4.4.24 deploy (the de-dup hard-deletes rows, which is irreversible without a DB restore).
+
+### Risky changes requiring extra caution
+
+- **Data fix on www2/c1conv** — hard DELETE of rows from `provider_ai_review`. The deleted row carries informational AI-review verdicts; safe to drop the row with NULL lifecycle fields. **Snapshot the table on each peer before the delete** (see `docs/backup-plan.md` update).
+- **UNIQUE constraint migration via shadow-table** — full table rewrite, brief read-only window. Test on a staging DB first.
+
+---
+
+
 
 > **Status (2026-05-19): Batch A attempted and DEFERRED to Batch C
 > (v4.4 arc).** The other batches remain planning-only and await
