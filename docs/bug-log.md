@@ -102,14 +102,24 @@ Comprehensive QA pass covering the v4.4.20→.23 release arc plus broader regres
 - **Tests:** unit-level — mock httpx client to return 500; assert a warning is logged.
 - **Status:** OPEN, do not fix yet.
 
-### BUG-082 — F2 cache-control breakpoint not producing upstream Anthropic cache hits — 🟡 **OPEN (MEDIUM, cross-team)**
+### BUG-082 — F2 cache-control not producing cache hits — ROOT-CAUSED to hub request structure (proxy verified clean) — 🟡 **OPEN (MEDIUM, cross-team) — memo drafted 2026-05-28**
 
-- **Severity:** medium · **Category:** cross-team integration gap
-- **Surfaced:** 2026-05-27 11:00 EDT by the cron watcher `/home/dblagbro/bin/f2_cache_verify.sh` (armed 2026-05-27 during this session).
-- **Verdict** (from `/home/dblagbro/log/f2_verify.verdict`): `F2 NOT VERIFIED: Avaya batch fired (n=479 reqs in last 10min) but ZERO requests carry cache_* fields — hub cache_control breakpoint is not producing upstream cache hits. Hub team should re-check the template change.`
-- **Context:** the hub team deployed prompt-cache breakpoints in their Avaya KB enricher template (per the 2026-05-22 routing-cost research F2 finding). After ~6 days the template change is in production but Anthropic upstream returns no `cache_creation_input_tokens` or `cache_read_input_tokens` on any of the 479 batch-burst requests sampled.
-- **Recommended fix direction:** draft a cross-team memo for the hub team. They likely need to verify: (a) cache_control is on the right block, (b) total content past the breakpoint is >= 1024 tokens (Anthropic minimum), (c) the breakpoint marker isn't being stripped by their template renderer.
-- **Status:** OPEN — needs operator-forwarded memo to hub team.
+- **Severity:** medium · **Category:** cross-team integration gap (NOT a proxy defect)
+- **Surfaced:** 2026-05-27 11:00 EDT by the cron watcher `/home/dblagbro/bin/f2_cache_verify.sh`.
+- **Verdict** (from `/home/dblagbro/log/f2_verify.verdict`): 479-req Avaya batch, zero cache_* fields.
+- **Investigation 2026-05-28 (the "do BUG-082" pass):**
+  1. **Volume check** — 4108 hub claude-haiku reqs in 48h; **2795 were ≥2048 tokens** (Haiku cache minimum). Size is NOT the problem. Zero of those 2795 had any cache token (`cc`/`cr` = `None`).
+  2. **Zero cache_creation is the tell** — even a cache MISS writes (`cache_creation > 0`) when caching is active. Zero creation = caching not engaging at all on the hub's requests.
+  3. **Routing** — hub claude-haiku → `Devin-Anthropic-Max-VG` / `Devin-Anthropic-Max-Gmail`, both `provider_type=claude-oauth` (subscription OAuth, not direct API).
+  4. **Proxy path audit** — `_messages_streaming_oauth.py:117` preserves caller `cache_control` AND auto-injects an ephemeral marker on the system prompt when the caller hasn't. Beta bundle includes `prompt-caching-scope-2026-01-05`.
+  5. **Controlled probe (decisive)** — sent 2 identical requests with a ~78 KB stable system prompt + explicit `cache_control` through the proxy to the SAME provider:
+     - req1: `cache_creation=16037, cache_read=0` (wrote cache)
+     - req2: `cache_creation=0, cache_read=16037` (full cache HIT)
+     **Caching works end-to-end on this exact path.** The proxy is clean; the subscription endpoint honors caching.
+- **Root cause (high confidence):** the hub's cacheable content is not behind a `cache_control` breakpoint on a **stable prefix**. Most likely the large per-article enrichment content sits in the **user message** (which varies per article, correctly uncached) while the small **system prompt** (where the proxy auto-injects the marker) is below the 2048-token cache minimum. So the cached prefix is too small to register.
+- **Recommended fix direction (hub-side):** move the stable shared content (enrichment instructions + any shared reference material that repeats across articles) into a large **system prompt** block and place the `cache_control: {type: ephemeral}` breakpoint there. Per-article content stays in the user message (uncached — correct). Verify with the proxy's recorded `cache_creation`/`cache_read` on the next batch.
+- **Optional proxy enhancement (not a bug, deferred):** the auto-inject currently always targets the system prompt. It could be smarter and place the marker on the largest stable block — but that's heuristic-heavy and risky; the hub-side fix is cleaner.
+- **Status:** OPEN — memo drafted 2026-05-28 for operator to forward to hub team. Proxy exonerated.
 
 ### F-OBS-004 — Light-mode contrast smell: `text-gray-400` on white for important labels — ⚠ **NOTED (low / a11y)**
 
