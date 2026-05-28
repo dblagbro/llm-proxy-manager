@@ -52,7 +52,14 @@ async def _apply_blocked_ips(db: AsyncSession, rows: list[dict]) -> bool:
             continue
         peer_added_at = _parse_iso_or_none(r.get("added_at"))
         peer_deleted_at = _parse_iso_or_none(r.get("deleted_at"))
-        result = await db.execute(select(BlockedIp).where(BlockedIp.ip == ip))
+        # v4.4.24 (BUG-080) — .limit(1) so a duplicate row can never raise
+        # MultipleResultsFound and abort the whole apply_sync transaction.
+        # See BUG-079: a single duplicate in provider_ai_review silently
+        # broke cluster sync for ~6 days. Same defensive pattern the
+        # external-usage + node-auth-state handlers already used.
+        result = await db.execute(
+            select(BlockedIp).where(BlockedIp.ip == ip).limit(1)
+        )
         existing = result.scalar_one_or_none()
         if existing is None:
             db.add(BlockedIp(
@@ -105,6 +112,7 @@ async def _apply_ai_reviews(db: AsyncSession, rows: list[dict]) -> None:
             select(ApiKeyAiReview)
             .where(ApiKeyAiReview.api_key_id == api_key_id)
             .where(ApiKeyAiReview.captured_at == captured_at)
+            .limit(1)  # v4.4.24 (BUG-080) — guard against duplicate rows
         )).scalar_one_or_none()
         if existing is None:
             db.add(ApiKeyAiReview(
@@ -149,6 +157,7 @@ async def _apply_provider_ai_reviews(db: AsyncSession, rows: list[dict]) -> None
             select(ProviderAiReview)
             .where(ProviderAiReview.provider_id == provider_id)
             .where(ProviderAiReview.captured_at == captured_at)
+            .limit(1)  # v4.4.24 (BUG-079) — the row this crash was found on
         )).scalar_one_or_none()
         if existing is None:
             db.add(ProviderAiReview(
@@ -200,6 +209,7 @@ async def _apply_caller_memory(db: AsyncSession, rows: list[dict]) -> None:
             .where(CallerMemory.api_key_id == akid)
             .where(CallerMemory.conversation_id.is_(None) if conv is None else CallerMemory.conversation_id == conv)
             .where(CallerMemory.memory_tag == tag)
+            .limit(1)  # v4.4.24 (BUG-080) — guard against duplicate rows
         )).scalar_one_or_none()
         if existing is None:
             db.add(CallerMemory(
@@ -248,6 +258,7 @@ async def _apply_caller_memory_markers(db: AsyncSession, rows: list[dict]) -> No
             .where(CallerMemoryMarker.api_key_id == akid)
             .where(CallerMemoryMarker.conversation_id.is_(None) if conv is None else CallerMemoryMarker.conversation_id == conv)
             .where(CallerMemoryMarker.memory_tag == tag)
+            .limit(1)  # v4.4.24 (BUG-080) — guard against duplicate rows
         )).scalar_one_or_none()
         if existing is None:
             db.add(CallerMemoryMarker(

@@ -9,6 +9,40 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v4.3.x — "Voice output" milestone
 
+### v4.4.24 — cluster-sync apply robustness (QA-pass remediation) (2026-05-28)
+
+Fixes the headline finding of the 2026-05-27 deep QA pass: **cluster sync had been silently broken for ~6 days** (BUG-079). A single duplicate `(provider_id, captured_at)` row in `provider_ai_review` made `_apply_provider_ai_reviews` raise `MultipleResultsFound`, aborting the *entire* `apply_sync` transaction on inbound `/cluster/sync` to www2 + c1conv. Nothing propagated from www1 — api_keys, providers, settings, the lot. Heartbeat still reported "healthy" so it went undetected. The v4.4.18 field-coverage fix and v4.4.20 LWW gate were both functionally dead the whole time.
+
+**Code fixes:**
+
+- **BUG-079 / BUG-080** — added `.limit(1)` to all 5 vulnerable `scalar_one_or_none()` lookups in `app/cluster/sync_handlers.py` (`_apply_blocked_ips`, `_apply_ai_reviews`, `_apply_provider_ai_reviews`, `_apply_caller_memory`, `_apply_caller_memory_markers`). The other 2 handlers already had it. A duplicate row can no longer crash the apply transaction — the merge picks one row and proceeds.
+- **BUG-081** — `push_sync` (`app/cluster/manager.py`) now inspects the peer response status. Pre-fix it was a fire-and-forget POST: a peer 500-ing on apply was invisible to the originator, which is the root reason BUG-079 hid for 6 days. A non-200 now logs `Sync to <peer> REJECTED: HTTP <code> — <body preview>`.
+- **BUG-083** — `Query(hours, le=720)` → `Query(hours, ge=1, le=720)` on the 3 monitoring endpoints. Negative `hours` previously returned 200 with a silently-empty result (the SQL window resolved to "the future").
+
+**Data fix** (applied operationally, not in the migration):
+
+- De-duped the 2 stale `provider_ai_review` rows (www2: `da9fb8d610e5ccfa@2026-05-21`, c1conv: `91bafda9cc28d0d6@2026-05-25`). Kept the row carrying lifecycle fields. Per-node DB snapshots taken before the delete (`/home/dblagbro/backups/`).
+
+**Deferred to v4.4.25:** `UNIQUE(provider_id, captured_at)` constraint via the SQLite shadow-table pattern (separate backup needs; the `.limit(1)` guard makes it non-urgent).
+
+**Tests** (`tests/unit/test_v4424_cluster_sync_robustness.py`, +5):
+- Source guard: every `scalar_one_or_none` in sync_handlers.py has a `.limit(1)` within its select chain (prevents BUG-080 regression on any future handler)
+- Source guard: `push_sync` captures + checks the response status (BUG-081)
+- Source guard: `Query(hours)` carries `ge=1` (BUG-083)
+- Behavioral: `_apply_provider_ai_reviews` survives a seeded duplicate (exact BUG-079 repro)
+- Behavioral: `_apply_caller_memory` survives a seeded duplicate (BUG-080)
+- Also widened the v4.4.13 push_sync source-window test (the BUG-081 block outgrew its 2500-char slice — same brittleness as the v3.9.8 fix during the QA pass).
+
+**Test infra** (F-INFRA-001): `pytest_sessionfinish` live-prod purge is now gated behind `LLMPROXY_TEST_PURGE_LIVE=1`. The unit suite is hermetic again — `pytest tests/unit/` no longer POSTs to `www.voipguru.org` at session-finish.
+
+**Deferred:** F-OBS-004 (light-mode `text-gray-400` contrast) needs visual verification in a browser; deferred to a dedicated UI-review session rather than a blind 39-spot class sweep.
+
+**Test counts**
+
+- Unit suite: **2380 passed + 2 skipped** (was 2375+2 in v4.4.23; +5).
+
+**Operator action — none.** After deploy, cluster sync resumes immediately (the `.limit(1)` guard tolerates the existing duplicates; the data fix is hygiene). Verified post-deploy with the same live LWW test that found BUG-079.
+
 ### v4.4.23 — per-event caller-memory header capture in activity_log (2026-05-27)
 
 Surfaced today by a DevinGPT follow-up to the caller-memory observability memo. They asked us to re-sample two specific 2026-05-17 events and confirm whether `X-Conversation-Id` was present.

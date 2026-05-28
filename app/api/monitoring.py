@@ -203,7 +203,7 @@ async def activity_stream(_: AdminUser = Depends(require_admin)):
 
 @router.get("/metrics")
 async def metrics_summary(
-    hours: int = Query(24, le=720),
+    hours: int = Query(24, ge=1, le=720),
     db: AsyncSession = Depends(get_db),
     _: AdminUser = Depends(require_admin),
 ):
@@ -222,7 +222,7 @@ async def metrics_summary(
 
 @router.get("/metrics-by-node")
 async def metrics_summary_by_node(
-    hours: int = Query(24, le=720),
+    hours: int = Query(24, ge=1, le=720),
     db: AsyncSession = Depends(get_db),
     _: AdminUser = Depends(require_admin),
 ):
@@ -308,7 +308,7 @@ async def metrics_summary_by_node(
 @router.get("/metrics/{provider_id}")
 async def provider_metrics(
     provider_id: str,
-    hours: int = Query(24, le=720),
+    hours: int = Query(24, ge=1, le=720),
     db: AsyncSession = Depends(get_db),
     _: AdminUser = Depends(require_admin),
 ):

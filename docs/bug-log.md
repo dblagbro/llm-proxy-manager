@@ -6,7 +6,147 @@ Add new findings on top. When status changes, leave the row in place and update 
 
 ---
 
-## 2026-05-20 — v4.4.0 release-readiness QA pass (post-release)
+## 2026-05-27 — Deep QA pass (post v4.4.23, fleet 3/3)
+
+Comprehensive QA pass covering the v4.4.20→.23 release arc plus broader regression. Methodology: discovery → planning → test design → execution across unit + cluster contract + auth boundaries + LWW behavioral + schema + per-event header capture + async tracer + cron watchers + frontend (Playwright in-flight) + theme contrast spot. Result: **one HIGH severity (cluster sync silently broken)**, one MEDIUM (input validation), several low/hardening items. The HIGH finding is the headline — six days of cluster sync data divergence undetected by heartbeat-only health checks.
+
+### BUG-079 — Cluster sync silently broken for ~6 days — `_apply_provider_ai_reviews` crashes on duplicate (provider_id, captured_at) — 🔴 **OPEN (HIGH)**
+
+- **Severity:** **high** · **Category:** confirmed defect · data correctness across cluster
+- **Surfaced:** 2026-05-27 during deep QA pass, by a live LWW behavioral test (created+PATCHed an api_keys row on www1, peers did NOT see it after 80s).
+- **Repro:** mint a fresh api_key on www1 via the admin API, wait > 60s for the next sync cycle, query the peer's DB by `key_hash` — row absent. Confirmed by directly observing the peers' uvicorn logs:
+  ```
+  POST /cluster/sync HTTP/1.1 500 Internal Server Error
+  File "/app/app/cluster/sync.py", line 859, in apply_sync
+      await _apply_provider_ai_reviews(db, payload.get("provider_ai_reviews", []))
+  File "/app/app/cluster/sync_handlers.py", line 152, in _apply_provider_ai_reviews
+      )).scalar_one_or_none()
+  sqlalchemy.exc.MultipleResultsFound: Multiple rows were found when one or none was required
+  ```
+- **Root cause:** `_apply_provider_ai_reviews` at `app/cluster/sync_handlers.py:152` queries `ProviderAiReview` by `(provider_id, captured_at)` using `.scalar_one_or_none()`. The table has **no UNIQUE constraint** on that pair and a check-then-insert race lets two writers (local AI-review + cluster-sync inbound apply) create duplicates concurrently. When apply_sync next walks the payload, the lookup raises `MultipleResultsFound`, the whole transaction rolls back, and **no rows in the payload are applied** (api_keys, providers, settings, blocked_ips, ai_reviews, caller_memory — everything).
+- **Scope:**
+  - www1: 0 duplicates → can apply incoming syncs fine
+  - www2: 1 duplicate (provider_id=`da9fb8d610e5ccfa`, captured_at=`2026-05-21 12:08:09`)
+  - c1conv: 1 duplicate (provider_id=`91bafda9cc28d0d6`, captured_at=`2026-05-25 07:02:06`)
+  - **www1 → www2 sync: BROKEN** (since 2026-05-21, ~6 days)
+  - **www1 → c1conv sync: BROKEN** (since 2026-05-25, ~2 days)
+  - www2 → www1 sync: works (www1 has no dup)
+  - c1conv → www1 sync: works
+  - Effective topology: www1 acts as **read-only sink**, peers diverge for outbound changes
+- **Implications:**
+  - **v4.4.18 cluster-sync field coverage fix has been DEAD for the entire v4.4.18+ window.** Operator edits to api_keys on www1 (incl. the recent semantic_cache flip, daily caps, rate-tier changes) never reached peers.
+  - **v4.4.20 LWW gate has been DEAD.** Schema migration ran per-node on deploy, so the *column* exists everywhere; field-level stamps don't propagate.
+  - **v4.4.18+ patches that depended on cluster sync working** (LWW gate, ai-review propagation, blocked_ips replication) silently failed.
+  - Schema-evidence: api_keys row counts diverge (www1=20, www2=20, c1conv=15); last_user_edit_at stamping diverges (www1=3, www2=0, c1conv=0).
+  - **Heartbeat health is misleading** — peers report `status=healthy` because the heartbeat endpoint doesn't exercise apply_sync.
+- **Suspected cause of the duplicate row itself:**
+  - No UNIQUE constraint on `(provider_id, captured_at)` in `provider_ai_review`
+  - The AI-review writer (`app/monitoring/ai_provider_supervisor*.py`) and the cluster-sync apply_handler both insert rows. If they race, both see no-existing → both insert → duplicate.
+  - This is exactly the kind of check-then-insert race that `.limit(1)` defends against.
+- **Related vulnerability pattern (BUG-080) — see below.**
+- **Recommended fix direction:**
+  1. **Hotfix code**: add `.limit(1)` to the `_apply_provider_ai_reviews` query (matches the v3.7.15 and v4.4-M2 defensive pattern in `_apply_external_usage_snapshots` and `_apply_provider_node_auth_states`).
+  2. **Data fix**: hard-delete the older row of each duplicate pair on www2 + c1conv. Pick the row with NULL lifecycle fields (`applied_at`/`reverted_at`/`dismissed_at`) — that's the unused one.
+  3. **Hardening**: add `UNIQUE(provider_id, captured_at)` constraint via ALTER (SQLite path: create new table + copy + drop + rename, since SQLite doesn't support adding unique constraints in place).
+  4. **Observability gap**: surface apply_sync 500s on the originating peer. Currently `push_sync` in `cluster/manager.py:518-523` fires the POST but **does not inspect the response status**. A `r = await client.post(...)` + `r.status_code != 200` check + log line would have surfaced this immediately. Filed as separate observability hardening item below.
+  5. **Tests**: add regression test that drives a duplicate row into `provider_ai_review` and asserts apply_sync still succeeds.
+- **Status:** OPEN, **DO NOT FIX YET** per QA-pass protocol — pause for operator review.
+
+### BUG-080 — 5 of 7 cluster-sync apply handlers share the same crash vulnerability — 🔴 **OPEN (HIGH)**
+
+- **Severity:** **high** · **Category:** hardening / latent defect — same class as BUG-079 but not yet triggered
+- **Surfaced:** 2026-05-27, during root-cause investigation of BUG-079. Audited every `scalar_one_or_none` call in `app/cluster/sync_handlers.py`.
+- **Audit result:**
+  | Line | Handler | Has `.limit(1)`? | Vulnerable? |
+  |---|---|---|---|
+  | 56 | `_apply_blocked_ips` | NO | latent risk on duplicate `ip` |
+  | 108 | `_apply_ai_reviews` (api_key_ai_review) | NO | empty table now; risk if it grows |
+  | **152** | `_apply_provider_ai_reviews` | **NO** | **ACTIVELY CRASHING** (BUG-079) |
+  | 203 | `_apply_caller_memory` | NO | latent risk on duplicate (api_key_id, conv_id, tag) |
+  | 251 | `_apply_caller_memory_markers` | NO | same |
+  | 310 | `_apply_provider_node_auth_states` | **YES** | safe |
+  | 352 | `_apply_external_usage_snapshots` | **YES** | safe (despite having actual duplicates) |
+- **Recommended fix direction:** add `.limit(1)` to all 5 vulnerable queries. Also add UNIQUE constraints to the (provider_id, captured_at) / (api_key_id, captured_at) / (api_key_id, conversation_id, memory_tag) tuples where appropriate.
+- **Status:** OPEN, do not fix yet.
+
+### BUG-081 — `push_sync` does not inspect peer response status — 🟡 **OPEN (MEDIUM)**
+
+- **Severity:** medium · **Category:** observability gap
+- **Area:** `app/cluster/manager.py:517-523` (`push_sync`)
+- **Repro:** the function calls `await client.post(...)` and never assigns the result. Peer 4xx/5xx responses are silently dropped. Only network-level exceptions are caught + logged.
+- **Impact:** BUG-079 was undiscovered for ~6 days specifically because of this. Peers were returning 500 to every sync push; www1 logged nothing.
+- **Fix direction:** assign the response, check `r.status_code != 200`, log a warning with `peer.id` + status + first-N bytes of response body. Same `_exc_str`-style fallback for empty error messages.
+- **Tests:** unit-level — mock httpx client to return 500; assert a warning is logged.
+- **Status:** OPEN, do not fix yet.
+
+### BUG-082 — F2 cache-control breakpoint not producing upstream Anthropic cache hits — 🟡 **OPEN (MEDIUM, cross-team)**
+
+- **Severity:** medium · **Category:** cross-team integration gap
+- **Surfaced:** 2026-05-27 11:00 EDT by the cron watcher `/home/dblagbro/bin/f2_cache_verify.sh` (armed 2026-05-27 during this session).
+- **Verdict** (from `/home/dblagbro/log/f2_verify.verdict`): `F2 NOT VERIFIED: Avaya batch fired (n=479 reqs in last 10min) but ZERO requests carry cache_* fields — hub cache_control breakpoint is not producing upstream cache hits. Hub team should re-check the template change.`
+- **Context:** the hub team deployed prompt-cache breakpoints in their Avaya KB enricher template (per the 2026-05-22 routing-cost research F2 finding). After ~6 days the template change is in production but Anthropic upstream returns no `cache_creation_input_tokens` or `cache_read_input_tokens` on any of the 479 batch-burst requests sampled.
+- **Recommended fix direction:** draft a cross-team memo for the hub team. They likely need to verify: (a) cache_control is on the right block, (b) total content past the breakpoint is >= 1024 tokens (Anthropic minimum), (c) the breakpoint marker isn't being stripped by their template renderer.
+- **Status:** OPEN — needs operator-forwarded memo to hub team.
+
+### F-OBS-004 — Light-mode contrast smell: `text-gray-400` on white for important labels — ⚠ **NOTED (low / a11y)**
+
+- **Severity:** low (a11y / readability)
+- **Surfaced:** 2026-05-27 source-grep on `frontend/src/pages/MetricsPage.tsx` and adjacent pages.
+- **Concern:** `text-gray-400` on `bg-white` is ~3.5:1 contrast ratio, failing WCAG AA 4.5:1 for normal text. Used for stat-card labels ("Hit Rate", "Cache Read", "Input from Cache", "Est. Savings"), and for several tabular row classes. Dark-mode equivalent (`text-gray-300` on `bg-gray-800`) is fine.
+- **Recommended fix:** swap `text-gray-400` → `text-gray-500` (or `text-gray-600` for the smallest sizes) on light-mode rules. Keep `dark:text-gray-300` as-is.
+- **Status:** noted, hardening candidate.
+
+### F-OBS-005 — Shared UI components have light a11y attribute coverage — ⚠ **NOTED (enhancement)**
+
+- **Severity:** enhancement
+- **Surfaced:** 2026-05-27, grep of `frontend/src/components/ui/` returned only 11 occurrences of `focus:` / `focus-visible:` / `aria-` / `role=` across the entire shared component library.
+- **Concern:** dialogs, dropdowns, popovers, drawers without aria-labelledby / aria-describedby / role="dialog" are not screen-reader-navigable. Focus-visible rings may be missing on custom buttons.
+- **Recommended fix:** dedicated a11y pass on `components/ui/*.tsx`. Not urgent for this internal admin tool but worth surfacing.
+- **Status:** noted.
+
+### BUG-083 — `Query(hours, le=720)` accepts negative values silently — 🟡 **OPEN (LOW)**
+
+- **Severity:** low · **Category:** input validation
+- **Area:** `app/api/monitoring.py:204` (`metrics_summary`) and any other endpoint using the same `hours: int = Query(24, le=720)` pattern.
+- **Repro:** `GET /api/monitoring/metrics?hours=-1` returns 200 with `providers: []`. Internally `created_at >= datetime('now', '-' || -1 || ' hours')` resolves to "anything created after now+1h" = empty set.
+- **Fix:** `hours: int = Query(24, ge=1, le=720)`.
+- **Tests:** existing input-validation tests cover the upper bound; add lower bound + zero cases.
+- **Status:** OPEN, low-severity hardening.
+
+### F-INFRA-001 — Unit-test conftest hits live production at session-finish — ⚠ **NOTED (test infra)**
+
+- **Severity:** low · **Category:** test infrastructure hardening
+- **Area:** `tests/conftest.py::pytest_sessionfinish`
+- **Concern:** every `pytest tests/unit/` run finishes by POST'ing to `https://www.voipguru.org/llm-proxy2/api/keys/_purge-test-tombstones` (with `verify=False`). This means:
+  1. Unit suite is NOT hermetic — running it in CI without network access fails the "purge" step (silently, because best-effort).
+  2. `verify=False` disables HTTPS cert verification — `InsecureRequestWarning` is suppressed at top of conftest but the practice itself is a smell.
+  3. Running `pytest -W error` (strict warning mode) fails because of the request's HTTP warnings.
+- **Recommended fix:** scope the session-finish purge to integration runs only (move to `tests/integration/conftest.py`), OR make it opt-in via environment variable. Replace `verify=False` with a trusted CA bundle.
+- **Status:** noted.
+
+### F-INFRA-002 — Playwright suite: stale assertion + 5 timeout-class failures — ⚠ **NOTED (test infra + possible UX/perf)**
+
+- **Severity:** mixed (low for the stale test; medium-unknown for the timeouts)
+- **Surfaced:** 2026-05-27 Playwright run against `https://www.voipguru.org/llm-proxy2` — 6 failed / 66 passed / 1 deselected in 3m45s.
+- **Stale test:** `TestLLMProxy2API::test_health_endpoint` asserts `data["version"].startswith("2.")` — that string check was written when the proxy was on v2.x. Live version is 4.4.23. The assertion is misleading, not a product bug.
+- **Real timeouts** (need triage):
+  - `TestLLMProxy2UI::test_create_api_key_flow` — `wait_for_function` 8s exceeded
+  - `TestLLMProxy2UI::test_cluster_page_shows_circuit_breakers` — UI render didn't finish
+  - `TestProviderActions::test_activity_page_provider_filter` — UI interaction
+  - `TestProviderCapabilityEditUI::test_capability_edit_save_closes_modal` — modal didn't close
+  - `TestCacheHeaderLive::test_cache_status_header_present` — `read timeout=60` on `/v1/messages` cache header test
+- **Suspected causes (need confirmation):**
+  - UI tests: SPA may have grown slower; some 8s timeouts may be too tight
+  - Cache-header test: 60s timeout on `/v1/messages` is concerning if it's a real proxy-side hang. Could be the upstream provider, could be the proxy. Needs separate investigation.
+- **Recommended fix direction:** update the stale version assertion to `startswith("4.")`. Triage each timeout individually — possibly tighten test data setup OR widen the 8s budget OR investigate the proxy slowness on `/v1/messages` for that specific test path.
+- **Status:** noted.
+
+### F-OBS-006 — Async-session tracer is live but has zero stack data because of clean uptime — ℹ️ **TRACKING**
+
+- **Severity:** informational
+- **Status:** tracking. The v4.4.22 `_TracedAsyncSession` subclass is active on all 3 nodes; `/cluster/db-pool-trace`'s `async_sessions` list is empty because no session has leaked since the v4.4.23 deploy (~5h uptime). The async-side capture is unverified live; only the unit test confirms the mechanism. Need a real leak to surface — or a longer uptime window.
+
+
 
 A targeted QA pass run immediately after the v4.4.0 release ceremony to verify the new dormant M-2..M-5 scaffolding is correct, the M-1 hardened bridge is operating cleanly across the fleet, and the v4.3.x recent surfaces survived the version bump. Methodology: doc/code consistency → live fleet state → dormant-scaffolding integrity (M-2 table populated, M-3 writer firing, M-4 wired but no-op, M-5 endpoint live + bundled UI) → cluster sync → wire-path smoke → 24h activity-log baseline.
 
