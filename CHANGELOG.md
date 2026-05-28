@@ -9,6 +9,28 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v4.3.x — "Voice output" milestone
 
+### v4.4.26 — accessibility + dark-mode contrast (Playwright-verified) (2026-05-28)
+
+Closes F-OBS-005 (a11y) and partially F-OBS-004 (contrast) from the 2026-05-27 QA pass. Both were originally deferred as "needs browser visual review" — done here with a Playwright audit that measures **real WCAG contrast ratios** (canvas-based color resolver that handles Tailwind v4's `oklch()` serialization) and inspects live DOM a11y state.
+
+**A11y (F-OBS-005) — FULLY CLOSED.** Before: ~13 findings across the app. After: **all 9 pages a11y-OK**.
+- `Sidebar` collapse button → `aria-label` (was anonymous on every page — highest-value single fix)
+- `Input` component → associates `<label htmlFor>` ↔ `<input id>` via `useId` (app-wide)
+- `Switch` component → new `ariaLabel` prop; wired through `DynamicSettingsPanel` (`item.label`) and `SettingsPage` (`boolField` humanizes the key)
+- `CopyButton` → default `aria-label="Copy to clipboard"` (shared, used in many places incl. routing)
+- Activity (severity, error-class), Providers (sort), UserPreferences (timezone, time-format) selects → `aria-label`
+- Users Edit/Delete row buttons → `aria-label` with the username
+
+**Contrast (F-OBS-004) — worst case fixed; rest is a design decision.**
+- Swept 12 `dark:text-gray-500` → `dark:text-gray-400` (7 files). The worst offender — a 10px "Anthropic Console" sub-label — went from **1.84:1 (unreadable) → 3.42:1 (legible)**.
+- Residual: ~54 bare `text-gray-500` 12px tertiary labels still measure ~3.03:1 in dark mode. These are *intentionally de-emphasized*; forcing them all to AA 4.5:1 would flatten the visual hierarchy. **Left as an operator design decision** (see bug-log F-OBS-004) — recommendation is to accept ~3:1 for de-emphasized tertiary text in this internal dark UI.
+
+**Verification:** Playwright audit re-run after each change; before/after ratios recorded in `docs/bug-log.md`. The audit script (canvas resolver) is a reusable regression harness.
+
+**No backend/test-count change** — frontend-only release. Unit suite unchanged at 2383+2.
+
+**Operator action — one decision pending:** how far to push the residual dark-mode tertiary-text contrast (accept ~3:1 vs. hierarchy redesign).
+
 ### v4.4.25 — api_keys cluster-sync INSERT field coverage (2026-05-28)
 
 Follow-on fix found while verifying v4.4.24's BUG-079 repair. The row + LWW stamp propagated to peers correctly (BUG-079 confirmed fixed), but a newly created+PATCHed api_key arrived at peers with `semantic_cache_enabled=0` and `daily_hard_cap_usd=NULL` — the operator's PATCHed values were lost.

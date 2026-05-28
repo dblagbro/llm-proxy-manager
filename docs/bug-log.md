@@ -121,21 +121,50 @@ Comprehensive QA pass covering the v4.4.20→.23 release arc plus broader regres
 - **Optional proxy enhancement (not a bug, deferred):** the auto-inject currently always targets the system prompt. It could be smarter and place the marker on the largest stable block — but that's heuristic-heavy and risky; the hub-side fix is cleaner.
 - **Status:** OPEN — memo drafted 2026-05-28 for operator to forward to hub team. Proxy exonerated.
 
-### F-OBS-004 — Light-mode contrast smell: `text-gray-400` on white for important labels — ⚠ **NOTED (low / a11y)**
+### F-OBS-004 — DARK-mode contrast failures on `text-gray-500` / `text-gray-400 dark:text-gray-500` — ⚠ **MEASURED (low / a11y)** — corrected 2026-05-28
 
 - **Severity:** low (a11y / readability)
-- **Surfaced:** 2026-05-27 source-grep on `frontend/src/pages/MetricsPage.tsx` and adjacent pages.
-- **Concern:** `text-gray-400` on `bg-white` is ~3.5:1 contrast ratio, failing WCAG AA 4.5:1 for normal text. Used for stat-card labels ("Hit Rate", "Cache Read", "Input from Cache", "Est. Savings"), and for several tabular row classes. Dark-mode equivalent (`text-gray-300` on `bg-gray-800`) is fine.
-- **Recommended fix:** swap `text-gray-400` → `text-gray-500` (or `text-gray-600` for the smallest sizes) on light-mode rules. Keep `dark:text-gray-300` as-is.
-- **Status:** noted, hardening candidate.
+- **Surfaced:** 2026-05-27 source-grep; **corrected 2026-05-28 by a Playwright audit measuring real WCAG ratios** via a canvas-based color resolver (the first audit pass used an rgb() regex that couldn't parse Tailwind-v4 `oklch()` serialization → false white-on-white ratio=1; that run's contrast results were discarded).
+- **My original source-grep guess was WRONG.** The problem is NOT light-mode `text-gray-400` on white. The measured failures are in **dark mode** (the app's default theme), on `text-gray-500` and `text-gray-400 dark:text-gray-500`:
+  | Page | Element | Class | Measured ratio | Need |
+  |---|---|---|---|---|
+  | api-keys | "Anthropic Console" (10px) | `text-[10px] text-gray-400 dark:text-gray-500` | **1.84** | 4.5 |
+  | api-keys / providers / activity / users | sub-labels (12px) | `text-gray-500` (+ `dark:text-gray-400` variants) | **3.03** | 4.5 |
+  | api-keys | "24h share · weekly utilization" (11px) | `text-[11px] text-gray-400 dark:text-gray-500` | **3.03** | 4.5 |
+  | routing | count badge "10" | `bg-red-100` + red text | **3.46** | 4.5 |
+  | several | section sub-headers (14px) | `text-sm text-gray-500` | **4.16** | 4.5 (borderline) |
+  | metrics, cluster | — | — | **OK in both themes** |
+- **Root insight:** `text-gray-500` (#6b7280) on the dark card bg (gray-900 #111827) ≈ 3.03:1. The `dark:text-gray-500` overrides are actively making dark mode *dimmer* than the light-mode `text-gray-400` they pair with — backwards. The 10px label at 1.84:1 is genuinely hard to read.
+- **Recommended fix:** in dark mode bump these one step lighter — `dark:text-gray-500` → `dark:text-gray-400`, and bare `text-gray-500` sub-labels → add `dark:text-gray-400`. Re-run the Playwright audit to confirm ≥4.5 (large text ≥3.0). The borderline 4.16 cases (14px sub-headers) are a judgment call — bumping them too helps but isn't strictly required for AA.
+- **Status:** ⚠ **PARTIALLY FIXED v4.4.26 + DESIGN DECISION NEEDED.** Swept the 12 `dark:text-gray-500` → `dark:text-gray-400` (7 files). Verified improvement: the worst offender (10px "Anthropic Console" label) went **1.84 → 3.42**. BUT a residual remains and it's a **design tension, not a clear bug**:
+  - ~54 bare `text-gray-500` 12px sub-labels still measure ~3.03 in dark mode (grok-web descriptors, "1 req", "100%", "util 0%", etc.).
+  - These are *intentionally de-emphasized* tertiary text. Pushing them all to `gray-300`/`gray-400` to hit AA 4.5:1 would flatten the visual hierarchy app-wide (secondary text becomes as prominent as primary).
+  - 3.03:1 meets AA for *large* text (≥18.66px bold / ≥24px) but these are 12px, so technically AA-fail for normal text.
+  - **Operator decision needed:** (a) accept ~3:1 for de-emphasized tertiary labels (common pragmatic bar for internal admin dark UIs), or (b) do a deliberate hierarchy redesign bumping tertiary text + compensating elsewhere. I recommend (a) for an internal tool — the unreadable 1.84:1 case is fixed; the rest is legible, just below the strict threshold.
+- **Regression harness:** `/tmp/contrast_a11y_audit.py` (canvas color resolver — handles Tailwind v4 oklch). Re-runnable any time.
 
-### F-OBS-005 — Shared UI components have light a11y attribute coverage — ⚠ **NOTED (enhancement)**
+### F-OBS-005 — Missing a11y attributes: icon-only buttons + unlabeled form controls — ⚠ **MEASURED (enhancement)** — 2026-05-28
 
 - **Severity:** enhancement
-- **Surfaced:** 2026-05-27, grep of `frontend/src/components/ui/` returned only 11 occurrences of `focus:` / `focus-visible:` / `aria-` / `role=` across the entire shared component library.
-- **Concern:** dialogs, dropdowns, popovers, drawers without aria-labelledby / aria-describedby / role="dialog" are not screen-reader-navigable. Focus-visible rings may be missing on custom buttons.
-- **Recommended fix:** dedicated a11y pass on `components/ui/*.tsx`. Not urgent for this internal admin tool but worth surfacing.
-- **Status:** noted.
+- **Surfaced:** 2026-05-28 Playwright a11y audit (DOM-level: buttons/links with no accessible name, inputs without a label/aria-label, dialog containers without role).
+- **Measured findings:**
+  | Location | Issue |
+  |---|---|
+  | **Shared layout (EVERY page)** | icon-only `<button class="hidden md:flex items-center justify-center p-3 bor...">` with no accessible name — one component, fleet-wide. Single fix benefits all pages. |
+  | Settings | toggle `<button class="relative inline-flex h-5 w-9 shrink-0 rounded-full">` (a switch) with no name — needs `role="switch"` + `aria-checked` + `aria-label` |
+  | Settings | unlabeled `<select>` + unlabeled `<input>` |
+  | Providers, Activity | unlabeled `<select>` filter dropdowns |
+  | Routing | icon `<button class="p-1 rounded text-gray-400 ...">` (a row action) with no name |
+  | Users | icon `<button>` action with no name |
+  | metrics, cluster | **a11y OK** |
+- **Recommended fix:** add `aria-label` to the icon-only buttons (the shared-layout one is the highest-value single fix); add `aria-label` or associated `<label htmlFor>` to the filter selects; make the Settings toggle a proper `role="switch"`.
+- **Status:** ✅ **mostly FIXED v4.4.26 (2026-05-28).** Verified by re-running the Playwright audit before/after:
+  - Sidebar collapse button → `aria-label` → cleared on **all 6 pages** that flagged it (dashboard/metrics/providers/api-keys/activity/cluster now a11y-OK).
+  - `Switch` component gained `ariaLabel` prop; DynamicSettingsPanel passes `item.label` → Settings toggles named.
+  - `Input` component now associates `<label htmlFor>` ↔ `<input id>` via `useId` (app-wide benefit).
+  - Activity (severity + error-class), Providers (sort), UserPreferences (timezone + time-format) selects → `aria-label`.
+  - Routing: the shared `CopyButton` gained a default `aria-label="Copy to clipboard"`. Users: Edit/Delete row buttons gained `aria-label={`Edit/Delete ${username}`}`. SettingsPage static switches gained `ariaLabel` via the `boolField` helper.
+  - ✅ **FULLY CLOSED v4.4.26** — final Playwright a11y audit: **all 9 pages a11y-OK** (dashboard, metrics, providers, api-keys, activity, settings, cluster, routing, users). Zero remaining no-accessible-name / input-no-label findings.
 
 ### BUG-083 — `Query(hours, le=720)` accepts negative values silently — 🟡 **OPEN (LOW)**
 

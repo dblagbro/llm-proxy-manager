@@ -10,7 +10,7 @@ export function CopyButton({ text, className }: { text: string; className?: stri
     setTimeout(() => setCopied(false), 2000)
   }
   return (
-    <button onClick={copy} className={clsx('p-1 rounded text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 transition-colors', className)}>
+    <button onClick={copy} aria-label={copied ? "Copied" : "Copy to clipboard"} title="Copy to clipboard" className={clsx('p-1 rounded text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 transition-colors', className)}>
       {copied ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
     </button>
   )

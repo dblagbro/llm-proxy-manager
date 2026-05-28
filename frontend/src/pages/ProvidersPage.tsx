@@ -324,6 +324,7 @@ export function ProvidersPage() {
           <select
             value={sortBy}
             onChange={e => setSortBy(e.target.value as typeof sortBy)}
+            aria-label="Sort providers by"
             className="text-sm bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-md px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-indigo-500"
           >
             <option value="priority">Priority</option>

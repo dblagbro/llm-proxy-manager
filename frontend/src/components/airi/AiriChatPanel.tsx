@@ -300,7 +300,7 @@ export function AiriChatPanel() {
               History &amp; search {historyOpen ? '▾' : '▸'}
             </button>
             {conversationId && (
-              <span className="text-xs text-gray-400 dark:text-gray-500 truncate">
+              <span className="text-xs text-gray-400 dark:text-gray-400 truncate">
                 thread saved
               </span>
             )}

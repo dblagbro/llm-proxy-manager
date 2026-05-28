@@ -50,10 +50,13 @@ export function SettingsPage() {
       onChange: (e) => setForm(f => ({ ...f!, [key]: Number(e.target.value) })),
     }
   }
-  function boolField(key: string): { checked: boolean; onChange: (v: boolean) => void } {
+  function boolField(key: string): { checked: boolean; onChange: (v: boolean) => void; ariaLabel: string } {
     return {
       checked: Boolean(form?.[key] ?? true),
       onChange: (v: boolean) => setForm(f => ({ ...f!, [key]: v })),
+      // v4.4.26 (F-OBS-005) — give the role=switch button an accessible
+      // name. Humanize the settings key (cot_enabled → "cot enabled").
+      ariaLabel: key.replace(/_/g, ' '),
     }
   }
   function strField(key: string): React.InputHTMLAttributes<HTMLInputElement> {

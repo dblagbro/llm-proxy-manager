@@ -231,7 +231,7 @@ export function ProviderModels({ providerId }: { providerId: string }) {
                       <td className="py-1 pr-4 text-gray-600 dark:text-gray-400">
                         {c.context_length >= 1000 ? `${Math.round(c.context_length / 1000)}k` : c.context_length}
                       </td>
-                      <td className="py-1 pr-4 text-gray-500 dark:text-gray-500 whitespace-nowrap">
+                      <td className="py-1 pr-4 text-gray-500 dark:text-gray-400 whitespace-nowrap">
                         {c.native_reasoning && <span title="Native reasoning" className="mr-1">🧠</span>}
                         {c.native_tools && <span title="Native tool use" className="mr-1">🔧</span>}
                         {c.native_vision && <span title="Native vision" className="mr-1">👁</span>}

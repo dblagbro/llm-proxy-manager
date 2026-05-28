@@ -128,6 +128,8 @@ export function Sidebar({
       {/* Collapse toggle — desktop only; on mobile the drawer is the control */}
       <button
         onClick={onToggle}
+        aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+        title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
         className="hidden md:flex items-center justify-center p-3 border-t border-gray-800 text-gray-500 hover:text-white hover:bg-gray-800 transition-colors"
       >
         {collapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
