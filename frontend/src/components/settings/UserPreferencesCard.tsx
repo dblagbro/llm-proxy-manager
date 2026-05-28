@@ -62,6 +62,7 @@ export function UserPreferencesCard() {
             <select
               value={timezone}
               onChange={e => setTimezone(e.target.value)}
+              aria-label="Timezone"
               className="w-full px-3 py-2 text-sm rounded-lg border bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 border-gray-300 dark:border-gray-600 focus:outline-none focus:ring-2 focus:ring-indigo-500"
             >
               {COMMON_TIMEZONES.map(tz => (
@@ -77,6 +78,7 @@ export function UserPreferencesCard() {
             <select
               value={timeFormat}
               onChange={e => setTimeFormat(e.target.value as '12h' | '24h' | '')}
+              aria-label="Time format"
               className="w-full px-3 py-2 text-sm rounded-lg border bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 border-gray-300 dark:border-gray-600 focus:outline-none focus:ring-2 focus:ring-indigo-500"
             >
               <option value="">Locale default</option>

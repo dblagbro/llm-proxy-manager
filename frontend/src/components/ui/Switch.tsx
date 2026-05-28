@@ -5,15 +5,21 @@ interface SwitchProps {
   onChange: (checked: boolean) => void
   label?: string
   disabled?: boolean
+  // v4.4.26 (F-OBS-005) — accessible name for screen readers. Falls back
+  // to the visible label; when a Switch is rendered without a visible
+  // label, callers should pass this so the role=switch button isn't
+  // anonymous (the wrapping <label> doesn't auto-name a custom button).
+  ariaLabel?: string
 }
 
-export function Switch({ checked, onChange, label, disabled }: SwitchProps) {
+export function Switch({ checked, onChange, label, disabled, ariaLabel }: SwitchProps) {
   return (
     <label className={clsx('flex items-center gap-2 cursor-pointer select-none', disabled && 'opacity-50 cursor-not-allowed')}>
       <button
         type="button"
         role="switch"
         aria-checked={checked}
+        aria-label={ariaLabel || label}
         disabled={disabled}
         onClick={() => !disabled && onChange(!checked)}
         className={clsx(

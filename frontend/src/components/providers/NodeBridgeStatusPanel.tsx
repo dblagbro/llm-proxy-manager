@@ -155,7 +155,7 @@ export function NodeBridgeStatusPanel({ provider }: Props) {
                     </span>
                     {s.last_error && (
                       <span
-                        className="ml-2 text-xs text-gray-500 dark:text-gray-500"
+                        className="ml-2 text-xs text-gray-500 dark:text-gray-400"
                         title={s.last_error}
                       >
                         ⓘ

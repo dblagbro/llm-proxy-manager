@@ -227,6 +227,7 @@ export function ActivityPage() {
             <select
               value={severity}
               onChange={(e) => setSeverity(e.target.value)}
+              aria-label="Filter by severity"
               className="px-3 py-2 bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 border border-gray-200 dark:border-gray-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
             >
               {SEVERITY_OPTS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
@@ -239,6 +240,7 @@ export function ActivityPage() {
               value={errorClass}
               onChange={(e) => setErrorClass(e.target.value)}
               title="Filter by error class (v3.0.75 taxonomy)"
+              aria-label="Filter by error class"
               className="px-3 py-2 bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 border border-gray-200 dark:border-gray-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
             >
               {ERROR_CLASS_OPTS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}

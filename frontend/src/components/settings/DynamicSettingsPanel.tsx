@@ -128,7 +128,7 @@ function SettingField({
           <p className="text-sm font-medium text-gray-800 dark:text-gray-200">{item.label}</p>
           {item.help && <p className="text-xs text-gray-400 mt-0.5">{item.help}</p>}
         </div>
-        <Switch checked={Boolean(value)} onChange={onChange} />
+        <Switch checked={Boolean(value)} onChange={onChange} ariaLabel={item.label} />
       </div>
     )
   }

@@ -25,7 +25,7 @@ export function StatCard({ label, value, sub, icon, variant = 'default', classNa
           <p className="text-2xl font-bold text-gray-900 dark:text-gray-100 leading-tight">{value}</p>
           {sub && <p className="text-xs text-gray-500 dark:text-gray-400">{sub}</p>}
         </div>
-        {icon && <div className="text-gray-400 dark:text-gray-500 shrink-0">{icon}</div>}
+        {icon && <div className="text-gray-400 dark:text-gray-400 shrink-0">{icon}</div>}
       </div>
     </div>
   )

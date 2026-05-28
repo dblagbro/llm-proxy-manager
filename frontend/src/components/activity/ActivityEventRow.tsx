@@ -175,13 +175,13 @@ export function ActivityEventRow({ event, compact }: Props) {
               {reqPreview && (
                 <p className="truncate text-gray-600 dark:text-gray-400">
                   <span className="text-indigo-500 dark:text-indigo-400 font-medium mr-1.5">→</span>
-                  <span className="text-gray-500 dark:text-gray-500">{reqPreview}</span>
+                  <span className="text-gray-500 dark:text-gray-400">{reqPreview}</span>
                 </p>
               )}
               {respPreview && (
                 <p className="truncate text-gray-600 dark:text-gray-400">
                   <span className="text-emerald-500 dark:text-emerald-400 font-medium mr-1.5">←</span>
-                  <span className="text-gray-500 dark:text-gray-500">{respPreview}</span>
+                  <span className="text-gray-500 dark:text-gray-400">{respPreview}</span>
                 </p>
               )}
               {errorMsg && !respPreview && (

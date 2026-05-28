@@ -169,7 +169,7 @@ export function DashboardPage() {
                   : quotaApproaching.length > 0 ? `${quotaApproaching.length} approaching`
                   : 'all healthy'}
                 {quotaSourceLabel && (
-                  <span className="block text-[10px] text-gray-400 dark:text-gray-500 mt-0.5">
+                  <span className="block text-[10px] text-gray-400 dark:text-gray-400 mt-0.5">
                     {quotaSourceLabel}
                   </span>
                 )}
@@ -277,7 +277,7 @@ export function DashboardPage() {
                         </div>
                       )
                     })}
-                    <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-2 leading-snug">
+                    <p className="text-[11px] text-gray-400 dark:text-gray-400 mt-2 leading-snug">
                       Probes paused until cool-off expires (v3.3.3 back-off
                       doubles the next-probe delay after each rate-limit hit,
                       capped at 30 min). Real user traffic continues; only
@@ -328,7 +328,7 @@ export function DashboardPage() {
           <Card>
             <CardHeader className="flex flex-row items-center justify-between">
               <CardTitle>Routing Balance — claude-oauth</CardTitle>
-              <span className="text-[11px] text-gray-400 dark:text-gray-500">
+              <span className="text-[11px] text-gray-400 dark:text-gray-400">
                 24h share · weekly utilization
               </span>
             </CardHeader>
@@ -383,11 +383,11 @@ export function DashboardPage() {
                 })}
               </div>
               {totalReqs === 0 ? (
-                <p className="text-xs text-gray-400 dark:text-gray-500 mt-3">
+                <p className="text-xs text-gray-400 dark:text-gray-400 mt-3">
                   No claude-oauth requests in the last 24h.
                 </p>
               ) : (
-                <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-3 leading-snug">
+                <p className="text-[11px] text-gray-400 dark:text-gray-400 mt-3 leading-snug">
                   Router prefers the lower-utilization provider (v3.7.20 bucket
                   filter). Heavily lopsided 24h share is expected when one
                   account is near its weekly cap and the other is fresh.
