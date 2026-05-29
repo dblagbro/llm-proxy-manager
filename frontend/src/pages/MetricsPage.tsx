@@ -140,7 +140,7 @@ export function MetricsPage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-xl font-bold text-gray-900 dark:text-gray-100">Metrics</h1>
-          <p className="text-sm text-gray-500 mt-0.5">Provider performance statistics</p>
+          <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">Provider performance statistics</p>
         </div>
         <div className="flex gap-1.5">
           {WINDOWS.map(w => (
@@ -223,7 +223,7 @@ export function MetricsPage() {
                 <p className="text-2xl font-bold text-gray-900 dark:text-gray-100">
                   {cacheStats.overall.cache_hit_rate_pct.toFixed(1)}%
                 </p>
-                <p className="text-xs text-gray-500 mt-0.5">
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
                   {cacheStats.overall.events_with_cache_read.toLocaleString()} of{' '}
                   {cacheStats.overall.events.toLocaleString()} events
                 </p>
@@ -233,21 +233,21 @@ export function MetricsPage() {
                 <p className="text-2xl font-bold text-gray-900 dark:text-gray-100">
                   {(cacheStats.overall.cache_read_tokens / 1000).toLocaleString(undefined, { maximumFractionDigits: 0 })}K
                 </p>
-                <p className="text-xs text-gray-500 mt-0.5">tokens served from cache</p>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">tokens served from cache</p>
               </div>
               <div>
                 <p className="text-xs text-gray-400 mb-1">Input from Cache</p>
                 <p className="text-2xl font-bold text-gray-900 dark:text-gray-100">
                   {cacheStats.overall.cache_share_of_input_pct.toFixed(0)}%
                 </p>
-                <p className="text-xs text-gray-500 mt-0.5">vs new input tokens</p>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">vs new input tokens</p>
               </div>
               <div>
                 <p className="text-xs text-gray-400 mb-1">Est. Savings</p>
                 <p className="text-2xl font-bold text-emerald-600 dark:text-emerald-400">
                   {fmtCost(cacheStats.overall.estimated_savings_usd)}
                 </p>
-                <p className="text-xs text-gray-500 mt-0.5">
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
                   @ ${cacheStats.rate_per_million_usd.toFixed(2)}/M ×{' '}
                   {(cacheStats.cache_discount_pct * 100).toFixed(0)}% disc
                 </p>
@@ -296,10 +296,10 @@ export function MetricsPage() {
                     .map(g => (
                       <div key={g.id} className="flex items-center justify-between text-sm">
                         <span className="text-gray-700 dark:text-gray-300 truncate flex-1">{g.name}</span>
-                        <span className="text-gray-500 mx-3">
+                        <span className="text-gray-500 dark:text-gray-400 mx-3">
                           {g.cache_hit_rate_pct.toFixed(0)}% hit
                         </span>
-                        <span className="text-gray-500 mx-3">
+                        <span className="text-gray-500 dark:text-gray-400 mx-3">
                           {(g.cache_read_tokens / 1000).toFixed(0)}K tok
                         </span>
                         <span className="text-emerald-600 dark:text-emerald-400 w-16 text-right">
@@ -317,7 +317,7 @@ export function MetricsPage() {
       {isLoading ? (
         <div className="flex justify-center py-16"><Spinner /></div>
       ) : providers.length === 0 ? (
-        <Card><CardContent><p className="text-center text-gray-500 py-12">No metrics data yet</p></CardContent></Card>
+        <Card><CardContent><p className="text-center text-gray-500 dark:text-gray-400 py-12">No metrics data yet</p></CardContent></Card>
       ) : (
         <>
           {/* Requests by provider */}
@@ -439,7 +439,7 @@ export function MetricsPage() {
                 {byNodeLoading ? (
                   <div className="flex justify-center py-8"><Spinner /></div>
                 ) : !byNode || byNode.nodes.length === 0 ? (
-                  <p className="text-center text-gray-500 py-8">No per-node data available</p>
+                  <p className="text-center text-gray-500 dark:text-gray-400 py-8">No per-node data available</p>
                 ) : (
                   <div className="overflow-x-auto">
                     <table className="w-full text-sm">

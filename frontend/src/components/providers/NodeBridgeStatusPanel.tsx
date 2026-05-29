@@ -179,7 +179,7 @@ export function NodeBridgeStatusPanel({ provider }: Props) {
                         Re-auth
                       </a>
                     ) : needsReauth ? (
-                      <span className="text-xs text-gray-500">
+                      <span className="text-xs text-gray-500 dark:text-gray-400">
                         Re-auth via SSH (no URL yet)
                       </span>
                     ) : (

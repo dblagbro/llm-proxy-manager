@@ -38,8 +38,8 @@ async function airi(path: string, init?: RequestInit): Promise<any> {
 const STATUS_STYLE: Record<string, string> = {
   pending: 'text-blue-700 dark:text-blue-400',
   applied: 'text-green-700 dark:text-green-400',
-  rejected: 'text-gray-500',
-  reverted: 'text-gray-500',
+  rejected: 'text-gray-500 dark:text-gray-400',
+  reverted: 'text-gray-500 dark:text-gray-400',
 }
 
 export function AiriChangesPanel() {
@@ -139,7 +139,7 @@ export function AiriChangesPanel() {
                     {p.kind?.replace(/_/g, ' ')} · {p.target}
                   </span>
                   <span
-                    className={`text-xs font-semibold ${STATUS_STYLE[p.status] || 'text-gray-500'}`}
+                    className={`text-xs font-semibold ${STATUS_STYLE[p.status] || 'text-gray-500 dark:text-gray-400'}`}
                   >
                     {p.status}
                   </span>

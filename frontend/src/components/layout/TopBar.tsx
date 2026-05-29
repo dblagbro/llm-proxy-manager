@@ -35,7 +35,7 @@ export function TopBar({ onMenuClick }: { onMenuClick?: () => void }) {
         {/* Hamburger — opens the sidebar drawer on mobile only */}
         <button
           onClick={onMenuClick}
-          className="md:hidden -ml-1 p-2 rounded-lg text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+          className="md:hidden -ml-1 p-2 rounded-lg text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
           aria-label="Open menu"
         >
           <Menu className="h-5 w-5" />

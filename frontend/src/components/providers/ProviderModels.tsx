@@ -79,7 +79,7 @@ function MultiCheck({ label, options, value, onChange, tooltip }: {
   }
   return (
     <div>
-      <p className="text-xs font-medium text-gray-500 mb-1 flex items-center gap-1">
+      <p className="text-xs font-medium text-gray-500 dark:text-gray-400 mb-1 flex items-center gap-1">
         <span>{label}</span>
         {tooltip && <HelpHint text={tooltip} />}
       </p>
@@ -237,7 +237,7 @@ export function ProviderModels({ providerId }: { providerId: string }) {
                         {c.native_vision && <span title="Native vision" className="mr-1">👁</span>}
                       </td>
                       <td className="py-1 pr-4">
-                        <span className={`px-1.5 py-0.5 rounded text-xs ${c.source === 'manual' ? 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300' : 'bg-gray-100 text-gray-500 dark:bg-gray-800'}`}>
+                        <span className={`px-1.5 py-0.5 rounded text-xs ${c.source === 'manual' ? 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300' : 'bg-gray-100 text-gray-500 dark:text-gray-400 dark:bg-gray-800'}`}>
                           {c.source}
                         </span>
                       </td>
@@ -290,7 +290,7 @@ export function ProviderModels({ providerId }: { providerId: string }) {
 
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="text-xs font-medium text-gray-500 block mb-1 flex items-center gap-1">
+                  <label className="text-xs font-medium text-gray-500 dark:text-gray-400 block mb-1 flex items-center gap-1">
                     <span>Latency</span>
                     <HelpHint text="Coarse latency band used by LMRH scoring. ‘low’ for sub-2s p50 models (haiku, gpt-4o-mini, grok-fast). ‘medium’ for 2-5s (sonnet, gpt-4o). ‘high’ for 5s+ (opus, reasoning models). Doesn't affect routing alone — it's a tiebreaker when other dimensions match." />
                   </label>
@@ -303,7 +303,7 @@ export function ProviderModels({ providerId }: { providerId: string }) {
                   </select>
                 </div>
                 <div>
-                  <label className="text-xs font-medium text-gray-500 block mb-1 flex items-center gap-1">
+                  <label className="text-xs font-medium text-gray-500 dark:text-gray-400 block mb-1 flex items-center gap-1">
                     <span>Cost tier</span>
                     <HelpHint text="Coarse cost band the router uses when LMRH ‘cost’ hint is set. ‘economy’ for cheapest options (haiku, mini, flash). ‘standard’ for everyday workhorses (sonnet, gpt-4o). ‘premium’ for expensive flagships (opus, gpt-4-turbo, gemini-pro)." />
                   </label>
@@ -316,7 +316,7 @@ export function ProviderModels({ providerId }: { providerId: string }) {
                   </select>
                 </div>
                 <div>
-                  <label className="text-xs font-medium text-gray-500 block mb-1 flex items-center gap-1">
+                  <label className="text-xs font-medium text-gray-500 dark:text-gray-400 block mb-1 flex items-center gap-1">
                     <span>Safety level (1–5)</span>
                     <HelpHint text="How strict this model's safety filtering is. 1 = permissive (raw research models, ollama). 5 = highly filtered (Claude on platform.claude.com Pro). Used by LMRH ‘safety-min’ hint to require at least N — callers handling sensitive content set safety-min=4 to keep risky content off less-filtered routes." />
                   </label>
@@ -327,7 +327,7 @@ export function ProviderModels({ providerId }: { providerId: string }) {
                   />
                 </div>
                 <div>
-                  <label className="text-xs font-medium text-gray-500 block mb-1 flex items-center gap-1">
+                  <label className="text-xs font-medium text-gray-500 dark:text-gray-400 block mb-1 flex items-center gap-1">
                     <span>Context length (tokens)</span>
                     <HelpHint text="Maximum input + output tokens this model accepts. Used to filter candidates that physically can't serve a long prompt. Common: 128000 (gpt-4o, claude-sonnet-4-5), 200000 (claude opus), 1000000 (gemini 2.5)." />
                   </label>
@@ -340,7 +340,7 @@ export function ProviderModels({ providerId }: { providerId: string }) {
               </div>
 
               <div>
-                <label className="text-xs font-medium text-gray-500 block mb-1 flex items-center gap-1">
+                <label className="text-xs font-medium text-gray-500 dark:text-gray-400 block mb-1 flex items-center gap-1">
                   <span>Regions (comma-separated, blank = any)</span>
                   <HelpHint text="Geographic regions this model is hosted in. Lets LMRH ‘region’ hint route data-residency-sensitive workloads to the right place. Blank means ‘any region acceptable’ — the most common choice unless your callers have legal residency constraints." />
                 </label>
@@ -358,7 +358,7 @@ export function ProviderModels({ providerId }: { providerId: string }) {
                   <HelpHint text="Optional metadata that lets LMRHv2 callers de-duplicate spelling variants of the same upstream model and pick between multi-route variants (e.g. grok-3 via the operator's grok.com web subscription vs via OpenRouter marketplace). See docs/rfc/2026-05-model-identity.md." />
                 </p>
                 <div>
-                  <label className="text-xs font-medium text-gray-500 block mb-1 flex items-center gap-1">
+                  <label className="text-xs font-medium text-gray-500 dark:text-gray-400 block mb-1 flex items-center gap-1">
                     <span>Aliases (comma-separated)</span>
                     <HelpHint text="Alternate spellings the proxy will accept and route to this same capability. Lets ‘grok-3’ and ‘x-ai/grok-3’ both resolve to the same Grok-3 model without listing it twice in /v1/models. Case-insensitive match. Leave blank if the canonical model_id is the only spelling clients send." />
                   </label>
@@ -370,7 +370,7 @@ export function ProviderModels({ providerId }: { providerId: string }) {
                 </div>
                 <div className="grid grid-cols-2 gap-4 mt-3">
                   <div>
-                    <label className="text-xs font-medium text-gray-500 block mb-1 flex items-center gap-1">
+                    <label className="text-xs font-medium text-gray-500 dark:text-gray-400 block mb-1 flex items-center gap-1">
                       <span>Family</span>
                       <HelpHint text="Upstream physical model identity, independent of provider. e.g. ‘grok-3’ for both the grok.com-web entry AND the OpenRouter entry. Two capability rows with the same family but different variants represent multi-route access to the SAME model. Leave blank to derive from canonical model_id (strip provider prefix)." />
                     </label>
@@ -381,7 +381,7 @@ export function ProviderModels({ providerId }: { providerId: string }) {
                     />
                   </div>
                   <div>
-                    <label className="text-xs font-medium text-gray-500 block mb-1 flex items-center gap-1">
+                    <label className="text-xs font-medium text-gray-500 dark:text-gray-400 block mb-1 flex items-center gap-1">
                       <span>Variant</span>
                       <HelpHint text="Route flavour for multi-route models. Common values: ‘web’ (grok-bridge), ‘openrouter’ (marketplace), ‘direct’ (vendor API), ‘vertex’ (GCP), ‘azure’ (AOAI). Leave blank when there's only one route to this family." />
                     </label>

@@ -216,7 +216,7 @@ export function AiriRulesPanel() {
                                          text-gray-900 dark:text-gray-100"
                             />
                           ) : (
-                            <span className="text-gray-500">{current}</span>
+                            <span className="text-gray-500 dark:text-gray-400">{current}</span>
                           )}
                         </td>
                         <td className="py-2">

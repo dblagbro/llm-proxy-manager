@@ -130,7 +130,7 @@ export function Sidebar({
         onClick={onToggle}
         aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
         title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-        className="hidden md:flex items-center justify-center p-3 border-t border-gray-800 text-gray-500 hover:text-white hover:bg-gray-800 transition-colors"
+        className="hidden md:flex items-center justify-center p-3 border-t border-gray-800 text-gray-500 dark:text-gray-400 hover:text-white hover:bg-gray-800 transition-colors"
       >
         {collapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
       </button>

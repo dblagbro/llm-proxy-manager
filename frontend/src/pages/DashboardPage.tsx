@@ -202,7 +202,7 @@ export function DashboardPage() {
             {!providers ? (
               <div className="flex items-center justify-center py-12"><Spinner /></div>
             ) : providers.length === 0 ? (
-              <p className="text-sm text-gray-500 text-center py-8">No providers configured</p>
+              <p className="text-sm text-gray-500 dark:text-gray-400 text-center py-8">No providers configured</p>
             ) : (
               <div className="divide-y divide-gray-100 dark:divide-gray-700">
                 {providers.map(p => (
@@ -355,7 +355,7 @@ export function DashboardPage() {
                               <span className={
                                 o.utilization >= 95 ? 'text-red-500'
                                 : o.utilization >= 80 ? 'text-amber-500'
-                                : 'text-gray-500'
+                                : 'text-gray-500 dark:text-gray-400'
                               }>
                                 util {o.utilization.toFixed(0)}%
                               </span>
@@ -435,7 +435,7 @@ export function DashboardPage() {
           {!activity ? (
             <div className="flex items-center justify-center py-8"><Spinner /></div>
           ) : activity.length === 0 ? (
-            <p className="text-sm text-gray-500 text-center py-8">No recent activity</p>
+            <p className="text-sm text-gray-500 dark:text-gray-400 text-center py-8">No recent activity</p>
           ) : (
             <div className="divide-y divide-gray-100 dark:divide-gray-700">
               {activity.slice(0, 10).map(e => <ActivityEventRow key={e.id} event={e} compact />)}
@@ -470,13 +470,13 @@ function ProviderStatusRow({ provider, cb, summary }: {
             </span>
           )}
         </p>
-        <p className="text-xs text-gray-500 truncate">{provider.provider_type} · {provider.default_model ?? 'no model set'}</p>
+        <p className="text-xs text-gray-500 dark:text-gray-400 truncate">{provider.provider_type} · {provider.default_model ?? 'no model set'}</p>
       </div>
       <div className="flex items-center gap-2 shrink-0">
         {summary && (
           <>
-            <span className="text-xs text-gray-500 hidden sm:block">{summary.requests.toLocaleString()} req</span>
-            <span className="text-xs text-gray-500 hidden md:block">{summary.success_rate}%</span>
+            <span className="text-xs text-gray-500 dark:text-gray-400 hidden sm:block">{summary.requests.toLocaleString()} req</span>
+            <span className="text-xs text-gray-500 dark:text-gray-400 hidden md:block">{summary.success_rate}%</span>
           </>
         )}
         <CircuitBreakerBadge state={(cb?.state as 'closed' | 'open' | 'half-open') ?? 'closed'} />

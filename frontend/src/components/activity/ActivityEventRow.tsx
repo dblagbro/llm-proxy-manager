@@ -210,7 +210,7 @@ export function ActivityEventRow({ event, compact }: Props) {
                 <button
                   type="button"
                   onClick={(e) => { e.stopPropagation(); setPrettyReq(!prettyReq) }}
-                  className="text-[10px] uppercase tracking-wide font-medium text-gray-500 hover:text-indigo-500 dark:text-gray-400 dark:hover:text-indigo-400 px-2 py-0.5 rounded border border-gray-200 dark:border-gray-700 hover:border-indigo-300 dark:hover:border-indigo-600"
+                  className="text-[10px] uppercase tracking-wide font-medium text-gray-500 dark:text-gray-400 hover:text-indigo-500 dark:text-gray-400 dark:hover:text-indigo-400 px-2 py-0.5 rounded border border-gray-200 dark:border-gray-700 hover:border-indigo-300 dark:hover:border-indigo-600"
                   title={prettyReq ? "Switch to raw text" : "Switch to pretty-printed JSON"}
                 >
                   {prettyReq ? 'pretty' : 'raw'}
@@ -226,7 +226,7 @@ export function ActivityEventRow({ event, compact }: Props) {
                 <button
                   type="button"
                   onClick={(e) => { e.stopPropagation(); setPrettyResp(!prettyResp) }}
-                  className="text-[10px] uppercase tracking-wide font-medium text-gray-500 hover:text-indigo-500 dark:text-gray-400 dark:hover:text-indigo-400 px-2 py-0.5 rounded border border-gray-200 dark:border-gray-700 hover:border-indigo-300 dark:hover:border-indigo-600"
+                  className="text-[10px] uppercase tracking-wide font-medium text-gray-500 dark:text-gray-400 hover:text-indigo-500 dark:text-gray-400 dark:hover:text-indigo-400 px-2 py-0.5 rounded border border-gray-200 dark:border-gray-700 hover:border-indigo-300 dark:hover:border-indigo-600"
                   title={prettyResp ? "Switch to raw text" : "Switch to pretty-printed JSON"}
                 >
                   {prettyResp ? 'pretty' : 'raw'}

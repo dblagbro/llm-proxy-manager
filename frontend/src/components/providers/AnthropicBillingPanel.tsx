@@ -68,7 +68,7 @@ function fmtCountdown(iso: string | null | undefined): string {
 }
 
 function pctColor(pct: number | null | undefined): string {
-  if (pct === null || pct === undefined) return 'text-gray-500'
+  if (pct === null || pct === undefined) return 'text-gray-500 dark:text-gray-400'
   if (pct >= 95) return 'text-red-600 dark:text-red-400 font-semibold'
   if (pct >= 80) return 'text-amber-600 dark:text-amber-400'
   if (pct >= 50) return 'text-yellow-600 dark:text-yellow-400'
@@ -210,7 +210,7 @@ export function AnthropicBillingPanel({ provider, onUpdated }: Props) {
               <>
                 <span className="text-emerald-600 dark:text-emerald-400">●</span> stored
                 {captured_days !== null && (
-                  <span className="text-gray-500 ml-2">
+                  <span className="text-gray-500 dark:text-gray-400 ml-2">
                     captured {captured_days === 0 ? 'today' : `${captured_days}d ago`}
                     {captured_days >= 25 && (
                       <span className="ml-1 text-amber-600">— refresh soon (~30d lifetime)</span>

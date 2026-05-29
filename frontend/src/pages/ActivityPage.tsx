@@ -170,7 +170,7 @@ export function ActivityPage() {
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-xl font-bold text-gray-900 dark:text-gray-100">Activity Log</h1>
-          <p className="text-sm text-gray-500 mt-0.5">
+          <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">
             {providerFilter && <span>Provider <span className="font-mono">{providerFilter}</span> · </span>}
             {showing > 0 ? (
               <>
@@ -210,7 +210,7 @@ export function ActivityPage() {
                 onChange={(e) => setSearchInput(e.target.value)}
                 onKeyDown={(e) => { if (e.key === 'Enter') applySearch() }}
                 placeholder="Search messages, providers, request bodies, errors…"
-                className="w-full pl-9 pr-9 py-2 text-sm bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 border border-gray-200 dark:border-gray-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                className="w-full pl-9 pr-9 py-2 text-sm bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 dark:text-gray-400 border border-gray-200 dark:border-gray-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
               />
               {searchInput && (
                 <button
@@ -262,7 +262,7 @@ export function ActivityPage() {
           {loadingPage && events.length === 0 ? (
             <div className="flex justify-center py-16"><Spinner /></div>
           ) : orderedEvents.length === 0 ? (
-            <p className="text-center text-gray-500 py-12">
+            <p className="text-center text-gray-500 dark:text-gray-400 py-12">
               No activity{search ? ' matching your search' : providerFilter ? ' for this provider' : ' yet'}
             </p>
           ) : (

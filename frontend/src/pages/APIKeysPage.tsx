@@ -187,7 +187,7 @@ export function APIKeysPage() {
       <button
         onClick={() => handleSort(col)}
         className={`flex items-center gap-1 text-xs font-semibold uppercase tracking-wide transition-colors
-          ${active ? 'text-indigo-600 dark:text-indigo-400' : 'text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'}
+          ${active ? 'text-indigo-600 dark:text-indigo-400' : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300'}
           ${align === 'right' ? 'justify-end w-full' : ''}`}
         title={`Sort by ${label}`}
       >
@@ -245,7 +245,7 @@ export function APIKeysPage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-xl font-bold text-gray-900 dark:text-gray-100">API Keys</h1>
-          <p className="text-sm text-gray-500 mt-0.5">
+          <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">
             {keys?.length ?? 0} keys
             {selectedIds.size > 0 && <> · {selectedIds.size} selected</>}
           </p>
@@ -265,7 +265,7 @@ export function APIKeysPage() {
         <CardContent className="py-4">
           <div className="flex items-start gap-4">
             <div className="flex-1 min-w-0">
-              <p className="text-xs uppercase tracking-wide text-gray-500 mb-1">API Base URL</p>
+              <p className="text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-1">API Base URL</p>
               <div className="flex items-center gap-2">
                 <code className="text-sm font-mono text-gray-900 dark:text-gray-100 break-all">{apiBase}</code>
                 <CopyButton text={apiBase} />
@@ -287,7 +287,7 @@ export function APIKeysPage() {
       {isLoading ? (
         <div className="flex justify-center py-16"><Spinner /></div>
       ) : (keys?.length ?? 0) === 0 ? (
-        <Card><CardContent><p className="text-center text-gray-500 py-10">No API keys yet</p></CardContent></Card>
+        <Card><CardContent><p className="text-center text-gray-500 dark:text-gray-400 py-10">No API keys yet</p></CardContent></Card>
       ) : (
         <Card>
           <CardContent className="p-0">
@@ -348,7 +348,7 @@ export function APIKeysPage() {
                         </>
                       ) : (
                         <>
-                          <p className="text-xs text-gray-500 font-mono">{k.key_prefix}…</p>
+                          <p className="text-xs text-gray-500 dark:text-gray-400 font-mono">{k.key_prefix}…</p>
                           {(k as any).can_reveal ? (
                             <button
                               onClick={() => toggleReveal(k.id)}
@@ -555,39 +555,39 @@ export function APIKeysPage() {
               </p>
             )}
             <dl className="grid grid-cols-2 gap-x-6 gap-y-3 text-sm">
-              <dt className="text-gray-500">ID</dt>
+              <dt className="text-gray-500 dark:text-gray-400">ID</dt>
               <dd className="font-mono text-gray-900 dark:text-gray-100">{viewDetails.id}</dd>
-              <dt className="text-gray-500">Prefix</dt>
+              <dt className="text-gray-500 dark:text-gray-400">Prefix</dt>
               <dd className="font-mono text-gray-900 dark:text-gray-100">{viewDetails.key_prefix}…</dd>
-              <dt className="text-gray-500">Type</dt>
+              <dt className="text-gray-500 dark:text-gray-400">Type</dt>
               <dd><Badge variant={viewDetails.key_type === 'claude-code' ? 'info' : 'default'}>{viewDetails.key_type}</Badge></dd>
-              <dt className="text-gray-500">Enabled</dt>
+              <dt className="text-gray-500 dark:text-gray-400">Enabled</dt>
               <dd className="text-gray-900 dark:text-gray-100">{viewDetails.enabled ? 'Yes' : 'No'}</dd>
-              <dt className="text-gray-500">Created</dt>
+              <dt className="text-gray-500 dark:text-gray-400">Created</dt>
               <dd className="text-gray-900 dark:text-gray-100">{formatTimeForUser(viewDetails.created_at, user)}</dd>
-              <dt className="text-gray-500">Last used</dt>
+              <dt className="text-gray-500 dark:text-gray-400">Last used</dt>
               <dd className="text-gray-900 dark:text-gray-100">{formatTimeForUser(viewDetails.last_used_at, user)}</dd>
-              <dt className="text-gray-500 border-t border-gray-100 dark:border-gray-700 pt-3">Total requests</dt>
+              <dt className="text-gray-500 dark:text-gray-400 border-t border-gray-100 dark:border-gray-700 pt-3">Total requests</dt>
               <dd className="text-gray-900 dark:text-gray-100 border-t border-gray-100 dark:border-gray-700 pt-3">{viewDetails.total_requests.toLocaleString()}</dd>
-              <dt className="text-gray-500">Total tokens</dt>
+              <dt className="text-gray-500 dark:text-gray-400">Total tokens</dt>
               <dd className="text-gray-900 dark:text-gray-100">{viewDetails.total_tokens.toLocaleString()}</dd>
-              <dt className="text-gray-500">Lifetime cost</dt>
+              <dt className="text-gray-500 dark:text-gray-400">Lifetime cost</dt>
               <dd className="text-gray-900 dark:text-gray-100">${viewDetails.total_cost_usd.toFixed(4)}</dd>
-              <dt className="text-gray-500">Today's cost</dt>
+              <dt className="text-gray-500 dark:text-gray-400">Today's cost</dt>
               <dd className="text-gray-900 dark:text-gray-100">${((viewDetails as any).day_cost_usd ?? 0).toFixed(4)}</dd>
-              <dt className="text-gray-500">This hour's cost</dt>
+              <dt className="text-gray-500 dark:text-gray-400">This hour's cost</dt>
               <dd className="text-gray-900 dark:text-gray-100">${((viewDetails as any).hour_cost_usd ?? 0).toFixed(4)}</dd>
-              <dt className="text-gray-500 border-t border-gray-100 dark:border-gray-700 pt-3">Lifetime cap</dt>
+              <dt className="text-gray-500 dark:text-gray-400 border-t border-gray-100 dark:border-gray-700 pt-3">Lifetime cap</dt>
               <dd className="text-gray-900 dark:text-gray-100 border-t border-gray-100 dark:border-gray-700 pt-3">{viewDetails.spending_cap_usd != null ? `$${viewDetails.spending_cap_usd.toFixed(2)}` : '∞'}</dd>
-              <dt className="text-gray-500">Daily hard cap</dt>
+              <dt className="text-gray-500 dark:text-gray-400">Daily hard cap</dt>
               <dd className="text-gray-900 dark:text-gray-100">{(viewDetails as any).daily_hard_cap_usd != null ? `$${(viewDetails as any).daily_hard_cap_usd.toFixed(2)}` : '∞'}</dd>
-              <dt className="text-gray-500">Daily soft cap</dt>
+              <dt className="text-gray-500 dark:text-gray-400">Daily soft cap</dt>
               <dd className="text-gray-900 dark:text-gray-100">{(viewDetails as any).daily_soft_cap_usd != null ? `$${(viewDetails as any).daily_soft_cap_usd.toFixed(2)}` : '—'}</dd>
-              <dt className="text-gray-500">Hourly cap</dt>
+              <dt className="text-gray-500 dark:text-gray-400">Hourly cap</dt>
               <dd className="text-gray-900 dark:text-gray-100">{(viewDetails as any).hourly_cap_usd != null ? `$${(viewDetails as any).hourly_cap_usd.toFixed(2)}` : '∞'}</dd>
-              <dt className="text-gray-500">Rate limit</dt>
+              <dt className="text-gray-500 dark:text-gray-400">Rate limit</dt>
               <dd className="text-gray-900 dark:text-gray-100">{viewDetails.rate_limit_rpm != null ? `${viewDetails.rate_limit_rpm}/min` : '∞'}</dd>
-              <dt className="text-gray-500">Semantic cache</dt>
+              <dt className="text-gray-500 dark:text-gray-400">Semantic cache</dt>
               <dd className="text-gray-900 dark:text-gray-100">{(viewDetails as any).semantic_cache_enabled ? 'Enabled' : 'Disabled'}</dd>
             </dl>
           </ModalBody>

@@ -129,7 +129,7 @@ export function GrokWebProviderFields({ form, set, editing }: Props) {
             'px-3 py-1.5 -mb-px border-b-2 font-medium focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-500 rounded-sm ' +
             (mode === 'bridge'
               ? 'border-purple-600 text-purple-900 dark:text-purple-100'
-              : 'border-transparent text-gray-500 hover:text-gray-700')
+              : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700')
           }
         >
           Bridge (recommended)
@@ -141,7 +141,7 @@ export function GrokWebProviderFields({ form, set, editing }: Props) {
             'px-3 py-1.5 -mb-px border-b-2 font-medium focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-500 rounded-sm ' +
             (mode === 'manual'
               ? 'border-purple-600 text-purple-900 dark:text-purple-100'
-              : 'border-transparent text-gray-500 hover:text-gray-700')
+              : 'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700')
           }
         >
           Manual paste
@@ -151,7 +151,7 @@ export function GrokWebProviderFields({ form, set, editing }: Props) {
       {/* Common: conversation_id */}
       <div>
         <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-          Conversation ID <span className="text-gray-500">(UUID after <code>grok.com/c/</code>)</span>
+          Conversation ID <span className="text-gray-500 dark:text-gray-400">(UUID after <code>grok.com/c/</code>)</span>
         </label>
         <div className="flex gap-2">
           <Input
@@ -262,7 +262,7 @@ export function GrokWebProviderFields({ form, set, editing }: Props) {
                         ⚠ Not signed in yet
                       </span>
                     )}
-                    <span className="text-gray-500 ml-2">
+                    <span className="text-gray-500 dark:text-gray-400 ml-2">
                       · {status.cookie_count} cookies · last refresh{' '}
                       {status.last_refresh_at
                         ? new Date(status.last_refresh_at * 1000).toLocaleTimeString()
@@ -270,7 +270,7 @@ export function GrokWebProviderFields({ form, set, editing }: Props) {
                     </span>
                   </span>
                 ) : (
-                  <span className="text-gray-500">Checking bridge…</span>
+                  <span className="text-gray-500 dark:text-gray-400">Checking bridge…</span>
                 )}
               </div>
               <Button
@@ -290,7 +290,7 @@ export function GrokWebProviderFields({ form, set, editing }: Props) {
           </div>
           <div>
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-              Bridge URL <span className="text-gray-500">(internal docker network)</span>
+              Bridge URL <span className="text-gray-500 dark:text-gray-400">(internal docker network)</span>
             </label>
             <Input
               value={(form.extra_config?.bridge_url as string) || ''}
@@ -308,7 +308,7 @@ export function GrokWebProviderFields({ form, set, editing }: Props) {
           </div>
           <div>
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-              Bridge token <span className="text-gray-500">(must match BRIDGE_TOKEN env on the bridge container)</span>
+              Bridge token <span className="text-gray-500 dark:text-gray-400">(must match BRIDGE_TOKEN env on the bridge container)</span>
             </label>
             <Input
               type="password"
@@ -367,7 +367,7 @@ export function GrokWebProviderFields({ form, set, editing }: Props) {
           </div>
           <div>
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-              x-userid header <span className="text-gray-500">(optional — also pulled from cookies)</span>
+              x-userid header <span className="text-gray-500 dark:text-gray-400">(optional — also pulled from cookies)</span>
             </label>
             <Input
               value={(form.extra_config?.x_userid as string) || ''}
@@ -381,7 +381,7 @@ export function GrokWebProviderFields({ form, set, editing }: Props) {
           </div>
           <div>
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
-              user-agent <span className="text-gray-500">(optional — defaults to Chrome 147)</span>
+              user-agent <span className="text-gray-500 dark:text-gray-400">(optional — defaults to Chrome 147)</span>
             </label>
             <Input
               value={(form.extra_config?.user_agent as string) || ''}

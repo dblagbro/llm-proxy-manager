@@ -505,10 +505,10 @@ function ProposalCard({
           </>
         )}
         {status === 'rejected' && (
-          <span className="text-xs text-gray-500">Rejected</span>
+          <span className="text-xs text-gray-500 dark:text-gray-400">Rejected</span>
         )}
         {status === 'reverted' && (
-          <span className="text-xs text-gray-500">Reverted</span>
+          <span className="text-xs text-gray-500 dark:text-gray-400">Reverted</span>
         )}
       </div>
     </div>

@@ -63,7 +63,7 @@ export function UsersPage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-xl font-bold text-gray-900 dark:text-gray-100">Users</h1>
-          <p className="text-sm text-gray-500 mt-0.5">{users?.length ?? 0} users</p>
+          <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">{users?.length ?? 0} users</p>
         </div>
         <Button size="sm" onClick={openCreate}><Plus className="h-4 w-4 mr-1.5" />Add User</Button>
       </div>
