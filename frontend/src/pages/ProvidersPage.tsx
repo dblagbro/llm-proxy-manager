@@ -291,7 +291,7 @@ export function ProvidersPage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-xl font-bold text-gray-900 dark:text-gray-100">Providers</h1>
-          <p className="text-sm text-gray-500 mt-0.5">{providers?.length ?? 0} configured</p>
+          <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">{providers?.length ?? 0} configured</p>
         </div>
         <div className="flex items-center gap-2 shrink-0">
           {hasClaudeOauth && (
@@ -316,7 +316,7 @@ export function ProvidersPage() {
             value={search}
             onChange={e => setSearch(e.target.value)}
             placeholder="Filter providers…"
-            className="w-full pl-9 pr-3 py-2 text-sm bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 border border-gray-200 dark:border-gray-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            className="w-full pl-9 pr-3 py-2 text-sm bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 dark:text-gray-400 border border-gray-200 dark:border-gray-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
           />
         </div>
         <label className="text-xs text-gray-500 dark:text-gray-400 flex items-center gap-2 shrink-0">
@@ -340,7 +340,7 @@ export function ProvidersPage() {
       {isLoading ? (
         <div className="flex justify-center py-16"><Spinner /></div>
       ) : filtered.length === 0 ? (
-        <Card><CardContent><p className="text-center text-gray-500 py-10">No providers found</p></CardContent></Card>
+        <Card><CardContent><p className="text-center text-gray-500 dark:text-gray-400 py-10">No providers found</p></CardContent></Card>
       ) : (
         <div className="space-y-3">
           {filtered.map(p => {
@@ -397,7 +397,7 @@ export function ProvidersPage() {
                         </span>
                       )}
                     </p>
-                    <p className="text-xs text-gray-500">{p.provider_type} · {p.default_model ?? 'no default model'} · priority {p.priority}</p>
+                    <p className="text-xs text-gray-500 dark:text-gray-400">{p.provider_type} · {p.default_model ?? 'no default model'} · priority {p.priority}</p>
                     {/* v3.0.6: per-provider 24h metrics inline. Hidden when no
                         traffic to that provider, so configured-but-unused
                         providers stay clean. */}
@@ -418,7 +418,7 @@ export function ProvidersPage() {
                           ? 'text-amber-500'
                           : 'text-red-500'
                       return (
-                        <p className="text-xs text-gray-500 mt-1 font-mono">
+                        <p className="text-xs text-gray-500 dark:text-gray-400 mt-1 font-mono">
                           24h: {m.requests.toLocaleString()} req
                           <span className="mx-1.5">·</span>
                           <span className={successColor}>{m.success_rate.toFixed(1)}%</span>
@@ -465,7 +465,7 @@ export function ProvidersPage() {
                       ].filter(Boolean)
                       if (!cells.length) return null
                       return (
-                        <p className="text-[11px] text-gray-500 mt-1 font-mono flex flex-wrap gap-x-3">
+                        <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-1 font-mono flex flex-wrap gap-x-3">
                           {cells}
                         </p>
                       )
@@ -491,7 +491,7 @@ export function ProvidersPage() {
                           : v >= 40 ? 'text-yellow-500 dark:text-yellow-400'
                           : 'text-emerald-600 dark:text-emerald-400'
                       return (
-                        <p className="text-[11px] text-gray-500 mt-1 font-mono flex flex-wrap gap-x-3">
+                        <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-1 font-mono flex flex-wrap gap-x-3">
                           <span className="text-gray-400 mr-0.5">usage:</span>
                           <span>session{' '}
                             <span className={colorFor(sPct)}>

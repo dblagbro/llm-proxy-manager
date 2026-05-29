@@ -9,6 +9,26 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v4.3.x — "Voice output" milestone
 
+### v4.4.28 — dark-mode tertiary-text contrast sweep (F-OBS-004 residual) (2026-05-28)
+
+Operator follow-up on F-OBS-004: continuing past the worst-case fix in v4.4.26. Targeted sweep across 29 files of bare `text-gray-500` (Tailwind 12px tertiary sub-labels with no compensating `dark:` variant) → `text-gray-500 dark:text-gray-400`.
+
+**Effect (Playwright audit, before → after, dark mode):**
+- Bare `text-gray-500` sub-labels — Dashboard/API-Keys/Providers/Activity/Users "grok-web · grok-3", "1 req", "100%", "util 0%", "12 users", etc.: **3.03 → 3.42** ✓
+- Light mode unchanged (the sweep added `dark:` variants only).
+
+**Honest residual (NOT regressions; pre-existing in v4.4.26):**
+- 10px "Anthropic Console" label remains 3.42:1 (font-size bound; bumping to gray-300 over-brightens). Operator-accepted at 3.42 per v4.4.26 sign-off.
+- Light-mode `text-gray-400` description text (~2.6:1) exists in DashboardPage/SettingsPage/ActivityPage. Not regressed; was previously below the audit's flagging threshold's apparent priority. Operator said "UI looks good" with these in place — left as-is.
+- Status-coded text (`text-red-500` failure %, `text-indigo-500` links, `text-emerald-500` arrows): semantic colors. Changing them flattens meaning. Left as-is.
+- "10" count badge with `bg-red-100`: borderline (3.46); deliberate red attention color.
+
+**Scope discipline.** Did not attempt a blanket gray bump (would flatten visual hierarchy + harm semantic colors). The sweep was the unambiguous case from v4.4.26's measured findings.
+
+**No backend change; tsc clean.** Unit suite unchanged 2391+2.
+
+**Operator action — none.** Dark-mode tertiary text now sits at 3.42:1 across the board (improved from 3.03); further bumps require deliberate hierarchy/semantic-color decisions outside this release's scope.
+
 ### v4.4.27 — UNIQUE(provider_id, captured_at) on provider_ai_review (BUG-079 permanent fix) (2026-05-28)
 
 The v4.4.24 `.limit(1)` guard stops `apply_sync` crashing on duplicate rows; this stops the duplicate from ever being written. Per-pass observation 2026-05-28: between v4.4.24's data-fix on www2 (1 dup removed → 0) and v4.4.27 prep, **www2 accumulated 3 NEW dup groups in 24h** — the check-then-insert race is still live. UNIQUE INDEX closes it at the schema level.

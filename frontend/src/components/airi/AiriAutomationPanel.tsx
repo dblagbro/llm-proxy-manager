@@ -173,7 +173,7 @@ export function AiriAutomationPanel() {
                   <div className="flex items-center justify-between gap-2 flex-wrap">
                     <span className="text-sm font-medium text-gray-900 dark:text-gray-100">
                       {r.name}
-                      <span className="ml-2 text-xs font-normal text-gray-500">{r.kind}</span>
+                      <span className="ml-2 text-xs font-normal text-gray-500 dark:text-gray-400">{r.kind}</span>
                     </span>
                     <button
                       onClick={() => act(
@@ -185,7 +185,7 @@ export function AiriAutomationPanel() {
                         'shrink-0 rounded px-2 py-1 text-xs font-medium disabled:opacity-50 ' +
                         (r.enabled
                           ? 'bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-400'
-                          : 'bg-gray-100 dark:bg-gray-700 text-gray-500')
+                          : 'bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400')
                       }
                     >
                       {r.enabled ? 'enabled — click to disable' : 'disabled — click to enable'}

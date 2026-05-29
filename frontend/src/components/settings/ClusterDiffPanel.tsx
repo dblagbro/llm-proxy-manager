@@ -67,7 +67,7 @@ export function ClusterDiffPanel() {
                     <div className="mt-2 space-y-1">
                       {peer.diffs.map(key => (
                         <div key={key} className="flex items-center gap-3 text-xs font-mono">
-                          <span className="text-gray-500 w-48 truncate">{key}</span>
+                          <span className="text-gray-500 dark:text-gray-400 w-48 truncate">{key}</span>
                           <span className="text-green-600 dark:text-green-400 truncate">
                             local: {String(result.local?.settings[key] ?? '—')}
                           </span>

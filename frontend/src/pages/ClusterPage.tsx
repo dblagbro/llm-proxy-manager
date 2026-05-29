@@ -58,7 +58,7 @@ export function ClusterPage() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-xl font-bold text-gray-900 dark:text-gray-100">Cluster</h1>
-          <p className="text-sm text-gray-500 mt-0.5">Multi-node status and circuit breakers</p>
+          <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">Multi-node status and circuit breakers</p>
         </div>
         <Button size="sm" variant="outline" onClick={() => syncMutation.mutate()} loading={syncMutation.isPending}>
           <RefreshCw className="h-4 w-4 mr-1.5" />Sync Now
@@ -71,7 +71,7 @@ export function ClusterPage() {
           <CardTitle>
             Cluster Nodes
             {cluster && (
-              <span className="ml-2 text-sm font-normal text-gray-500">
+              <span className="ml-2 text-sm font-normal text-gray-500 dark:text-gray-400">
                 {cluster.healthy_nodes}/{cluster.total_nodes} healthy
               </span>
             )}
@@ -83,7 +83,7 @@ export function ClusterPage() {
           ) : !cluster?.cluster_enabled ? (
             <div className="text-center py-6">
               <Server className="h-8 w-8 text-gray-400 mx-auto mb-2" />
-              <p className="text-sm text-gray-500">Cluster mode not enabled</p>
+              <p className="text-sm text-gray-500 dark:text-gray-400">Cluster mode not enabled</p>
               <p className="text-xs text-gray-400 mt-1">Set CLUSTER_ENABLED=true and CLUSTER_PEERS in your environment</p>
             </div>
           ) : (
@@ -100,7 +100,7 @@ export function ClusterPage() {
                           <span className="text-xs bg-indigo-100 dark:bg-indigo-900 text-indigo-700 dark:text-indigo-300 px-1.5 py-0.5 rounded">this node</span>
                         )}
                       </div>
-                      <p className="text-xs text-gray-500">{node.url}</p>
+                      <p className="text-xs text-gray-500 dark:text-gray-400">{node.url}</p>
                       {'healthy_providers' in node && node.healthy_providers != null && (
                         <p className="text-xs text-gray-400">{node.healthy_providers}/{node.total_providers} providers healthy</p>
                       )}
@@ -129,7 +129,7 @@ export function ClusterPage() {
           {healthLoading ? (
             <div className="flex justify-center py-8"><Spinner /></div>
           ) : cbs.length === 0 ? (
-            <p className="text-sm text-gray-500 text-center py-6">No providers configured</p>
+            <p className="text-sm text-gray-500 dark:text-gray-400 text-center py-6">No providers configured</p>
           ) : (
             <div className="divide-y divide-gray-100 dark:divide-gray-700">
               {cbs.map(([providerId, cb]) => (

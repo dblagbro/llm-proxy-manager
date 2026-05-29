@@ -78,7 +78,7 @@ export function SettingsPage() {
     <div className="p-6 space-y-6 max-w-3xl">
       <div>
         <h1 className="text-xl font-bold text-gray-900 dark:text-gray-100">Settings</h1>
-        <p className="text-sm text-gray-500 mt-0.5">
+        <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">
           Changes apply live — no restart required. Environment variables remain the defaults.
         </p>
       </div>

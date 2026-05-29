@@ -37,7 +37,7 @@ export function RoutingPage() {
     <div className="p-4 sm:p-6 space-y-6 max-w-5xl">
       <div>
         <h1 className="text-xl font-bold text-gray-900 dark:text-gray-100">Routing / LMRH</h1>
-        <p className="text-sm text-gray-500 mt-0.5">LLM Model Routing Hint protocol — draft-blagbrough-lmrh-00</p>
+        <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">LLM Model Routing Hint protocol — draft-blagbrough-lmrh-00</p>
       </div>
 
       {/* v4.0 — AIRI (renders only when the airi_enabled flag is on) */}
@@ -183,7 +183,7 @@ export function RoutingPage() {
           {isLoading ? (
             <div className="flex justify-center py-8"><Spinner /></div>
           ) : (providers?.length ?? 0) === 0 ? (
-            <p className="text-center text-gray-500 py-8 text-sm">No providers configured</p>
+            <p className="text-center text-gray-500 dark:text-gray-400 py-8 text-sm">No providers configured</p>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
