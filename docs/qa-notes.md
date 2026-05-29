@@ -48,6 +48,24 @@ Per F-OBS-004. Stat-card labels and table helper text use `text-gray-400` which 
 
 Documented previously in `reference_avaya01_ssh_hang_is_overload.md`, observed again 2026-05-27 — three back-to-back failures on the v4.4.23 deploy attempt. The auto-retry script (`/home/dblagbro/bin/c1conv_v4423_retry.sh`) caught up automatically within minutes. For routine deploys, set up the cron retry path BEFORE attempting the manual hop.
 
+## 2026-05-28 — v4.4.27 migration observations (UNIQUE constraint shipped)
+
+### The race that wrote BUG-079's duplicate is real and live
+
+Between v4.4.24's de-dup on www2 (2026-05-27, 1 dup → 0) and v4.4.27 prep (2026-05-28), www2 silently accumulated **3 NEW duplicate groups in ~24 hours**. The `.limit(1)` guard prevented apply_sync from crashing on these new dupes, but the underlying check-then-insert race kept writing them. This validates the v4.4.27 work: without the UNIQUE index, dupes accumulate forever (operationally invisible until the next apply_sync without a `.limit(1)` partner crashes again).
+
+### Idempotent migration pattern is reusable
+
+The v4.4.27 init_db block (de-dup via ROW_NUMBER + ranked keeper heuristic, then CREATE UNIQUE INDEX IF NOT EXISTS) is the template for any future `(col_a, col_b)` UNIQUE constraint we want to add to a SQLite table that may already have duplicates. It runs every container start with zero overhead once the table is clean. Reusable in `app/models/database.py::init_db`.
+
+### Keeper heuristic — pick the row carrying lifecycle fields
+
+When de-duping `provider_ai_review` / `api_key_ai_review`, prefer rows where any of `applied_at`/`dismissed_at`/`reverted_at` is non-NULL (operator action carried). Fall back to highest id for ties. Generic enough to mirror to any table with similar lifecycle columns.
+
+### v4.4.28 contrast sweep — `text-gray-500` `dark:` variant scope
+
+Tailwind `text-gray-500` on its own works fine in light mode (~4.83:1 on white) but fails AA in dark mode (~3.03:1 on `bg-gray-900`). The `dark:text-gray-400` variant fixes dark without disturbing light. Sweep across 29 files used `perl -pe 's/\btext-gray-500\b(?! dark:text-gray-)/text-gray-500 dark:text-gray-400/g'` — the negative lookahead skips elements that already have a `dark:text-gray-` companion (avoids double-darks). Re-runnable safely.
+
 
 
 ---

@@ -6,7 +6,30 @@
 previously in this file (preserved in git history; the v4.3.0 + v4.3.2
 fix groups are consolidated below).
 
-## 2026-05-27 — new findings from deep QA pass
+## 2026-05-28 — QA-pass remediation arc COMPLETE (v4.4.24 → v4.4.28)
+
+The deep QA pass's findings have been remediated across 5 releases. **All Priority 0 + Priority 1 items closed.** Priority 2 cosmetic/a11y items also closed (F-OBS-005 fully; F-OBS-004 worst-case + dark-mode tertiary sweep). Remaining backlog: F-INFRA-002 (Playwright stale test) + any future operator-discretionary contrast/a11y depth.
+
+| Release | Findings closed |
+|---|---|
+| **v4.4.24** | BUG-079 (guard + de-dup) · BUG-080 · BUG-081 · BUG-083 · F-INFRA-001 |
+| **v4.4.25** | BUG-084 (api_keys INSERT field coverage, surfaced during v4.4.24 verification) |
+| **v4.4.26** | F-OBS-005 (a11y, all 9 pages clean) · F-OBS-004 (worst-case 1.84→3.42) |
+| **v4.4.27** | BUG-079 PERMANENT FIX (UNIQUE constraint + idempotent migration) |
+| **v4.4.28** | F-OBS-004 dark-mode tertiary sweep (3.03→3.42 across 29 files) |
+| pending | BUG-082 (hub-side, proxy exonerated, memo presented for forward) |
+
+### v4.4.27 — observation that validated the work
+
+Between v4.4.24's manual cleanup of www2's 1 duplicate row and v4.4.27 prep, www2 silently accumulated **3 NEW dup groups in 24h**. The check-then-insert race was still live under the `.limit(1)` guard — the guard prevented the crash, not the cause. UNIQUE INDEX closed it at the schema level. Net release impact across the arc: cluster-sync data correctness restored from "silently broken" to "schema-impossible to break."
+
+### Backup procedure executed as planned
+
+Per `docs/backup-plan.md`'s v4.4.27 addendum, fresh per-node snapshots were taken before the data-fix portion of the v4.4.27 migration. Snapshots retained: `/home/dblagbro/backups/llmproxy.{www1,www2,c1conv}.pre-v4427.*` (~30 MB each on peers, ~1.1 GB on www1 due to bigger activity_log). The backup-plan's rollback procedure remains valid if a future migration goes sideways.
+
+---
+
+## 2026-05-27 — new findings from deep QA pass (historical; superseded by the consolidated 2026-05-28 entry above)
 
 **Source:** `docs/bug-log.md` 2026-05-27 section (BUG-079..BUG-083 + F-OBS-004..006 + F-INFRA-001).
 **Status:** PLANNING ONLY — pause before fixes per QA-pass protocol.
