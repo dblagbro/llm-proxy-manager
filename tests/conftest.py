@@ -10,9 +10,20 @@ import urllib3
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-BASE_URL = "https://www.voipguru.org/llm-proxy2"
-ADMIN_USER = "admin"
-ADMIN_PASS = "REMOVED-CREDENTIAL-ROTATED-20260828"
+import os as _os
+
+BASE_URL = _os.environ.get("LLMPROXY_TEST_BASE_URL", "https://www.voipguru.org/llm-proxy2")
+ADMIN_USER = _os.environ.get("LLMPROXY_TEST_ADMIN_USER", "admin")
+# v4.4.29 — credential moved out of source. Pre-fix the admin password
+# lived in plaintext in this committed file, making it indefinitely
+# visible in git history on a public repo. Now read from
+# LLMPROXY_TEST_ADMIN_PASS at test time (operator sets it in their
+# shell or .env); fall back to the documented default "admin" so a
+# from-scratch checkout against a default-credentials dev box still
+# works. Integration runs that purge tombstones (gated behind
+# LLMPROXY_TEST_PURGE_LIVE=1 since v4.4.24/F-INFRA-001) also need
+# this env var set to authenticate against live.
+ADMIN_PASS = _os.environ.get("LLMPROXY_TEST_ADMIN_PASS", "admin")
 MOCK_PORT = 9876
 DOCKER_BRIDGE_IP = "172.18.0.1"
 MOCK_BASE_URL = f"http://{DOCKER_BRIDGE_IP}:{MOCK_PORT}"

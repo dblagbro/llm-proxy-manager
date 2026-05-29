@@ -114,7 +114,43 @@ def _inject_claude_code_system(body: dict) -> dict:
         isinstance(b, dict) and "cache_control" in b for b in sys_field
     )
     marker_block: dict = {"type": "text", "text": _CLAUDE_CODE_SYS_MARKER}
-    if not sys_already_cached and _count_cache_control_markers(body) < 4:
+    # v4.4.29 (BUG-085) — when the caller already sent more than 4
+    # cache_control markers, log the breakdown so we can tell from the
+    # logs whether the 400 is hub-side or proxy-side. The proxy never
+    # adds a 5th itself (the `< 4` gate below stops it from injecting
+    # cache_control when the count is already 4+), so >4 means the
+    # CALLER sent the excess. Without this log, an operator only sees
+    # "Found 5" in the upstream error text and has to body-sample to
+    # diagnose. Surfaced 2026-05-29 on coordinator-hub (14 such errors
+    # in 24h).
+    cc_count = _count_cache_control_markers(body)
+    if cc_count > 4:
+        try:
+            sys_cc = sum(
+                1 for b in (sys_field if isinstance(sys_field, list) else [])
+                if isinstance(b, dict) and b.get("cache_control")
+            )
+            msg_cc = sum(
+                1
+                for msg in (body.get("messages") or [])
+                if isinstance(msg.get("content") if isinstance(msg, dict) else None, list)
+                for blk in (msg.get("content") or [])
+                if isinstance(blk, dict) and blk.get("cache_control")
+            )
+            tool_cc = sum(
+                1 for t in (body.get("tools") or [])
+                if isinstance(t, dict) and t.get("cache_control")
+            )
+            logger.warning(
+                "claude-oauth: caller sent %d cache_control markers "
+                "(Anthropic caps at 4 — upstream will 400). "
+                "breakdown: sys=%d msgs=%d tools=%d. "
+                "Proxy did NOT add its own marker's cache_control.",
+                cc_count, sys_cc, msg_cc, tool_cc,
+            )
+        except Exception:
+            pass  # never break the dispatch path on telemetry
+    if not sys_already_cached and cc_count < 4:
         marker_block["cache_control"] = {"type": "ephemeral"}
 
     if sys_field is None:

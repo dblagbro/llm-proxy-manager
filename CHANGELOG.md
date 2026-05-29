@@ -9,6 +9,26 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v4.3.x — "Voice output" milestone
 
+### v4.4.29 — observability + credential-exposure fix (BUG-085 + F-INFRA-003) (2026-05-29)
+
+Two small fixes from the post-v4.4.28 health sweep:
+
+**BUG-085** — Post-deploy fleet check on 2026-05-29 showed 17 errors in last 3h (vs 0 in the previous QA pass). All from `coordinator-hub` against `Devin-Anthropic-Max-VG/claude-haiku`: upstream `400: "A maximum of 4 blocks with cache_control may be provided. Found 5."` 14 occurrences today, 1 ever before. Related to the hub team's F2 work (BUG-082 territory).
+
+The proxy's `_inject_claude_code_system` (`app/api/_messages_streaming_oauth.py`) already caps itself — when the caller's count is ≥4, the proxy adds its marker WITHOUT `cache_control`. So the 5 is entirely caller-supplied. v4.4.29 adds a `logger.warning` that fires when count > 4 with a breakdown `sys=N msgs=N tools=N` so the next occurrence self-documents the source location of the excess markers. The actual fix is hub-side (trim their template); this is observability.
+
+**F-INFRA-003** — `tests/conftest.py:15` had `ADMIN_PASS = "REMOVED-CREDENTIAL-ROTATED-20260828"` in plaintext (committed in git history on a public repo). Now reads from `LLMPROXY_TEST_ADMIN_PASS` env var with a dev-default fallback. Same pattern applied to `BASE_URL`/`ADMIN_USER`. The password remains in old commits — recommend operator rotate the live password if it's still in active use.
+
+**Tests** (`tests/unit/test_v4429_cache_marker_overcap_log.py`, +5):
+- Source guards (BUG-085 reference, breakdown fields, telemetry try/except, conftest plaintext-cred guard)
+- Behavioral (warning fires at 5 markers with correct sys/msgs/tools breakdown; no warning at ≤4)
+
+**Test counts**
+
+- Unit suite: **2396 passed + 2 skipped** (was 2391+2 in v4.4.27; +5).
+
+**Operator action**: forward the BUG-082 follow-up memo when convenient (hub trim their cache_control marker count to ≤4). If the conftest password was ever the live `admin` password, rotate it.
+
 ### v4.4.28 — dark-mode tertiary-text contrast sweep (F-OBS-004 residual) (2026-05-28)
 
 Operator follow-up on F-OBS-004: continuing past the worst-case fix in v4.4.26. Targeted sweep across 29 files of bare `text-gray-500` (Tailwind 12px tertiary sub-labels with no compensating `dark:` variant) → `text-gray-500 dark:text-gray-400`.

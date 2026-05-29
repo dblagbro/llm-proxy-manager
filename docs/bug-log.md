@@ -6,6 +6,29 @@ Add new findings on top. When status changes, leave the row in place and update 
 
 ---
 
+## 2026-05-29 — coordinator-hub overcap on cache_control markers
+
+### BUG-085 — Caller sending 5 cache_control markers (Anthropic caps at 4) — ⚠ **OBSERVED + LOG ADDED v4.4.29 (hub-side root cause)**
+
+- **Severity:** medium · **Category:** cross-team (proxy clean; needs hub-side fix)
+- **Surfaced:** 2026-05-29 during post-deploy fleet health check after v4.4.27/.28 went out. Activity-log severity in the last 3h: 6361 info / 20 warning / **17 error** (vs the 0 errors seen in the previous QA pass).
+- **Repro:** all 16 `llm_request` errors in the 3h window are `error_class=bad_request` from `Devin-Anthropic-Max-VG` (claude-haiku), with upstream message `400: ... "A maximum of 4 blocks with cache_control may be provided. Found 5."` Daily counts: 2026-05-20: 1 (one-off), **2026-05-29: 14** (clearly an active issue today).
+- **Root cause:** the **coordinator-hub** caller is sending requests with 5 `cache_control` markers. The proxy's `_inject_claude_code_system` (`app/api/_messages_streaming_oauth.py:117`) already caps its own injection — when the caller's count is already 4+, the proxy adds its marker WITHOUT `cache_control`. So the 5 is entirely caller-supplied. Related to the hub team's F2 work (BUG-082 territory) where they added cache breakpoints to their Avaya enricher template.
+- **Body-sample confirmation:** the v3.9.2 4xx body-sampler captured 1 of the failing bodies. Body is 3992 chars (truncated at the `activity_log_max_body_chars=4000` cap). First chars show `model=claude-haiku-4-5-20251001, messages[0].content=[…]` — `messages` opens the body and the cache_control markers are further in, past the truncation point. Direct count from the sample wasn't possible.
+- **Fix shipped (proxy observability):** v4.4.29 adds a `logger.warning` in `_inject_claude_code_system` whenever the caller's `cache_control` count is > 4. Logs the breakdown `sys=N msgs=N tools=N` so the source location of the excess markers is immediately obvious from the next occurrence. Confirms the proxy is not adding the 5th: "Proxy did NOT add its own marker's cache_control."
+- **Hub-side fix:** the hub team needs to audit their template — they probably have `cache_control` on multiple system blocks + multiple message blocks. Anthropic's cap is 4; they need to trim. Bundles with the BUG-082 memo follow-up (the F2 work is the source of both findings).
+- **Tests** (`tests/unit/test_v4429_cache_marker_overcap_log.py`, +4 of 5): source guards (BUG-085 reference, breakdown fields, telemetry try/except), behavioral (warning fires at 5 with right sys/msgs/tools counts, no warning at ≤4).
+- **Status:** OPEN — observability added; hub-side fix needed.
+
+### F-INFRA-003 — Plaintext admin password committed in `tests/conftest.py` — ✅ **CLOSED v4.4.29**
+
+- **Severity:** medium · **Category:** credential exposure (latent)
+- **Repro:** `tests/conftest.py:15` previously read `ADMIN_PASS = "REMOVED-CREDENTIAL-ROTATED-20260828"` — a hardcoded production-admin password committed in git history on a public repository. Visible to anyone who clones or browses the repo.
+- **Fix:** v4.4.29 reads `ADMIN_PASS` from `LLMPROXY_TEST_ADMIN_PASS` env var with a dev-default fallback of `"admin"`. Same env-var pattern applied to `BASE_URL` (`LLMPROXY_TEST_BASE_URL`) and `ADMIN_USER` (`LLMPROXY_TEST_ADMIN_USER`) for consistency. Operator sets these in their shell/.env when running integration tests against live; default-credentials dev boxes still work from a clean checkout.
+- **Caveat (not in scope here):** the password remains in `git log -p tests/conftest.py` for the lifetime of the existing history. A full `git filter-repo`-style history rewrite is out of scope for this fix — the practical remediation is to rotate the password on the live deployment if it hasn't been already. Flagging for operator action.
+- **Tests:** the test file's source-guard asserts `REMOVED-CREDENTIAL-ROTATED-20260828` is no longer present and that the env var name is wired in.
+- **Status:** CLOSED v4.4.29 (forward-looking). Operator should rotate the password if it's still in active use anywhere.
+
 ## 2026-05-28 — QA-pass remediation arc COMPLETE (v4.4.24 → v4.4.28)
 
 The 2026-05-27 findings below were remediated across 5 releases. Final status:
