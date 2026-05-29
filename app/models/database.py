@@ -446,6 +446,63 @@ async def init_db():
                 await conn.exec_driver_sql(index_stmt)
             except Exception as e:
                 logger.warning(f"index create failed (likely missing column): {index_stmt[:60]}... — {e}")
+
+        # v4.4.27 — BUG-079 permanent fix. De-dup `provider_ai_review`
+        # (+ `api_key_ai_review`) and then enforce
+        # `UNIQUE(provider_id, captured_at)` /
+        # `UNIQUE(api_key_id, captured_at)` so the check-then-insert
+        # race that created the BUG-079 duplicate can never write again.
+        # The v4.4.24 `.limit(1)` guard in apply_sync stops the crash;
+        # this stops the cause. Per-pass observation 2026-05-28: www2
+        # accumulated 3 NEW dup groups in the day since the v4.4.24
+        # cleanup — race is still live, confirming the need.
+        #
+        # De-dup heuristic: prefer rows with any non-NULL lifecycle
+        # field (`applied_at`, `dismissed_at`, `reverted_at` — the row
+        # carries operator action), break ties by highest id (newest).
+        # Same shape as the manual fix script used during v4.4.24.
+        #
+        # Idempotent: the DELETE is a no-op once the table is clean,
+        # the CREATE UNIQUE INDEX is IF NOT EXISTS. Safe to run on
+        # every boot.
+        for tbl, cols in (
+            ("provider_ai_review", ("provider_id", "captured_at")),
+            ("api_key_ai_review", ("api_key_id", "captured_at")),
+        ):
+            try:
+                col_list = ", ".join(cols)
+                # SQLite window-function ROW_NUMBER ranks by keeper
+                # heuristic per duplicate group; delete everything except
+                # the top-ranked row in each group.
+                await conn.exec_driver_sql(f"""
+                    DELETE FROM {tbl} WHERE id IN (
+                        SELECT id FROM (
+                            SELECT id, ROW_NUMBER() OVER (
+                                PARTITION BY {col_list}
+                                ORDER BY
+                                    CASE WHEN applied_at IS NOT NULL THEN 0 ELSE 1 END,
+                                    CASE WHEN dismissed_at IS NOT NULL THEN 0 ELSE 1 END,
+                                    CASE WHEN reverted_at IS NOT NULL THEN 0 ELSE 1 END,
+                                    id DESC
+                            ) AS rn FROM {tbl}
+                        ) WHERE rn > 1
+                    )
+                """)
+                idx_name = f"ux_{tbl}_{'_'.join(cols)}"
+                await conn.exec_driver_sql(
+                    f"CREATE UNIQUE INDEX IF NOT EXISTS {idx_name} "
+                    f"ON {tbl}({col_list})"
+                )
+            except Exception as e:
+                # If the table doesn't exist yet (fresh DB before
+                # Base.metadata.create_all ran above), or another
+                # benign condition, log + continue. The migration is
+                # belt-and-braces over the .limit(1) guard.
+                logger.warning(
+                    f"v4.4.27 UNIQUE constraint setup failed for {tbl}: "
+                    f"{type(e).__name__}: {e}"
+                )
+
     logger.info("Database initialized")
 
 

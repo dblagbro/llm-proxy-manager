@@ -9,6 +9,36 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v4.3.x — "Voice output" milestone
 
+### v4.4.27 — UNIQUE(provider_id, captured_at) on provider_ai_review (BUG-079 permanent fix) (2026-05-28)
+
+The v4.4.24 `.limit(1)` guard stops `apply_sync` crashing on duplicate rows; this stops the duplicate from ever being written. Per-pass observation 2026-05-28: between v4.4.24's data-fix on www2 (1 dup removed → 0) and v4.4.27 prep, **www2 accumulated 3 NEW dup groups in 24h** — the check-then-insert race is still live. UNIQUE INDEX closes it at the schema level.
+
+**Migration (`init_db`, idempotent):**
+
+1. `DELETE FROM provider_ai_review WHERE id IN (...)` — `ROW_NUMBER() OVER (PARTITION BY provider_id, captured_at)` ranks each group by keeper heuristic (prefer rows with non-NULL `applied_at`/`dismissed_at`/`reverted_at` — operator action; ties break by highest id). Drops the losers.
+2. `CREATE UNIQUE INDEX IF NOT EXISTS ux_provider_ai_review_provider_id_captured_at ON provider_ai_review(provider_id, captured_at)`.
+3. Same loop mirrors the change onto `api_key_ai_review` (currently empty, but BUG-080 flagged the latent risk).
+
+**Belt + braces.** The `.limit(1)` guard in `sync_handlers.py` stays — it protects against legacy duplicates landing during a rolling deploy from a peer that hasn't applied the migration yet.
+
+**Live verification on www1 + cluster roll:**
+- www1 startup applied the migration cleanly (4247 rows, 0 dups). Direct INSERT of an existing (provider_id, captured_at) pair now raises `sqlite3.IntegrityError: UNIQUE constraint failed`.
+- www2 deploy auto-removed the **3 dup rows** observed pre-deploy (4047 → 4044).
+- c1conv deploy auto-removed the **1 dup row** (4063 → 4062).
+- All 3 nodes carry the index `ux_provider_ai_review_provider_id_captured_at`.
+
+**Tests** (`tests/unit/test_v4427_unique_constraint.py`, +8):
+- 4 source guards (both tables covered; DELETE precedes CREATE in executable code; lifecycle-keeper heuristic; IF NOT EXISTS idempotency)
+- 4 behavioral (constraint rejects direct duplicate INSERT; allows different `captured_at`; migration de-dups pre-existing dupes preferring lifecycle-bearing row; rerunning init_db is a no-op)
+
+**Pre-fix DB snapshots:** `/home/dblagbro/backups/llmproxy.{www1,www2,c1conv}.pre-v4427.*` (rollback per `docs/backup-plan.md`).
+
+**Test counts**
+
+- Unit suite: **2391 passed + 2 skipped** (was 2383+2 in v4.4.26; +8).
+
+**Operator action — none.** The race that created BUG-079 can no longer write duplicates anywhere in the fleet.
+
 ### v4.4.26 — accessibility + dark-mode contrast (Playwright-verified) (2026-05-28)
 
 Closes F-OBS-005 (a11y) and partially F-OBS-004 (contrast) from the 2026-05-27 QA pass. Both were originally deferred as "needs browser visual review" — done here with a Playwright audit that measures **real WCAG contrast ratios** (canvas-based color resolver that handles Tailwind v4's `oklch()` serialization) and inspects live DOM a11y state.
