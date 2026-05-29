@@ -6,9 +6,24 @@ Add new findings on top. When status changes, leave the row in place and update 
 
 ---
 
+## 2026-05-28 — QA-pass remediation arc COMPLETE (v4.4.24 → v4.4.28)
+
+The 2026-05-27 findings below were remediated across 5 releases. Final status:
+
+- **BUG-079** (cluster sync broken) — ✅ **CLOSED v4.4.24** (`.limit(1)` guard + de-dup data fix). **PERMANENTLY CLOSED v4.4.27** via `UNIQUE(provider_id, captured_at)` schema constraint. The race that wrote the duplicate is now schema-level impossible. Confirmed live: between v4.4.24 cleanup and v4.4.27 prep, www2 silently accumulated 3 NEW dup groups in 24h (race was still active under the guard). Post-v4.4.27 direct INSERT raises `IntegrityError`.
+- **BUG-080** (5 vulnerable handlers) — ✅ **CLOSED v4.4.24** (`.limit(1)` on all 5). The two ai_review tables (provider_ai_review + api_key_ai_review) additionally got UNIQUE indexes in v4.4.27; the others stay belt-and-braces-protected by `.limit(1)`.
+- **BUG-081** (push_sync ignores response) — ✅ **CLOSED v4.4.24.**
+- **BUG-082** (F2 cache_control not engaging) — ✅ **PROXY EXONERATED v4.4.27 pass**: controlled 2-request probe confirmed prompt caching works end-to-end on the claude-oauth subscription path (cache_creation=16037 then cache_read=16037 on the same Devin-Anthropic-Max provider the hub uses). Root cause is HUB-side request structure (cacheable content in user message instead of system prefix). Memo presented for forward 2026-05-28.
+- **BUG-083** (negative hours) — ✅ **CLOSED v4.4.24.**
+- **BUG-084** (api_keys INSERT field coverage) — ✅ **CLOSED v4.4.25.**
+- **F-INFRA-001** (non-hermetic unit suite) — ✅ **CLOSED v4.4.24.** Session-finish purge gated behind `LLMPROXY_TEST_PURGE_LIVE=1`.
+- **F-OBS-004** (contrast) — ✅ **WORST CASE FIXED v4.4.26** (1.84 → 3.42 on the 10px "Anthropic Console" label). ✅ **TERTIARY DARK-MODE SWEPT v4.4.28** (29-file sweep, 3.03 → 3.42 across the bare `text-gray-500` labels). Remaining residual (light-mode `text-gray-400` description text + status-coded colors) operator-accepted as intentional design.
+- **F-OBS-005** (a11y) — ✅ **FULLY CLOSED v4.4.26.** All 9 pages a11y-OK per Playwright audit.
+- **F-INFRA-002** (Playwright stale assertion + timeouts) — still open, low priority.
+
 ## 2026-05-28 — QA-pass remediation (v4.4.24 + v4.4.25)
 
-The 2026-05-27 findings below were remediated. Status updates:
+The 2026-05-27 findings below were remediated. Status updates (now superseded by the consolidated 2026-05-28 entry above; kept for traceability):
 
 - **BUG-079** (cluster sync broken) — ✅ **CLOSED v4.4.24.** `.limit(1)` guard + de-dup data fix on www2/c1conv. Verified live: minted+PATCHed api_key on www1 propagated to both peers in <80s (the exact test that found it). Peer `/cluster/sync` returns 200, not 500.
 - **BUG-080** (5 vulnerable handlers) — ✅ **CLOSED v4.4.24.** All 5 got `.limit(1)`. Source-guard test prevents regression on future handlers.

@@ -6,6 +6,21 @@ until this plan is reviewed.** Written for the v4.3.0 QA-pass remediation
 
 ---
 
+## 2026-05-28 — v4.4.27 backup procedure executed cleanly (records the outcome)
+
+The v4.4.27 schema migration (`UNIQUE(provider_id, captured_at)` on `provider_ai_review` + mirror on `api_key_ai_review`) followed the procedure documented in the 2026-05-27 addendum below. Outcome:
+
+- **Pre-fix snapshots taken on all 3 nodes** BEFORE the deploy that ran the migration:
+  - `/home/dblagbro/backups/llmproxy.www1.pre-v4427.20260529T155337.bak` (~1.1 GB)
+  - On peers: `/home/dblagbro/llmproxy.www2.pre-v4427.20260529T155413.bak` (~30 MB) and `/home/dblagbro/llmproxy.c1conv.pre-v4427.20260529T155430.bak` (~30 MB)
+- **Migration ran on container startup** via `init_db`'s idempotent block. De-dup ran first (preferring rows with non-NULL lifecycle fields), then `CREATE UNIQUE INDEX IF NOT EXISTS` succeeded.
+- **Verified live** by attempting a direct duplicate INSERT on www1 — raised `sqlite3.IntegrityError: UNIQUE constraint failed`.
+- **No rollback needed.** Snapshots retained as standing safety net.
+
+The procedure documented below is the canonical pattern for any future migration that combines a data-fix with a constraint addition. Reusable.
+
+---
+
 ## 2026-05-27 — Backup plan addendum for v4.4.24 (cluster-sync robustness)
 
 The 2026-05-27 deep QA pass surfaced BUG-079..083 (see `docs/bug-log.md`). The remediation (`docs/remediation-plan.md` 2026-05-27 section) requires:
