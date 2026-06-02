@@ -9,6 +9,35 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v4.3.x — "Voice output" milestone
 
+### v4.4.34 — Cursor default model: claude-3-7-sonnet → claude-4-sonnet (2026-06-02)
+
+Live operator hit it immediately after v4.4.33 shipped: the Test button returned `litellm.AuthenticationError: OpenAIException - Incorrect API key provided: user_01J***...`, masking the real problem. The token format was correct; the api_key value was correct; the sidecar accepted it. What failed was **the model name**: `claude-3-7-sonnet` no longer exists in Cursor's relay catalog. The sidecar returns the unknown-model rejection as an OpenAI-format 401, which litellm parrots verbatim — `user_01J***` is the masked api_key in the error, not the actual cause.
+
+Direct probe through the sidecar with a valid model confirmed:
+
+```
+/v1/models     → 200, 132 models, 56 Claude variants
+/v1/chat/completions  model=claude-4-sonnet  → 200 (good response shape)
+/v1/chat/completions  model=claude-3-7-sonnet → 401 "Incorrect API key" (sidecar/upstream misclassification)
+```
+
+**Changed** the default model from `claude-3-7-sonnet` to `claude-4-sonnet` in three places:
+
+- `app/api/providers_oauth.py` — `CURSOR_OAUTH_SPEC.default_model`
+- `frontend/src/components/providers/ProviderForm.tsx` — `OAUTH_FLAVORS['cursor-oauth'].defaultModel`
+- `docs/cursor-oauth-onboarding.md` — examples + the "Choosing models" picks list (added a footnote that Cursor's catalog churns and Scan Models / `/v1/models` is the live source of truth)
+
+**Existing provider rows** with `default_model=claude-3-7-sonnet` need their `default_model` updated to a real Cursor model name. Edit the provider through the UI or via SQL:
+
+```sql
+UPDATE providers SET default_model='claude-4-sonnet'
+ WHERE provider_type='cursor-oauth' AND default_model='claude-3-7-sonnet';
+```
+
+(I ran this against www1's DB as part of the v4.4.34 deploy.)
+
+Common Cursor model picks: `claude-4-sonnet`, `claude-4.5-sonnet`, `claude-4.6-sonnet-medium`, `gpt-4o`, `gpt-5`. Note Cursor uses suffix tiers (`-low/-medium/-high/-max`, `-fast`, `-thinking`) and renames more often than upstream model providers — call `/v1/models` through the sidecar after any onboarding hiccup.
+
 ### v4.4.33 — Cursor onboarding: real PKCE poll flow (no cookie copy) (2026-06-02)
 
 Live operator showed me the actual URL the IDE-login Cursor renders: `https://cursor.com/loginDeepControl?challenge=…&uuid=…&mode=login&supportsSelectedTeamLogin=true`. After login Cursor's backend pairs the (uuid, challenge) with the user's WorkOS session, then polling `https://api2.cursor.sh/auth/poll?uuid=…&verifier=…` returns the access token. v4.4.31 ignored this entirely and made the operator copy the cookie out of DevTools. v4.4.32 added a callout to make the cookie copy obvious. v4.4.33 ditches the cookie copy: backend mirrors the IDE login flow PKCE-style, end-to-end.

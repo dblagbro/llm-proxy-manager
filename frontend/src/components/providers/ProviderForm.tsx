@@ -85,7 +85,7 @@ const OAUTH_FLAVORS: Record<string, OAuthFlavor> = {
   'cursor-oauth': {
     label: 'Cursor Pro / Business — sign in with your Cursor account',
     callbackHostHint: 'cursor.com (DevTools → Application → Cookies → WorkosCursorSessionToken)',
-    defaultModel: 'claude-3-7-sonnet',
+    defaultModel: 'claude-4-sonnet',
     pasteFallbackInstructions: {
       cmd: 'npm run login  (inside the cursor-bridge sidecar)',
       catFile: '<the printed user_<id>::<JWT> string>',
