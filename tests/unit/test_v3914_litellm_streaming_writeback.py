@@ -29,7 +29,19 @@ def test_litellm_pin_is_tight():
     are all Proxy-server features (see test_v3917_litellm_pin.py).
     This test just guards that SOME explicit upper bound exists."""
     req = Path("requirements.txt").read_text()
-    assert "litellm>=1.83.0,<1.85.0" in req
+    # Look at the pin line specifically (comments may mention old
+    # ceilings for historical context).
+    pin_lines = [
+        l for l in req.splitlines()
+        if l.strip().startswith("litellm") and not l.strip().startswith("#")
+    ]
+    assert pin_lines, "no litellm pin found"
+    pin = pin_lines[0]
+    # v4.4.30: bumped past <1.85.0 to address 3 critical CVEs
+    # (SSTI in /completions, RCE via eval, OIDC auth bypass).
+    assert pin == "litellm>=1.85.2,<1.87.0", (
+        f"expected canonical v4.4.30 pin; got {pin!r}"
+    )
     # The old loose pin must be gone (otherwise pip resolves to >=1.40)
     assert "litellm>=1.40.0" not in req
 

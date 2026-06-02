@@ -9,6 +9,28 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v4.3.x — "Voice output" milestone
 
+### v4.4.30 — litellm bump (3 critical CVEs in prod runtime) (2026-05-29)
+
+Out-of-band security-scan finding (the security toolkit at `~/security/` flagged 17 critical / 106 high; the 3 most consequential were in our actual prod runtime).
+
+**Vulnerabilities (all in `litellm` >=1.83.0,<1.85.0 — our exact pin):**
+
+- **GHSA-46cm-pfwv-cgf8** — Server-Side Template Injection in `/completions`. We expose `/v1/completions` so this is directly reachable.
+- **GHSA-gppg-gqw8-wh9g** — Remote Code Execution via unsafe `eval()`.
+- **GHSA-jjhc-v7c2-5hh6** — Authentication bypass via OIDC `userinfo` cache key collision. We don't use litellm's OIDC, but coverage is cleaner with the fixed version.
+
+**Fix:** bumped pin from `litellm>=1.83.0,<1.85.0` (vulnerable range) to `litellm>=1.85.2,<1.87.0`. Running 1.86.2 in the rebuilt image.
+
+**The "secrets" finding (3 hits) is a false positive.** Gitleaks flagged Anthropic's *public* Claude OAuth client ID (`9d1c250a-e61b-44d9-88ed-5944d1962f5e`) at 3 locations (claude_oauth_flow.py:61 + 2 doc references). The value is in Anthropic's published OAuth flow docs. Safe to baseline.
+
+**Validation:**
+
+- Full unit suite green against the new litellm: **2396 passed + 2 skipped** (unchanged).
+- Two existing pin-version source-guard tests updated to match the new bounds (test_v3914 + test_v3917).
+- Live smoke on www1: `/v1/messages` returns 200 (litellm dispatch path works). Bedrock/SageMaker pre-load warnings are benign (botocore not installed; we don't use AWS providers).
+
+**Operator action — none.** Patch-class release; the security scanner has the CVE evidence if needed for compliance.
+
 ### v4.4.29 — observability + credential-exposure fix (BUG-085 + F-INFRA-003) (2026-05-29)
 
 Two small fixes from the post-v4.4.28 health sweep:

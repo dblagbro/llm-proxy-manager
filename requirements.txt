@@ -11,7 +11,14 @@ pydantic-settings>=2.3.0
 # explicitly state those interfaces are unchanged. Empirical check:
 # 1907/1907 unit tests pass on 1.84.0. Ceiling stays at <1.85.0 so a
 # future major bump gets the same deliberate evaluation.
-litellm>=1.83.0,<1.85.0
+litellm>=1.85.2,<1.87.0
+# v4.4.30 (2026-05-29) — bumped from <1.85.0 to address 3 critical CVEs
+# in the 1.83.0–<1.85.0 range: GHSA-46cm-pfwv-cgf8 (SSTI in /completions),
+# GHSA-gppg-gqw8-wh9g (RCE via unsafe eval), GHSA-jjhc-v7c2-5hh6 (auth
+# bypass via OIDC cache key collision — we don't use litellm's OIDC,
+# but coverage is cleaner with the fixed version). Pin floor at 1.85.2
+# (the latest 1.85.x at the time of the bump) and ceiling at <1.87.0
+# for safety.
 sqlalchemy>=2.0.0
 alembic>=1.13.0
 aiosqlite>=0.20.0
