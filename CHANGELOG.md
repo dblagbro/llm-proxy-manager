@@ -9,6 +9,50 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v4.3.x — "Voice output" milestone
 
+### v4.4.33 — Cursor onboarding: real PKCE poll flow (no cookie copy) (2026-06-02)
+
+Live operator showed me the actual URL the IDE-login Cursor renders: `https://cursor.com/loginDeepControl?challenge=…&uuid=…&mode=login&supportsSelectedTeamLogin=true`. After login Cursor's backend pairs the (uuid, challenge) with the user's WorkOS session, then polling `https://api2.cursor.sh/auth/poll?uuid=…&verifier=…` returns the access token. v4.4.31 ignored this entirely and made the operator copy the cookie out of DevTools. v4.4.32 added a callout to make the cookie copy obvious. v4.4.33 ditches the cookie copy: backend mirrors the IDE login flow PKCE-style, end-to-end.
+
+**Algorithm** (cribbed verbatim from the upstream sidecar's `cursorLogin.js` — verified by reading it inside the running container):
+
+```
+verifier  = base64url(random_bytes(43))         # ~58 chars
+challenge = base64url(sha256(verifier))         # 43 chars
+uuid      = uuid4()
+URL = https://cursor.com/loginDeepControl?challenge=<challenge>&uuid=<uuid>&mode=login&supportsSelectedTeamLogin=true
+
+# After operator opens URL + signs in:
+GET https://api2.cursor.sh/auth/poll?uuid=<uuid>&verifier=<verifier>
+   User-Agent: Cursor/0.48.6 Electron/34.3.4   (matches sidecar UA)
+# On 200: { accessToken, authId: "workos|<userid>" }
+# Synthesized token: "<userid>::<accessToken>"
+```
+
+**Operator flow now:** click Generate Auth URL → open in tab → sign in to Cursor → switch back to llm-proxy2 → click Save Provider. The save-handler calls `POST /api/providers/cursor-oauth/poll`; backend polls api2.cursor.sh for up to 30s; returns the token; Provider row created. No DevTools, no cookie copy, no paste.
+
+**Backend additions** (`app/api/providers_oauth.py`):
+
+- `_do_poll_create` + `_do_poll_rotate` — shared poll-based handlers parameterized by `OAuthProviderSpec`, ready for any future vendor whose flow exposes `poll_for_token`.
+- `OAuthPollRequest` + `OAuthPollRotateRequest` Pydantic models — same shape as the exchange/rotate requests minus the `callback` field.
+- `POST /api/providers/cursor-oauth/poll` and `POST /api/providers/{id}/cursor-oauth-poll-rotate` — admin-gated, wire into the shared handlers above.
+
+**Frontend additions:**
+
+- `providersApi.cursorOauthPoll` + `cursorOauthPollRotate` in `frontend/src/api/index.ts`.
+- `ProvidersPage.saveMutation` routes cursor-oauth + state + no-callback → poll endpoint (create or rotate as appropriate).
+- `ProviderForm.tsx` cursor-oauth branch now shows an indigo "Waiting for your Cursor login…" panel after Generate Auth URL is clicked, with instructions to sign in then click Save Provider. The DevTools cookie-copy UI is gone from the default path; the paste-fallback (showPasteFallback toggle) remains as a backup.
+
+**Fallback path preserved.** The v4.4.31 paste-cookie path is still wired (the modal's "Paste credentials instead" link). Operators who already have a `user_<id>::<JWT>` token in hand can still onboard that way, and the existing `/cursor-oauth/exchange` endpoint still works.
+
+**Validation:**
+
+- 10 new tests in `tests/unit/test_v4431_cursor_oauth.py` (33 total in the file) covering: authorize URL shape (challenge + uuid + mode + supportsSelectedTeamLogin), PKCE pair correctness (SHA-256 of verifier == challenge), `_synthesize_user_token` happy + missing-authId paths, `poll_for_token` first-success / repeat-then-success / timeout / unknown-state, and source-level guards for the new endpoints + frontend wiring.
+- Full unit suite: **2429 passed + 2 skipped** (was 2419 + 2 in v4.4.32).
+- Frontend typecheck: `tsc --noEmit` exit 0.
+- Live www1: `version=4.4.33 status=healthy`; `/api/providers/cursor-oauth/poll` returns 401 for unauthenticated callers (endpoint wired + admin-gated).
+
+**Operator next:** validate live by adding a fresh Cursor Provider through the UI. Click Generate Auth URL, sign in, click Save Provider. Token should arrive without any DevTools.
+
 ### v4.4.32 — Cursor onboarding UX fix: "no auto-redirect" callout (2026-06-02)
 
 Live operator hit the gap in v4.4.31's polished flow: clicked Generate Auth URL, landed on `cursor.com/dashboard`, and then sat there waiting for a callback that was never going to happen (Cursor doesn't implement OAuth+PKCE; there is no redirect with a code). The DevTools-cookie instructions were already in the modal but read like background info, not "here's what to do next."

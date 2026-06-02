@@ -131,6 +131,29 @@ class OAuthRotateRequest(BaseModel):
     callback: str
 
 
+# v4.4.33 — Cursor's polished poll-based flow: the backend polls Cursor's
+# IDE auth endpoint, no operator callback paste. Same body shape as
+# OAuthExchangeRequest minus the ``callback`` field (replaced by the
+# server-side poll).
+class OAuthPollRequest(BaseModel):
+    state: str
+    name: str
+    default_model: Optional[str] = None
+    base_url: Optional[str] = None
+    priority: int = 10
+    enabled: bool = True
+    timeout_sec: int = 30
+    exclude_from_tool_requests: bool = False
+    hold_down_sec: Optional[int] = None
+    failure_threshold: Optional[int] = None
+    daily_budget_usd: Optional[float] = None
+    extra_config: dict = {}
+
+
+class OAuthPollRotateRequest(BaseModel):
+    state: str
+
+
 # ── Shared inner handlers (parameterized by spec) ────────────────────────────
 
 
@@ -277,6 +300,126 @@ async def _do_rotate(
     return _serialize(p)
 
 
+# v4.4.33 — polished poll-based create/rotate, used by cursor-oauth (and
+# any future vendor whose flow module exposes ``poll_for_token``). Same
+# shape as exchange-create/rotate but with the callback paste replaced
+# by a server-side poll of the vendor's IDE auth endpoint.
+
+
+async def _do_poll_create(
+    spec: OAuthProviderSpec,
+    body: OAuthPollRequest,
+    db: AsyncSession,
+) -> dict:
+    flow = _flow_module(spec)
+    poll = getattr(flow, "poll_for_token", None)
+    if poll is None:
+        raise HTTPException(
+            400,
+            f"{spec.provider_type} flow doesn't support poll-based auth",
+        )
+    try:
+        result = await poll(body.state)
+    except flow.OAuthFlowError as e:
+        raise HTTPException(400, str(e))
+
+    from app.providers.dedup import name_is_taken
+    if await name_is_taken(db, body.name):
+        raise HTTPException(409, f"A provider named {body.name!r} already exists.")
+
+    data = body.model_dump(exclude={"state"})
+    data["provider_type"] = spec.provider_type
+    data["api_key"] = result.access_token
+    data["oauth_refresh_token"] = result.refresh_token
+    data["oauth_expires_at"] = result.expires_at
+    if not data.get("default_model"):
+        data["default_model"] = spec.default_model
+
+    if spec.provider_type == "cursor-oauth" and not data.get("base_url"):
+        import os as _os
+        data["base_url"] = _os.environ.get(
+            "CURSOR_BRIDGE_URL",
+            "http://llm-proxy2-cursor-bridge:3010",
+        ).rstrip("/") + "/v1"
+
+    if spec.extra_config_keys:
+        cfg = dict(data.get("extra_config") or {})
+        for key in spec.extra_config_keys:
+            value = getattr(result, key, None)
+            if value:
+                cfg[key] = value
+        data["extra_config"] = cfg
+
+    from app.api.providers import (
+        _bump_priority_conflicts, _stamp_user_edit, _serialize,
+    )
+    await _bump_priority_conflicts(db, data["priority"])
+
+    provider = Provider(id=secrets.token_hex(8), **data)
+    _stamp_user_edit(provider)
+    db.add(provider)
+    await db.commit()
+    await db.refresh(provider)
+    register_provider(
+        provider.id, provider.provider_type,
+        provider.hold_down_sec, provider.failure_threshold,
+    )
+    return _serialize(provider)
+
+
+async def _do_poll_rotate(
+    spec: OAuthProviderSpec,
+    provider_id: str,
+    body: OAuthPollRotateRequest,
+    db: AsyncSession,
+) -> dict:
+    flow = _flow_module(spec)
+    poll = getattr(flow, "poll_for_token", None)
+    if poll is None:
+        raise HTTPException(
+            400,
+            f"{spec.provider_type} flow doesn't support poll-based auth",
+        )
+    from app.api.providers import _get_or_404, _stamp_user_edit, _serialize
+
+    p = await _get_or_404(db, provider_id)
+    if p.provider_type != spec.provider_type:
+        raise HTTPException(
+            400,
+            f"Provider {p.name!r} is not a {spec.provider_type} provider",
+        )
+
+    try:
+        result = await poll(body.state)
+    except flow.OAuthFlowError as e:
+        raise HTTPException(400, str(e))
+
+    p.api_key = result.access_token
+    p.oauth_refresh_token = result.refresh_token
+    p.oauth_expires_at = result.expires_at
+
+    if spec.extra_config_keys:
+        cfg = dict(p.extra_config or {})
+        for key in spec.extra_config_keys:
+            value = getattr(result, key, None)
+            if value:
+                cfg[key] = value
+        p.extra_config = cfg
+
+    _stamp_user_edit(p)
+    await db.commit()
+    await db.refresh(p)
+    register_provider(
+        p.id, p.provider_type, p.hold_down_sec, p.failure_threshold,
+    )
+    from app.routing.circuit_breaker import (
+        clear_auth_failure as _clear_af, force_close,
+    )
+    _clear_af(p.id)
+    await force_close(p.id)
+    return _serialize(p)
+
+
 # ── Endpoints — claude-oauth (Claude Pro Max) ────────────────────────────────
 
 
@@ -415,3 +558,35 @@ async def cursor_oauth_rotate(
     fresh ``WorkosCursorSessionToken`` here to mint a new access
     cookie without losing the Provider's id / priority / config."""
     return await _do_rotate(CURSOR_OAUTH_SPEC, provider_id, body, db)
+
+
+# v4.4.33 — polished poll-based onboarding for cursor-oauth. Backend
+# polls Cursor's IDE auth endpoint until the operator's browser login
+# completes; no DevTools cookie copy. ``state`` ties to the PKCE pair
+# generated by ``start_authorize``.
+
+
+@router.post("/cursor-oauth/poll")
+async def cursor_oauth_poll_create(
+    body: OAuthPollRequest,
+    db: AsyncSession = Depends(get_db),
+    _: AdminUser = Depends(require_admin),
+):
+    """Poll Cursor's IDE auth endpoint until the operator finishes
+    logging in (~5 min budget), then CREATE the cursor-oauth Provider
+    with the returned token. Long-poll: the connection stays open until
+    the token is captured or the budget exhausts."""
+    return await _do_poll_create(CURSOR_OAUTH_SPEC, body, db)
+
+
+@router.post("/{provider_id}/cursor-oauth-poll-rotate")
+async def cursor_oauth_poll_rotate(
+    provider_id: str,
+    body: OAuthPollRotateRequest,
+    db: AsyncSession = Depends(get_db),
+    _: AdminUser = Depends(require_admin),
+):
+    """Same as cursor_oauth_poll_create but updates an existing Provider
+    in place — used by the Re-authorize button when the stored JWT
+    expires."""
+    return await _do_poll_rotate(CURSOR_OAUTH_SPEC, provider_id, body, db)

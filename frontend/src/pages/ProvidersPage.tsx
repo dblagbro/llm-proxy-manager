@@ -77,7 +77,32 @@ export function ProvidersPage() {
       // endpoints instead of the plain POST/PUT.
       const isOAuthExchange =
         data.oauth_state && data.oauth_callback &&
-        (data.provider_type === 'claude-oauth' || data.provider_type === 'ChatGPT-oauth-plan')
+        (data.provider_type === 'claude-oauth' || data.provider_type === 'ChatGPT-oauth-plan' || data.provider_type === 'cursor-oauth')
+      // v4.4.33: cursor-oauth's polished path uses state+poll (no callback paste).
+      // Operator clicks Finish Authentication; backend polls Cursor's IDE auth
+      // endpoint and returns the token.
+      const isCursorPoll =
+        data.provider_type === 'cursor-oauth' &&
+        data.oauth_state && !data.oauth_callback
+      if (!editing && isCursorPoll) {
+        return providersApi.cursorOauthPoll({
+          state: data.oauth_state,
+          name: data.name,
+          default_model: data.default_model || undefined,
+          base_url: data.base_url || undefined,
+          priority: data.priority,
+          enabled: data.enabled,
+          timeout_sec: data.timeout_sec,
+          exclude_from_tool_requests: data.exclude_from_tool_requests,
+          hold_down_sec: data.hold_down_sec,
+          failure_threshold: data.failure_threshold,
+          extra_config: data.extra_config,
+        })
+      }
+      if (editing && isCursorPoll) {
+        await providersApi.cursorOauthPollRotate(editing.id, { state: data.oauth_state })
+        return providersApi.update(editing.id, data)
+      }
       if (!editing && isOAuthExchange) {
         const payload = {
           state: data.oauth_state,
@@ -93,15 +118,17 @@ export function ProvidersPage() {
           failure_threshold: data.failure_threshold,
           extra_config: data.extra_config,
         }
-        return data.provider_type === 'ChatGPT-oauth-plan'
-          ? providersApi.codexOauthExchange(payload)
-          : providersApi.oauthExchange(payload)
+        if (data.provider_type === 'ChatGPT-oauth-plan') return providersApi.codexOauthExchange(payload)
+        if (data.provider_type === 'cursor-oauth') return providersApi.cursorOauthExchange(payload)
+        return providersApi.oauthExchange(payload)
       }
       // v2.7.7 / v3.0.15: re-auth in place when editing with state+callback.
       if (editing && isOAuthExchange) {
         const rotatePayload = { state: data.oauth_state, callback: data.oauth_callback }
         if (data.provider_type === 'ChatGPT-oauth-plan') {
           await providersApi.codexOauthRotate(editing.id, rotatePayload)
+        } else if (data.provider_type === 'cursor-oauth') {
+          await providersApi.cursorOauthRotate(editing.id, rotatePayload)
         } else {
           await providersApi.oauthRotate(editing.id, rotatePayload)
         }
