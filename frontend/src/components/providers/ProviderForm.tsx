@@ -251,14 +251,14 @@ export function ProviderForm({ form, onChange, editing, provider, onProviderUpda
               <ol className="list-decimal list-inside text-xs text-gray-600 dark:text-gray-300 space-y-1">
                 {editing && <li className="text-amber-600 dark:text-amber-400 font-medium">Re-authorize this provider — replaces the stored access &amp; refresh tokens.</li>}
                 <li>Click <strong>{editing ? 'Generate New Auth URL' : 'Generate Auth URL'}</strong> below.</li>
-                <li>Open the URL in a tab where you're signed in to your {form.provider_type === 'ChatGPT-oauth-plan' ? 'ChatGPT' : form.provider_type === 'cursor-oauth' ? 'Cursor' : 'Claude'} account{form.provider_type === 'cursor-oauth' ? '' : ' and approve access'}.</li>
                 {form.provider_type === 'cursor-oauth' ? (
                   <>
-                    <li>Open browser DevTools → Application → Cookies → <code className="font-mono">cursor.com</code> → copy the value of <code className="font-mono">WorkosCursorSessionToken</code>.</li>
-                    <li>Paste that cookie value below. We'll exchange it for a long-lived Cursor access cookie via the <code className="font-mono">cursor-bridge</code> sidecar.</li>
+                    <li>Open the URL in a new tab and sign in to Cursor (any team).</li>
+                    <li>Come back here and click <strong>{editing ? 'Save Provider' : 'Save Provider'}</strong>. The backend polls Cursor's IDE auth endpoint and grabs the access token automatically — no cookie copy.</li>
                   </>
                 ) : (
                   <>
+                    <li>Open the URL in a tab where you're signed in to your {form.provider_type === 'ChatGPT-oauth-plan' ? 'ChatGPT' : 'Claude'} account and approve access.</li>
                     <li>You'll be redirected to <code className="px-1 font-mono bg-gray-100 dark:bg-gray-800 rounded">{flavor.callbackHostHint}</code>.</li>
                     <li>Copy that code (or the full URL from your address bar) and paste it below. We'll trade it for a token automatically.</li>
                   </>
@@ -288,34 +288,29 @@ export function ProviderForm({ form, onChange, editing, provider, onProviderUpda
               </div>
 
               {form.oauth_authorize_url && form.provider_type === 'cursor-oauth' && (
-                <div className="rounded border border-amber-300 dark:border-amber-700 bg-amber-50/60 dark:bg-amber-950/30 p-3 space-y-2">
-                  <div className="text-xs font-semibold text-amber-900 dark:text-amber-200">
-                    ⚠ Cursor does not auto-redirect — you grab the cookie manually
+                <div className="rounded border border-indigo-300 dark:border-indigo-700 bg-indigo-50/60 dark:bg-indigo-950/30 p-3 space-y-1.5">
+                  <div className="text-xs font-semibold text-indigo-900 dark:text-indigo-200">
+                    Waiting for your Cursor login…
                   </div>
                   <div className="text-[11px] text-gray-700 dark:text-gray-300">
-                    The tab lands on the Cursor dashboard and just sits there. That's expected. To get the cookie value, open the DevTools <strong>Console</strong> in that tab and paste the snippet below — it prints just the <code className="font-mono">WorkosCursorSessionToken</code> value:
+                    Open the URL above, sign in to Cursor, then click <strong>Save Provider</strong> below. We'll poll Cursor's IDE auth endpoint and grab the token (typically &lt; 5 seconds after you finish logging in).
                   </div>
-                  <pre className="text-[11px] font-mono bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded p-2 overflow-x-auto select-all">{`copy(document.cookie.split('; ').find(c=>c.startsWith('WorkosCursorSessionToken='))?.split('=')[1] || 'NOT FOUND — are you logged in?')`}</pre>
-                  <div className="text-[11px] text-gray-600 dark:text-gray-400">
-                    That copies the cookie value to your clipboard. Paste it below. (If you'd rather, you can also dig it out by hand under DevTools → Application → Cookies → <code className="font-mono">cursor.com</code> → <code className="font-mono">WorkosCursorSessionToken</code>.)
+                  <div className="text-[11px] text-gray-500 dark:text-gray-400">
+                    If polling times out, the most common cause is your sign-in didn't complete — try again, then click Save Provider once you see the Cursor success page.
                   </div>
                 </div>
               )}
 
-              {form.oauth_authorize_url && (
+              {form.oauth_authorize_url && form.provider_type !== 'cursor-oauth' && (
                 <>
                   <label className="block text-xs font-medium text-gray-700 dark:text-gray-300">
-                    {form.provider_type === 'cursor-oauth'
-                      ? 'Paste the WorkosCursorSessionToken cookie value'
-                      : 'Paste the authorization code (or the full callback URL)'}
+                    Paste the authorization code (or the full callback URL)
                   </label>
                   <textarea
                     value={form.oauth_callback}
                     onChange={e => set({ oauth_callback: e.target.value })}
                     rows={3}
-                    placeholder={form.provider_type === 'cursor-oauth'
-                      ? 'user_01ABCDEFGH…%3A%3AeyJhbGciOiJIUzI1NiI…\n— or paste the whole cookie line —\nWorkosCursorSessionToken=user_…%3A%3AeyJ…'
-                      : `code=…&state=…\n— or —\nhttp(s)://${flavor.callbackHostHint.split(' ')[0]}?code=…&state=…`}
+                    placeholder={`code=…&state=…\n— or —\nhttp(s)://${flavor.callbackHostHint.split(' ')[0]}?code=…&state=…`}
                     className="w-full px-3 py-2 text-xs font-mono bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 border border-gray-300 dark:border-gray-700 rounded focus:outline-none focus:ring-2 focus:ring-indigo-500"
                     required={!editing}
                   />
