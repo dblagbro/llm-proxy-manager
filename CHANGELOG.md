@@ -9,6 +9,38 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v4.3.x — "Voice output" milestone
 
+### v4.4.37 — Cursor dispatch tests + JWT exp probe + refresh-token capture (2026-06-02)
+
+Two follow-ups from the cursor-oauth arc:
+
+**1. Closed the v4.4.35 test-coverage gap.** Four new tests in `tests/unit/test_router.py::TestBuildLitellmKwargs`:
+
+- `test_base_url_included_for_cursor_oauth` — asserts cursor-oauth is in the `api_base` allowlist.
+- `test_cursor_oauth_model_prefix_is_openai` — pins `PROVIDER_TYPE_TO_LITELLM['cursor-oauth'] == 'openai'`.
+- `test_cursor_oauth_dispatch_passes_api_base_to_litellm` — full end-to-end-ish: `build_litellm_model + build_litellm_kwargs` together produce exactly the litellm.acompletion call the Test endpoint makes. Would have caught v4.4.31..v4.4.34's mystery in 30 seconds.
+- `test_cursor_oauth_subscription_tier_membership` — pins cursor-oauth in `SUBSCRIPTION_TIER_PROVIDER_TYPES` so cost accounting stays $0.
+
+The `TestProviderMaps::test_all_known_types_have_default` invariant immediately caught that I'd never added cursor-oauth to `PROVIDER_DEFAULT_MODELS` — fixed (set to `claude-4-sonnet`). Working as designed.
+
+Suite: **2433 passed + 2 skipped** (was 2429 + 2).
+
+**2. Decoded the JWT's `exp` claim — empirical lifetime is 60 days, not 30.**
+
+```
+dblagbro:          exp = 2026-08-01 21:34:54 UTC  (60 days from issue)
+Cursor-oAuth-acct: exp = 2026-08-01 22:17:59 UTC  (60 days from issue)
+```
+
+JWT also carries `scope: openid profile email offline_access`. The `offline_access` scope is OAuth2's signal that **refresh tokens were issued** — meaning Cursor's IDE has a silent-rotation path we may be able to mirror server-side without ever building the noVNC sidecar.
+
+**Probe added to `poll_for_token`**: log all response keys (not values — PII) on success so the next operator re-auth tells us empirically whether `refreshToken` / `refresh_token` / `expiresAt` is in the response. Plus the function now opportunistically captures any of those fields into `ExchangeResult.refresh_token` / `expires_at` so they reach `Provider.oauth_refresh_token` / `oauth_expires_at`.
+
+`refresh_access_token` still raises (the wire to call Cursor's token endpoint isn't built yet) — but the data capture is in place so we can decide what to build with empirical evidence rather than guessing.
+
+**Updated** the noVNC backlog (`project_backlog_cursor_oauth_novnc.md`) with these findings: first JWT expiry is now **2026-08-01**, and "implement refresh-token rotation" is the lower-cost alternative to noVNC if the poll response contains the tokens.
+
+Fleet: not yet deployed (test-only + speculative response-key capture; deploy on the next routine roll).
+
 ### v4.4.36 — Cursor scan-models: dedicated _fetch_cursor_oauth_models (2026-06-02)
 
 Same shape of bug as v4.4.35, different code path. Operator's "Scan Models" button returned `No models discovered — check API key and provider type`. Tracing through `app/providers/scanner.py::_fetch_model_list`: the `match provider.provider_type` block had **no case for cursor-oauth** — fell through to `_ → return []`. Silent fail; the UI message is a stock "0 models found" toast that doesn't say "I didn't even try."
