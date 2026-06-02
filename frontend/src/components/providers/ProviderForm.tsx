@@ -287,16 +287,35 @@ export function ProviderForm({ form, onChange, editing, provider, onProviderUpda
                 )}
               </div>
 
+              {form.oauth_authorize_url && form.provider_type === 'cursor-oauth' && (
+                <div className="rounded border border-amber-300 dark:border-amber-700 bg-amber-50/60 dark:bg-amber-950/30 p-3 space-y-2">
+                  <div className="text-xs font-semibold text-amber-900 dark:text-amber-200">
+                    ⚠ Cursor does not auto-redirect — you grab the cookie manually
+                  </div>
+                  <div className="text-[11px] text-gray-700 dark:text-gray-300">
+                    The tab lands on the Cursor dashboard and just sits there. That's expected. To get the cookie value, open the DevTools <strong>Console</strong> in that tab and paste the snippet below — it prints just the <code className="font-mono">WorkosCursorSessionToken</code> value:
+                  </div>
+                  <pre className="text-[11px] font-mono bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded p-2 overflow-x-auto select-all">{`copy(document.cookie.split('; ').find(c=>c.startsWith('WorkosCursorSessionToken='))?.split('=')[1] || 'NOT FOUND — are you logged in?')`}</pre>
+                  <div className="text-[11px] text-gray-600 dark:text-gray-400">
+                    That copies the cookie value to your clipboard. Paste it below. (If you'd rather, you can also dig it out by hand under DevTools → Application → Cookies → <code className="font-mono">cursor.com</code> → <code className="font-mono">WorkosCursorSessionToken</code>.)
+                  </div>
+                </div>
+              )}
+
               {form.oauth_authorize_url && (
                 <>
                   <label className="block text-xs font-medium text-gray-700 dark:text-gray-300">
-                    Paste the authorization code (or the full callback URL)
+                    {form.provider_type === 'cursor-oauth'
+                      ? 'Paste the WorkosCursorSessionToken cookie value'
+                      : 'Paste the authorization code (or the full callback URL)'}
                   </label>
                   <textarea
                     value={form.oauth_callback}
                     onChange={e => set({ oauth_callback: e.target.value })}
                     rows={3}
-                    placeholder={`code=…&state=…\n— or —\nhttp(s)://${flavor.callbackHostHint.split(' ')[0]}?code=…&state=…`}
+                    placeholder={form.provider_type === 'cursor-oauth'
+                      ? 'user_01ABCDEFGH…%3A%3AeyJhbGciOiJIUzI1NiI…\n— or paste the whole cookie line —\nWorkosCursorSessionToken=user_…%3A%3AeyJ…'
+                      : `code=…&state=…\n— or —\nhttp(s)://${flavor.callbackHostHint.split(' ')[0]}?code=…&state=…`}
                     className="w-full px-3 py-2 text-xs font-mono bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 border border-gray-300 dark:border-gray-700 rounded focus:outline-none focus:ring-2 focus:ring-indigo-500"
                     required={!editing}
                   />

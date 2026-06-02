@@ -9,6 +9,23 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v4.3.x — "Voice output" milestone
 
+### v4.4.32 — Cursor onboarding UX fix: "no auto-redirect" callout (2026-06-02)
+
+Live operator hit the gap in v4.4.31's polished flow: clicked Generate Auth URL, landed on `cursor.com/dashboard`, and then sat there waiting for a callback that was never going to happen (Cursor doesn't implement OAuth+PKCE; there is no redirect with a code). The DevTools-cookie instructions were already in the modal but read like background info, not "here's what to do next."
+
+**Fix** (frontend-only):
+
+- New amber callout box appears in the cursor-oauth modal **after** Generate Auth URL is clicked. Title: "⚠ Cursor does not auto-redirect — you grab the cookie manually." Includes a copy-paste DevTools Console snippet that copies just the `WorkosCursorSessionToken` value to the clipboard:
+
+  ```js
+  copy(document.cookie.split('; ').find(c=>c.startsWith('WorkosCursorSessionToken='))?.split('=')[1] || 'NOT FOUND — are you logged in?')
+  ```
+
+- The textarea label below the callout reads "Paste the WorkosCursorSessionToken cookie value" for cursor-oauth (was the generic "Paste the authorization code (or the full callback URL)" inherited from claude-oauth/codex-oauth).
+- The textarea placeholder shows the cursor-specific shape (`user_…%3A%3A…JWT…` or the full `WorkosCursorSessionToken=…` cookie line) instead of `code=…&state=…`.
+
+No backend or test changes. Other OAuth flavors (claude-oauth, ChatGPT-oauth-plan) untouched.
+
 ### v4.4.31 — Cursor as a Provider (polished OAuth onboarding) (2026-06-02)
 
 Operator can now add a Cursor Pro/Business subscription as a backend Provider through the same modal-driven flow as `claude-oauth` and `ChatGPT-oauth-plan` — no compose-file edits, no `docker exec` plumbing, no raw cookie handling beyond a single DevTools paste.
