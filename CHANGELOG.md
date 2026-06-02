@@ -9,6 +9,36 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v4.3.x — "Voice output" milestone
 
+### v4.4.35 — Cursor dispatch fix: litellm api_base honoured (the real Test bug) (2026-06-02)
+
+The Test-failure mystery from v4.4.31..v4.4.34 finally cracked. Same symptom across every fix attempt: `litellm.AuthenticationError: OpenAIException - Incorrect API key provided: user_01J***`. v4.4.31 paste fallback, v4.4.32 callout, v4.4.33 PKCE poll, v4.4.34 model rename — all returned good `200`s when I tested the stored token directly through the sidecar. The bug was nowhere in the OAuth flow.
+
+**Root cause: `app/routing/router.py::build_litellm_kwargs` only sets `api_base` for `ollama` + `compatible` provider types.** cursor-oauth wasn't in the allowlist, so litellm received `model='openai/claude-4-sonnet'` plus `api_key='user_…::eyJ…'` with **no `api_base`** — and dutifully POSTed to `https://api.openai.com/v1/chat/completions`. OpenAI rejected the Cursor token with the exact error string the operator saw. The error said "user_01J***" because OpenAI's API echoes the rejected key in its 401 body.
+
+**Two-line fix:**
+
+```python
+PROVIDER_TYPE_TO_LITELLM["cursor-oauth"] = "openai"             # explicit (was relying on the default)
+# build_litellm_kwargs:
+if provider.base_url and provider.provider_type in (
+    "ollama", "compatible", "cursor-oauth",                     # ← added
+):
+    kwargs["api_base"] = provider.base_url
+```
+
+**Verified live on www1** by running `test_provider()` against both onboarded cursor-oauth Providers (the operator's "dblagbro" and "Cursor-oAuth-acct") through the actual Test path:
+
+```
+Testing provider: dblagbro
+  result: {'success': True, 'model': 'openai/claude-4-sonnet'}
+Testing provider: Cursor-oAuth-acct
+  result: {'success': True, 'model': 'openai/claude-4-sonnet'}
+```
+
+Both 200. The poll-based onboarding from v4.4.33 was solid; the token was always correct. Dispatch was the silent failure mode.
+
+**Why the test suite missed this**: there's no integration test that exercises `test_provider()` for cursor-oauth. The unit tests cover the flow module (start_authorize / poll / synthesize) and the endpoint shapes, but not the litellm dispatch wiring. The right follow-up is a test that mocks litellm.acompletion and asserts api_base reaches it for cursor-oauth — backlogged.
+
 ### v4.4.34 — Cursor default model: claude-3-7-sonnet → claude-4-sonnet (2026-06-02)
 
 Live operator hit it immediately after v4.4.33 shipped: the Test button returned `litellm.AuthenticationError: OpenAIException - Incorrect API key provided: user_01J***...`, masking the real problem. The token format was correct; the api_key value was correct; the sidecar accepted it. What failed was **the model name**: `claude-3-7-sonnet` no longer exists in Cursor's relay catalog. The sidecar returns the unknown-model rejection as an OpenAI-format 401, which litellm parrots verbatim — `user_01J***` is the masked api_key in the error, not the actual cause.
