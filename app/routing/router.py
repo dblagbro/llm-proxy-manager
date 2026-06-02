@@ -264,6 +264,16 @@ PROVIDER_TYPE_TO_LITELLM = {
     # / completions.py dispatch directly via app.providers.grok_web.
     # The "xai" prefix here is only used by the X-Resolved-Model header.
     "grok-web": "xai",
+    # v4.4.31: cursor-oauth dispatches through the Cursor-To-OpenAI
+    # sidecar, which speaks the OpenAI Chat Completions wire format.
+    # litellm therefore uses the openai/ prefix and the sidecar's
+    # base_url (auto-pinned by _do_exchange_create / _do_poll_create).
+    # build_litellm_kwargs adds it to the api_base allowlist below so
+    # litellm actually honors that base_url instead of falling through
+    # to api.openai.com (which rejected the user_<id>::<JWT> token with
+    # "Incorrect API key provided" — the v4.4.31..v4.4.34 Test-failure
+    # mystery resolved by v4.4.35).
+    "cursor-oauth": "openai",
 }
 
 
@@ -308,7 +318,11 @@ def build_litellm_kwargs(provider: Provider) -> dict:
     kwargs: dict[str, Any] = {}
     if provider.api_key:
         kwargs["api_key"] = provider.api_key
-    if provider.base_url and provider.provider_type in ("ollama", "compatible"):
+    # v4.4.35: cursor-oauth needs api_base too, or litellm routes the
+    # request to api.openai.com (defaulting from the ``openai/`` prefix)
+    # and the user_<id>::<JWT> token gets rejected as "Incorrect API
+    # key provided" — the exact symptom that confused v4.4.31..v4.4.34.
+    if provider.base_url and provider.provider_type in ("ollama", "compatible", "cursor-oauth"):
         kwargs["api_base"] = provider.base_url
     kwargs["timeout"] = provider.timeout_sec
     return kwargs
