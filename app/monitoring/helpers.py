@@ -43,6 +43,12 @@ SUBSCRIPTION_TIER_PROVIDER_TYPES = frozenset({
     # missing here, but it didn't matter because the dispatcher also
     # missed record_outcome entirely (separate v3.2.10 fix).
     "grok-web",
+    # v4.4.31: cursor-oauth (operator's Cursor Pro/Business subscription).
+    # Calls route through the Cursor-To-OpenAI sidecar at
+    # ``llm-proxy2-cursor-bridge``; the upstream cost lives in Cursor's
+    # flat-rate plan, so we record $0 against the api_key total and
+    # surface the rated estimate as ``quota_usd``.
+    "cursor-oauth",
 })
 
 

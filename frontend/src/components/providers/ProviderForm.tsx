@@ -17,6 +17,7 @@ const PROVIDER_TYPES: ProviderType[] = [
   'azure',         // v3.0.66 — Microsoft Azure OpenAI Service
   'openrouter',    // v3.1.3 — OpenRouter multi-vendor marketplace
   'grok-web',      // v3.2.0 — grok.com web subscription via pasted cookies
+  'cursor-oauth',  // v4.4.31 — Cursor Pro/Business subscription via cursor-bridge sidecar
 ]
 
 // v3.8.0 — display labels for the provider_type dropdown. The internal
@@ -72,6 +73,28 @@ const OAUTH_FLAVORS: Record<string, OAuthFlavor> = {
     authorize: () => providersApi.codexOauthAuthorize(),
     exchange: (data) => providersApi.codexOauthExchange(data),
     rotate: (id, data) => providersApi.codexOauthRotate(id, data),
+  },
+  // v4.4.31 — Cursor Pro/Business subscription. Cursor's deep-link
+  // login doesn't redirect with ``?code=…`` like Anthropic/OpenAI;
+  // it lands a ``WorkosCursorSessionToken`` cookie on cursor.com.
+  // The operator copies that cookie value from DevTools → Application
+  // → Cookies and pastes it back; the backend POSTs it to the
+  // cursor-bridge sidecar's ``/cursor/loginDeepControl`` to mint the
+  // long-lived ``user_<id>::<JWT>`` access cookie we store as
+  // Provider.api_key.
+  'cursor-oauth': {
+    label: 'Cursor Pro / Business — sign in with your Cursor account',
+    callbackHostHint: 'cursor.com (DevTools → Application → Cookies → WorkosCursorSessionToken)',
+    defaultModel: 'claude-3-7-sonnet',
+    pasteFallbackInstructions: {
+      cmd: 'npm run login  (inside the cursor-bridge sidecar)',
+      catFile: '<the printed user_<id>::<JWT> string>',
+      tokenShape: 'user_<id>::<JWT>',
+    },
+    pasteFallbackPlaceholder: 'user_01ABCDEFGH…::eyJhbGciOiJIUzI1NiI…\n\n— or as JSON —\n\n{\n  "access_token": "user_01ABCDEFGH…::eyJhbGciOi…"\n}',
+    authorize: () => providersApi.cursorOauthAuthorize(),
+    exchange: (data) => providersApi.cursorOauthExchange(data),
+    rotate: (id, data) => providersApi.cursorOauthRotate(id, data),
   },
 }
 
@@ -228,9 +251,18 @@ export function ProviderForm({ form, onChange, editing, provider, onProviderUpda
               <ol className="list-decimal list-inside text-xs text-gray-600 dark:text-gray-300 space-y-1">
                 {editing && <li className="text-amber-600 dark:text-amber-400 font-medium">Re-authorize this provider — replaces the stored access &amp; refresh tokens.</li>}
                 <li>Click <strong>{editing ? 'Generate New Auth URL' : 'Generate Auth URL'}</strong> below.</li>
-                <li>Open the URL in a tab where you're signed in to your {form.provider_type === 'ChatGPT-oauth-plan' ? 'ChatGPT' : 'Claude'} account and approve access.</li>
-                <li>You'll be redirected to <code className="px-1 font-mono bg-gray-100 dark:bg-gray-800 rounded">{flavor.callbackHostHint}</code>.</li>
-                <li>Copy that code (or the full URL from your address bar) and paste it below. We'll trade it for a token automatically.</li>
+                <li>Open the URL in a tab where you're signed in to your {form.provider_type === 'ChatGPT-oauth-plan' ? 'ChatGPT' : form.provider_type === 'cursor-oauth' ? 'Cursor' : 'Claude'} account{form.provider_type === 'cursor-oauth' ? '' : ' and approve access'}.</li>
+                {form.provider_type === 'cursor-oauth' ? (
+                  <>
+                    <li>Open browser DevTools → Application → Cookies → <code className="font-mono">cursor.com</code> → copy the value of <code className="font-mono">WorkosCursorSessionToken</code>.</li>
+                    <li>Paste that cookie value below. We'll exchange it for a long-lived Cursor access cookie via the <code className="font-mono">cursor-bridge</code> sidecar.</li>
+                  </>
+                ) : (
+                  <>
+                    <li>You'll be redirected to <code className="px-1 font-mono bg-gray-100 dark:bg-gray-800 rounded">{flavor.callbackHostHint}</code>.</li>
+                    <li>Copy that code (or the full URL from your address bar) and paste it below. We'll trade it for a token automatically.</li>
+                  </>
+                )}
               </ol>
 
               <div className="flex items-center gap-2">
