@@ -145,6 +145,80 @@ class TestBuildLitellmKwargs:
         k = build_litellm_kwargs(p)
         assert "api_base" not in k
 
+    # v4.4.35 regression — the cursor-oauth onboarding mystery (v4.4.31..v4.4.34)
+    # was litellm getting model=openai/<x> + api_key=user_…::eyJ… but NO api_base,
+    # defaulting to api.openai.com, and OpenAI rejecting the Cursor token verbatim
+    # ("Incorrect API key provided: user_01J***…"). The Test button showed the
+    # same litellm error on every reonboarding attempt; the actual token was
+    # always fine. The fix added cursor-oauth to the api_base allowlist in
+    # build_litellm_kwargs. These tests pin both halves of the wiring so a
+    # future refactor can't silently regress dispatch.
+    def test_base_url_included_for_cursor_oauth(self):
+        p = _FakeProvider(
+            provider_type="cursor-oauth",
+            base_url="http://llm-proxy2-cursor-bridge:3010/v1",
+            api_key="user_01ABC::eyJhbGciOiJIUzI1NiI.fake.signature",
+        )
+        k = build_litellm_kwargs(p)
+        assert k["api_base"] == "http://llm-proxy2-cursor-bridge:3010/v1", (
+            "cursor-oauth MUST set api_base; otherwise litellm sends the "
+            "request to api.openai.com and OpenAI rejects the Cursor token. "
+            "If this assertion fires after a router refactor, restore "
+            'cursor-oauth in the api_base allowlist next to "ollama"/"compatible".'
+        )
+        assert k["api_key"].startswith("user_01ABC")
+
+    def test_cursor_oauth_model_prefix_is_openai(self):
+        """The sidecar speaks OpenAI Chat Completions; cursor-oauth's
+        litellm model string therefore needs the openai/ prefix. If this
+        ever changes (e.g. someone adds a dedicated 'cursor/' provider
+        to litellm and we want to use it), update both
+        PROVIDER_TYPE_TO_LITELLM and PROVIDER_DEFAULT_MODELS together."""
+        assert PROVIDER_TYPE_TO_LITELLM["cursor-oauth"] == "openai"
+        p = _FakeProvider(
+            provider_type="cursor-oauth",
+            default_model="claude-4-sonnet",
+            base_url="http://llm-proxy2-cursor-bridge:3010/v1",
+        )
+        assert build_litellm_model(p) == "openai/claude-4-sonnet"
+
+    def test_cursor_oauth_dispatch_passes_api_base_to_litellm(self):
+        """End-to-end-ish: build_litellm_model + build_litellm_kwargs
+        together produce the exact litellm.acompletion call the Test
+        endpoint makes. Asserts the call would hit the sidecar, not
+        api.openai.com.
+
+        This is the test that would have caught v4.4.31..v4.4.34's
+        Test-failure mystery 30 seconds after writing it."""
+        p = _FakeProvider(
+            provider_type="cursor-oauth",
+            default_model="claude-4-sonnet",
+            api_key="user_01ABC::eyJfake",
+            base_url="http://llm-proxy2-cursor-bridge:3010/v1",
+            timeout_sec=60,
+        )
+        model = build_litellm_model(p)
+        kwargs = build_litellm_kwargs(p)
+        # The model/api_base pair litellm receives:
+        assert model == "openai/claude-4-sonnet"
+        assert kwargs["api_base"] == "http://llm-proxy2-cursor-bridge:3010/v1"
+        assert kwargs["api_key"] == "user_01ABC::eyJfake"
+        assert kwargs["timeout"] == 60
+        # Negative assertion: without api_base, litellm would default to
+        # https://api.openai.com which would reject the user_… token.
+        # If api_base disappears from kwargs in a future refactor, this
+        # test must fail BEFORE the operator sees Test failures.
+        assert "api_base" in kwargs
+
+    def test_cursor_oauth_subscription_tier_membership(self):
+        """Cost accounting: cursor-oauth must be in the subscription tier
+        set so per-request cost_usd is recorded as 0 against the api_key's
+        budget. Without this, the proxy bills traffic as if the upstream
+        was charging per token (which it isn't — the operator's Cursor Pro
+        subscription is flat-rate)."""
+        from app.monitoring.helpers import SUBSCRIPTION_TIER_PROVIDER_TYPES
+        assert "cursor-oauth" in SUBSCRIPTION_TIER_PROVIDER_TYPES
+
 
 # ── _native_thinking_params ──────────────────────────────────────────────────
 

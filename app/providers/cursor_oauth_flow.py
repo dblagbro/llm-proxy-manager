@@ -260,11 +260,46 @@ async def poll_for_token(
                     if isinstance(access, str) and access:
                         auth_id = data.get("authId", "") if isinstance(data, dict) else ""
                         token = _synthesize_user_token(access, auth_id)
+                        # v4.4.37 backlog probe: capture refresh_token /
+                        # expiresAt / refreshToken if Cursor's poll
+                        # response carries them. The JWT carries
+                        # ``scope: offline_access`` so SOMETHING upstream
+                        # has the refresh capability; we just don't know
+                        # which field the poll endpoint surfaces yet.
+                        # Log the response keys (not values — PII) so the
+                        # next operator re-auth tells us empirically what
+                        # to capture for OAuth2 refresh-flow rotation
+                        # (lower-cost alternative to noVNC backlog).
+                        import logging as _log
+                        _log.getLogger("app.providers.cursor_oauth_flow").info(
+                            "cursor_oauth_poll_response_keys: %s",
+                            sorted(data.keys()) if isinstance(data, dict) else type(data).__name__,
+                        )
+                        refresh = None
+                        expires_at = None
+                        if isinstance(data, dict):
+                            # Try common field names — Cursor may use any of
+                            # these depending on the OAuth lib version on
+                            # their backend. None of them are guaranteed
+                            # to exist; we just want to record them if so.
+                            for k in ("refreshToken", "refresh_token"):
+                                v = data.get(k)
+                                if isinstance(v, str) and v:
+                                    refresh = v
+                                    break
+                            for k in ("expiresAt", "expires_at", "expiresIn", "expires_in"):
+                                v = data.get(k)
+                                if isinstance(v, (int, float)):
+                                    expires_at = float(v)
+                                    if k in ("expiresIn", "expires_in"):
+                                        # relative seconds → absolute
+                                        expires_at = time.time() + expires_at
+                                    break
                         _PENDING.pop(state, None)
                         return ExchangeResult(
                             access_token=token,
-                            refresh_token=None,
-                            expires_at=None,
+                            refresh_token=refresh,
+                            expires_at=expires_at,
                             id_token=None,
                             raw=data,
                         )

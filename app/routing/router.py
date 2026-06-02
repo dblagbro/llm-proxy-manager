@@ -304,6 +304,13 @@ PROVIDER_DEFAULT_MODELS = {
     # v3.2.0: grok-web — operator's web subscription. Lite plan default is
     # grok-3 (modeId=fast); Premium can override default_model to grok-4.
     "grok-web": "grok-3",
+    # v4.4.37: cursor-oauth — Cursor renamed catalog (no claude-3-7-sonnet)
+    # so the default is the live model name. v4.4.34 fixed the same default
+    # in CURSOR_OAUTH_SPEC + ProviderForm OAUTH_FLAVORS; this dict was
+    # missed and the test_all_known_types_have_default invariant caught it
+    # in v4.4.37. Used as the build_litellm_model fallback if a provider
+    # row has no default_model set.
+    "cursor-oauth": "claude-4-sonnet",
 }
 
 
