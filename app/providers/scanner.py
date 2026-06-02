@@ -95,6 +95,8 @@ async def _fetch_model_list(provider: Provider) -> list[str]:
                 return await _fetch_cohere_models(provider)
             case "openai" | "compatible" | "grok" | "openrouter":
                 return await _fetch_openai_models(provider)
+            case "cursor-oauth":
+                return await _fetch_cursor_oauth_models(provider)
             case "google":
                 return await _fetch_google_models(provider)
             case "ollama":
@@ -246,6 +248,31 @@ async def _fetch_openai_models(provider: Provider) -> list[str]:
         resp.raise_for_status()
         data = resp.json()
         return [m["id"] for m in data.get("data", [])]
+
+
+async def _fetch_cursor_oauth_models(provider: Provider) -> list[str]:
+    """v4.4.36: cursor-oauth's catalog comes from the cursor-bridge
+    sidecar's ``/v1/models`` endpoint (the sidecar proxies through to
+    Cursor's IDE backend with the operator's WorkOS token). Distinct
+    from ``_fetch_openai_models`` because the stored base_url already
+    ends in ``/v1`` (for litellm's api_base) — appending ``/v1/models``
+    naively would produce ``/v1/v1/models`` and 404. We normalize the
+    base before appending."""
+    base = (provider.base_url or "http://llm-proxy2-cursor-bridge:3010/v1").rstrip("/")
+    if base.endswith("/v1"):
+        base = base[:-3]
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(
+            f"{base}/v1/models",
+            headers={"Authorization": f"Bearer {provider.api_key}"},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        # Cursor's catalog has 130+ entries with tier suffixes
+        # (-low/-medium/-high/-max, -fast, -thinking). Surface them all;
+        # operators pick the variant they want via the Provider's
+        # default_model or per-request via the chat completions ``model``.
+        return [m["id"] for m in data.get("data", []) if isinstance(m.get("id"), str)]
 
 
 async def _fetch_google_models(provider: Provider) -> list[str]:
