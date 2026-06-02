@@ -26,26 +26,40 @@ from __future__ import annotations
 from pathlib import Path
 
 
-def test_pin_allows_1_84_x():
+def test_pin_floor_is_1_85_2():
+    """v4.4.30 (2026-05-29): bumped floor past 1.85.0 to address 3
+    critical CVEs in the 1.83.0–<1.85.0 range (SSTI in /completions,
+    RCE via eval, OIDC auth bypass via cache key collision).
+    1.85.2 is the latest 1.85.x at the time of the bump."""
     req = Path("requirements.txt").read_text()
-    assert "litellm>=1.83.0,<1.85.0" in req
-    # The old <1.84.0 ceiling must be gone
-    assert "<1.84.0" not in req
+    # Look at the pin line specifically (not comments, which may
+    # legitimately reference the OLD ceiling for context).
+    pin_lines = [
+        l for l in req.splitlines()
+        if l.strip().startswith("litellm") and not l.strip().startswith("#")
+    ]
+    assert pin_lines, "no litellm pin found"
+    pin = pin_lines[0]
+    assert pin == "litellm>=1.85.2,<1.87.0", (
+        f"expected canonical v4.4.30 pin; got {pin!r}"
+    )
 
 
 def test_pin_keeps_ceiling_for_next_major():
-    """Ceiling stays at <1.85.0 so a 1.85.x bump triggers the same
-    deliberate evaluation, rather than floating unbounded."""
+    """Ceiling stays bounded so a >=1.87 release triggers deliberate
+    evaluation rather than floating unbounded into a new minor."""
     req = Path("requirements.txt").read_text()
-    assert "<1.85.0" in req
+    assert "<1.87.0" in req
 
 
 def test_pin_rationale_documented():
     """The requirements.txt comment must explain WHY the ceiling moved
     — so the next person doesn't have to re-derive the eval."""
     req = Path("requirements.txt").read_text()
-    assert "Proxy-server" in req or "proxy-server" in req
-    assert "1907" in req  # the empirical test-count evidence
+    # v4.4.30 rationale: the 3 GHSA IDs being addressed
+    assert "GHSA-46cm-pfwv-cgf8" in req  # SSTI in /completions
+    assert "GHSA-gppg-gqw8-wh9g" in req  # RCE via unsafe eval
+    assert "GHSA-jjhc-v7c2-5hh6" in req  # OIDC cache key collision
 
 
 def _litellm_attrs_in_clean_interpreter() -> set[str]:
