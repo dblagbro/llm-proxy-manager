@@ -9,6 +9,27 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v4.3.x — "Voice output" milestone
 
+### v4.4.36 — Cursor scan-models: dedicated _fetch_cursor_oauth_models (2026-06-02)
+
+Same shape of bug as v4.4.35, different code path. Operator's "Scan Models" button returned `No models discovered — check API key and provider type`. Tracing through `app/providers/scanner.py::_fetch_model_list`: the `match provider.provider_type` block had **no case for cursor-oauth** — fell through to `_ → return []`. Silent fail; the UI message is a stock "0 models found" toast that doesn't say "I didn't even try."
+
+Naively dropping cursor-oauth into the existing `case "openai" | "compatible" | ...` branch would have failed differently: the stored `base_url` is `http://llm-proxy2-cursor-bridge:3010/v1` (correct for litellm's `api_base`), and `_fetch_openai_models` appends `/v1/models` to whatever it gets — producing `http://…/v1/v1/models` → 404.
+
+**Fix**: new `_fetch_cursor_oauth_models` that strips the trailing `/v1` from the stored `base_url` before appending the catalog path, and a new `case "cursor-oauth"` in `_fetch_model_list` to dispatch to it.
+
+Verified live on www1 against both onboarded providers:
+
+```
+dblagbro: base_url=http://llm-proxy2-cursor-bridge:3010/v1
+  → discovered 132 models
+  → first 5: ['default', 'composer-2.5-fast', 'composer-2.5',
+              'claude-opus-4-8-low', 'claude-opus-4-8-low-fast']
+Cursor-oAuth-acct: base_url=http://llm-proxy2-cursor-bridge:3010/v1
+  → discovered 132 models  (same; same upstream catalog)
+```
+
+The 132 models include the full Cursor IDE selector (Claude 4.x/4.5/4.6, Opus thinking variants, Composer, GPT-5, etc.). The operator clicks Scan Models in the UI and gets the live catalog — same source of truth as Cursor's app.
+
 ### v4.4.35 — Cursor dispatch fix: litellm api_base honoured (the real Test bug) (2026-06-02)
 
 The Test-failure mystery from v4.4.31..v4.4.34 finally cracked. Same symptom across every fix attempt: `litellm.AuthenticationError: OpenAIException - Incorrect API key provided: user_01J***`. v4.4.31 paste fallback, v4.4.32 callout, v4.4.33 PKCE poll, v4.4.34 model rename — all returned good `200`s when I tested the stored token directly through the sidecar. The bug was nowhere in the OAuth flow.
