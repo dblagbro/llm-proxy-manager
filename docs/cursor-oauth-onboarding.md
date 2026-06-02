@@ -17,7 +17,7 @@ This is the same shape as `claude-oauth` and `ChatGPT-oauth-plan` (subscription-
 5. In Cursor's tab: open DevTools → Application → Cookies → `cursor.com` → copy the value of `WorkosCursorSessionToken`.
 6. Paste the value into the modal's **Paste cookie** field.
 7. Click **Authorize**.
-8. The proxy exchanges the cookie via the sidecar's `/cursor/loginDeepControl`, stores the resulting `user_<id>::<JWT>` access token, and pins `base_url=http://llm-proxy2-cursor-bridge:3010/v1` + `default_model=claude-3-7-sonnet` automatically.
+8. The proxy exchanges the cookie via the sidecar's `/cursor/loginDeepControl`, stores the resulting `user_<id>::<JWT>` access token, and pins `base_url=http://llm-proxy2-cursor-bridge:3010/v1` + `default_model=claude-4-sonnet` automatically.
 9. Provider is created **disabled** — flip it on once you've smoke-tested with Step 3 below.
 
 That's it. No raw cookie handling, no compose-file edits, no `docker exec` plumbing.
@@ -65,7 +65,7 @@ The Provider row created has:
 
 - `provider_type = 'cursor-oauth'`
 - `base_url = 'http://llm-proxy2-cursor-bridge:3010/v1'` (auto-pinned; not surfaced in the form)
-- `default_model = 'claude-3-7-sonnet'`
+- `default_model = 'claude-4-sonnet'`
 - `cost_class = 'subscription'` (inherited from `SUBSCRIPTION_TIER_PROVIDER_TYPES`)
 - `api_key` = the `user_<id>::<JWT>` token from the sidecar
 - `enabled = false` (operator must verify, then flip on)
@@ -112,7 +112,7 @@ cur.execute("INSERT INTO api_keys (id,name,key_hash,key_prefix,key_type,enabled,
 con.commit(); con.close()
 try:
     body = json.dumps({
-        "model": "claude-3-7-sonnet",
+        "model": "claude-4-sonnet",
         "max_tokens": 16,
         "messages": [{"role":"user","content":"Reply with the single word: ok"}],
     }).encode()
@@ -150,7 +150,7 @@ for m in r['data'][:30]:
 "
 ```
 
-Common picks: `claude-3-7-sonnet`, `claude-3-5-sonnet`, `gpt-4o`, `gpt-5`.
+Common picks: `claude-4-sonnet`, `claude-4.5-sonnet`, `claude-4.6-sonnet-medium`, `gpt-4o`, `gpt-5`. Cursor's catalog churns more often than the upstream model providers'; if a model name returns a 401-looking error from the sidecar, the most likely cause is "model no longer exists in Cursor's relay" — call `/v1/models` through the sidecar to refresh.
 
 ---
 

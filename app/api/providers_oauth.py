@@ -89,7 +89,7 @@ CODEX_OAUTH_SPEC = OAuthProviderSpec(
 # docs/cursor-oauth-onboarding.md for the operator-facing flow.
 CURSOR_OAUTH_SPEC = OAuthProviderSpec(
     provider_type="cursor-oauth",
-    default_model="claude-3-7-sonnet",
+    default_model="claude-4-sonnet",
     flow_module_name="app.providers.cursor_oauth_flow",
 )
 
