@@ -269,6 +269,43 @@ async def create_provider(
         data["extra_config"] = cfg
         if not data.get("default_model"):
             data["default_model"] = "gpt-5.5"
+    elif body.provider_type == "cursor-oauth":
+        # v4.4.31 — Cursor subscription. The polished onboarding path
+        # is the dedicated /cursor-oauth/authorize → /exchange endpoints
+        # (shared providers_oauth machinery); this branch handles the
+        # paste-credentials fallback, used when an operator already has
+        # the ``user_<id>::<JWT>`` cookie in hand from elsewhere.
+        if not blob:
+            raise HTTPException(
+                400,
+                "cursor-oauth providers require 'oauth_credentials_blob' — paste "
+                "a 'user_<id>::<JWT>' Cursor cookie or a JSON blob containing "
+                "'access_token'. To generate a fresh one via the deep-link flow, "
+                "use the Generate Auth URL button in the admin UI.",
+            )
+        from app.providers.cursor_oauth import (
+            parse_credentials as _parse_cursor, CredentialParseError as _CursorParseErr,
+        )
+        try:
+            creds = _parse_cursor(blob)
+        except _CursorParseErr as e:
+            raise HTTPException(400, f"Credential parse failed: {e}")
+        data["api_key"] = creds.access_token
+        # Cursor doesn't issue refresh tokens through the sidecar flow;
+        # leave the column NULL so the refresh worker skips this Provider
+        # cleanly instead of trying and erroring on every cycle.
+        data["oauth_refresh_token"] = None
+        data["oauth_expires_at"] = None
+        if not data.get("default_model"):
+            data["default_model"] = "claude-3-7-sonnet"
+        # Pin base_url to the sidecar (same default as the deep-link
+        # exchange path in providers_oauth._do_exchange_create).
+        if not data.get("base_url"):
+            import os as _os
+            data["base_url"] = _os.environ.get(
+                "CURSOR_BRIDGE_URL",
+                "http://llm-proxy2-cursor-bridge:3010",
+            ).rstrip("/") + "/v1"
     elif body.provider_type == "grok-web":
         # v3.2.0: grok.com web-subscription provider. Two valid auth paths
         # captured in extra_config:

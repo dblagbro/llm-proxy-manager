@@ -16,6 +16,7 @@ export type ProviderType =
   | 'azure'          // v3.0.66: Microsoft Azure OpenAI Service
   | 'openrouter'     // v3.1.3: OpenRouter multi-vendor marketplace
   | 'grok-web'       // v3.2.0: grok.com web subscription via cookie replay
+  | 'cursor-oauth'   // v4.4.31: Cursor Pro/Business subscription via the cursor-bridge sidecar
 
 export interface Provider {
   id: string

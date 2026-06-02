@@ -83,6 +83,17 @@ CODEX_OAUTH_SPEC = OAuthProviderSpec(
 )
 
 
+# v4.4.31 — Cursor (Pro/Business subscription via the
+# Cursor-To-OpenAI sidecar at llm-proxy2-cursor-bridge).
+# See app/providers/cursor_oauth_flow.py for the exchange dance and
+# docs/cursor-oauth-onboarding.md for the operator-facing flow.
+CURSOR_OAUTH_SPEC = OAuthProviderSpec(
+    provider_type="cursor-oauth",
+    default_model="claude-3-7-sonnet",
+    flow_module_name="app.providers.cursor_oauth_flow",
+)
+
+
 def _flow_module(spec: OAuthProviderSpec):
     """Return the per-vendor flow module (lazy import)."""
     return importlib.import_module(spec.flow_module_name)
@@ -164,6 +175,18 @@ async def _do_exchange_create(
     data["oauth_expires_at"] = result.expires_at
     if not data.get("default_model"):
         data["default_model"] = spec.default_model
+
+    # v4.4.31 — cursor-oauth Providers always dispatch through the
+    # Cursor-To-OpenAI sidecar; the operator never edits the base_url.
+    # Pin it here so the create+rotate paths share one definition. If
+    # the operator did pass a value (e.g. for a non-default sidecar
+    # name), respect it.
+    if spec.provider_type == "cursor-oauth" and not data.get("base_url"):
+        import os as _os
+        data["base_url"] = _os.environ.get(
+            "CURSOR_BRIDGE_URL",
+            "http://llm-proxy2-cursor-bridge:3010",
+        ).rstrip("/") + "/v1"
 
     # Vendor-specific: copy result fields into extra_config (codex carries
     # chatgpt_account_id / chatgpt_plan_type; claude carries nothing extra).
@@ -338,3 +361,57 @@ async def codex_oauth_rotate(
     claude-oauth ``/oauth-rotate`` endpoint — separate URL so the UI can
     call the right exchange + know the right provider type."""
     return await _do_rotate(CODEX_OAUTH_SPEC, provider_id, body, db)
+
+
+# ── Cursor (v4.4.31) ─────────────────────────────────────────────────────────
+#
+# Cursor's deep-link login differs from Anthropic/OpenAI PKCE: instead of
+# a redirect carrying ``?code=…&state=…``, the operator pastes the
+# ``WorkosCursorSessionToken`` cookie from cursor.com DevTools. The
+# exchange handler POSTs that cookie to the Cursor-To-OpenAI sidecar's
+# ``/cursor/loginDeepControl`` endpoint, which converts to the
+# long-lived ``user_<id>::<JWT>`` access cookie consumed by chat
+# dispatch. See app/providers/cursor_oauth_flow.py for the dance and
+# docs/cursor-oauth-onboarding.md for the operator-facing flow.
+
+
+@router.post("/cursor-oauth/authorize", response_model=OAuthAuthorizeResponse)
+async def cursor_oauth_authorize(
+    _: AdminUser = Depends(require_admin),
+):
+    """Start a Cursor subscription onboarding flow.
+
+    Returns the URL the admin opens in their browser
+    (``https://www.cursor.com/dashboard``). Cursor either lands them
+    there directly (already signed in) or prompts a sign-in first;
+    either way a fresh ``WorkosCursorSessionToken`` cookie ends up
+    in the browser's cookie jar for ``cursor.com``.
+    """
+    return _do_authorize(CURSOR_OAUTH_SPEC)
+
+
+@router.post("/cursor-oauth/exchange")
+async def cursor_oauth_exchange(
+    body: OAuthExchangeRequest,
+    db: AsyncSession = Depends(get_db),
+    _: AdminUser = Depends(require_admin),
+):
+    """Convert the pasted ``WorkosCursorSessionToken`` cookie into the
+    long-lived Cursor access cookie via the sidecar, then create the
+    cursor-oauth Provider row in one shot. ``base_url`` is pinned to
+    the sidecar inside ``_do_exchange_create``."""
+    return await _do_exchange_create(CURSOR_OAUTH_SPEC, body, db)
+
+
+@router.post("/{provider_id}/cursor-oauth-rotate")
+async def cursor_oauth_rotate(
+    provider_id: str,
+    body: OAuthRotateRequest,
+    db: AsyncSession = Depends(get_db),
+    _: AdminUser = Depends(require_admin),
+):
+    """Re-auth an existing cursor-oauth provider in-place. Cursor JWTs
+    have a multi-week lifetime; when they expire the operator pastes a
+    fresh ``WorkosCursorSessionToken`` here to mint a new access
+    cookie without losing the Provider's id / priority / config."""
+    return await _do_rotate(CURSOR_OAUTH_SPEC, provider_id, body, db)

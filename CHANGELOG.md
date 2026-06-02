@@ -9,6 +9,38 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v4.3.x — "Voice output" milestone
 
+### v4.4.31 — Cursor as a Provider (polished OAuth onboarding) (2026-06-02)
+
+Operator can now add a Cursor Pro/Business subscription as a backend Provider through the same modal-driven flow as `claude-oauth` and `ChatGPT-oauth-plan` — no compose-file edits, no `docker exec` plumbing, no raw cookie handling beyond a single DevTools paste.
+
+**What landed:**
+
+- New provider type **`cursor-oauth`** in `app/api/providers.py`, `app/api/providers_oauth.py`, `app/monitoring/helpers.py` (subscription tier), and the frontend `ProviderType` union.
+- New OAuth flow module `app/providers/cursor_oauth_flow.py` registered through `CURSOR_OAUTH_SPEC` so the existing `OAuthProviderSpec` machinery serves three endpoints: `POST /api/providers/cursor-oauth/{authorize,exchange}` and `POST /api/providers/{id}/cursor-oauth-rotate`.
+- New credential parser `app/providers/cursor_oauth.py` accepts the raw `user_<id>::<JWT>` token, JSON blob with `access_token` / `accessToken`, or nested `{tokens: {access_token: ...}}` — same defensive shape as the other vendors.
+- New `OAUTH_FLAVORS['cursor-oauth']` entry in `ProviderForm.tsx` with vendor-specific instructions (DevTools → Application → Cookies → `WorkosCursorSessionToken`) and a Cursor-aware account-name copy block.
+- `base_url` auto-pinned to `http://llm-proxy2-cursor-bridge:3010/v1` inside `_do_exchange_create` so the sidecar URL is invisible to the operator.
+- The cursor-bridge sidecar service (`ghcr.io/jiuz-chn/cursor-to-openai`, digest-pinned, internal-only, healthchecked, resource-capped) was added to `/home/dblagbro/docker/docker-compose.yml` in the v4.4.31 prep work.
+
+**Vendor-specific quirks** (documented in `docs/cursor-oauth-onboarding.md`):
+
+- Cursor's auth does **not** implement OAuth+PKCE. The "authorize" step is a deep-link to the operator's Cursor dashboard; the "code" the operator pastes back is the `WorkosCursorSessionToken` cookie. `extract_code_from_callback` strips known prefixes (`WorkosCursorSessionToken=`, `Cookie:` header line, trailing other cookies) so the operator can paste any reasonable shape.
+- No refresh-token flow — `refresh_access_token` raises `OAuthFlowError` so the proxy's background rotation worker stops cleanly. Operators rotate by pasting a fresh cookie through the Rotate button (~30 day cadence per Cursor's session lifetime).
+
+**Dispatch:** cursor-oauth uses the standard OpenAI / litellm path. The sidecar speaks OpenAI Chat Completions; the proxy treats it like any other OpenAI-compatible upstream. No new dispatcher.
+
+**Validation:**
+
+- New file `tests/unit/test_v4431_cursor_oauth.py` — 23 tests covering: spec registration, subscription tier membership, endpoint shape, frontend wiring, all `parse_credentials` branches (bare token, JSON shapes, malformed, empty, unrecognized), `looks_like_cursor_token` boundary cases, `start_authorize` randomness + dashboard URL, `extract_code_from_callback` prefix-stripping + trailing-cookie handling, mocked-sidecar happy path (200 + accessToken), unknown-state rejection, non-200 sidecar propagation with status code in error, refresh-not-supported in v1, and pending-state expiry sweep.
+- Full unit suite: **2419 passed + 2 skipped** (was 2396+2 in v4.4.30 — +23 from this ship).
+- Frontend typecheck: `tsc --noEmit` exit 0.
+- Live smoke on www1: container reports `version: 4.4.31`; `POST /api/providers/cursor-oauth/authorize` returns HTTP 401 for unauthenticated callers (endpoint is wired and admin-gated); sidecar reachable from inside the container.
+
+**Cluster status at ship time:**
+
+- www1 (tmrwww01): **deployed**, smoke clean.
+- www2 (tmrwww02) + c1conv (avaya-01-s23): pending operator UI validation of the polished flow on www1 before cluster roll-out. Standard rsync-app + build-locally procedure applies (see `reference_llm_proxy_deploy.md`); the cursor-bridge service in compose needs to be present on each peer (already is on www1).
+
 ### v4.4.30 — litellm bump (3 critical CVEs in prod runtime) (2026-05-29)
 
 Out-of-band security-scan finding (the security toolkit at `~/security/` flagged 17 critical / 106 high; the 3 most consequential were in our actual prod runtime).

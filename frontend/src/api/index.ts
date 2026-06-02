@@ -88,6 +88,27 @@ export const providersApi = {
   }) => api.post<Provider>('/api/providers/codex-oauth/exchange', data),
   codexOauthRotate: (id: string, data: { state: string; callback: string }) =>
     api.post<Provider>(`/api/providers/${id}/codex-oauth-rotate`, data),
+  // v4.4.31: Cursor Pro/Business subscription onboarding via the
+  // cursor-bridge sidecar. Same shape as the codex/claude flows so the
+  // form's OAUTH_FLAVORS lookup can share the rendering path.
+  cursorOauthAuthorize: () =>
+    api.post<{ state: string; authorize_url: string }>('/api/providers/cursor-oauth/authorize', {}),
+  cursorOauthExchange: (data: {
+    state: string
+    callback: string
+    name: string
+    default_model?: string
+    base_url?: string
+    priority: number
+    enabled: boolean
+    timeout_sec: number
+    exclude_from_tool_requests: boolean
+    hold_down_sec: number | null
+    failure_threshold: number | null
+    extra_config: Record<string, unknown>
+  }) => api.post<Provider>('/api/providers/cursor-oauth/exchange', data),
+  cursorOauthRotate: (id: string, data: { state: string; callback: string }) =>
+    api.post<Provider>(`/api/providers/${id}/cursor-oauth-rotate`, data),
   // v2.8.0: clear the BUG-002 "needs re-auth" flag (admin asserts they fixed it)
   clearAuthFailure: (id: string) =>
     api.post<{ ok: boolean }>(`/api/providers/${id}/clear-auth-failure`, {}),

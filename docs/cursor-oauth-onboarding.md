@@ -4,13 +4,29 @@ How to plug a Cursor Pro/Business subscription into llm-proxy2 as a backend prov
 
 **Architecture in one sentence:** an MIT-licensed third-party sidecar (`Cursor-To-OpenAI`) sits between llm-proxy2 and `api2.cursor.sh`, translating OpenAI Chat Completions ↔ Cursor's ConnectRPC+protobuf protocol. llm-proxy2 treats the sidecar as a normal OpenAI-compatible upstream.
 
-This is the same shape as `claude-oauth` and `codex-oauth` (subscription-tier OAuth providers), just realized differently — Cursor's IDE protocol is too proprietary to embed directly in our codebase, so the sidecar absorbs the complexity.
+This is the same shape as `claude-oauth` and `ChatGPT-oauth-plan` (subscription-tier OAuth providers), and now has the **same polished UI flow** — the operator never has to know the sidecar exists.
+
+---
+
+## TL;DR — the operator path (v4.4.31+)
+
+1. Providers page → **Add Provider** → set **Provider type** = `cursor-oauth`.
+2. Click **Generate Auth URL** in the modal.
+3. The modal opens `https://www.cursor.com/dashboard` in a new tab.
+4. Log in (or confirm you are logged in).
+5. In Cursor's tab: open DevTools → Application → Cookies → `cursor.com` → copy the value of `WorkosCursorSessionToken`.
+6. Paste the value into the modal's **Paste cookie** field.
+7. Click **Authorize**.
+8. The proxy exchanges the cookie via the sidecar's `/cursor/loginDeepControl`, stores the resulting `user_<id>::<JWT>` access token, and pins `base_url=http://llm-proxy2-cursor-bridge:3010/v1` + `default_model=claude-3-7-sonnet` automatically.
+9. Provider is created **disabled** — flip it on once you've smoke-tested with Step 3 below.
+
+That's it. No raw cookie handling, no compose-file edits, no `docker exec` plumbing.
 
 ---
 
 ## What's already in place
 
-The sidecar container is plumbed into the docker-compose stack:
+The sidecar container is plumbed into the docker-compose stack on every node:
 
 ```yaml
 # /home/dblagbro/docker/docker-compose.yml
@@ -22,7 +38,7 @@ llm-proxy2-cursor-bridge:
   # health-check probes `/` and accepts 404 (proves express is up)
 ```
 
-Reachable from `llm-proxy2` at `http://llm-proxy2-cursor-bridge:3010/v1` — standard OpenAI-format paths (`/v1/models`, `/v1/chat/completions`). The sidecar holds **no secrets itself**; every request must carry the operator's Cursor cookie as the OpenAI `Authorization: Bearer ...` header.
+Reachable from `llm-proxy2` at `http://llm-proxy2-cursor-bridge:3010/v1` — standard OpenAI-format paths (`/v1/models`, `/v1/chat/completions`). The sidecar holds **no secrets itself**; every request carries the operator's Cursor cookie as the `Authorization: Bearer ...` header.
 
 Verify the sidecar is healthy:
 
@@ -33,64 +49,60 @@ sudo docker ps --filter name=llm-proxy2-cursor-bridge --format "{{.Names}} {{.St
 
 ---
 
-## Step 1: get a Cursor session cookie
+## The flow under the hood
 
-The proxy needs a JWT-format cookie of the shape `user_<id>::eyJhbGciOiJIUzI1NiI...`. Two paths:
+`cursor-oauth` rides the same shared `OAuthProviderSpec` machinery as `claude-oauth` / `ChatGPT-oauth-plan`, with one vendor-specific quirk: **Cursor does not implement OAuth+PKCE**, so the "authorize" step is a deep-link to the user's Cursor dashboard, and the "code" the operator pastes back is the `WorkosCursorSessionToken` cookie.
 
-### Path A (recommended) — use the sidecar's `/cursor/loginDeepControl`
+| Step | Endpoint | What it does |
+|---|---|---|
+| Authorize | `POST /api/providers/cursor-oauth/authorize` | Returns `{state, authorize_url}`. `authorize_url` is the Cursor dashboard. `state` is a 32-byte random token TTL=10min, stored in process memory. |
+| Exchange | `POST /api/providers/cursor-oauth/exchange` | Body `{state, code, name, default_model?}`. The proxy validates `state`, calls the sidecar's `/cursor/loginDeepControl` with the pasted cookie, gets back `accessToken`, and creates the Provider row. |
+| Rotate | `POST /api/providers/{id}/cursor-oauth-rotate` | Same shape as exchange, used when the stored cookie expires (~30 days) and the operator pastes a fresh one. |
 
-1. Log into cursor.com in a browser.
-2. Open DevTools → Application → Cookies → `cursor.com` → copy the value of `WorkosCursorSessionToken`.
-3. From inside the docker network (or any machine that can reach the sidecar), call:
+`extract_code_from_callback` strips known prefixes (`WorkosCursorSessionToken=`, `Cookie: WorkosCursorSessionToken=`) and trailing other cookies, so the operator can paste the bare value OR the full `document.cookie` line.
 
-   ```bash
-   sudo docker exec llm-proxy2 python3 -c "
-   import urllib.request, json
-   wcst = 'PASTE_WorkosCursorSessionToken_HERE'
-   req = urllib.request.Request(
-       'http://llm-proxy2-cursor-bridge:3010/cursor/loginDeepControl',
-       headers={'Authorization': f'Bearer {wcst}'},
-   )
-   r = json.load(urllib.request.urlopen(req, timeout=10))
-   print(r['accessToken'])
-   "
-   ```
+The Provider row created has:
 
-4. The printed value is the cookie you'll paste into the proxy. Format: `user_<id>::<JWT>`.
+- `provider_type = 'cursor-oauth'`
+- `base_url = 'http://llm-proxy2-cursor-bridge:3010/v1'` (auto-pinned; not surfaced in the form)
+- `default_model = 'claude-3-7-sonnet'`
+- `cost_class = 'subscription'` (inherited from `SUBSCRIPTION_TIER_PROVIDER_TYPES`)
+- `api_key` = the `user_<id>::<JWT>` token from the sidecar
+- `enabled = false` (operator must verify, then flip on)
 
-### Path B — IDE login flow (slower)
-
-Run the upstream `npm run login` flow inside the sidecar container, follow the printed URL in a browser, complete the Cursor login. Cookie is printed to stdout. See [the upstream README](https://github.com/JiuZ-Chn/Cursor-To-OpenAI) for the exact procedure.
+Dispatch reuses the standard OpenAI/litellm path — no new dispatcher. The sidecar speaks OpenAI Chat Completions; the proxy treats it like any other OpenAI-compatible upstream.
 
 ---
 
-## Step 2: add the Provider in llm-proxy2
+## v3-era fallback (paste-the-token directly)
 
-In the admin UI (Providers page), click **Add Provider** and set:
+The polished flow is what the UI presents. If you ever need to bypass it (e.g. during cluster bring-up before the sidecar is online on a peer), the **paste fallback** still works: pick `cursor-oauth` as the type, then paste a `user_<id>::<JWT>` token directly into the API key field. The same `parse_credentials` accepts the bare token, a JSON blob with `access_token` / `accessToken`, or a `{tokens: {access_token: ...}}` shape.
 
-| Field | Value |
-|---|---|
-| Name | `Cursor-Subscription` (or whatever's meaningful) |
-| Provider type | `openai` |
-| Base URL | `http://llm-proxy2-cursor-bridge:3010/v1` |
-| API key | paste the `user_<id>::<JWT>` cookie from Step 1 |
-| Default model | `claude-3-7-sonnet` (or another — see Step 4) |
-| Cost class | `subscription` ⚠️ **must be set explicitly** (per v3.0.57 — the default `per_call` derivation is wrong for this provider) |
-| Enabled | `false` initially — flip on after the verification in Step 3 |
+To get a `user_<id>::<JWT>` token by hand:
 
-The api_key is the credential. The sidecar holds no secrets; the proxy stores the cookie in the encrypted `Provider.encrypted_key` column and forwards it per request.
+```bash
+sudo docker exec llm-proxy2 python3 -c "
+import urllib.request, json
+wcst = 'PASTE_WorkosCursorSessionToken_HERE'
+req = urllib.request.Request(
+    'http://llm-proxy2-cursor-bridge:3010/cursor/loginDeepControl',
+    headers={'Authorization': f'Bearer {wcst}'},
+)
+r = json.load(urllib.request.urlopen(req, timeout=10))
+print(r['accessToken'])
+"
+```
 
 ---
 
 ## Step 3: verify with a synthetic request
 
-Once the Provider row exists, drive a single non-streaming call to confirm round-trip works:
+Once the Provider exists (still disabled), drive a single non-streaming call to confirm round-trip works:
 
 ```bash
 sudo docker exec llm-proxy2 python3 <<'PY'
 import urllib.request, json, sqlite3, secrets
 from hashlib import sha256
-# Mint a temp api_key scoped to test the Cursor provider only
 con = sqlite3.connect('/app/data/llmproxy.db'); cur = con.cursor()
 raw = f"llmp-cursortest-{secrets.token_hex(6)}"
 kid = secrets.token_hex(8)
@@ -100,7 +112,7 @@ cur.execute("INSERT INTO api_keys (id,name,key_hash,key_prefix,key_type,enabled,
 con.commit(); con.close()
 try:
     body = json.dumps({
-        "model": "claude-3-7-sonnet",  # or whatever you set as default
+        "model": "claude-3-7-sonnet",
         "max_tokens": 16,
         "messages": [{"role":"user","content":"Reply with the single word: ok"}],
     }).encode()
@@ -119,13 +131,13 @@ PY
 
 Success criteria: 200 response with a JSON body containing `content[0].text == "ok"` (or close). Activity log should show one `llm_request` event against the Cursor provider with `cost_class=subscription`.
 
-If you see HTTP 500 from the sidecar, check `sudo docker logs llm-proxy2-cursor-bridge --tail 20` — if it's `ERROR_NOT_LOGGED_IN`, the cookie has expired (Cursor cookies last ~30 days; refresh via Step 1).
+If you see HTTP 500 from the sidecar, check `sudo docker logs llm-proxy2-cursor-bridge --tail 20` — if it's `ERROR_NOT_LOGGED_IN`, the cookie has expired (~30 days). Use the **Rotate** button on the Provider row to paste a fresh one through the same flow.
 
 ---
 
-## Step 4: choose models
+## Choosing models
 
-Cursor's relay supports (as of 2026-05-29) several upstreams. The Provider's `default_model` should match one of these strings exactly — call `/v1/models` through the sidecar (with a valid cookie) for the live list:
+Cursor's relay supports several upstreams. Call `/v1/models` through the sidecar (with a valid cookie) for the live list:
 
 ```bash
 sudo docker exec llm-proxy2 python3 -c "
@@ -146,9 +158,9 @@ Common picks: `claude-3-7-sonnet`, `claude-3-5-sonnet`, `gpt-4o`, `gpt-5`.
 
 | Issue | Behavior | Workaround |
 |---|---|---|
-| Sidecar returns **HTTP 500** on missing / malformed Bearer | `TypeError: Cannot read properties of undefined (reading 'split')` at `routes/v1.js:13` — should be 401 | Cosmetic only — when the Provider's stored cookie is valid, requests succeed. The proxy circuit-breaker treats 5xx as a failure either way. |
-| Sidecar returns **HTTP 500** wrapping Cursor's `ERROR_NOT_LOGGED_IN` | When the cookie expires | Re-do Step 1 with a fresh `WorkosCursorSessionToken`. Plan for cookie rotation every ~30 days until we automate it. |
-| Cookie has **no refresh-token flow** in the sidecar | The IDE rotates via `POST /oauth/token` with `grant_type=refresh_token`, but the sidecar only stores access tokens | Manual re-paste on expiry. Sidecar enhancement candidate for v2. |
+| Sidecar returns **HTTP 500** on missing / malformed Bearer | `TypeError: Cannot read properties of undefined (reading 'split')` at `routes/v1.js:13` — should be 401 | Cosmetic; the proxy's circuit breaker treats 5xx as a failure either way. |
+| Sidecar wraps Cursor's `ERROR_NOT_LOGGED_IN` as **HTTP 500** | Cookie has expired | Use the Provider's Rotate button; paste a fresh `WorkosCursorSessionToken`. Plan for ~30 day rotation cadence. |
+| Sidecar has **no refresh-token flow** | Cursor's IDE rotates via `POST /oauth/token` with `grant_type=refresh_token`, but the sidecar only stores access tokens | Manual rotate on expiry. Background `refresh_access_token` in `cursor_oauth_flow.py` raises `OAuthFlowError` cleanly so the proxy's rotation worker stops rather than silently no-ops. |
 | Rate limits are per-account | The 150 fast-premium-request budget on Cursor Pro is **fleet-wide** through this Provider | Don't expose this Provider to every caller — gate by api_key.key_type or by manual_override; budget like any other subscription tier. |
 
 ---
@@ -161,7 +173,7 @@ We picked the sidecar approach (Option A in the Phase 1 recon) over native Conne
 - The sidecar isolates the protocol churn — when Cursor changes their backend, we update the sidecar image, not our code.
 - The sidecar is stateless + has no secrets of its own, so the security review surface is minimal (we treat it as untrusted code in the request path; the cookie is the only credential and it goes through unmodified).
 
-If the sidecar becomes unstable or we discover Cursor-specific needs that require deeper integration, we can port to native (Option B) without disrupting the operator's onboarding flow — the Provider config stays the same; only the `base_url` would change to point at an internal in-proxy dispatcher.
+If the sidecar becomes unstable or we discover Cursor-specific needs that require deeper integration, we can port to native (Option B) without disrupting the operator's onboarding flow — the `OAuthProviderSpec` row stays the same; only the auto-pinned `base_url` would change to point at an internal in-proxy dispatcher.
 
 ## Sources / prior art
 
