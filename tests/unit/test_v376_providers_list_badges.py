@@ -41,16 +41,22 @@ def test_preferred_skips_at_capacity():
 
 
 def test_preferred_only_runs_with_2plus_oauth_providers():
-    """No 'preferred' tag when there's only one claude-oauth provider —
-    nothing to rank against."""
+    """No 'preferred' tag when there's only one subscription provider of
+    a given type — nothing to rank against. v4.4.41 generalized the
+    variable name from claudeOauthIds to subscriptionIds (covers both
+    claude-oauth AND cursor-oauth in one pass) so this asserts the
+    new shape."""
     src = Path("frontend/src/pages/ProvidersPage.tsx").read_text()
-    assert "claudeOauthIds.length >= 2" in src
-    assert "claudeOauthIds.length < 2" in src
+    assert "subscriptionIds.length >= 2" in src
+    # v4.4.41: the per-type < 2 guard now lives inside ``pickPerType``;
+    # it reads ``sameType.length < 2`` rather than ``claudeOauthIds.length < 2``.
+    assert "sameType.length < 2" in src
 
 
 def test_provider_list_query_keyed_by_provider_ids():
-    """The query must re-fire when the set of claude-oauth providers
-    changes (operator adds/removes one)."""
+    """The query must re-fire when the set of subscription-tier providers
+    changes (operator adds/removes one). v4.4.41 renamed the query key
+    + the deps key to cover both claude-oauth and cursor-oauth in one pass."""
     src = Path("frontend/src/pages/ProvidersPage.tsx").read_text()
-    assert "claude-oauth-snapshots" in src
-    assert "claudeOauthIdsKey" in src
+    assert "subscription-snapshots" in src
+    assert "subscriptionIdsKey" in src

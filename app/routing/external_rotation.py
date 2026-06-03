@@ -157,12 +157,13 @@ async def evaluate_rules_for_provider(
 
 
 async def evaluate_rules_for_all_providers(db: AsyncSession) -> list[dict]:
-    """Convenience: evaluate every claude-oauth provider that has a
-    snapshot. Used by the manual-trigger admin endpoint and as a
-    one-shot from the scraper worker after a sweep."""
+    """Convenience: evaluate every snapshot-bearing provider type
+    (claude-oauth + cursor-oauth as of v4.4.41) that has a snapshot.
+    Used by the manual-trigger admin endpoint and as a one-shot from
+    the scraper workers after a sweep."""
     rs = await db.execute(
         select(Provider)
-        .where(Provider.provider_type == "claude-oauth")
+        .where(Provider.provider_type.in_(("claude-oauth", "cursor-oauth")))
         .where(Provider.deleted_at.is_(None))
     )
     out = []
@@ -249,30 +250,25 @@ def _utilization_bucket(util: Optional[float], bucket_size_pct: float = 25.0) ->
     return max(0, int(util // max(bucket_size_pct, 1.0)))
 
 
-def reorder_claude_oauth_by_utilization(
+def reorder_subscription_by_utilization(
     providers: list[Provider],
     util_map: dict[str, float],
     *,
+    provider_type: str,
     bucket_size_pct: float = 25.0,
 ) -> list[Provider]:
-    """Return ``providers`` with claude-oauth entries re-sorted by
-    (utilization_bucket, operator_priority). Non-claude-oauth
-    entries occupy the same positions they did originally — only
-    the claude-oauth subset is shuffled among its own slots.
-
-    Why this design: operator-set priority encodes cost class, account
-    preference, and other dimensions not captured by utilization. We
-    don't want to route a $$$ per-call provider just because its
-    utilization happens to be lower than a subscription provider.
-    Limiting the reorder to within the claude-oauth subset preserves
-    the operator's coarse-grained ordering while expressing
-    "use the account with more headroom" within the subscription pool.
-
-    No-op when fewer than 2 claude-oauth providers are present.
+    """v4.4.41 — generalization of the original ``claude-oauth`` reorder.
+    Re-sorts providers of a single ``provider_type`` by
+    (utilization_bucket, operator_priority); leaves all other entries
+    in their original positions. Called once per subscription-tier type
+    that has a usage-monitoring scrape (today: claude-oauth via the
+    Anthropic Console scrape; cursor-oauth via the Cursor dashboard
+    scrape). No-op when fewer than 2 providers of ``provider_type`` are
+    present.
     """
     if not providers:
         return providers
-    oauth_positions = [i for i, p in enumerate(providers) if p.provider_type == "claude-oauth"]
+    oauth_positions = [i for i, p in enumerate(providers) if p.provider_type == provider_type]
     if len(oauth_positions) < 2:
         return providers
     oauth_subset = [providers[i] for i in oauth_positions]
@@ -284,11 +280,45 @@ def reorder_claude_oauth_by_utilization(
 
     sorted_subset = sorted(oauth_subset, key=_key)
     if all(a is b for a, b in zip(sorted_subset, oauth_subset)):
-        return providers  # already in correct order — avoid list-copy
+        return providers
     result = list(providers)
     for idx, p in zip(oauth_positions, sorted_subset):
         result[idx] = p
     return result
+
+
+def reorder_claude_oauth_by_utilization(
+    providers: list[Provider],
+    util_map: dict[str, float],
+    *,
+    bucket_size_pct: float = 25.0,
+) -> list[Provider]:
+    """v3.7.4 — claude-oauth + (v4.4.41) cursor-oauth multi-vendor
+    preferred-pick: route through the subscription account with more
+    headroom inside each vendor's account pool. Each subscription
+    type's reorder is scoped to its own subset (claude accounts don't
+    reorder cursor positions and vice versa).
+
+    Operator-set priority encodes cost class, account preference, and
+    other dimensions not captured by utilization. We don't want to
+    route a $$$ per-call provider just because its utilization happens
+    to be lower than a subscription provider. Limiting the reorder to
+    within each subscription subset preserves the operator's
+    coarse-grained ordering while expressing "use the account with
+    more headroom" within the subscription pool.
+
+    Function name kept for back-compat with the router callsite; the
+    new public name is ``reorder_subscription_by_utilization``.
+    """
+    out = reorder_subscription_by_utilization(
+        providers, util_map,
+        provider_type="claude-oauth", bucket_size_pct=bucket_size_pct,
+    )
+    out = reorder_subscription_by_utilization(
+        out, util_map,
+        provider_type="cursor-oauth", bucket_size_pct=bucket_size_pct,
+    )
+    return out
 
 
 def _bucket_size_setting() -> float:
