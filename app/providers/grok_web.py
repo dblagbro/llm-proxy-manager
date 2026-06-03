@@ -412,53 +412,12 @@ def _validate_extra_config(extra_config: dict) -> None:
         )
 
 
-async def _bridge_chat(
-    provider_extra_config: dict,
-    messages: list[dict],
-    model: str,
-    stream: bool,
-    timeout: float,
-) -> dict:
-    """Forward an OpenAI-shape body to the Playwright bridge sidecar.
-
-    Bridge handles cookie maintenance + 401/403 retry-after-refresh; we
-    just POST the structured request and return whatever the bridge
-    returns. ``bridge_token`` from extra_config rides as ``X-Bridge-Token``.
-    Stream support is pass-through-only for v1 — the bridge buffers the
-    full NDJSON internally.
-    """
-    bridge_url = provider_extra_config["bridge_url"].rstrip("/")
-    conv_id = _pick_conversation_id(provider_extra_config)
-    statsig_id = provider_extra_config.get("x_statsig_id") or None
-    bridge_token = provider_extra_config.get("bridge_token") or ""
-    body = {
-        "messages": messages,
-        "model": model,
-        "conversation_id": conv_id,
-        "stream": stream,
-    }
-    if statsig_id:
-        body["statsig_id"] = statsig_id
-    headers = {"content-type": "application/json"}
-    if bridge_token:
-        headers["x-bridge-token"] = bridge_token
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        try:
-            r = await client.post(f"{bridge_url}/api/chat", json=body, headers=headers)
-        except httpx.HTTPError as e:
-            raise GrokWebError(f"grok-web bridge unreachable: {e}")
-    if r.status_code == 401:
-        raise GrokWebAuthError(
-            f"grok-web bridge auth: {r.text[:200]}. The bridge's "
-            "Playwright session may need re-login — open the bridge "
-            "/login page in a browser and sign in to grok.com again."
-        )
-    if r.status_code != 200:
-        raise GrokWebError(
-            f"grok-web bridge {r.status_code}: {r.text[:200]}",
-            status_code=_map_upstream_status(r.status_code),
-        )
-    return r.json()
+# v4.4.38 — bridge-mode dispatch (_bridge_chat) moved to
+# ``app.providers.grok_web_bridge`` as the first step of the
+# manual/bridge axial split. Re-exported here so the public surface
+# (including tests/unit/test_grok_web.py's ``from app.providers.grok_web
+# import _bridge_chat``) stays unchanged.
+from app.providers.grok_web_bridge import _bridge_chat  # noqa: F401  (re-export)
 
 
 async def complete_grok_web(

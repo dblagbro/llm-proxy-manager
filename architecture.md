@@ -23,8 +23,11 @@ app/
 │   ├── _messages_dispatch.py    Dispatch orchestration (v3.10.9): dispatch_claude_oauth_chain
 │   │                              walks the claude-oauth provider chain (streaming /
 │   │                              non-streaming + 401-refresh fallback); _select_excluding
-│   │                              chain-walk helper. Extracted from messages.py's
-│   │                              ~913-line messages() handler.
+│   │                              chain-walk helper. v4.4.38 added try_cascade_dispatch
+│   │                              (cheap-route → grader verdict → accept-or-escalate)
+│   │                              — the cascade orchestration sub-block of the
+│   │                              non-streaming else-branch that messages.py used to
+│   │                              inline. messages.py 927 → 861 LOC.
 │   ├── completions.py           POST /v1/chat/completions — OpenAI wire format handler
 │   │                              v3.0.38: claude-oauth providers reachable here via
 │   │                              the wire-format translator (was excluded by v2.8.11)
@@ -81,9 +84,20 @@ app/
 │
 ├── routing/
 │   ├── router.py                  Provider selection — returns RouteResult;
-│   │                                build_litellm_model, build_litellm_kwargs (public helpers);
-│   │                                resolve_chat_model_for_provider (v3.0.32, shared
-│   │                                embedding→chat fallback used by keepalive + scanner)
+│   │                                select_provider strategy + scoring + capability fit.
+│   │                                v4.4.38: litellm-binding helpers (build_litellm_*,
+│   │                                PROVIDER_TYPE_TO_LITELLM, PROVIDER_DEFAULT_MODELS,
+│   │                                resolve_chat_model_for_provider, _is_embedding_model,
+│   │                                _model_family_provider_types, _native_thinking_params)
+│   │                                moved to litellm_binding.py and re-exported here.
+│   │                                998 → 800 LOC.
+│   ├── litellm_binding.py         v4.4.38: provider_type → litellm prefix tables,
+│   │                                build_litellm_model + build_litellm_kwargs,
+│   │                                embedding-default → chat fallback. Each new
+│   │                                subscription-provider type (claude-oauth,
+│   │                                codex-oauth, grok-web, cursor-oauth, …) adds
+│   │                                ~3 lines here; select_provider strategy
+│   │                                code stays untouched.
 │   ├── lmrh/                      LMRH protocol package (split from lmrh.py on 2026-04-23):
 │   │   ├── __init__.py            re-exports everything below
 │   │   ├── types.py               HintDimension / LMRHHint / CapabilityProfile + weight tables
@@ -302,15 +316,26 @@ caller ──→ proxy ──→ grok-web dispatcher ─┬──→ MANUAL: HTT
 ```
 
 ```
-app/providers/grok_web.py    (743 lines as of v3.2.8)
+app/providers/grok_web.py    (825 lines as of v4.4.38)
 ├── _is_bridge_mode(extra_config)  bridge_url present → bridge path
 ├── _validate_extra_config         enforces required fields per mode
 ├── _build_headers / _build_body / _flatten_messages_to_prompt   shared shape
-├── _bridge_chat                   forward to bridge /api/chat
-├── complete_grok_web              non-streaming OpenAI-shape result
+├── _bridge_chat                   v4.4.38: moved to grok_web_bridge.py;
+│                                    re-exported here for back-compat. First
+│                                    step of the manual/bridge axial split
+│                                    (the v3.10.9 next-target list). Future
+│                                    work converts to a grok_web/ package
+│                                    with manual.py + bridge.py + shared.py.
+├── complete_grok_web              non-streaming OpenAI-shape result (branches manual/bridge)
 ├── stream_grok_web                streaming SSE (OpenAI delta chunks)
 ├── stream_grok_web_anthropic      streaming SSE (Anthropic event format)
 └── anthropic_response_from_openai response shape conversion
+
+app/providers/grok_web_bridge.py   (76 lines — v4.4.38)
+└── _bridge_chat                   POST → bridge /api/chat (with X-Bridge-Token).
+                                     Lazy-imports GrokWebError / GrokWebAuthError /
+                                     _map_upstream_status / _pick_conversation_id
+                                     from grok_web to avoid a load-time circular.
 
 SUPPORTED_MODELS = ["grok-3", "grok-4",
                     "x-ai/grok-3", "x-ai/grok-4"]

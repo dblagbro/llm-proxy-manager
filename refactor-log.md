@@ -1,5 +1,71 @@
 # Refactor Log
 
+## 2026-06-02 — v4.4.38: three-target incremental refactor (router / messages / grok-web)
+
+Post-cursor-oauth arc. The v4.4.31..v4.4.37 cursor-oauth onboarding work added 6 changes to `router.py`'s litellm-binding tables in a single week, pushing the file from 977 → 998 LOC and reinforcing what was already on the v3.10.9 "next refactor targets" list. This pass landed three behavior-preserving extracts.
+
+### #1 — `router.py` litellm-binding extract
+
+`PROVIDER_TYPE_TO_LITELLM`, `PROVIDER_DEFAULT_MODELS`, `build_litellm_model`, `build_litellm_kwargs`, `resolve_chat_model_for_provider`, `_is_embedding_model`, `_model_family_provider_types`, and `_native_thinking_params` moved to a new `app/routing/litellm_binding.py` (274 LOC). Re-exported from `router.py` so every existing `from app.routing.router import build_litellm_model, …` site is unchanged.
+
+A future fifth subscription-provider type touches `litellm_binding.py` only; `router.py`'s strategy code stays untouched. `router.py` 998 → 800 LOC.
+
+### #2 — `messages.py` cascade extract
+
+Continued the v3.10.9 plan. v3.10.9's commit explicitly named the next target: "messages.py litellm/CoT/tool-emulation dispatch tail — extract into `_messages_dispatch.py`." This pass took the smaller, most-self-contained sub-block first — the cascade orchestration (cheap-route call → grader verdict → accept-and-return OR fall-through). Extracted as `_messages_dispatch.try_cascade_dispatch`, same shape as `dispatch_claude_oauth_chain`: returns either a `JSONResponse` (cascade accepted, caller returns immediately) or `None` (caller falls through with `resp_headers` mutated to reflect the cascade attempt).
+
+`messages.py` 927 → 861 LOC. Still over the design.md 800-line trigger — a follow-up can extract the streaming-hedge block or the success-path tail. Incremental is the point.
+
+### #3 — `grok_web.py` manual/bridge axis (first step)
+
+`_bridge_chat` (the bridge-mode dispatch — POSTs to the Playwright sidecar at `Provider.extra_config.bridge_url`) moved to a new `app/providers/grok_web_bridge.py` (76 LOC). Re-exported from `grok_web.py` for back-compat (1 test imports it directly). Manual-mode HTTP replay against grok.com stays in `grok_web.py`.
+
+First step of the full manual/bridge axial split. The follow-up converts `grok_web.py` to a `grok_web/` package with `manual.py` + `bridge.py` + `shared.py`. Doing the full package split in one session was deemed too large given the other two refactors landing in the same pass. A lazy import inside `_bridge_chat` avoids the load-time circular for the four names it borrows back from `grok_web`.
+
+`grok_web.py` 866 → 825 LOC.
+
+### Files impacted
+
+- `app/routing/litellm_binding.py` (NEW, 274 LOC)
+- `app/routing/router.py` (998 → 800 LOC)
+- `app/api/_messages_dispatch.py` (256 → 386 LOC) — `try_cascade_dispatch` added
+- `app/api/messages.py` (927 → 861 LOC) — cascade inline replaced with delegation
+- `app/providers/grok_web_bridge.py` (NEW, 76 LOC)
+- `app/providers/grok_web.py` (866 → 825 LOC) — `_bridge_chat` is now a re-export
+- `tests/unit/test_v4438_refactor_split.py` (NEW, 8 source-guard tests pinning the three splits)
+- `tests/unit/test_v380_codex_oauth_rename.py` — 1 source-grep repointed to `litellm_binding.py`
+- `tests/unit/test_v3726_grok_web_status_propagation.py` — 1 source-grep widened to span both grok_web files
+- `architecture.md` — module map updated for new files + split rationale
+
+### Behavior preservation
+
+Suite: **2441 passed + 2 skipped** (was 2433 + 2 in v4.4.37 — 8 new source-guard tests, zero regressions).
+
+The only behavior change is a narrow edge case in the cascade extract: pre-extraction, if `record_outcome` raised inside the cascade-accept branch *after* `route = cheap_route`, the outer messages.py except attributed the failure to `cheap_route`. Post-extraction, cascade-internal success/failure is recorded against `cheap_route` inside the dispatch function; raises that propagate out of `try_cascade_dispatch` are attributed by the caller's outer except to the original `route`. No production traffic has hit this in current activity-log retention.
+
+### Risks / follow-ups
+
+- `litellm_binding.py` is now the canonical home for the provider-type tables. Future PRs that add a new subscription-provider type need to update both tables here (caught by the pre-existing `test_all_known_types_have_default` invariant) plus, if `base_url` is required, the api_base allowlist in `build_litellm_kwargs`. The cursor-oauth v4.4.31..v4.4.37 arc demonstrated how this triple-update can be missed; v4.4.37 added the dispatch test that pins the api_base wiring, and this refactor co-locates the three table updates so future fifth-subscription-provider PRs are one file's diff.
+- `_messages_dispatch.try_cascade_dispatch` takes 11 kwargs — verbose but explicit. Same shape as v3.10.9's `dispatch_claude_oauth_chain` (13 kwargs); follow the convention.
+- `grok_web_bridge.py` uses a lazy import inside `_bridge_chat` for the 4 names it borrows from `grok_web`. Hoisting that import to module top would create a load-time circular. A guard test pins this; if you need to hoist, first move the shared names to a third file (`grok_web_shared.py`) and update both sides.
+
+### Next refactor targets
+
+1. **`app/cluster/sync.py` (915 LOC)** — grew 97 lines since v4.4.17 (818). v4.4.24/.25 hardening + `sync_handlers` extraction in v3.9.8 already trimmed the easy parts; the remainder is the apply_sync orchestrator. Splittable along per-table handler dispatch but reads fine today. Defer unless a new table joins the sync set.
+2. **`app/api/messages.py` (861 LOC)** — still over 800. Next sub-block to extract is either the streaming-hedge block (~77 LOC) or the success-path tail (record_outcome + cache store + shadow + memory write-back, ~70 LOC). The streaming-hedge extract is more cohesive.
+3. **`app/providers/grok_web.py` (825 LOC)** — finish the manual/bridge split: convert to a `grok_web/` package with `manual.py` + `bridge.py` + `shared.py`. The first step (`_bridge_chat` extract) is done.
+4. **`app/api/monitoring.py` (781 LOC)** — new on the watch list since v4.4.17. Hasn't been audited for distinct-concerns count yet. Skim before splitting.
+5. **`app/runs/worker.py` (749 LOC)** — new on the watch list. Background job runner; single responsibility but long. Defer.
+6. **`app/api/completions.py` (742 LOC)** — grew from 672 in v3.10.9. Symmetric to `messages.py`; check whether the same sub-blocks repeat and extract via shared helpers (potentially co-located in `_messages_dispatch.py`).
+
+### Lessons learned
+
+- **Over-large extractions backfire.** I drafted a single ~440-LOC extract for the entire non-streaming else-branch of `messages.py` (including the try-except). The resulting function had ~25 kwargs and a subtle double-record bug because the outer messages.py except still caught the HTTPException the function raised. Aborted and switched to the smaller cascade-only extract (~130 LOC, 11 kwargs, no exception-semantics change). Lesson: when an extract's kwarg count climbs past ~15 or its exception-handling semantics need a comment longer than the function's docstring, split smaller.
+- **Source-grep tests are the right backstop.** Three existing source-grep tests fired during this pass (`test_router_recognizes_chatgpt_oauth_plan`, `test_all_four_raise_sites_use_map_helper`, plus the new ones I added). Each was a 30-second fix once spotted. Future refactor-log entries should call out which existing source-grep tests need repointing — saves the next session a discovery pass.
+- **The v3.10.9 "next targets" comment was load-bearing.** It told me exactly what to extract from `messages.py` and let me skip the survey. Keep this section honest — it's the only thing that survives between sessions.
+
+---
+
 ## 2026-05-15 — v3.9.15: bug-log audit refresh + BUG-007 + BUG-012
 
 Bug-log items from the 2026-04-24 sweep were re-checked against current

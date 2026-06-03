@@ -56,11 +56,16 @@ def test_no_hardcoded_502_left_in_raise_sites():
 
 def test_all_four_raise_sites_use_map_helper():
     """The 4 GrokWebError raises previously had ``status_code=502``;
-    each should now read ``status_code=_map_upstream_status(...)``."""
-    src = Path("app/providers/grok_web.py").read_text()
-    # 4 call sites + maybe more if added later; assert >=4
+    each should now read ``status_code=_map_upstream_status(...)``.
+
+    v4.4.38: one of the 4 raise sites (the bridge-mode one) moved with
+    _bridge_chat into ``grok_web_bridge.py``. Count across both files."""
+    src = (
+        Path("app/providers/grok_web.py").read_text()
+        + Path("app/providers/grok_web_bridge.py").read_text()
+    )
     map_calls = src.count("_map_upstream_status(")
-    # 1 def + 4 call sites = >=5
+    # 1 def + 4 call sites = >=5 across the two files
     assert map_calls >= 5, f"Expected >=5 mentions of _map_upstream_status, got {map_calls}"
 
 
