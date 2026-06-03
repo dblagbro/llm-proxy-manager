@@ -270,6 +270,18 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"codex_billing_worker failed to start: {e}")
 
+    # v4.4.41 — Cursor dashboard billing scraper. Same shape as the
+    # Anthropic / Codex ones. Uses Provider.api_key (the stored
+    # WorkosCursorSessionToken) directly as a Cookie header — no
+    # separate credential plumbing needed unlike Anthropic/Codex.
+    # No-op until at least one enabled cursor-oauth provider exists;
+    # safe to always start.
+    try:
+        from app.monitoring import cursor_billing_worker as _cur_worker
+        _cur_worker.start()
+    except Exception as e:
+        logger.warning(f"cursor_billing_worker failed to start: {e}")
+
     # v3.9.10 — Prometheus pool depth + scrape freshness sampler.
     # Always-safe to start (no-op when there are no scraped providers).
     try:

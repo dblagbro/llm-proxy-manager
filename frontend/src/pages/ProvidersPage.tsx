@@ -267,21 +267,24 @@ export function ProvidersPage() {
     for (const [pri, n] of counts) if (n > 1) priorityTies.add(pri)
   }
 
-  // v3.7.6 — fetch latest external snapshots for each claude-oauth
-  // provider so we can render a "preferred" badge next to the one with
-  // the lowest weekly utilization. The router uses the same signal
-  // (see app/routing/external_rotation.py:reorder_claude_oauth_by_utilization)
+  // v3.7.6 / v4.4.41 — fetch latest external snapshots for each
+  // subscription-tier provider (claude-oauth via Anthropic Console
+  // scrape; cursor-oauth via Cursor dashboard scrape) so we can render
+  // the 🥇 router's pick today badge next to the one with the lowest
+  // utilization in its account pool. The router uses the same signal
+  // (see app/routing/external_rotation.py:reorder_subscription_by_utilization)
   // so the badge reflects actual routing behavior, not just stored
-  // operator priority.
-  const claudeOauthIds = (providers ?? [])
-    .filter(p => p.provider_type === 'claude-oauth' && p.enabled)
+  // operator priority. Generalized in v4.4.41 to cover both types.
+  const SUBSCRIPTION_TYPES = ['claude-oauth', 'cursor-oauth'] as const
+  const subscriptionIds = (providers ?? [])
+    .filter(p => SUBSCRIPTION_TYPES.includes(p.provider_type as typeof SUBSCRIPTION_TYPES[number]) && p.enabled)
     .map(p => p.id)
-  const claudeOauthIdsKey = claudeOauthIds.join(',')
-  const { data: claudeOauthUtilMap } = useQuery({
-    queryKey: ['claude-oauth-snapshots', claudeOauthIdsKey],
+  const subscriptionIdsKey = subscriptionIds.join(',')
+  const { data: subscriptionUtilMap } = useQuery({
+    queryKey: ['subscription-snapshots', subscriptionIdsKey],
     queryFn: async () => {
       const out: Record<string, number> = {}
-      for (const id of claudeOauthIds) {
+      for (const id of subscriptionIds) {
         try {
           const rows = await providersApi.listSnapshots(id, 1)
           if (rows.length && rows[0].seven_day_utilization != null) {
@@ -291,26 +294,29 @@ export function ProvidersPage() {
       }
       return out
     },
-    enabled: claudeOauthIds.length >= 2,
-    staleTime: 60_000,  // 1 min — matches router's 30s util cache
+    enabled: subscriptionIds.length >= 2,
+    staleTime: 60_000,
     refetchInterval: 120_000,
   })
-  // "Preferred" = the claude-oauth provider with the LOWEST weekly
-  // utilization AND no active auto-skip. Returns null when we don't
-  // have enough data to rank (e.g. only one claude-oauth provider or
-  // no snapshots).
-  const claudeOauthPreferred: string | null = (() => {
-    if (!claudeOauthUtilMap || claudeOauthIds.length < 2) return null
-    const candidates = (providers ?? [])
+  // Per-type "router's pick today" — within each subscription type,
+  // the provider with the LOWEST utilization AND no active auto-skip.
+  // Returns null per-type when we don't have enough data to rank
+  // (e.g. only one provider of that type, or no snapshots).
+  const pickPerType = (type: typeof SUBSCRIPTION_TYPES[number]): string | null => {
+    if (!subscriptionUtilMap) return null
+    const sameType = (providers ?? []).filter(p => p.provider_type === type)
+    if (sameType.length < 2) return null
+    const candidates = sameType
       .filter(p =>
-        p.provider_type === 'claude-oauth' &&
         p.enabled &&
         !(p.auto_skip_until && new Date(p.auto_skip_until).getTime() > Date.now()) &&
-        claudeOauthUtilMap[p.id] !== undefined
+        subscriptionUtilMap[p.id] !== undefined
       )
-      .sort((a, b) => (claudeOauthUtilMap[a.id] ?? 999) - (claudeOauthUtilMap[b.id] ?? 999))
+      .sort((a, b) => (subscriptionUtilMap[a.id] ?? 999) - (subscriptionUtilMap[b.id] ?? 999))
     return candidates.length > 0 ? candidates[0].id : null
-  })()
+  }
+  const claudeOauthPreferred: string | null = pickPerType('claude-oauth')
+  const cursorOauthPreferred: string | null = pickPerType('cursor-oauth')
 
   const hasClaudeOauth = (providers ?? []).some(p => p.provider_type === 'claude-oauth')
 
@@ -416,10 +422,11 @@ export function ProvidersPage() {
                           🚦 auto-skipped
                         </span>
                       )}
-                      {p.provider_type === 'claude-oauth' && claudeOauthPreferred === p.id && (
+                      {((p.provider_type === 'claude-oauth' && claudeOauthPreferred === p.id) ||
+                        (p.provider_type === 'cursor-oauth' && cursorOauthPreferred === p.id)) && (
                         <span
                           className="inline-flex items-center rounded-full bg-emerald-100 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-200 px-2 py-0.5 text-xs font-normal"
-                          title="Auto-computed from the Anthropic Console scrape: this claude-oauth provider has the lowest 7-day utilization among your enabled claude-oauth providers, so the router picks it first today. Not related to the operator-set Priority Score below — that's a separate, manually-configured field."
+                          title={`Auto-computed from the ${p.provider_type === 'claude-oauth' ? 'Anthropic Console' : 'Cursor dashboard'} usage scrape: this ${p.provider_type} provider has the lowest current utilization among your enabled ${p.provider_type} accounts, so the router picks it first today. Not related to the operator-set Priority Score below — that's a separate, manually-configured field.`}
                         >
                           🥇 router&apos;s pick today
                         </span>

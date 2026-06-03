@@ -9,6 +9,44 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v4.3.x — "Voice output" milestone
 
+### v4.4.41 — Cursor dashboard usage scrape + multi-vendor preferred-pick (2026-06-03)
+
+Mirrors the Anthropic Console scrape pattern (v3.7.0) for cursor-oauth providers, so multi-account Cursor setups auto-rotate by lowest utilization — the same `🥇 router's pick today` badge logic that already works for claude-oauth now applies to cursor-oauth too.
+
+**The 30-minute spike pivot:** the initial probe sent the stored token as `Authorization: Bearer …` and concluded the direct-HTTPS path was dead (6-10h sidecar patch needed). Reading upstream `JiuZ-Chn/Cursor-To-OpenAI/routes/cursor.js` (a new file added since our pinned digest) revealed the correct auth shape: `Cookie: WorkosCursorSessionToken=<value>`. Re-spike confirmed three GET endpoints fully cover the routing-signal surface — `auth/me`, `usage-summary` (`totalPercentUsed` is the routing signal), `dashboard/get-aggregated-usage-events` (per-modelIntent tokens + cost). Implementation cost dropped from 6-10h to 2-3h.
+
+**Live-deploy gotcha:** `www.cursor.com` issues a 308 redirect to the apex `cursor.com` for the API endpoints. httpx's default redirect-follow STRIPS the Cookie header when crossing subdomain boundaries (security default — different from urllib). My initial deploy got 401 session_expired on every endpoint. Fix: hit the apex `cursor.com` directly. Now logged in the source comment so the next subscription-as-a-provider integration doesn't trip on this.
+
+**What shipped:**
+
+- `app/providers/cursor_billing.py` — three async GETs against the apex `cursor.com`, parse three JSON responses into a single `ExternalUsageSnapshot` row. Auth-state classification (`ok` / `session_expired` / `network_error` / `parse_error`) matches the Anthropic worker so the shared rotation evaluator + UI badge layers work uniformly.
+- `app/monitoring/cursor_billing_worker.py` — 4h periodic worker. Same shape as `anthropic_billing_worker`: warmup delay, per-node startup jitter, freshness floor (skip a scrape if the cluster-replicated snapshot table already has a fresh row).
+- `app/main.py` — wires the worker on startup (no-op when no enabled cursor-oauth providers exist).
+- `app/routing/external_rotation.py`:
+  - `evaluate_rules_for_all_providers` query extended from `provider_type=='claude-oauth'` to `provider_type IN ('claude-oauth', 'cursor-oauth')`, so the auto-skip rule (≥95% util → set `auto_skip_until = billingCycleEnd`) fires for cursor-oauth too.
+  - New `reorder_subscription_by_utilization(providers, util_map, *, provider_type, …)` generalization of the original claude-only reorder. The back-compat `reorder_claude_oauth_by_utilization` now calls it twice — once for claude-oauth, once for cursor-oauth — so the router's existing single callsite gets multi-vendor preferred-pick behavior without router changes.
+- `frontend/src/pages/ProvidersPage.tsx` — `claudeOauthIds` / `claudeOauthIdsKey` renamed to `subscriptionIds` / `subscriptionIdsKey`; the snapshot fetch covers both types. The `🥇 router's pick today` badge now renders on cursor-oauth providers (when there are 2+ of them and snapshot data exists), with a type-aware tooltip distinguishing "Anthropic Console" vs "Cursor dashboard" as the source.
+
+**Schema reuse:** the existing `ExternalUsageSnapshot` columns are Anthropic-named (`seven_day_utilization`, `seven_day_resets_at`) but semantically generic. Cursor's billing window is monthly, not weekly — column NAMES are historical artifacts, column SEMANTICS (current util % + reset timestamp) generalize. No schema migration; no cluster-sync change. Renaming columns to `current_utilization` / `period_resets_at` is a deferred follow-up if/when a third vendor lands.
+
+**Live verification on www1:**
+
+```
+dblagbro:             ok=True, util=0.0%, resets=2026-06-22 18:22:28, credits=$0.054
+Cursor-oAuth-C1acct:  ok=True, util=0.0%, resets=2026-06-22 18:22:28, credits=$0.054
+```
+
+(Both providers belong to the same operator's Google-OAuth account — identical data is expected; the multi-account preferred-pick will be meaningful once the operator adds a separate Cursor account.)
+
+**Validation:**
+
+- 10 new unit tests in `tests/unit/test_v4441_cursor_billing.py` covering `parse_usage_response` mapping + edge cases, the auth-shape (Cookie not Bearer) end-to-end with a mocked client, 401 → session_expired classification, the multi-type evaluator query, the `reorder_subscription_by_utilization` generalization, the back-compat `reorder_claude_oauth_by_utilization` now handling both types in one pass, and the main.py wire-up.
+- 2 existing `test_v376_providers_list_badges.py` source-grep tests updated for the rename (`claudeOauthIds` → `subscriptionIds`, scope guard moved into `pickPerType`).
+- Suite: **2462 passed + 2 skipped** (was 2452 + 2 in v4.4.40 — +10 new tests, zero regressions).
+- Frontend typecheck: `tsc --noEmit` exit 0.
+
+Fleet: all 3 nodes on v4.4.41, healthy. Worker active with default 4h cadence; the first cron-driven scrape will land within `[60s, 60s+jitter]` of each container's startup.
+
 ### v4.4.40 — BUG-086: cursor-oauth missing from the model-family filter + v4.4.39 UI ship (2026-06-03)
 
 Two ships rolled into one release because v4.4.39 hadn't propagated past www1 yet when the v4.4.40 routing bug was reported.
