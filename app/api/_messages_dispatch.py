@@ -254,3 +254,133 @@ async def dispatch_claude_oauth_chain(
     # Chain exhausted (or never entered) — route now points at a
     # non-claude-oauth provider; caller falls through to the litellm path.
     return None, route
+
+
+# ─── cascade dispatch ─────────────────────────────────────────────────────────
+# Extracted from messages.py 2026-06-02 (v4.4.38) — the v3.10.9 follow-up.
+# The cascade orchestration is the most self-contained sub-block of the
+# non-streaming else-branch: cheap-route call, grader verdict, accept-and-
+# return-response OR fall-through. Lifted verbatim with the same internal
+# try-except for the grader-retrieval rare-failure path. Returns either a
+# JSONResponse (cascade accepted) or None (caller falls through to the
+# non-cascade non-streaming path). The route mutation in the original
+# (`route = cheap_route` for the success record_outcome) is now fully
+# contained: this function records the outcome against cheap_route before
+# returning, so the caller's `route` is unchanged.
+
+
+async def try_cascade_dispatch(
+    route,
+    *,
+    db,
+    key_record,
+    hint,
+    has_images,
+    messages_list,
+    cache_decision,
+    resp_headers,
+    max_tokens,
+    t0,
+    call_with_route,
+):
+    """Cascade orchestration: cheap-route call → grader verdict → return
+    accepted response OR fall through to the caller's non-cascade path.
+
+    Returns a JSONResponse on cascade accept, or None when the verdict is
+    escalate / the cascade itself raises (caller falls through with
+    headers updated to reflect the cascade attempt).
+
+    The caller is responsible for the gate (cascade flag + non-tools +
+    non-CoT); this function trusts the gate and runs the cascade
+    unconditionally.
+    """
+    from app.routing.router import select_provider
+    from app.routing.cascade import grade_answer
+    from app.monitoring.helpers import record_outcome
+    from app.cache.middleware import maybe_store
+    from app.cot.sse import to_anthropic_response, extract_cache_tokens
+
+    try:
+        cheap_route = await select_provider(
+            db, hint, has_tools=False, has_images=has_images,
+            key_type=key_record.key_type, prefer_cheapest=True,
+            excluded_provider_types={"claude-oauth"},
+        )
+        # Grader: use the current top (route) if different from cheap
+        grader_route = route if route.provider.id != cheap_route.provider.id else None
+        if grader_route is None:
+            try:
+                grader_route = await select_provider(
+                    db, hint, has_tools=False, has_images=has_images,
+                    key_type=key_record.key_type,
+                    exclude_provider_id=cheap_route.provider.id,
+                    prefer_cheapest=True,
+                    excluded_provider_types={"claude-oauth"},
+                )
+            except Exception:
+                grader_route = None
+
+        cheap_result = await call_with_route(cheap_route)
+        cheap_answer = cheap_result.choices[0].message.content or ""
+
+        # Extract last user turn for grader context
+        _user_text = ""
+        for _m in reversed(messages_list):
+            if _m.get("role") == "user":
+                _c = _m.get("content", "")
+                if isinstance(_c, str):
+                    _user_text = _c
+                elif isinstance(_c, list):
+                    _user_text = "\n".join(
+                        b.get("text", "") for b in _c
+                        if isinstance(b, dict) and b.get("type") == "text"
+                    )
+                break
+
+        if grader_route is not None:
+            verdict = await grade_answer(
+                grader_route.litellm_model, grader_route.litellm_kwargs,
+                _user_text, cheap_answer,
+            )
+        else:
+            # No distinct grader available → accept cheap result
+            verdict = type("V", (), {"acceptable": True, "reason": "no-grader-available"})()
+
+        if verdict.acceptable:
+            resp_headers["X-Cascade"] = "accepted"
+            resp_headers["X-Cascade-Grader"] = (
+                grader_route.provider.name if grader_route else "—"
+            )
+            resp_headers["X-Provider"] = cheap_route.provider.name
+            resp_headers["X-Resolved-Model"] = cheap_route.litellm_model
+            in_tok = getattr(cheap_result.usage, "prompt_tokens", 0)
+            out_tok = getattr(cheap_result.usage, "completion_tokens", 0)
+            cache_creation, cache_read = extract_cache_tokens(cheap_result.usage)
+            await record_outcome(
+                db, cheap_route.provider.id, cheap_route.litellm_model,
+                success=True,
+                in_tok=in_tok, out_tok=out_tok, t0=t0,
+                key_record_id=key_record.id,
+                cache_creation=cache_creation, cache_read=cache_read,
+                provider_name=cheap_route.provider.name,
+            )
+            try:
+                await maybe_store(cache_decision, cheap_answer)
+            except Exception:
+                pass
+            remaining = max(0, max_tokens - out_tok)
+            resp_headers["X-Token-Budget-Remaining"] = str(remaining)
+            return JSONResponse(
+                content=to_anthropic_response(cheap_result),
+                headers=resp_headers,
+            )
+        else:
+            # Escalate to the original top-ranked route (already in caller's `route`)
+            resp_headers["X-Cascade"] = "escalated"
+            resp_headers["X-Cascade-Reason"] = verdict.reason[:100]
+            resp_headers["X-Cascade-Grader"] = grader_route.provider.name
+            return None
+    except Exception as cascade_exc:
+        logger.warning(f"Cascade failed, falling through to default: {cascade_exc}")
+        resp_headers["X-Cascade"] = f"error:{type(cascade_exc).__name__}"
+        return None

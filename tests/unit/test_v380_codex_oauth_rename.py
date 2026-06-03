@@ -111,7 +111,9 @@ def test_dispatcher_routes_chatgpt_oauth_plan():
 
 
 def test_router_recognizes_chatgpt_oauth_plan():
-    src = Path("app/routing/router.py").read_text()
+    # v4.4.38: the PROVIDER_TYPE_TO_LITELLM table moved to
+    # litellm_binding.py; assertion is structurally identical.
+    src = Path("app/routing/litellm_binding.py").read_text()
     assert '"ChatGPT-oauth-plan"' in src
 
 
