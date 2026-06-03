@@ -114,23 +114,36 @@ def _model_family_provider_types(model: str) -> Optional[set[str]]:
 
     DevinGPT report 2026-05-01: claude-sonnet-4-6 was being routed to
     codex-oauth via a v3.0.22 fall-through. This filter is the hard backstop.
+
+    v4.4.40 BUG-086 fix: ``cursor-oauth`` was missing from both the Claude
+    AND the OpenAI families since its v4.4.31 introduction. Cursor's relay
+    serves claude-* (claude-4-sonnet, claude-4.5-haiku, claude-opus-4-8-*,
+    etc.) and gpt-* (gpt-4o, gpt-5, gpt-5-codex, …) — the operator filed
+    a high-priority bug on 2026-06-03 noting that claude-haiku requests
+    were skipping their priority-4 Cursor provider in favor of higher-
+    priority-number Anthropic-OAuth providers, because the family filter
+    eliminated Cursor before priority ordering even applied.
     """
     if not model:
         return None
     m = model.lower()
     # Anthropic family — claude-* + their variants. Vertex's claude-on-bedrock
     # would also live here but we don't currently support that wire format.
+    # cursor-oauth's relay serves the full Claude catalog (including the
+    # tiered -low/-medium/-high/-max and -thinking variants).
     if m.startswith("claude-") or m.startswith("claude/"):
-        return {"anthropic", "anthropic-direct", "anthropic-oauth", "claude-oauth"}
+        return {"anthropic", "anthropic-direct", "anthropic-oauth", "claude-oauth", "cursor-oauth"}
     # OpenAI family — gpt-*, o1/o3/o4 reasoning series, text-embedding-*,
     # whisper-*, dall-e-*, codex-*. codex-oauth speaks the same wire format
     # but only for its 6 Plus-tier slugs (handled by the v3.0.22 cap filter
-    # which runs after this).
+    # which runs after this). cursor-oauth's relay also serves the gpt-*
+    # family (gpt-4o, gpt-5, gpt-5-codex, …); the same downstream cap
+    # filter eliminates models the operator's Cursor account can't reach.
     if (m.startswith("gpt-") or m.startswith("o1-") or m.startswith("o3-")
             or m.startswith("o4-") or m.startswith("text-embedding-")
             or m.startswith("whisper-") or m.startswith("dall-e-")
             or m.startswith("codex-")):
-        return {"openai", "ChatGPT-oauth-plan"}
+        return {"openai", "ChatGPT-oauth-plan", "cursor-oauth"}
     # Google / Gemini family.
     if m.startswith("gemini-") or m.startswith("text-bison") or m.startswith("chat-bison"):
         return {"google", "vertex", "vertex_ai"}

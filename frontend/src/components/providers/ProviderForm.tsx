@@ -407,8 +407,8 @@ export function ProviderForm({ form, onChange, editing, provider, onProviderUpda
         }
       />
       <Input
-        label="Priority (lower = preferred)"
-        tooltip="Routing order. Lower numbers are tried first. Use 1 for your free / subscription provider (Grok-Web, Claude-OAuth, Codex-OAuth) so it absorbs traffic before paid providers. Use 5+ for paid fallbacks (OpenRouter, direct OpenAI). Ties are broken by capability score from LMRH."
+        label="Priority score (1 = highest, 999 = lowest)"
+        tooltip="Routing order — lower numbers are tried first. Think of it as 1st place, 2nd place, etc. Use 1 for your free / subscription provider (Grok-Web, Claude-OAuth, Codex-OAuth) so it absorbs traffic before paid providers. Use 5+ for paid fallbacks (OpenRouter, direct OpenAI). Ties are broken by capability score from LMRH. Note: this is separate from the green '🥇 router&#39;s pick today' badge on the Providers list, which is auto-computed from Anthropic Console utilization for claude-oauth providers only."
         type="number"
         value={String(form.priority)}
         onChange={e => set({ priority: Number(e.target.value) })}
