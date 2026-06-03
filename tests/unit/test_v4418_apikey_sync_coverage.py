@@ -68,6 +68,10 @@ def test_push_payload_includes_operator_settable_fields():
         "caller_memory_ttl_days",
         "lmrh_polling_rpm",
         "lmrh_quotes_rpm",
+        # v5.0.0 — compliance per-key policy fields
+        "blocked_companies",
+        "allowed_paths",
+        "debug_echo_enabled",
     ):
         assert field in block, f"push payload missing {field}"
 

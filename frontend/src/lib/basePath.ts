@@ -80,6 +80,8 @@ function pathFromLocation(): string {
     "/metrics",
     "/activity",
     "/settings",
+    "/compliance",
+    "/admin/compliance",
   ];
   for (const route of KNOWN_ROUTES) {
     const idx = path.indexOf(route);

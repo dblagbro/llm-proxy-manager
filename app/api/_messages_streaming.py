@@ -140,12 +140,18 @@ async def _stream_cot_anthropic(
     # maybe_extract_memory_writes() the other streaming paths use.
     conversation_id: Optional[str] = None,
     memory_tag: Optional[str] = None,
+    # v5.0.0 — compliance substitution SSE prelude (decision 15 + 28).
+    compliance_disclosure: Optional[dict] = None,
+    accept_compliance_events: bool = False,
 ) -> AsyncIterator[bytes]:
     """Pass-through wrapper around run_cot_pipeline; records metrics after completion."""
     import json as _json
     in_tok = out_tok = 0
     cache_creation = cache_read = 0
     t0 = time.monotonic()
+    if compliance_disclosure and accept_compliance_events:
+        from app.compliance import sse_prelude_anthropic
+        yield sse_prelude_anthropic(compliance_disclosure)
     # v3.10.11 — accumulate memory-tool tool_use blocks across the SSE
     # passthrough, keyed by content-block index, so the assembled
     # response can be fed through maybe_extract_memory_writes once the
@@ -238,8 +244,16 @@ async def _stream_anthropic(
     api_key_id: Optional[str] = None,
     conversation_id: Optional[str] = None,
     memory_tag: Optional[str] = None,
+    # v5.0.0 — compliance substitution SSE prelude (decision 15 + 28).
+    # When both are set, emit ``event: compliance_substitution`` BEFORE
+    # ``message_start`` (opt-in via ``Accept-Compliance-Events: true``).
+    compliance_disclosure: Optional[dict] = None,
+    accept_compliance_events: bool = False,
 ) -> AsyncIterator[bytes]:
     try:
+        if compliance_disclosure and accept_compliance_events:
+            from app.compliance import sse_prelude_anthropic
+            yield sse_prelude_anthropic(compliance_disclosure)
         response = await acompletion_with_retry(model=model, messages=messages, stream=True, **extra)
         index = 0
         text_started = False

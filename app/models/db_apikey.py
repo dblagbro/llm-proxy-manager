@@ -76,6 +76,26 @@ class ApiKey(Base):
     # a specific tenant without touching the global flag.
     lmrh_polling_rpm = Column(Integer, nullable=True)
     lmrh_quotes_rpm = Column(Integer, nullable=True)
+    # v5.0.0 — compliance policy (decision 1, 13, 21, 30, 31).
+    # blocked_companies: per-key list[str] of company IDs that must be blocked
+    # for this key. Unioned with the system-wide setting at request time. The
+    # router pre-filter drops any provider whose owner_company is in this set
+    # AND any model whose family lineage resolves to a banned company; the UA
+    # detector 451s requests whose client User-Agent is a product of a banned
+    # company.
+    blocked_companies = Column(JSON, nullable=True)
+    # allowed_paths: list[str] of normalized request paths the key is allowed
+    # to call. NULL = unrestricted (legacy behavior). When set, the
+    # allowed_paths middleware 403s anything that doesn't exact-match. Used to
+    # lock production CLI-scoped keys to /v1/chat/completions + /v1/models +
+    # /health and nothing else. Exact match only — no substring/prefix; globs
+    # deferred to v5.1.
+    allowed_paths = Column(JSON, nullable=True)
+    # debug_echo_enabled: gates the sandbox /api/debug/echo-client endpoint.
+    # Production keys should leave this False; sandbox/validation keys turn it
+    # on so the hub team can echo back the proxy's view of UA + identity
+    # headers without going through a real LLM call.
+    debug_echo_enabled = Column(Boolean, default=False)
 
 
 class ApiKeyAiReview(Base):

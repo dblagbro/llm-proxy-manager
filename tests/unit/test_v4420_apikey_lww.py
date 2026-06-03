@@ -77,7 +77,13 @@ def test_patch_endpoint_bumps_last_user_edit_at():
     half-dead (peers gate but operator never writes)."""
     src = Path("app/api/apikeys.py").read_text()
     idx = src.index("async def update_key")
-    block = src[idx:idx + 2500]
+    # v5.0.0: window widened from 2500 → 4500 because Agent 5 added
+    # compliance fields (blocked_companies / allowed_paths /
+    # debug_echo_enabled + policy-change audit emission) inline in
+    # ``update_key``, pushing the LWW stamp assignment past the old 2500
+    # boundary. The intent of the guard — stamp still inside ``update_key`` —
+    # is unchanged.
+    block = src[idx:idx + 4500]
     assert "last_user_edit_at" in block, (
         "PATCH endpoint no longer stamps last_user_edit_at — operator "
         "edits will never propagate under the LWW gate"
@@ -90,7 +96,13 @@ def test_patch_uses_walltime_for_stamp():
     peers since each node's monotonic clock has a different epoch."""
     src = Path("app/api/apikeys.py").read_text()
     idx = src.index("async def update_key")
-    block = src[idx:idx + 2500]
+    # v5.0.0: window widened from 2500 → 4500 because Agent 5 added
+    # compliance fields (blocked_companies / allowed_paths /
+    # debug_echo_enabled + policy-change audit emission) inline in
+    # ``update_key``, pushing the LWW stamp assignment past the old 2500
+    # boundary. The intent of the guard — stamp still inside ``update_key`` —
+    # is unchanged.
+    block = src[idx:idx + 4500]
     # Heuristic: the bump line uses ``time.time()``; reject monotonic.
     assert "time.time()" in block, "expected wall-clock stamp"
     assert "time.monotonic()" not in block, (

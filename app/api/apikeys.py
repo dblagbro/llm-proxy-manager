@@ -1,9 +1,9 @@
 """API key management endpoints."""
 import secrets
 import time
-from typing import Optional
+from typing import Optional, List
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, or_
@@ -15,6 +15,12 @@ from app.auth.keys import generate_api_key
 from app.auth.key_encryption import encrypt_key, decrypt_key
 from app.auth.rate_limit_tiers import get_tier, list_tiers, tier_names
 from app.utils.timefmt import utc_iso
+from app.compliance import (
+    KNOWN_COMPANIES,
+    emit_policy_change,
+    invalidate_blocklist_cache,
+)
+from app.compliance.policy import get_custom_companies
 
 router = APIRouter(prefix="/api/keys", tags=["api-keys"])
 
@@ -33,6 +39,13 @@ class KeyCreate(BaseModel):
     daily_hard_cap_usd: Optional[float] = Field(default=None, ge=0)
     hourly_cap_usd: Optional[float] = Field(default=None, ge=0)
     semantic_cache_enabled: bool = False
+    # v5.0.0 — compliance policy fields. Validation occurs in
+    # ``_validate_blocked_companies``; reason is required only on POST when
+    # blocked_companies/allowed_paths are non-empty (policy edit).
+    blocked_companies: Optional[List[str]] = None
+    allowed_paths: Optional[List[str]] = None
+    debug_echo_enabled: Optional[bool] = False
+    reason: Optional[str] = None
 
 
 class KeyUpdate(BaseModel):
@@ -50,6 +63,12 @@ class KeyUpdate(BaseModel):
     # 0 or negative = clear (no TTL); positive int = days until
     # background sweeper tombstones unused rows.
     caller_memory_ttl_days: Optional[int] = None
+    # v5.0.0 — compliance policy edits. Decision 6 — ``reason`` is mandatory
+    # when either ``blocked_companies`` or ``allowed_paths`` change.
+    blocked_companies: Optional[List[str]] = None
+    allowed_paths: Optional[List[str]] = None
+    debug_echo_enabled: Optional[bool] = None
+    reason: Optional[str] = None
 
 
 @router.get("")
@@ -72,9 +91,15 @@ async def list_keys(
 async def create_key(
     body: KeyCreate,
     db: AsyncSession = Depends(get_db),
-    _: AdminUser = Depends(require_admin),
+    user: AdminUser = Depends(require_admin),
 ):
     raw_key, key_hash = generate_api_key()
+    # v5.0.0 — validate compliance fields. ``blocked_companies`` must be
+    # known company IDs; reason required when policy is set at create time.
+    if body.blocked_companies:
+        _validate_blocked_companies(body.blocked_companies)
+        if not (body.reason and body.reason.strip()):
+            raise HTTPException(422, "reason required when setting blocked_companies")
     key = ApiKey(
         id=secrets.token_hex(8),
         name=body.name,
@@ -90,10 +115,24 @@ async def create_key(
         daily_hard_cap_usd=body.daily_hard_cap_usd,
         hourly_cap_usd=body.hourly_cap_usd,
         semantic_cache_enabled=body.semantic_cache_enabled,
+        blocked_companies=body.blocked_companies,
+        allowed_paths=body.allowed_paths,
+        debug_echo_enabled=bool(body.debug_echo_enabled),
     )
     db.add(key)
     await db.commit()
     await db.refresh(key)
+    if body.blocked_companies or body.allowed_paths:
+        await _emit_compliance_policy_change(
+            db, key=key,
+            before={"blocked_companies": None, "allowed_paths": None},
+            after={"blocked_companies": body.blocked_companies,
+                   "allowed_paths": body.allowed_paths},
+            reason=body.reason or "initial-policy-on-create",
+            user_id=user.user_id,
+        )
+        invalidate_blocklist_cache(key.id)
+        await _push_compliance_sync()
     # Return raw key ONCE — never stored, never retrievable again
     result = _serialize(key)
     result["raw_key"] = raw_key
@@ -105,7 +144,7 @@ async def update_key(
     key_id: str,
     body: KeyUpdate,
     db: AsyncSession = Depends(get_db),
-    _: AdminUser = Depends(require_admin),
+    user: AdminUser = Depends(require_admin),
 ):
     k = await _get_or_404(db, key_id)
     if body.name is not None:
@@ -134,12 +173,44 @@ async def update_key(
             None if body.caller_memory_ttl_days <= 0
             else int(body.caller_memory_ttl_days)
         )
+    # v5.0.0 — compliance fields. Detect a real change and require ``reason``
+    # (decision 6). Snapshot before-state for the audit row + invalidate the
+    # in-process blocklist cache + trigger a quorum sync push.
+    policy_changed = False
+    before = {
+        "blocked_companies": list(k.blocked_companies) if k.blocked_companies else None,
+        "allowed_paths": list(k.allowed_paths) if k.allowed_paths else None,
+    }
+    if body.blocked_companies is not None:
+        _validate_blocked_companies(body.blocked_companies)
+        if (k.blocked_companies or None) != (body.blocked_companies or None):
+            k.blocked_companies = body.blocked_companies or None
+            policy_changed = True
+    if body.allowed_paths is not None:
+        if (k.allowed_paths or None) != (body.allowed_paths or None):
+            k.allowed_paths = body.allowed_paths or None
+            policy_changed = True
+    if body.debug_echo_enabled is not None:
+        k.debug_echo_enabled = bool(body.debug_echo_enabled)
+    if policy_changed and not (body.reason and body.reason.strip()):
+        raise HTTPException(422, "reason required for compliance policy edits")
     # v4.4.20 — stamp the LWW gate. Mirror of provider PATCH: only
     # operator-initiated edits bump this; cost-bucket / last_used_at
     # writes from request hot-paths do NOT, so background traffic
     # can't ping-pong a real edit on a peer.
     k.last_user_edit_at = time.time()
     await db.commit()
+    if policy_changed:
+        after = {
+            "blocked_companies": list(k.blocked_companies) if k.blocked_companies else None,
+            "allowed_paths": list(k.allowed_paths) if k.allowed_paths else None,
+        }
+        await _emit_compliance_policy_change(
+            db, key=k, before=before, after=after,
+            reason=body.reason, user_id=user.user_id,
+        )
+        invalidate_blocklist_cache(k.id)
+        await _push_compliance_sync()
     return _serialize(k)
 
 
@@ -350,9 +421,74 @@ def _serialize(k: ApiKey) -> dict:
         "hourly_cap_usd": k.hourly_cap_usd,
         "semantic_cache_enabled": bool(k.semantic_cache_enabled),
         "caller_memory_ttl_days": getattr(k, "caller_memory_ttl_days", None),
+        # v5.0.0 — compliance per-key fields
+        "blocked_companies": list(k.blocked_companies) if k.blocked_companies else None,
+        "allowed_paths": list(k.allowed_paths) if k.allowed_paths else None,
+        "debug_echo_enabled": bool(getattr(k, "debug_echo_enabled", False)),
         "day_cost_usd": float(k.day_cost_usd or 0.0),
         "hour_cost_usd": float(k.hour_cost_usd or 0.0),
         "can_reveal": bool(k.encrypted_key),
         "last_used_at": utc_iso(k.last_used_at),
         "created_at": utc_iso(k.created_at),
     }
+
+
+def _validate_blocked_companies(ids: List[str]) -> None:
+    """Reject unknown company IDs. Allowed = KNOWN_COMPANIES keys ∪ custom-companies IDs."""
+    if not ids:
+        return
+    allowed = set(KNOWN_COMPANIES.keys()) | set(get_custom_companies().keys())
+    bad = [c for c in ids if c not in allowed]
+    if bad:
+        raise HTTPException(
+            400,
+            f"Unknown company IDs in blocked_companies: {bad}. "
+            f"Allowed: {sorted(allowed)}",
+        )
+
+
+async def _emit_compliance_policy_change(
+    db, *, key: ApiKey, before: dict, after: dict, reason: str, user_id: Optional[str],
+) -> None:
+    """Wrap ``emit_policy_change`` + best-effort quorum fan-out. Records the
+    fan-out result on the policy-change row. Falls back to ``applied=[]``,
+    ``pending=[]`` when the cluster manager doesn't have the v5 helper."""
+    applied_peers, pending_peers = [], []
+    try:
+        from app.cluster import manager as _cm
+        if hasattr(_cm, "push_policy_change_with_quorum"):
+            n_peers = len(getattr(_cm, "peers", {}) or {})
+            required = max(0, n_peers - 1)
+            result = await _cm.push_policy_change_with_quorum(
+                {"scope": "per_key", "target_id": key.id, "after": after},
+                required_acks=required,
+            )
+            applied_peers = result.get("applied_to_peers", [])
+            pending_peers = result.get("pending_peers", [])
+    except Exception:
+        pending_peers = [{"peer": "unknown", "reason": "quorum-push-failed"}]
+    await emit_policy_change(
+        db, scope="per_key", target_id=key.id,
+        before=before, after=after, reason=reason,
+        changed_by_user_id=user_id,
+        applied_to_peers=applied_peers, pending_peers=pending_peers,
+        commit=True,
+    )
+
+
+async def _push_compliance_sync() -> None:
+    """Trigger a regular cluster sync push so peers pick up the new key
+    fields. ``push_policy_change_with_quorum`` covers the active-peer fan-out;
+    this catches recovering peers via the normal sync loop."""
+    try:
+        from app.config import settings as _s
+        if not _s.cluster_enabled:
+            return
+        import asyncio
+        from app.cluster.manager import peers as cluster_peers, push_sync
+        from app.models.database import AsyncSessionLocal
+        for peer in list(cluster_peers.values()):
+            if peer.status != "unreachable":
+                asyncio.create_task(push_sync(peer, AsyncSessionLocal))
+    except Exception:
+        pass

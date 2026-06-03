@@ -277,6 +277,39 @@ class Settings(BaseSettings):
     # comfortable safety margin.
     provider_tombstone_retention_days: int = Field(7, alias="PROVIDER_TOMBSTONE_RETENTION_DAYS")
 
+    # v5.0.0 — compliance enforcement (see docs/5.0-compliance-design.md).
+    # When OFF, the entire compliance path is a no-op (router pre-filter
+    # short-circuits, UA detector skipped). Flipping ON is the audit-trail
+    # cutover event; the daily worker also runs the one-shot
+    # caller_memory.source_company backfill on first activation.
+    compliance_enabled: bool = Field(False, alias="COMPLIANCE_ENABLED")
+    # JSON-encoded list of company IDs to block for ALL keys on this
+    # deployment (e.g. ["anthropic"]). Unioned with each ApiKey's
+    # blocked_companies at request time. Cluster-synced.
+    compliance_system_blocked_companies: str = Field(
+        "", alias="COMPLIANCE_SYSTEM_BLOCKED_COMPANIES"
+    )
+    # Audit retention (days; 2555 = 7 years per decision 7).
+    compliance_audit_retention_days: int = Field(
+        2555, alias="COMPLIANCE_AUDIT_RETENTION_DAYS"
+    )
+    # UA detection master switch (decision 16). On by default. Turn off for
+    # UA-spoofing debug only.
+    compliance_ua_block_enabled: bool = Field(
+        True, alias="COMPLIANCE_UA_BLOCK_ENABLED"
+    )
+    # JSON-encoded custom company taxonomy entries (decision 12), merged
+    # with KNOWN_COMPANIES at lookup time. Schema in
+    # docs/compliance-taxonomy-v5.0.0.md.
+    compliance_custom_companies: str = Field(
+        "", alias="COMPLIANCE_CUSTOM_COMPANIES"
+    )
+    # One-shot backfill flag (decision 19). Set automatically on first
+    # policy enable; do NOT toggle manually.
+    compliance_backfill_applied: bool = Field(
+        False, alias="COMPLIANCE_BACKFILL_APPLIED"
+    )
+
     # v4.4.13: retention for the AI supervisor review tables. These
     # accumulate ~250 rows/day on a 30-min cadence × 10 providers and
     # ARE included in the cluster sync push payload — left unbounded

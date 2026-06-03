@@ -196,6 +196,110 @@ export interface ApiKey {
   last_used_at: string | null
   created_at: string
   raw_key?: string  // only on create response
+  // v5.0.0 compliance fields. blocked_companies / allowed_paths are JSON
+  // arrays of strings; nulls mean "no per-key restriction" (system policy
+  // still applies). debug_echo_enabled gates /api/debug/echo-client.
+  blocked_companies?: string[] | null
+  allowed_paths?: string[] | null
+  debug_echo_enabled?: boolean
+}
+
+// v5.0.0 — taxonomy of company IDs the operator can preset in the
+// blocked_companies multi-select. Backend ships the full map in
+// app/compliance/company_map.py; we hard-code the display labels for
+// the form so the picker works without a roundtrip.
+export interface CompanyChoice {
+  id: string
+  label: string
+}
+
+export const KNOWN_COMPANIES: CompanyChoice[] = [
+  { id: 'anthropic', label: 'Anthropic' },
+  { id: 'openai',    label: 'OpenAI' },
+  { id: 'google',    label: 'Google' },
+  { id: 'xai',       label: 'xAI' },
+  { id: 'cohere',    label: 'Cohere' },
+  { id: 'meta',      label: 'Meta' },
+  { id: 'mistral',   label: 'Mistral' },
+  { id: 'aws',       label: 'AWS' },
+  { id: 'microsoft', label: 'Microsoft (Azure)' },
+  { id: 'amazon',    label: 'Amazon' },
+]
+
+// v5.0.0 — /api/me/compliance response shape.
+export interface MyComplianceResponse {
+  per_key_blocked_companies: string[]
+  system_blocked_companies: string[]
+  effective_blocked_companies: string[]
+  allowed_paths: string[] | null
+  debug_echo_enabled: boolean
+  recent_substitutions_24h: number
+  recent_451_count_24h: number
+  last_policy_change: {
+    changed_at: string
+    changed_by: string | null
+    field: string
+    old_value: unknown
+    new_value: unknown
+    reason: string | null
+  } | null
+  compliance_disclaimer_url: string | null
+}
+
+// v5.0.0 — compliance_events row.
+export type ComplianceEventType =
+  | 'model_substitution'
+  | 'client_product_refusal'
+  | 'compliance_no_substitute'
+  | 'cache_filtered'
+  | 'memory_filtered'
+  | 'path_not_allowed'
+
+export interface ComplianceEvent {
+  audit_id: string
+  api_key_id: string
+  event_type: ComplianceEventType
+  requested_at: string
+  requested_model: string | null
+  served_model: string | null
+  served_provider_id: string | null
+  blocked_company: string | null
+  reason_code: string | null
+  client_user_agent: string | null
+  http_status: number | null
+}
+
+export interface CompliancePolicyChange {
+  id: number
+  api_key_id: string | null
+  changed_at: string
+  changed_by: string | null
+  field: string
+  old_value: unknown
+  new_value: unknown
+  reason: string | null
+}
+
+export interface ClusterCompliancePeer {
+  id: string
+  name: string
+  status: string
+  last_sync_at?: string | null
+  compliance_state_hash?: string | null
+  active_streams?: number
+  active_requests?: number
+  oldest_active_request_started_at?: string | null
+}
+
+export interface ClusterComplianceReadiness {
+  ready_for_policy_change: boolean
+  cluster_size: number
+  quorum_size: number
+  current_compliance_state_consistent: boolean
+  active_streams_cluster_wide: number
+  active_requests_cluster_wide: number
+  oldest_active_request_started_at: string | null
+  peers: ClusterCompliancePeer[]
 }
 
 // ── Users ─────────────────────────────────────────────────────────────────────

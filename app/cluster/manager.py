@@ -183,6 +183,13 @@ async def _build_sync_payload(db) -> dict:
          "caller_memory_ttl_days": getattr(k, "caller_memory_ttl_days", None),
          "lmrh_polling_rpm": getattr(k, "lmrh_polling_rpm", None),
          "lmrh_quotes_rpm": getattr(k, "lmrh_quotes_rpm", None),
+         # v5.0.0 — compliance per-key policy fields. Same field-coverage
+         # discipline as v4.4.18/v4.4.25: every operator-settable column
+         # must round-trip via the sync payload, otherwise a PATCH on
+         # one node never reaches peers.
+         "blocked_companies": getattr(k, "blocked_companies", None),
+         "allowed_paths": getattr(k, "allowed_paths", None),
+         "debug_echo_enabled": bool(getattr(k, "debug_echo_enabled", False)),
          # v4.4.20 — LWW gate, mirrors providers. Pre-v4.4.20 peers
          # omit this; apply handler treats absence as "legacy peer"
          # and falls through to last-sync-wins, same as today.
@@ -237,7 +244,12 @@ async def _build_sync_payload(db) -> dict:
          "manual_override_set_at": p.manual_override_set_at.isoformat() if getattr(p, "manual_override_set_at", None) else None,
          "manual_override_reason": getattr(p, "manual_override_reason", None),
          "auto_skip_until": p.auto_skip_until.isoformat() if p.auto_skip_until else None,
-         "auto_skip_reason": p.auto_skip_reason}
+         "auto_skip_reason": p.auto_skip_reason,
+         # v5.0.0 — compliance: owner_company is used by the router
+         # pre-filter to drop providers belonging to a banned company.
+         # Auto-derived at create/update time from provider_type, with
+         # per-row override allowed.
+         "owner_company": getattr(p, "owner_company", None)}
         for p in providers_result.scalars().all()
     ]
     # Only push settings that were explicitly saved (have a DB row) — not env-var defaults
@@ -469,6 +481,35 @@ async def _build_sync_payload(db) -> dict:
         for r in marker_rs.scalars().all()
     ]
 
+    # v5.0.0 — compliance_events + compliance_policy_changes. Both tables
+    # are append-only audit logs; receiver dedupes on the unique
+    # business key (audit_id / policy_change_id). Spec §6 calls for
+    # "rows since last sync"; this codebase has no last-sync watermark
+    # so we push the last 1000 rows by created_at — idempotent on the
+    # receiver thanks to the dedup, and 1000 is well above the per-sync
+    # event rate for the foreseeable future.
+    from app.models.db import ComplianceEvent, CompliancePolicyChange
+    from app.cluster.sync_handlers import (
+        serialize_compliance_event,
+        serialize_policy_change,
+    )
+    events_rs = await db.execute(
+        select(ComplianceEvent)
+        .order_by(ComplianceEvent.id.desc())
+        .limit(1000)
+    )
+    compliance_events_payload = [
+        serialize_compliance_event(r) for r in events_rs.scalars().all()
+    ]
+    policy_changes_rs = await db.execute(
+        select(CompliancePolicyChange)
+        .order_by(CompliancePolicyChange.id.desc())
+        .limit(1000)
+    )
+    compliance_policy_changes_payload = [
+        serialize_policy_change(r) for r in policy_changes_rs.scalars().all()
+    ]
+
     return {
         "source_node": settings.cluster_node_id,
         "timestamp": time.time(),
@@ -497,6 +538,9 @@ async def _build_sync_payload(db) -> dict:
         # v3.8.7 (#267) Phase 2 — caller memory king-store.
         "caller_memory": caller_memory_payload,
         "caller_memory_markers": caller_memory_markers_payload,
+        # v5.0.0 — compliance audit trail; append-only on the receiver.
+        "compliance_events": compliance_events_payload,
+        "compliance_policy_changes": compliance_policy_changes_payload,
     }
 
 
@@ -548,6 +592,142 @@ async def push_sync(peer: PeerNode, db_factory):
 
 
 _push_sync = push_sync
+
+
+# ───────────────────────────────────────────────────────────────────
+# v5.0.0 — compliance policy-change quorum fan-out (spec §6.1).
+# ───────────────────────────────────────────────────────────────────
+
+
+class ClusterSyncQuorumNotReached(Exception):
+    """v5.0.0 — raised when ``push_policy_change_with_quorum`` cannot
+    collect ``required_acks`` peer ACKs within the timeout window. The
+    caller (the policy-change endpoint) rolls back the local edit and
+    surfaces a 503 to the operator so they know the cluster is partitioned
+    or unhealthy."""
+
+    def __init__(self, acks, pending):
+        self.acks = acks
+        self.pending = pending
+        super().__init__(
+            f"quorum not reached: {len(acks)} acks, {len(pending)} pending"
+        )
+
+
+def _active_peers() -> list[PeerNode]:
+    """Peers we'd consider eligible for a policy-change fan-out: anything
+    not currently unreachable. ``degraded`` peers are still attempted —
+    the quorum result will surface them as pending if they fail to ack."""
+    return [p for p in _peers.values() if p.status != "unreachable"]
+
+
+async def _push_to_peer(peer: PeerNode, payload: dict, timeout_sec: float):
+    """POST one signed payload to a peer's /cluster/sync. Returns the
+    peer + ack timestamp on success. Raises on any failure (HTTP non-200,
+    network error, timeout) — the caller categorises it as ``pending``."""
+    from datetime import datetime as _dt, timezone as _tz
+    body = json.dumps(payload, sort_keys=True).encode()
+    sig = sign_payload(body)
+    async with httpx.AsyncClient(timeout=timeout_sec, verify=False) as client:
+        resp = await client.post(
+            f"{peer.url.rstrip('/')}/cluster/sync",
+            content=body,
+            headers={
+                "X-Cluster-Node": settings.cluster_node_id or "",
+                "X-Cluster-Sig": sig,
+                "Content-Type": "application/json",
+            },
+        )
+    if resp.status_code != 200:
+        raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:200]}")
+    return peer, _dt.now(_tz.utc)
+
+
+async def push_policy_change_with_quorum(
+    payload: dict,
+    required_acks: int,
+    timeout_sec: float = 5.0,
+) -> dict:
+    """v5.0.0 spec §6.1 — fan out a policy-change payload to all active
+    peers; return as soon as ``required_acks`` peers ACK or the timeout
+    elapses.
+
+    Module-level (not method) because ``manager.py`` is module-scoped in
+    this codebase — there's no ``ClusterManager`` class. The spec wrote
+    it as ``self.push_policy_change_with_quorum`` against an assumed
+    class layout; the call site is the same shape either way.
+
+    Returns ``{applied_to_peers, pending_peers, cluster_sync_status}``.
+    Raises ``ClusterSyncQuorumNotReached`` if ``required_acks`` cannot
+    be collected within ``timeout_sec``."""
+    peers = _active_peers()
+    acks: list[dict] = []
+    pending: list[dict] = []
+
+    if not peers:
+        # Single-node cluster — quorum is trivially the local write.
+        if required_acks <= 0:
+            return {
+                "applied_to_peers": acks,
+                "pending_peers": pending,
+                "cluster_sync_status": "fully-acked",
+            }
+        raise ClusterSyncQuorumNotReached(acks, pending)
+
+    # Build a task→peer index so we can name lagging peers in the
+    # pending list after quorum is reached.
+    task_to_peer: dict[asyncio.Task, PeerNode] = {}
+    for p in peers:
+        t = asyncio.create_task(_push_to_peer(p, payload, timeout_sec))
+        task_to_peer[t] = p
+
+    deadline = asyncio.get_event_loop().time() + timeout_sec
+    try:
+        while task_to_peer:
+            remaining = deadline - asyncio.get_event_loop().time()
+            if remaining <= 0:
+                break
+            done, _ = await asyncio.wait(
+                list(task_to_peer.keys()),
+                timeout=remaining,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if not done:
+                break
+            for t in done:
+                p = task_to_peer.pop(t)
+                try:
+                    _, ack_time = t.result()
+                    acks.append({"peer": p.name, "acked_at": ack_time.isoformat()})
+                except Exception as e:
+                    pending.append({"peer": p.name, "reason": str(e) or type(e).__name__})
+            if len(acks) >= required_acks:
+                # Quorum reached — flag still-running tasks as lagging
+                # and stop waiting. Don't cancel: the writes might still
+                # land, and the next regular sync cycle will reconcile.
+                for t, p in task_to_peer.items():
+                    pending.append({"peer": p.name, "reason": "lagging"})
+                task_to_peer.clear()
+                break
+    finally:
+        # Anything still in task_to_peer at this point timed out; mark
+        # those peers pending too.
+        for t, p in task_to_peer.items():
+            pending.append({"peer": p.name, "reason": "timeout"})
+
+    if len(acks) < required_acks:
+        raise ClusterSyncQuorumNotReached(acks, pending)
+
+    status = (
+        "fully-acked"
+        if not pending
+        else f"quorum-reached-{len(pending)}-pending"
+    )
+    return {
+        "applied_to_peers": acks,
+        "pending_peers": pending,
+        "cluster_sync_status": status,
+    }
 
 
 def get_cluster_status() -> dict:

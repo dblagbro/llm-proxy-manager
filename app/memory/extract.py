@@ -61,13 +61,26 @@ async def maybe_extract_memory_writes(
         # v3.9.5 (#267 Phase 8) — per-provider opt-out. Skip extract
         # entirely if the provider that served this response has
         # memory_disabled=True.
+        #
+        # v5.0.0 — same lookup also resolves source_company (owner_company
+        # of the serving provider, falling back to provider_type → company
+        # derivation). source_company persists onto every memory row so
+        # later compliance filtering can drop it for keys that have banned
+        # the originating company.
+        source_company: Optional[str] = None
         if source_provider_id:
             from sqlalchemy import select
             from app.models.db import Provider
+            from app.compliance import provider_type_to_company
             pq = select(Provider).where(Provider.id == source_provider_id)
             p = (await db.execute(pq)).scalar_one_or_none()
             if p is not None and getattr(p, "memory_disabled", False):
                 return 0
+            if p is not None:
+                source_company = (
+                    getattr(p, "owner_company", None)
+                    or provider_type_to_company(getattr(p, "provider_type", None))
+                )
 
         content = response_dict.get("content") or []
         if not isinstance(content, list):
@@ -93,6 +106,7 @@ async def maybe_extract_memory_writes(
                 conversation_id=conversation_id,
                 memory_tag_default=memory_tag_default,
                 source_provider_id=source_provider_id,
+                source_company=source_company,
             )
             if applied:
                 writes += 1
@@ -123,9 +137,15 @@ async def _apply_command(
     conversation_id: str,
     memory_tag_default: Optional[str],
     source_provider_id: Optional[str],
+    source_company: Optional[str] = None,
 ) -> bool:
     """Apply one memory-tool command to the store. Returns True if the
-    store was mutated."""
+    store was mutated.
+
+    ``source_company`` is the owner_company of the provider that produced
+    this write — persisted to every CallerMemory + CallerMemoryMarker row
+    so compliance filtering at read time can drop banned origins.
+    """
     from app.memory.store import get, put, delete
 
     # Path → memory_tag mapping. Anthropic memory tool addresses entries
@@ -146,6 +166,7 @@ async def _apply_command(
             conversation_id=conversation_id,
             memory_tag=tag,
             source_provider_id=source_provider_id,
+            source_company=source_company,
         )
         return True
 
@@ -165,6 +186,7 @@ async def _apply_command(
             conversation_id=conversation_id,
             memory_tag=tag,
             source_provider_id=source_provider_id,
+            source_company=source_company,
         )
         return True
 
@@ -187,6 +209,7 @@ async def _apply_command(
             conversation_id=conversation_id,
             memory_tag=tag,
             source_provider_id=source_provider_id,
+            source_company=source_company,
         )
         return True
 
@@ -208,6 +231,7 @@ async def _apply_command(
             conversation_id=conversation_id,
             memory_tag=new_tag,
             source_provider_id=source_provider_id,
+            source_company=source_company,
         )
         await delete(db, api_key_id, conversation_id, tag)
         return True

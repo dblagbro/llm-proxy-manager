@@ -31,6 +31,8 @@ def test_caller_memory_table_exists():
         "content", "content_format",
         "updated_at", "updated_by_node",
         "source_provider_id", "source_request_id",
+        # v5.0.0 compliance — decision 18
+        "source_company",
         "deleted_at",
     }
     missing = expected - cols
@@ -44,6 +46,8 @@ def test_caller_memory_marker_table_exists():
         "id", "api_key_id", "conversation_id", "memory_tag",
         "first_seen_at",
         "last_known_provider_id", "last_known_external_ref",
+        # v5.0.0 compliance — decision 18
+        "source_company",
         "recovered_at", "deleted_at",
     }
     missing = expected - cols

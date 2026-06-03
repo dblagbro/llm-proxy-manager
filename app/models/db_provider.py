@@ -173,6 +173,16 @@ class Provider(Base):
     auto_skip_until = Column(DateTime, nullable=True)
     auto_skip_reason = Column(String, nullable=True)
 
+    # v5.0.0 — owner company for compliance enforcement (decision 14, 17).
+    # Auto-derived at create/update time from provider_type via
+    # ``app.compliance.company_map.provider_type_to_company`` (e.g.
+    # provider_type="anthropic" → owner_company="anthropic"). Operator can
+    # override via PATCH for unusual cases (a self-hosted Llama deployment
+    # that should be classified as "internal" instead of "meta", say). The
+    # router pre-filter drops any provider whose owner_company is in a key's
+    # effective blocklist.
+    owner_company = Column(String, nullable=True)
+
     capabilities = relationship("ModelCapability", back_populates="provider", cascade="all, delete-orphan")
 
 

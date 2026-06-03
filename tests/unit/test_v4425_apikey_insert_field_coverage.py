@@ -41,6 +41,11 @@ def test_insert_path_includes_extended_fields():
         "caller_memory_ttl_days",
         "lmrh_polling_rpm",
         "lmrh_quotes_rpm",
+        # v5.0.0 — compliance per-key policy fields. Same BUG-084 class
+        # of bug if they're missing from the INSERT branch.
+        "blocked_companies",
+        "allowed_paths",
+        "debug_echo_enabled",
     ):
         assert field in block, f"INSERT path missing {field} (BUG-084)"
 

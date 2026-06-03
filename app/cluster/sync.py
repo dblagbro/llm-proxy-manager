@@ -157,6 +157,23 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
                 existing.lmrh_polling_rpm = k_data["lmrh_polling_rpm"]
             if "lmrh_quotes_rpm" in k_data:
                 existing.lmrh_quotes_rpm = k_data["lmrh_quotes_rpm"]
+            # v5.0.0 — compliance per-key policy fields. Mirror v4.4.18
+            # membership-test pattern so a pre-v5.0 peer (omitting the
+            # field) doesn't clobber the local value with None. After
+            # blocked_companies changes, invalidate the per-key
+            # blocklist cache so the next request sees the new policy
+            # immediately instead of waiting up to 30s for TTL.
+            if "blocked_companies" in k_data:
+                existing.blocked_companies = k_data["blocked_companies"]
+                try:
+                    from app.compliance.policy import invalidate_blocklist_cache
+                    invalidate_blocklist_cache(existing.id)
+                except Exception:
+                    pass  # cluster sync must not fail if compliance import shifts
+            if "allowed_paths" in k_data:
+                existing.allowed_paths = k_data["allowed_paths"]
+            if "debug_echo_enabled" in k_data:
+                existing.debug_echo_enabled = bool(k_data["debug_echo_enabled"])
             # v4.4.20 — stamp the local row with the peer's edit time
             # so subsequent round-trips converge instead of pinging.
             if peer_user_edit_at is not None:
@@ -195,6 +212,14 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
                 caller_memory_ttl_days=k_data.get("caller_memory_ttl_days"),
                 lmrh_polling_rpm=k_data.get("lmrh_polling_rpm"),
                 lmrh_quotes_rpm=k_data.get("lmrh_quotes_rpm"),
+                # v5.0.0 — compliance per-key policy fields. Same
+                # field-coverage discipline as v4.4.25: every
+                # operator-settable column must materialize on INSERT
+                # too, or the LWW tie blocks the UPDATE path from
+                # backfilling it on the next sync round-trip.
+                blocked_companies=k_data.get("blocked_companies"),
+                allowed_paths=k_data.get("allowed_paths"),
+                debug_echo_enabled=bool(k_data.get("debug_echo_enabled", False)),
                 # v4.4.20 — carry the peer's edit-stamp on first
                 # materialization so subsequent sync cycles can use
                 # the LWW gate immediately.
@@ -426,6 +451,19 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
                         existing.auto_skip_until = None
                 if "auto_skip_reason" in p_data:
                     existing.auto_skip_reason = p_data.get("auto_skip_reason")
+                if "owner_company" in p_data:
+                    existing.owner_company = p_data.get("owner_company")
+                    # v5.0.0 — owner_company change affects every key's
+                    # effective provider filter; clear the whole cache,
+                    # not just this api_key. The router reads
+                    # provider.owner_company at request time, but the
+                    # blocklist set is per-api_key, so the GLOBAL clear
+                    # is the safe play.
+                    try:
+                        from app.compliance.policy import invalidate_blocklist_cache
+                        invalidate_blocklist_cache(None)
+                    except Exception:
+                        pass
                 if peer_updated_at:
                     existing.updated_at = peer_updated_at
                 # v3.0.11: preserve peer's user-edit timestamp so further
@@ -472,6 +510,7 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
             manual_override_reason=p_data.get("manual_override_reason"),
             auto_skip_until=_parse_iso_or_none(p_data.get("auto_skip_until")),
             auto_skip_reason=p_data.get("auto_skip_reason"),
+            owner_company=p_data.get("owner_company"),
             last_user_edit_at=peer_user_edit_at,
         )
         db.add(p)
@@ -881,6 +920,12 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
     # v3.8.7 (#267) Phase 2 — caller memory king-store
     await _apply_caller_memory(db, payload.get("caller_memory", []))
     await _apply_caller_memory_markers(db, payload.get("caller_memory_markers", []))
+    # v5.0.0 — compliance audit trail. Both handlers are append-only;
+    # they dedupe on the unique business key (audit_id / policy_change_id)
+    # and skip duplicates so re-applying the last 1000 rows on every
+    # sync round is idempotent.
+    await _apply_compliance_events(db, payload.get("compliance_events", []))
+    await _apply_compliance_policy_changes(db, payload.get("compliance_policy_changes", []))
 
     await db.commit()
 
@@ -912,4 +957,7 @@ from app.cluster.sync_handlers import (  # noqa: E402,F401
     _apply_caller_memory_markers,
     _apply_external_usage_snapshots,
     _apply_provider_node_auth_states,
+    # v5.0.0 — compliance audit trail
+    _apply_compliance_events,
+    _apply_compliance_policy_changes,
 )

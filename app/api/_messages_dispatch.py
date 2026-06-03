@@ -36,12 +36,15 @@ from app.memory.extract import maybe_extract_memory_writes
 logger = logging.getLogger(__name__)
 
 
-async def _select_excluding(db, hint, has_tools, has_images, key_type, excluded: set[str], api_key_id=None):
+async def _select_excluding(db, hint, has_tools, has_images, key_type, excluded: set[str], api_key_id=None, blocked_companies=None):
     """v2.8.6: select_provider only accepts a single exclude_id. To walk
     through a chain of OAuth providers we need to call it repeatedly,
     excluding one id per pass and discarding any pick already in the
     tried set. Once we land on a never-tried provider, return its route.
-    v3.0.45: forwards api_key_id for tenant scoping."""
+    v3.0.45: forwards api_key_id for tenant scoping.
+    v5.0.0: forwards blocked_companies so the compliance pre-filter runs
+    on every iteration of the OAuth-chain walk (the per-call cache makes
+    the threading more efficient than the lazy resolve on each pass)."""
     from app.routing.router import select_provider as _select
     last_exc = None
     # Cap iterations conservatively so we never spin if every provider was tried.
@@ -55,6 +58,7 @@ async def _select_excluding(db, hint, has_tools, has_images, key_type, excluded:
                 db, hint, has_tools=has_tools, has_images=has_images,
                 key_type=key_type, exclude_provider_id=seed,
                 api_key_id=api_key_id,
+                blocked_companies=blocked_companies,
             )
         except Exception as e:
             last_exc = e
@@ -86,6 +90,7 @@ async def dispatch_claude_oauth_chain(
     has_images: bool,
     conversation_id: Optional[str],
     memory_tag: Optional[str],
+    blocked_companies: Optional[set] = None,
 ):
     """Walk the claude-oauth provider chain and dispatch the request.
 
@@ -194,6 +199,8 @@ async def dispatch_claude_oauth_chain(
                     # repeat-call until we get one we haven't tried.
                     route = await _select_excluding(
                         db, hint, has_tools, has_images, key_record.key_type, tried_oauth_ids,
+                        api_key_id=key_record.id,
+                        blocked_companies=blocked_companies,
                     )
                 except Exception as sel_exc:
                     logger.warning(f"no fallback provider available: {sel_exc}")
@@ -209,6 +216,8 @@ async def dispatch_claude_oauth_chain(
                 try:
                     route = await _select_excluding(
                         db, hint, has_tools, has_images, key_record.key_type, tried_oauth_ids,
+                        api_key_id=key_record.id,
+                        blocked_companies=blocked_companies,
                     )
                 except Exception:
                     raise HTTPException(502, f"Claude OAuth upstream: {e}")
@@ -282,6 +291,7 @@ async def try_cascade_dispatch(
     max_tokens,
     t0,
     call_with_route,
+    blocked_companies: Optional[set] = None,
 ):
     """Cascade orchestration: cheap-route call → grader verdict → return
     accepted response OR fall through to the caller's non-cascade path.
@@ -305,6 +315,8 @@ async def try_cascade_dispatch(
             db, hint, has_tools=False, has_images=has_images,
             key_type=key_record.key_type, prefer_cheapest=True,
             excluded_provider_types={"claude-oauth"},
+            api_key_id=key_record.id,
+            blocked_companies=blocked_companies,
         )
         # Grader: use the current top (route) if different from cheap
         grader_route = route if route.provider.id != cheap_route.provider.id else None
@@ -316,6 +328,8 @@ async def try_cascade_dispatch(
                     exclude_provider_id=cheap_route.provider.id,
                     prefer_cheapest=True,
                     excluded_provider_types={"claude-oauth"},
+                    api_key_id=key_record.id,
+                    blocked_companies=blocked_companies,
                 )
             except Exception:
                 grader_route = None

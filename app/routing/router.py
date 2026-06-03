@@ -10,7 +10,7 @@ for callers that import them from ``app.routing.router``.
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Optional, Any
+from typing import Optional, Any, Set
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
@@ -126,6 +126,12 @@ class RouteResult:
     cross_family_fallback: bool = False
     requested_model: Optional[str] = None
     served_model_native: Optional[str] = None
+    # v5.0.0 compliance — set when a banned company's provider was filtered
+    # AND a cross-family fallback served the request. Surfaces to the
+    # disclosure-header builder in _request_pipeline.py (Agent 2 reads these).
+    compliance_substituted: bool = False
+    compliance_blocked_company: Optional[str] = None
+    compliance_served_company: Optional[str] = None
 
 
 # The litellm wire-binding helpers (_is_embedding_model,
@@ -221,6 +227,7 @@ async def select_provider(
     api_key_id: Optional[str] = None,
     dry_run: bool = False,
     est_input_tokens: Optional[int] = None,
+    blocked_companies: Optional[Set[str]] = None,
 ) -> RouteResult:
     """
     Select the best available provider+model for this request.
@@ -349,6 +356,19 @@ async def select_provider(
         providers = [p for p in providers if p.id == pinned_provider_id]
         if not providers:
             raise RuntimeError(f"Aliased provider '{pinned_provider_id}' is not enabled")
+
+    # v5.0.0 compliance pre-filter (decision 19). Drops providers whose
+    # owner_company or model-family lineage is in the key's effective
+    # blocklist. ComplianceNoSubstituteError propagates to the dispatch
+    # layer (translated to 503 there). Resolves blocklist lazily from
+    # api_key_id when caller didn't pass it explicitly; skipped entirely
+    # when the result is empty so unflipped deployments pay zero overhead.
+    if blocked_companies is None and api_key_id:
+        from app.compliance import get_effective_blocklist
+        blocked_companies = await get_effective_blocklist(db, api_key_id)
+    if blocked_companies:
+        from app.compliance import filter_providers
+        providers = filter_providers(providers, blocked_companies, model_override)
 
     # Hedge path: exclude the primary before CB/availability filtering
     if exclude_provider_id:
@@ -782,6 +802,20 @@ async def select_provider(
         },
     )
 
+    # v5.0.0 — if the cross-family fallback fired AND a blocklist is in
+    # force, mark the route so the disclosure header builder can emit the
+    # compliance substitution headers (decision 15).
+    compliance_substituted = False
+    compliance_blocked = None
+    compliance_served = None
+    if cross_family_fallback and blocked_companies:
+        from app.compliance import model_family_to_company, provider_type_to_company
+        requested_family_company = model_family_to_company(model_override)
+        if requested_family_company and requested_family_company in blocked_companies:
+            compliance_substituted = True
+            compliance_blocked = requested_family_company
+            compliance_served = provider_type_to_company(provider.provider_type)
+
     return RouteResult(
         provider=provider,
         profile=best_profile,
@@ -797,4 +831,7 @@ async def select_provider(
         cross_family_fallback=cross_family_fallback,
         requested_model=cross_family_requested if cross_family_fallback else None,
         served_model_native=(provider.default_model if cross_family_fallback else None),
+        compliance_substituted=compliance_substituted,
+        compliance_blocked_company=compliance_blocked,
+        compliance_served_company=compliance_served,
     )

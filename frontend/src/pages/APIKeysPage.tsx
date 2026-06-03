@@ -1,6 +1,6 @@
 import { useState, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Plus, Trash2, Pencil, Eye, ArrowUp, ArrowDown, ArrowUpDown, Key as KeyIcon, EyeOff, ClipboardList } from 'lucide-react'
+import { Plus, Trash2, Pencil, Eye, ArrowUp, ArrowDown, ArrowUpDown, Key as KeyIcon, EyeOff, ClipboardList, Shield } from 'lucide-react'
 import { keysApi } from '@/api'
 import { Card, CardContent } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
@@ -15,6 +15,8 @@ import { useToast } from '@/components/ui/Toast'
 import type { ApiKey, KeyType } from '@/types'
 import { useAuth } from '@/context/AuthContext'
 import { formatTimeForUser } from '@/utils/time'
+import { ComplianceFieldsEditor } from '@/components/keys/ComplianceFieldsEditor'
+import { ReasonPromptModal } from '@/components/keys/ReasonPromptModal'
 
 const KEY_TYPES: KeyType[] = ['standard', 'claude-code', 'admin-readonly-catalog']
 
@@ -49,6 +51,20 @@ export function APIKeysPage() {
   const [capInput, setCapInput] = useState('')
   const [rpmInput, setRpmInput] = useState('')
   const [form, setForm] = useState({ name: '', key_type: 'standard' as KeyType, rate_limit_rpm: '' })
+  // v5.0.0 compliance form state (parallel to `form` so we can wire
+  // them into create + the new ComplianceFieldsEditor without mixing
+  // value shapes).
+  const [createBlockedCompanies, setCreateBlockedCompanies] = useState<string[]>([])
+  const [createAllowedPaths, setCreateAllowedPaths] = useState<string[] | null>(null)
+  const [createDebugEcho, setCreateDebugEcho] = useState(false)
+  const [editCompliance, setEditCompliance] = useState<ApiKey | null>(null)
+  const [editBlockedCompanies, setEditBlockedCompanies] = useState<string[]>([])
+  const [editAllowedPaths, setEditAllowedPaths] = useState<string[] | null>(null)
+  const [editDebugEcho, setEditDebugEcho] = useState(false)
+  const [reasonPrompt, setReasonPrompt] = useState<{
+    summary: string
+    payload: Partial<ApiKey>
+  } | null>(null)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [showBulkConfirm, setShowBulkConfirm] = useState(false)
   const [sortKey, setSortKey] = useState<SortKey>('created_at')
@@ -85,6 +101,11 @@ export function APIKeysPage() {
       name: form.name,
       key_type: form.key_type,
       rate_limit_rpm: form.rate_limit_rpm ? Number(form.rate_limit_rpm) : undefined,
+      // v5.0.0 compliance fields. Empty arrays are sent as-is so the
+      // server records "explicit no per-key block" vs "no opinion".
+      blocked_companies: createBlockedCompanies.length > 0 ? createBlockedCompanies : null,
+      allowed_paths: createAllowedPaths,
+      debug_echo_enabled: createDebugEcho,
     }),
     onSuccess: (data) => {
       qc.invalidateQueries({ queryKey: ['apikeys'] })
@@ -112,6 +133,9 @@ export function APIKeysPage() {
     setShowCreate(false)
     setNewKey(null)
     setForm({ name: '', key_type: 'standard', rate_limit_rpm: '' })
+    setCreateBlockedCompanies([])
+    setCreateAllowedPaths(null)
+    setCreateDebugEcho(false)
   }
 
   const updateLimitsMutation = useMutation({
@@ -127,6 +151,77 @@ export function APIKeysPage() {
     },
     onError: (e: Error) => toast.error(e.message),
   })
+
+  // v5.0.0 — compliance fields editor. PATCH calls go through the reason
+  // prompt when blocked_companies or allowed_paths have changed.
+  const updateComplianceMutation = useMutation({
+    mutationFn: ({ id, payload }: { id: string; payload: Partial<ApiKey> & { reason?: string } }) =>
+      keysApi.update(id, payload),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['apikeys'] })
+      toast.success('Compliance policy updated')
+      setEditCompliance(null)
+      setReasonPrompt(null)
+    },
+    onError: (e: Error) => toast.error(e.message),
+  })
+
+  function openComplianceEdit(k: ApiKey) {
+    setEditCompliance(k)
+    setEditBlockedCompanies(k.blocked_companies ?? [])
+    setEditAllowedPaths(k.allowed_paths ?? null)
+    setEditDebugEcho(Boolean(k.debug_echo_enabled))
+  }
+
+  function _arrayEqual(a: string[] | null | undefined, b: string[] | null | undefined): boolean {
+    if (a == null && b == null) return true
+    if (a == null || b == null) return false
+    if (a.length !== b.length) return false
+    return a.every((v, i) => v === b[i])
+  }
+
+  function saveComplianceEdit() {
+    if (!editCompliance) return
+    const original = editCompliance
+    const nextBlocked = editBlockedCompanies.length > 0 ? editBlockedCompanies : null
+    const blockedChanged = !_arrayEqual(original.blocked_companies ?? null, nextBlocked)
+    const pathsChanged = !_arrayEqual(original.allowed_paths ?? null, editAllowedPaths)
+    const echoChanged = Boolean(original.debug_echo_enabled) !== editDebugEcho
+
+    if (!blockedChanged && !pathsChanged && !echoChanged) {
+      setEditCompliance(null)
+      return
+    }
+
+    const payload: Partial<ApiKey> = {}
+    if (blockedChanged) payload.blocked_companies = nextBlocked
+    if (pathsChanged)   payload.allowed_paths    = editAllowedPaths
+    if (echoChanged)    payload.debug_echo_enabled = editDebugEcho
+
+    if (blockedChanged || pathsChanged) {
+      // Decision 6: policy changes require a reason. Hand control to the
+      // ReasonPromptModal; the actual PATCH fires from its onConfirm.
+      const parts: string[] = []
+      if (blockedChanged) parts.push('blocked_companies')
+      if (pathsChanged)   parts.push('allowed_paths')
+      setReasonPrompt({
+        summary: `Changing ${parts.join(' + ')} on key ${original.name || original.key_prefix}.`,
+        payload,
+      })
+      return
+    }
+
+    // Only debug_echo_enabled changed — no reason required.
+    updateComplianceMutation.mutate({ id: original.id, payload })
+  }
+
+  function confirmReasonAndSave(reason: string) {
+    if (!editCompliance || !reasonPrompt) return
+    updateComplianceMutation.mutate({
+      id: editCompliance.id,
+      payload: { ...reasonPrompt.payload, reason },
+    })
+  }
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => keysApi.delete(id),
@@ -329,9 +424,29 @@ export function APIKeysPage() {
                     aria-label={`Select ${k.name || k.key_prefix}`}
                   />
                   <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 mb-0.5">
+                    <div className="flex items-center gap-2 mb-0.5 flex-wrap">
                       <p className="font-medium text-gray-900 dark:text-gray-100">{k.name || '(unnamed)'}</p>
                       <Badge variant={k.key_type === 'claude-code' ? 'info' : 'default'}>{k.key_type}</Badge>
+                      {(k.blocked_companies?.length ?? 0) > 0 && (
+                        <span title={`Per-key blocked: ${(k.blocked_companies ?? []).join(', ')}`}>
+                          <Badge variant="warning" className="font-mono">
+                            Blocks: {(k.blocked_companies ?? []).slice(0, 2).join(',')}
+                            {(k.blocked_companies?.length ?? 0) > 2 && '…'}
+                          </Badge>
+                        </span>
+                      )}
+                      {k.allowed_paths != null && (
+                        <span title={k.allowed_paths.length > 0
+                          ? `Allowed paths: ${k.allowed_paths.join(', ')}`
+                          : 'Path whitelist is empty — every endpoint is denied.'}>
+                          <Badge variant="info">Restricted paths</Badge>
+                        </span>
+                      )}
+                      {k.debug_echo_enabled && (
+                        <span title="The sandbox /api/debug/echo-client endpoint is enabled for this key.">
+                          <Badge variant="muted">Debug echo</Badge>
+                        </span>
+                      )}
                     </div>
                     <div className="flex items-center gap-1.5">
                       {revealedKeys[k.id] ? (
@@ -409,6 +524,13 @@ export function APIKeysPage() {
                     <Pencil className="h-4 w-4" />
                   </button>
                   <button
+                    onClick={() => openComplianceEdit(k)}
+                    className="text-gray-400 hover:text-indigo-500 transition-colors shrink-0"
+                    title="Edit compliance policy"
+                  >
+                    <Shield className="h-4 w-4" />
+                  </button>
+                  <button
                     onClick={() => setModelsModalKey(k)}
                     className="text-gray-400 hover:text-indigo-500 transition-colors shrink-0"
                     title="Copy this key's model list"
@@ -482,6 +604,14 @@ export function APIKeysPage() {
                 type="number"
                 value={form.rate_limit_rpm}
                 onChange={e => setForm(f => ({ ...f, rate_limit_rpm: e.target.value }))}
+              />
+              <ComplianceFieldsEditor
+                blockedCompanies={createBlockedCompanies}
+                setBlockedCompanies={setCreateBlockedCompanies}
+                allowedPaths={createAllowedPaths}
+                setAllowedPaths={setCreateAllowedPaths}
+                debugEchoEnabled={createDebugEcho}
+                setDebugEchoEnabled={setCreateDebugEcho}
               />
             </div>
           )}
@@ -644,6 +774,40 @@ export function APIKeysPage() {
           </ModalFooter>
         </Modal>
       )}
+
+      {/* Compliance Edit Modal (v5.0.0) */}
+      {editCompliance && (
+        <Modal open onClose={() => setEditCompliance(null)} size="lg">
+          <ModalHeader onClose={() => setEditCompliance(null)}>
+            Compliance — {editCompliance.name || editCompliance.key_prefix}
+          </ModalHeader>
+          <ModalBody>
+            <ComplianceFieldsEditor
+              blockedCompanies={editBlockedCompanies}
+              setBlockedCompanies={setEditBlockedCompanies}
+              allowedPaths={editAllowedPaths}
+              setAllowedPaths={setEditAllowedPaths}
+              debugEchoEnabled={editDebugEcho}
+              setDebugEchoEnabled={setEditDebugEcho}
+            />
+          </ModalBody>
+          <ModalFooter>
+            <Button variant="ghost" onClick={() => setEditCompliance(null)}>Cancel</Button>
+            <Button onClick={saveComplianceEdit} loading={updateComplianceMutation.isPending}>
+              Save Compliance Policy
+            </Button>
+          </ModalFooter>
+        </Modal>
+      )}
+
+      {/* Reason prompt for policy changes (decision 6) */}
+      <ReasonPromptModal
+        open={!!reasonPrompt}
+        summary={reasonPrompt?.summary ?? ''}
+        loading={updateComplianceMutation.isPending}
+        onCancel={() => setReasonPrompt(null)}
+        onConfirm={confirmReasonAndSave}
+      />
 
       <ConfirmDialog
         open={!!deleteId}

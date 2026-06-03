@@ -2,8 +2,8 @@
 import hashlib
 import secrets
 import logging
-from dataclasses import dataclass
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import Optional, List
 
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -43,6 +43,12 @@ class ApiKeyRecord:
     semantic_cache_enabled: bool = False
     budget_status: Optional[BudgetStatus] = None
     rate_limit_tier: Optional[str] = None
+    # v5.0.0 — compliance policy fields. Populated from the ApiKey row in
+    # verify_api_key so downstream middleware + handlers (allowed_paths,
+    # debug-echo, compliance disclosure) read from one place.
+    blocked_companies: Optional[List[str]] = None
+    allowed_paths: Optional[List[str]] = None
+    debug_echo_enabled: bool = False
 
 
 def _hash_key(raw_key: str) -> str:
@@ -110,6 +116,23 @@ async def verify_api_key(db: AsyncSession, raw_key: Optional[str]) -> ApiKeyReco
     )
     await db.commit()
 
+    # v5.0.0 — compliance policy columns may be persisted as JSON arrays
+    # or text; coerce to a List[str] / None at this boundary so callers
+    # don't need to re-parse.
+    def _coerce_str_list(raw):
+        if raw is None:
+            return None
+        if isinstance(raw, list):
+            return [str(x) for x in raw if x]
+        if isinstance(raw, str):
+            import json as _json
+            try:
+                v = _json.loads(raw)
+                return [str(x) for x in v if x] if isinstance(v, list) else None
+            except Exception:
+                return None
+        return None
+
     return ApiKeyRecord(
         id=key.id,
         name=key.name,
@@ -117,6 +140,9 @@ async def verify_api_key(db: AsyncSession, raw_key: Optional[str]) -> ApiKeyReco
         semantic_cache_enabled=bool(key.semantic_cache_enabled),
         budget_status=budget_status,
         rate_limit_tier=getattr(key, "rate_limit_tier", None),
+        blocked_companies=_coerce_str_list(getattr(key, "blocked_companies", None)),
+        allowed_paths=_coerce_str_list(getattr(key, "allowed_paths", None)),
+        debug_echo_enabled=bool(getattr(key, "debug_echo_enabled", False)),
     )
 
 
