@@ -1,10 +1,13 @@
 import { api } from './client'
+import { getBasePath } from '@/lib/basePath'
 import type {
   AuthUser, Provider, ProviderFormData, ModelCapability, TestResult, ScannedModel,
   ApiKey, User, ActivityEvent, MetricsSummary, MetricBucket,
   MetricsByNodeResponse,
   ClusterStatus, HealthStatus, ExternalStatus, CacheStats,
   NodeAuthState,
+  MyComplianceResponse, ComplianceEvent, CompliancePolicyChange,
+  ClusterComplianceReadiness,
 } from '@/types'
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
@@ -211,9 +214,20 @@ export const providersApi = {
 // ── API Keys ──────────────────────────────────────────────────────────────────
 export const keysApi = {
   list:   ()                           => api.get<ApiKey[]>('/api/keys'),
-  create: (data: { name?: string; key_type: string; rate_limit_rpm?: number }) =>
+  create: (data: {
+    name?: string
+    key_type: string
+    rate_limit_rpm?: number
+    blocked_companies?: string[] | null
+    allowed_paths?: string[] | null
+    debug_echo_enabled?: boolean
+  }) =>
     api.post<ApiKey & { raw_key: string }>('/api/keys', data),
-  update: (id: string, data: Partial<ApiKey>) => api.patch<ApiKey>(`/api/keys/${id}`, data),
+  // v5.0.0 — PATCH accepts the new compliance fields and a reason string
+  // (required when blocked_companies or allowed_paths change, per
+  // decision 6). Reason is logged into compliance_policy_changes.
+  update: (id: string, data: Partial<ApiKey> & { reason?: string }) =>
+    api.patch<ApiKey>(`/api/keys/${id}`, data),
   delete: (id: string)                 => api.delete<void>(`/api/keys/${id}`),
   bulkDelete: (ids: string[])          => api.post<{ deleted: number; requested: number }>('/api/keys/bulk-delete', { ids }),
   reveal: (id: string)                 => api.get<{ id: string; raw_key: string }>(`/api/keys/${id}/reveal`),
@@ -223,6 +237,53 @@ export const keysApi = {
     api.get<{ key_id: string; key_name: string; count: number; models: string[] }>(
       `/api/keys/${id}/models`,
     ),
+}
+
+// ── Compliance (v5.0.0) ──────────────────────────────────────────────────────
+export interface ComplianceEventsQuery {
+  api_key_id?: string | null
+  event_type?: string | null
+  start?: string | null
+  end?: string | null
+  blocked_company?: string | null
+  limit?: number
+}
+
+function _complianceQs(q: ComplianceEventsQuery): string {
+  const sp = new URLSearchParams()
+  if (q.api_key_id)      sp.set('api_key_id', q.api_key_id)
+  if (q.event_type)      sp.set('event_type', q.event_type)
+  if (q.start)           sp.set('start', q.start)
+  if (q.end)             sp.set('end', q.end)
+  if (q.blocked_company) sp.set('blocked_company', q.blocked_company)
+  if (q.limit != null)   sp.set('limit', String(q.limit))
+  return sp.toString()
+}
+
+export const complianceApi = {
+  me: () => api.get<MyComplianceResponse>('/api/me/compliance'),
+  events: (q: ComplianceEventsQuery = {}) =>
+    api.get<{ events: ComplianceEvent[] }>(
+      `/api/admin/compliance-events?${_complianceQs({ limit: 200, ...q })}`,
+    ),
+  // CSV export: returns the URL the browser should hit directly (so
+  // download triggers natively rather than going through the SPA fetch
+  // wrapper). Caller builds an <a href={url} download> or window.open.
+  eventsCsvUrl: (q: ComplianceEventsQuery = {}) => {
+    const qs = _complianceQs(q)
+    const base = getBasePath()
+    return `${base}/api/admin/compliance-events?format=csv${qs ? '&' + qs : ''}`
+  },
+  policyChanges: (apiKeyId?: string | null, limit = 100) => {
+    const sp = new URLSearchParams()
+    if (apiKeyId) sp.set('api_key_id', apiKeyId)
+    sp.set('limit', String(limit))
+    return api.get<{ changes: CompliancePolicyChange[] }>(
+      `/api/admin/compliance-policy-changes?${sp.toString()}`,
+    )
+  },
+  clusterReady: () =>
+    api.get<ClusterComplianceReadiness>('/api/admin/cluster/compliance-ready'),
 }
 
 // ── Users ─────────────────────────────────────────────────────────────────────

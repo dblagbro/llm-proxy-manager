@@ -438,6 +438,43 @@ SCHEMA: dict[str, dict] = {
         "label": "Proxy-side memory: back-pressure recovery — reconstruct missing content from upstream when marker exists (best-effort)",
         "group": "Caller memory",
     },
+    # ── Compliance enforcement (v5.0.0) ──────────────────────────────────────
+    "compliance_enabled": {
+        "type": "bool",
+        "default": getattr(settings, "compliance_enabled", False),
+        "label": "Compliance enforcement: master switch. When OFF, all blocklist checks are skipped (sandbox / pre-rollout mode).",
+        "group": "Compliance",
+    },
+    "compliance_system_blocked_companies": {
+        "type": "str",
+        "default": getattr(settings, "compliance_system_blocked_companies", ""),
+        "label": "System-wide blocked companies (JSON list of company IDs; e.g. [\"anthropic\"]). Unioned with each key's blocked_companies at request time.",
+        "group": "Compliance",
+    },
+    "compliance_audit_retention_days": {
+        "type": "int",
+        "default": getattr(settings, "compliance_audit_retention_days", 2555),
+        "label": "Compliance audit retention (days; default 2555 = 7 years).",
+        "group": "Compliance",
+    },
+    "compliance_ua_block_enabled": {
+        "type": "bool",
+        "default": getattr(settings, "compliance_ua_block_enabled", True),
+        "label": "Compliance: refuse requests whose User-Agent identifies a banned client product (HTTP 451). On by default; turn off for UA-spoofing debug only.",
+        "group": "Compliance",
+    },
+    "compliance_custom_companies": {
+        "type": "str",
+        "default": getattr(settings, "compliance_custom_companies", ""),
+        "label": "Custom compliance companies (JSON list of {id, display_name, model_prefixes, provider_types, ua_patterns}). Merged with the built-in 10-company taxonomy at lookup time.",
+        "group": "Compliance",
+    },
+    "compliance_backfill_applied": {
+        "type": "bool",
+        "default": getattr(settings, "compliance_backfill_applied", False),
+        "label": "Compliance: caller_memory.source_company backfill flag (set automatically on first policy enable; do NOT toggle manually).",
+        "group": "Compliance",
+    },
 }
 
 
@@ -462,6 +499,30 @@ def _coerce(raw: str, typ: str) -> Any:
 
 def get_defaults() -> dict[str, Any]:
     return {k: v["default"] for k, v in SCHEMA.items()}
+
+
+def get_setting(key: str, default: Any = None) -> Any:
+    """v5.0.0 — read a single SystemSetting via the in-memory settings
+    singleton. Some settings (JSON-encoded lists for compliance taxonomy)
+    are stored as text; callers parse with ``json.loads`` if they need a
+    list shape. Returns ``default`` when the key isn't present.
+    """
+    if hasattr(settings, key):
+        val = getattr(settings, key)
+        if val in (None, ""):
+            return default
+        # JSON-shaped string settings (compliance lists, custom company maps):
+        # auto-parse when the value looks like a JSON list or object.
+        if isinstance(val, str):
+            stripped = val.strip()
+            if stripped.startswith(("[", "{")):
+                import json as _json
+                try:
+                    return _json.loads(stripped)
+                except Exception:
+                    return default
+        return val
+    return default
 
 
 def apply(overrides: dict[str, Any]) -> None:

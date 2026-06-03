@@ -1,10 +1,95 @@
-"""Model alias resolver — maps client model names to specific provider+model pairs."""
-from typing import Optional
+"""Model alias resolver — maps client model names to specific provider+model pairs.
+
+v5.0.0 adds 4 hardcoded LOGICAL aliases (decision 29) layered ON TOP of
+the existing DB-backed ``ModelAlias`` table. Logical aliases don't pin a
+provider — instead they map to an LMRH hint string that the existing
+hint resolver propagates, plus an optional ``self_hosted_only`` hard
+filter that lives OUTSIDE the LMRH scorer (decision 29 correction
+2026-06-03).
+"""
+from typing import Any, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from app.models.db import ModelAlias
+
+
+# v5.0.0 — hardcoded logical aliases. Each entry carries an LMRH hint
+# string the caller layers into ``LLM-Hint``; the ``self_hosted_only``
+# entry (coordinator-local only) enforces a hard self-hosted filter
+# outside the LMRH scorer (decision 29, hub correction 2026-06-03 —
+# "self-hosted/private regardless of runtime", no fallback to hosted).
+LOGICAL_ALIASES: dict[str, dict[str, Any]] = {
+    "coordinator-code": {
+        "hint": "task=code, safety-min=3, cost=standard, exclude=anthropic;require",
+    },
+    "coordinator-fast": {
+        "hint": "task=code, latency=low, cost=economy, exclude=anthropic;require",
+    },
+    "coordinator-reasoning": {
+        "hint": "task=reasoning, safety-min=3, context-length=100000, exclude=anthropic;require",
+    },
+    "coordinator-local": {
+        "hint": "task=code, exclude=anthropic;require",
+        "self_hosted_only": True,
+    },
+}
+
+
+# Provider types that are inherently self-hosted. The
+# ``is_self_hosted_provider`` predicate also accepts opt-in marker fields
+# on the generic ``openai-compatible`` / ``custom`` types and on the
+# operator-set ``owner_company`` label.
+SELF_HOSTED_PROVIDER_TYPES = {
+    "ollama", "vllm", "llamacpp", "lmstudio", "localai",
+}
+
+
+def is_self_hosted_provider(p: Any) -> bool:
+    """Hard filter for ``coordinator-local`` (decision 29 correction
+    2026-06-03 — wider than Ollama-only).
+
+    True when EITHER:
+    - provider_type is one of the inherent self-hosted runtimes, OR
+    - provider_type is a generic compatibility shim AND extra_config
+      carries ``self_hosted: True`` (operator opt-in), OR
+    - owner_company is an internal/local sentinel (operator override).
+    """
+    if getattr(p, "provider_type", None) in SELF_HOSTED_PROVIDER_TYPES:
+        return True
+    ptype = getattr(p, "provider_type", None)
+    if ptype in ("openai-compatible", "compatible", "custom"):
+        extra = getattr(p, "extra_config", None) or {}
+        if extra.get("self_hosted") is True:
+            return True
+    if getattr(p, "owner_company", None) in ("internal", "local", "self-hosted"):
+        return True
+    return False
+
+
+async def resolve_logical_alias(
+    db: AsyncSession, alias: str, api_key_id: str
+) -> Optional[str]:
+    """Return the alias string itself when it is a known logical alias,
+    or ``None`` otherwise.
+
+    The caller's existing alias→hint propagation path (see
+    ``_request_pipeline.build_hint_with_auto_task`` + LMRH hint
+    resolution) layers ``LOGICAL_ALIASES[alias]["hint"]`` into the
+    request's LMRH hint string. ``coordinator-local`` carries the extra
+    ``self_hosted_only`` flag which the dispatch layer enforces with
+    ``is_self_hosted_provider`` outside the LMRH scorer.
+
+    Marker pass-through — does NOT resolve to a concrete provider+model
+    here (that's the LMRH ranker's job once the hint is in place). Keeps
+    the existing alias mechanism (``resolve_alias`` below, DB-backed)
+    the source of truth for concrete pins; the logical aliases live
+    alongside as a parallel namespace.
+    """
+    if alias in LOGICAL_ALIASES:
+        return alias
+    return None
 
 
 async def resolve_alias(db: AsyncSession, model: Optional[str]) -> Optional[ModelAlias]:

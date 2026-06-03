@@ -41,6 +41,9 @@ async def _stream_cot_openai(
     critique_kwargs: dict | None = None,
     samples: int = 1,
     task_branch: str | None = None,
+    # v5.0.0 — compliance substitution disclosure (decision 15 + 28).
+    compliance_disclosure: dict | None = None,
+    accept_compliance_events: bool = False,
 ) -> AsyncIterator[bytes]:
     """
     Run the CoT-E pipeline and re-emit as OpenAI-format SSE chunks.
@@ -98,10 +101,15 @@ async def _stream_cot_openai(
         )
 
         msg_id = "chatcmpl-cot"
-        yield (
-            f'data: {{"id":"{msg_id}","object":"chat.completion.chunk",'
-            f'"choices":[{{"index":0,"delta":{{"role":"assistant"}},"finish_reason":null}}]}}\n\n'
-        ).encode()
+        _first_frame = {
+            "id": msg_id,
+            "object": "chat.completion.chunk",
+            "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
+        }
+        if compliance_disclosure and accept_compliance_events:
+            from app.compliance import sse_prelude_openai_inject
+            sse_prelude_openai_inject(_first_frame, compliance_disclosure)
+        yield f"data: {json.dumps(_first_frame)}\n\n".encode()
         chunk_size = 50
         for i in range(0, len(full_text), chunk_size):
             piece = json.dumps(full_text[i:i + chunk_size])[1:-1]
@@ -129,11 +137,19 @@ async def _stream_openai(
     model: str, messages: list, extra: dict, provider_id: str,
     db: AsyncSession, key_record_id: str, t0: float, budget_total: int = 0,
     cache_decision=None,
+    # v5.0.0 — compliance substitution disclosure (decision 15 + 28).
+    # When both are set, inject ``compliance_substitution`` as a top-level
+    # key on the FIRST ``data:`` frame (opt-in via Accept-Compliance-Events).
+    compliance_disclosure: dict | None = None,
+    accept_compliance_events: bool = False,
 ) -> AsyncIterator[bytes]:
     in_tok = out_tok = 0
     ttft_ms: float = 0.0
     first_chunk = True
     full_text_buf: list[str] = []
+    # v5.0.0 — gate set when the first emitted (post-buffer) frame needs
+    # the disclosure key injected. Cleared after first injection.
+    _need_compliance_inject = bool(compliance_disclosure and accept_compliance_events)
     # v4.4.6 BUG-057 — buffer one chunk so we can patch the FINAL
     # chunk before emit. Modern OpenAI streaming (when usage is
     # included, which litellm defaults to ON in 1.83.x) emits an
@@ -171,7 +187,17 @@ async def _stream_openai(
             # Emit the previously-buffered chunk; hold the current
             # one in case it's the last.
             if prev_chunk is not None:
-                yield f"data: {prev_chunk.model_dump_json()}\n\n".encode()
+                _payload = prev_chunk.model_dump_json()
+                if _need_compliance_inject:
+                    from app.compliance import sse_prelude_openai_inject
+                    try:
+                        _dict = json.loads(_payload)
+                        sse_prelude_openai_inject(_dict, compliance_disclosure)
+                        _payload = json.dumps(_dict)
+                    except Exception:
+                        pass  # never break the stream over disclosure
+                    _need_compliance_inject = False
+                yield f"data: {_payload}\n\n".encode()
             prev_chunk = chunk
         # End-of-stream: patch the final chunk if needed, then emit.
         if prev_chunk is not None:
@@ -182,7 +208,19 @@ async def _stream_openai(
                         c0.finish_reason = last_finish
             except Exception:
                 pass  # best-effort; never break the stream
-            yield f"data: {prev_chunk.model_dump_json()}\n\n".encode()
+            _payload = prev_chunk.model_dump_json()
+            if _need_compliance_inject:
+                # Edge case: only one chunk total. Inject on this last
+                # emission instead.
+                from app.compliance import sse_prelude_openai_inject
+                try:
+                    _dict = json.loads(_payload)
+                    sse_prelude_openai_inject(_dict, compliance_disclosure)
+                    _payload = json.dumps(_dict)
+                except Exception:
+                    pass
+                _need_compliance_inject = False
+            yield f"data: {_payload}\n\n".encode()
         if budget_total > 0:
             remaining = max(0, budget_total - out_tok)
             yield (

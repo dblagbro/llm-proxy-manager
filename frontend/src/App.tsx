@@ -15,6 +15,8 @@ import { ClusterPage } from '@/pages/ClusterPage'
 import { MetricsPage } from '@/pages/MetricsPage'
 import { ActivityPage } from '@/pages/ActivityPage'
 import { SettingsPage } from '@/pages/SettingsPage'
+import { MyCompliancePage } from '@/pages/MyCompliancePage'
+import { CompliancePage } from '@/pages/CompliancePage'
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1, staleTime: 10_000 } },
@@ -24,6 +26,16 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth()
   if (loading) return null
   if (!user) return <Navigate to="/login" replace />
+  return <>{children}</>
+}
+
+// v5.0.0 — admin-only route gate. The admin compliance page reads
+// /api/admin/* endpoints which the backend already enforces, but
+// hiding the route entirely keeps non-admins out of a 403'd page.
+function AdminGate({ children }: { children: React.ReactNode }) {
+  const { user } = useAuth()
+  if (!user) return <Navigate to="/login" replace />
+  if (user.role !== 'admin') return <Navigate to="/" replace />
   return <>{children}</>
 }
 
@@ -47,6 +59,8 @@ function AppRoutes() {
         <Route path="metrics" element={<MetricsPage />} />
         <Route path="activity" element={<ActivityPage />} />
         <Route path="settings" element={<SettingsPage />} />
+        <Route path="compliance" element={<MyCompliancePage />} />
+        <Route path="admin/compliance" element={<AdminGate><CompliancePage /></AdminGate>} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
     </Routes>

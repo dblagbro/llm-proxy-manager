@@ -45,6 +45,10 @@ class MemoryEntry:
     content_format: str
     updated_at: float
     source_provider_id: Optional[str] = None
+    # v5.0.0 compliance — owner_company of the provider that produced this
+    # memory turn. Filtered against the requesting key's effective blocklist
+    # in get(); decision 7 treats NULL as banned for non-empty blocklists.
+    source_company: Optional[str] = None
 
 
 def _key(api_key_id: str, conversation_id: Optional[str], memory_tag: str) -> str:
@@ -81,10 +85,18 @@ async def get(
     api_key_id: str,
     conversation_id: Optional[str] = None,
     memory_tag: str = "default",
+    *,
+    blocked_companies: Optional[set] = None,
 ) -> Optional[MemoryEntry]:
     """Read one memory entry. Redis-first; falls back to SQLite, then
     to the in-process dict. Returns None if no live row exists (or
-    the row is tombstoned via deleted_at)."""
+    the row is tombstoned via deleted_at).
+
+    v5.0.0 compliance: when ``blocked_companies`` is non-empty, drop any
+    entry whose ``source_company`` is banned OR is NULL (decision 7 —
+    unknown provenance must not surface to a banned key). The caller
+    treats the filtered-out case as "no memory" so injection is silent.
+    """
     key = _key(api_key_id, conversation_id, memory_tag)
     # Redis hot path
     r = await _get_redis()
@@ -94,6 +106,9 @@ async def get(
             if raw:
                 d = json.loads(raw)
                 if d.get("deleted_at") is None:
+                    sc = d.get("source_company")
+                    if _filtered_by_blocklist(sc, blocked_companies):
+                        return None
                     return MemoryEntry(
                         api_key_id=d["api_key_id"],
                         conversation_id=d.get("conversation_id"),
@@ -102,6 +117,7 @@ async def get(
                         content_format=d.get("content_format", "text"),
                         updated_at=float(d.get("updated_at", 0)),
                         source_provider_id=d.get("source_provider_id"),
+                        source_company=sc,
                     )
         except Exception as e:
             logger.warning(f"caller_memory: Redis get failed ({e}), falling through")
@@ -123,7 +139,14 @@ async def get(
         # In-process fallback (last resort)
         fb = _fallback.get(key)
         if fb and fb.get("deleted_at") is None:
+            if _filtered_by_blocklist(fb.get("source_company"), blocked_companies):
+                return None
             return MemoryEntry(**{k: v for k, v in fb.items() if k != "deleted_at"})
+        return None
+
+    # v5.0.0 — filter banned source_company BEFORE returning. NULL is
+    # banned by any non-empty blocklist (decision 7).
+    if _filtered_by_blocklist(getattr(row, "source_company", None), blocked_companies):
         return None
 
     entry = MemoryEntry(
@@ -134,6 +157,7 @@ async def get(
         content_format=row.content_format or "text",
         updated_at=row.updated_at,
         source_provider_id=row.source_provider_id,
+        source_company=getattr(row, "source_company", None),
     )
     # Backfill the Redis cache for next read
     if r is not None:
@@ -142,6 +166,18 @@ async def get(
         except Exception:
             pass
     return entry
+
+
+def _filtered_by_blocklist(source_company, blocked_companies) -> bool:
+    """Decision 7 — NULL source_company is treated as banned when any
+    blocklist is in effect. Centralized so the Redis, SQLite, and
+    in-process branches all apply the same rule.
+    """
+    if not blocked_companies:
+        return False
+    if source_company is None:
+        return True
+    return source_company in blocked_companies
 
 
 async def put(
@@ -154,6 +190,7 @@ async def put(
     content_format: str = "text",
     source_provider_id: Optional[str] = None,
     source_request_id: Optional[str] = None,
+    source_company: Optional[str] = None,
 ) -> MemoryEntry:
     """Write/update one memory entry.
 
@@ -161,6 +198,11 @@ async def put(
     invalidates the Redis cache (next read re-populates from SQLite).
     Also updates the marker row so back-pressure recovery has the
     provenance trail.
+
+    v5.0.0 compliance: ``source_company`` (owner_company of the
+    serving provider) is persisted to BOTH the content row and the
+    marker. NULL stays NULL — it'll be treated as banned for any
+    compliance-filtered request (decision 7).
     """
     from sqlalchemy import select
     from app.config import settings
@@ -190,6 +232,7 @@ async def put(
             updated_by_node=node_id,
             source_provider_id=source_provider_id,
             source_request_id=source_request_id,
+            source_company=source_company,
             deleted_at=None,
         )
         db.add(row)
@@ -202,6 +245,11 @@ async def put(
             existing.source_provider_id = source_provider_id
         if source_request_id:
             existing.source_request_id = source_request_id
+        if source_company:
+            # Only overwrite when the new write carries provenance — don't
+            # let a None call (admin write, unknown provider) clobber a
+            # known company tag from a prior turn.
+            existing.source_company = source_company
         existing.deleted_at = None
         row = existing
 
@@ -224,12 +272,15 @@ async def put(
             first_seen_at=now,
             last_known_provider_id=source_provider_id,
             last_known_external_ref=None,
+            source_company=source_company,
             recovered_at=None,
             deleted_at=None,
         ))
     else:
         if source_provider_id:
             marker.last_known_provider_id = source_provider_id
+        if source_company:
+            marker.source_company = source_company
 
     await db.commit()
 
@@ -250,6 +301,7 @@ async def put(
         content_format=content_format,
         updated_at=now,
         source_provider_id=source_provider_id,
+        source_company=source_company,
     )
 
 
@@ -311,6 +363,7 @@ async def list_for_key(db, api_key_id: str, limit: int = 100) -> list[MemoryEntr
             content_format=r.content_format or "text",
             updated_at=r.updated_at,
             source_provider_id=r.source_provider_id,
+            source_company=getattr(r, "source_company", None),
         )
         for r in rows
     ]

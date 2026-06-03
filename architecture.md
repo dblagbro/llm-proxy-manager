@@ -68,6 +68,11 @@ app/
 │   ├── provider_capabilities.py Capability admin (v3.9.8): list/upsert/infer + _serialize_cap
 │   │                              (v3.1.0: was 1136 lines; OAuth flow endpoints
 │   │                              moved to providers_oauth.py — now 875 lines)
+│   │                              v4.4.39 (UI clarity): Providers list page renders
+│   │                                priority as ordinal ("12th priority" not
+│   │                                "priority 12"); preferred badge renamed
+│   │                                ✓ preferred → 🥇 router's pick today; form
+│   │                                label disambiguates from the badge.
 │   ├── providers_oauth.py       claude-oauth + codex-oauth authorize / exchange /
 │   │                              rotate (v3.1.0: extracted from providers.py).
 │   │                              Six endpoints over a parameterized
@@ -91,6 +96,28 @@ app/
 │   │                                _model_family_provider_types, _native_thinking_params)
 │   │                                moved to litellm_binding.py and re-exported here.
 │   │                                998 → 800 LOC.
+│   │                                v4.4.35: cursor-oauth added to PROVIDER_TYPE_TO_LITELLM
+│   │                                + base_url allowlist (fixed the v4.4.31..v4.4.34
+│   │                                "Incorrect API key" mystery — litellm was
+│   │                                routing to api.openai.com without api_base).
+│   │                                v4.4.40 (BUG-086): cursor-oauth added to BOTH
+│   │                                the claude-* AND gpt-* branches of
+│   │                                _model_family_provider_types — the family filter
+│   │                                was eliminating cursor providers before priority
+│   │                                ordering applied, so claude-haiku requests were
+│   │                                skipping priority-4 Cursor in favor of
+│   │                                priority-7 Anthropic-OAuth. Caught by operator
+│   │                                routing-bug report.
+│   ├── external_rotation.py       Auto-skip rule + multi-vendor preferred-pick.
+│   │                                v3.7.4: claude-oauth utilization-weighted
+│   │                                preference. v4.4.41: generalized to
+│   │                                reorder_subscription_by_utilization(provider_type=…);
+│   │                                back-compat reorder_claude_oauth_by_utilization
+│   │                                now reorders BOTH claude-oauth AND cursor-oauth
+│   │                                in one pass (router's existing single callsite
+│   │                                gets multi-vendor preferred-pick free).
+│   │                                evaluate_rules_for_all_providers query covers
+│   │                                both subscription types since v4.4.41.
 │   ├── litellm_binding.py         v4.4.38: provider_type → litellm prefix tables,
 │   │                                build_litellm_model + build_litellm_kwargs,
 │   │                                embedding-default → chat fallback. Each new
@@ -149,12 +176,27 @@ app/
 │                              reconstructs missing content from upstream when marker survives
 │
 ├── monitoring/
-│   ├── helpers.py           record_outcome() — shared success/failure metrics recorder
-│   ├── metrics.py           request/token/cost DB writes
-│   ├── pricing.py           litellm cost estimation
-│   ├── status.py            provider health registration + status aggregation
-│   ├── activity.py          activity feed / recent-request log
-│   └── notifications.py     alert hooks (Slack, webhook)
+│   ├── helpers.py                  record_outcome() — shared success/failure metrics recorder
+│   ├── metrics.py                  request/token/cost DB writes
+│   ├── pricing.py                  litellm cost estimation
+│   ├── status.py                   provider health registration + status aggregation
+│   ├── activity.py                 activity feed / recent-request log
+│   ├── notifications.py            alert hooks (Slack, webhook)
+│   ├── anthropic_billing_worker.py v3.7.0: 4h periodic scrape of Anthropic Console
+│   │                                 usage per claude-oauth provider; writes
+│   │                                 ExternalUsageSnapshot rows; feeds
+│   │                                 external_rotation auto-skip rule.
+│   ├── codex_billing_worker.py     v3.7.27 (#245): same shape as Anthropic worker
+│   │                                 for ChatGPT Plus / Codex Cloud.
+│   └── cursor_billing_worker.py    v4.4.41: same shape as Anthropic worker for
+│                                     cursor-oauth providers. Uses Provider.api_key
+│                                     (the stored WorkosCursorSessionToken) directly
+│                                     as a Cookie header — no separate credential
+│                                     plumbing. Polls cursor.com/api/usage-summary +
+│                                     /api/dashboard/get-aggregated-usage-events.
+│                                     Live-deploy gotcha: hit apex cursor.com (not
+│                                     www.cursor.com) — httpx strips Cookie across
+│                                     subdomain redirects.
 │
 ├── models/
 │   ├── db.py                SQLAlchemy ORM models

@@ -80,6 +80,58 @@ async def chat_completions(
     from app.routing.tenant import current_api_key_id
     current_api_key_id.set(key_record.id)
 
+    # v5.0.0 — compliance UA pre-check (decision 16 + 22). Fires BEFORE
+    # any provider routing — mirror of messages.py.
+    if getattr(_cfg_settings, "compliance_ua_block_enabled", True):
+        from app.compliance import (
+            detect_client_company, get_effective_blocklist,
+            refusal_headers_ua, emit_event, generate_audit_id,
+        )
+        _ua = request.headers.get("user-agent", "")
+        _detection = detect_client_company(_ua)
+        if _detection:
+            _company, _pattern, _product = _detection
+            _blocklist = await get_effective_blocklist(db, key_record.id)
+            if _company in _blocklist:
+                _audit_id = generate_audit_id()
+                await emit_event(
+                    db, audit_id=_audit_id, api_key_id=key_record.id,
+                    event_type="client_product_refusal",
+                    reason_code="client-product-banned",
+                    http_status=451,
+                    client_user_agent=_ua,
+                    matched_pattern=_pattern,
+                    blocked_company=_company,
+                    client_identity={
+                        "x_coordinator_client": request.headers.get("x-coordinator-client"),
+                        "x_coordinator_profile": request.headers.get("x-coordinator-profile"),
+                        "x_coordinator_client_version": request.headers.get("x-coordinator-client-version"),
+                        "x_coordinator_upstream_cli": request.headers.get("x-coordinator-upstream-cli"),
+                    },
+                    commit=True,
+                )
+                raise HTTPException(
+                    status_code=451,
+                    detail={"error": {
+                        "type": "compliance_block",
+                        "code": "client-product-banned",
+                        "matched_product": _product,
+                        "matched_company": _company,
+                        "matched_pattern": _pattern,
+                        "audit_id": _audit_id,
+                        "reason": (
+                            f"This API key's compliance policy prohibits clients "
+                            f"identified as products of {_company.title()}. Migrate "
+                            f"to a non-{_company.title()} client to continue."
+                        ),
+                    }},
+                    headers=refusal_headers_ua(
+                        matched_product=_product,
+                        matched_company=_company,
+                        audit_id=_audit_id,
+                    ),
+                )
+
     # v4.4.15 (F-OBS-003) — caller-memory gating-header visibility.
     # See messages.py for the rationale.
     try:
@@ -166,13 +218,43 @@ async def chat_completions(
     from app.api._request_pipeline import (
         select_provider_with_503, resolve_auto_model_into_body,
     )
-    route = await select_provider_with_503(
-        db, hint,
-        has_tools=has_tools, has_images=has_images,
-        key_record=key_record, parsed_slug=parsed_slug, alias=alias,
-        detailed_503=False,
-        messages=body.get("messages"),
+    # v5.0.0 — convert ComplianceNoSubstituteError into a 503 with audit row
+    # + X-Compliance-Refusal headers (decision 4). Mirror of messages.py.
+    from app.compliance import (
+        ComplianceNoSubstituteError, refusal_headers_no_substitute,
+        emit_event, generate_audit_id, model_family_to_company,
     )
+    try:
+        route = await select_provider_with_503(
+            db, hint,
+            has_tools=has_tools, has_images=has_images,
+            key_record=key_record, parsed_slug=parsed_slug, alias=alias,
+            detailed_503=False,
+            messages=body.get("messages"),
+        )
+    except ComplianceNoSubstituteError:
+        _audit_id = generate_audit_id()
+        _requested_model = body.get("model")
+        _blocked_company = model_family_to_company(_requested_model)
+        await emit_event(
+            db, audit_id=_audit_id, api_key_id=key_record.id,
+            event_type="compliance_no_substitute",
+            reason_code="no-compliant-provider-available",
+            http_status=503,
+            requested_model=_requested_model,
+            blocked_company=_blocked_company,
+            client_user_agent=request.headers.get("user-agent", ""),
+            commit=True,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail={"error": {
+                "type": "compliance_no_substitute",
+                "audit_id": _audit_id,
+                "message": "No compliance-compatible provider available for this request.",
+            }},
+            headers=refusal_headers_no_substitute(audit_id=_audit_id),
+        )
     body = resolve_auto_model_into_body(body, route, is_auto)
     # Kept as a local for downstream record_outcome calls (lines ~600-615).
     requested_model = (alias.model_id if alias else parsed_slug.bare_model) or None
@@ -256,6 +338,48 @@ async def chat_completions(
     if key_record.budget_status is not None:
         from app.budget.tracker import warnings_for
         resp_headers.update(warnings_for(key_record.budget_status))
+
+    # v5.0.0 — compliance substitution disclosure (decision 8 + 15 + 23).
+    # Mirror of messages.py — see that file for the rationale.
+    _compliance_disclosure = None
+    _compliance_wants_sse_prelude = False
+    if getattr(route, "compliance_substituted", False):
+        from app.compliance import (
+            compliance_headers, build_disclosure_payload,
+            wants_sse_prelude, emit_event, generate_audit_id,
+        )
+        _audit_id = generate_audit_id()
+        _served_model = (
+            route.litellm_model or body.get("model")
+        )
+        _compliance_disclosure = build_disclosure_payload(
+            blocked_company=route.compliance_blocked_company,
+            requested_model=body.get("model") or "",
+            served_model=_served_model or "",
+            served_company=route.compliance_served_company,
+            served_provider_id=route.provider.id,
+            audit_id=_audit_id,
+        )
+        resp_headers.update(compliance_headers(
+            blocked_company=route.compliance_blocked_company,
+            requested_model=body.get("model") or "",
+            served_model=_served_model or "",
+            served_company=route.compliance_served_company,
+            served_provider_id=route.provider.id,
+            audit_id=_audit_id,
+        ))
+        _compliance_wants_sse_prelude = wants_sse_prelude(request.headers)
+        await emit_event(
+            db, audit_id=_audit_id, api_key_id=key_record.id,
+            event_type="model_substitution",
+            reason_code=f"api-key-policy:blocked-company:{route.compliance_blocked_company}",
+            http_status=200,
+            requested_model=body.get("model"),
+            served_model=_served_model,
+            served_provider_id=route.provider.id,
+            blocked_company=route.compliance_blocked_company,
+            client_user_agent=request.headers.get("user-agent", ""),
+        )
 
     # v3.0.36: cross-family fallback — rewrite body['model'] to the resolved
     # served model so dispatchers that read body['model'] (codex-oauth,
@@ -536,6 +660,8 @@ async def chat_completions(
                             route.litellm_model, messages_list, extra, route.provider.id,
                             db, key_record.id, time.monotonic(), budget_total,
                             cache_decision=cache_decision,
+                            compliance_disclosure=_compliance_disclosure,
+                            accept_compliance_events=_compliance_wants_sse_prelude,
                         )
 
                     def _backup():
@@ -550,6 +676,8 @@ async def chat_completions(
                             backup_route.provider.id,
                             db, key_record.id, time.monotonic(), budget_total,
                             cache_decision=None,
+                            compliance_disclosure=_compliance_disclosure,
+                            accept_compliance_events=_compliance_wants_sse_prelude,
                         )
 
                     racer, winner = await race_streams(_primary, _backup, wait_ms)
@@ -586,6 +714,8 @@ async def chat_completions(
                 route.litellm_model, messages_list, extra, route.provider.id,
                 db, key_record.id, time.monotonic(), budget_total,
                 cache_decision=cache_decision,
+                compliance_disclosure=_compliance_disclosure,
+                accept_compliance_events=_compliance_wants_sse_prelude,
             )
             _first, _stream_err, _gen = await preflight_sse(_gen)
             if _stream_err is not None:

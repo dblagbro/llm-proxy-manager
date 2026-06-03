@@ -86,8 +86,46 @@ async def maybe_inject_memory(
             return body, False
         tag = memory_tag or "default"
 
+        # v5.0.0 compliance — resolve the per-key blocklist before reading
+        # so a memory row tagged with a banned source_company never gets
+        # injected into the prompt (decision 7: NULL is also banned when
+        # the blocklist is non-empty).
+        blocked_companies = None
+        try:
+            from app.compliance import get_effective_blocklist
+            blocked_companies = await get_effective_blocklist(db, api_key_id)
+        except Exception:
+            # Resolution failure leaves blocked_companies=None — store.get()
+            # treats that as "no filter", which is the legacy behavior.
+            blocked_companies = None
+
         from app.memory.store import get
-        entry = await get(db, api_key_id, conversation_id, tag)
+        entry = await get(
+            db, api_key_id, conversation_id, tag,
+            blocked_companies=blocked_companies or None,
+        )
+        # Audit the filter-out case: a row exists but was dropped by the
+        # blocklist. Re-probe without the filter to distinguish "no row"
+        # from "row banned" so we only emit the event when policy actually
+        # blocked something.
+        if entry is None and blocked_companies:
+            try:
+                raw = await get(db, api_key_id, conversation_id, tag)
+                if raw is not None and raw.content:
+                    from app.compliance import emit_event, generate_audit_id
+                    await emit_event(
+                        db,
+                        audit_id=generate_audit_id(),
+                        api_key_id=api_key_id,
+                        event_type="memory_filtered",
+                        reason_code="source-company-banned",
+                        http_status=0,  # internal filter
+                        blocked_company=raw.source_company or next(iter(blocked_companies), None),
+                        commit=False,
+                    )
+            except Exception:
+                # Audit failures must not block the request — silent degrade.
+                pass
         if entry is None or not entry.content:
             # v3.9.4 (#267) Phase 7 — back-pressure recovery. If the
             # marker exists but content is missing (DB restore that
@@ -100,7 +138,10 @@ async def maybe_inject_memory(
                 conversation_id=conversation_id, memory_tag=tag,
             )
             if recovered:
-                entry = await get(db, api_key_id, conversation_id, tag)
+                entry = await get(
+                    db, api_key_id, conversation_id, tag,
+                    blocked_companies=blocked_companies or None,
+                )
             if entry is None or not entry.content:
                 observe_memory_operation("inject", "skipped")
                 return body, False

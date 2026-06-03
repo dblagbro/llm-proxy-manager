@@ -319,7 +319,17 @@ async def select_provider_with_503(
             api_key_id=key_record.id,  # v3.0.45 tenant scoping
             est_input_tokens=_estimate_input_tokens(messages),  # v4.1 context gate
         )
-    except RuntimeError as e:
+    except Exception as e:
+        # v5.0.0 compliance — ComplianceNoSubstituteError carries the
+        # banned-company info messages.py / completions.py need to
+        # serialize the 503 with the X-Compliance-Refusal header + audit
+        # row (decision 4). Re-raise so the wire-format handler owns the
+        # body shape; we don't translate to HTTPException here.
+        from app.compliance import ComplianceNoSubstituteError
+        if isinstance(e, ComplianceNoSubstituteError):
+            raise
+        if not isinstance(e, RuntimeError):
+            raise
         msg = str(e)
         if detailed_503 and "circuit breakers open" in msg:
             raise HTTPException(

@@ -9,9 +9,15 @@ insert-if-missing, update-if-newer, tombstone-aware. See the original
 This module is import-only — ``sync.py`` re-imports these names so
 existing call sites continue to work. No behavior change vs the inline
 versions; this is structural cleanup only.
+
+v5.0.0 also adds the two compliance audit-trail handlers
+(``_apply_compliance_events`` / ``_apply_compliance_policy_changes``)
+and their matching ``serialize_*`` helpers used by
+``manager._build_sync_payload``.
 """
 from __future__ import annotations
 
+import json
 import logging
 import time
 from datetime import datetime
@@ -384,3 +390,158 @@ async def _apply_external_usage_snapshots(db: AsyncSession, rows: list[dict]) ->
             extra_usage_utilization=r.get("extra_usage_utilization"),
             extra_usage_currency=r.get("extra_usage_currency"),
         ))
+
+
+# ───────────────────────────────────────────────────────────────────
+# v5.0.0 — compliance audit-trail handlers + serialization helpers.
+# ───────────────────────────────────────────────────────────────────
+
+
+def _iso_or_none(v):
+    """ISO-encode a datetime or None — used for outbound serialization."""
+    if v is None:
+        return None
+    if isinstance(v, datetime):
+        return v.isoformat()
+    return str(v)
+
+
+def serialize_compliance_event(r) -> dict:
+    """Render a ``ComplianceEvent`` row in the wire shape consumed by
+    ``_apply_compliance_events``. Dict keys mirror the column names so
+    the apply handler can pass the payload straight through to the
+    constructor (after filtering to valid columns)."""
+    return {
+        "audit_id": r.audit_id,
+        "api_key_id": r.api_key_id,
+        "event_type": r.event_type,
+        "requested_at": _iso_or_none(r.requested_at),
+        "requested_model": r.requested_model,
+        "served_model": r.served_model,
+        "served_provider_id": r.served_provider_id,
+        "blocked_company": r.blocked_company,
+        "reason_code": r.reason_code,
+        "client_user_agent": r.client_user_agent,
+        "http_status": r.http_status,
+        "matched_pattern": r.matched_pattern,
+        "client_identity": r.client_identity,
+        "policy_active_since": _iso_or_none(r.policy_active_since),
+        "created_at": _iso_or_none(r.created_at),
+    }
+
+
+def serialize_policy_change(r) -> dict:
+    """Render a ``CompliancePolicyChange`` row in the wire shape consumed
+    by ``_apply_compliance_policy_changes``."""
+    return {
+        "policy_change_id": r.policy_change_id,
+        "changed_at": _iso_or_none(r.changed_at),
+        "changed_by_user_id": r.changed_by_user_id,
+        "scope": r.scope,
+        "target_id": r.target_id,
+        "before_state": r.before_state,
+        "after_state": r.after_state,
+        "reason": r.reason,
+        "applied_to_peers": r.applied_to_peers,
+        "pending_peers": r.pending_peers,
+        "cluster_sync_status": r.cluster_sync_status,
+    }
+
+
+# Datetime columns on the compliance tables — converted on the way in
+# so a payload built with ``serialize_*`` round-trips losslessly.
+_COMPLIANCE_EVENT_DT_COLS = {
+    "requested_at", "policy_active_since", "created_at",
+}
+_POLICY_CHANGE_DT_COLS = {"changed_at"}
+
+
+def _row_to_kwargs(row: dict, allowed: set[str], dt_cols: set[str]) -> dict:
+    """Filter incoming wire-row to model columns + parse ISO datetime
+    strings back to ``datetime``. Skips unknown keys defensively in case
+    a future schema bump adds a field the local build doesn't know about."""
+    out = {}
+    for k, v in row.items():
+        if k not in allowed:
+            continue
+        if k in dt_cols and isinstance(v, str):
+            v = _parse_iso_or_none(v)
+        out[k] = v
+    return out
+
+
+async def _apply_compliance_events(db: AsyncSession, rows: list[dict]) -> int:
+    """v5.0.0 — append-only merge of ``compliance_events`` rows.
+
+    Dedup on the unique business key ``audit_id`` (ULID-shape, per spec
+    §3.2). Mirrors ``_apply_blocked_ips``'s ``.limit(1)`` guard so a
+    duplicate row from a misbehaving peer can never raise
+    ``MultipleResultsFound`` and abort the whole apply_sync transaction
+    (BUG-079/BUG-080 discipline).
+
+    Returns the number of rows actually inserted (helpful for tests +
+    logging)."""
+    from app.models.db import ComplianceEvent
+    applied = 0
+    allowed_cols = {col.name for col in ComplianceEvent.__table__.columns}
+    for row in rows:
+        audit_id = row.get("audit_id")
+        if not audit_id:
+            continue
+        existing = await db.execute(
+            select(ComplianceEvent)
+            .where(ComplianceEvent.audit_id == audit_id)
+            .limit(1)  # BUG-080 guard
+        )
+        if existing.scalar_one_or_none():
+            continue
+        kwargs = _row_to_kwargs(row, allowed_cols, _COMPLIANCE_EVENT_DT_COLS)
+        db.add(ComplianceEvent(**kwargs))
+        applied += 1
+    if applied:
+        await db.commit()
+    return applied
+
+
+async def _apply_compliance_policy_changes(
+    db: AsyncSession, rows: list[dict]
+) -> int:
+    """v5.0.0 — append-only merge of ``compliance_policy_changes`` rows.
+
+    Dedup on ``policy_change_id``. Same shape as
+    ``_apply_compliance_events``."""
+    from app.models.db import CompliancePolicyChange
+    applied = 0
+    allowed_cols = {col.name for col in CompliancePolicyChange.__table__.columns}
+    for row in rows:
+        policy_change_id = row.get("policy_change_id")
+        if not policy_change_id:
+            continue
+        existing = await db.execute(
+            select(CompliancePolicyChange)
+            .where(CompliancePolicyChange.policy_change_id == policy_change_id)
+            .limit(1)  # BUG-080 guard
+        )
+        if existing.scalar_one_or_none():
+            continue
+        kwargs = _row_to_kwargs(row, allowed_cols, _POLICY_CHANGE_DT_COLS)
+        db.add(CompliancePolicyChange(**kwargs))
+        applied += 1
+    if applied:
+        await db.commit()
+    return applied
+
+
+__all__ = [
+    "_apply_blocked_ips",
+    "_apply_ai_reviews",
+    "_apply_provider_ai_reviews",
+    "_apply_caller_memory",
+    "_apply_caller_memory_markers",
+    "_apply_external_usage_snapshots",
+    "_apply_provider_node_auth_states",
+    "_apply_compliance_events",
+    "_apply_compliance_policy_changes",
+    "serialize_compliance_event",
+    "serialize_policy_change",
+]

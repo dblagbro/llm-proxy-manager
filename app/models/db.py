@@ -90,6 +90,13 @@ from app.models.db_airi import (
     AiriNotificationPref,
 )
 
+# Compliance audit (v5.0.0)
+from app.models.db_compliance import (
+    ComplianceEvent,
+    CompliancePolicyChange,
+    ComplianceAuditChain,
+)
+
 __all__ = [
     "Base",
     "Session",
@@ -133,4 +140,8 @@ __all__ = [
     "AiriConversation",
     "AiriMessage",
     "AiriNotificationPref",
+    # Compliance (v5.0.0)
+    "ComplianceEvent",
+    "CompliancePolicyChange",
+    "ComplianceAuditChain",
 ]

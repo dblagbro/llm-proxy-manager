@@ -65,6 +65,9 @@ async def put_settings(
     db: AsyncSession = Depends(get_db),
     _user: AdminUser = Depends(require_admin),
 ):
+    # Pop the optional `reason` envelope before schema validation; it is not
+    # a stored SystemSetting but a header for compliance policy edits.
+    reason = body.pop("reason", None) if isinstance(body, dict) else None
     unknown = [k for k in body if k not in config_runtime.SCHEMA]
     if unknown:
         raise HTTPException(400, f"Unknown setting keys: {unknown}")
@@ -77,8 +80,39 @@ async def put_settings(
     }
     if not cleaned:
         return {"saved": []}
+
+    # v5.0.0 — compliance system policy edits require a ``reason`` (decision 6).
+    # Snapshot the prior value of any compliance-policy setting so we can
+    # emit a CompliancePolicyChange row after the save.
+    _POLICY_KEYS = ("compliance_system_blocked_companies",
+                    "compliance_custom_companies")
+    policy_changes: dict[str, tuple] = {}
+    for pkey in _POLICY_KEYS:
+        if pkey not in cleaned:
+            continue
+        prior = config_runtime.get_setting(pkey, None)
+        if str(prior or "") != str(cleaned[pkey] or ""):
+            policy_changes[pkey] = (prior, cleaned[pkey])
+    if policy_changes and not (reason and str(reason).strip()):
+        raise HTTPException(422, "reason required for compliance system policy edits")
+
     await config_runtime.save(db, cleaned)
     logger.info("settings_updated keys=%s", list(cleaned.keys()))
+
+    if policy_changes:
+        from app.compliance import emit_policy_change, invalidate_blocklist_cache
+        for pkey, (prior, new) in policy_changes.items():
+            applied_peers, pending_peers = await _push_policy_quorum({
+                "scope": "system", "key": pkey, "after": new,
+            })
+            await emit_policy_change(
+                db, scope="system", target_id=None,
+                before={pkey: prior}, after={pkey: new},
+                reason=reason, changed_by_user_id=getattr(_user, "user_id", None),
+                applied_to_peers=applied_peers, pending_peers=pending_peers,
+                commit=True,
+            )
+        invalidate_blocklist_cache(None)
 
     # Kick off an immediate sync to peers so they pick up the change within seconds
     if settings.cluster_enabled:
@@ -90,6 +124,22 @@ async def put_settings(
                 asyncio.create_task(push_sync(peer, AsyncSessionLocal))
 
     return {"saved": list(body.keys())}
+
+
+async def _push_policy_quorum(payload: dict):
+    """Best-effort quorum fan-out via cluster manager. Returns (applied, pending)."""
+    try:
+        from app.cluster import manager as _cm
+        if hasattr(_cm, "push_policy_change_with_quorum"):
+            n_peers = len(getattr(_cm, "peers", {}) or {})
+            required = max(0, n_peers - 1)
+            result = await _cm.push_policy_change_with_quorum(
+                payload, required_acks=required,
+            )
+            return result.get("applied_to_peers", []), result.get("pending_peers", [])
+    except Exception:
+        return [], [{"peer": "unknown", "reason": "quorum-push-failed"}]
+    return [], []
 
 
 @router.get("/cluster-diff")

@@ -4,9 +4,10 @@ import { useQuery } from '@tanstack/react-query'
 import {
   LayoutDashboard, Server, GitBranch, Key, Users,
   Network, BarChart2, Activity, Settings, ChevronLeft, ChevronRight,
-  Zap,
+  Zap, ShieldCheck, ShieldAlert,
 } from 'lucide-react'
 import { clusterApi } from '@/api'
+import { useAuth } from '@/context/AuthContext'
 
 interface NavItem {
   to: string
@@ -38,6 +39,8 @@ export function Sidebar({
     refetchInterval: 60_000,
     staleTime: 30_000,
   })
+  const { user } = useAuth()
+  const isAdmin = user?.role === 'admin'
   const version = health?.version ? `v${health.version}` : 'v2.x'
   const navItems: (NavItem | 'divider')[] = [
     { to: '/',         icon: LayoutDashboard, label: 'Dashboard' },
@@ -52,6 +55,11 @@ export function Sidebar({
     { to: '/metrics',  icon: BarChart2,        label: 'Metrics' },
     { to: '/activity', icon: Activity,         label: 'Activity',
       badge: liveActivity ? '●' : undefined },
+    'divider',
+    // v5.0.0 — compliance routes. /compliance is per-caller (always
+    // visible); /admin/compliance is the admin events table.
+    { to: '/compliance', icon: ShieldCheck,    label: 'My Compliance' },
+    { to: '/admin/compliance', icon: ShieldAlert, label: 'Compliance Events', hidden: !isAdmin },
     'divider',
     { to: '/settings', icon: Settings,         label: 'Settings' },
   ]

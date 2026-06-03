@@ -36,6 +36,13 @@ class CallerMemory(Base):
     # Optional provenance for back-pressure recovery + flush logic
     source_provider_id = Column(String, nullable=True)
     source_request_id = Column(String, nullable=True)
+    # v5.0.0 — compliance source-company tag (decision 18). Resolved at write
+    # time from the serving provider's owner_company. Memory rows whose
+    # source_company is in a key's effective blocklist are FILTERED OUT of
+    # /api/memory reads + memory injection (decision 7: unknown = blocked).
+    # NULL is treated as banned for any compliance-filtered request — the
+    # backfill migration populates from providers JOIN where possible.
+    source_company = Column(String, nullable=True)
     # Soft-delete tombstone for cluster-sync propagation (mirrors
     # the v3.7.15 BlockedIp.deleted_at pattern)
     deleted_at = Column(Float, nullable=True)
@@ -64,5 +71,9 @@ class CallerMemoryMarker(Base):
     first_seen_at = Column(Float, nullable=False)
     last_known_provider_id = Column(String, nullable=True)
     last_known_external_ref = Column(String, nullable=True)  # provider's thread_id / conversation handle
+    # v5.0.0 — compliance source-company tag (decision 18). Mirrors the column
+    # on CallerMemory. Markers whose source_company is banned are not
+    # surfaced to back-pressure recovery for banned keys.
+    source_company = Column(String, nullable=True)
     recovered_at = Column(Float, nullable=True)
     deleted_at = Column(Float, nullable=True)

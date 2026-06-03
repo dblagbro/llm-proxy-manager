@@ -210,6 +210,12 @@ def _build_event_meta_base(
     had_lmrh_hint: bool,
     lmrh_hint_raw: Optional[str],
     lmrh_warnings: Optional[list[str]],
+    # v5.0.0 — compliance enrichment (decision 9): when a substitution
+    # fired, stamp the activity_log row so audit grep can find it without
+    # JOINing compliance_events. Not a new column — lives in event_meta.
+    compliance_substituted: bool = False,
+    blocked_company: Optional[str] = None,
+    served_company: Optional[str] = None,
 ) -> dict:
     """v3.7.13 R5 — build the branch-agnostic activity-log meta dict.
 
@@ -269,6 +275,12 @@ def _build_event_meta_base(
         meta["lmrh_warnings"] = list(lmrh_warnings)
     if is_probe:
         meta["probe"] = True
+    if compliance_substituted or blocked_company or served_company:
+        meta["compliance"] = {
+            "substituted": bool(compliance_substituted),
+            "blocked_company": blocked_company,
+            "served_company": served_company,
+        }
     return meta
 
 
@@ -507,6 +519,13 @@ async def record_outcome(
     # (all calls have name + dict input) from response_body when this
     # is non-None.
     tool_call_format: Optional[str] = None,
+    # v5.0.0 — compliance enrichment (decision 9). When a substitution
+    # fired for this request, propagate to the activity_log row's
+    # event_meta.compliance dict so audit grep can find it without
+    # JOINing compliance_events.
+    compliance_substituted: bool = False,
+    blocked_company: Optional[str] = None,
+    served_company: Optional[str] = None,
 ) -> None:
     # v3.0.50: classify provider as subscription vs per-call so paperless's
     # cost ticker (and api_keys.total_cost_usd) doesn't inflate from
@@ -600,6 +619,9 @@ async def record_outcome(
             had_lmrh_hint=had_lmrh_hint,
             lmrh_hint_raw=lmrh_hint_raw,
             lmrh_warnings=lmrh_warnings,
+            compliance_substituted=compliance_substituted,
+            blocked_company=blocked_company,
+            served_company=served_company,
         )
         # Branch-specific: per-request volume + cost + latency
         meta["in_tok"] = in_tok
@@ -668,6 +690,9 @@ async def record_outcome(
             had_lmrh_hint=had_lmrh_hint,
             lmrh_hint_raw=lmrh_hint_raw,
             lmrh_warnings=lmrh_warnings,
+            compliance_substituted=compliance_substituted,
+            blocked_company=blocked_company,
+            served_company=served_company,
         )
         # Branch-specific: error blob + classified taxonomy
         # v3.0.75 — coarse error-class taxonomy for activity-log

@@ -113,16 +113,75 @@ def decide_cacheable(
     )
 
 
-async def maybe_check(decision: CacheDecision, endpoint: str) -> Optional[CacheHit]:
-    """Check cache; emit Prometheus counter for hit/miss/bypass."""
+async def maybe_check(
+    decision: CacheDecision,
+    endpoint: str,
+    *,
+    db=None,
+    api_key_id: Optional[str] = None,
+    requested_model: Optional[str] = None,
+) -> Optional[CacheHit]:
+    """Check cache; emit Prometheus counter for hit/miss/bypass.
+
+    v5.0.0 compliance: when ``db`` + ``api_key_id`` are supplied, resolve
+    the per-key effective blocklist and ask the cache to drop banned
+    (and NULL-source — decision 7) rows. If a hit existed but every
+    candidate was filtered, emit a ``cache_filtered`` compliance event.
+    """
     if not decision.eligible:
         observe_cache_lookup("bypass", endpoint)
         return None
+    blocked_companies: Optional[set[str]] = None
+    if db is not None and api_key_id:
+        try:
+            from app.compliance import get_effective_blocklist
+            blocked_companies = await get_effective_blocklist(db, api_key_id)
+        except Exception as exc:
+            # Resolving the blocklist must never block a cache lookup; fall
+            # through with no filter so the request itself can proceed.
+            logger.warning("cache.middleware.blocklist_resolve_failed %s", exc)
+            blocked_companies = None
     cache = get_cache()
     hit = await cache.check(
-        decision.namespace, decision.query, settings.semantic_cache_threshold
+        decision.namespace,
+        decision.query,
+        settings.semantic_cache_threshold,
+        blocked_companies=blocked_companies or None,
     )
     if hit is None:
+        # Distinguish "true miss" from "filtered out". The cache layer
+        # can't tell us which, so we re-probe without the blocklist when
+        # one is in effect to detect the filter-only case for audit.
+        if blocked_companies and db is not None and api_key_id:
+            try:
+                raw = await cache.check(
+                    decision.namespace,
+                    decision.query,
+                    settings.semantic_cache_threshold,
+                    blocked_companies=None,
+                )
+                if raw is not None:
+                    # A hit exists but every candidate is banned for this key
+                    # — record the refusal. commit=False so we don't punch a
+                    # transaction inside this hot path; the request handler's
+                    # own commit will pick it up.
+                    try:
+                        from app.compliance import emit_event, generate_audit_id
+                        await emit_event(
+                            db,
+                            audit_id=generate_audit_id(),
+                            api_key_id=api_key_id,
+                            event_type="cache_filtered",
+                            reason_code="source-company-banned",
+                            http_status=0,  # internal filter — no HTTP response
+                            requested_model=requested_model,
+                            blocked_company=next(iter(blocked_companies), None),
+                            commit=False,
+                        )
+                    except Exception as exc:
+                        logger.warning("cache.middleware.emit_event_failed %s", exc)
+            except Exception:
+                pass
         observe_cache_lookup("miss", endpoint)
         return None
     response_text, similarity = hit
@@ -131,13 +190,40 @@ async def maybe_check(decision: CacheDecision, endpoint: str) -> Optional[CacheH
 
 
 async def maybe_store(
-    decision: CacheDecision, response_text: str, min_chars: Optional[int] = None
+    decision: CacheDecision,
+    response_text: str,
+    min_chars: Optional[int] = None,
+    *,
+    provider=None,
 ) -> None:
-    """Store response if quality gate passes."""
+    """Store response if quality gate passes.
+
+    v5.0.0 compliance: when ``provider`` is supplied, tag the cache row
+    with the provider's ``owner_company`` (or the derived company for the
+    provider_type). check() uses that tag to drop hits for keys that
+    have banned the source company.
+    """
     if not decision.eligible or not response_text:
         return
     floor = min_chars if min_chars is not None else settings.semantic_cache_min_response_chars
     if len(response_text) < floor:
         return  # too short — likely error/refusal/pathological
+    source_company: Optional[str] = None
+    if provider is not None:
+        try:
+            from app.compliance import provider_type_to_company
+            source_company = (
+                getattr(provider, "owner_company", None)
+                or provider_type_to_company(getattr(provider, "provider_type", None))
+            )
+        except Exception as exc:
+            logger.warning("cache.middleware.resolve_source_company_failed %s", exc)
+            source_company = None
     cache = get_cache()
-    await cache.store(decision.namespace, decision.query, response_text, decision.ttl_sec)
+    await cache.store(
+        decision.namespace,
+        decision.query,
+        response_text,
+        decision.ttl_sec,
+        source_company=source_company,
+    )

@@ -4,10 +4,19 @@
 Python/FastAPI rewrite of llm-proxy v1. Served at `/llm-proxy2/` on 3 nodes via the main
 nginx + docker-compose stack at `/home/dblagbro/docker/`.
 
-## Deployment nodes
-- tmrwww01 (this server)
-- tmrwww02
-- c1conversations-avaya-01-s23
+## Current state (2026-06-03)
+- Live version: **v4.4.41** on all 3 dev-cluster nodes + smoke
+- **v5.0.0 compliance ship in flight** — architecture locked through 33 decisions; implementation begins on hub team's final ack. Specs: `docs/5.0-compliance-design.md`, `docs/5.0-impact-map.md`, `docs/compliance-taxonomy-v5.0.0.md`
+- READ FIRST when resuming this project: that v5.0.0 spec set + `architecture.md`
+
+## Deployment topology
+- **dev cluster (3 nodes):** `tmrwww01`, `tmrwww02`, `c1conversations-avaya-01-s23`. Operator uses these for development; if proxy work breaks them, only dev users affected.
+- **smoke instance:** `llm-proxy2-smoke` container on tmrwww01, served at `/llm-proxy2-smoke/`. `CLUSTER_ENABLED=false`, separate DB, separate volume. Used as the sandbox for downstream teams (e.g., Coordinator Hub) to validate before promotion.
+- **production (downstream):** separate deployments operated by consumer teams (gov-compliance use case lives here). Pull QA'd Docker Hub image (`dblagbro/llm-proxy-manager:<version>`).
+
+## Sidecars (in compose, isolated from each other)
+- `llm-proxy2-grok-bridge` — grok.com Playwright session holder (grok-web provider)
+- `llm-proxy2-cursor-bridge` — Cursor-To-OpenAI adapter (cursor-oauth provider, v4.4.31+)
 
 ## Critical paths
 - App source: `/home/dblagbro/llm-proxy-v2/`

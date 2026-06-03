@@ -61,6 +61,8 @@ from app.api.provider_lifecycle import router as provider_lifecycle_router
 from app.api.provider_capabilities import router as provider_capabilities_router
 # v4.4.14: 4th sibling for the read-side / stats endpoints
 from app.api.providers_stats import router as providers_stats_router
+# v5.0.0 — compliance admin + user surfaces
+from app.api.compliance import router as compliance_router
 from app.observability.otel import init_tracer
 from app.observability.prometheus import metrics_response, set_service_info, observe_circuit_breaker_state
 
@@ -395,6 +397,12 @@ app.add_middleware(
 from app.middleware.ip_block import ip_block_middleware  # noqa: E402
 app.middleware("http")(ip_block_middleware)
 
+# v5.0.0 — allowed_paths middleware. Registered AFTER ip_block so banned
+# IPs short-circuit first; runs before route resolution to deny disallowed
+# paths with a single DB lookup + audit row.
+from app.middleware.allowed_paths import allowed_paths_middleware  # noqa: E402
+app.middleware("http")(allowed_paths_middleware)
+
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
@@ -521,6 +529,7 @@ app.include_router(memory_scoped_router)
 app.include_router(provider_lifecycle_router)
 app.include_router(provider_capabilities_router)
 app.include_router(providers_stats_router)  # v4.4.14 — read-side / stats
+app.include_router(compliance_router)  # v5.0.0 — compliance admin + user endpoints
 # v3.3.0: LMRHv2 endpoints (feature-flagged via lmrh_v2_enabled).
 # Same /lmrh/* prefix as v1; new paths don't collide with existing ones.
 from app.api.lmrh_v2 import router as lmrh_v2_router  # noqa: E402

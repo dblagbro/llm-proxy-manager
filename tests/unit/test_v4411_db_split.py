@@ -52,6 +52,7 @@ def test_all_domain_modules_load_cleanly():
         "app.models.db_oauth",
         "app.models.db_caller_memory",
         "app.models.db_airi",
+        "app.models.db_compliance",
     ):
         importlib.import_module(mod)
 
@@ -75,6 +76,7 @@ def test_re_export_shim_includes_every_model_class():
         "app.models.db_oauth",
         "app.models.db_caller_memory",
         "app.models.db_airi",
+        "app.models.db_compliance",
     ):
         expected |= _classes_in(mod_name)
     # Also add Base itself
@@ -94,17 +96,19 @@ def test_re_export_shim_includes_every_model_class():
     )
 
 
-def test_registry_has_all_32_tables():
-    """``Base.metadata.tables`` must contain all 32 tables after
-    importing ``db.py``. If this drops below 32, a new table was
-    likely added to a domain module but ``db.py`` doesn't import
-    that domain module (so ``Base.metadata`` never sees it)."""
+def test_registry_has_all_tables():
+    """``Base.metadata.tables`` must contain every domain-module table.
+    Pre-v5.0.0 the count was 32; v5.0.0 added 3 (compliance_events,
+    compliance_policy_changes, compliance_audit_chain) → 35. If this
+    count drops, a new table was likely added to a domain module but
+    ``db.py`` doesn't import that domain module (so ``Base.metadata``
+    never sees it)."""
     # Importing db.py triggers imports of every domain module
     from app.models import db  # noqa: F401
     from app.models.db_base import Base
     tables = set(Base.metadata.tables.keys())
-    assert len(tables) == 32, (
-        f"Expected 32 tables in Base.metadata, got {len(tables)}: "
+    assert len(tables) == 35, (
+        f"Expected 35 tables in Base.metadata, got {len(tables)}: "
         f"{sorted(tables)}"
     )
 

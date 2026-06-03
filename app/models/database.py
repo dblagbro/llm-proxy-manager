@@ -400,6 +400,29 @@ async def init_db():
             # NULL = no TTL (current behavior); integer = sweeper
             # tombstones rows older than N days.
             "ALTER TABLE api_keys ADD COLUMN caller_memory_ttl_days INTEGER",
+            # v5.0.0 — compliance policy fields. blocked_companies is a JSON
+            # list of company IDs to block for this key (unioned at request
+            # time with the system-wide setting). allowed_paths is a JSON
+            # list of normalized request paths; NULL = unrestricted. Both
+            # are read by the router pre-filter + allowed_paths middleware.
+            "ALTER TABLE api_keys ADD COLUMN blocked_companies TEXT",
+            "ALTER TABLE api_keys ADD COLUMN allowed_paths TEXT",
+            # debug_echo_enabled gates the /api/debug/echo-client sandbox
+            # endpoint; production keys leave it 0.
+            "ALTER TABLE api_keys ADD COLUMN debug_echo_enabled BOOLEAN DEFAULT 0",
+            # owner_company is auto-derived at provider create/update time
+            # from provider_type via app.compliance.company_map; operator
+            # can override for unusual rows. The router pre-filter drops
+            # providers whose owner_company is in a key's effective
+            # blocklist.
+            "ALTER TABLE providers ADD COLUMN owner_company TEXT",
+            # source_company on caller_memory + caller_memory_marker is
+            # resolved at write time from the serving provider's
+            # owner_company. Memory rows whose source_company is banned
+            # for a request are filtered out at read time (decision 7:
+            # unknown=blocked, so NULL is also treated as blocked).
+            "ALTER TABLE caller_memory ADD COLUMN source_company TEXT",
+            "ALTER TABLE caller_memory_marker ADD COLUMN source_company TEXT",
         ]:
             try:
                 await conn.exec_driver_sql(stmt)
@@ -441,6 +464,10 @@ async def init_db():
             # variant here so a future "purge keys for tenant X" lookup is
             # also indexed without a scan.
             "CREATE INDEX IF NOT EXISTS ix_run_idempotency_key_created ON run_idempotency(idempotency_key, created_at)",
+            # v5.0.0 — compliance audit indices.
+            "CREATE INDEX IF NOT EXISTS ix_compliance_events_api_key_created ON compliance_events(api_key_id, created_at DESC)",
+            "CREATE INDEX IF NOT EXISTS ix_compliance_events_event_type ON compliance_events(event_type)",
+            "CREATE INDEX IF NOT EXISTS ix_compliance_policy_changes_at ON compliance_policy_changes(changed_at DESC)",
         ]:
             try:
                 await conn.exec_driver_sql(index_stmt)
