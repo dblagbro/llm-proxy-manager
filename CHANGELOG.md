@@ -9,6 +9,57 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v4.3.x — "Voice output" milestone
 
+### v4.4.40 — BUG-086: cursor-oauth missing from the model-family filter + v4.4.39 UI ship (2026-06-03)
+
+Two ships rolled into one release because v4.4.39 hadn't propagated past www1 yet when the v4.4.40 routing bug was reported.
+
+**v4.4.40 — BUG-086 (HIGH): cursor-oauth was being skipped by family-filter pre-priority.**
+
+Operator-reported 2026-06-03: `Cursor-oAuth-C1acct` had priority 4 (lower number = higher precedence) but `claude-haiku` requests were routing to `Devin-Anthropic-Max-Gmail` instead — a higher-priority-number anthropic-oauth provider that came lower in the precedence order. The Cursor provider had the model in its scanned catalog AND a winning priority score; it should have been picked.
+
+Root cause: `_model_family_provider_types` in `app/routing/litellm_binding.py` runs BEFORE the priority/scoring step as a "hard backstop" to prevent cross-family misroutes (the DevinGPT 2026-05-01 incident that put claude-sonnet-4-6 on codex-oauth). It maps `claude-*` → `{anthropic, anthropic-direct, anthropic-oauth, claude-oauth}` — **cursor-oauth was missing** because I forgot to update this filter when adding the provider type in v4.4.31. Same gap for `gpt-*` → `{openai, ChatGPT-oauth-plan}`, which also affects Cursor's relay (it serves gpt-4o / gpt-5 / gpt-5-codex too).
+
+**Fix:** add `cursor-oauth` to both branches. Two-line change in `_model_family_provider_types`. The downstream capability filter (per-provider scanned `ModelCapability` rows) continues to eliminate models the operator's specific Cursor account can't reach, so no over-routing risk.
+
+**Regression scope:** v4.4.31 (cursor-oauth provider type added) through v4.4.39. Any cursor-oauth provider was being skipped by the family filter for every `claude-*` and `gpt-*` request since v4.4.31. The cursor-oauth providers were still reachable for explicit non-family-matched models (cursor-specific slugs like `composer-2.5`, `default`) and for direct provider-pinned requests (alias path).
+
+6 new tests in `tests/unit/test_v4440_cursor_oauth_family_filter.py` pinning both the positive (cursor-oauth IS in claude + openai families) and negative cases (cursor-oauth is NOT in grok / google / cohere families — don't over-correct).
+
+**v4.4.39 — Providers UI clarity: priority ordinals + preferred badge rename.**
+
+Operator-filed 2026-06-03 after reviewing `Devin-Anthropic-Max-VG` on the Providers page. Two confusable labels co-existed on the same card:
+
+1. The green `✓ preferred` badge — auto-computed for claude-oauth providers (lowest 7-day Anthropic Console scrape utilization → router's first pick). The `✓` glyph read as a checkbox; the meaning was buried in the badge's `title=` tooltip.
+2. The `priority N` field — operator-set, lower = higher precedence. "Priority 12" intuitively reads as more important than "priority 1" for many operators.
+
+The form's old label was "Priority (lower = preferred)" which made the badge and the field look related when they aren't.
+
+**Frontend fix** (backend unchanged):
+
+- New `frontend/src/utils/ordinal.ts` — pure helper, standard ordinal pattern with the 11th/12th/13th edge case handled via the `v - 20` modulo trick.
+- `ProvidersPage.tsx` per-card render: `priority 12` → `12th priority` (via `ordinal()`). Priority-tie tooltip got the same treatment.
+- `ProvidersPage.tsx` claude-oauth badge: `✓ preferred` → `🥇 router's pick today`. Tooltip now explicitly says it's "not related to the operator-set Priority Score below — that's a separate, manually-configured field."
+- `ProviderForm.tsx` field label: `Priority (lower = preferred)` → `Priority score (1 = highest, 999 = lowest)`. Tooltip rewritten to use ordinal framing ("1st place, 2nd place, etc.") and cross-link the badge so the disambiguation is in both places.
+
+5 new source-guard tests in `tests/unit/test_v4439_providers_ui_priority.py` pinning the ordinal use + badge rename + form label change.
+
+**Validation (combined):**
+
+- Suite: **2452 passed + 2 skipped** (was 2441 + 2 in v4.4.38 — +11 new tests).
+- Frontend typecheck: `tsc --noEmit` exit 0.
+
+### v4.4.38 — incremental architectural refactor (router / messages / grok-web) (2026-06-02)
+
+Three behavior-preserving extracts following the v3.10.9 "next refactor targets" list, motivated by the v4.4.31..v4.4.37 cursor-oauth arc which added 6 changes to `router.py`'s litellm-binding tables in a single week.
+
+- `router.py` 998 → 800 LOC — litellm-binding tables + helpers extracted to a new `app/routing/litellm_binding.py` (274 LOC). 91+ existing import sites preserved via re-export.
+- `messages.py` 927 → 861 LOC — cascade orchestration (cheap-route → grader verdict → accept-or-fall-through) extracted to `_messages_dispatch.try_cascade_dispatch` (continuing the v3.10.9 pattern).
+- `grok_web.py` 866 → 825 LOC — `_bridge_chat` extracted to a new `grok_web_bridge.py` (first step of the manual/bridge axial split). Lazy import sidesteps a load-time circular.
+
+8 new source-guard tests pin all three splits. Suite went from 2433 → 2441 passed. Behavior preserved; one narrow exception-attribution edge case documented in the refactor-log.
+
+Full details in `refactor-log.md` and `architecture.md`.
+
 ### v4.4.37 — Cursor dispatch tests + JWT exp probe + refresh-token capture (2026-06-02)
 
 Two follow-ups from the cursor-oauth arc:

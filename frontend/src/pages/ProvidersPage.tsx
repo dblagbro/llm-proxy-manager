@@ -15,6 +15,7 @@ import type { Provider } from '@/types'
 import { ProviderModels } from '@/components/providers/ProviderModels'
 import { useAuth } from '@/context/AuthContext'
 import { formatTimeForUser } from '@/utils/time'
+import { ordinal } from '@/utils/ordinal'
 import { ProviderForm, type ProviderFormState, emptyProviderForm, providerToForm } from '@/components/providers/ProviderForm'
 import { clsx } from 'clsx'
 
@@ -418,13 +419,13 @@ export function ProvidersPage() {
                       {p.provider_type === 'claude-oauth' && claudeOauthPreferred === p.id && (
                         <span
                           className="inline-flex items-center rounded-full bg-emerald-100 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-200 px-2 py-0.5 text-xs font-normal"
-                          title="Lowest weekly utilization among claude-oauth providers — current first-choice for routing"
+                          title="Auto-computed from the Anthropic Console scrape: this claude-oauth provider has the lowest 7-day utilization among your enabled claude-oauth providers, so the router picks it first today. Not related to the operator-set Priority Score below — that's a separate, manually-configured field."
                         >
-                          ✓ preferred
+                          🥇 router&apos;s pick today
                         </span>
                       )}
                     </p>
-                    <p className="text-xs text-gray-500 dark:text-gray-400">{p.provider_type} · {p.default_model ?? 'no default model'} · priority {p.priority}</p>
+                    <p className="text-xs text-gray-500 dark:text-gray-400">{p.provider_type} · {p.default_model ?? 'no default model'} · {ordinal(p.priority)} priority</p>
                     {/* v3.0.6: per-provider 24h metrics inline. Hidden when no
                         traffic to that provider, so configured-but-unused
                         providers stay clean. */}
@@ -551,7 +552,7 @@ export function ProvidersPage() {
                     )}
                     {/* v2.7.8 BUG-010: priority tie warning */}
                     {p.enabled && priorityTies.has(p.priority) && (
-                      <span title={`Multiple enabled providers share priority ${p.priority}; tiebreaker is creation order.`}>
+                      <span title={`Multiple enabled providers share ${ordinal(p.priority)} priority; tiebreaker is creation order.`}>
                         <Badge variant="warning">Priority tie</Badge>
                       </span>
                     )}
