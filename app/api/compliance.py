@@ -455,12 +455,40 @@ async def admin_policy_snapshot(_: AdminUser = Depends(require_admin)):
 
 @router.get("/api/me/compliance")
 async def me_compliance(
+    request: Request,
     db: AsyncSession = Depends(get_db),
-    key: ApiKeyRecord = Depends(resolve_api_key_dep()),
 ):
-    """Decision 24 — per-key transparency. Any authenticated key may
-    read its own effective compliance posture."""
-    blocklist = await get_effective_blocklist(db, key.id)
+    """Decision 24 — compliance transparency view.
+
+    v5.0.8 — dual auth: ACCEPT EITHER an api_key (Bearer header or
+    x-api-key) OR a session cookie. Pre-v5.0.8 required the api_key
+    path only, which forced an unnecessary 401 → login cycle for
+    admins who clicked the "My Compliance" link in the UI nav (their
+    session cookie didn't satisfy ``resolve_api_key_dep``).
+
+    Per-key mode (api_key present in headers): returns the calling
+    key's own effective blocklist, allowed_paths, 24h substitution
+    counts, etc. — the original v5.0.0 behavior.
+
+    Session mode (cookie present, no api_key in headers): returns the
+    SYSTEM-WIDE compliance posture — system blocklist, fleet-wide 24h
+    substitution + 451 counts across all keys, last policy change.
+    Useful for operators answering "what is this proxy enforcing
+    globally?" without picking a specific key.
+
+    If neither auth path works, 401.
+    """
+    from app.auth.keys import verify_api_key
+    from app.auth.admin import require_any_user
+
+    # Try api_key path first.
+    auth_header = request.headers.get("authorization") or ""
+    raw_key: Optional[str] = None
+    if auth_header.lower().startswith("bearer "):
+        raw_key = auth_header[7:].strip() or None
+    if not raw_key:
+        raw_key = request.headers.get("x-api-key")
+
     system_block_raw = get_setting("compliance_system_blocked_companies", []) or []
     if isinstance(system_block_raw, str):
         try:
@@ -469,11 +497,64 @@ async def me_compliance(
             system_block_raw = []
     if not isinstance(system_block_raw, list):
         system_block_raw = []
-
     since = datetime.utcnow() - timedelta(hours=24)
+
+    if raw_key:
+        # Per-key transparency (legacy path).
+        key = await verify_api_key(db, raw_key)
+        blocklist = await get_effective_blocklist(db, key.id)
+        subs_rs = await db.execute(
+            select(func.count(ComplianceEvent.id)).where(
+                ComplianceEvent.api_key_id == key.id,
+                ComplianceEvent.event_type.in_((
+                    "model_substitution", "provider_substitution",
+                )),
+                ComplianceEvent.created_at >= since,
+            )
+        )
+        refusals_rs = await db.execute(
+            select(func.count(ComplianceEvent.id)).where(
+                ComplianceEvent.api_key_id == key.id,
+                ComplianceEvent.http_status == 451,
+                ComplianceEvent.created_at >= since,
+            )
+        )
+        last_change_rs = await db.execute(
+            select(CompliancePolicyChange).where(
+                (CompliancePolicyChange.scope == "system")
+                | (CompliancePolicyChange.target_id == key.id)
+            ).order_by(CompliancePolicyChange.id.desc()).limit(1)
+        )
+        last_change = last_change_rs.scalar_one_or_none()
+        last_change_payload = None
+        if last_change:
+            last_change_payload = {
+                "changed_at": (
+                    last_change.changed_at.isoformat() + "Z" if last_change.changed_at else None
+                ),
+                "reason": last_change.reason,
+                "changed_by_user_id": last_change.changed_by_user_id,
+            }
+        return {
+            "view": "per_key",
+            "api_key_id": key.id,
+            "api_key_name": key.name,
+            "per_key_blocked_companies": list(key.blocked_companies or []),
+            "system_blocked_companies": [str(x) for x in system_block_raw if x],
+            "effective_blocked_companies": sorted(blocklist),
+            "allowed_paths": list(key.allowed_paths) if key.allowed_paths else None,
+            "debug_echo_enabled": bool(key.debug_echo_enabled),
+            "recent_substitutions_24h": int(subs_rs.scalar() or 0),
+            "recent_451_count_24h": int(refusals_rs.scalar() or 0),
+            "last_policy_change": last_change_payload,
+            "compliance_disclaimer_url": _DISCLAIMER_URL,
+            "policy_active_at": datetime.utcnow().isoformat() + "Z",
+        }
+
+    # Session-cookie path — system-wide view for the admin UI.
+    user = await require_any_user(request)
     subs_rs = await db.execute(
         select(func.count(ComplianceEvent.id)).where(
-            ComplianceEvent.api_key_id == key.id,
             ComplianceEvent.event_type.in_((
                 "model_substitution", "provider_substitution",
             )),
@@ -482,16 +563,20 @@ async def me_compliance(
     )
     refusals_rs = await db.execute(
         select(func.count(ComplianceEvent.id)).where(
-            ComplianceEvent.api_key_id == key.id,
             ComplianceEvent.http_status == 451,
             ComplianceEvent.created_at >= since,
         )
     )
+    keys_with_policy_rs = await db.execute(
+        select(func.count(ApiKey.id)).where(
+            ApiKey.blocked_companies.is_not(None),
+            ApiKey.deleted_at.is_(None),
+        )
+    )
     last_change_rs = await db.execute(
-        select(CompliancePolicyChange).where(
-            (CompliancePolicyChange.scope == "system")
-            | (CompliancePolicyChange.target_id == key.id)
-        ).order_by(CompliancePolicyChange.id.desc()).limit(1)
+        select(CompliancePolicyChange).order_by(
+            CompliancePolicyChange.id.desc()
+        ).limit(1)
     )
     last_change = last_change_rs.scalar_one_or_none()
     last_change_payload = None
@@ -500,18 +585,19 @@ async def me_compliance(
             "changed_at": (
                 last_change.changed_at.isoformat() + "Z" if last_change.changed_at else None
             ),
+            "scope": last_change.scope,
             "reason": last_change.reason,
             "changed_by_user_id": last_change.changed_by_user_id,
         }
-
     return {
-        "per_key_blocked_companies": list(key.blocked_companies or []),
+        "view": "system",
+        "viewer_username": user.username,
+        "viewer_role": user.role,
         "system_blocked_companies": [str(x) for x in system_block_raw if x],
-        "effective_blocked_companies": sorted(blocklist),
-        "allowed_paths": list(key.allowed_paths) if key.allowed_paths else None,
-        "debug_echo_enabled": bool(key.debug_echo_enabled),
-        "recent_substitutions_24h": int(subs_rs.scalar() or 0),
-        "recent_451_count_24h": int(refusals_rs.scalar() or 0),
+        "effective_blocked_companies": [str(x) for x in system_block_raw if x],
+        "keys_with_per_key_policy": int(keys_with_policy_rs.scalar() or 0),
+        "fleet_recent_substitutions_24h": int(subs_rs.scalar() or 0),
+        "fleet_recent_451_count_24h": int(refusals_rs.scalar() or 0),
         "last_policy_change": last_change_payload,
         "compliance_disclaimer_url": _DISCLAIMER_URL,
         "policy_active_at": datetime.utcnow().isoformat() + "Z",
