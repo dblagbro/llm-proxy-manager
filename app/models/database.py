@@ -530,6 +530,46 @@ async def init_db():
                     f"{type(e).__name__}: {e}"
                 )
 
+        # v5.0.0 — one-shot backfill of ``providers.owner_company`` from
+        # ``provider_type`` for rows that pre-date the column. Decision 17
+        # in docs/5.0-compliance-design.md — the auto-derivation hook in
+        # ``app/api/providers.py`` covers fresh create/update; this catches
+        # everything else exactly once. Gated by ``SystemSetting`` so
+        # restarts after the first run are a no-op. Idempotent within a
+        # single boot — only updates rows where owner_company IS NULL,
+        # never overwrites operator-set values.
+        try:
+            from sqlalchemy import text as _text
+            applied = await conn.exec_driver_sql(
+                "SELECT value FROM system_settings WHERE key='owner_company_backfill_applied'"
+            )
+            row = applied.fetchone()
+            if not row or (row[0] or "").lower() not in ("1", "true", "yes"):
+                from app.compliance.company_map import (
+                    provider_type_to_company as _ptc,
+                )
+                rs = await conn.exec_driver_sql(
+                    "SELECT id, provider_type FROM providers WHERE owner_company IS NULL"
+                )
+                rows = rs.fetchall()
+                n = 0
+                for pid, ptype in rows:
+                    derived = _ptc(ptype)
+                    if derived:
+                        await conn.exec_driver_sql(
+                            "UPDATE providers SET owner_company = ? WHERE id = ?",
+                            (derived, pid),
+                        )
+                        n += 1
+                await conn.exec_driver_sql(
+                    "INSERT OR REPLACE INTO system_settings(key, value, value_type, updated_at) "
+                    "VALUES ('owner_company_backfill_applied', 'true', 'bool', strftime('%s','now'))"
+                )
+                logger.info(f"v5.0.0 backfill: derived owner_company for {n} providers (gated; one-shot)")
+        except Exception as e:
+            # Non-fatal — provider rows can be backfilled manually via PATCH.
+            logger.warning(f"v5.0.0 owner_company backfill skipped: {type(e).__name__}: {e}")
+
     logger.info("Database initialized")
 
 
