@@ -991,6 +991,50 @@ async def messages(
         # bad_request → HTTP 400 (it was the caller's fault); other
         # classes stay as 502 (upstream / network / billing).
         status_code = 400 if cls == "bad_request" else 502
-        raise HTTPException(status_code, f"Upstream provider error ({cls}): {clean}")
+        # v5.0.0 — when the dispatch FAILED but the route was a compliance
+        # substitution, the caller still deserves to know the substitution
+        # happened (the substituted provider is the one that failed; not
+        # the originally-requested-and-banned one). Merge the disclosure
+        # headers onto the error response + rewrite the audit row's
+        # http_status to reflect the actual outcome.
+        error_headers = {}
+        if getattr(route, "compliance_substituted", False):
+            from app.compliance import (
+                compliance_headers as _ch,
+                generate_audit_id as _gid,
+                emit_event as _emit,
+            )
+            audit_id = _gid()
+            error_headers = _ch(
+                blocked_company=getattr(route, "compliance_blocked_company", ""),
+                requested_model=(body.get("model") if isinstance(body, dict) else "") or "",
+                served_model=getattr(route, "litellm_model", "") or "",
+                served_company=getattr(route, "compliance_served_company", ""),
+                served_provider_id=route.provider.id,
+                audit_id=audit_id,
+            )
+            try:
+                await _emit(
+                    db,
+                    audit_id=audit_id,
+                    api_key_id=key_record.id,
+                    event_type="model_substitution",
+                    reason_code=f"api-key-policy:blocked-company:{getattr(route, 'compliance_blocked_company', '')}-upstream-error",
+                    http_status=status_code,
+                    requested_model=body.get("model") if isinstance(body, dict) else None,
+                    served_model=getattr(route, "litellm_model", None),
+                    served_provider_id=route.provider.id,
+                    blocked_company=getattr(route, "compliance_blocked_company", None),
+                    client_user_agent=(request.headers.get("user-agent", "") if "request" in dir() else "")[:200],
+                    commit=True,
+                )
+            except Exception:
+                # Audit write failures must not mask the actual upstream error
+                pass
+        raise HTTPException(
+            status_code,
+            f"Upstream provider error ({cls}): {clean}",
+            headers=error_headers or None,
+        )
 
 

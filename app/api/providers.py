@@ -354,6 +354,13 @@ async def create_provider(
     await _bump_priority_conflicts(db, data["priority"])
 
     provider = Provider(id=secrets.token_hex(8), **data)
+    # v5.0.0 — auto-derive owner_company from provider_type for compliance
+    # filtering. Operator-supplied owner_company on the request body wins
+    # (passed in via ProviderCreate); otherwise compute from provider_type.
+    # Existing rows are handled by the startup backfill in database.py.
+    if not getattr(provider, "owner_company", None):
+        from app.compliance.company_map import provider_type_to_company
+        provider.owner_company = provider_type_to_company(provider.provider_type)
     _stamp_user_edit(provider)
     db.add(provider)
     await db.commit()
@@ -536,6 +543,16 @@ async def update_provider(
 
     for field, value in data.items():
         setattr(p, field, value)
+    # v5.0.0 — re-derive owner_company if provider_type changed and the
+    # admin didn't supply an explicit owner_company override. Operator can
+    # still pin owner_company to a non-default value via the PUT body
+    # (e.g. a self-hosted Llama deployment they want classified as
+    # ``internal`` rather than ``meta``).
+    if "owner_company" not in data or data.get("owner_company") is None:
+        from app.compliance.company_map import provider_type_to_company
+        derived = provider_type_to_company(p.provider_type)
+        if derived:
+            p.owner_company = derived
     _stamp_user_edit(p)
     await db.commit()
     await db.refresh(p)

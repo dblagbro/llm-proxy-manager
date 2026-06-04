@@ -867,6 +867,46 @@ async def chat_completions(
         cls = classify_error(err_str or "")
         clean = sanitize_upstream_error(err_str)
         status_code = 400 if cls == "bad_request" else 502
-        raise HTTPException(status_code, f"Upstream provider error ({cls}): {clean}")
+        # v5.0.0 — preserve compliance disclosure on upstream-error 502. The
+        # substitution decision is real even if the substituted provider
+        # subsequently fails; caller deserves the headers so they know
+        # which provider was tried under what policy.
+        error_headers = {}
+        if getattr(route, "compliance_substituted", False):
+            from app.compliance import (
+                compliance_headers as _ch,
+                generate_audit_id as _gid,
+                emit_event as _emit,
+            )
+            audit_id = _gid()
+            error_headers = _ch(
+                blocked_company=getattr(route, "compliance_blocked_company", ""),
+                requested_model=requested_model or "",
+                served_model=getattr(route, "litellm_model", "") or "",
+                served_company=getattr(route, "compliance_served_company", ""),
+                served_provider_id=route.provider.id,
+                audit_id=audit_id,
+            )
+            try:
+                await _emit(
+                    db,
+                    audit_id=audit_id,
+                    api_key_id=key_record.id,
+                    event_type="model_substitution",
+                    reason_code=f"api-key-policy:blocked-company:{getattr(route, 'compliance_blocked_company', '')}-upstream-error",
+                    http_status=status_code,
+                    requested_model=requested_model,
+                    served_model=getattr(route, "litellm_model", None),
+                    served_provider_id=route.provider.id,
+                    blocked_company=getattr(route, "compliance_blocked_company", None),
+                    commit=True,
+                )
+            except Exception:
+                pass
+        raise HTTPException(
+            status_code,
+            f"Upstream provider error ({cls}): {clean}",
+            headers=error_headers or None,
+        )
 
 
