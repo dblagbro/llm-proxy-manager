@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Plus, Trash2, Pencil, Eye, ArrowUp, ArrowDown, ArrowUpDown, Key as KeyIcon, EyeOff, ClipboardList, Shield } from 'lucide-react'
+import { Plus, Trash2, Pencil, Eye, ArrowUp, ArrowDown, ArrowUpDown, Key as KeyIcon, EyeOff, ClipboardList } from 'lucide-react'
 import { keysApi } from '@/api'
 import { Card, CardContent } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
@@ -46,7 +46,8 @@ export function APIKeysPage() {
   const [showCreate, setShowCreate] = useState(false)
   const [newKey, setNewKey] = useState<{ raw: string; prefix: string } | null>(null)
   const [deleteId, setDeleteId] = useState<string | null>(null)
-  const [editLimits, setEditLimits] = useState<ApiKey | null>(null)
+  // v5.0.11 — single unified edit modal merges limits + compliance.
+  const [editKey, setEditKey] = useState<ApiKey | null>(null)
   const [viewDetails, setViewDetails] = useState<ApiKey | null>(null)
   const [capInput, setCapInput] = useState('')
   const [rpmInput, setRpmInput] = useState('')
@@ -57,7 +58,6 @@ export function APIKeysPage() {
   const [createBlockedCompanies, setCreateBlockedCompanies] = useState<string[]>([])
   const [createAllowedPaths, setCreateAllowedPaths] = useState<string[] | null>(null)
   const [createDebugEcho, setCreateDebugEcho] = useState(false)
-  const [editCompliance, setEditCompliance] = useState<ApiKey | null>(null)
   const [editBlockedCompanies, setEditBlockedCompanies] = useState<string[]>([])
   const [editAllowedPaths, setEditAllowedPaths] = useState<string[] | null>(null)
   const [editDebugEcho, setEditDebugEcho] = useState(false)
@@ -198,40 +198,21 @@ export function APIKeysPage() {
     setCreateDebugEcho(false)
   }
 
-  const updateLimitsMutation = useMutation({
-    mutationFn: ({ id, cap, rpm }: { id: string; cap: number | null; rpm: number | null }) =>
-      keysApi.update(id, {
-        spending_cap_usd: cap === null ? -1 : cap,
-        rate_limit_rpm: rpm === null ? -1 : rpm,
-      } as any),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['apikeys'] })
-      toast.success('Limits updated')
-      setEditLimits(null)
-    },
-    onError: (e: Error) => toast.error(e.message),
-  })
-
-  // v5.0.0 — compliance fields editor. PATCH calls go through the reason
-  // prompt when blocked_companies or allowed_paths have changed.
-  const updateComplianceMutation = useMutation({
+  // v5.0.11 — one mutation handles both limits + compliance via a
+  // partial-update payload. Reason-prompt still gates blocked_companies
+  // and allowed_paths changes; limits and debug_echo go straight
+  // through.
+  const updateKeyMutation = useMutation({
     mutationFn: ({ id, payload }: { id: string; payload: Partial<ApiKey> & { reason?: string } }) =>
-      keysApi.update(id, payload),
+      keysApi.update(id, payload as any),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['apikeys'] })
-      toast.success('Compliance policy updated')
-      setEditCompliance(null)
+      toast.success('Key updated')
+      setEditKey(null)
       setReasonPrompt(null)
     },
     onError: (e: Error) => toast.error(e.message),
   })
-
-  function openComplianceEdit(k: ApiKey) {
-    setEditCompliance(k)
-    setEditBlockedCompanies(k.blocked_companies ?? [])
-    setEditAllowedPaths(k.allowed_paths ?? null)
-    setEditDebugEcho(Boolean(k.debug_echo_enabled))
-  }
 
   function _arrayEqual(a: string[] | null | undefined, b: string[] | null | undefined): boolean {
     if (a == null && b == null) return true
@@ -240,20 +221,41 @@ export function APIKeysPage() {
     return a.every((v, i) => v === b[i])
   }
 
-  function saveComplianceEdit() {
-    if (!editCompliance) return
-    const original = editCompliance
+  function saveEdit() {
+    if (!editKey) return
+    const original = editKey
+
+    // Limits diff
+    const capRaw = capInput.trim()
+    const rpmRaw = rpmInput.trim()
+    if (capRaw !== '' && (isNaN(Number(capRaw)) || Number(capRaw) < 0)) {
+      toast.error('Spending cap must be a positive number or blank')
+      return
+    }
+    if (rpmRaw !== '' && (isNaN(Number(rpmRaw)) || Number(rpmRaw) < 1 || !Number.isInteger(Number(rpmRaw)))) {
+      toast.error('Rate limit must be a positive integer or blank')
+      return
+    }
+    const newCap = capRaw === '' ? null : Number(capRaw)
+    const newRpm = rpmRaw === '' ? null : Number(rpmRaw)
+    const capChanged = (original.spending_cap_usd ?? null) !== newCap
+    const rpmChanged = (original.rate_limit_rpm ?? null) !== newRpm
+
+    // Compliance diff
     const nextBlocked = editBlockedCompanies.length > 0 ? editBlockedCompanies : null
     const blockedChanged = !_arrayEqual(original.blocked_companies ?? null, nextBlocked)
     const pathsChanged = !_arrayEqual(original.allowed_paths ?? null, editAllowedPaths)
     const echoChanged = Boolean(original.debug_echo_enabled) !== editDebugEcho
 
-    if (!blockedChanged && !pathsChanged && !echoChanged) {
-      setEditCompliance(null)
+    if (!capChanged && !rpmChanged && !blockedChanged && !pathsChanged && !echoChanged) {
+      setEditKey(null)
       return
     }
 
-    const payload: Partial<ApiKey> = {}
+    const payload: Partial<ApiKey> & { spending_cap_usd?: number; rate_limit_rpm?: number } = {}
+    // -1 is the API's sentinel for "clear to null" on limits fields.
+    if (capChanged) (payload as any).spending_cap_usd = newCap === null ? -1 : newCap
+    if (rpmChanged) (payload as any).rate_limit_rpm = newRpm === null ? -1 : newRpm
     if (blockedChanged) payload.blocked_companies = nextBlocked
     if (pathsChanged)   payload.allowed_paths    = editAllowedPaths
     if (echoChanged)    payload.debug_echo_enabled = editDebugEcho
@@ -271,15 +273,14 @@ export function APIKeysPage() {
       return
     }
 
-    // Only debug_echo_enabled changed — no reason required.
-    updateComplianceMutation.mutate({ id: original.id, payload })
+    updateKeyMutation.mutate({ id: original.id, payload })
   }
 
   function confirmReasonAndSave(reason: string) {
-    if (!editCompliance || !reasonPrompt) return
-    updateComplianceMutation.mutate({
-      id: editCompliance.id,
-      payload: { ...reasonPrompt.payload, reason },
+    if (!editKey || !reasonPrompt) return
+    updateKeyMutation.mutate({
+      id: editKey.id,
+      payload: { ...reasonPrompt.payload, reason } as any,
     })
   }
 
@@ -356,27 +357,14 @@ export function APIKeysPage() {
     ? `${window.location.origin}${window.location.pathname.replace(/\/$/, '')}`.replace(/\/api-keys.*$/, '')
     : ''
 
-  function openLimitsEdit(k: ApiKey) {
-    setEditLimits(k)
+  // v5.0.11 — unified open: seed limits + compliance state from the key.
+  function openEdit(k: ApiKey) {
+    setEditKey(k)
     setCapInput(k.spending_cap_usd != null ? String(k.spending_cap_usd) : '')
     setRpmInput(k.rate_limit_rpm != null ? String(k.rate_limit_rpm) : '')
-  }
-
-  function saveLimits() {
-    if (!editLimits) return
-    const capRaw = capInput.trim()
-    const rpmRaw = rpmInput.trim()
-    const cap = capRaw === '' ? null : Number(capRaw)
-    const rpm = rpmRaw === '' ? null : Number(rpmRaw)
-    if (capRaw !== '' && (isNaN(cap!) || cap! < 0)) {
-      toast.error('Spending cap must be a positive number or blank')
-      return
-    }
-    if (rpmRaw !== '' && (isNaN(rpm!) || rpm! < 1 || !Number.isInteger(rpm))) {
-      toast.error('Rate limit must be a positive integer or blank')
-      return
-    }
-    updateLimitsMutation.mutate({ id: editLimits.id, cap, rpm })
+    setEditBlockedCompanies(k.blocked_companies ?? [])
+    setEditAllowedPaths(k.allowed_paths ?? null)
+    setEditDebugEcho(Boolean(k.debug_echo_enabled))
   }
 
   function fmtDate(ts: string) {
@@ -592,18 +580,11 @@ export function APIKeysPage() {
                     <Eye className="h-4 w-4" />
                   </button>
                   <button
-                    onClick={() => openLimitsEdit(k)}
+                    onClick={() => openEdit(k)}
                     className="text-gray-400 hover:text-indigo-500 transition-colors shrink-0"
-                    title="Edit limits"
+                    title="Edit limits + compliance policy"
                   >
                     <Pencil className="h-4 w-4" />
-                  </button>
-                  <button
-                    onClick={() => openComplianceEdit(k)}
-                    className="text-gray-400 hover:text-indigo-500 transition-colors shrink-0"
-                    title="Edit compliance policy"
-                  >
-                    <Shield className="h-4 w-4" />
                   </button>
                   <button
                     onClick={() => setModelsModalKey(k)}
@@ -703,16 +684,19 @@ export function APIKeysPage() {
         </ModalFooter>
       </Modal>
 
-      {/* Limits Edit Modal */}
-      {editLimits && (
-        <Modal open onClose={() => setEditLimits(null)}>
-          <ModalHeader onClose={() => setEditLimits(null)}>
-            Limits — {editLimits.name || editLimits.key_prefix}
+      {/* v5.0.11 — unified Edit Key modal (limits + compliance) */}
+      {editKey && (
+        <Modal open onClose={() => setEditKey(null)} size="lg">
+          <ModalHeader onClose={() => setEditKey(null)}>
+            Edit — {editKey.name || editKey.key_prefix}
           </ModalHeader>
           <ModalBody>
             <div className="space-y-4">
+              <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide">
+                Limits
+              </p>
               <p className="text-sm text-gray-600 dark:text-gray-400">
-                Current spend: <strong>${editLimits.total_cost_usd.toFixed(4)}</strong>
+                Current spend: <strong>${editKey.total_cost_usd.toFixed(4)}</strong>
               </p>
               <Input
                 label="Lifetime spending cap in USD (blank = unlimited)"
@@ -734,15 +718,19 @@ export function APIKeysPage() {
                 onChange={e => setRpmInput(e.target.value)}
                 placeholder="e.g. 60"
               />
-              <p className="text-xs text-gray-400">
-                Spending cap: requests are rejected with HTTP 429 once the key's lifetime cost reaches the limit.
-                Rate limit: enforced per-node using a 60-second sliding window.
-              </p>
             </div>
+            <ComplianceFieldsEditor
+              blockedCompanies={editBlockedCompanies}
+              setBlockedCompanies={setEditBlockedCompanies}
+              allowedPaths={editAllowedPaths}
+              setAllowedPaths={setEditAllowedPaths}
+              debugEchoEnabled={editDebugEcho}
+              setDebugEchoEnabled={setEditDebugEcho}
+            />
           </ModalBody>
           <ModalFooter>
-            <Button variant="ghost" onClick={() => setEditLimits(null)}>Cancel</Button>
-            <Button onClick={saveLimits} loading={updateLimitsMutation.isPending}>Save Limits</Button>
+            <Button variant="ghost" onClick={() => setEditKey(null)}>Cancel</Button>
+            <Button onClick={saveEdit} loading={updateKeyMutation.isPending}>Save</Button>
           </ModalFooter>
         </Modal>
       )}
@@ -798,8 +786,8 @@ export function APIKeysPage() {
           </ModalBody>
           <ModalFooter>
             <Button variant="ghost" onClick={() => setViewDetails(null)}>Close</Button>
-            <Button onClick={() => { openLimitsEdit(viewDetails); setViewDetails(null) }}>
-              <Pencil className="h-4 w-4 mr-1.5" />Edit limits
+            <Button onClick={() => { openEdit(viewDetails); setViewDetails(null) }}>
+              <Pencil className="h-4 w-4 mr-1.5" />Edit
             </Button>
           </ModalFooter>
         </Modal>
@@ -850,36 +838,11 @@ export function APIKeysPage() {
         </Modal>
       )}
 
-      {/* Compliance Edit Modal (v5.0.0) */}
-      {editCompliance && (
-        <Modal open onClose={() => setEditCompliance(null)} size="lg">
-          <ModalHeader onClose={() => setEditCompliance(null)}>
-            Compliance — {editCompliance.name || editCompliance.key_prefix}
-          </ModalHeader>
-          <ModalBody>
-            <ComplianceFieldsEditor
-              blockedCompanies={editBlockedCompanies}
-              setBlockedCompanies={setEditBlockedCompanies}
-              allowedPaths={editAllowedPaths}
-              setAllowedPaths={setEditAllowedPaths}
-              debugEchoEnabled={editDebugEcho}
-              setDebugEchoEnabled={setEditDebugEcho}
-            />
-          </ModalBody>
-          <ModalFooter>
-            <Button variant="ghost" onClick={() => setEditCompliance(null)}>Cancel</Button>
-            <Button onClick={saveComplianceEdit} loading={updateComplianceMutation.isPending}>
-              Save Compliance Policy
-            </Button>
-          </ModalFooter>
-        </Modal>
-      )}
-
       {/* Reason prompt for policy changes (decision 6) */}
       <ReasonPromptModal
         open={!!reasonPrompt}
         summary={reasonPrompt?.summary ?? ''}
-        loading={updateComplianceMutation.isPending}
+        loading={updateKeyMutation.isPending}
         onCancel={() => setReasonPrompt(null)}
         onConfirm={confirmReasonAndSave}
       />
