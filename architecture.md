@@ -22,7 +22,9 @@ app/
 │
 ├── api/
 │   ├── messages.py              POST /v1/messages — Anthropic wire format handler:
-│   │                              preflight, routing, cache, litellm/CoT dispatch
+│   │                              preflight, routing, cache, litellm/CoT dispatch.
+│   │                              v5.0.9: compliance orchestration extracted to
+│   │                              _compliance_handler (-166 LOC; 1095 → 929)
 │   ├── _messages_streaming.py   SSE generators: _stream_cot_anthropic / _stream_anthropic /
 │   │                              _stream_claude_oauth / _complete_claude_oauth /
 │   │                              _webhook_completion_anthropic (extracted 2026-04-23)
@@ -34,6 +36,14 @@ app/
 │   │                              — the cascade orchestration sub-block of the
 │   │                              non-streaming else-branch that messages.py used to
 │   │                              inline. messages.py 927 → 861 LOC.
+│   ├── _compliance_handler.py   v5.0.9: the four compliance orchestration sites
+│   │                              messages.py + completions.py used to mirror inline.
+│   │                              raise_if_banned_client_ua (451 path) /
+│   │                              raise_for_no_substitute_exception (503 / no-local 503) /
+│   │                              emit_substitution_disclosure_for_route (200 disclosure) /
+│   │                              disclosure_headers_for_upstream_error (502 disclosure).
+│   │                              Every v5.0.x patch touched both handlers in lockstep
+│   │                              before this extraction — net -166 LOC × 2.
 │   ├── completions.py           POST /v1/chat/completions — OpenAI wire format handler
 │   │                              v3.0.38: claude-oauth providers reachable here via
 │   │                              the wire-format translator (was excluded by v2.8.11)

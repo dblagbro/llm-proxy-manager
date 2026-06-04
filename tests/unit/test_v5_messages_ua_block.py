@@ -289,19 +289,29 @@ async def test_unbanned_ua_with_anthropic_blocklist_does_not_block(fixture_db_ua
 
 
 def test_messages_py_runs_ua_check_after_verify_api_key():
+    """v5.0.9 refactor: the inline UA-check pattern moved into
+    ``app/api/_compliance_handler.py``. messages.py now delegates via
+    ``raise_if_banned_client_ua``. The 451 path is asserted via the
+    helper's source instead (the helper is the single mirror)."""
     from pathlib import Path
-    src = Path("app/api/messages.py").read_text()
-    # The UA-check block must be present.
-    assert "detect_client_company(" in src
-    assert "client_product_refusal" in src
-    assert "client-product-banned" in src
-    assert "status_code=451" in src
+    msg_src = Path("app/api/messages.py").read_text()
+    helper_src = Path("app/api/_compliance_handler.py").read_text()
+    # messages.py wires the helper.
+    assert "raise_if_banned_client_ua(request, db, key_record)" in msg_src
+    # The helper holds the original 451 wire contract.
+    assert "detect_client_company(" in helper_src
+    assert "client_product_refusal" in helper_src
+    assert "client-product-banned" in helper_src
+    assert "status_code=451" in helper_src
 
 
 def test_completions_py_runs_ua_check_after_verify_api_key():
+    """Mirror of messages.py — same v5.0.9 extraction."""
     from pathlib import Path
-    src = Path("app/api/completions.py").read_text()
-    assert "detect_client_company(" in src
-    assert "client_product_refusal" in src
-    assert "client-product-banned" in src
-    assert "status_code=451" in src
+    cmp_src = Path("app/api/completions.py").read_text()
+    helper_src = Path("app/api/_compliance_handler.py").read_text()
+    assert "raise_if_banned_client_ua(request, db, key_record)" in cmp_src
+    assert "detect_client_company(" in helper_src
+    assert "client_product_refusal" in helper_src
+    assert "client-product-banned" in helper_src
+    assert "status_code=451" in helper_src

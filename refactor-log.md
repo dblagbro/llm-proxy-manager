@@ -1531,3 +1531,117 @@ One architecture document, no drift trap.
 1969 unit tests pass (4 new in `test_v3109`; 1 repointed). Behavior
 preserved — verified by the full suite plus the cross-family
 translation integration suite that exercises `/v1/messages`.
+
+---
+
+## v5.0.9 (2026-06-04) — extract `_compliance_handler.py` from messages.py + completions.py
+
+### Why
+
+The v5.0.0–v5.0.7 compliance ship duplicated four orchestration sites
+between `app/api/messages.py` and `app/api/completions.py`:
+
+1. UA pre-check (~50 lines verbatim in both)
+2. `ComplianceNoSubstituteError` / `ComplianceNoLocalProviderError`
+   → 503 conversion (~60 lines)
+3. Substitution disclosure setup + `emit_event` on 200 OK (~40 lines)
+4. Upstream-error 502 follow-up `emit_event` + header merge (~70 lines)
+
+Every v5.0.x patch (v5.0.1 / v5.0.2 / v5.0.4 / v5.0.6 / v5.0.7) touched
+both files in lockstep. The v5.0.4 F-anomaly fix had to add a new
+exception subclass + catch block in both. The v5.0.6 audit-field fix
+had to update 8 emit_event call sites across both. Per design.md the
+"three callers" rule is comfortably exceeded — we're at 5+ touches in
+24 hours with one near-verbatim mirror.
+
+### What
+
+Extracted into new `app/api/_compliance_handler.py`:
+
+- `raise_if_banned_client_ua(request, db, key_record)` — 451 path.
+- `raise_for_no_substitute_exception(exc, *, request, db, key_record, orig_request_model)` —
+  503 conversion. Single catch block (the LocalProvider error is a
+  subclass) so callers don't duplicate the try-except.
+- `emit_substitution_disclosure_for_route(request, db, route, key_record, orig_request_model)` —
+  returns `(headers_to_merge, sse_disclosure, wants_prelude)`. Caller
+  unpacks unconditionally.
+- `disclosure_headers_for_upstream_error(request, db, route, key_record, orig_request_model, status_code)` —
+  returns headers dict for the upstream-error path. Writes the
+  follow-up audit row. Swallows audit-write failures (v5.0.1
+  guarantee).
+
+The v5.0.6 invariant (`requested_model` field is the caller's
+ORIGINAL, captured at the top of the handler before the v3.0.36 body
+rewrite) is enforced via signature — every helper takes
+`orig_request_model` as a parameter, never reads `body["model"]`
+itself.
+
+### Files impacted
+
+- `app/api/_compliance_handler.py` (NEW, 377 LOC)
+- `app/api/messages.py` (1095 → 929; -166)
+- `app/api/completions.py` (961 → 795; -166, now back under design.md's 800 trigger)
+- `tests/unit/test_v509_compliance_handler_extraction.py` (NEW, 6 tests):
+  helper exports + static grep that messages.py + completions.py
+  no longer inline the patterns + invariant that `_orig_request_model`
+  is passed at every call site (the v5.0.6 contract).
+- `tests/unit/test_v5_messages_ua_block.py` — repointed the two
+  source-grep tests to look in the helper instead of the request
+  handlers.
+- `tests/unit/test_v5_disclosure_headers.py` — same repoint.
+- `tests/unit/test_v5_compliance_endpoints.py` — updated
+  test_me_compliance_returns_effective_blocklist for v5.0.8's
+  Request-based endpoint signature (the v5.0.8 dual-auth ship had
+  changed the function signature; the original test bypassed
+  request-based auth).
+- `architecture.md` — module map gained `_compliance_handler.py`.
+
+### Risks
+
+- The 503 / no-local-503 paths now share a single catch block (the
+  subclass relationship handles the dispatch internally). A future
+  contributor splitting them back out would need to also remove the
+  isinstance check in `raise_for_no_substitute_exception`. The static
+  test `test_emit_event_uses_orig_request_model_for_compliance_audits`
+  (from v5.0.6) catches the audit-field regression that bit pre-v5.0.6.
+
+### Decision NOT to continue with messages.py litellm/CoT dispatch tail extraction
+
+The refactor-log's "next target #1" from the v3.10.9 entry was to
+extract the litellm tail of messages.py. Re-evaluating after #1
+landed: the file is now at 929 LOC (vs the 800 trigger). What
+remains is mostly setup + delegations to ALREADY-EXTRACTED modules
+(`_messages_dispatch`, `_messages_streaming`, `_grok_web_dispatch`,
+`_codex_oauth_dispatch`, the new `_compliance_handler`). The litellm
+dispatch tail has heavy local-variable surface (extra, hint, body,
+x_cot_*, etc.) — extracting would create a fuzzy-bordered module
+purely to gain ~250 LOC, against design.md's "could be split but
+isn't painful — leave it." The high-frequency-touched code (the
+compliance orchestration) is now centralized; the litellm tail
+hasn't been edited in months. Stop here; queue when there's a
+concrete trigger.
+
+### Remaining issues / next refactor targets
+
+1. **app/cluster/sync.py** (1024 LOC) — over 800 trigger. v5.0.5 added
+   `_section_commit` helper but didn't extract per-table sub-applies
+   into named functions. Each table's merge loop is 30-80 LOC; extracting
+   each one into a static method on a `_SyncContext` (which holds db,
+   peer_costs, settings_to_apply, etc.) would bring sync.py to ~500 LOC
+   and make adding new tables to the cluster sync push obvious.
+   Deferred this pass: cluster/sync.py was the v5.0.5 incident area;
+   touching it in the same week as the incident invites a regression
+   the soak might not catch.
+2. **app/routing/router.py** (837 LOC) — marginal over 800. The v5.0.0
+   compliance pre-filter added ~60 LOC. Lower urgency.
+3. **app/providers/grok_web.py** (825 LOC) — refactor-log's v3.10.9
+   #3 target, "split along manual/bridge axis." Still pending.
+
+### Tests
+
+2625 unit tests pass (6 new in `test_v509`; 5 repointed/updated;
+1 v5.0.8 endpoint test signature-fixed). Behavior preserved —
+verified by the full suite. No live deploy needed for this pass yet
+since the helper module is import-shape-equivalent to the inlined
+code; will ship as part of the next code change that lands on the
+fleet.

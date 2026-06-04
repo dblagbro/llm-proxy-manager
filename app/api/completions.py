@@ -80,57 +80,10 @@ async def chat_completions(
     from app.routing.tenant import current_api_key_id
     current_api_key_id.set(key_record.id)
 
-    # v5.0.0 — compliance UA pre-check (decision 16 + 22). Fires BEFORE
-    # any provider routing — mirror of messages.py.
-    if getattr(_cfg_settings, "compliance_ua_block_enabled", True):
-        from app.compliance import (
-            detect_client_company, get_effective_blocklist,
-            refusal_headers_ua, emit_event, generate_audit_id,
-        )
-        _ua = request.headers.get("user-agent", "")
-        _detection = detect_client_company(_ua)
-        if _detection:
-            _company, _pattern, _product = _detection
-            _blocklist = await get_effective_blocklist(db, key_record.id)
-            if _company in _blocklist:
-                _audit_id = generate_audit_id()
-                await emit_event(
-                    db, audit_id=_audit_id, api_key_id=key_record.id,
-                    event_type="client_product_refusal",
-                    reason_code="client-product-banned",
-                    http_status=451,
-                    client_user_agent=_ua,
-                    matched_pattern=_pattern,
-                    blocked_company=_company,
-                    client_identity={
-                        "x_coordinator_client": request.headers.get("x-coordinator-client"),
-                        "x_coordinator_profile": request.headers.get("x-coordinator-profile"),
-                        "x_coordinator_client_version": request.headers.get("x-coordinator-client-version"),
-                        "x_coordinator_upstream_cli": request.headers.get("x-coordinator-upstream-cli"),
-                    },
-                    commit=True,
-                )
-                raise HTTPException(
-                    status_code=451,
-                    detail={"error": {
-                        "type": "compliance_block",
-                        "code": "client-product-banned",
-                        "matched_product": _product,
-                        "matched_company": _company,
-                        "matched_pattern": _pattern,
-                        "audit_id": _audit_id,
-                        "reason": (
-                            f"This API key's compliance policy prohibits clients "
-                            f"identified as products of {_company.title()}. Migrate "
-                            f"to a non-{_company.title()} client to continue."
-                        ),
-                    }},
-                    headers=refusal_headers_ua(
-                        matched_product=_product,
-                        matched_company=_company,
-                        audit_id=_audit_id,
-                    ),
-                )
+    # v5.0.0 → v5.0.9 — compliance UA pre-check extracted to
+    # ``_compliance_handler.raise_if_banned_client_ua``.
+    from app.api._compliance_handler import raise_if_banned_client_ua
+    await raise_if_banned_client_ua(request, db, key_record)
 
     # v4.4.15 (F-OBS-003) — caller-memory gating-header visibility.
     # See messages.py for the rationale.
@@ -225,13 +178,10 @@ async def chat_completions(
     from app.api._request_pipeline import (
         select_provider_with_503, resolve_auto_model_into_body,
     )
-    # v5.0.0 — convert ComplianceNoSubstituteError into a 503 with audit row
-    # + X-Compliance-Refusal headers (decision 4). Mirror of messages.py.
-    from app.compliance import (
-        ComplianceNoSubstituteError, ComplianceNoLocalProviderError,
-        refusal_headers_no_substitute, refusal_headers_no_local,
-        emit_event, generate_audit_id, model_family_to_company,
-    )
+    # v5.0.0 → v5.0.9 — `ComplianceNoSubstituteError` / `…NoLocalProviderError`
+    # → 503 conversion extracted to ``_compliance_handler.raise_for_no_substitute_exception``.
+    from app.compliance import ComplianceNoSubstituteError
+    from app.api._compliance_handler import raise_for_no_substitute_exception
     try:
         route = await select_provider_with_503(
             db, hint,
@@ -240,59 +190,10 @@ async def chat_completions(
             detailed_503=False,
             messages=body.get("messages"),
         )
-    # v5.0.4 — F-anomaly fix: see messages.py for rationale.
-    except ComplianceNoLocalProviderError:
-        _audit_id = generate_audit_id()
-        # v5.0.6 — consistency with messages.py (the mutation hasn't
-        # fired yet here, but future refactors must not silently regress
-        # the audit).
-        await emit_event(
-            db, audit_id=_audit_id, api_key_id=key_record.id,
-            event_type="compliance_no_local_provider",
-            reason_code="no-compliant-local-provider",
-            http_status=503,
-            requested_model=_orig_request_model,
-            client_user_agent=request.headers.get("user-agent", ""),
-            commit=True,
-        )
-        raise HTTPException(
-            status_code=503,
-            detail={"error": {
-                "type": "compliance_no_local_provider",
-                "audit_id": _audit_id,
-                "message": (
-                    "Coordinator-local was requested but no self-hosted provider "
-                    "is configured on this deployment. Operator action: enable a "
-                    "self-hosted provider (ollama/vllm/llamacpp/lmstudio/localai), "
-                    "or call a non-local logical alias (coordinator-code, "
-                    "coordinator-fast, coordinator-reasoning)."
-                ),
-            }},
-            headers=refusal_headers_no_local(audit_id=_audit_id),
-        )
-    except ComplianceNoSubstituteError:
-        _audit_id = generate_audit_id()
-        # v5.0.6 — _orig_request_model captured at line ~158.
-        _requested_model = _orig_request_model
-        _blocked_company = model_family_to_company(_requested_model)
-        await emit_event(
-            db, audit_id=_audit_id, api_key_id=key_record.id,
-            event_type="compliance_no_substitute",
-            reason_code="no-compliant-provider-available",
-            http_status=503,
-            requested_model=_requested_model,
-            blocked_company=_blocked_company,
-            client_user_agent=request.headers.get("user-agent", ""),
-            commit=True,
-        )
-        raise HTTPException(
-            status_code=503,
-            detail={"error": {
-                "type": "compliance_no_substitute",
-                "audit_id": _audit_id,
-                "message": "No compliance-compatible provider available for this request.",
-            }},
-            headers=refusal_headers_no_substitute(audit_id=_audit_id),
+    except ComplianceNoSubstituteError as _exc:
+        await raise_for_no_substitute_exception(
+            _exc, request=request, db=db, key_record=key_record,
+            orig_request_model=_orig_request_model,
         )
     body = resolve_auto_model_into_body(body, route, is_auto)
     # Kept as a local for downstream record_outcome calls (lines ~600-615).
@@ -378,51 +279,16 @@ async def chat_completions(
         from app.budget.tracker import warnings_for
         resp_headers.update(warnings_for(key_record.budget_status))
 
-    # v5.0.0 — compliance substitution disclosure (decision 8 + 15 + 23).
-    # Mirror of messages.py — see that file for the rationale.
-    _compliance_disclosure = None
-    _compliance_wants_sse_prelude = False
-    if getattr(route, "compliance_substituted", False):
-        from app.compliance import (
-            compliance_headers, build_disclosure_payload,
-            wants_sse_prelude, emit_event, generate_audit_id,
+    # v5.0.0 → v5.0.9 — substitution disclosure extracted to
+    # ``_compliance_handler.emit_substitution_disclosure_for_route``.
+    from app.api._compliance_handler import emit_substitution_disclosure_for_route
+    _headers_to_merge, _compliance_disclosure, _compliance_wants_sse_prelude = (
+        await emit_substitution_disclosure_for_route(
+            request, db, route, key_record, _orig_request_model,
         )
-        _audit_id = generate_audit_id()
-        # v5.0.6 — _orig_request_model captured at line ~158 before any
-        # body mutation; body.get("model") here would surface the
-        # served model (cross-family fallback rewrites body["model"]
-        # at line ~287).
-        _served_model = (
-            route.litellm_model or _orig_request_model
-        )
-        _compliance_disclosure = build_disclosure_payload(
-            blocked_company=route.compliance_blocked_company,
-            requested_model=_orig_request_model or "",
-            served_model=_served_model or "",
-            served_company=route.compliance_served_company,
-            served_provider_id=route.provider.id,
-            audit_id=_audit_id,
-        )
-        resp_headers.update(compliance_headers(
-            blocked_company=route.compliance_blocked_company,
-            requested_model=_orig_request_model or "",
-            served_model=_served_model or "",
-            served_company=route.compliance_served_company,
-            served_provider_id=route.provider.id,
-            audit_id=_audit_id,
-        ))
-        _compliance_wants_sse_prelude = wants_sse_prelude(request.headers)
-        await emit_event(
-            db, audit_id=_audit_id, api_key_id=key_record.id,
-            event_type="model_substitution",
-            reason_code=f"api-key-policy:blocked-company:{route.compliance_blocked_company}",
-            http_status=200,
-            requested_model=_orig_request_model,
-            served_model=_served_model,
-            served_provider_id=route.provider.id,
-            blocked_company=route.compliance_blocked_company,
-            client_user_agent=request.headers.get("user-agent", ""),
-        )
+    )
+    if _headers_to_merge:
+        resp_headers.update(_headers_to_merge)
 
     # v3.0.36: cross-family fallback — rewrite body['model'] to the resolved
     # served model so dispatchers that read body['model'] (codex-oauth,
@@ -914,44 +780,12 @@ async def chat_completions(
         # substitution decision is real even if the substituted provider
         # subsequently fails; caller deserves the headers so they know
         # which provider was tried under what policy.
-        error_headers = {}
-        if getattr(route, "compliance_substituted", False):
-            from app.compliance import (
-                compliance_headers as _ch,
-                generate_audit_id as _gid,
-                emit_event as _emit,
-            )
-            audit_id = _gid()
-            # v5.0.6 — use _orig_request_model for consistency with the
-            # messages.py audit + the 200/503 paths in this file. The
-            # local ``requested_model`` here is alias-resolved, which is
-            # subtly different from "what the caller wrote" — the audit
-            # row's ``requested_model`` field should reflect the
-            # caller's wire-level input, not our resolution of it.
-            error_headers = _ch(
-                blocked_company=getattr(route, "compliance_blocked_company", ""),
-                requested_model=_orig_request_model or "",
-                served_model=getattr(route, "litellm_model", "") or "",
-                served_company=getattr(route, "compliance_served_company", ""),
-                served_provider_id=route.provider.id,
-                audit_id=audit_id,
-            )
-            try:
-                await _emit(
-                    db,
-                    audit_id=audit_id,
-                    api_key_id=key_record.id,
-                    event_type="model_substitution",
-                    reason_code=f"api-key-policy:blocked-company:{getattr(route, 'compliance_blocked_company', '')}-upstream-error",
-                    http_status=status_code,
-                    requested_model=_orig_request_model,
-                    served_model=getattr(route, "litellm_model", None),
-                    served_provider_id=route.provider.id,
-                    blocked_company=getattr(route, "compliance_blocked_company", None),
-                    commit=True,
-                )
-            except Exception:
-                pass
+        # v5.0.9 — upstream-error disclosure extracted to
+        # ``_compliance_handler.disclosure_headers_for_upstream_error``.
+        from app.api._compliance_handler import disclosure_headers_for_upstream_error
+        error_headers = await disclosure_headers_for_upstream_error(
+            request, db, route, key_record, _orig_request_model, status_code,
+        )
         raise HTTPException(
             status_code,
             f"Upstream provider error ({cls}): {clean}",
