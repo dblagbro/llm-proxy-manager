@@ -49,20 +49,22 @@ def test_cluster_manager_includes_manual_override_in_payload():
 
 
 def test_cluster_sync_apply_handles_manual_override():
-    """The apply_sync path (sync.py) must update existing AND create-new
-    rows with the lock fields. Both branches read from p_data."""
-    src = Path("app/cluster/sync.py").read_text()
+    """The apply_sync path must update existing AND create-new rows with
+    the lock fields. Both branches read from p_data. v5.0.10 — extracted
+    from sync.py into sync_handlers._apply_providers."""
+    src = Path("app/cluster/sync_handlers.py").read_text()
     # Update branch — uses membership-test so null overwrites work
     assert '"manual_override_until" in p_data' in src
-    # Create branch — passes through to Provider kwargs
-    assert "manual_override_until=_parse_iso_or_none(p_data.get" in src
+    # Create branch — passes through to Provider kwargs (multi-line tolerated)
+    assert "manual_override_until=_parse_iso_or_none(" in src
+    assert 'p_data.get("manual_override_until")' in src
 
 
 def test_cluster_sync_apply_handles_codex_fields():
     """v3.7.27 (#245) gap caught in v3.7.28 ship: the codex_* fields
     were added but not wired into cluster sync. Verify they're now
-    replicated."""
-    src = Path("app/cluster/sync.py").read_text()
+    replicated. v5.0.10 — extracted into sync_handlers._apply_providers."""
+    src = Path("app/cluster/sync_handlers.py").read_text()
     assert "codex_usage_endpoint_url" in src
     assert "codex_session_captured_at" in src
     # Cookies must NOT be synced (auth material stays on capture node)

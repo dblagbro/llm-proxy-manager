@@ -82,20 +82,25 @@ def test_build_payload_does_not_include_cookies():
 
 
 def test_apply_pass_updates_billing_fields_on_existing_rows():
+    """v5.0.10 — providers merge extracted to sync_handlers._apply_providers."""
     from pathlib import Path
-    src = Path("app/cluster/sync.py").read_text()
-    # The update path (else branch — existing row found)
-    assert 'existing.anthropic_org_uuid = p_data.get("anthropic_org_uuid")' in src
-    assert 'existing.auto_skip_reason = p_data.get("auto_skip_reason")' in src
+    src = Path("app/cluster/sync_handlers.py").read_text()
+    # The update path (else branch — existing row found). Tolerates multi-
+    # line p_data.get(...) reformatting in sync_handlers.
+    assert "existing.anthropic_org_uuid = p_data.get(" in src
+    assert '"anthropic_org_uuid"' in src
+    assert "existing.auto_skip_reason = p_data.get(" in src
+    assert '"auto_skip_reason"' in src
     # auto_skip_until needs the ISO parse — check both branches present
-    assert "datetime.fromisoformat" in src
+    assert "datetime.fromisoformat" in src or "_parse_iso_or_none" in src
 
 
 def test_apply_pass_creates_new_rows_with_billing_fields():
     """New peer-imported rows must include the new fields so a fresh
-    node doesn't lose the auto-skip state mid-replication."""
+    node doesn't lose the auto-skip state mid-replication. v5.0.10 —
+    extracted to sync_handlers._apply_providers."""
     from pathlib import Path
-    src = Path("app/cluster/sync.py").read_text()
+    src = Path("app/cluster/sync_handlers.py").read_text()
     # Provider(...) constructor block at the row-insert path
     insert_marker = "owned_by_key_id=p_data.get(\"owned_by_key_id\")"
     insert_idx = src.index(insert_marker)

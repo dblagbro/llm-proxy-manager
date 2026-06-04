@@ -1645,3 +1645,107 @@ verified by the full suite. No live deploy needed for this pass yet
 since the helper module is import-shape-equivalent to the inlined
 code; will ship as part of the next code change that lands on the
 fleet.
+
+---
+
+## v5.0.10 — Extract api_keys + providers merges from sync.py
+
+**Date:** 2026-06-04
+**Shipped:** v5.0.10
+
+### Motivation
+
+sync.py was 1024 LOC (>800-LOC design.md trigger). The two largest
+inline blocks — the api_keys merge (189 LOC) and the providers merge
+(262 LOC) — totaled ~451 LOC inside `apply_sync()`. The other
+per-table sub-applies (blocked_ips, ai_reviews, caller_memory, etc.)
+already live in `sync_handlers.py` under an `_apply_<table>` naming
+pattern. The api_keys + providers blocks were extracted in this pass
+to bring sync.py under the 800-LOC trigger and unify the codebase
+around the existing handler pattern.
+
+### Extraction
+
+Added to `app/cluster/sync_handlers.py`:
+
+- `_parse_iso_naive_utc(v)` — strips tzinfo for naive comparisons
+  against SQLite-loaded datetimes (the helper that was inline at
+  `apply_sync._parse_iso`).
+- `_parse_iso_keep_naive(v)` — accepts both `datetime` and ISO
+  strings; used for the api_keys `deleted_at` column.
+- `_apply_api_keys(db, rows) -> dict[str, float]` — full api_keys
+  merge: tombstone-aware LWW (v4.4.20), full-field UPDATE coverage
+  (v4.4.18), full-field INSERT coverage (v4.4.25), BUG-080 .limit(1)
+  guards, v5.0.0 compliance-cache invalidation on per-key policy
+  change. Returns the per-key `total_cost_usd` map so apply_sync can
+  stash it in `_peer_key_costs[source_node]`.
+- `_apply_providers(db, rows) -> None` — full providers merge:
+  tombstone semantics, dual-lookup (by id then name), v3.5.9 BUG-012
+  CB-state cleanup on disable, v3.2.7 legacy updated_at fallback,
+  manual-override + codex/anthropic capture fields preserved,
+  `register_provider()` invoked on every applied row. BUG-080
+  .limit(1) guards on both lookups.
+
+In `apply_sync()` (sync.py), the inline blocks collapsed to:
+
+```python
+peer_costs = await _apply_api_keys(db, payload.get("api_keys", []))
+_peer_key_costs[source_node] = peer_costs
+await _section_commit("api_keys")
+
+await _apply_providers(db, payload.get("providers", []))
+await _section_commit("providers")
+```
+
+The inner `_parse_iso` function definition (15 LOC) and the
+`from app.monitoring.status import register_provider` import (both
+inside `apply_sync()`) are now in the handlers, not in sync.py. The
+remaining `_parse_iso` reference at model_capabilities (line 373 pre-
+refactor) was repointed to the new module-level `_parse_iso_naive_utc`
+imported from sync_handlers.
+
+### Result
+
+- `app/cluster/sync.py`: 1024 → 573 LOC (under the 800 trigger,
+  matching the post-#1 prediction in the prior refactor-log entry).
+- `app/cluster/sync_handlers.py`: 685 → 1002 LOC. Still under 1500
+  (the next trigger band per design.md); the per-table handler
+  pattern naturally distributes by table count.
+- `apply_sync()` body now reads as a clean orchestrator: each
+  `_apply_*` call paired with its `_section_commit` boundary. New
+  developers adding a table to the sync push have a clear pattern.
+
+### Tests
+
+2631 unit tests pass (6 new in `tests/unit/test_v510_sync_extraction.py`;
+4 static-pin tests repointed to `sync_handlers.py`; 2 BUG-080 .limit(1)
+guards added to handlers to satisfy `test_v4424_cluster_sync_robustness`).
+Behavior preserved — all the existing tombstone, LWW, field-coverage,
+and compliance-cache invalidation tests continue to pass.
+
+### Risks
+
+- The api_keys merge now releases the v5.0.5 section commit boundary
+  via a return-then-assign hop (helper returns peer_costs; caller
+  assigns to `_peer_key_costs[source_node]` then commits). If a
+  future contributor inlines the helper back without preserving the
+  commit boundary, the v5.0.5 slow-degradation bug returns. The
+  static test `test_section_commit_boundaries_preserved` catches the
+  removal of the per-section commits.
+- The two extracted helpers grew from a place that touched module-
+  level state (`_peer_key_costs` for api_keys; `register_provider`
+  for providers). The api_keys peer_costs is now passed back via
+  return value (no module state coupling); providers'
+  `register_provider` was already a side-effect call into another
+  module (no change). Net: the extraction strictly reduces coupling.
+
+### Remaining issues / next refactor targets
+
+1. **app/routing/router.py** (837 LOC) — marginal over 800. The
+   v5.0.0 compliance pre-filter added ~60 LOC. Lower urgency.
+2. **app/providers/grok_web.py** (825 LOC) — refactor-log's v3.10.9
+   #3 target, "split along manual/bridge axis." Still pending.
+3. **app/providers/_avaya_scraper.py** (1080 LOC) — the largest
+   remaining file. Logical split candidates: capture loop / parse /
+   persist. Lower priority than router.py — Avaya scraper is
+   relatively cold (no active feature work).

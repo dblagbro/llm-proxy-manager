@@ -171,11 +171,15 @@ app/
 │
 ├── cluster/
 │   ├── manager.py           Peer state, heartbeat loop, push-sync outgoing
-│   ├── sync.py              apply_sync() — incoming peer data merge orchestrator; peer cost tracking
+│   ├── sync.py              apply_sync() — incoming peer data merge orchestrator; peer cost
+│   │                          tracking. v5.0.10: api_keys + providers extracted; sync.py
+│   │                          1024 → 573 LOC (under 800 trigger).
 │   ├── sync_handlers.py     Per-table _apply_<table> handlers (v3.9.8 P5 refactor):
 │   │                          _apply_blocked_ips, _apply_ai_reviews,
 │   │                          _apply_provider_ai_reviews, _apply_caller_memory,
-│   │                          _apply_caller_memory_markers, _apply_external_usage_snapshots
+│   │                          _apply_caller_memory_markers, _apply_external_usage_snapshots,
+│   │                          _apply_compliance_events, _apply_compliance_policy_changes
+│   │                          (v5.0.0), _apply_api_keys, _apply_providers (v5.0.10)
 │   └── auth.py              HMAC signing/verification primitives (sign_payload, verify_payload,
 │                              verify_cluster_request, auth_headers_for)
 │
