@@ -95,7 +95,16 @@ async def _resolve_api_key(raw_key: str):
 async def _emit_path_block_event(api_key_id: str, path: str, ua: Optional[str]) -> str:
     """Write the ``path_not_allowed`` compliance row in its own session
     (commit=True). Returns the generated audit_id so callers can echo
-    it in the 403 response + X-Compliance-Audit-Id header."""
+    it in the 403 response + X-Compliance-Audit-Id header.
+
+    v5.0.13: the rejected request path lands in ``matched_pattern`` so the
+    audit row is self-contained — pre-v5.0.13 the column was NULL and
+    operators had to grep the nginx access log to identify the offending
+    URL (which is how we spotted the hub's ``/v1/v1/messages`` double-
+    prefix bug). The string is the normalized path the middleware checked
+    against ``key.allowed_paths`` — same value as the JSON body's
+    ``requested_path`` field.
+    """
     audit_id = generate_audit_id()
     try:
         from app.models.database import AsyncSessionLocal
@@ -108,6 +117,7 @@ async def _emit_path_block_event(api_key_id: str, path: str, ua: Optional[str]) 
                 reason_code="path-not-in-allowed_paths",
                 http_status=403,
                 client_user_agent=ua,
+                matched_pattern=path,
                 commit=True,
             )
     except Exception as exc:
