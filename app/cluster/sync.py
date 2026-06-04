@@ -38,7 +38,38 @@ def get_peer_total_cost(key_id: str) -> float:
 
 
 async def apply_sync(db: AsyncSession, payload: dict) -> None:
-    """Merge incoming user/key/provider/settings data from a peer (insert-if-missing strategy)."""
+    """Merge incoming user/key/provider/settings data from a peer (insert-if-missing strategy).
+
+    v5.0.5: commit between major sub-sections to keep the SQLite write
+    lock held in short bursts instead of one 10-20s span. Pre-v5.0.5 the
+    receiver wrapped 10+ tables × thousands of rows × row-by-row dedup
+    in a single transaction; while the lock was held, every other writer
+    on the node (per-request metrics rollup, auth lookups, allowed_paths
+    middleware) hit SQLite's busy_timeout and threw
+    "database is locked". The fix preserves correctness — each sub-
+    section is independent (no FK that requires cross-section
+    atomicity for the merge to make sense) — while bounding each lock
+    hold to one table's worth of writes.
+
+    Helper closure ``_section_commit`` keeps the existing failure
+    semantics: a per-section commit failure logs and continues to the
+    next section (the prior failure pattern was "one section fails →
+    everything rolls back"; we deliberately accept partial sync on
+    error in exchange for short locks).
+    """
+    async def _section_commit(label: str) -> None:
+        try:
+            await db.commit()
+        except Exception as exc:
+            logger.warning(
+                "cluster_sync.section_commit_failed label=%s err=%s",
+                label, exc,
+            )
+            try:
+                await db.rollback()
+            except Exception:
+                pass
+
     for u_data in payload.get("users", []):
         result = await db.execute(select(User).where(User.username == u_data["username"]))
         existing = result.scalar_one_or_none()
@@ -49,6 +80,7 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
                 password_hash=u_data["password_hash"],
                 role=u_data.get("role", "user"),
             ))
+    await _section_commit("users")
 
     source_node = payload.get("source_node", "unknown")
     peer_costs: dict[str, float] = {}
@@ -254,6 +286,10 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
         if dt.tzinfo is not None:
             dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
         return dt
+
+    # v5.0.5 — commit api_keys before starting providers so the write
+    # lock is released between sections (see apply_sync docstring).
+    await _section_commit("api_keys")
 
     for p_data in payload.get("providers", []):
         peer_deleted_at = _parse_iso(p_data.get("deleted_at"))
@@ -516,6 +552,9 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
         db.add(p)
         register_provider(p.id, p.provider_type, p.hold_down_sec, p.failure_threshold)
 
+    # v5.0.5 — commit providers before settings.
+    await _section_commit("providers")
+
     # Merge settings — last-write-wins by updated_at timestamp
     from app import config_runtime
     settings_to_apply: dict = {}
@@ -551,6 +590,9 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
             logger.info("cluster_sync_normalized_ties count=%s", bumped)
     except Exception:
         logger.exception("priority-tie normalization failed during sync apply")
+
+    # v5.0.5 — commit settings before runs.
+    await _section_commit("settings")
 
     # R5: ingest replicated Run state. Last-write-wins by updated_at.
     # Workers do NOT spawn here — only the owner_node_id node spawns; if
@@ -611,6 +653,9 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
                 updated_at=incoming_ts or time.time(),
                 completed_at=r_data.get("completed_at"),
             ))
+
+    # v5.0.5 — commit runs before lmrh.
+    await _section_commit("runs")
 
     # v3.0.25: replicate the LMRH dim registry + proposals queue.
     # Dims are immutable once registered (the canonical name space is the
@@ -907,27 +952,43 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
             if p_data.get("notes") != existing.notes:
                 existing.notes = p_data.get("notes")
 
+    # v5.0.5 — commit lmrh / runs / model_capabilities / model_aliases /
+    # oauth_capture_profiles together. These were authored under one
+    # transaction historically; keeping them grouped preserves the
+    # "all-or-nothing for slow-growing tables" property while still
+    # releasing the lock between this batch and the bigger ones below.
+    await _section_commit("lmrh+runs+capabilities+aliases+oauth")
+
     # v3.7.15 — BUG-016: merge the three v3.7.x tables. LWW by
     # added_at / captured_at. Tracks whether the block-list mutated
     # so we can invalidate the middleware cache after commit
     # (BUG-018 fix).
     blocked_ips_changed = await _apply_blocked_ips(db, payload.get("blocked_ips", []))
+    await _section_commit("blocked_ips")
     await _apply_ai_reviews(db, payload.get("api_key_ai_reviews", []))
+    await _section_commit("ai_reviews")
     await _apply_external_usage_snapshots(db, payload.get("external_usage_snapshots", []))
+    await _section_commit("external_usage_snapshots")
     # v4.4 M-2 — per-node bridge auth state (Path A foundation).
     await _apply_provider_node_auth_states(db, payload.get("provider_node_auth_states", []))
+    await _section_commit("provider_node_auth_states")
+    # v5.0.5 — provider_ai_reviews is the largest+slowest section (5K+ rows
+    # at scale); committing immediately after it is what halts the
+    # 12+s write-lock-thrash that triggered today's incident.
     await _apply_provider_ai_reviews(db, payload.get("provider_ai_reviews", []))
+    await _section_commit("provider_ai_reviews")
     # v3.8.7 (#267) Phase 2 — caller memory king-store
     await _apply_caller_memory(db, payload.get("caller_memory", []))
     await _apply_caller_memory_markers(db, payload.get("caller_memory_markers", []))
+    await _section_commit("caller_memory")
     # v5.0.0 — compliance audit trail. Both handlers are append-only;
     # they dedupe on the unique business key (audit_id / policy_change_id)
     # and skip duplicates so re-applying the last 1000 rows on every
     # sync round is idempotent.
     await _apply_compliance_events(db, payload.get("compliance_events", []))
     await _apply_compliance_policy_changes(db, payload.get("compliance_policy_changes", []))
-
-    await db.commit()
+    # Final tail commit covers compliance + any leftover state.
+    await _section_commit("compliance+tail")
 
     # v3.7.15 — BUG-018: peer nodes were waiting up to 30s for their
     # in-memory cache to expire after an admin block was synced. Now
