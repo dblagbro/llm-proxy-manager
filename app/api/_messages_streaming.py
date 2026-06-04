@@ -369,12 +369,9 @@ async def _stream_anthropic(
             f'data: {{"type":"message_delta","delta":{{"stop_reason":"{stop_reason}",'
             f'"stop_sequence":null}},"usage":{{{",".join(usage_parts)}}}}}\n\n'
         ).encode()
-        if budget_total > 0:
-            remaining = max(0, budget_total - output_tokens)
-            yield (
-                f'event: budget\ndata: {{"remaining":{remaining},'
-                f'"used":{output_tokens},"total":{budget_total}}}\n\n'
-            ).encode()
+        # v5.0.12 — removed mid-stream ``event: budget`` SSE frame.
+        # See _completions_streaming.py for context (Vercel-AI-SDK consumer
+        # incompatibility). Budget remains on X-Token-Budget-Remaining header.
         yield b'data: {"type":"message_stop"}\n\ndata: [DONE]\n\n'
         await record_outcome(db, provider_id, model, success=True,
                              in_tok=input_tokens, out_tok=output_tokens, t0=t0,

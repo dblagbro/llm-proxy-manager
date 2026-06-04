@@ -221,12 +221,11 @@ async def _stream_openai(
                     pass
                 _need_compliance_inject = False
             yield f"data: {_payload}\n\n".encode()
-        if budget_total > 0:
-            remaining = max(0, budget_total - out_tok)
-            yield (
-                f'event: budget\ndata: {{"remaining":{remaining},'
-                f'"used":{out_tok},"total":{budget_total}}}\n\n'
-            ).encode()
+        # v5.0.12 — removed mid-stream ``event: budget`` SSE frame. Vercel
+        # AI SDK consumers (OpenCode, Cursor IDE, continue.dev) Zod-validate
+        # every ``data:`` line against {choices}|{error}; the budget frame
+        # crashed them on invalid_union. Budget info still on the
+        # ``X-Token-Budget-Remaining`` response header (set pre-stream).
         yield b"data: [DONE]\n\n"
         await record_outcome(db, provider_id, model, endpoint="completions", success=True,
                              in_tok=in_tok, out_tok=out_tok, t0=t0,

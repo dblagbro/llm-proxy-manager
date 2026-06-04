@@ -18,9 +18,10 @@ def collect_sse(resp: requests.Response) -> list[dict]:
 
     Excludes:
       - ``[DONE]`` sentinel
-      - Events from non-default ``event:`` channels (e.g. the proxy's
-        ``event: budget`` heartbeat) — those use a different payload
-        shape and Anthropic-Messages tests don't expect them.
+      - Events from non-default ``event:`` channels. v5.0.12 dropped the
+        proxy's ``event: budget`` frame (broke Vercel-AI-SDK consumers);
+        kept the channel-skip logic so future custom channels stay
+        opt-in for downstream tests.
 
     The ``event: <kind>`` line precedes the ``data:`` line on a custom
     channel; we track the most recent ``event:`` and skip its data.
