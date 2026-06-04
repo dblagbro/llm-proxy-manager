@@ -210,6 +210,16 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"prune loop failed to start: {e}")
 
+    # v5.0.1: daily compliance audit worker — computes the prior-day
+    # integrity hash chain (decision 10) + purges compliance_events
+    # older than the retention window (decision 7, default 7 years).
+    # Boot-delayed 90 min so the prune sweep (1h delay) lands first.
+    try:
+        from app.monitoring.compliance_audit_worker import start as start_compliance_audit
+        start_compliance_audit()
+    except Exception as e:
+        logger.warning(f"compliance audit worker failed to start: {e}")
+
     # v3.0.62: per-provider usage-window tracking (rolling 5h session +
     # weekly reset). Operator opts in per provider via
     # ``providers.usage_tracking_enabled``. Updates ``provider_usage_windows``
