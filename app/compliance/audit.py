@@ -74,6 +74,16 @@ async def emit_event(
     transaction. Set ``commit=True`` for error paths that need an
     immediate flush (e.g. 451/503 raise before the request handler
     would commit).
+
+    ``matched_pattern`` is the salient string for the event type:
+
+      - ``client_product_refusal``  → UA pattern (e.g. ``claude-cli/``)
+      - ``path_not_allowed`` (v5.0.13+)  → normalized rejected path
+      - ``model_substitution``      → typically ``None`` (the
+        requested/served model columns carry the diagnostic)
+
+    Reading a single ``compliance_events`` row should let an operator
+    reconstruct what got blocked without grepping the access log.
     """
     row = ComplianceEvent(
         audit_id=audit_id,
