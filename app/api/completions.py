@@ -156,6 +156,13 @@ async def chat_completions(
         pass
 
     body = await request.json()
+    # v5.0.6 — capture the caller's ORIGINAL model name before any
+    # rewriting downstream. See messages.py:168 for the full
+    # rationale. The v3.0.36 cross-family-fallback rewrite at line
+    # ~290 mutates body["model"] to the served-model-native, so audit
+    # writes downstream that read body.get("model") get the served
+    # model. Capturing here is the single-point fix.
+    _orig_request_model = body.get("model") if isinstance(body, dict) else None
     # v3.5.8 BUG-004 fix — validate request shape at the input boundary
     # so missing model/messages return 400 instead of cascading to a
     # 502 with upstream error leakage. See _input_validation.py +
@@ -236,13 +243,15 @@ async def chat_completions(
     # v5.0.4 — F-anomaly fix: see messages.py for rationale.
     except ComplianceNoLocalProviderError:
         _audit_id = generate_audit_id()
-        _requested_model = body.get("model")
+        # v5.0.6 — consistency with messages.py (the mutation hasn't
+        # fired yet here, but future refactors must not silently regress
+        # the audit).
         await emit_event(
             db, audit_id=_audit_id, api_key_id=key_record.id,
             event_type="compliance_no_local_provider",
             reason_code="no-compliant-local-provider",
             http_status=503,
-            requested_model=_requested_model,
+            requested_model=_orig_request_model,
             client_user_agent=request.headers.get("user-agent", ""),
             commit=True,
         )
@@ -263,7 +272,8 @@ async def chat_completions(
         )
     except ComplianceNoSubstituteError:
         _audit_id = generate_audit_id()
-        _requested_model = body.get("model")
+        # v5.0.6 — _orig_request_model captured at line ~158.
+        _requested_model = _orig_request_model
         _blocked_company = model_family_to_company(_requested_model)
         await emit_event(
             db, audit_id=_audit_id, api_key_id=key_record.id,
@@ -378,12 +388,16 @@ async def chat_completions(
             wants_sse_prelude, emit_event, generate_audit_id,
         )
         _audit_id = generate_audit_id()
+        # v5.0.6 — _orig_request_model captured at line ~158 before any
+        # body mutation; body.get("model") here would surface the
+        # served model (cross-family fallback rewrites body["model"]
+        # at line ~287).
         _served_model = (
-            route.litellm_model or body.get("model")
+            route.litellm_model or _orig_request_model
         )
         _compliance_disclosure = build_disclosure_payload(
             blocked_company=route.compliance_blocked_company,
-            requested_model=body.get("model") or "",
+            requested_model=_orig_request_model or "",
             served_model=_served_model or "",
             served_company=route.compliance_served_company,
             served_provider_id=route.provider.id,
@@ -391,7 +405,7 @@ async def chat_completions(
         )
         resp_headers.update(compliance_headers(
             blocked_company=route.compliance_blocked_company,
-            requested_model=body.get("model") or "",
+            requested_model=_orig_request_model or "",
             served_model=_served_model or "",
             served_company=route.compliance_served_company,
             served_provider_id=route.provider.id,
@@ -403,7 +417,7 @@ async def chat_completions(
             event_type="model_substitution",
             reason_code=f"api-key-policy:blocked-company:{route.compliance_blocked_company}",
             http_status=200,
-            requested_model=body.get("model"),
+            requested_model=_orig_request_model,
             served_model=_served_model,
             served_provider_id=route.provider.id,
             blocked_company=route.compliance_blocked_company,
@@ -908,9 +922,15 @@ async def chat_completions(
                 emit_event as _emit,
             )
             audit_id = _gid()
+            # v5.0.6 — use _orig_request_model for consistency with the
+            # messages.py audit + the 200/503 paths in this file. The
+            # local ``requested_model`` here is alias-resolved, which is
+            # subtly different from "what the caller wrote" — the audit
+            # row's ``requested_model`` field should reflect the
+            # caller's wire-level input, not our resolution of it.
             error_headers = _ch(
                 blocked_company=getattr(route, "compliance_blocked_company", ""),
-                requested_model=requested_model or "",
+                requested_model=_orig_request_model or "",
                 served_model=getattr(route, "litellm_model", "") or "",
                 served_company=getattr(route, "compliance_served_company", ""),
                 served_provider_id=route.provider.id,
@@ -924,7 +944,7 @@ async def chat_completions(
                     event_type="model_substitution",
                     reason_code=f"api-key-policy:blocked-company:{getattr(route, 'compliance_blocked_company', '')}-upstream-error",
                     http_status=status_code,
-                    requested_model=requested_model,
+                    requested_model=_orig_request_model,
                     served_model=getattr(route, "litellm_model", None),
                     served_provider_id=route.provider.id,
                     blocked_company=getattr(route, "compliance_blocked_company", None),
