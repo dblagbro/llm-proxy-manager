@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Plus, Trash2, Pencil, Eye, ArrowUp, ArrowDown, ArrowUpDown, Key as KeyIcon, EyeOff, ClipboardList, Shield } from 'lucide-react'
 import { keysApi } from '@/api'
@@ -126,6 +126,66 @@ export function APIKeysPage() {
       setRevealedKeys(r => ({ ...r, [id]: resp.raw_key }))
     } catch (e: any) {
       toast.error(e.message || 'Could not reveal — key was created before encryption was added. Delete and create a new one.')
+    }
+  }
+
+  // v5.0.8 — "Show all keys" toggle. Session-persisted in sessionStorage so
+  // it survives page navigation but resets at logout. When ON, every key with
+  // can_reveal=true auto-reveals on render; per-row hide still works (it
+  // overrides for that row).
+  function readShowAllPref(): boolean {
+    try { return sessionStorage.getItem('apikeys.show_all') === '1' } catch { return false }
+  }
+  function writeShowAllPref(v: boolean): void {
+    try { sessionStorage.setItem('apikeys.show_all', v ? '1' : '0') } catch { /* noop */ }
+  }
+  const [showAllKeys, setShowAllKeys] = useState<boolean>(readShowAllPref)
+
+  // v5.0.8 — when the page mounts (or keys arrive) with showAllKeys=true
+  // (persisted from a prior session), fire the bulk reveal once.
+  useEffect(() => {
+    if (!showAllKeys || !keys) return
+    const toFetch = keys.filter((k: any) => k.can_reveal && !revealedKeys[k.id])
+    if (toFetch.length === 0) return
+    let cancelled = false
+    ;(async () => {
+      const results = await Promise.allSettled(toFetch.map((k: any) => keysApi.reveal(k.id)))
+      if (cancelled) return
+      const newRevealed: Record<string, string> = {}
+      results.forEach((r, i) => {
+        if (r.status === 'fulfilled') newRevealed[toFetch[i].id] = r.value.raw_key
+      })
+      if (Object.keys(newRevealed).length > 0) {
+        setRevealedKeys(prev => ({ ...prev, ...newRevealed }))
+      }
+    })()
+    return () => { cancelled = true }
+    // Only depends on the key id set; ignore revealedKeys to avoid loops.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showAllKeys, (keys ?? []).map((k: any) => k.id).join(',')])
+
+  async function toggleShowAll() {
+    const next = !showAllKeys
+    setShowAllKeys(next)
+    writeShowAllPref(next)
+    if (next && keys) {
+      // Reveal everything that can be revealed and isn't already shown.
+      const toFetch = keys.filter((k: any) => k.can_reveal && !revealedKeys[k.id])
+      const results = await Promise.allSettled(toFetch.map((k: any) => keysApi.reveal(k.id)))
+      const newRevealed: Record<string, string> = {}
+      results.forEach((r, i) => {
+        if (r.status === 'fulfilled') newRevealed[toFetch[i].id] = r.value.raw_key
+      })
+      if (Object.keys(newRevealed).length > 0) {
+        setRevealedKeys(prev => ({ ...prev, ...newRevealed }))
+      }
+      const failures = results.filter(r => r.status === 'rejected').length
+      if (failures > 0) {
+        toast.error(`${failures} key${failures === 1 ? '' : 's'} could not be revealed (created before encryption was added)`)
+      }
+    } else if (!next) {
+      // Collapse back — clear revealed state so rows return to prefix display.
+      setRevealedKeys({})
     }
   }
 
@@ -351,6 +411,21 @@ export function APIKeysPage() {
               <Trash2 className="h-4 w-4 mr-1.5" />Delete {selectedIds.size}
             </Button>
           )}
+          {/* v5.0.8 — bulk reveal toggle (session-persisted) */}
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={toggleShowAll}
+            title={showAllKeys
+              ? 'Hide all key values (collapse back to prefixes)'
+              : 'Reveal all key values that can be revealed (per-key 👁 still works)'}
+          >
+            {showAllKeys ? (
+              <><EyeOff className="h-4 w-4 mr-1.5" />Hide keys</>
+            ) : (
+              <><Eye className="h-4 w-4 mr-1.5" />Show keys</>
+            )}
+          </Button>
           <Button size="sm" onClick={() => setShowCreate(true)}><Plus className="h-4 w-4 mr-1.5" />Create Key</Button>
         </div>
       </div>

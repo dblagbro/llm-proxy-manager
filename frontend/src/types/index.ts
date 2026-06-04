@@ -227,7 +227,13 @@ export const KNOWN_COMPANIES: CompanyChoice[] = [
 ]
 
 // v5.0.0 — /api/me/compliance response shape.
-export interface MyComplianceResponse {
+// v5.0.8 — endpoint now returns one of two shapes depending on auth path:
+//   view="per_key"  (called with api_key)     — original per-key transparency
+//   view="system"   (called with session)     — admin operator's system-wide view
+export interface PerKeyComplianceView {
+  view: 'per_key'
+  api_key_id: string
+  api_key_name: string
   per_key_blocked_companies: string[]
   system_blocked_companies: string[]
   effective_blocked_companies: string[]
@@ -236,15 +242,34 @@ export interface MyComplianceResponse {
   recent_substitutions_24h: number
   recent_451_count_24h: number
   last_policy_change: {
-    changed_at: string
-    changed_by: string | null
-    field: string
-    old_value: unknown
-    new_value: unknown
+    changed_at: string | null
     reason: string | null
+    changed_by_user_id: string | null
   } | null
   compliance_disclaimer_url: string | null
+  policy_active_at: string
 }
+
+export interface SystemComplianceView {
+  view: 'system'
+  viewer_username: string
+  viewer_role: string
+  system_blocked_companies: string[]
+  effective_blocked_companies: string[]
+  keys_with_per_key_policy: number
+  fleet_recent_substitutions_24h: number
+  fleet_recent_451_count_24h: number
+  last_policy_change: {
+    changed_at: string | null
+    scope: string
+    reason: string | null
+    changed_by_user_id: string | null
+  } | null
+  compliance_disclaimer_url: string | null
+  policy_active_at: string
+}
+
+export type MyComplianceResponse = PerKeyComplianceView | SystemComplianceView
 
 // v5.0.0 — compliance_events row.
 export type ComplianceEventType =
