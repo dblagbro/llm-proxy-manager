@@ -215,27 +215,43 @@ async def test_admin_events_json_shape():
 
 @pytest.mark.asyncio
 async def test_me_compliance_returns_effective_blocklist():
+    """v5.0.8 — endpoint takes (request, db) and resolves the key via
+    Authorization/x-api-key header. Test simulates that by hashing the
+    seeded key + setting the bearer header on a stub request. The
+    response payload now carries ``view='per_key'`` plus the original
+    per-key fields (api_key_id/name added).
+    """
+    import hashlib
+    from starlette.datastructures import Headers
+    from app.compliance import generate_audit_id
     Session = await _fresh_db()
     invalidate_blocklist_cache(None)
+    raw_key = "sk-test-me-compliance"
     async with Session() as db:
         db.add(ApiKey(
-            id="key-1", name="t", key_hash="h", key_prefix="p",
+            id="key-1", name="t",
+            key_hash=hashlib.sha256(raw_key.encode()).hexdigest(),
+            key_prefix=raw_key[:8],
             blocked_companies=["anthropic"],
             allowed_paths=["/v1/chat/completions"],
         ))
         await db.flush()
-        # Seed a 451 event in the 24h window
         await emit_event(
-            db, audit_id="comp_z", api_key_id="key-1",
+            db, audit_id=generate_audit_id(), api_key_id="key-1",
             event_type="client_product_refusal",
             reason_code="client-product-banned",
             http_status=451, commit=True,
         )
-    key = _mk_record(key_id="key-1", blocked=["anthropic"],
-                     allowed_paths=["/v1/chat/completions"])
+
+    class _StubRequest:
+        def __init__(self, raw):
+            self.headers = Headers({"authorization": f"Bearer {raw}"})
+
     async with Session() as db:
-        result = await me_compliance(db=db, key=key)
+        result = await me_compliance(_StubRequest(raw_key), db=db)
     invalidate_blocklist_cache(None)
+    assert result["view"] == "per_key"
+    assert result["api_key_id"] == "key-1"
     assert "anthropic" in result["effective_blocked_companies"]
     assert result["per_key_blocked_companies"] == ["anthropic"]
     assert result["allowed_paths"] == ["/v1/chat/completions"]

@@ -129,21 +129,29 @@ def test_sse_prelude_openai_injects_top_level_key():
 
 
 def test_messages_py_calls_compliance_headers_helper():
+    """v5.0.9 refactor: the substitution disclosure block moved to
+    ``app/api/_compliance_handler.py``. messages.py now delegates via
+    ``emit_substitution_disclosure_for_route``. The contract (calling
+    compliance_headers + build_disclosure_payload + emitting a
+    model_substitution row) is asserted against the helper's source."""
     from pathlib import Path
-    src = Path("app/api/messages.py").read_text()
-    assert "compliance_headers(" in src
-    assert "build_disclosure_payload(" in src
-    assert "compliance_substituted" in src
-    assert "model_substitution" in src
+    msg_src = Path("app/api/messages.py").read_text()
+    helper_src = Path("app/api/_compliance_handler.py").read_text()
+    assert "emit_substitution_disclosure_for_route(" in msg_src
+    assert "compliance_headers(" in helper_src
+    assert "build_disclosure_payload(" in helper_src
+    assert "model_substitution" in helper_src
 
 
 def test_completions_py_calls_compliance_headers_helper():
+    """Mirror of messages.py — same v5.0.9 extraction."""
     from pathlib import Path
-    src = Path("app/api/completions.py").read_text()
-    assert "compliance_headers(" in src
-    assert "build_disclosure_payload(" in src
-    assert "compliance_substituted" in src
-    assert "model_substitution" in src
+    cmp_src = Path("app/api/completions.py").read_text()
+    helper_src = Path("app/api/_compliance_handler.py").read_text()
+    assert "emit_substitution_disclosure_for_route(" in cmp_src
+    assert "compliance_headers(" in helper_src
+    assert "build_disclosure_payload(" in helper_src
+    assert "model_substitution" in helper_src
 
 
 def test_messages_streaming_threads_compliance_into_stream_anthropic():
