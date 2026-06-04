@@ -26,6 +26,7 @@ from sqlalchemy import select
 # ── Routers ──────────────────────────────────────────────────────────────────
 from app.api.messages import router as messages_router
 from app.api.completions import router as completions_router
+from app.api.responses import router as responses_router
 from app.api.embeddings import router as embeddings_router
 from app.api.models import router as models_router
 from app.api.aliases import router as aliases_router
@@ -508,6 +509,7 @@ async def _handle_json_decode_error(request: Request, exc: json.JSONDecodeError)
 # ── Core LLM endpoints (same paths as v1) ────────────────────────────────────
 app.include_router(messages_router)
 app.include_router(completions_router)
+app.include_router(responses_router)
 app.include_router(embeddings_router)
 app.include_router(models_router)
 
