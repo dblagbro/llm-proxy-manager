@@ -532,6 +532,458 @@ async def _apply_compliance_policy_changes(
     return applied
 
 
+def _parse_iso_naive_utc(v):
+    """Parse a peer-side ISO timestamp into a NAIVE UTC datetime.
+
+    SQLAlchemy's ``Column(DateTime)`` without ``timezone=True`` returns
+    naive values when reading from SQLite, so we strip tzinfo here to
+    keep comparisons consistent across LWW branches. Without this, peer
+    payloads (ISO strings with explicit offsets) compare as tz-aware
+    against locally-loaded naive datetimes and TypeError out on
+    ``>=`` / ``>`` ops.
+    """
+    from datetime import datetime, timezone
+    if not v:
+        return None
+    if isinstance(v, str):
+        try:
+            dt = datetime.fromisoformat(v.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    elif isinstance(v, datetime):
+        dt = v
+    else:
+        return v
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
+
+
+def _parse_iso_keep_naive(v):
+    """Like ``_parse_iso_naive_utc`` but accepts both ``datetime`` and
+    ``str`` without further normalization — used for the api_keys
+    ``deleted_at`` field which is a plain datetime column."""
+    from datetime import datetime as _dt
+    if not v:
+        return None
+    if isinstance(v, str):
+        try:
+            return _dt.fromisoformat(v.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    return v
+
+
+async def _apply_api_keys(
+    db: AsyncSession, rows: list[dict]
+) -> dict[str, float]:
+    """v5.0.10 — extracted from ``apply_sync``. Merge incoming api_keys.
+
+    Returns the ``peer_costs`` dict (key_id → total_cost_usd reported by
+    the peer for this row) that the caller folds into the per-peer
+    cost-tracking map ``_peer_key_costs[source_node]``.
+
+    The merge semantics are unchanged from the original inline block:
+
+    - **Tombstone-aware** (v3.0.20): a peer's ``deleted_at`` propagates
+      locally when we have no tombstone OR peer's stamp is newer; a
+      local tombstone outranks any non-tombstoned peer payload.
+    - **LWW gate** (v4.4.20): per-row ``last_user_edit_at`` decides
+      accept/reject. Tie → keep local (anti-ping-pong); peer-stamped +
+      local-unstamped → accept (legacy upgrade path); neither stamped
+      → accept (pre-LWW legacy behavior).
+    - **Membership-test field coverage** (v4.4.18): every
+      operator-settable field uses ``if "field" in k_data:`` so a peer
+      omitting the field (older build) doesn't clobber the local value
+      with None. v5.0.0 added the three compliance columns
+      (``blocked_companies`` / ``allowed_paths`` /
+      ``debug_echo_enabled``) under the same discipline.
+    - **Compliance cache invalidation** (v5.0.0): when
+      ``blocked_companies`` changes via sync, the per-key blocklist
+      cache is invalidated so the next request sees the new policy
+      without waiting up to 30s for TTL.
+    - **Full-field INSERT** (v4.4.25 / BUG-084): on first
+      materialization we set every operator-settable field, not just
+      the base columns, so a freshly-created + immediately-PATCHed key
+      doesn't get stuck at defaults under the LWW tie on the next sync
+      round-trip.
+    """
+    from app.models.db import ApiKey
+    peer_costs: dict[str, float] = {}
+    for k_data in rows:
+        peer_deleted_at = _parse_iso_keep_naive(k_data.get("deleted_at"))
+        peer_user_edit_at = k_data.get("last_user_edit_at")
+        if peer_user_edit_at is not None:
+            try:
+                peer_user_edit_at = float(peer_user_edit_at)
+            except (TypeError, ValueError):
+                peer_user_edit_at = None
+        result = await db.execute(
+            select(ApiKey).where(ApiKey.key_hash == k_data["key_hash"]).limit(1)
+        )
+        existing = result.scalar_one_or_none()
+        if existing:
+            if peer_deleted_at and (
+                existing.deleted_at is None
+                or peer_deleted_at >= existing.deleted_at
+            ):
+                existing.deleted_at = peer_deleted_at
+                existing.enabled = False
+                continue
+            if existing.deleted_at is not None and peer_deleted_at is None:
+                continue
+            local_user_edit = existing.last_user_edit_at
+            if (
+                peer_user_edit_at is not None
+                and local_user_edit is not None
+            ):
+                if peer_user_edit_at == local_user_edit:
+                    accept = False
+                else:
+                    accept = peer_user_edit_at > local_user_edit
+            elif (
+                local_user_edit is not None and peer_user_edit_at is None
+            ):
+                accept = False
+            else:
+                accept = True
+            if not accept:
+                continue
+            if "spending_cap_usd" in k_data:
+                existing.spending_cap_usd = k_data["spending_cap_usd"]
+            if "rate_limit_rpm" in k_data:
+                existing.rate_limit_rpm = k_data["rate_limit_rpm"]
+            if "enabled" in k_data:
+                existing.enabled = k_data["enabled"]
+            if "semantic_cache_enabled" in k_data:
+                existing.semantic_cache_enabled = bool(
+                    k_data["semantic_cache_enabled"]
+                )
+            if "daily_soft_cap_usd" in k_data:
+                existing.daily_soft_cap_usd = k_data["daily_soft_cap_usd"]
+            if "daily_hard_cap_usd" in k_data:
+                existing.daily_hard_cap_usd = k_data["daily_hard_cap_usd"]
+            if "hourly_cap_usd" in k_data:
+                existing.hourly_cap_usd = k_data["hourly_cap_usd"]
+            if "rate_limit_tier" in k_data:
+                existing.rate_limit_tier = k_data["rate_limit_tier"]
+            if "caller_memory_ttl_days" in k_data:
+                existing.caller_memory_ttl_days = (
+                    k_data["caller_memory_ttl_days"]
+                )
+            if "lmrh_polling_rpm" in k_data:
+                existing.lmrh_polling_rpm = k_data["lmrh_polling_rpm"]
+            if "lmrh_quotes_rpm" in k_data:
+                existing.lmrh_quotes_rpm = k_data["lmrh_quotes_rpm"]
+            if "blocked_companies" in k_data:
+                existing.blocked_companies = k_data["blocked_companies"]
+                try:
+                    from app.compliance.policy import (
+                        invalidate_blocklist_cache,
+                    )
+                    invalidate_blocklist_cache(existing.id)
+                except Exception:
+                    pass
+            if "allowed_paths" in k_data:
+                existing.allowed_paths = k_data["allowed_paths"]
+            if "debug_echo_enabled" in k_data:
+                existing.debug_echo_enabled = bool(
+                    k_data["debug_echo_enabled"]
+                )
+            if peer_user_edit_at is not None:
+                existing.last_user_edit_at = peer_user_edit_at
+        else:
+            if peer_deleted_at is not None:
+                continue
+            db.add(ApiKey(
+                id=k_data["id"],
+                name=k_data["name"],
+                key_hash=k_data["key_hash"],
+                key_prefix=k_data["key_prefix"],
+                key_type=k_data.get("key_type", "standard"),
+                enabled=k_data.get("enabled", True),
+                spending_cap_usd=k_data.get("spending_cap_usd"),
+                rate_limit_rpm=k_data.get("rate_limit_rpm"),
+                semantic_cache_enabled=bool(
+                    k_data.get("semantic_cache_enabled", False)
+                ),
+                daily_soft_cap_usd=k_data.get("daily_soft_cap_usd"),
+                daily_hard_cap_usd=k_data.get("daily_hard_cap_usd"),
+                hourly_cap_usd=k_data.get("hourly_cap_usd"),
+                rate_limit_tier=k_data.get("rate_limit_tier"),
+                caller_memory_ttl_days=k_data.get("caller_memory_ttl_days"),
+                lmrh_polling_rpm=k_data.get("lmrh_polling_rpm"),
+                lmrh_quotes_rpm=k_data.get("lmrh_quotes_rpm"),
+                blocked_companies=k_data.get("blocked_companies"),
+                allowed_paths=k_data.get("allowed_paths"),
+                debug_echo_enabled=bool(
+                    k_data.get("debug_echo_enabled", False)
+                ),
+                last_user_edit_at=peer_user_edit_at,
+            ))
+        key_id = k_data.get("id")
+        if key_id and "total_cost_usd" in k_data:
+            peer_costs[key_id] = float(k_data["total_cost_usd"])
+    return peer_costs
+
+
+async def _apply_providers(db: AsyncSession, rows: list[dict]) -> None:
+    """v5.0.10 — extracted from ``apply_sync``. Merge incoming providers.
+
+    Behavior identical to the original inline block:
+
+    - **Match by id, fallback to name** for legacy pre-v2.8.2 rows that
+      may have different ids on each node.
+    - **Tombstone-aware** (v2.8.2 / v4.4.2 / BUG-053): peer-tombstone
+      propagates whenever we don't have a tombstone (the v2.8.2 gate
+      ``peer_deleted_at >= local_updated`` failed when background
+      activity bumped local.updated_at past the originator's
+      tombstone). Clears local CB state on inbound tombstone
+      propagation (v3.5.9 BUG-012).
+    - **LWW gate** (v3.0.11): per-row ``last_user_edit_at`` decides
+      accept/reject. v3.0.63 strict-greater on ties (anti-ping-pong).
+      v3.2.7 fall-through to legacy ``updated_at`` LWW when both stamps
+      tie (catches background mutations that didn't bump
+      last_user_edit_at).
+    - **Membership-test field coverage** for all operator-settable
+      fields including v3.7.3 Anthropic billing,
+      v3.7.27 Codex billing, v3.7.28 manual override, and v5.0.0
+      owner_company. Cookies (anthropic_session_cookies /
+      codex_session_cookies) are INTENTIONALLY not synced — auth
+      material stays on the capture node.
+    - **owner_company change** (v5.0.0): clears the GLOBAL blocklist
+      cache (not just per-key) because the router reads
+      ``provider.owner_company`` at request time and that affects every
+      key's effective filter.
+    - **CB state init**: calls ``register_provider`` on freshly inserted
+      rows so the circuit-breaker state is set up immediately.
+    """
+    from app.models.db import Provider
+    from app.monitoring.status import register_provider
+    for p_data in rows:
+        peer_deleted_at = _parse_iso_naive_utc(p_data.get("deleted_at"))
+        peer_updated_at = _parse_iso_naive_utc(p_data.get("updated_at"))
+        peer_user_edit_at = p_data.get("last_user_edit_at")
+        if peer_user_edit_at is not None:
+            try:
+                peer_user_edit_at = float(peer_user_edit_at)
+            except (TypeError, ValueError):
+                peer_user_edit_at = None
+
+        result = await db.execute(
+            select(Provider).where(Provider.id == p_data["id"]).limit(1)
+        )
+        existing = result.scalar_one_or_none()
+        if existing is None:
+            result2 = await db.execute(
+                select(Provider).where(Provider.name == p_data["name"]).limit(1)
+            )
+            existing = result2.scalar_one_or_none()
+
+        if existing is not None:
+            local_updated = existing.updated_at
+            local_deleted = existing.deleted_at
+
+            if peer_deleted_at and not local_deleted:
+                existing.deleted_at = peer_deleted_at
+                existing.enabled = False
+                if peer_updated_at and (
+                    local_updated is None or peer_updated_at > local_updated
+                ):
+                    existing.updated_at = peer_updated_at
+                try:
+                    from app.routing.circuit_breaker import (
+                        _local_states as _cb_states,
+                        _auth_failed as _cb_auth_failed,
+                    )
+                    _cb_states.pop(existing.id, None)
+                    _cb_auth_failed.pop(existing.id, None)
+                except Exception:
+                    pass
+                continue
+
+            if local_deleted and (
+                peer_updated_at is None or local_deleted >= peer_updated_at
+            ):
+                continue
+
+            local_user_edit = existing.last_user_edit_at
+            if (
+                peer_user_edit_at is not None
+                and local_user_edit is not None
+            ):
+                if peer_user_edit_at != local_user_edit:
+                    accept = peer_user_edit_at > local_user_edit
+                else:
+                    accept = (
+                        peer_updated_at is not None
+                        and local_updated is not None
+                        and peer_updated_at > local_updated
+                    )
+            elif (
+                local_user_edit is not None and peer_user_edit_at is None
+            ):
+                accept = False
+            else:
+                accept = (
+                    peer_updated_at is None
+                    or local_updated is None
+                    or peer_updated_at >= local_updated
+                )
+            if accept:
+                if "name" in p_data:
+                    existing.name = p_data["name"]
+                if "provider_type" in p_data:
+                    existing.provider_type = p_data["provider_type"]
+                existing.api_key = p_data.get("api_key", existing.api_key)
+                existing.base_url = p_data.get("base_url", existing.base_url)
+                existing.default_model = p_data.get(
+                    "default_model", existing.default_model
+                )
+                existing.priority = p_data.get(
+                    "priority", existing.priority
+                )
+                existing.enabled = p_data.get("enabled", existing.enabled)
+                existing.timeout_sec = p_data.get(
+                    "timeout_sec", existing.timeout_sec
+                )
+                existing.exclude_from_tool_requests = p_data.get(
+                    "exclude_from_tool_requests",
+                    existing.exclude_from_tool_requests,
+                )
+                existing.hold_down_sec = p_data.get(
+                    "hold_down_sec", existing.hold_down_sec
+                )
+                existing.failure_threshold = p_data.get(
+                    "failure_threshold", existing.failure_threshold
+                )
+                existing.extra_config = p_data.get(
+                    "extra_config", existing.extra_config
+                )
+                if "owned_by_key_id" in p_data:
+                    existing.owned_by_key_id = p_data["owned_by_key_id"]
+                if "daily_budget_usd" in p_data:
+                    existing.daily_budget_usd = p_data["daily_budget_usd"]
+                if "oauth_refresh_token" in p_data:
+                    existing.oauth_refresh_token = p_data[
+                        "oauth_refresh_token"
+                    ]
+                if "oauth_expires_at" in p_data:
+                    existing.oauth_expires_at = p_data["oauth_expires_at"]
+                if "anthropic_org_uuid" in p_data:
+                    existing.anthropic_org_uuid = p_data.get(
+                        "anthropic_org_uuid"
+                    )
+                if "anthropic_session_captured_at" in p_data:
+                    existing.anthropic_session_captured_at = p_data.get(
+                        "anthropic_session_captured_at"
+                    )
+                if "codex_usage_endpoint_url" in p_data:
+                    existing.codex_usage_endpoint_url = p_data.get(
+                        "codex_usage_endpoint_url"
+                    )
+                if "codex_session_captured_at" in p_data:
+                    existing.codex_session_captured_at = p_data.get(
+                        "codex_session_captured_at"
+                    )
+                if "manual_override_until" in p_data:
+                    existing.manual_override_until = _parse_iso_or_none(
+                        p_data.get("manual_override_until")
+                    )
+                if "manual_override_set_by" in p_data:
+                    existing.manual_override_set_by = p_data.get(
+                        "manual_override_set_by"
+                    )
+                if "manual_override_set_at" in p_data:
+                    existing.manual_override_set_at = _parse_iso_or_none(
+                        p_data.get("manual_override_set_at")
+                    )
+                if "manual_override_reason" in p_data:
+                    existing.manual_override_reason = p_data.get(
+                        "manual_override_reason"
+                    )
+                if "auto_skip_until" in p_data:
+                    val = p_data.get("auto_skip_until")
+                    if val:
+                        from datetime import datetime as _dt
+                        try:
+                            existing.auto_skip_until = (
+                                _dt.fromisoformat(val.replace("Z", "+00:00"))
+                            )
+                        except Exception:
+                            existing.auto_skip_until = None
+                    else:
+                        existing.auto_skip_until = None
+                if "auto_skip_reason" in p_data:
+                    existing.auto_skip_reason = p_data.get(
+                        "auto_skip_reason"
+                    )
+                if "owner_company" in p_data:
+                    existing.owner_company = p_data.get("owner_company")
+                    try:
+                        from app.compliance.policy import (
+                            invalidate_blocklist_cache,
+                        )
+                        invalidate_blocklist_cache(None)
+                    except Exception:
+                        pass
+                if peer_updated_at:
+                    existing.updated_at = peer_updated_at
+                if peer_user_edit_at is not None:
+                    existing.last_user_edit_at = peer_user_edit_at
+            continue
+
+        if peer_deleted_at is not None:
+            continue
+        p = Provider(
+            id=p_data["id"],
+            name=p_data["name"],
+            provider_type=p_data["provider_type"],
+            api_key=p_data.get("api_key"),
+            base_url=p_data.get("base_url"),
+            default_model=p_data.get("default_model"),
+            priority=p_data.get("priority", 10),
+            enabled=p_data.get("enabled", True),
+            timeout_sec=p_data.get("timeout_sec", 60),
+            exclude_from_tool_requests=p_data.get(
+                "exclude_from_tool_requests", False
+            ),
+            hold_down_sec=p_data.get("hold_down_sec"),
+            failure_threshold=p_data.get("failure_threshold"),
+            extra_config=p_data.get("extra_config", {}),
+            owned_by_key_id=p_data.get("owned_by_key_id"),
+            daily_budget_usd=p_data.get("daily_budget_usd"),
+            oauth_refresh_token=p_data.get("oauth_refresh_token"),
+            oauth_expires_at=p_data.get("oauth_expires_at"),
+            anthropic_org_uuid=p_data.get("anthropic_org_uuid"),
+            anthropic_session_captured_at=p_data.get(
+                "anthropic_session_captured_at"
+            ),
+            codex_usage_endpoint_url=p_data.get("codex_usage_endpoint_url"),
+            codex_session_captured_at=p_data.get(
+                "codex_session_captured_at"
+            ),
+            manual_override_until=_parse_iso_or_none(
+                p_data.get("manual_override_until")
+            ),
+            manual_override_set_by=p_data.get("manual_override_set_by"),
+            manual_override_set_at=_parse_iso_or_none(
+                p_data.get("manual_override_set_at")
+            ),
+            manual_override_reason=p_data.get("manual_override_reason"),
+            auto_skip_until=_parse_iso_or_none(
+                p_data.get("auto_skip_until")
+            ),
+            auto_skip_reason=p_data.get("auto_skip_reason"),
+            owner_company=p_data.get("owner_company"),
+            last_user_edit_at=peer_user_edit_at,
+        )
+        db.add(p)
+        register_provider(
+            p.id, p.provider_type, p.hold_down_sec, p.failure_threshold,
+        )
+
+
 __all__ = [
     "_apply_blocked_ips",
     "_apply_ai_reviews",
@@ -542,6 +994,9 @@ __all__ = [
     "_apply_provider_node_auth_states",
     "_apply_compliance_events",
     "_apply_compliance_policy_changes",
+    "_apply_api_keys",
+    "_apply_providers",
+    "_parse_iso_naive_utc",
     "serialize_compliance_event",
     "serialize_policy_change",
 ]

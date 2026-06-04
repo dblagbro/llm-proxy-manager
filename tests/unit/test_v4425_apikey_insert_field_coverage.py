@@ -27,8 +27,9 @@ from sqlalchemy import delete, select
 
 def test_insert_path_includes_extended_fields():
     """Source guard — the api_keys INSERT in apply_sync must carry
-    every operator-settable field, matching the UPDATE-path coverage."""
-    src = Path("app/cluster/sync.py").read_text()
+    every operator-settable field, matching the UPDATE-path coverage.
+    v5.0.10 — extracted to sync_handlers._apply_api_keys."""
+    src = Path("app/cluster/sync_handlers.py").read_text()
     # Find the db.add(ApiKey(...)) insert block
     idx = src.index("db.add(ApiKey(")
     block = src[idx:idx + 1600]
