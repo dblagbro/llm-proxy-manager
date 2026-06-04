@@ -166,6 +166,18 @@ async def messages(
         pass
 
     body = await request.json()
+    # v5.0.6 — capture the caller's ORIGINAL model name before any
+    # rewriting downstream (the v3.0.36 cross-family fallback at
+    # line ~355 rewrites ``body["model"]`` to the served-model-native
+    # so the claude-oauth dispatcher reads the right slug; that
+    # mutation predates v5.0.0 and was correct for its purpose, but
+    # the v5.0.0 audit row at line ~557 then read body.get("model")
+    # AFTER the mutation, mislabeling the audit's ``requested_model``
+    # field with the served model. Same hit the
+    # ``X-Compliance-Requested-Model`` response header. Capturing
+    # here is the single-point fix — every audit + disclosure site
+    # downstream uses ``_orig_request_model`` instead.
+    _orig_request_model = body.get("model") if isinstance(body, dict) else None
     # v3.5.8 BUG-005 fix — validate request shape at the input boundary.
     # Pre-fix the proxy treated `{}` and `{"model":"x"}` (no messages)
     # as valid, auto-routed to a default provider, and returned 200 with
@@ -256,13 +268,16 @@ async def messages(
     # the right reason code (hub-team-flagged 2026-06-04).
     except ComplianceNoLocalProviderError:
         _audit_id = generate_audit_id()
-        _requested_model = body.get("model")
+        # v5.0.6 — use _orig_request_model for consistency with the 200/502
+        # paths (body mutation at line ~349 hasn't fired yet here, but
+        # future refactors that move it earlier would silently regress
+        # the audit field).
         await emit_event(
             db, audit_id=_audit_id, api_key_id=key_record.id,
             event_type="compliance_no_local_provider",
             reason_code="no-compliant-local-provider",
             http_status=503,
-            requested_model=_requested_model,
+            requested_model=_orig_request_model,
             client_user_agent=request.headers.get("user-agent", ""),
             commit=True,
         )
@@ -283,7 +298,8 @@ async def messages(
         )
     except ComplianceNoSubstituteError:
         _audit_id = generate_audit_id()
-        _requested_model = body.get("model")
+        # v5.0.6 — _orig_request_model captured at line ~168.
+        _requested_model = _orig_request_model
         _blocked_company = model_family_to_company(_requested_model)
         await emit_event(
             db, audit_id=_audit_id, api_key_id=key_record.id,
@@ -529,12 +545,16 @@ async def messages(
             wants_sse_prelude, emit_event, generate_audit_id,
         )
         _audit_id = generate_audit_id()
+        # v5.0.6 — _orig_request_model captured at line ~168 before any
+        # body mutation; using body.get("model") here would label the
+        # audit with the served model (cross-family fallback rewrites
+        # body["model"]).
         _served_model = (
-            route.litellm_model or body.get("model")
+            route.litellm_model or _orig_request_model
         )
         _compliance_disclosure = build_disclosure_payload(
             blocked_company=route.compliance_blocked_company,
-            requested_model=body.get("model") or "",
+            requested_model=_orig_request_model or "",
             served_model=_served_model or "",
             served_company=route.compliance_served_company,
             served_provider_id=route.provider.id,
@@ -542,7 +562,7 @@ async def messages(
         )
         resp_headers.update(compliance_headers(
             blocked_company=route.compliance_blocked_company,
-            requested_model=body.get("model") or "",
+            requested_model=_orig_request_model or "",
             served_model=_served_model or "",
             served_company=route.compliance_served_company,
             served_provider_id=route.provider.id,
@@ -554,7 +574,7 @@ async def messages(
             event_type="model_substitution",
             reason_code=f"api-key-policy:blocked-company:{route.compliance_blocked_company}",
             http_status=200,
-            requested_model=body.get("model"),
+            requested_model=_orig_request_model,
             served_model=_served_model,
             served_provider_id=route.provider.id,
             blocked_company=route.compliance_blocked_company,
@@ -1037,9 +1057,12 @@ async def messages(
                 emit_event as _emit,
             )
             audit_id = _gid()
+            # v5.0.6 — same _orig_request_model fix; body was rewritten
+            # at the v3.0.36 cross-family-fallback path before we got
+            # here.
             error_headers = _ch(
                 blocked_company=getattr(route, "compliance_blocked_company", ""),
-                requested_model=(body.get("model") if isinstance(body, dict) else "") or "",
+                requested_model=_orig_request_model or "",
                 served_model=getattr(route, "litellm_model", "") or "",
                 served_company=getattr(route, "compliance_served_company", ""),
                 served_provider_id=route.provider.id,
@@ -1053,7 +1076,7 @@ async def messages(
                     event_type="model_substitution",
                     reason_code=f"api-key-policy:blocked-company:{getattr(route, 'compliance_blocked_company', '')}-upstream-error",
                     http_status=status_code,
-                    requested_model=body.get("model") if isinstance(body, dict) else None,
+                    requested_model=_orig_request_model,
                     served_model=getattr(route, "litellm_model", None),
                     served_provider_id=route.provider.id,
                     blocked_company=getattr(route, "compliance_blocked_company", None),
