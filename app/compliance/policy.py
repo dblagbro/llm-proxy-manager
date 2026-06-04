@@ -46,6 +46,26 @@ class ComplianceNoSubstituteError(Exception):
         self.n_dropped = n_dropped
 
 
+class ComplianceNoLocalProviderError(ComplianceNoSubstituteError):
+    """v5.0.4 — fires when ``model=coordinator-local`` is requested but
+    no self-hosted provider is configured. Subclass of
+    ``ComplianceNoSubstituteError`` so legacy 503 catches still work,
+    but it carries a more specific ``reason_code`` for the disclosure
+    header (``no-compliant-local-provider`` per CADC §6.2).
+
+    Hub-team-flagged F anomaly: the 503 must include
+    ``X-Compliance-Refusal-Reason`` even when the failure mode is
+    "no self-hosted provider" rather than "no compliant substitute."
+    """
+
+    def __init__(self):
+        super().__init__(
+            "coordinator-local requested but no self-hosted provider configured",
+            blocked_companies=set(),
+            n_dropped=0,
+        )
+
+
 class ComplianceUaBlockedError(Exception):
     """Raised when the incoming request's User-Agent matches a banned
     client product (decision 16). Carries enough fields for messages.py

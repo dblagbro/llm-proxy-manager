@@ -77,6 +77,19 @@ def refusal_headers_no_substitute(*, audit_id: str) -> Dict[str, str]:
     }
 
 
+def refusal_headers_no_local(*, audit_id: str) -> Dict[str, str]:
+    """v5.0.4 — headers for the HTTP 503 coordinator-local-without-self-
+    hosted-provider response. CADC §6.2 specifies
+    ``no-compliant-local-provider``; v5.0.0–v5.0.3 omitted the header
+    entirely (hub-team-flagged F anomaly), defaulting to a bare 503.
+    """
+    return {
+        "X-Compliance-Refusal": "true",
+        "X-Compliance-Refusal-Reason": "no-compliant-local-provider",
+        "X-Compliance-Audit-Id": audit_id,
+    }
+
+
 def refusal_headers_path(*, audit_id: str) -> Dict[str, str]:
     """Headers for the HTTP 403 path-not-allowed response from the
     allowed_paths middleware."""

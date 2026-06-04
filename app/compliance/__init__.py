@@ -25,6 +25,7 @@ from app.compliance.company_map import (
 )
 from app.compliance.policy import (
     ComplianceNoSubstituteError,
+    ComplianceNoLocalProviderError,
     ComplianceUaBlockedError,
     get_effective_blocklist,
     get_custom_companies,
@@ -37,6 +38,7 @@ from app.compliance.disclosure import (
     compliance_headers,
     refusal_headers_ua,
     refusal_headers_no_substitute,
+    refusal_headers_no_local,
     refusal_headers_path,
     wants_sse_prelude,
     build_disclosure_payload,
@@ -60,6 +62,7 @@ __all__ = [
     "model_family_to_company",
     # Policy
     "ComplianceNoSubstituteError",
+    "ComplianceNoLocalProviderError",
     "ComplianceUaBlockedError",
     "get_effective_blocklist",
     "get_custom_companies",
@@ -72,6 +75,7 @@ __all__ = [
     "compliance_headers",
     "refusal_headers_ua",
     "refusal_headers_no_substitute",
+    "refusal_headers_no_local",
     "refusal_headers_path",
     "wants_sse_prelude",
     "build_disclosure_payload",
