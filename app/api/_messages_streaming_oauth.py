@@ -529,12 +529,8 @@ async def _stream_claude_oauth(
             }
 
             # Successful end of stream
-            if budget_total > 0:
-                remaining = max(0, budget_total - out_tok)
-                yield (
-                    f'event: budget\ndata: {{"remaining":{remaining},'
-                    f'"used":{out_tok},"total":{budget_total}}}\n\n'
-                ).encode()
+            # v5.0.12 — removed mid-stream ``event: budget`` SSE frame.
+            # See _completions_streaming.py for context.
             # v3.0.43: requested_model + served-from-upstream-when-available
             req_model_str = body.get("model") or "claude-oauth"
             served_str = (assembled_response.get("model")
