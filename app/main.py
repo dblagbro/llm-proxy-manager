@@ -659,7 +659,30 @@ async def version():
 
 
 @app.get("/metrics", include_in_schema=False)
-async def metrics():
+async def metrics(request: Request):
+    # v5.0.14 — route conflict: ``/metrics`` is both the Prometheus
+    # scrape endpoint AND a React-Router SPA route (``MetricsPage``).
+    # Decide which to serve based on the caller's Accept header:
+    #
+    #   - Browsers typing the URL send
+    #     ``Accept: text/html,application/xhtml+xml,...,*/*;q=0.8`` →
+    #     serve ``index.html`` so React Router shows the dashboard.
+    #   - Prometheus scrapers send
+    #     ``Accept: text/plain;version=0.0.4,...`` (or just ``*/*``
+    #     without ``text/html``) → return the metric text.
+    #
+    # The heuristic ("html mentioned more authoritatively than wildcard")
+    # is the Accept-header pattern Browsers actually emit; Prometheus
+    # scrapes never request ``text/html`` explicitly. Source-grep tests
+    # in ``test_v5014_metrics_route_disambiguation.py`` pin the contract.
+    accept = (request.headers.get("accept") or "").lower()
+    if "text/html" in accept:
+        index = os.path.join(_static_dir, "index.html")
+        if os.path.isfile(index):
+            return FileResponse(
+                index,
+                headers={"Cache-Control": "no-cache, must-revalidate"},
+            )
     return await metrics_response()
 
 
