@@ -238,7 +238,8 @@ async def messages(
     # already prevents banned providers from being picked; this path fires
     # only when every candidate was eliminated by policy.
     from app.compliance import (
-        ComplianceNoSubstituteError, refusal_headers_no_substitute,
+        ComplianceNoSubstituteError, ComplianceNoLocalProviderError,
+        refusal_headers_no_substitute, refusal_headers_no_local,
         emit_event, generate_audit_id, model_family_to_company,
     )
     try:
@@ -248,6 +249,37 @@ async def messages(
             key_record=key_record, parsed_slug=parsed_slug, alias=alias,
             detailed_503=True,
             messages=body.get("messages"),
+        )
+    # v5.0.4 — F-anomaly fix: catch the more specific
+    # ``no-compliant-local-provider`` case BEFORE the parent
+    # ``ComplianceNoSubstituteError`` so the disclosure header carries
+    # the right reason code (hub-team-flagged 2026-06-04).
+    except ComplianceNoLocalProviderError:
+        _audit_id = generate_audit_id()
+        _requested_model = body.get("model")
+        await emit_event(
+            db, audit_id=_audit_id, api_key_id=key_record.id,
+            event_type="compliance_no_local_provider",
+            reason_code="no-compliant-local-provider",
+            http_status=503,
+            requested_model=_requested_model,
+            client_user_agent=request.headers.get("user-agent", ""),
+            commit=True,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail={"error": {
+                "type": "compliance_no_local_provider",
+                "audit_id": _audit_id,
+                "message": (
+                    "Coordinator-local was requested but no self-hosted provider "
+                    "is configured on this deployment. Operator action: enable a "
+                    "self-hosted provider (ollama/vllm/llamacpp/lmstudio/localai), "
+                    "or call a non-local logical alias (coordinator-code, "
+                    "coordinator-fast, coordinator-reasoning)."
+                ),
+            }},
+            headers=refusal_headers_no_local(audit_id=_audit_id),
         )
     except ComplianceNoSubstituteError:
         _audit_id = generate_audit_id()

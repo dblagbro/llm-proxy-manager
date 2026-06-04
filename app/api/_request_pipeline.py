@@ -306,6 +306,29 @@ async def select_provider_with_503(
     # + the v3.0.22 model-supports-by-provider capability filter +
     # v3.0.46 cross-family-fallback path.
     requested_model = (alias.model_id if alias else parsed_slug.bare_model) or None
+
+    # v5.0.4 — F-anomaly fix (hub-team-flagged 2026-06-04). When the
+    # caller requests ``coordinator-local`` (CADC §6.2 logical alias),
+    # enforce the self-hosted hard filter HERE so the 503 carries the
+    # specific ``no-compliant-local-provider`` reason instead of a
+    # generic "provider selection failed" 503. The marker pass-through in
+    # ``aliases.resolve_logical_alias`` keeps the LMRH hint flowing for
+    # the soft case (operator-tagged self-hosted via owner_company), but
+    # the hard filter needs to run BEFORE select_provider to fail closed
+    # when no self-hosted provider exists at all.
+    if requested_model == "coordinator-local":
+        from sqlalchemy import select as _select
+        from app.models.db import Provider as _Provider
+        from app.routing.aliases import is_self_hosted_provider
+        from app.compliance import ComplianceNoLocalProviderError
+        rs = await db.execute(
+            _select(_Provider).where(
+                _Provider.enabled == True,  # noqa: E712
+                _Provider.deleted_at.is_(None),
+            )
+        )
+        if not any(is_self_hosted_provider(p) for p in rs.scalars().all()):
+            raise ComplianceNoLocalProviderError()
     try:
         return await select_provider(
             db,

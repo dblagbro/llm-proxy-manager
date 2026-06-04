@@ -299,6 +299,23 @@ async def admin_compliance_policy_changes(
     return {"changes": [_policy_change_to_dict(r) for r in rs.scalars().all()]}
 
 
+@router.get("/api/admin/cursor-oauth-expiry")
+async def admin_cursor_oauth_expiry(
+    _: AdminUser = Depends(require_admin),
+):
+    """v5.0.4 — read the cursor-oauth expiry monitor's last sweep
+    snapshot. Surfaces days-until-expiry per cursor-oauth provider for
+    the admin UI banner + the operator's re-auth scheduling.
+
+    Path to refresh-flow: an empirical refresh_token capture from the
+    v4.4.37 poll-response probe will unblock autonomous rotation; until
+    then this endpoint is the only way to see expiry status without
+    decoding JWTs manually.
+    """
+    from app.monitoring.cursor_oauth_expiry_monitor import get_last_sweep
+    return get_last_sweep()
+
+
 @router.get("/api/admin/compliance-audit-worker")
 async def admin_compliance_audit_worker(
     db: AsyncSession = Depends(get_db),

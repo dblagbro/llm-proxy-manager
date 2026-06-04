@@ -221,6 +221,20 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"compliance audit worker failed to start: {e}")
 
+    # v5.0.4 (P3 partial): cursor-oauth JWT expiry monitor — decodes the
+    # exp claim on each cursor-oauth provider's stored JWT, backfills
+    # ``oauth_expires_at`` when NULL, and logs a warning when any
+    # provider crosses the 14-day-remaining threshold. The full
+    # refresh-flow obviating noVNC is gated on an empirical refresh_token
+    # capture from the v4.4.37 probe; this monitor is the zero-speculation
+    # piece we can ship now. 2h boot delay so the existing cursor billing
+    # worker fires first.
+    try:
+        from app.monitoring.cursor_oauth_expiry_monitor import start as start_cursor_expiry
+        start_cursor_expiry()
+    except Exception as e:
+        logger.warning(f"cursor-oauth expiry monitor failed to start: {e}")
+
     # v3.0.62: per-provider usage-window tracking (rolling 5h session +
     # weekly reset). Operator opts in per provider via
     # ``providers.usage_tracking_enabled``. Updates ``provider_usage_windows``
