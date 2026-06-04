@@ -8,14 +8,23 @@ Endpoints:
   change. Returns per-peer health + state-consistency.
 - ``GET /api/admin/compliance-events`` — JSON or CSV stream.
 - ``GET /api/admin/compliance-policy-changes`` — recent policy-edit history.
+- ``GET /api/admin/policy-snapshot`` (v5.0.7) — canonical taxonomy +
+  UA patterns + system block list + policy_version hash. Built for the
+  Coordinator Hub team's v2.1.0 hub-side enforcement to pull the
+  canonical policy on demand without scraping the taxonomy markdown.
+- ``GET /api/admin/cursor-oauth-expiry`` (v5.0.4) — cursor-oauth JWT
+  expiry monitor snapshot.
+- ``GET /api/admin/compliance-audit-worker`` (v5.0.2) — daily audit
+  chain worker snapshot.
 - ``GET /api/me/compliance`` — per-key transparency view.
 """
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -344,6 +353,101 @@ async def admin_compliance_audit_worker(
         for r in rs.scalars().all()
     ]
     return {"worker": snap, "chain_recent": chain}
+
+
+@router.get("/api/admin/policy-snapshot")
+async def admin_policy_snapshot(_: AdminUser = Depends(require_admin)):
+    """v5.0.7 — single-shot snapshot of the canonical compliance policy.
+
+    Returns the full ``KNOWN_COMPANIES`` taxonomy (display names, model
+    prefixes, provider types, UA patterns) + any operator-defined
+    custom companies + the current system-wide block list. Includes a
+    ``policy_version`` hash so consumers (notably the Coordinator Hub
+    team's v2.1.0+ hub-side enforcement layer) can detect drift cheaply
+    by diffing the hash instead of comparing the full payload.
+
+    Hub team integration plan (see
+    ``docs/2026-06-04-reply-5-to-hub-team-hub-side-enforcement.md``):
+    poll this endpoint periodically (or on-demand via their UI "Pull
+    canonical policy" button), import the company IDs + UA patterns
+    into ``app/_llm_defaults.py``, refuse banned-product traffic
+    locally before relaying to us.
+
+    NOT exposed here: per-key ``blocked_companies`` data (operator-
+    scoped to individual API keys; query
+    ``GET /api/admin/compliance-events?api_key_id=...`` or the per-key
+    ``GET /api/me/compliance`` pass-through if needed).
+
+    Payload shape is deliberately stable: any future taxonomy field
+    additions land under each company's dict without renaming existing
+    keys. The ``policy_version`` hash changes deterministically on any
+    field add/remove/change so consumers always know to re-import.
+    """
+    # Custom companies merged on top of KNOWN_COMPANIES (operator can
+    # add but not redefine; same precedence as the runtime resolver).
+    custom = get_custom_companies()
+    taxonomy = {}
+    for company_id, info in KNOWN_COMPANIES.items():
+        taxonomy[company_id] = {
+            "display_name": info.get("display_name", company_id),
+            "model_prefixes": list(info.get("model_prefixes", [])),
+            "provider_types": list(info.get("provider_types", [])),
+            "ua_patterns": [
+                {"type": r.get("type"), "value": r.get("value")}
+                for r in info.get("ua_patterns", [])
+            ],
+        }
+    custom_serialized = []
+    for cid, entry in custom.items():
+        # Custom entries already shape-match KNOWN_COMPANIES per
+        # ``compliance_custom_companies`` schema; surface verbatim with
+        # the ``id`` carried explicitly so consumers can round-trip.
+        custom_serialized.append({
+            "id": cid,
+            "display_name": entry.get("display_name", cid),
+            "model_prefixes": list(entry.get("model_prefixes", [])),
+            "provider_types": list(entry.get("provider_types", [])),
+            "ua_patterns": [
+                {"type": r.get("type"), "value": r.get("value")}
+                for r in entry.get("ua_patterns", [])
+            ],
+        })
+
+    # System-wide block list — same source the runtime resolver reads.
+    system_blocked_raw = get_setting("compliance_system_blocked_companies", []) or []
+    if isinstance(system_blocked_raw, str):
+        try:
+            system_blocked_raw = json.loads(system_blocked_raw)
+        except Exception:
+            system_blocked_raw = []
+    if not isinstance(system_blocked_raw, list):
+        system_blocked_raw = []
+    system_blocked = [str(x) for x in system_blocked_raw if x]
+
+    from app.__version__ import __version__ as _proxy_version
+
+    # Hash the canonical content fields ONLY (exclude computed_at +
+    # proxy_version) so the hash is stable across requests when nothing
+    # has actually changed. policy_version is the canonical drift
+    # signal.
+    canonical = {
+        "taxonomy": taxonomy,
+        "custom_companies": custom_serialized,
+        "system_blocked_companies": sorted(system_blocked),
+    }
+    policy_version = hashlib.sha256(
+        json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()[:16]
+
+    return {
+        "policy_version": policy_version,
+        "computed_at": datetime.now(timezone.utc).isoformat(),
+        "proxy_version": _proxy_version,
+        "snapshot_kind": "canonical-policy",
+        "taxonomy": taxonomy,
+        "custom_companies": custom_serialized,
+        "system_blocked_companies": system_blocked,
+    }
 
 
 # ── User transparency view ───────────────────────────────────────────
