@@ -2,9 +2,15 @@
 
 ## Overview
 
-FastAPI proxy that accepts Anthropic (`/v1/messages`) and OpenAI (`/v1/chat/completions`)
-requests, routes them to the best available upstream provider via litellm, and returns
-responses in the caller's expected wire format.
+FastAPI proxy that accepts Anthropic (`/v1/messages`), OpenAI (`/v1/chat/completions`)
+and OpenAI Responses (`/v1/responses`) requests, routes them to the best available
+upstream provider via litellm, and returns responses in the caller's expected wire
+format. v5.0.0 (2026-06-04) added a per-key + system-wide compliance enforcement layer
+that can block configured companies (10 built-in + operator-defined customs) at the
+provider-routing, model-family, and client-product layers — with audit-grade event
+logging, daily integrity hash chain, and cluster-quorum policy push.
+
+**Current version: 5.0.7 (2026-06-04)**
 
 ## Module Map
 
@@ -263,6 +269,142 @@ counts often have a common cause that is itself cluster-synced):
 ## Design contract
 
 `design.md` is the contract for module boundaries, layering rules, when-to-refactor heuristics, and observability/cluster invariants. Read it before any non-trivial refactor or new module.
+
+## Compliance enforcement (`app/compliance/` — v5.0.0+)
+
+Driven by a US Government policy requirement on one deployment that bans Anthropic
+products entirely (the Claude CLI itself, the `@anthropic-ai/claude-code` package,
+all Anthropic SDKs). Built generic so any company can be banned by any deployment.
+
+### Decision authorities
+
+- **CADC** (claude-alternative-design-committee) — 3rd-party spec authority. Locked
+  the architecture across 33 decisions; canonical spec in `docs/5.0-compliance-design.md`,
+  taxonomy in `docs/compliance-taxonomy-v5.0.0.md`, impact map in
+  `docs/5.0-impact-map.md`.
+- **llm-proxy2 team** — implements + audits.
+- **Coordinator Hub team** — operates the bot fleet that consumes the proxy. Their
+  v2.1.0+ ships hub-side enforcement as defense-in-depth (using the
+  `/api/admin/policy-snapshot` endpoint shipped in v5.0.7).
+
+### Six layers of enforcement
+
+1. **UA pre-check (decision 16+22)** — HTTP 451 if the request's `User-Agent` matches
+   a banned client product pattern. Fires BEFORE any provider routing. Narrow patterns
+   only (`claude-cli/`, `anthropic-sdk-python/`, `@anthropic-ai/claude-code`, etc.);
+   case-insensitive; no bare-substring matching that would false-positive on docs.
+2. **Provider pre-filter (decision 11+14)** — router drops providers whose
+   `owner_company` is banned, OR whose `default_model` family lineage is banned
+   (Bedrock-Anthropic = both `aws` and `anthropic` per `model_family_companies`).
+3. **Cross-family substitution** — surviving providers serve a non-banned model;
+   the route flags `compliance_substituted=True` and the seven `X-Compliance-*`
+   headers + optional SSE prelude disclose the swap.
+4. **No-compliant-substitute (decision 4)** — if the pre-filter empties the candidate
+   pool, HTTP 503 with `X-Compliance-Refusal-Reason: no-compliant-provider-available`
+   (or `no-compliant-local-provider` for the `coordinator-local` logical alias path,
+   added v5.0.4).
+5. **Cache + memory filter (decision 7+18)** — `Provider.owner_company` propagates to
+   `caller_memory.source_company` and the semantic cache index. Read paths filter rows
+   whose `source_company` is banned (NULL is treated as banned — unknown provenance
+   can't be served to a banned key).
+6. **Allowed-paths middleware (decision 21)** — per-key `allowed_paths` (JSON list,
+   exact match). Drops anything not on the list with HTTP 403
+   `X-Compliance-Reason: path-not-in-allowed_paths`. Has a debug-echo bypass for
+   sandbox keys with `debug_echo_enabled=True`.
+
+### Package layout
+
+```
+app/compliance/
+├── __init__.py         Public exports — what callers actually import
+├── company_map.py      KNOWN_COMPANIES (10-entry taxonomy) + provider_type → company
+│                       and model-family → company resolvers (model_family_to_company
+│                       returns first match; model_family_companies returns ALL
+│                       matches — Bedrock-Anthropic returns {anthropic, aws}).
+├── policy.py           get_effective_blocklist (api_key ∪ system, 30s cache);
+│                       filter_providers (raises ComplianceNoSubstituteError on empty);
+│                       ComplianceNoLocalProviderError subclass (v5.0.4 F-fix).
+├── ua_detect.py        detect_client_company(ua) — case-insensitive pattern match
+│                       across KNOWN_COMPANIES ∪ custom; returns (company_id, pattern,
+│                       product_label).
+├── disclosure.py       7-header builder, SSE prelude (Anthropic event + OpenAI
+│                       first-frame inject), Accept-Compliance-Events opt-in.
+└── audit.py            emit_event (ComplianceEvent row), emit_policy_change
+                        (CompliancePolicyChange + cluster fan-out), daily integrity
+                        hash chain (ComplianceAuditChain), retention purge.
+```
+
+### Schema additions (v5.0.0)
+
+3 new tables, 6 new columns:
+
+- `compliance_events` — one row per substitution / refusal / cache or memory filter /
+  path-not-allowed. Append-only; cluster-replicated via append-only sync handler with
+  audit_id dedup.
+- `compliance_policy_changes` — one row per operator-initiated policy edit.
+  Mandatory `reason` field (decision 6). Records cluster fan-out outcome
+  (`applied_to_peers`, `pending_peers`, `cluster_sync_status`).
+- `compliance_audit_chain` — daily SHA-256 hash chain (decision 10). Chain links
+  forward (`prior_day_chain_hash + sorted_event_content`). Computed by
+  `app/monitoring/compliance_audit_worker.py` 90 min after boot then every 24h.
+- New columns: `api_keys.blocked_companies`, `api_keys.allowed_paths`,
+  `api_keys.debug_echo_enabled`, `providers.owner_company`,
+  `caller_memory.source_company`, `caller_memory_marker.source_company`.
+
+### Public admin/user endpoints
+
+- `GET /api/me/compliance` — per-key transparency (effective blocklist, allowed_paths,
+  24h substitution + 451 counts, last policy change).
+- `GET /api/admin/cluster/compliance-ready` — preflight before flipping a policy
+  (per-peer health + state-consistency).
+- `GET /api/admin/compliance-events` — JSON or 11-column CSV stream (audit team).
+- `GET /api/admin/compliance-policy-changes` — recent policy edits.
+- `GET /api/admin/compliance-audit-worker` — daily worker snapshot + last 30 chain rows.
+- `GET /api/admin/cursor-oauth-expiry` (v5.0.4) — cursor-oauth JWT expiry monitor.
+- `GET /api/admin/policy-snapshot` (v5.0.7) — canonical taxonomy + UA patterns +
+  system block list + drift-stable `policy_version` hash. Built for the Coordinator
+  Hub team's v2.1.0 hub-side enforcement layer.
+- `GET/POST /api/debug/echo-client` — sandbox echo (key.debug_echo_enabled gated).
+
+### 4 logical model aliases (decision 29)
+
+`coordinator-code`, `coordinator-fast`, `coordinator-reasoning`, `coordinator-local`
+— stable identifiers the consumer team's CLI configs reference instead of vendor model
+names. Resolved through the existing LMRH hint scorer, except `coordinator-local`
+which applies a HARD `is_self_hosted_provider` filter outside the scorer (ollama /
+vllm / llamacpp / lmstudio / localai + `compatible+self_hosted=true` + operator-tagged
+`owner_company in ('internal','local','self-hosted')`).
+
+### Daily workers
+
+- `app/monitoring/compliance_audit_worker.py` (v5.0.2) — computes the prior-day
+  integrity hash + purges events older than `compliance_audit_retention_days`
+  (default 2555 = 7 years).
+- `app/monitoring/cursor_oauth_expiry_monitor.py` (v5.0.4) — decodes JWT exp on each
+  cursor-oauth provider, backfills `oauth_expires_at` when NULL, alerts at <14d.
+  Lays the groundwork for the noVNC-replacement refresh-flow once v4.4.37's
+  refreshToken probe captures an empirical token from a fresh re-auth.
+
+### v5.0.x patch history (2026-06-04)
+
+- **5.0.1** — `Provider.owner_company` auto-derivation hook + one-shot startup
+  backfill; X-Compliance-* headers preserved on upstream-error 502 responses.
+- **5.0.2** — daily compliance audit worker (integrity hash chain + retention purge);
+  `/api/admin/compliance-audit-worker` admin endpoint.
+- **5.0.3** — `/v1/responses` translation shim (Responses-shape ↔ ChatCompletions);
+  streaming returns 501 (full SSE translation deferred to v5.1).
+- **5.0.4** — F-anomaly fix: `coordinator-local` without a self-hosted provider now
+  returns 503 with `X-Compliance-Refusal-Reason: no-compliant-local-provider`;
+  cursor-oauth JWT expiry monitor.
+- **5.0.5** — cluster sync `apply_sync` chunked into per-section commits. Fixed
+  a slow-degradation SQLite write-lock contention where sync apply time walked from
+  1.5s to 19.6s over 10h soak, hitting the 10s busy_timeout and locking out
+  concurrent writers.
+- **5.0.6** — audit + disclosure record the caller's ORIGINAL requested model
+  (`_orig_request_model` captured before the v3.0.36 cross-family-fallback body
+  rewrite). Pre-v5.0.6 the `requested_model` audit field captured the served model.
+- **5.0.7** — `GET /api/admin/policy-snapshot` for the Coordinator Hub team's
+  hub-side enforcement layer.
 
 ## Claude Pro Max OAuth (`claude-oauth` provider type, v2.7.1+)
 
