@@ -299,6 +299,36 @@ async def admin_compliance_policy_changes(
     return {"changes": [_policy_change_to_dict(r) for r in rs.scalars().all()]}
 
 
+@router.get("/api/admin/compliance-audit-worker")
+async def admin_compliance_audit_worker(
+    db: AsyncSession = Depends(get_db),
+    _: AdminUser = Depends(require_admin),
+):
+    """v5.0.1 — read the daily audit worker's last-sweep snapshot + the
+    most recent chain rows. Lets operators verify the worker is firing
+    + sample the hash chain without docker-exec.
+    """
+    from app.monitoring.compliance_audit_worker import get_last_sweep
+    from app.models.db import ComplianceAuditChain
+    snap = get_last_sweep()
+    rs = await db.execute(
+        select(ComplianceAuditChain)
+        .order_by(ComplianceAuditChain.day.desc())
+        .limit(30)
+    )
+    chain = [
+        {
+            "day": r.day,
+            "row_count": r.row_count,
+            "prior_day_chain_hash": r.prior_day_chain_hash,
+            "chain_hash": r.chain_hash,
+            "computed_at": r.computed_at.isoformat() if r.computed_at else None,
+        }
+        for r in rs.scalars().all()
+    ]
+    return {"worker": snap, "chain_recent": chain}
+
+
 # ── User transparency view ───────────────────────────────────────────
 
 
