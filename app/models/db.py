@@ -97,6 +97,11 @@ from app.models.db_compliance import (
     ComplianceAuditChain,
 )
 
+# Cluster peers (v5.0.18 — UI-configurable peer list)
+from app.models.db_cluster_peer import (
+    ClusterPeer,
+)
+
 __all__ = [
     "Base",
     "Session",
@@ -144,4 +149,6 @@ __all__ = [
     "ComplianceEvent",
     "CompliancePolicyChange",
     "ComplianceAuditChain",
+    # Cluster peers (v5.0.18)
+    "ClusterPeer",
 ]

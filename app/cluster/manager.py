@@ -13,6 +13,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Optional
 
 import httpx
@@ -53,6 +54,12 @@ def active_node_count() -> int:
 
 
 def _parse_peers() -> list[PeerNode]:
+    """Parse the env-derived peer list. Used as the seed source on first
+    boot AND as a safety-net fallback when the DB is empty/unreachable.
+
+    v5.0.18: env was the only source pre-v5.0.18. Now the cluster_peers
+    table is authoritative once seeded. See ``_reload_peers_from_db``.
+    """
     raw = settings.cluster_peers or ""
     nodes = []
     for item in raw.split(","):
@@ -62,6 +69,76 @@ def _parse_peers() -> list[PeerNode]:
         node_id, _, url = item.partition(":")
         nodes.append(PeerNode(id=node_id.strip(), name=node_id.strip(), url=url.strip()))
     return nodes
+
+
+async def _reload_peers_from_db(db_factory) -> int:
+    """v5.0.18 — Sync the in-memory ``_peers`` dict with the active rows
+    in the ``cluster_peers`` table. Called at startup and on a 30s
+    refresh loop. Returns the count of active peers after reload.
+
+    Adds new peers (preserving their ``status`` if already known),
+    removes tombstoned peers, and updates URLs in place.
+    """
+    from sqlalchemy import select
+    from app.models.db import ClusterPeer
+    try:
+        async with db_factory() as db:
+            rows = (await db.execute(
+                select(ClusterPeer).where(ClusterPeer.removed_at.is_(None))
+            )).scalars().all()
+    except Exception as exc:
+        logger.warning("_reload_peers_from_db.failed err=%s — keeping current in-memory peers", exc)
+        return len(_peers)
+
+    db_ids = {r.id for r in rows}
+    # Remove peers no longer in DB
+    for stale in [pid for pid in list(_peers.keys()) if pid not in db_ids]:
+        logger.info("cluster_peers: removing peer %s (no longer in DB)", stale)
+        _peers.pop(stale, None)
+    # Add / update peers from DB
+    for r in rows:
+        existing = _peers.get(r.id)
+        if existing is None:
+            _peers[r.id] = PeerNode(id=r.id, name=r.name or r.id, url=r.url)
+            logger.info("cluster_peers: adding peer %s -> %s", r.id, r.url)
+        else:
+            # URL/name may have been edited; refresh those fields without
+            # clobbering status/latency tracking.
+            existing.url = r.url
+            existing.name = r.name or r.id
+    return len(_peers)
+
+
+async def _seed_peers_from_env_if_empty(db_factory) -> int:
+    """v5.0.18 one-time migration: if cluster_peers table is empty AND
+    CLUSTER_PEERS env is set, seed the table from env. Idempotent — a
+    second call with the table already populated is a no-op.
+    """
+    import time as _t
+    from sqlalchemy import select, func
+    from app.models.db import ClusterPeer
+    try:
+        async with db_factory() as db:
+            existing = (await db.execute(select(func.count(ClusterPeer.id)))).scalar_one()
+            if existing > 0:
+                return 0
+            env_peers = _parse_peers()
+            if not env_peers:
+                return 0
+            now = datetime.utcnow()
+            now_ts = _t.time()
+            for p in env_peers:
+                db.add(ClusterPeer(
+                    id=p.id, url=p.url, name=p.name,
+                    added_at=now,
+                    last_user_edit_at=now_ts,
+                ))
+            await db.commit()
+            logger.info("cluster_peers: seeded %d peers from CLUSTER_PEERS env", len(env_peers))
+            return len(env_peers)
+    except Exception as exc:
+        logger.warning("_seed_peers_from_env_if_empty.failed err=%s", exc)
+        return 0
 
 
 
@@ -510,6 +587,23 @@ async def _build_sync_payload(db) -> dict:
         serialize_policy_change(r) for r in policy_changes_rs.scalars().all()
     ]
 
+    # v5.0.18 — UI-configurable cluster peer list. Replicate the full
+    # cluster_peers table (including tombstones — receiver's apply
+    # handler honours removed_at) so add/remove operations propagate.
+    from app.models.db import ClusterPeer as _CP
+    cp_rs = await db.execute(select(_CP))
+    cluster_peers_payload = [
+        {
+            "id": r.id,
+            "url": r.url,
+            "name": r.name,
+            "added_at": r.added_at.isoformat() if r.added_at else None,
+            "removed_at": r.removed_at.isoformat() if r.removed_at else None,
+            "last_user_edit_at": r.last_user_edit_at,
+        }
+        for r in cp_rs.scalars().all()
+    ]
+
     return {
         "source_node": settings.cluster_node_id,
         "timestamp": time.time(),
@@ -541,6 +635,8 @@ async def _build_sync_payload(db) -> dict:
         # v5.0.0 — compliance audit trail; append-only on the receiver.
         "compliance_events": compliance_events_payload,
         "compliance_policy_changes": compliance_policy_changes_payload,
+        # v5.0.18 — UI-configurable peer list with LWW + tombstones.
+        "cluster_peers": cluster_peers_payload,
     }
 
 
@@ -757,14 +853,40 @@ def get_cluster_status() -> dict:
     }
 
 
+async def _peer_refresh_loop(db_factory):
+    """v5.0.18 — every 30s, refresh ``_peers`` from the cluster_peers
+    table so UI-driven add/remove ops on this or any peer node take
+    effect within one cycle without a container restart."""
+    while True:
+        await asyncio.sleep(30)
+        try:
+            await _reload_peers_from_db(db_factory)
+        except Exception as exc:
+            logger.warning("peer_refresh_loop.iteration_failed err=%s", exc)
+
+
+_peer_refresh_task: Optional[asyncio.Task] = None
+
+
 def start_cluster(db_factory, notify_fn=None):
-    global _heartbeat_task, _sync_task
+    global _heartbeat_task, _sync_task, _peer_refresh_task
     if not settings.cluster_enabled:
         return
 
-    for peer in _parse_peers():
-        _peers[peer.id] = peer
+    # v5.0.18 — defer the seed+load to the event loop so we can use
+    # the async DB factory. Pre-v5.0.18 used the synchronous env parse
+    # only; that path is now the safety-net inside _reload_peers_from_db.
+    async def _bootstrap():
+        await _seed_peers_from_env_if_empty(db_factory)
+        await _reload_peers_from_db(db_factory)
+        # If both DB and env failed, fall back to env-only legacy behavior
+        # to preserve pre-v5.0.18 startup semantics.
+        if not _peers:
+            for peer in _parse_peers():
+                _peers[peer.id] = peer
+        logger.info(f"Cluster started — {len(_peers)} peers registered")
 
+    asyncio.create_task(_bootstrap())
     _heartbeat_task = asyncio.create_task(_heartbeat_loop(notify_fn))
     _sync_task = asyncio.create_task(_sync_loop(db_factory))
-    logger.info(f"Cluster started — {len(_peers)} peers registered")
+    _peer_refresh_task = asyncio.create_task(_peer_refresh_loop(db_factory))

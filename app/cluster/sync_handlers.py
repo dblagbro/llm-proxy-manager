@@ -984,6 +984,82 @@ async def _apply_providers(db: AsyncSession, rows: list[dict]) -> None:
         )
 
 
+async def _apply_cluster_peers(db: AsyncSession, rows: list[dict]) -> None:
+    """v5.0.18 — merge incoming ``cluster_peers`` rows.
+
+    PK is the string ``id`` (the remote node's CLUSTER_NODE_ID).
+    Conflict resolution:
+
+      - **Tombstone-aware**: if the incoming row has ``removed_at`` set
+        AND it's >= our local ``removed_at`` (or our local is NULL),
+        we accept the deletion. Mirrors api_keys/providers tombstone
+        semantics so a remove on any peer propagates everywhere.
+      - **LWW on edits**: when neither side is tombstoned, the row with
+        the higher ``last_user_edit_at`` wins on ``url`` + ``name``.
+      - **Self-row protection**: never sync a row whose id equals this
+        node's CLUSTER_NODE_ID. Each node knows itself; the
+        cluster_peers table is for OTHER nodes only. If a peer
+        accidentally includes our id in its payload (clock skew on a
+        UI add operation), we silently skip it.
+    """
+    from app.config import settings as _s
+    from app.models.db import ClusterPeer
+    self_id = _s.cluster_node_id or ""
+    for r in rows:
+        pid = r.get("id")
+        if not pid or pid == self_id:
+            continue
+        peer_removed = _parse_iso_keep_naive(r.get("removed_at"))
+        peer_added = _parse_iso_keep_naive(r.get("added_at"))
+        peer_edit = r.get("last_user_edit_at")
+        if peer_edit is not None:
+            try:
+                peer_edit = float(peer_edit)
+            except (TypeError, ValueError):
+                peer_edit = None
+        existing = (await db.execute(
+            select(ClusterPeer).where(ClusterPeer.id == pid).limit(1)
+        )).scalar_one_or_none()
+
+        if existing is None:
+            db.add(ClusterPeer(
+                id=pid,
+                url=r.get("url") or "",
+                name=r.get("name"),
+                added_at=peer_added,
+                removed_at=peer_removed,
+                last_user_edit_at=peer_edit,
+            ))
+            continue
+
+        # Tombstone branch — accept a removal whose timestamp is newer
+        # than ours (or whose ours is NULL, meaning we still think the
+        # peer is active).
+        if peer_removed and (
+            existing.removed_at is None
+            or peer_removed >= existing.removed_at
+        ):
+            existing.removed_at = peer_removed
+            continue
+        # Local is tombstoned, peer says active → keep local tombstone.
+        if existing.removed_at is not None and peer_removed is None:
+            continue
+        # LWW on edits.
+        local_edit = existing.last_user_edit_at
+        if (
+            peer_edit is not None
+            and local_edit is not None
+            and peer_edit <= local_edit
+        ):
+            continue
+        if r.get("url"):
+            existing.url = r["url"]
+        if "name" in r:
+            existing.name = r.get("name")
+        if peer_edit is not None:
+            existing.last_user_edit_at = peer_edit
+
+
 __all__ = [
     "_apply_blocked_ips",
     "_apply_ai_reviews",
@@ -996,6 +1072,7 @@ __all__ = [
     "_apply_compliance_policy_changes",
     "_apply_api_keys",
     "_apply_providers",
+    "_apply_cluster_peers",
     "_parse_iso_naive_utc",
     "serialize_compliance_event",
     "serialize_policy_change",

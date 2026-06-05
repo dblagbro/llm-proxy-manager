@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { RefreshCw, ShieldAlert, ShieldCheck, Server } from 'lucide-react'
 import { clusterApi, providersApi } from '@/api'
@@ -122,6 +123,9 @@ export function ClusterPage() {
         </CardContent>
       </Card>
 
+      {/* v5.0.18 — UI-configurable cluster peers */}
+      <ClusterPeersPanel />
+
       {/* Circuit Breakers */}
       <Card>
         <CardHeader><CardTitle>Provider Circuit Breakers</CardTitle></CardHeader>
@@ -172,5 +176,163 @@ export function ClusterPage() {
         </CardContent>
       </Card>
     </div>
+  )
+}
+
+
+// ── v5.0.18: UI-configurable cluster peers panel ───────────────────────
+function ClusterPeersPanel() {
+  const qc = useQueryClient()
+  const toast = useToast()
+  const { data: peers, isLoading } = useQuery({
+    queryKey: ['cluster-peers'],
+    queryFn: clusterApi.listPeers,
+    refetchInterval: 30_000,
+  })
+  const addMut = useMutation({
+    mutationFn: clusterApi.addPeer,
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['cluster-peers'] }); toast.success('Peer added') },
+    onError:   (e: Error) => toast.error(e.message),
+  })
+  const removeMut = useMutation({
+    mutationFn: (id: string) => clusterApi.removePeer(id),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['cluster-peers'] }); toast.success('Peer removed') },
+    onError:   (e: Error) => toast.error(e.message),
+  })
+
+  const [id, setId] = useState('')
+  const [url, setUrl] = useState('')
+  const [name, setName] = useState('')
+
+  function submit() {
+    const trim = (s: string) => s.trim()
+    if (!trim(id) || !trim(url)) {
+      toast.error('id + url are required')
+      return
+    }
+    if (!/^https?:\/\//.test(trim(url))) {
+      toast.error('url must include scheme (http:// or https://)')
+      return
+    }
+    addMut.mutate({ id: trim(id), url: trim(url), name: trim(name) || undefined })
+    setId(''); setUrl(''); setName('')
+  }
+
+  const active = (peers ?? []).filter(p => p.active)
+  const removed = (peers ?? []).filter(p => !p.active)
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>
+          Cluster Peers
+          <span className="ml-2 text-sm font-normal text-gray-500 dark:text-gray-400">
+            {active.length} active{removed.length > 0 ? ` · ${removed.length} removed` : ''}
+          </span>
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        {isLoading ? (
+          <div className="flex justify-center py-6"><Spinner /></div>
+        ) : (
+          <div className="space-y-4">
+            {/* Add row */}
+            <div className="border border-gray-200 dark:border-gray-700 rounded-lg p-3 bg-gray-50 dark:bg-gray-800/50">
+              <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">
+                Add peer: enter the remote node's CLUSTER_NODE_ID and its public URL (no trailing slash).
+                Replicates to existing peers within ~60s.
+              </p>
+              <div className="grid grid-cols-1 sm:grid-cols-12 gap-2">
+                <input
+                  className="sm:col-span-3 px-2.5 py-1.5 text-sm rounded border bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600"
+                  placeholder="id (e.g. llm-proxy2-www3)"
+                  value={id}
+                  onChange={e => setId(e.target.value)}
+                />
+                <input
+                  className="sm:col-span-6 px-2.5 py-1.5 text-sm rounded border bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600 font-mono"
+                  placeholder="https://node3.example.com/llm-proxy2"
+                  value={url}
+                  onChange={e => setUrl(e.target.value)}
+                />
+                <input
+                  className="sm:col-span-2 px-2.5 py-1.5 text-sm rounded border bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600"
+                  placeholder="name (optional)"
+                  value={name}
+                  onChange={e => setName(e.target.value)}
+                />
+                <Button
+                  size="sm"
+                  className="sm:col-span-1"
+                  onClick={submit}
+                  loading={addMut.isPending}
+                  disabled={!id.trim() || !url.trim()}
+                >
+                  Add
+                </Button>
+              </div>
+            </div>
+
+            {/* Active peers */}
+            {active.length === 0 ? (
+              <p className="text-sm text-gray-500 dark:text-gray-400 px-1">No active peers configured.</p>
+            ) : (
+              <div className="space-y-1.5">
+                {active.map(p => (
+                  <div key={p.id} className="flex items-center justify-between gap-3 px-3 py-2 rounded border border-gray-200 dark:border-gray-700">
+                    <div className="min-w-0 flex-1">
+                      <div className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">
+                        {p.name || p.id}
+                        {p.name && p.name !== p.id && (
+                          <span className="ml-1.5 text-xs text-gray-500 dark:text-gray-400">({p.id})</span>
+                        )}
+                      </div>
+                      <div className="text-xs text-gray-500 dark:text-gray-400 font-mono truncate">{p.url}</div>
+                    </div>
+                    <Button
+                      size="sm"
+                      variant="danger"
+                      onClick={() => {
+                        if (confirm(`Remove peer ${p.id}?\n\nThe local node will stop syncing to ${p.url} within 30s. The tombstone replicates to all peers, so they will also drop ${p.id}.`)) {
+                          removeMut.mutate(p.id)
+                        }
+                      }}
+                      loading={removeMut.isPending}
+                    >
+                      Remove
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Removed (tombstones) */}
+            {removed.length > 0 && (
+              <details className="text-xs text-gray-500 dark:text-gray-400">
+                <summary className="cursor-pointer mb-1.5 hover:text-gray-700 dark:hover:text-gray-200">
+                  Recently removed ({removed.length})
+                </summary>
+                <div className="space-y-1 pl-3">
+                  {removed.map(p => (
+                    <div key={p.id} className="flex items-center justify-between gap-3">
+                      <div className="min-w-0 flex-1">
+                        <span className="font-mono">{p.id}</span>
+                        <span className="ml-2 text-[0.7rem]">removed {p.removed_at}</span>
+                      </div>
+                      <button
+                        className="text-indigo-600 dark:text-indigo-400 hover:underline"
+                        onClick={() => addMut.mutate({ id: p.id, url: p.url, name: p.name || undefined })}
+                      >
+                        Restore
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </details>
+            )}
+          </div>
+        )}
+      </CardContent>
+    </Card>
   )
 }
