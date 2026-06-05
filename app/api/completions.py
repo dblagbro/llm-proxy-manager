@@ -344,6 +344,13 @@ async def chat_completions(
         # but for claude-oauth same-family we want the caller's value.
         if route.cross_family_fallback and route.served_model_native:
             anthropic_body["model"] = route.served_model_native
+        # v5.0.21 — per-provider 1M-context opt-out via ContextVar.
+        # Same pattern as _messages_dispatch.py — set before invoking
+        # the OAuth path so build_headers strips the long-context beta.
+        from app.providers.claude_oauth import set_disable_long_context
+        set_disable_long_context(
+            bool((route.provider.extra_config or {}).get("disable_long_context"))
+        )
         # Override stream flag from the request body so `stream=True` propagates.
         # v3.0.40: removed the inline imports — they triggered Python's
         # "import binds the name as local in the enclosing function" rule,

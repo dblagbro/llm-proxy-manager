@@ -205,6 +205,11 @@ async def _probe_one(provider: Provider) -> None:
         # via platform.claude.com). Reuse the dispatch helper from messages.py
         # rather than going through litellm.
         from app.api._messages_streaming import _complete_claude_oauth
+        # v5.0.21 — per-provider 1M-context opt-out via ContextVar
+        from app.providers.claude_oauth import set_disable_long_context
+        set_disable_long_context(
+            bool((provider.extra_config or {}).get("disable_long_context"))
+        )
         try:
             async with AsyncSessionLocal() as _oauth_db:
                 resp = await asyncio.wait_for(
