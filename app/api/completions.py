@@ -347,9 +347,10 @@ async def chat_completions(
         # v5.0.21 — per-provider 1M-context opt-out via ContextVar.
         # Same pattern as _messages_dispatch.py — set before invoking
         # the OAuth path so build_headers strips the long-context beta.
+        # v5.0.21 hotfix: defensive getattr + identity-check for bool.
         from app.providers.claude_oauth import set_disable_long_context
         set_disable_long_context(
-            bool((route.provider.extra_config or {}).get("disable_long_context"))
+            (getattr(route.provider, "extra_config", None) or {}).get("disable_long_context") is True
         )
         # Override stream flag from the request body so `stream=True` propagates.
         # v3.0.40: removed the inline imports — they triggered Python's
