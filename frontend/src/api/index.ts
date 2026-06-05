@@ -420,8 +420,12 @@ export const clusterApi = {
       ? api.post<void>(`/cluster/circuit-breaker/${providerId}/open`)
       : api.post<void>(`/cluster/circuit-breaker/${providerId}/reset`),
   // v5.0.18 — UI-configurable cluster peers
-  listPeers:   ()                                => api.get<ClusterPeerRow[]>('/api/cluster/peers'),
+  // v5.0.18-hotfix: paths corrected from /api/cluster/peers (returned
+  // 404 — server router mounts at /cluster without /api/ prefix,
+  // matching every other cluster method above). UI panel was DOA
+  // before this fix. Caught by QA sweep 2026-06-05.
+  listPeers:   ()                                => api.get<ClusterPeerRow[]>('/cluster/peers'),
   addPeer:     (body: {id: string; url: string; name?: string}) =>
-                                                    api.post<{ok: boolean; id: string; url: string}>('/api/cluster/peers', body),
-  removePeer:  (peerId: string)                  => api.delete<{ok: boolean; id: string; removed_at: string}>(`/api/cluster/peers/${peerId}`),
+                                                    api.post<{ok: boolean; id: string; url: string}>('/cluster/peers', body),
+  removePeer:  (peerId: string)                  => api.delete<{ok: boolean; id: string; removed_at: string}>(`/cluster/peers/${peerId}`),
 }
