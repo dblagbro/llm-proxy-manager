@@ -70,16 +70,46 @@ _LONG_CONTEXT_MODEL_PATTERNS = (
 )
 
 
-def _beta_flags_for_model(model: str) -> str:
+# v5.0.21 — module-level ContextVar lets dispatch sites set the
+# per-provider 1M-context opt-out without changing every signature
+# in the OAuth call chain. Reset on each dispatch (defaults False).
+from contextvars import ContextVar
+_disable_long_context_cv: ContextVar[bool] = ContextVar(
+    "disable_long_context", default=False
+)
+
+
+def set_disable_long_context(flag: bool) -> None:
+    """Dispatch helper: call BEFORE invoking _complete_claude_oauth /
+    _stream_claude_oauth to apply the per-provider opt-out for this
+    request. ContextVar is async-task scoped, so concurrent requests
+    don't pollute each other's flag state.
+    """
+    _disable_long_context_cv.set(bool(flag))
+
+
+def _beta_flags_for_model(model: str, disable_long_context: bool = False) -> str:
     """Return the anthropic-beta flag bundle suitable for ``model``.
 
-    Strips ``context-1m-2025-08-07`` for every model that isn't on the
-    short whitelist of Pro-Max-1M-eligible families. Keeps every other
-    flag (oauth, claude-code, interleaved-thinking, prompt-caching, …).
+    Strips ``context-1m-2025-08-07`` when:
+      - the model isn't on the 1M-eligible whitelist
+        (``_LONG_CONTEXT_MODEL_PATTERNS``), OR
+      - ``disable_long_context`` is True — operator-set per-provider
+        opt-out (v5.0.21) for Max accounts that haven't purchased
+        Anthropic's separate "Usage credits" prerequisite for 1M
+        context. Without those credits, Anthropic returns:
+          429 {"type":"rate_limit_error",
+               "message":"Usage credits are required for long
+                context requests."}
+        even on tiny probe requests, which auto-skips the provider
+        from routing.
+
+    Other flags (oauth, claude-code, interleaved-thinking,
+    prompt-caching, …) are always kept.
     """
     model_lc = (model or "").lower()
     grants_1m = any(p in model_lc for p in _LONG_CONTEXT_MODEL_PATTERNS)
-    if grants_1m:
+    if grants_1m and not disable_long_context:
         return OAUTH_BETA_FLAGS
     parts = [f.strip() for f in OAUTH_BETA_FLAGS.split(",")]
     return ",".join(p for p in parts if p != "context-1m-2025-08-07")
@@ -204,18 +234,32 @@ def _to_unix_ts(v) -> Optional[float]:
 # ── Request-side helpers ─────────────────────────────────────────────────────
 
 
-def build_headers(access_token: str, model: Optional[str] = None) -> dict[str, str]:
+def build_headers(
+    access_token: str,
+    model: Optional[str] = None,
+    disable_long_context: bool = False,
+) -> dict[str, str]:
     """Return the exact header set Claude Code uses for OAuth-authenticated
     ``/v1/messages`` requests. Mirroring the CLI's headers avoids subtle
     400s from the beta-flag server-side enforcement.
 
     ``model`` is optional; when provided, we prune beta flags the model's
     tier doesn't grant (e.g. strip ``context-1m-2025-08-07`` for Haiku).
+
+    ``disable_long_context`` (v5.0.21) is the per-provider opt-out flag
+    — set via ``extra_config.disable_long_context = true`` for Max
+    accounts without Usage credits. See ``_beta_flags_for_model``
+    docstring for the failure mode it prevents.
     """
+    # v5.0.21 — if no explicit flag passed, fall through to the
+    # ContextVar set by the dispatch layer. That's how the streaming
+    # hot path picks up provider.extra_config.disable_long_context
+    # without rewriting every signature in the OAuth call chain.
+    effective_disable = disable_long_context or _disable_long_context_cv.get()
     return {
         "Authorization": f"Bearer {access_token}",
         "anthropic-version": ANTHROPIC_API_VERSION,
-        "anthropic-beta": _beta_flags_for_model(model or ""),
+        "anthropic-beta": _beta_flags_for_model(model or "", disable_long_context=effective_disable),
         "anthropic-dangerous-direct-browser-access": "true",
         "x-app": "cli",
     }

@@ -417,6 +417,12 @@ async def _test_claude_oauth(provider: Provider) -> dict:
     })
     url = f"{PLATFORM_BASE_URL}/v1/messages?beta=true"
 
+    # v5.0.21 — read per-provider 1M-context opt-out. Set on Max
+    # accounts that haven't bought Anthropic Usage credits; without
+    # this, even tiny probes return 429 "Usage credits are required
+    # for long context requests."
+    disable_long_context = bool((provider.extra_config or {}).get("disable_long_context"))
+
     # v2.7.6: refresh-and-retry once on 401 so admins see the real status
     from app.providers.claude_oauth_flow import refresh_and_persist, OAuthFlowError
     from app.models.database import AsyncSessionLocal
@@ -425,7 +431,7 @@ async def _test_claude_oauth(provider: Provider) -> dict:
     try:
         while True:
             headers = {
-                **build_headers(current_token, model=model),
+                **build_headers(current_token, model=model, disable_long_context=disable_long_context),
                 "Content-Type": "application/json",
             }
             async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as c:

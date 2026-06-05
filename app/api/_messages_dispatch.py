@@ -133,6 +133,13 @@ async def dispatch_claude_oauth_chain(
             )
         oauth_provider_id = route.provider.id
         tried_oauth_ids.add(oauth_provider_id)
+        # v5.0.21 — set the per-provider 1M-context opt-out on a
+        # ContextVar before invoking the OAuth path. Avoids threading
+        # an extra arg through every signature in the call chain.
+        from app.providers.claude_oauth import set_disable_long_context
+        set_disable_long_context(
+            bool((route.provider.extra_config or {}).get("disable_long_context"))
+        )
         if stream:
             # v2.7.6: pre-flight the streaming connection so 401/4xx errors
             # become proper HTTP responses instead of SSE-error-then-200.
