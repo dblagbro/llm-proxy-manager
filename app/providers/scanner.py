@@ -575,22 +575,51 @@ async def _test_codex_oauth(provider: Provider) -> dict:
         }
 
 
+# v5.0.18 — randomized smoke-test prompts. The pre-fix test always sent
+# the literal string "Reply with: OK" which is exactly the kind of
+# deterministic, easily-fingerprintable payload anti-bot systems hash
+# to detect probe traffic. Operator observed: manual chat works in
+# noVNC but the test consistently 403s. Hypothesis: Grok's anti-bot
+# has the old test string on a signature list. Randomizing the prompt
+# defeats payload fingerprinting while keeping the response shape
+# easy to validate (any natural-language answer is "success").
+import random as _random
+_GROK_TEST_PROMPTS = (
+    "What's your favorite color?",
+    "What's a good name for a friendly robot?",
+    "Tell me one fun fact about octopuses.",
+    "What's a tasty pairing for grilled cheese?",
+    "What's your favorite season?",
+    "Name a planet that isn't Earth.",
+    "What's a good gift for someone who loves cats?",
+    "What's a creative name for a small bookshop?",
+    "What's an interesting fact about the moon?",
+    "What's a good word for 'happy'?",
+    "Name a city you'd recommend visiting.",
+    "What's your favorite kind of weather?",
+)
+
+
 async def _test_grok_web(provider: Provider) -> dict:
-    """v3.2.0: smoke-test grok-web by sending one fast-mode "say OK" call.
+    """v3.2.0: smoke-test grok-web with a one-shot fast-mode chat call.
 
     Uses the operator's pasted cookies + conversation_id. On HTTP 401/403
     we surface a re-paste hint; on any other failure we record a circuit-
     breaker hit so repeated failures rotate the provider out of routing.
+
+    v5.0.18: prompt is randomized per call (was a fixed "Reply with: OK"
+    string that anti-bot signature-fingerprinted).
     """
     from app.providers.grok_web import (
         complete_grok_web, GrokWebAuthError, GrokWebError,
     )
     from app.routing.circuit_breaker import record_failure, record_success, is_billing_error
     model = provider.default_model or "grok-3"
+    prompt = _random.choice(_GROK_TEST_PROMPTS)
     try:
         result = await complete_grok_web(
             provider.extra_config or {},
-            messages=[{"role": "user", "content": "Reply with: OK"}],
+            messages=[{"role": "user", "content": prompt}],
             model=model,
             timeout=30.0,
         )
