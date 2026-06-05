@@ -90,6 +90,14 @@ _last_login_url: str = ""
 # before issuing a new request.
 _last_429_at: float = 0.0
 _last_429_body: str = ""
+# v5.0.19 — last VALID statsig-id captured from ANY page/tab in the
+# BrowserContext. Populated by the context-level request listener
+# installed during lifespan startup; consumed by chat() so we never
+# send a request with a broken/stale statsig nonce. Whenever the
+# operator types in noVNC OR any automated probe fires a real SPA
+# request, the cache updates.
+_last_valid_statsig: Optional[str] = None
+_last_valid_statsig_at: float = 0.0
 
 
 @asynccontextmanager
@@ -139,6 +147,26 @@ async def lifespan(app: FastAPI):
         await _page.goto(GROK_BASE + "/", wait_until="domcontentloaded", timeout=20_000)
     except Exception as e:
         logger.warning("startup navigation to grok.com failed: %s", e)
+    # v5.0.19 — install a CONTEXT-level request listener so we catch
+    # statsig-id headers fired from ANY page/tab/frame in the browser,
+    # not just from the tracked _page. This is what makes the operator's
+    # manual noVNC chats automatically feed our cache: when they send a
+    # message, the SPA's fetch fires on whatever tab they're on, and
+    # the context-level listener catches it regardless of which tab.
+    def _on_context_request(req):
+        global _last_valid_statsig, _last_valid_statsig_at
+        try:
+            if "grok.com" not in req.url:
+                return
+            sid = req.headers.get("x-statsig-id")
+            if sid and _statsig_id_looks_valid(sid):
+                _last_valid_statsig = sid
+                _last_valid_statsig_at = time.time()
+        except Exception:
+            pass
+    _context.on("request", _on_context_request)
+    logger.info("context-level statsig listener installed")
+
     # Kick off the cookie-refresh background task.
     refresh_task = asyncio.create_task(_cookie_refresh_loop())
     logger.info("playwright ready; bridge listening")
@@ -221,34 +249,110 @@ async def _capture_request_headers() -> dict[str, str]:
     return base
 
 
+def _statsig_id_looks_valid(sid: Optional[str]) -> bool:
+    """v5.0.19 — sanity-check a candidate ``x-statsig-id`` value.
+
+    When the Statsig SDK throws during ID generation (which it does
+    when the DOM isn't ready — common during page navigation), it
+    falls back to base64-encoding the error message AS the statsig-id
+    header. The result looks like a valid b64 string but decodes to
+    something like ``x0:TypeError: Cannot read properties...``.
+
+    Grok's anti-bot validates the statsig-id cryptographically and
+    rejects garbage values with HTTP 403 'Request rejected by
+    anti-bot rules' — which is exactly the failure mode the operator
+    saw all afternoon.
+
+    Real Statsig IDs are random-looking base64; broken ones contain
+    readable error keywords. Check for both substrings + the
+    decoded fallback marker.
+    """
+    if not sid or not isinstance(sid, str) or len(sid) < 20:
+        return False
+    import base64 as _b64
+    try:
+        decoded = _b64.b64decode(sid + "==", validate=False).decode("utf-8", errors="ignore")
+    except Exception:
+        return True  # not valid b64 → not the fallback error format
+    bad_markers = (
+        "TypeError", "ReferenceError", "Cannot read", "is not defined",
+        "x0:", "error", "Error",
+    )
+    return not any(m in decoded for m in bad_markers)
+
+
 async def _capture_statsig_id(timeout_sec: float = 10.0) -> Optional[str]:
-    """Listen for the next outgoing grok.com /responses request and pull
-    its ``x-statsig-id`` header. We trigger a request by sending a tiny
-    ping message via the bridge's own machinery if no organic traffic is
-    in flight — but simplest is to just navigate the page once and watch
-    for any request to grok.com that carries the header.
+    """Listen for the next outgoing grok.com request that carries a
+    VALID ``x-statsig-id`` header. Filters out the Statsig-SDK-error
+    fallback values that cause grok's anti-bot to 403 (see
+    ``_statsig_id_looks_valid``).
+
+    Strategy:
+      - Install a request listener.
+      - Navigate to grok.com root to provoke organic traffic.
+      - Wait for SPA hydration to settle (so Statsig SDK initializes
+        cleanly before we ask the page for the next request burst).
+      - Resolve on the first request that carries a real-looking
+        statsig-id. Reject error-fallback values and keep listening
+        for a real one until the timeout expires.
     """
     if _page is None:
         return None
-    found: dict[str, str] = {}
     fut: asyncio.Future[Optional[str]] = asyncio.get_event_loop().create_future()
 
-    def _on_request(req):  # type: ignore[no-untyped-def]
+    def _on_request(req):
         try:
             url = req.url
-            if "grok.com" in url and req.headers.get("x-statsig-id"):
-                if not fut.done():
-                    fut.set_result(req.headers.get("x-statsig-id"))
+            sid = req.headers.get("x-statsig-id")
+            if "grok.com" not in url or not sid:
+                return
+            if not _statsig_id_looks_valid(sid):
+                # Don't resolve; keep listening for a real one.
+                return
+            if not fut.done():
+                fut.set_result(sid)
         except Exception:
             pass
 
     _page.on("request", _on_request)
     try:
-        # Kick a navigation to provoke a request burst.
+        # Only navigate if we're not already on grok.com — repeated
+        # goto() calls during page transitions are the root cause of
+        # the SDK throwing on .childNodes (DOM is mid-replacement).
         try:
-            await _page.goto(GROK_BASE + "/", wait_until="domcontentloaded", timeout=timeout_sec * 1000)
+            cur_url = _page.url or ""
+        except Exception:
+            cur_url = ""
+        if "grok.com" not in cur_url:
+            try:
+                await _page.goto(GROK_BASE + "/", wait_until="domcontentloaded", timeout=timeout_sec * 1000)
+            except PlaywrightTimeout:
+                pass
+        # Let the SPA hydrate so Statsig SDK initializes properly.
+        try:
+            await _page.wait_for_load_state("networkidle", timeout=4_000)
         except PlaywrightTimeout:
             pass
+        await asyncio.sleep(0.8)
+
+        # Provoke a /rest/suggestions/stream request by typing a single
+        # character into the textarea — that request carries a real
+        # statsig-id (the SPA's own SDK signs it). Type then immediately
+        # delete the character so we don't pollute the conversation.
+        try:
+            ta = _page.locator('div[contenteditable="true"]').first
+            await ta.wait_for(state="visible", timeout=2_000)
+            await ta.click()
+            # Use insert_text to avoid leaving any composition state.
+            await _page.keyboard.insert_text("a")
+            # Wait a moment for the suggestions request to fire and our
+            # listener to catch it.
+            await asyncio.sleep(0.4)
+            # Clean up the typed character.
+            await _page.keyboard.press("Backspace")
+        except Exception as e:
+            logger.debug("statsig-provoke keystroke failed: %s", e)
+
         try:
             return await asyncio.wait_for(fut, timeout=timeout_sec)
         except asyncio.TimeoutError:
@@ -355,6 +459,16 @@ async def status():
             "last_429_at": _last_429_at if _last_429_at > 0 else None,
             "cooldown_remaining_sec": cooldown_remaining,
             "cooldown_active": cooldown_remaining > 0,
+        },
+        # v5.0.19 — exposes whether the context-level listener has
+        # caught a usable statsig recently. ``warm`` means we have a
+        # valid nonce younger than 10 min that chat() can reuse.
+        "statsig_cache": {
+            "warm": _last_valid_statsig is not None
+                    and (time.time() - _last_valid_statsig_at) < 600,
+            "age_sec": int(time.time() - _last_valid_statsig_at)
+                       if _last_valid_statsig else None,
+            "last_at": _last_valid_statsig_at if _last_valid_statsig else None,
         },
     }
 
@@ -1142,32 +1256,74 @@ def _build_grok_create_body(message: str) -> dict:
 
 
 async def _post_to_grok(conv_id: str, body: dict, statsig_id: Optional[str]) -> tuple[int, str]:
-    """Single HTTP POST to grok.com /responses. Returns (status, text).
-    Cookies come from the live BrowserContext."""
-    cookies = await _cookies_dict()
-    cookie_str = "; ".join(f"{k}={v}" for k, v in cookies.items())
-    headers = await _capture_request_headers()
+    """Single POST to grok.com /responses. Returns (status, text).
+
+    v5.0.19 (2026-06-05 — operator insight): we now run the POST via
+    the bridge's Chromium tab using ``page.evaluate(fetch(...))``
+    instead of a Python httpx call. The operator pointed out that
+    manual chats in noVNC succeed from the SAME IP that httpx
+    requests 403 from — so the difference isn't IP, it's the
+    request envelope. By routing through the in-browser fetch() we
+    inherit Chromium's TLS/JA3 fingerprint, HTTP/2 SETTINGS frame,
+    header order, sec-fetch-* headers, and statsig/sentry tracing
+    auto-added by the SPA's own request machinery.
+
+    Cookies are sent automatically by the browser (we don't need to
+    pass them explicitly). statsig_id, if provided, is added as
+    ``x-statsig-id`` to match the SPA's pattern.
+    """
+    global _last_429_at, _last_429_body
+    if _page is None:
+        return 599, "playwright not ready"
+
+    url = f"{GROK_BASE}/rest/app-chat/conversations/{conv_id}/responses"
+    # First, make sure the page is sitting on the conversation's URL
+    # so the SPA's tracing/baggage headers (Sentry) reflect the right
+    # context. If we're already on the right /c/<conv_id>, skip
+    # navigation to avoid unnecessary requests that further raise
+    # the bot score.
+    try:
+        cur_url = _page.url or ""
+    except Exception:
+        cur_url = ""
+    if conv_id not in cur_url:
+        try:
+            await _page.goto(f"{GROK_BASE}/c/{conv_id}", wait_until="domcontentloaded", timeout=20_000)
+        except Exception:
+            pass
+
+    headers = {"content-type": "application/json"}
     if statsig_id:
         headers["x-statsig-id"] = statsig_id
     headers["x-xai-request-id"] = str(uuid.uuid4())
-    if "x-userid" in cookies:
-        headers["x-userid"] = cookies["x-userid"]
-    headers["referer"] = f"{GROK_BASE}/c/{conv_id}"
-    headers["cookie"] = cookie_str
 
-    url = f"{GROK_BASE}/rest/app-chat/conversations/{conv_id}/responses"
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        try:
-            r = await client.post(url, json=body, headers=headers)
-            # v3.3.3: capture 429 timestamp so subsequent /api/chat
-            # callers can short-circuit during the cool-off window.
-            if r.status_code == 429:
-                global _last_429_at, _last_429_body
-                _last_429_at = time.time()
-                _last_429_body = r.text[:500]
-            return r.status_code, r.text
-        except httpx.HTTPError as e:
-            return 599, f"network error: {e}"
+    try:
+        result = await _page.evaluate(
+            """async ({url, headers, body}) => {
+                try {
+                    const res = await fetch(url, {
+                        method: 'POST',
+                        headers,
+                        body: JSON.stringify(body),
+                        credentials: 'include',
+                    });
+                    const text = await res.text();
+                    return {status: res.status, text};
+                } catch (e) {
+                    return {status: 599, text: 'network error: ' + String(e)};
+                }
+            }""",
+            {"url": url, "headers": headers, "body": body},
+        )
+    except Exception as e:
+        return 599, f"page.evaluate failed: {e}"
+
+    status = int((result or {}).get("status") or 0)
+    text = str((result or {}).get("text") or "")
+    if status == 429:
+        _last_429_at = time.time()
+        _last_429_body = text[:500]
+    return status, text
 
 
 @app.post("/api/chat")
@@ -1213,9 +1369,25 @@ async def chat(req: Request, _: None = Depends(require_bridge_token)):
     prompt = _flatten_messages(messages)
     body = _build_grok_body(prompt, mode_id)
 
-    # If caller didn't supply a statsig-id, try to capture one quickly.
+    # v5.0.19 — statsig-id priority order:
+    #   1. caller-supplied (rare; only if proxy passes one)
+    #   2. context-level cache (updated by ANY SPA traffic — operator's
+    #      manual chats, suggestions stream from typing, etc.)
+    #   3. fresh capture (provoke a keystroke + listen)
+    # The cache is the meaningful fix: as long as SPA activity is
+    # occurring SOMEWHERE in the browser, we have a fresh nonce.
     if not statsig_id:
-        statsig_id = await _capture_statsig_id(timeout_sec=8.0)
+        # Accept cache up to 10 minutes old. Statsig nonces don't
+        # encode a strict timestamp but they do rotate; staleness
+        # beyond ~10min reads as suspicious to grok's anti-bot.
+        if _last_valid_statsig and (time.time() - _last_valid_statsig_at) < 600:
+            statsig_id = _last_valid_statsig
+            logger.info("chat: using cached statsig (age=%.1fs)",
+                        time.time() - _last_valid_statsig_at)
+        else:
+            statsig_id = await _capture_statsig_id(timeout_sec=8.0)
+            if statsig_id:
+                logger.info("chat: captured fresh statsig")
 
     # First attempt
     status, text = await _post_to_grok(conv_id, body, statsig_id)
