@@ -1828,3 +1828,37 @@ Updated `tests/unit/test_v371_external_rotation.py` `_snapshot()` helper to defa
 ### Remaining issues / next refactor targets
 
 Per-model breakdowns from `seven_day_sonnet_utilization` / `seven_day_opus_utilization` could drive per-model skip decisions (e.g., skip a provider only for Sonnet when only the Sonnet bucket is at 100%). Same data shape, no concrete operator trigger yet — deferred.
+
+---
+
+## v5.0.16 — Nginx routing hardening (ops-only, no version bump)
+
+**Date:** 2026-06-04
+**Shipped:** nginx config changes on tmrwww01 / tmrwww02 / c1conv. No proxy code change, no docker image push, no version tag.
+
+### Motivation
+
+The variable+rewrite fix shipped earlier 2026-06-04 (alongside the v5.0.12 deploy) eliminated the *catastrophic* version of the nginx stale-upstream-cache bug — where `proxy_pass http://llm-proxy2:3000/` was being resolved once at config-load and silently routing `/llm-proxy2/` URL to whatever container happened to hold the cached IP. But it left two residual issues:
+
+1. **Stale-cache window after recreate.** The parent server block's `resolver 127.0.0.11 valid=30s;` bounded re-resolution at 30s. After a container recreate that swapped IPs (saw this twice today during v5.0.12 and v5.0.15 deploys), nginx could route to the wrong backend for up to 30s. In practice the window seemed longer — operator hit the bad state ~11 minutes post-deploy on the second occurrence, suggesting docker's embedded DNS at 127.0.0.11 was also caching beyond the nginx-stated TTL.
+
+2. **One bare-hostname holdout** at the `/grok-bridge-auth-check` auth_request subrequest block: `proxy_pass http://llm-proxy2:3000/api/auth/me;`. Not part of the variable-form sweep because it's an `internal` auth_request, not a user-facing route. Same stale-cache risk; same silent failure mode (auth subrequest hits smoke's session table → operator bounced to login with no clear error).
+
+### Approach
+
+1. **Tighten resolver TTL** from `valid=30s` to `valid=5s ipv6=off` on the llm-proxy2 server block (tmrwww01) and host-wide (tmrwww02, c1conv — they have one resolver, so scope is broader but the cost — more frequent ~1ms-each docker DNS lookups — is negligible). `ipv6=off` because docker's embedded DNS lacks IPv6 anyway; suppressing the IPv6 query halves the resolution cost.
+2. **Convert the bare-hostname holdout** to `proxy_pass $llm_proxy2_upstream/api/auth/me;`. Re-uses the existing `set $llm_proxy2_upstream …` directive declared earlier in the same server block.
+
+### Result
+
+Worst-case stale-IP window after a recreate: ≤5s (down from ≤30s observed, ≤several minutes worst-case earlier today). Zero bare-hostname holdouts remain in the llm-proxy2 routing path. Stress-tested via `--force-recreate llm-proxy2-smoke`: routing held correctly throughout the 8s sample window.
+
+### Risks
+
+- Tighter resolver TTL means ~6x more DNS queries against docker's embedded resolver. Cost is sub-millisecond per query (in-memory lookup inside the docker daemon); no measurable performance impact.
+- The deeper question — *why* did the routing stay stale for several minutes once today rather than the expected ~30s — wasn't fully diagnosed. Hypothesis: docker's embedded DNS at 127.0.0.11 returns answers with longer-than-stated TTLs under some conditions and nginx's resolver respects the upstream TTL when it's shorter than `valid=` (though the docs imply `valid=` overrides). Worth a separate diagnostic if the issue recurs even with `valid=5s`.
+- Configs are host-local (not in git, not in backup tarballs). Backups left at `nginx.conf.bak-pre-v5016-<UTC-timestamp>` on each host for rollback.
+
+### Tests
+
+No tests — these are nginx configs, not proxy code. Verification was live: post-restart routing checks on all three hosts + a `--force-recreate llm-proxy2-smoke` stress test that confirmed routing held across the recreate.
