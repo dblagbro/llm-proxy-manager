@@ -1255,75 +1255,207 @@ def _build_grok_create_body(message: str) -> dict:
     }
 
 
-async def _post_to_grok(conv_id: str, body: dict, statsig_id: Optional[str]) -> tuple[int, str]:
-    """Single POST to grok.com /responses. Returns (status, text).
+async def _send_via_spa_ui(conv_id: str, message: str) -> tuple[int, str]:
+    """v5.0.20 — Drive the SPA's send button via Playwright instead of
+    replaying the POST ourselves. Returns (status, text) matching the
+    httpx contract so chat()'s downstream parsing is unchanged.
 
-    v5.0.19 (2026-06-05 — operator insight): we now run the POST via
-    the bridge's Chromium tab using ``page.evaluate(fetch(...))``
-    instead of a Python httpx call. The operator pointed out that
-    manual chats in noVNC succeed from the SAME IP that httpx
-    requests 403 from — so the difference isn't IP, it's the
-    request envelope. By routing through the in-browser fetch() we
-    inherit Chromium's TLS/JA3 fingerprint, HTTP/2 SETTINGS frame,
-    header order, sec-fetch-* headers, and statsig/sentry tracing
-    auto-added by the SPA's own request machinery.
+    Why this exists: grok's anti-bot rejects requests with reused or
+    SDK-generated-then-replayed ``x-statsig-id`` nonces (see commit
+    5bfa56f). The SPA's own ``Send`` button triggers the React handler
+    that mints a fresh statsig in-call and fires the request through
+    its native API client — which IS what grok's anti-bot accepts. So
+    we just let the SPA do it.
 
-    Cookies are sent automatically by the browser (we don't need to
-    pass them explicitly). statsig_id, if provided, is added as
-    ``x-statsig-id`` to match the SPA's pattern.
+    Steps:
+      1. Navigate to ``/c/<conv_id>`` if not already there. Hydrate.
+      2. Install a response listener for the next ``/responses`` POST.
+      3. Type the message via ``insert_text`` + InputEvent dispatch
+         so React's controlled input sees it.
+      4. Click ``data-testid="chat-submit"`` via React-fiber direct
+         onClick invocation (bypasses ``isTrusted=false`` rejection).
+      5. Await the response listener for up to 45 seconds; return the
+         full streamed NDJSON body.
+
+    Cost: ~15-30 seconds per chat (page navigation + SPA streaming).
+    Suitable for the provider Test path and ad-hoc chat. Production
+    routing should still prefer OpenRouter for grok-3 (no bot
+    detection, ~3s end-to-end).
     """
     global _last_429_at, _last_429_body
     if _page is None:
         return 599, "playwright not ready"
 
-    url = f"{GROK_BASE}/rest/app-chat/conversations/{conv_id}/responses"
-    # First, make sure the page is sitting on the conversation's URL
-    # so the SPA's tracing/baggage headers (Sentry) reflect the right
-    # context. If we're already on the right /c/<conv_id>, skip
-    # navigation to avoid unnecessary requests that further raise
-    # the bot score.
+    # ── Step 1: ensure we're on the right conversation page ──────────
     try:
         cur_url = _page.url or ""
     except Exception:
         cur_url = ""
     if conv_id not in cur_url:
         try:
-            await _page.goto(f"{GROK_BASE}/c/{conv_id}", wait_until="domcontentloaded", timeout=20_000)
+            await _page.goto(f"{GROK_BASE}/c/{conv_id}",
+                             wait_until="domcontentloaded", timeout=20_000)
+        except Exception as e:
+            logger.warning("SPA-UI: nav to /c/%s failed: %s", conv_id, e)
+    # Whether we just navigated or were already here, the SPA may
+    # be mid-stream from a previous chat — the textarea is hidden
+    # while a response is generating. Wait for network to settle so
+    # the textarea returns to its visible/editable state.
+    try:
+        await _page.wait_for_load_state("networkidle", timeout=10_000)
+    except PlaywrightTimeout:
+        pass
+    await asyncio.sleep(0.8)
+
+    # ── Step 2: arm a response listener for the next /responses POST ─
+    target_path = f"/conversations/{conv_id}/responses"
+    fut: asyncio.Future = asyncio.get_event_loop().create_future()
+
+    async def _on_response(resp):
+        try:
+            if resp.request.method != "POST":
+                return
+            if target_path not in resp.url:
+                return
+            if fut.done():
+                return
+            # Buffer the full body. For streaming NDJSON, .text() blocks
+            # until the response stream completes.
+            try:
+                text = await resp.text()
+            except Exception as e:
+                text = ""
+                logger.warning("SPA-UI: .text() failed: %s", e)
+            if not fut.done():
+                fut.set_result((resp.status, text))
+        except Exception as e:
+            logger.debug("SPA-UI response listener err: %s", e)
+
+    # Playwright will await async listeners.
+    _page.on("response", _on_response)
+
+    try:
+        # ── Step 3: type the message into the SPA's textarea ─────────
+        # Wait up to 15s for the textarea to appear. After a previous
+        # chat's response stream, the SPA hides the input until the
+        # assistant message lands, then re-renders it. 3s wasn't long
+        # enough on slower runs.
+        typed_ok = False
+        for sel in (
+            'div[contenteditable="true"]',
+            'textarea[placeholder*="What"]',
+            'textarea[placeholder*="Ask"]',
+            'textarea',
+        ):
+            try:
+                loc = _page.locator(sel).first
+                await loc.wait_for(state="visible", timeout=15_000)
+                await loc.click()
+                try:
+                    await _page.keyboard.insert_text(message)
+                except Exception:
+                    await loc.type(message, delay=20)
+                # React-aware dispatch in case insert_text didn't fire
+                # the controlled-input listeners.
+                try:
+                    await _page.evaluate(
+                        """(args) => {
+                            const el = document.querySelector(args.sel);
+                            if (!el) return;
+                            el.dispatchEvent(new InputEvent('input', {
+                                inputType: 'insertText',
+                                data: args.text,
+                                bubbles: true,
+                                cancelable: false,
+                            }));
+                        }""",
+                        {"sel": sel, "text": message},
+                    )
+                except Exception:
+                    pass
+                typed_ok = True
+                break
+            except Exception:
+                continue
+        if not typed_ok:
+            return 599, "SPA-UI: no usable textarea found"
+
+        # ── Step 4: click chat-submit via React-fiber ────────────────
+        clicked = await _page.evaluate(
+            """() => {
+                const btn = document.querySelector(
+                    'button[data-testid="chat-submit"]:not([disabled])'
+                ) || document.querySelector(
+                    'button[data-testid*="submit" i]:not([disabled])'
+                );
+                if (!btn) return 'no-button';
+                const propsKey = Object.keys(btn).find(k =>
+                    k.startsWith('__reactProps')
+                );
+                if (propsKey) {
+                    const props = btn[propsKey];
+                    if (props && typeof props.onClick === 'function') {
+                        try {
+                            props.onClick({
+                                preventDefault: () => {},
+                                stopPropagation: () => {},
+                                currentTarget: btn,
+                                target: btn,
+                                type: 'click',
+                                isTrusted: true,
+                                nativeEvent: new MouseEvent('click', {bubbles: true}),
+                            });
+                            return 'react_fiber';
+                        } catch (e) { /* fall through */ }
+                    }
+                }
+                try { btn.click(); return 'native_click'; }
+                catch (e) { return 'click_failed:' + String(e); }
+            }"""
+        )
+        logger.info("SPA-UI: send click result=%s", clicked)
+        if isinstance(clicked, str) and clicked == "no-button":
+            return 599, "SPA-UI: chat-submit button not found"
+
+        # ── Step 5: wait for the SPA-fired response ──────────────────
+        try:
+            status, text = await asyncio.wait_for(fut, timeout=45.0)
+        except asyncio.TimeoutError:
+            return 599, "SPA-UI: timed out waiting for /responses POST (45s)"
+
+        if status == 429:
+            _last_429_at = time.time()
+            _last_429_body = text[:500]
+        return status, text
+    finally:
+        try:
+            _page.remove_listener("response", _on_response)
         except Exception:
             pass
 
-    headers = {"content-type": "application/json"}
-    if statsig_id:
-        headers["x-statsig-id"] = statsig_id
-    headers["x-xai-request-id"] = str(uuid.uuid4())
 
-    try:
-        result = await _page.evaluate(
-            """async ({url, headers, body}) => {
-                try {
-                    const res = await fetch(url, {
-                        method: 'POST',
-                        headers,
-                        body: JSON.stringify(body),
-                        credentials: 'include',
-                    });
-                    const text = await res.text();
-                    return {status: res.status, text};
-                } catch (e) {
-                    return {status: 599, text: 'network error: ' + String(e)};
-                }
-            }""",
-            {"url": url, "headers": headers, "body": body},
-        )
-    except Exception as e:
-        return 599, f"page.evaluate failed: {e}"
+async def _post_to_grok(conv_id: str, body: dict, statsig_id: Optional[str]) -> tuple[int, str]:
+    """Single POST to grok.com /responses. Returns (status, text).
 
-    status = int((result or {}).get("status") or 0)
-    text = str((result or {}).get("text") or "")
-    if status == 429:
-        _last_429_at = time.time()
-        _last_429_body = text[:500]
-    return status, text
+    v5.0.20 (2026-06-05): now delegates to ``_send_via_spa_ui`` —
+    Playwright drives the SPA's Send button so grok's anti-bot sees a
+    real React-handler-initiated request with a fresh single-use
+    statsig nonce. The earlier page.evaluate(fetch()) approach failed
+    because cached/replayed statsigs are rejected. The ``body`` arg
+    here is shadowed by the SPA's own body builder (we only need the
+    plain-text user message), and ``statsig_id`` is ignored for the
+    same reason.
+
+    The httpx + page.evaluate(fetch()) path is preserved in git
+    history (commit 5bfa56f) for when grok ever decides to accept
+    bridge-side POSTs again.
+    """
+    # ``body`` is the bridge-built _build_grok_body() dict; extract
+    # the user-visible message field to feed the SPA UI.
+    message = (body or {}).get("message") or ""
+    if not message:
+        return 599, "SPA-UI: empty message in build_grok_body"
+    return await _send_via_spa_ui(conv_id, message)
 
 
 @app.post("/api/chat")
