@@ -325,3 +325,108 @@ async def force_sync_now(
         except Exception:
             results[peer_id] = False
     return {"pushed_to": results, "peer_count": len(_peers)}
+
+
+# ── v5.0.18 — UI-configurable cluster peer list ──────────────────────
+
+
+@router.get("/cluster/peers")
+async def list_cluster_peers(
+    db: AsyncSession = Depends(get_db),
+    _: AdminUser = Depends(require_admin),
+):
+    """List active + tombstoned peers from the cluster_peers table.
+
+    Active = ``removed_at IS NULL``; tombstoned rows are surfaced so
+    the operator can see recent removals (and an admin could later
+    "restore" by clearing the timestamp — not exposed in this round).
+    """
+    from sqlalchemy import select
+    from app.models.db import ClusterPeer
+    rs = await db.execute(select(ClusterPeer).order_by(ClusterPeer.added_at))
+    rows = rs.scalars().all()
+    return [
+        {
+            "id": r.id,
+            "url": r.url,
+            "name": r.name,
+            "added_at": r.added_at.isoformat() if r.added_at else None,
+            "removed_at": r.removed_at.isoformat() if r.removed_at else None,
+            "active": r.removed_at is None,
+        }
+        for r in rows
+    ]
+
+
+from pydantic import BaseModel, Field as _Field
+
+
+class _PeerCreate(BaseModel):
+    id: str = _Field(..., min_length=1, max_length=64)
+    url: str = _Field(..., min_length=1, max_length=512)
+    name: str | None = None
+
+
+@router.post("/cluster/peers")
+async def add_cluster_peer(
+    body: _PeerCreate,
+    db: AsyncSession = Depends(get_db),
+    _: AdminUser = Depends(require_admin),
+):
+    """Add a new peer (or restore a tombstoned one) by id+url. The
+    next sync round (≤60s) replicates the new row to all currently-
+    known peers, and the local manager's peer-refresh loop picks it
+    up within 30s. Validation: rejects ids that match this node's
+    own CLUSTER_NODE_ID (a node can't peer with itself)."""
+    import time as _t
+    from datetime import datetime
+    from sqlalchemy import select
+    from app.models.db import ClusterPeer
+    if body.id == (settings.cluster_node_id or ""):
+        raise HTTPException(400, "cannot add self as peer")
+    if "://" not in body.url:
+        raise HTTPException(400, "url must include scheme (http:// or https://)")
+    existing = (await db.execute(
+        select(ClusterPeer).where(ClusterPeer.id == body.id).limit(1)
+    )).scalar_one_or_none()
+    now_dt = datetime.utcnow()
+    now_ts = _t.time()
+    if existing is None:
+        db.add(ClusterPeer(
+            id=body.id, url=body.url, name=body.name,
+            added_at=now_dt,
+            last_user_edit_at=now_ts,
+        ))
+    else:
+        # Restore or update an existing row (clears tombstone too).
+        existing.url = body.url
+        if body.name is not None:
+            existing.name = body.name
+        existing.removed_at = None
+        existing.last_user_edit_at = now_ts
+    await db.commit()
+    return {"ok": True, "id": body.id, "url": body.url}
+
+
+@router.delete("/cluster/peers/{peer_id}")
+async def remove_cluster_peer(
+    peer_id: str,
+    db: AsyncSession = Depends(get_db),
+    _: AdminUser = Depends(require_admin),
+):
+    """Soft-delete a peer (sets ``removed_at`` + bumps
+    ``last_user_edit_at``). Replicated as a tombstone via cluster
+    sync; the local manager stops pushing to it within 30s."""
+    import time as _t
+    from datetime import datetime
+    from sqlalchemy import select
+    from app.models.db import ClusterPeer
+    row = (await db.execute(
+        select(ClusterPeer).where(ClusterPeer.id == peer_id).limit(1)
+    )).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(404, "peer not found")
+    row.removed_at = datetime.utcnow()
+    row.last_user_edit_at = _t.time()
+    await db.commit()
+    return {"ok": True, "id": peer_id, "removed_at": row.removed_at.isoformat()}

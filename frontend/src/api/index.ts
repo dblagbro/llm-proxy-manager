@@ -398,6 +398,17 @@ export const settingsApi = {
 
 
 // ── Cluster ───────────────────────────────────────────────────────────────────
+// v5.0.18 — UI-configurable peer list. listPeers / addPeer / removePeer
+// drive the new Settings → Cluster Peers panel.
+export interface ClusterPeerRow {
+  id: string
+  url: string
+  name: string | null
+  added_at: string | null
+  removed_at: string | null
+  active: boolean
+}
+
 export const clusterApi = {
   status:  ()                              => api.get<ClusterStatus>('/cluster/status'),
   health:  ()                              => api.get<HealthStatus>('/health'),
@@ -408,4 +419,9 @@ export const clusterApi = {
     action === 'open'
       ? api.post<void>(`/cluster/circuit-breaker/${providerId}/open`)
       : api.post<void>(`/cluster/circuit-breaker/${providerId}/reset`),
+  // v5.0.18 — UI-configurable cluster peers
+  listPeers:   ()                                => api.get<ClusterPeerRow[]>('/api/cluster/peers'),
+  addPeer:     (body: {id: string; url: string; name?: string}) =>
+                                                    api.post<{ok: boolean; id: string; url: string}>('/api/cluster/peers', body),
+  removePeer:  (peerId: string)                  => api.delete<{ok: boolean; id: string; removed_at: string}>(`/api/cluster/peers/${peerId}`),
 }

@@ -532,8 +532,11 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
     # sync round is idempotent.
     await _apply_compliance_events(db, payload.get("compliance_events", []))
     await _apply_compliance_policy_changes(db, payload.get("compliance_policy_changes", []))
-    # Final tail commit covers compliance + any leftover state.
-    await _section_commit("compliance+tail")
+    # v5.0.18 — UI-configurable cluster peer list. Tombstone-aware LWW
+    # merge; same shape as api_keys.
+    await _apply_cluster_peers(db, payload.get("cluster_peers", []))
+    # Final tail commit covers compliance + cluster_peers + any leftover state.
+    await _section_commit("compliance+cluster_peers+tail")
 
     # v3.7.15 — BUG-018: peer nodes were waiting up to 30s for their
     # in-memory cache to expire after an admin block was synced. Now
@@ -570,4 +573,6 @@ from app.cluster.sync_handlers import (  # noqa: E402,F401
     _apply_api_keys,
     _apply_providers,
     _parse_iso_naive_utc,
+    # v5.0.18 — UI-configurable cluster peer list
+    _apply_cluster_peers,
 )
