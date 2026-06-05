@@ -359,6 +359,101 @@ async def status():
     }
 
 
+@app.post("/api/diagnostic/capture_next_send")
+async def capture_next_send(req: Request, _: None = Depends(require_bridge_token)):
+    """v5.0.18 diagnostic — arm a request listener and capture the next
+    POST to grok.com's chat-create or chat-responses endpoint, fired
+    from inside the bridge's own Chromium tab.
+
+    Usage:
+        1. Operator opens the noVNC viewer and navigates to grok.com.
+        2. Operator calls this endpoint (with X-Bridge-Token).
+        3. Within ``timeout`` seconds, operator clicks 'New chat' in
+           grok.com (or sends a message in an existing chat) — anything
+           that fires a real SPA POST to the chat API.
+        4. The endpoint returns the captured URL, method, headers,
+           and request body of that POST.
+
+    This solves the "DevTools clipboard quirk in noVNC" problem: we
+    don't need the operator to copy-paste the request payload. We
+    observe it from inside the same browser the operator is driving.
+
+    Body params (all optional):
+        timeout_sec:  how long to wait (default 60, max 180)
+        path_match:   substring to match in URL (default
+                      'app-chat/conversations'; matches both /new
+                      and /<id>/responses)
+    """
+    if _page is None:
+        raise HTTPException(503, "playwright not ready")
+    try:
+        body = await req.json()
+    except Exception:
+        body = {}
+    timeout_sec = float(body.get("timeout_sec") or 60.0)
+    timeout_sec = max(5.0, min(180.0, timeout_sec))
+    path_match = body.get("path_match") or "app-chat/conversations"
+
+    captured: dict = {}
+    fut: asyncio.Future = asyncio.get_event_loop().create_future()
+
+    def _on_req(playwright_req):
+        try:
+            if playwright_req.method != "POST":
+                return
+            if "grok.com" not in playwright_req.url:
+                return
+            if path_match not in playwright_req.url:
+                return
+            if fut.done():
+                return
+            # Capture URL, method, headers, and body. Body may be None
+            # for some requests; we serialize whatever is available.
+            try:
+                post_data = playwright_req.post_data
+            except Exception:
+                post_data = None
+            try:
+                post_json = playwright_req.post_data_json
+            except Exception:
+                post_json = None
+            captured.update({
+                "url": playwright_req.url,
+                "method": playwright_req.method,
+                "headers": dict(playwright_req.headers),
+                "post_data": (post_data or "")[:50_000],
+                "post_data_json": post_json,
+            })
+            fut.set_result(True)
+        except Exception:
+            pass
+
+    _page.on("request", _on_req)
+    try:
+        try:
+            await asyncio.wait_for(fut, timeout=timeout_sec)
+            captured["timed_out"] = False
+        except asyncio.TimeoutError:
+            captured["timed_out"] = True
+    finally:
+        try:
+            _page.remove_listener("request", _on_req)
+        except Exception:
+            pass
+
+    # Redact authorization-type headers in the response just in case
+    # logs of this endpoint end up somewhere visible — the actual
+    # value lives in the bridge's existing cookie jar so the operator
+    # doesn't need it returned.
+    if captured.get("headers"):
+        for h in ("cookie", "authorization"):
+            for k in list(captured["headers"].keys()):
+                if k.lower() == h:
+                    captured["headers"][k] = "<redacted>"
+
+    return captured
+
+
 @app.post("/api/conversation/new")
 async def create_new_conversation():
     """Create a fresh conversation in the operator's grok.com account
@@ -411,12 +506,15 @@ async def create_new_conversation():
             if statsig:
                 req_headers["x-statsig-id"] = statsig
             req_headers["x-xai-request-id"] = str(uuid.uuid4())
-            if "x-userid" in cookies:
-                req_headers["x-userid"] = cookies["x-userid"]
+            # NOTE 2026-06-05: do NOT add x-userid here. The captured
+            # SPA request to /conversations/new does NOT include it,
+            # and adding it makes us look anomalous to the anti-bot
+            # layer. (The /responses endpoint may behave differently;
+            # leaving chat() alone.)
             req_headers["referer"] = f"{GROK_BASE}/"
             req_headers["cookie"] = cookie_str
             create_url = f"{GROK_BASE}/rest/app-chat/conversations/new"
-            create_body = _build_grok_body("hi", "MODE_FAST")
+            create_body = _build_grok_create_body("hi")
             async with httpx.AsyncClient(timeout=45.0) as client:
                 cresp = await client.post(create_url, json=create_body, headers=req_headers)
             logger.info("conversation/new direct API status=%d (statsig=%s)",
@@ -953,6 +1051,9 @@ def _flatten_messages(messages: list[dict]) -> str:
 
 
 def _build_grok_body(message: str, mode_id: str) -> dict:
+    """Body shape for POST /responses on an existing conversation.
+    Kept as-is — chat() has been confirmed to return 200 with this
+    shape for the routing hot path."""
     return {
         "message": message,
         "parentResponseId": "",
@@ -987,6 +1088,56 @@ def _build_grok_body(message: str, mode_id: str) -> dict:
             "viewportHeight": 800,
         },
         "modeId": mode_id,
+    }
+
+
+def _build_grok_create_body(message: str) -> dict:
+    """Body shape for POST /conversations/new (creating a fresh
+    conversation). Captured 2026-06-05 from the live SPA via the
+    /api/diagnostic/capture_next_send endpoint. Differs from
+    /responses on existing convs:
+      - modeId is lowercase "fast", not "MODE_FAST"
+      - metadata key is "responseMetadata", not "metadata"
+      - includes "temporary" and "linkQuery" booleans
+      - omits parentResponseId / isFromGrokFiles / isRegenRequest /
+        skipCancelCurrentInflightRequests (server adds those)
+      - feature flags (enableImageGeneration/Streaming, side-by-side)
+        default to TRUE, not False
+      - viewport carries real numbers, not the conservative 999x800
+        we used previously
+    """
+    return {
+        "temporary": False,
+        "message": message,
+        "fileAttachments": [],
+        "imageAttachments": [],
+        "disableSearch": False,
+        "enableImageGeneration": True,
+        "returnImageBytes": False,
+        "returnRawGrokInXaiRequest": False,
+        "enableImageStreaming": True,
+        "imageGenerationCount": 2,
+        "forceConcise": False,
+        "enableSideBySide": True,
+        "sendFinalMetadata": True,
+        "disableTextFollowUps": False,
+        "responseMetadata": {},
+        "disableMemory": False,
+        "forceSideBySide": False,
+        "isAsyncChat": False,
+        "disableSelfHarmShortCircuit": False,
+        "collectionIds": [],
+        "disabledConnectorIds": [],
+        "deviceEnvInfo": {
+            "darkModeEnabled": False,
+            "devicePixelRatio": 1,
+            "screenWidth": 1920,
+            "screenHeight": 1080,
+            "viewportWidth": 1911,
+            "viewportHeight": 936,
+        },
+        "modeId": "fast",
+        "linkQuery": False,
     }
 
 
