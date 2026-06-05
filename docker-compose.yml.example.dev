@@ -1,3 +1,25 @@
+# ⚠️  NOT THE DEPLOYMENT COMPOSE FILE.  ⚠️
+#
+# This file existed as `docker-compose.yml` in the repo root from
+# inception. Production deployment uses the canonical compose stack at
+# /home/dblagbro/docker/docker-compose.yml, which defines ALL the
+# services (llm-proxy, llm-proxy2, llm-proxy2-smoke, llm-proxy2-grok-bridge,
+# llm-proxy2-cursor-bridge, …).
+#
+# Repeated deploy failures in 2026-06-05 ("no such service: llm-proxy")
+# traced back to this file: running `docker compose up` from the repo
+# directory picks up THIS file, which only knows about `llm-proxy2`,
+# silently masking the real stack. BUG-056 in bug-log.md.
+#
+# Renamed 2026-06-05 (v5.0.21+remediation batch 1) to make the ambiguity
+# obvious. If you want to use it for local development of the proxy
+# alone, copy it to `docker-compose.dev.yml` and run with
+# `docker compose -f docker-compose.dev.yml up`.
+#
+# DO NOT rename this file back to `docker-compose.yml` without first
+# removing or updating the canonical stack — you will reintroduce
+# BUG-056.
+
 services:
   llm-proxy2:
     container_name: llm-proxy2

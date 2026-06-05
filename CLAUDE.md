@@ -41,9 +41,15 @@ to resolve paths incorrectly.
 
 ## Docker rules (from global CLAUDE.md)
 - NEVER run `docker compose down` or touch other containers
-- To rebuild: `sudo docker compose build llm-proxy2 && sudo docker compose up -d --force-recreate --no-deps llm-proxy2`
+- **ALWAYS `cd /home/dblagbro/docker` first.** The repo root used to
+  hold a `docker-compose.yml` that only defined `llm-proxy2` and
+  silently masked the canonical stack — see BUG-056. As of v5.0.21+
+  remediation Batch 1, that file was renamed to
+  `docker-compose.yml.example.dev`. Compose commands from anywhere
+  other than `/home/dblagbro/docker/` will either fail explicitly OR
+  pick up an unrelated dev file. Both are wrong.
+- To rebuild: `cd /home/dblagbro/docker && sudo docker compose build llm-proxy2 && sudo docker compose up -d --force-recreate --no-deps llm-proxy2`
 - To reload nginx: `sudo docker exec nginx nginx -s reload`
-- Run compose commands from `/home/dblagbro/docker/`, NOT from this directory
 
 ## Python 3.13 notes
 - Do NOT use `passlib` — it crashes on Python 3.13. Use `bcrypt` package directly (see `app/auth/admin.py`)

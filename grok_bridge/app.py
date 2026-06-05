@@ -1525,7 +1525,12 @@ async def chat(req: Request, _: None = Depends(require_bridge_token)):
     status, text = await _post_to_grok(conv_id, body, statsig_id)
 
     # On 401/403: refresh page (Playwright will silently solve any CF
-    # challenge), capture a fresh statsig-id, retry once.
+    # challenge), then retry once. The retry goes through
+    # _post_to_grok → _send_via_spa_ui, which drives the SPA itself; a
+    # passed-in statsig_id is ignored on that path (the SPA mints its
+    # own per-request statsig). The pre-retry capture below is kept
+    # only because the bridge could fall back to the legacy httpx
+    # path in a future revision.
     if status in (401, 403) and INFERENCE_RETRY_AFTER_REFRESH:
         logger.warning("grok.com %s — refreshing playwright page and retrying", status)
         await _force_refresh()
