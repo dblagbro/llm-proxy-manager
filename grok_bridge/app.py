@@ -395,16 +395,26 @@ async def create_new_conversation():
 
         # ── Strategy 1: in-browser fetch to /conversations/new ──────────
         # Tries the canonical create endpoint via the page's own fetch().
-        # If grok.com's anti-bot only triggers on server-IP requests, this
-        # bypasses it. Cookies + UA + TLS fingerprint all match the
-        # operator's logged-in browser.
+        # Cookies + UA + TLS fingerprint inherit from the SPA. The
+        # ``x-statsig-id`` header — Grok's bot-detection nonce — does
+        # NOT come for free with fetch(); we capture it from the SPA's
+        # outgoing /responses request and stamp it on our call. Without
+        # this header Strategy 1 reliably 403s with "Request rejected
+        # by anti-bot rules." See ``_capture_statsig_id``.
+        statsig_id: Optional[str] = None
+        try:
+            statsig_id = await _capture_statsig_id(timeout_sec=6.0)
+        except Exception as e:
+            logger.info("conversation/new: statsig capture failed (%s); trying fetch without", e)
         try:
             result = await _page.evaluate(
-                """async () => {
+                """async (statsig) => {
                     try {
+                        const headers = {'content-type': 'application/json'};
+                        if (statsig) headers['x-statsig-id'] = statsig;
                         const res = await fetch('https://grok.com/rest/app-chat/conversations/new', {
                             method: 'POST',
-                            headers: {'content-type': 'application/json'},
+                            headers,
                             body: '{}',
                             credentials: 'include',
                         });
@@ -413,9 +423,11 @@ async def create_new_conversation():
                     } catch (e) {
                         return {error: String(e)};
                     }
-                }"""
+                }""",
+                statsig_id,
             )
-            logger.info("conversation/new fetch result: %s", result)
+            logger.info("conversation/new fetch result (statsig=%s): %s",
+                        "yes" if statsig_id else "no", result)
             if isinstance(result, dict) and result.get("ok"):
                 # Try to parse the conversation_id out of the body.
                 import re as _re
@@ -431,6 +443,47 @@ async def create_new_conversation():
                         "url": _page.url,
                     }
                 logger.info("fetch ok but no UUID in body; falling back to UI")
+            elif isinstance(result, dict) and result.get("status") == 403 and statsig_id is None:
+                # We tried without a statsig and got the expected 403 —
+                # retry ONCE with a fresh capture. This handles the case
+                # where the first capture timed out but a request fires
+                # immediately after.
+                logger.info("conversation/new: retrying after capturing statsig_id")
+                try:
+                    statsig_id = await _capture_statsig_id(timeout_sec=8.0)
+                except Exception:
+                    statsig_id = None
+                if statsig_id:
+                    result = await _page.evaluate(
+                        """async (statsig) => {
+                            try {
+                                const res = await fetch('https://grok.com/rest/app-chat/conversations/new', {
+                                    method: 'POST',
+                                    headers: {'content-type': 'application/json', 'x-statsig-id': statsig},
+                                    body: '{}',
+                                    credentials: 'include',
+                                });
+                                const text = await res.text();
+                                return {ok: res.ok, status: res.status, body: text.slice(0, 600)};
+                            } catch (e) {
+                                return {error: String(e)};
+                            }
+                        }""",
+                        statsig_id,
+                    )
+                    logger.info("conversation/new fetch retry result: %s", result)
+                    if isinstance(result, dict) and result.get("ok"):
+                        import re as _re
+                        body = result.get("body") or ""
+                        m = _re.search(r'"conversation"\s*:\s*"?([0-9a-f-]{32,40})"?', body)
+                        if not m:
+                            m = _re.search(r'"id"\s*:\s*"([0-9a-f-]{32,40})"', body)
+                        if m:
+                            return {
+                                "conversation_id": m.group(1),
+                                "method": "in_browser_fetch_with_statsig",
+                                "url": _page.url,
+                            }
         except Exception as e:
             logger.warning("in-browser fetch failed: %s", e)
 
