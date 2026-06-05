@@ -7,6 +7,78 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ---
 
+## v5.0.x — Compliance enforcement milestone
+
+The v5.0.x line landed the gov-compliance subsystem (per-key + system-wide company block list, model substitution, audit chain) and the operational ship-rate that followed it. Spec set: `docs/5.0-compliance-design.md`, `docs/5.0-impact-map.md`, `docs/compliance-taxonomy-v5.0.0.md`. Cross-team memo trail with the Coordinator Hub team in `docs/2026-06-04-reply-{1..9}-to-hub-team-*.md`.
+
+### v5.0.15 — Rotation clamps on `five_hour_utilization` (2026-06-04)
+
+`app/routing/external_rotation.evaluate_rules_for_provider` now reads both `seven_day_utilization` AND `five_hour_utilization` from the Anthropic billing snapshot. Pre-v5.0.15 only the weekly bucket was considered; the session bucket (5h window, resets every 5h) hit 100% on session-max well before the weekly cap, and the router kept picking the at-limit provider as if it were healthy. Reproduced live on `Devin-Anthropic-Max-VG` (`five_hour=100% / seven_day=13%` on 2026-06-04). v5.0.15: skip if EITHER exhausts; `auto_skip_until` = LATER of the two reset times. Session bucket is a hard 100% cap (no hysteresis — it's an upstream lockout, not a tunable policy). Backward-compatible with cursor-oauth and older snapshots that don't populate `five_hour_*`. 8 new tests in `test_v5015_external_rotation_five_hour.py`; 2 v3.7.1 tests updated to default the new column to None. 2650 unit pass.
+
+### v5.0.14 — `/metrics` route disambiguates SPA vs Prometheus via `Accept` header (2026-06-04)
+
+Pre-v5.0.14 the bare `/metrics` path always returned Prometheus text/plain. Operators typing `https://www.voipguru.org/llm-proxy2/metrics` saw raw scrape data instead of the React `MetricsPage`. The SPA route was added in v3.x but the conflict only surfaced today when the operator hit it via a fresh tab (in-app sidebar navigation never issues a full HTTP request so it didn't trigger the conflict).
+
+Fix is `Accept`-header sniffing on the route handler: `text/html` in Accept → serve `index.html` so React Router takes over; otherwise → existing Prometheus response. Browsers always include `text/html`; Prometheus scrapers (Grafana Cloud Agent, vmagent, prometheus itself) all send `Accept: */*` or `text/plain;version=0.0.4`. 4 new tests in `test_v5014_metrics_route_disambiguation.py`.
+
+### v5.0.13 — `ComplianceEvent.matched_pattern` carries rejected path for `path_not_allowed` (2026-06-04)
+
+Pre-v5.0.13 the `matched_pattern` column was NULL for every `path_not_allowed` audit row. Operators had to grep the nginx access log to identify which path was blocked — the audit row alone couldn't answer "what got blocked." Hit acutely on 2026-06-04 diagnosing the hub canary's `/v1/v1/messages` double-prefix bug (three round-trips of grep that one query should have answered). Fix is a one-line thread-through in `_emit_path_block_event`. `emit_event` docstring clarified to document what `matched_pattern` carries per event_type (UA pattern for client refusals, normalized rejected path for path-not-allowed, typically None for substitutions). 3 new tests. Promised in two prior hub-team memos.
+
+### v5.0.12 — Remove mid-stream `event: budget` SSE frame (2026-06-04)
+
+Hub team filed: the proxy emitted a custom `event: budget\ndata: {"remaining":N,...}` SSE frame between the last chat-completion chunk and `data: [DONE]` whenever `max_tokens` was set. Vercel-AI-SDK consumers (OpenCode, Cursor IDE, continue.dev) strict-Zod-validate every `data:` line against `{choices}|{error}`; the budget frame matched neither → `invalid_union` → hard crash mid-stream. Coordinator Hub shipped a hub-side strip (v2.1.3) as a stopgap; v5.0.12 removes the emission at all three sites (`_completions_streaming.py`, `_messages_streaming.py`, `_messages_streaming_oauth.py`). Budget signal remains on `X-Token-Budget-Remaining` header. No consumer was reading the SSE frame (verified by grep across the repo). 3 new static-pin tests catch any re-introduction.
+
+### v5.0.11 — Merge limits + compliance into one Edit Key modal (2026-06-04)
+
+Operator UX feedback: the Pencil (edit limits) and Shield (edit compliance policy) icons sat side-by-side on each key's row but weren't intuitive — operators couldn't tell one of them existed. v5.0.11 consolidates them into a single Pencil-icon button that opens a unified modal: Limits section (cap + rpm) above the existing `ComplianceFieldsEditor`. Reason prompt still gates `blocked_companies` / `allowed_paths` changes; limits and debug-echo edits skip it. View Details modal's "Edit limits" button became "Edit". No backend changes — single PATCH `/api/keys/{id}` handles the merged payload.
+
+### v5.0.10 — Extract `_apply_api_keys` + `_apply_providers` from `sync.py` (2026-06-04)
+
+`app/cluster/sync.py` was 1024 LOC (>800-LOC design.md trigger). The two largest inline blocks — api_keys merge (189 LOC) and providers merge (262 LOC) — moved into `sync_handlers.py` under the existing `_apply_<table>` pattern that other tables already followed. Brings sync.py to 573 LOC. Behavior preserved: tombstone-aware LWW (v4.4.20), full-field UPDATE+INSERT coverage (v4.4.18 + v4.4.25), BUG-080 `.limit(1)` guards, v5.0.0 compliance-cache invalidation, v3.5.9 BUG-012 CB-state cleanup, v5.0.5 per-section commit boundaries. 6 new extraction-pin tests; 4 existing static-pin tests repointed; 2 BUG-080 `.limit(1)` guards added during extraction.
+
+### v5.0.9 — Extract `_compliance_handler.py` from messages.py + completions.py (2026-06-04)
+
+The four compliance orchestration sites that `messages.py` and `completions.py` had been mirroring inline (raise-on-banned-UA / raise-on-no-substitute / emit-substitution-disclosure / disclosure-headers-on-upstream-error) extracted into `app/api/_compliance_handler.py`. Every v5.0.x patch since v5.0.0 had been touching both handlers in lockstep — keeping that duplication was actively painful. Net: messages.py 1095 → 929 LOC, completions.py 961 → 795 LOC, -166 LOC × 2.
+
+### v5.0.8 — `my-compliance` dual auth + "Show keys" toggle on `APIKeysPage` (2026-06-04)
+
+`/api/me/compliance` accepted only API-key auth; the operator's session-cookie tab got 401 on every visit. v5.0.8 makes it accept session OR api-key. Separately on `APIKeysPage`: the prefix-only display required clicking each card to see the key value — added a "Show keys" page-level toggle that surfaces the encrypted-key reveal for every row at once.
+
+### v5.0.7 — `GET /api/admin/policy-snapshot` endpoint for hub-side enforcement (2026-06-04)
+
+Hub team's hub-side enforcement build (v2.1.0+) needs to read the policy state without round-tripping through `/v1/messages` for every request. v5.0.7 adds a read-only admin endpoint that returns the current effective system blocklist + per-key blocklists in one JSON. Drives hub's local cache; admin-auth-only.
+
+### v5.0.6 — Audit + disclosure record the caller's ORIGINAL requested model (2026-06-04)
+
+The `compliance_events.requested_model` column was mislabeled. `body["model"]` gets REWRITTEN at `messages.py:355` to the served model BEFORE the audit row writes at line 557 — so `requested_model = body.get("model")` captured the SERVED model, making caller-side `SELECT requested_model, served_model` queries show identical values for every substitution. Substitution itself was always correct; only the audit field was wrong. Fix: capture `_orig_request_model = body.get("model")` at the top of the handler and pass it explicitly through the dispatch chain. Static-grep tests in `test_v506_audit_preserves_requested_model.py` catch regressions of this whole class.
+
+### v5.0.5 — Cluster sync `apply_sync` commits per major sub-section (2026-06-04)
+
+Pre-v5.0.5 `apply_sync` wrapped 12+ table sub-applies in ONE transaction → 19.6s SQLite write lock → "database is locked" on per-request writers across the cluster. v5.0.5 commits per section so the write lock releases between each table. If sync timings creep back over ~5s avg in future, suspect a new section was added without its `_section_commit("label")` call.
+
+### v5.0.4 — F-anomaly fix (no-compliant-local-provider header) + cursor-oauth expiry monitor (2026-06-04)
+
+Coordinator-local 503 path was missing the X-Compliance-* headers that the standard 503 path carried. Caller couldn't distinguish "no local provider compliant" from a generic 503. v5.0.4 backfills the disclosure headers. Plus the cursor-oauth probe (added in v4.4.41) gained an `oauth_expires_at` capture from the poll response — surfaces lifetime in the UI before re-auth becomes urgent.
+
+### v5.0.3 — `/v1/responses` translation shim (2026-06-04)
+
+OpenCode and a few internal callers POST to `/v1/responses` (OpenAI's newer endpoint shape) instead of `/v1/chat/completions`. Pre-v5.0.3 they got 404. v5.0.3 adds a translation shim that maps the request to chat-completions internally and the response back. No new dispatch path — just a format adapter.
+
+### v5.0.2 — Daily compliance audit worker — hash chain + retention purge (2026-06-04)
+
+A daily worker links the previous day's `compliance_events` into a SHA-256 hash chain in the `compliance_audit_chain` table. Each chain row references its predecessor's hash, so any tampering with historical audit data breaks the chain. Same worker purges rows older than the configured retention window. Closes one of the spec's tamper-evident requirements.
+
+### v5.0.1 — Provider `owner_company` auto-derive + 502 compliance disclosure (2026-06-03)
+
+Provider rows didn't reliably carry `owner_company` for older entries created before that field existed. v5.0.1 auto-derives it from `provider_type` + model family. Same ship: 502 upstream errors now carry the X-Compliance-* disclosure headers like the other error paths.
+
+### v5.0.0 — Compliance enforcement: per-key + system-wide company block list (2026-06-03)
+
+Major: the gov-compliance subsystem. New `app/compliance/` subpackage; three new tables (`compliance_events`, `compliance_policy_changes`, `compliance_audit_chain`); six new columns on existing tables; per-key `blocked_companies` policy enforced at the dispatcher; model substitution when a blocked-company provider would have served (no client-visible failure, full audit row written); X-Compliance-* response headers on every substituted or refused response; 10-company taxonomy (Anthropic, OpenAI, Google, Meta, Mistral, AWS, Microsoft, Cohere, xAI, Other) plus per-key override list; system-wide blocklist via SystemSetting for fleet-wide bans. Bedrock-Anthropic dual-tag handled via `model_family_companies()` returning a set so banning either company drops the dual-tagged provider.
+
+---
+
 ## v4.3.x — "Voice output" milestone
 
 ### v4.4.41 — Cursor dashboard usage scrape + multi-vendor preferred-pick (2026-06-03)
