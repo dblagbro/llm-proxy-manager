@@ -5,8 +5,8 @@ Python/FastAPI rewrite of llm-proxy v1. Served at `/llm-proxy2/` on 3 nodes via 
 nginx + docker-compose stack at `/home/dblagbro/docker/`.
 
 ## Current state (2026-06-04)
-- Live version: **v5.0.10** on all 3 dev-cluster nodes + smoke
-- **v5.0.x compliance enforcement shipped** (v5.0.0 → v5.0.10 over 2026-06-03/04). New `app/compliance/` subpackage; 3 new tables (`compliance_events`, `compliance_policy_changes`, `compliance_audit_chain`); 6 new columns; `/v1/responses` translation shim; `/api/admin/policy-snapshot` for the hub team's hub-side enforcement layer. v5.0.9 + v5.0.10: incremental refactor sweep (messages.py + completions.py shrunk via `_compliance_handler.py` extraction; sync.py 1024 → 573 LOC via `_apply_api_keys` + `_apply_providers` extraction).
+- Live version: **v5.0.15** on all 3 dev-cluster nodes + smoke
+- **v5.0.x compliance enforcement shipped** (v5.0.0 → v5.0.15 over 2026-06-03/04). New `app/compliance/` subpackage; 3 new tables (`compliance_events`, `compliance_policy_changes`, `compliance_audit_chain`); 6 new columns; `/v1/responses` translation shim; `/api/admin/policy-snapshot` for the hub team's hub-side enforcement layer. v5.0.9 + v5.0.10: incremental refactor sweep (messages.py + completions.py shrunk via `_compliance_handler.py` extraction; sync.py 1024 → 573 LOC via `_apply_api_keys` + `_apply_providers` extraction). v5.0.11: limits + compliance edit modal merged. v5.0.12: dropped mid-stream `event: budget` SSE frame (hub-team-filed, Vercel-AI-SDK consumers). v5.0.13: `ComplianceEvent.matched_pattern` now carries rejected path for `path_not_allowed` rows. v5.0.14: `/metrics` Accept-header-disambiguates between Prometheus and React SPA. v5.0.15: rotation also clamps on `five_hour_utilization` (caught the VG session-max incident).
 - **READ FIRST when resuming this project:**
   - `architecture.md` (has a full `## Compliance enforcement (v5.0.0+)` section now)
   - Spec set: `docs/5.0-compliance-design.md`, `docs/5.0-impact-map.md`, `docs/compliance-taxonomy-v5.0.0.md`

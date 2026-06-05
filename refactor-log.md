@@ -1749,3 +1749,82 @@ and compliance-cache invalidation tests continue to pass.
    remaining file. Logical split candidates: capture loop / parse /
    persist. Lower priority than router.py — Avaya scraper is
    relatively cold (no active feature work).
+
+---
+
+## v5.0.14 — `/metrics` route disambiguation
+
+**Date:** 2026-06-04
+**Shipped:** v5.0.14
+
+### Motivation
+
+`@app.get("/metrics")` (Prometheus scrape endpoint) and the React Router `/metrics` route (`MetricsPage`) lived at the same URL. The FastAPI route always intercepted, so any browser typing the URL got raw text/plain Prometheus output instead of the UI. The conflict was latent until 2026-06-04 when the operator hit the URL directly via a fresh tab (in-app sidebar navigation never triggers a full HTTP request).
+
+### Approach
+
+Accept-header sniffing on the route handler — the smallest semantic change that preserves both audiences:
+
+- Browsers always include `text/html` in `Accept` → serve `frontend/dist/index.html` so React Router renders `MetricsPage`.
+- Prometheus scrapers send `Accept: */*` or `text/plain;version=0.0.4` → existing Prometheus response.
+- No-Accept requests (bare wget/httpie) → Prometheus (don't break naive scrapers).
+
+### Result
+
+Zero behavior change for external Prometheus consumers (Grafana Cloud Agent, vmagent, prometheus itself all omit `text/html` from `Accept`). The browser path that was previously broken is now correct.
+
+### Risks
+
+- Any future caller that sends `text/html` in Accept thinking it's a hint about content negotiation would get the SPA shell instead of Prometheus data. This is the standard `Accept` semantic, so it's acceptable — but if it bites, the fallback path is documented in the handler's docstring.
+
+### Tests
+
+`tests/unit/test_v5014_metrics_route_disambiguation.py` (4 new):
+- Source pin: handler reads `Accept` and branches on `text/html`.
+- Behavioral: browser Accept → `FileResponse`; Prometheus Accept → text/plain; no-Accept defaults to Prometheus.
+
+---
+
+## v5.0.15 — Rotation reads both utilization buckets
+
+**Date:** 2026-06-04
+**Shipped:** v5.0.15
+
+### Motivation
+
+`app/routing/external_rotation.evaluate_rules_for_provider` only checked `seven_day_utilization`. The Anthropic billing snapshot captures a SEPARATE `five_hour_utilization` (session window, resets every 5h). Hit live on 2026-06-04: `Devin-Anthropic-Max-VG` showed `five_hour=100% / seven_day=13%` and stayed in rotation because the weekly bucket looked healthy. Operator's workaround was a manual `auto_skip_until` set; v5.0.15 is the proper fix.
+
+### Approach
+
+Treat each bucket according to its actual semantics:
+
+- Session bucket (`five_hour_utilization`): hard 100% cap, no hysteresis. It's an upstream lockout, not a tunable policy.
+- Weekly bucket (`seven_day_utilization`): existing soft threshold + hysteresis preserved.
+- Skip if EITHER exhausts. `auto_skip_until` = LATER of the two active resets so we don't release prematurely while one bucket is still capped.
+- Clear only when BOTH are confirmed healthy. A missing value (None) treated as healthy so a transient scraper window-loss doesn't strand a provider.
+
+### Result
+
+Same data path (the snapshots already carry both buckets), more accurate rotation. Backward-compatible with cursor-oauth and older Anthropic snapshots that don't populate `five_hour_*` — those continue to drive on the weekly bucket alone.
+
+Live dry-run against the VG snapshot post-deploy returned `skip_set` until `2026-06-04T23:40:00.990777` (Anthropic's exact reset time), matching the manual workaround that was in place.
+
+### Risks
+
+- A provider where both buckets briefly exhaust could see `auto_skip_until` set to the LATER reset (weekly) and stay skipped for the full weekly window — correct behavior, but worth flagging if it surprises an operator.
+- The `evaluate_rules_for_provider` return dict gained a new key (`five_hour_utilization`). Admin endpoint consumers that strict-validate the response shape would need to be aware. Internal-only; no external API contract.
+
+### Tests
+
+`tests/unit/test_v5015_external_rotation_five_hour.py` (8 new):
+- The VG incident: session=100% / weekly=13% → skip until session reset.
+- Both buckets exhausted → skip until LATER reset.
+- Clears only when BOTH buckets recover.
+- Weekly-only / session-only / both-None backward compat.
+- No_change when both healthy.
+
+Updated `tests/unit/test_v371_external_rotation.py` `_snapshot()` helper to default `five_hour_*` to None so weekly-only tests preserve their pre-v5.0.15 semantics (1-line change). 2650 unit tests pass.
+
+### Remaining issues / next refactor targets
+
+Per-model breakdowns from `seven_day_sonnet_utilization` / `seven_day_opus_utilization` could drive per-model skip decisions (e.g., skip a provider only for Sonnet when only the Sonnet bucket is at 100%). Same data shape, no concrete operator trigger yet — deferred.
