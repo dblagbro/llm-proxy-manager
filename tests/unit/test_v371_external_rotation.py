@@ -58,6 +58,13 @@ def _snapshot(util, resets_in_hours=2):
     s.id = 1
     s.seven_day_utilization = util
     s.seven_day_resets_at = datetime.now(timezone.utc) + timedelta(hours=resets_in_hours)
+    # v5.0.15 — the rotation logic now also reads ``five_hour_*``.
+    # Default both to None so these weekly-only tests exercise the
+    # weekly branch exclusively (preserves pre-v5.0.15 semantics).
+    # Tests for the session bucket live in
+    # ``test_v5015_external_rotation_five_hour.py``.
+    s.five_hour_utilization = None
+    s.five_hour_resets_at = None
     return s
 
 
@@ -135,6 +142,11 @@ async def test_rule_handles_null_utilization():
     snap = MagicMock()
     snap.seven_day_utilization = None
     snap.seven_day_resets_at = datetime.now(timezone.utc) + timedelta(hours=2)
+    # v5.0.15: rotation also reads five_hour_*; "no data" means BOTH
+    # are None. Explicit set preserves the test's "no_utilization"
+    # semantic against the new dual-bucket logic.
+    snap.five_hour_utilization = None
+    snap.five_hour_resets_at = None
     p = _provider(auto_skip_until=None)
     out = await evaluate_rules_for_provider(MagicMock(), p, snapshot=snap)
     assert out["decision"] == "no_utilization"
