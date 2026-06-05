@@ -31,7 +31,15 @@ class LoginRequest(BaseModel):
 
 @router.post("/login")
 async def login(body: LoginRequest, response: Response, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(User).where(User.username == body.username))
+    # v5.0.22 — login must refuse tombstoned users (BUG-070). Pre-fix
+    # a deleted user could still authenticate as long as some peer
+    # had resurrected them via insert-if-missing cluster sync.
+    result = await db.execute(
+        select(User).where(
+            User.username == body.username,
+            User.deleted_at.is_(None),
+        )
+    )
     user = result.scalar_one_or_none()
     if not user or not verify_password(body.password, user.password_hash):
         raise HTTPException(401, "Invalid credentials")

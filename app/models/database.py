@@ -249,6 +249,13 @@ async def init_db():
             "ALTER TABLE api_keys ADD COLUMN last_user_edit_at REAL",
             # v3.0.20 — ApiKey soft-delete tombstone for cluster-sync resurrection bug
             "ALTER TABLE api_keys ADD COLUMN deleted_at DATETIME",
+            # v5.0.22 — same fix for users (BUG-070). User deletes
+            # were being silently undone by peer sync since users
+            # had no tombstone + the sync handler at sync.py:73 was
+            # an insert-if-missing merge. Now users.deleted_at +
+            # last_user_edit_at carry the LWW intent across nodes.
+            "ALTER TABLE users ADD COLUMN deleted_at DATETIME",
+            "ALTER TABLE users ADD COLUMN last_user_edit_at REAL",
             # v3.0.25 — LMRH self-extension protocol tables
             # (idempotent ALTERs; CREATE handled by Base.metadata.create_all above)
             # v3.0.29 — soft-delete tombstones on LMRH dim/proposal rows so

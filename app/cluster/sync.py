@@ -70,16 +70,55 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
             except Exception:
                 pass
 
+    # v5.0.22 — users merge now respects soft-delete tombstones +
+    # LWW (BUG-070). Pre-fix this was insert-if-missing which made
+    # peer pushes resurrect locally-deleted users. The handler:
+    #   1. If incoming row is tombstoned (deleted_at set), propagate
+    #      the tombstone to local — set local deleted_at + role/hash
+    #      if absent.
+    #   2. If local row is missing AND incoming is alive, insert it.
+    #   3. If both exist, LWW on last_user_edit_at: peer wins iff
+    #      peer's edit-stamp is strictly newer than local.
+    # Lookup by id (canonical) AND by username (collision recovery
+    # for cases where peers disagree on id but agree on username).
+    from datetime import datetime as _dt
+    def _parse_iso(s):
+        if not s: return None
+        if isinstance(s, _dt): return s
+        try: return _dt.fromisoformat(s.replace("Z", ""))
+        except Exception: return None
     for u_data in payload.get("users", []):
-        result = await db.execute(select(User).where(User.username == u_data["username"]))
-        existing = result.scalar_one_or_none()
-        if not existing:
-            db.add(User(
-                id=u_data["id"],
-                username=u_data["username"],
-                password_hash=u_data["password_hash"],
-                role=u_data.get("role", "user"),
-            ))
+        # Prefer id-based lookup; fall back to username if no row by id.
+        rs = await db.execute(select(User).where(User.id == u_data["id"]))
+        existing = rs.scalar_one_or_none()
+        if existing is None:
+            rs = await db.execute(
+                select(User).where(User.username == u_data["username"])
+            )
+            existing = rs.scalar_one_or_none()
+        incoming_edit = u_data.get("last_user_edit_at") or 0.0
+        incoming_deleted = _parse_iso(u_data.get("deleted_at"))
+        if existing is None:
+            # Only insert if peer's row is alive; if it's already
+            # tombstoned, there's nothing to merge.
+            if incoming_deleted is None:
+                db.add(User(
+                    id=u_data["id"],
+                    username=u_data["username"],
+                    password_hash=u_data["password_hash"],
+                    role=u_data.get("role", "user"),
+                    last_user_edit_at=incoming_edit or None,
+                ))
+        else:
+            local_edit = existing.last_user_edit_at or 0.0
+            if incoming_edit > local_edit:
+                if incoming_deleted is not None:
+                    existing.deleted_at = incoming_deleted
+                else:
+                    existing.deleted_at = None  # peer restored
+                    existing.password_hash = u_data["password_hash"]
+                    existing.role = u_data.get("role", existing.role)
+                existing.last_user_edit_at = incoming_edit
     await _section_commit("users")
 
     source_node = payload.get("source_node", "unknown")

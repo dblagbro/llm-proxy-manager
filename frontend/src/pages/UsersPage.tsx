@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Plus, Trash2, Edit2 } from 'lucide-react'
 import { usersApi } from '@/api'
@@ -23,6 +23,9 @@ export function UsersPage() {
   const [editing, setEditing] = useState<User | null>(null)
   const [form, setForm] = useState({ username: '', password: '', role: 'user' as Role })
   const [deleteId, setDeleteId] = useState<string | null>(null)
+  // v5.0.22 — bulk-delete selection. Self is never selectable.
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [bulkConfirmOpen, setBulkConfirmOpen] = useState(false)
 
   const { data: users, isLoading } = useQuery({ queryKey: ['users'], queryFn: usersApi.list })
 
@@ -44,6 +47,25 @@ export function UsersPage() {
     onError: (e: Error) => toast.error(e.message),
   })
 
+  const bulkDeleteMutation = useMutation({
+    mutationFn: (ids: string[]) => usersApi.bulkDelete(ids),
+    onSuccess: (r) => {
+      qc.invalidateQueries({ queryKey: ['users'] })
+      setSelected(new Set())
+      setBulkConfirmOpen(false)
+      if (r.errors?.length) {
+        toast.error(
+          `Deleted ${r.deleted.length}; ${r.errors.length} skipped (` +
+          r.errors.slice(0, 3).map(e => e.reason).join(', ') +
+          (r.errors.length > 3 ? ', …' : '') + ')'
+        )
+      } else {
+        toast.success(`Deleted ${r.deleted.length} user${r.deleted.length === 1 ? '' : 's'}`)
+      }
+    },
+    onError: (e: Error) => toast.error(e.message),
+  })
+
   function openCreate() {
     setEditing(null)
     setForm({ username: '', password: '', role: 'user' })
@@ -58,6 +80,34 @@ export function UsersPage() {
 
   function closeModal() { setShowModal(false); setEditing(null) }
 
+  // Self is never selectable. Compute the set of selectable users.
+  const selectableUsers = useMemo(
+    () => (users ?? []).filter(u => u.username !== me?.username),
+    [users, me?.username],
+  )
+
+  const allSelected = selectableUsers.length > 0 && selectableUsers.every(u => selected.has(u.id))
+  const someSelected = !allSelected && selectableUsers.some(u => selected.has(u.id))
+
+  function toggleSelectAll() {
+    if (allSelected) {
+      setSelected(new Set())
+    } else {
+      setSelected(new Set(selectableUsers.map(u => u.id)))
+    }
+  }
+
+  function toggleOne(id: string) {
+    setSelected(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  const selectedCount = selected.size
+
   return (
     <div className="p-6 space-y-6 max-w-4xl">
       <div className="flex items-center justify-between">
@@ -65,7 +115,19 @@ export function UsersPage() {
           <h1 className="text-xl font-bold text-gray-900 dark:text-gray-100">Users</h1>
           <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">{users?.length ?? 0} users</p>
         </div>
-        <Button size="sm" onClick={openCreate}><Plus className="h-4 w-4 mr-1.5" />Add User</Button>
+        <div className="flex items-center gap-2">
+          {selectedCount > 0 && (
+            <Button
+              size="sm"
+              variant="danger"
+              onClick={() => setBulkConfirmOpen(true)}
+              loading={bulkDeleteMutation.isPending}
+            >
+              <Trash2 className="h-4 w-4 mr-1.5" />Delete {selectedCount} selected
+            </Button>
+          )}
+          <Button size="sm" onClick={openCreate}><Plus className="h-4 w-4 mr-1.5" />Add User</Button>
+        </div>
       </div>
 
       {isLoading ? (
@@ -73,31 +135,58 @@ export function UsersPage() {
       ) : (
         <Card>
           <CardContent className="p-0">
+            {/* Select-all header row */}
+            {selectableUsers.length > 0 && (
+              <div className="flex items-center gap-3 px-5 py-3 border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50">
+                <input
+                  type="checkbox"
+                  className="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+                  checked={allSelected}
+                  ref={el => { if (el) el.indeterminate = someSelected }}
+                  onChange={toggleSelectAll}
+                  aria-label="Select all users"
+                />
+                <span className="text-xs font-medium text-gray-600 dark:text-gray-400">
+                  {selectedCount > 0 ? `${selectedCount} selected` : 'Select all'}
+                </span>
+              </div>
+            )}
             <div className="divide-y divide-gray-100 dark:divide-gray-700">
-              {(users ?? []).map(u => (
-                <div key={u.id} className="flex items-center gap-3 px-5 py-4">
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2">
-                      <p className="font-medium text-gray-900 dark:text-gray-100">{u.username}</p>
-                      {u.username === me?.username && <Badge variant="muted">You</Badge>}
+              {(users ?? []).map(u => {
+                const isSelf = u.username === me?.username
+                return (
+                  <div key={u.id} className="flex items-center gap-3 px-5 py-4">
+                    <input
+                      type="checkbox"
+                      className="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed"
+                      checked={selected.has(u.id)}
+                      onChange={() => toggleOne(u.id)}
+                      disabled={isSelf}
+                      aria-label={`Select ${u.username}`}
+                    />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <p className="font-medium text-gray-900 dark:text-gray-100">{u.username}</p>
+                        {isSelf && <Badge variant="muted">You</Badge>}
+                      </div>
+                    </div>
+                    <span className={`text-xs font-semibold px-2 py-0.5 rounded-full text-white ${u.role === 'admin' ? 'bg-indigo-600' : 'bg-gray-500'}`}>{u.role}</span>
+                    <div className="flex gap-2">
+                      <Button size="sm" variant="outline" aria-label={`Edit ${u.username}`} onClick={() => openEdit(u)}>
+                        <Edit2 className="h-3.5 w-3.5" />
+                      </Button>
+                      <Button
+                        size="sm" variant="danger"
+                        aria-label={`Delete ${u.username}`}
+                        onClick={() => setDeleteId(u.id)}
+                        disabled={isSelf}
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
                     </div>
                   </div>
-                  <span className={`text-xs font-semibold px-2 py-0.5 rounded-full text-white ${u.role === 'admin' ? 'bg-indigo-600' : 'bg-gray-500'}`}>{u.role}</span>
-                  <div className="flex gap-2">
-                    <Button size="sm" variant="outline" aria-label={`Edit ${u.username}`} onClick={() => openEdit(u)}>
-                      <Edit2 className="h-3.5 w-3.5" />
-                    </Button>
-                    <Button
-                      size="sm" variant="danger"
-                      aria-label={`Delete ${u.username}`}
-                      onClick={() => setDeleteId(u.id)}
-                      disabled={u.username === me?.username}
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </Button>
-                  </div>
-                </div>
-              ))}
+                )
+              })}
             </div>
           </CardContent>
         </Card>
@@ -149,8 +238,20 @@ export function UsersPage() {
         message="This user will lose all access immediately."
         confirmLabel="Delete"
         variant="danger"
+        loading={deleteMutation.isPending}
         onConfirm={() => { deleteMutation.mutate(deleteId!); setDeleteId(null) }}
         onCancel={() => setDeleteId(null)}
+      />
+
+      <ConfirmDialog
+        open={bulkConfirmOpen}
+        title={`Delete ${selectedCount} user${selectedCount === 1 ? '' : 's'}`}
+        message={`The selected user${selectedCount === 1 ? '' : 's'} will lose all access immediately. (Self never included. Last admin is protected.)`}
+        confirmLabel={`Delete ${selectedCount}`}
+        variant="danger"
+        loading={bulkDeleteMutation.isPending}
+        onConfirm={() => bulkDeleteMutation.mutate(Array.from(selected))}
+        onCancel={() => setBulkConfirmOpen(false)}
       />
     </div>
   )

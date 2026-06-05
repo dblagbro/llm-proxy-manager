@@ -242,10 +242,16 @@ async def _sync_loop(db_factory):
 
 
 async def _build_sync_payload(db) -> dict:
+    # v5.0.22 — include tombstoned (soft-deleted) users so peers learn
+    # about deletes (BUG-070). Mirrors api_keys / providers tombstone
+    # replication. Without the tombstone, peer 'insert-if-missing'
+    # merge resurrected deleted users.
     users_result = await db.execute(select(User))
     users = [
         {"id": u.id, "username": u.username, "password_hash": u.password_hash,
-         "role": u.role, "created_at": str(u.created_at)}
+         "role": u.role, "created_at": str(u.created_at),
+         "deleted_at": (u.deleted_at.isoformat() if u.deleted_at else None),
+         "last_user_edit_at": u.last_user_edit_at}
         for u in users_result.scalars().all()
     ]
     # v3.0.20: include tombstoned (soft-deleted) keys so peers learn about

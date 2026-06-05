@@ -164,8 +164,13 @@ async def require_any_user(request: Request) -> AdminUser:
 
 
 async def ensure_default_admin(db: AsyncSession):
-    """Create default admin/admin on first boot if no users exist."""
-    result = await db.execute(select(User))
+    """Create default admin/admin on first boot if no users exist.
+
+    v5.0.22 — filter out tombstoned users (BUG-070). If the entire
+    user table has been soft-deleted, the operator should still be
+    able to log in via the regenerated default admin.
+    """
+    result = await db.execute(select(User).where(User.deleted_at.is_(None)))
     if result.first() is None:
         admin = User(
             id=secrets.token_hex(8),

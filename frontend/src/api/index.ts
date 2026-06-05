@@ -287,6 +287,11 @@ export const complianceApi = {
 }
 
 // ── Users ─────────────────────────────────────────────────────────────────────
+export interface BulkDeleteResult {
+  deleted: string[]
+  errors: { id: string; reason: string }[]
+}
+
 export const usersApi = {
   list:   ()                             => api.get<User[]>('/api/users'),
   create: (data: { username: string; password: string; role: string }) =>
@@ -294,6 +299,8 @@ export const usersApi = {
   update: (id: string, data: { password?: string; role?: string }) =>
     api.patch<User>(`/api/users/${id}`, data),
   delete: (id: string)                   => api.delete<void>(`/api/users/${id}`),
+  // v5.0.22 — bulk-delete endpoint (BUG-070 + bulk-UX feature)
+  bulkDelete: (ids: string[])            => api.post<BulkDeleteResult>('/api/users/bulk_delete', { ids }),
 }
 
 // ── Monitoring ────────────────────────────────────────────────────────────────

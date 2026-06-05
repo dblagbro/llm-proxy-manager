@@ -26,6 +26,12 @@ class User(Base):
     created_at = Column(DateTime, server_default=func.now())
     timezone = Column(String, nullable=True)      # IANA name; NULL = browser default
     time_format = Column(String, nullable=True)   # '12h'|'24h'|NULL = locale default
+    # v5.0.22 — soft-delete tombstone + LWW timestamp for the same
+    # reason api_keys / providers needed them (v3.0.20 / v2.8.2):
+    # cluster sync's "insert-if-missing" merge resurrects deleted
+    # users from peers that haven't seen the delete yet. BUG-070.
+    deleted_at = Column(DateTime, nullable=True)
+    last_user_edit_at = Column(Float, nullable=True)
 
 
 class SystemSetting(Base):
