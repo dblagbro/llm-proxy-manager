@@ -4,6 +4,64 @@ Operational quirks, environment assumptions, flaky behavior, and risk
 notes accumulated during regression sweeps. Update freely; this file is
 deliberately less structured than `bug-log.md` or `test-plan.md`.
 
+## Post-refactor deep regression sweep (2026-06-05 PM — v5.0.21)
+
+Findings BUG-049..BUG-068 in `bug-log.md`. Hotfixes shipped during sweep:
+v5.0.21 (defensive getattr + identity-check bool, `test_v5021_…`) and
+v5.0.18-hotfix (frontend `/api/cluster/peers` → `/cluster/peers`).
+
+- **The bug-log-lag pattern recurred AGAIN.** This time spanning the
+  v3.x → v4.x → v5.x lineage (~22 months since the last QA pass)
+  during which the entire compliance enforcement subsystem, the airi
+  feature, LMRH v2, claude-oauth, the messages.py split, the cursor
+  bridge, the grok bridge SPA-UI refactor, and the cluster-peers
+  feature all shipped. Test-plan baseline went from 1973 → 2670 tests
+  with no intermediate sweep. **Mitigation:** schedule a QA sweep
+  every ~5 versions or every 2 weeks, whichever comes first.
+
+- **Deploy ambiguity from stray repo-root `docker-compose.yml`.** BUG-056
+  cost me >1h during the sweep. Three times I shipped a hotfix and the
+  clone container didn't pick it up because `cd /home/dblagbro/llm-proxy-v2`
+  was implicit when running `git commit` and the followup `sudo docker
+  compose up …` resolved to the repo's compose file which only knows
+  about `llm-proxy2`. Always `cd /home/dblagbro/docker` before any
+  `docker compose` command; better yet, delete or rename the repo-root
+  one.
+
+- **Grok bridge concurrency is fundamentally bottlenecked by Playwright
+  single-tab.** v5.0.20 SPA-UI driving works for sequential requests
+  but cannot serve 2 concurrent chats safely. Production routing
+  through grok-web at scale will require either (a) explicit
+  per-conversation queueing, (b) a pool of bridge sidecar containers,
+  or (c) acceptance that grok-web is for ad-hoc / low-volume use only.
+  OpenRouter remains the right Grok routing target for production.
+
+- **Cursor account state degrades silently.** BUG-053 surfaced because
+  the Cursor billing scrape (per-memory project `cursor-oauth usage
+  monitoring + multi-account preferred-pick`) tracks usage utilization
+  but NOT plan tier. A Pro→Free downgrade leaves the scraper happy
+  (usage stays at 0%) while every routing request returns empty. Add
+  a plan-tier field to the scrape + alert on changes.
+
+- **ContextVar + asyncio Task scoping is correct but subtle.** The
+  v5.0.21 design relies on FastAPI creating a fresh asyncio Task per
+  request so the ContextVar value set by one request can't bleed into
+  another. This holds for the streaming dispatch sites I checked, but
+  a single test runner sharing a Task across multiple async-fixture
+  invocations would leak the value. Pin tests in
+  `test_v5021_disable_long_context.py` explicitly reset
+  `_disable_long_context_cv.set(False)` after each test to prevent
+  intra-suite leakage.
+
+- **The intentional failing-provider fixtures kept tripping me up.**
+  `C1 Anthropic Claude` (priority 112) is intentionally broken per
+  the memory note `reference_intentional_failing_provider_fixtures.md`.
+  When my chat tests returned empty content with model `claude-4-sonnet`,
+  my first hypothesis was the failing fixture. It turned out to be
+  Cursor-OAuth's empty-response masking (BUG-053). Lesson: ALSO check
+  which provider was actually selected via the activity log before
+  blaming a known-broken fixture.
+
 ## Post-refactor deep regression sweep (2026-05-15 PM — v3.10.9)
 
 Deep sweep covering **v3.9.16 → v3.10.9** — 14 releases shipped since

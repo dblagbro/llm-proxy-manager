@@ -1,6 +1,36 @@
 # Test Plan — llm-proxy-v2
 
-Last refreshed: **2026-05-15** (post-refactor deep regression sweep, v3.10.9).
+Last refreshed: **2026-06-05** (post-refactor deep regression sweep, v5.0.21
+post-hotfixes; previous baseline 2026-05-15 v3.10.9 was 22 months stale).
+
+## Pytest baseline (2026-06-05, v5.0.21 + hotfixes)
+
+| Suite | Command | Result |
+|---|---|---|
+| Unit | `python3 -m pytest tests/unit/` | **2670 / 2670 passing + 2 skipped** (~42s). +8 new pins in `test_v5021_disable_long_context.py`. Pre-hotfix: 7 failures in `test_v31015_buglog_fixes.py` (BUG-049). |
+| Integration (non-UI) | `pytest tests/integration/ --ignore=tests/integration/test_playwright_ui.py` | not re-run this sweep (stale baseline from v3.10.9 era; see Open Coverage Gaps) |
+| Integration UI (Playwright) | `pytest tests/integration/test_playwright_ui.py` | not run — no browser in this sweep environment. **Confirmed coverage gap**: would have caught BUG-051 (v5.0.18 frontend route mismatch). |
+| SDK | `pytest sdk/python/` | not re-run this sweep |
+
+### Critical pins added in this sweep
+
+| Test file | Pins | Catches |
+|---|---|---|
+| `tests/unit/test_v5021_disable_long_context.py` | 8 | BUG-049, BUG-050 regressions |
+| `tests/unit/test_v5018_cluster_peer_persistence.py` (pre-existing) | 7 | cluster_peers LWW/tombstone/self-ignore (does NOT pin the frontend path — BUG-051 slipped through). |
+
+### Coverage gaps surfaced this sweep — recommended new tests
+
+1. **End-to-end Playwright test for ClusterPeersPanel** (would catch BUG-051 + future API path drift).
+2. **Bridge `_send_via_spa_ui` concurrency unit test** with mocked Playwright page (would catch BUG-052/054/055/058).
+3. **Cursor-bridge error-mapping fixture test** feeding the captured `ERROR_RATE_LIMITED_CHANGEABLE` JSON and asserting non-200 HTTP status (would catch BUG-053).
+4. **Cluster-peers integration test** spinning up 2 real proxy containers and verifying sync of add/remove/restore.
+5. **Compose-file ambiguity guard** — pytest fixture asserting CWD-resolved `docker-compose.yml` matches the canonical one (BUG-056).
+
+---
+
+## Original (stale 2026-05-15) plan continues below
+
 
 ## Validation Scope
 

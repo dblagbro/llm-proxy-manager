@@ -10,6 +10,189 @@ Status flow: **open** → **in-progress** → **fixed** → **verified-fixed** �
 
 ---
 
+## 2026-06-05 — post-refactor deep regression sweep (v5.0.17 → v5.0.21)
+
+Deep sweep covering **v5.0.17 → v5.0.21** (5 releases + grok-bridge
+refactor + clone-cluster spin-up + DevinGPT key provisioning), spanning
+the v5.0.18 cluster-peers feature, v5.0.19 random-prompt + statsig
+validation, v5.0.20 SPA-UI-driven chat, v5.0.21 disable_long_context
+ContextVar. Environment: 5 prod endpoints (3 `llm-proxy2` nodes + 2
+`llm-proxy` clone nodes + smoke); 35 release diffs since the 2026-05-15
+v3.10.9 baseline. Pre-sweep: 1973-test baseline (stale by 22+ months
+of feature work, actual at sweep start: **2655 passing + 7 failing**);
+post-sweep + new pins: **2670 passing**. Methods: full pytest suite,
+multi-file code-level audit via Explore agents, live HTTP/curl probing
+of every changed endpoint, concurrent-call race testing, container log
+inspection across the fleet, schema parity check across 3 clusters.
+
+Findings BUG-049+ (BUG-001..048 already used).
+
+> **Hotfix ships (v5.0.21 + v5.0.18-hotfix)** — BUG-049, BUG-050, BUG-051,
+> BUG-052 shipped during this sweep as inline hotfixes; pin tests added
+> in `test_v5021_disable_long_context.py`.
+
+### Critical — FIXED during sweep
+
+#### BUG-049 — `disable_long_context` dispatch crashes on test mocks (v5.0.21 RC regression)
+- **Component:** `app/api/_messages_dispatch.py:141`, `completions.py:351`, `monitoring/keepalive.py:210`, `providers/scanner.py:424`
+- **Severity:** critical (production hot path → `AttributeError` if provider object lacks `extra_config`; 7 unit tests crashing was the signal)
+- **Repro:** Run `pytest tests/unit/test_v31015_buglog_fixes.py`. Pre-hotfix: 7/11 fail with `AttributeError: 'types.SimpleNamespace' object has no attribute 'extra_config'`.
+- **Evidence:** Test output captured at v5.0.21 RC.
+- **Cause:** v5.0.21 added `set_disable_long_context(bool(route.provider.extra_config…))` calls without defensive attribute access; mocks (and any non-ORM provider object) crash the dispatch site.
+- **Fix shipped:** `getattr(provider, "extra_config", None) or {}).get("disable_long_context") is True` at all 4 dispatch sites.
+- **Pin:** `test_v5021_disable_long_context.py::test_dispatch_tolerates_mock_provider_without_extra_config` + `test_dispatch_sites_use_getattr_not_attribute_access`.
+- **Status:** **fixed** (v5.0.21 hotfix shipped 2026-06-05 PM).
+
+#### BUG-050 — `bool("false") == True` silent flag inversion
+- **Component:** Same 4 dispatch sites as BUG-049.
+- **Severity:** critical (silent inversion of operator intent on a billing-relevant flag).
+- **Repro:** `python3 -c 'print(bool("false"))'` → `True`. If `extra_config.disable_long_context = "false"` (string, e.g. operator sends JSON via REST), the proxy interprets it as `True`.
+- **Cause:** `bool(...)` truth-test on any non-empty string returns `True`.
+- **Fix shipped:** Replaced `bool(x)` with `x is True` at all 4 sites.
+- **Pin:** `test_v5021_disable_long_context.py::test_dispatch_sites_use_identity_check_not_bool`.
+- **Status:** **fixed** (v5.0.21 hotfix shipped 2026-06-05 PM).
+
+#### BUG-051 — v5.0.18 frontend `clusterApi` uses wrong path → cluster_peers UI DOA
+- **Component:** `frontend/src/api/index.ts:423-426`.
+- **Severity:** critical (operator-facing feature broken from day one; the entire purpose of v5.0.18).
+- **Repro:** `curl https://www.voipguru.org/llm-proxy2/api/cluster/peers` → **404**. The actual route is at `/cluster/peers` (no `/api/` prefix); every other `clusterApi.*` method uses `/cluster/*` correctly.
+- **Cause:** typo in v5.0.18 frontend additions — copy-paste pattern from a different route.
+- **Fix shipped:** changed all three paths to `/cluster/peers`.
+- **Pin:** TODO — add an integration test that calls `clusterApi.listPeers()` against a running stack to catch path drift.
+- **Status:** **fixed** (v5.0.18-hotfix shipped 2026-06-05 PM).
+
+### Critical — OPEN
+
+#### BUG-052 — Grok bridge concurrent `/api/chat` race corrupts responses
+- **Component:** `grok_bridge/app.py` (`chat()` + `_send_via_spa_ui`).
+- **Severity:** critical (two concurrent chats can return swapped or unrelated content; provider routing under load is unsafe).
+- **Repro:** Fire two `/api/chat` calls with distinct user messages in parallel against the same `conversation_id`. Pre-fix observation 2026-06-05:
+    - Call A (sent "Reply with just the letter A") → `{"detail":"grok.com 599: SPA-UI: chat-submit button not found"}`
+    - Call B (sent "Reply with just the letter B") → `"Hi Grok-Web-Devin! 👋 Streak still going strong. What's the next test or idea you've got lined up?"` (unrelated content)
+- **Cause:** `_send_via_spa_ui` mutates shared `_page` state (textarea typing, button click, response listener) without acquiring `_lock`. The single Chromium tab interleaves the two requests.
+- **Fix:** Wrap `_send_via_spa_ui` body in `async with _lock:`. Confirm `chat()` and `create_new_conversation()` both hold the lock around the SPA-driven path. Consider a per-conversation queue if higher concurrency is needed.
+- **Status:** **open**, P0 next release.
+
+#### BUG-053 — Cursor bridge silently swallows account-downgrade errors as HTTP 200
+- **Component:** `llm-proxy2-cursor-bridge` + `app/providers/cursor_bridge_*` (caller-side handling).
+- **Severity:** critical (provider returns empty content on a real failure; routing layer can't tell, callers see `success` with empty payload).
+- **Repro:** `curl -X POST https://www.voipguru.org/llm-proxy/v1/messages -H 'x-api-key: <devingpt key>' -d '{"model":"claude-haiku-4-5","messages":[{"role":"user","content":"Say PONG"}],"max_tokens":20}'` → `{"content":[{"type":"text","text":""}], "usage":{"input_tokens":0,"output_tokens":0}}`. Three consecutive retries all empty.
+- **Evidence (cursor-bridge log):** `{"error":{"code":"resource_exhausted","details":[{"debug":{"error":"ERROR_RATE_LIMITED_CHANGEABLE","details":{"title":"Named models unavailable","detail":"Free plans can only use Auto. Switch to Auto or upgrade plans to continue."}}}]}}` followed by `POST /v1/chat/completions 200 286`.
+- **Cause:** Cursor's API returned a structured error (account downgraded to free plan), but cursor-bridge converted it to HTTP 200 OK with the error JSON embedded; the proxy interpreted 200 as success and forwarded empty content to the caller.
+- **Fix:** (1) cursor-bridge: detect `code: "resource_exhausted"` / `ERROR_RATE_LIMITED_CHANGEABLE` and return a real 429 with `Retry-After`; (2) proxy: when content is empty + finish_reason `stop` + 0 token usage, treat as upstream failure and trigger failover; (3) cursor billing scrape: detect plan-tier changes (Pro→Free) and auto-disable the provider with operator notification.
+- **Status:** **open**, P0 next release. Workaround: operator should manually disable Cursor-oAuth-C1acct until the account is upgraded or the bridge is patched.
+
+### High — OPEN
+
+#### BUG-054 — Bridge `_send_via_spa_ui` early returns leak response listeners
+- **Component:** `grok_bridge/app.py:1381, 1418` (paths in `_send_via_spa_ui`).
+- **Severity:** high (dangling listener fires on the NEXT request's `/responses` POST, resolving the wrong future with the wrong body).
+- **Repro:** Trigger any path that returns early ("no usable textarea found", "chat-submit not found"). The `_page.on("response", _on_response)` is installed BEFORE the early-return branches; cleanup is only in the `finally` clause, which the early returns bypass.
+- **Cause:** Early returns not refactored to flow through `try/finally`.
+- **Fix:** Wrap the SPA-UI body in `try/finally` such that ALL exits remove the listener. Either reorder (install listener AFTER typing succeeds) or replace early `return`s with raising-then-handle.
+- **Status:** **open**.
+
+#### BUG-055 — `_cookie_refresh_loop` races with `/api/chat` page.goto
+- **Component:** `grok_bridge/app.py:382` (`_cookie_refresh_loop`).
+- **Severity:** high (deterministic chat failure within ~30s of every 25-min refresh tick).
+- **Repro:** Trigger any `/api/chat` exactly when the refresh loop fires. The loop's `_page.goto(GROK_BASE + "/")` navigates AWAY from `/c/<conv_id>`; chat lands on root, no textarea, returns 599.
+- **Fix:** Refresh loop must acquire `_lock` around its `_page.goto`. Alternative: dedicated refresh-only page in a separate tab.
+- **Status:** **open**.
+
+#### BUG-056 — Stray `docker-compose.yml` at repo root masks canonical `/home/dblagbro/docker/docker-compose.yml`
+- **Component:** `/home/dblagbro/llm-proxy-v2/docker-compose.yml` (repo file).
+- **Severity:** high (silent deploy failures — repeated `no such service: llm-proxy` errors during the sweep when commands ran from the repo dir; some deploys appeared to succeed without actually recreating the clone).
+- **Repro:** `cd /home/dblagbro/llm-proxy-v2 && sudo docker compose up -d --force-recreate --no-deps llm-proxy` → `no such service: llm-proxy`. The repo `docker-compose.yml` defines only `llm-proxy2` + its volumes; the clone (`llm-proxy`) and bridges live in `/home/dblagbro/docker/docker-compose.yml`.
+- **Fix:** Either delete the repo-root compose file (no longer needed if it was for local development) or rename it to make ambiguous compose-file resolution obvious (e.g. `docker-compose.dev.yml.example`). Document the canonical compose location in `CLAUDE.md`.
+- **Status:** **open** (ops hygiene; immediate workaround is `cd /home/dblagbro/docker` before every compose command).
+
+#### BUG-057 — `cluster_peers` self-row phantom on `CLUSTER_NODE_ID` change
+- **Component:** `app/cluster/sync_handlers.py::_apply_cluster_peers` + `app/cluster/manager.py`.
+- **Severity:** high (a config-edit + restart can leave an orphan self-row in `cluster_peers` table that the local manager treats as a peer of itself — infinite push loop or misdirected traffic).
+- **Repro:** With `CLUSTER_NODE_ID=A` running, add A as a peer to cluster (UI). Stop the container, change `CLUSTER_NODE_ID=B`, restart. The row keyed by `A` is no longer filtered as self; manager pushes sync payloads to `A`'s URL (which is THIS node).
+- **Fix:** On startup, after seeding, run a pruning pass: `DELETE FROM cluster_peers WHERE id = ?` for the current `cluster_node_id`. Also reject `POST /cluster/peers` with an id that matches the current node (already done — `cluster.py:385`), but the rename case still bypasses that check.
+- **Status:** **open**.
+
+### Medium — OPEN
+
+#### BUG-058 — `/api/diagnostic/capture_next_send` doesn't hold `_lock`; listener collisions with concurrent chats
+- **Component:** `grok_bridge/app.py:476`.
+- **Severity:** medium (diagnostic endpoint can capture another in-flight chat's response or starve the chat's listener).
+- **Fix:** Either acquire `_lock` (which serializes capture with chats), or document the trade-off and let operator coordinate.
+- **Status:** open.
+
+#### BUG-059 — Statsig validator false-positives on random base64 statsigs (~0.016%)
+- **Component:** `grok_bridge/app.py::_statsig_id_looks_valid`.
+- **Severity:** medium (occasional rejection of valid statsigs → re-capture latency).
+- **Fix:** Tighten to exact prefix match (e.g. `x0:Type`, `x0:Reference`) rather than substring `"error"` / `"Type"`.
+- **Status:** open.
+
+#### BUG-060 — Statsig cache TTL is fixed at 600s; rotation cadence unknown
+- **Component:** `grok_bridge/app.py:548`.
+- **Severity:** medium.
+- **Fix:** Measure empirically (sample 50 statsigs over a day, infer rotation period); adjust TTL to 0.5× observed period, or invalidate on first 403.
+- **Status:** open.
+
+#### BUG-061 — `_reload_peers_from_db` swaps `_peers` without lock
+- **Component:** `app/cluster/manager.py`.
+- **Severity:** medium (race window is small but real — heartbeats during the swap can see partial state).
+- **Fix:** Add `asyncio.Lock` around the swap.
+- **Status:** open.
+
+### Low — OPEN
+
+#### BUG-062 — `/cluster/peers` POST allows `http://` URLs
+- **Component:** `app/api/cluster.py:387` — only checks `"://" in url`.
+- **Severity:** low (cluster sync traffic could be unencrypted).
+- **Fix:** Enforce `https://` prefix.
+- **Status:** open.
+
+#### BUG-063 — Frontend `confirm()` not Playwright-friendly
+- **Component:** `frontend/src/pages/ClusterPage.tsx:295`.
+- **Severity:** low (UI tests can't easily exercise removal path).
+- **Fix:** Use a modal component (most of the codebase already has one for delete confirmations).
+- **Status:** open.
+
+#### BUG-064 — `_parse_iso_keep_naive` returns raw input on type mismatch
+- **Component:** `app/cluster/sync_handlers.py`.
+- **Severity:** low (a peer pushing `added_at: 123` int causes downstream comparison to crash; caught by per-section try/except so end-to-end behavior is just "this section skipped").
+- **Fix:** Return `None` on unrecognized types.
+- **Status:** open.
+
+#### BUG-065 — Context-level listener leak on bridge shutdown
+- **Component:** `grok_bridge/app.py` lifespan teardown.
+- **Severity:** low (no functional impact in current single-context design; architectural risk).
+- **Fix:** `_context.remove_listener("request", _on_context_request)` in lifespan `finally`.
+- **Status:** open.
+
+#### BUG-066 — Silent no-op when `CLUSTER_PEERS` env edited but DB already populated
+- **Component:** `app/cluster/manager.py::_seed_peers_from_env_if_empty`.
+- **Severity:** low (operator surprise — env edit assumed to take effect).
+- **Fix:** Log `INFO` when env value differs from DB rows; document in `CLAUDE.md`.
+- **Status:** open.
+
+#### BUG-067 — Misleading retry comment in bridge `chat()`
+- **Component:** `grok_bridge/app.py:1532`.
+- **Severity:** low (documentation only).
+- **Fix:** Remove or correct the comment.
+- **Status:** open.
+
+#### BUG-068 — `_send_via_spa_ui` and `create_new_conversation` UI-send code duplication
+- **Component:** `grok_bridge/app.py`.
+- **Severity:** low (maintenance burden).
+- **Fix:** Extract a shared `_drive_spa_send(conv_id, message, on_response)` helper.
+- **Status:** open.
+
+### Coverage gaps surfaced
+
+- **`v5.0.18` UI flow:** zero Playwright tests for ClusterPeersPanel add/remove/restore. Would have caught BUG-051 before deploy.
+- **`v5.0.19/20` bridge SPA-UI:** zero unit OR integration tests for `_send_via_spa_ui`. The 4 concurrency/race bugs (BUG-052, 054, 055, 058) would have been caught by a 2-call parallel test against a mocked Playwright.
+- **`v5.0.21` ContextVar plumbing:** added `test_v5021_disable_long_context.py` in this sweep (8 pins) — covers source/behavior contracts.
+- **Cursor bridge error mapping:** no tests verify that Cursor error JSON shapes get translated to non-200 statuses. BUG-053 would have been caught by a fixture test feeding the captured error JSON.
+- **Cluster-peers sync end-to-end:** 1 unit test added in v5.0.18 (`test_v5018_cluster_peer_persistence.py` — 7 pins). No integration test exercises the full path through two real nodes.
+
+---
+
 ## 2026-05-15 — post-refactor deep regression sweep (v3.10.9)
 
 Deep regression / release-hardening sweep covering **v3.9.16 → v3.10.9**
