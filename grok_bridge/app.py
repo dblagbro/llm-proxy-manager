@@ -393,99 +393,20 @@ async def create_new_conversation():
             pass
         await asyncio.sleep(1.5)  # let SPA hydrate
 
-        # ── Strategy 1: in-browser fetch to /conversations/new ──────────
-        # Tries the canonical create endpoint via the page's own fetch().
-        # Cookies + UA + TLS fingerprint inherit from the SPA. The
-        # ``x-statsig-id`` header — Grok's bot-detection nonce — does
-        # NOT come for free with fetch(); we capture it from the SPA's
-        # outgoing /responses request and stamp it on our call. Without
-        # this header Strategy 1 reliably 403s with "Request rejected
-        # by anti-bot rules." See ``_capture_statsig_id``.
-        statsig_id: Optional[str] = None
-        try:
-            statsig_id = await _capture_statsig_id(timeout_sec=6.0)
-        except Exception as e:
-            logger.info("conversation/new: statsig capture failed (%s); trying fetch without", e)
-        try:
-            result = await _page.evaluate(
-                """async (statsig) => {
-                    try {
-                        const headers = {'content-type': 'application/json'};
-                        if (statsig) headers['x-statsig-id'] = statsig;
-                        const res = await fetch('https://grok.com/rest/app-chat/conversations/new', {
-                            method: 'POST',
-                            headers,
-                            body: '{}',
-                            credentials: 'include',
-                        });
-                        const text = await res.text();
-                        return {ok: res.ok, status: res.status, body: text.slice(0, 600)};
-                    } catch (e) {
-                        return {error: String(e)};
-                    }
-                }""",
-                statsig_id,
-            )
-            logger.info("conversation/new fetch result (statsig=%s): %s",
-                        "yes" if statsig_id else "no", result)
-            if isinstance(result, dict) and result.get("ok"):
-                # Try to parse the conversation_id out of the body.
-                import re as _re
-                body = result.get("body") or ""
-                m = _re.search(r'"conversation"\s*:\s*"?([0-9a-f-]{32,40})"?', body)
-                if not m:
-                    m = _re.search(r'"id"\s*:\s*"([0-9a-f-]{32,40})"', body)
-                if m:
-                    cid = m.group(1)
-                    return {
-                        "conversation_id": cid,
-                        "method": "in_browser_fetch",
-                        "url": _page.url,
-                    }
-                logger.info("fetch ok but no UUID in body; falling back to UI")
-            elif isinstance(result, dict) and result.get("status") == 403 and statsig_id is None:
-                # We tried without a statsig and got the expected 403 —
-                # retry ONCE with a fresh capture. This handles the case
-                # where the first capture timed out but a request fires
-                # immediately after.
-                logger.info("conversation/new: retrying after capturing statsig_id")
-                try:
-                    statsig_id = await _capture_statsig_id(timeout_sec=8.0)
-                except Exception:
-                    statsig_id = None
-                if statsig_id:
-                    result = await _page.evaluate(
-                        """async (statsig) => {
-                            try {
-                                const res = await fetch('https://grok.com/rest/app-chat/conversations/new', {
-                                    method: 'POST',
-                                    headers: {'content-type': 'application/json', 'x-statsig-id': statsig},
-                                    body: '{}',
-                                    credentials: 'include',
-                                });
-                                const text = await res.text();
-                                return {ok: res.ok, status: res.status, body: text.slice(0, 600)};
-                            } catch (e) {
-                                return {error: String(e)};
-                            }
-                        }""",
-                        statsig_id,
-                    )
-                    logger.info("conversation/new fetch retry result: %s", result)
-                    if isinstance(result, dict) and result.get("ok"):
-                        import re as _re
-                        body = result.get("body") or ""
-                        m = _re.search(r'"conversation"\s*:\s*"?([0-9a-f-]{32,40})"?', body)
-                        if not m:
-                            m = _re.search(r'"id"\s*:\s*"([0-9a-f-]{32,40})"', body)
-                        if m:
-                            return {
-                                "conversation_id": m.group(1),
-                                "method": "in_browser_fetch_with_statsig",
-                                "url": _page.url,
-                            }
-        except Exception as e:
-            logger.warning("in-browser fetch failed: %s", e)
+        # ── Strategy 1 REMOVED 2026-06-05 (operator-blocking) ───────────
+        # Pre-fix, Strategy 1 did:
+        #     POST https://grok.com/rest/app-chat/conversations/new
+        #         body: "{}"
+        # Once the statsig-id capture got us past the bot-detection 403,
+        # the same call started returning HTTP 400 with body:
+        #     {"error":{"code":3,"message":"Cannot generate response to
+        #      empty conversation."}}
+        # i.e. Grok's API contract now wants the create call to include
+        # the first message. The bridge no longer knows the exact shape
+        # (operator's DevTools capture is the proper fix path). Until
+        # the SPA's request shape is known, Strategy 1 always fails;
+        # skipping it removes a 5-8 second wasted detour and gets us
+        # to UI-send faster.
 
         # ── Strategy 2: UI automation ───────────────────────────────────
         # Send a tiny "hi" via the page's textarea — the SPA assigns a
@@ -548,15 +469,31 @@ async def create_new_conversation():
                     ),
                 }
 
-            # Wait up to ~20s for the URL to flip to /c/<uuid>. Polled
+            # Wait up to 20s for the URL to flip to /c/<uuid>. Polled
             # rather than relying on wait_for_url because grok.com may
             # do an intermediate redirect through ``/?continue=...``.
+            #
+            # 2026-06-05: live testing showed Enter-after-type no longer
+            # triggers the SPA's send action — typing succeeds but the
+            # URL never updates. The SPA likely requires an explicit
+            # Send button click + listens for a click handler. Needs
+            # DevTools capture to confirm the new flow. Until then this
+            # endpoint will reliably time out; callers should fall back
+            # to using existing (operator-pasted) conversation_ids
+            # rather than minting fresh ones via the bridge.
             deadline = time.time() + 20.0
             cid: Optional[str] = None
             while time.time() < deadline:
                 cid = _conv_id_from_url(_page.url)
                 if cid:
                     break
+                try:
+                    live_url = await _page.evaluate("window.location.href")
+                    cid = _conv_id_from_url(live_url)
+                    if cid:
+                        break
+                except Exception:
+                    pass
                 await asyncio.sleep(0.4)
 
             return {
@@ -564,9 +501,12 @@ async def create_new_conversation():
                 "method": "ui_send",
                 "url": _page.url,
                 "hint": (
-                    "UI-send didn't produce a conversation in 20s; "
-                    "the message may still be in flight — refresh in a "
-                    "moment, or use noVNC to confirm"
+                    "UI-send typed the message but the SPA didn't navigate "
+                    "to /c/<uuid> within 20s. Likely cause: Grok's SPA "
+                    "no longer triggers send on Enter; the bridge needs "
+                    "the new send-trigger captured from DevTools. "
+                    "Workaround: paste an existing conversation_id into "
+                    "the provider's extra_config instead of using 'Create new'."
                     if cid is None else None
                 ),
             }
