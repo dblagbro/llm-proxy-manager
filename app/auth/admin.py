@@ -30,8 +30,17 @@ SESSION_IDLE_SEC = 86400      # Extend last_seen on each /me call
 # at any URL prefix (production /llm-proxy2/, smoke /llm-proxy2-smoke/,
 # future ports/subdomains) without dropping the cookie. Hub-team smoke
 # bug #1 — cookie didn't follow the smoke prefix.
-SESSION_COOKIE_NAME = "llmproxy_session"
-SESSION_COOKIE_PATH = "/"
+#
+# v5.0.17: cookie name + path are now env-configurable. The clone-fork
+# pattern (2026-06-05) put two independent llm-proxy2 instances on the
+# same domain at different paths (/llm-proxy/ + /llm-proxy2/). With
+# both using SESSION_COOKIE_NAME="llmproxy_session" + path="/", each
+# login clobbered the other's cookie. Now: the clone runs with
+# SESSION_COOKIE_NAME=llmproxy_clone_session (set in compose env), the
+# original keeps the default, and both can be logged in concurrently.
+import os
+SESSION_COOKIE_NAME = os.environ.get("SESSION_COOKIE_NAME", "llmproxy_session")
+SESSION_COOKIE_PATH = os.environ.get("SESSION_COOKIE_PATH", "/")
 _LEGACY_COOKIE_NAME = "session"  # accepted during migration window
 
 
