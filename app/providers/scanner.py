@@ -421,7 +421,11 @@ async def _test_claude_oauth(provider: Provider) -> dict:
     # accounts that haven't bought Anthropic Usage credits; without
     # this, even tiny probes return 429 "Usage credits are required
     # for long context requests."
-    disable_long_context = bool((provider.extra_config or {}).get("disable_long_context"))
+    # v5.0.21 hotfix: identity-check rather than bool() — bool("false")
+    # is True, which would silently invert operator intent.
+    disable_long_context = (
+        (getattr(provider, "extra_config", None) or {}).get("disable_long_context") is True
+    )
 
     # v2.7.6: refresh-and-retry once on 401 so admins see the real status
     from app.providers.claude_oauth_flow import refresh_and_persist, OAuthFlowError

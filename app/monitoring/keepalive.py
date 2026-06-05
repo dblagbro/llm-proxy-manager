@@ -206,9 +206,10 @@ async def _probe_one(provider: Provider) -> None:
         # rather than going through litellm.
         from app.api._messages_streaming import _complete_claude_oauth
         # v5.0.21 — per-provider 1M-context opt-out via ContextVar
+        # v5.0.21 hotfix: defensive getattr + identity-check for bool.
         from app.providers.claude_oauth import set_disable_long_context
         set_disable_long_context(
-            bool((provider.extra_config or {}).get("disable_long_context"))
+            (getattr(provider, "extra_config", None) or {}).get("disable_long_context") is True
         )
         try:
             async with AsyncSessionLocal() as _oauth_db:

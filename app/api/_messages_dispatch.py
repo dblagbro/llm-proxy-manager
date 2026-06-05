@@ -136,9 +136,11 @@ async def dispatch_claude_oauth_chain(
         # v5.0.21 — set the per-provider 1M-context opt-out on a
         # ContextVar before invoking the OAuth path. Avoids threading
         # an extra arg through every signature in the call chain.
+        # v5.0.21 hotfix: use getattr to tolerate test mocks that omit
+        # extra_config; production ORM rows always have the column.
         from app.providers.claude_oauth import set_disable_long_context
         set_disable_long_context(
-            bool((route.provider.extra_config or {}).get("disable_long_context"))
+            (getattr(route.provider, "extra_config", None) or {}).get("disable_long_context") is True
         )
         if stream:
             # v2.7.6: pre-flight the streaming connection so 401/4xx errors
