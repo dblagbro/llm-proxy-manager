@@ -22,10 +22,16 @@ on the timestamp comparison — so a provider's ``auto_skip_until`` in
 the past is effectively cleared even before the next scrape. The
 explicit clear in Rule 2 keeps the DB clean and the admin UI honest.
 
-This module is INTENTIONALLY simple. v3.7.x can extend it (per-model
-breakdowns from ``seven_day_sonnet_utilization``, 5-hour bursts via
-``five_hour_utilization``, etc.) once we've validated the basic
-weekly-cap behavior in production.
+v5.0.15 — also clamp on the session bucket. Anthropic's billing API
+exposes ``five_hour_utilization`` (resets every 5h). Pre-v5.0.15 the
+rotation logic ignored it; a provider at 100% session / 13% weekly
+kept getting picked because weekly looked healthy. Now a provider
+is skipped if EITHER bucket exhausts (weekly with hysteresis, session
+as a hard 100% cap) and ``auto_skip_until`` is the LATER of the two
+reset times so we don't release while one bucket is still capped.
+
+Per-model breakdowns from ``seven_day_sonnet_utilization`` etc. are
+still deferred — same pattern, no concrete trigger yet.
 
 Operator-set ``Provider.priority`` and ``Provider.enabled`` are
 preserved unchanged — auto-rotation is additive.
@@ -107,8 +113,21 @@ async def evaluate_rules_for_provider(
             "decision": "no_snapshot",
             "auto_skip_until": _iso(provider.auto_skip_until),
         }
-    util = snap.seven_day_utilization
-    if util is None:
+    util_weekly = snap.seven_day_utilization
+    # v5.0.15 — Anthropic's billing API exposes a SEPARATE session-window
+    # utilization (``five_hour``) that hits 100% on session-max well
+    # before the weekly cap. Pre-v5.0.15 the rotation logic only looked
+    # at ``seven_day_utilization`` — so when a provider's session window
+    # exhausted (e.g. Devin-Anthropic-Max-VG at 100% five-hour / 13%
+    # weekly on 2026-06-04) the router kept picking it as if it were
+    # healthy. Now we treat the session bucket as a hard 100% cap (no
+    # hysteresis — it's not a tunable policy, it's an upstream lockout)
+    # and the weekly bucket keeps its existing soft threshold +
+    # hysteresis. The provider is skipped if EITHER bucket exhausts;
+    # ``auto_skip_until`` is the LATER of the two reset times so we
+    # don't release prematurely while one bucket is still capped.
+    util_session = snap.five_hour_utilization
+    if util_weekly is None and util_session is None:
         return {
             "provider_id": provider.id,
             "decision": "no_utilization",
@@ -122,19 +141,46 @@ async def evaluate_rules_for_provider(
     new_skip_until: Optional[datetime] = prior_skip
     new_reason: Optional[str] = prior_reason
 
-    if util >= threshold:
-        new_skip_until = snap.seven_day_resets_at
-        new_reason = (
-            f"weekly utilization {util:.1f}% >= {threshold:.0f}% threshold; "
-            f"resets {_iso(snap.seven_day_resets_at)}"
-        )
+    session_exhausted = util_session is not None and util_session >= 100.0
+    weekly_exhausted = util_weekly is not None and util_weekly >= threshold
+
+    if session_exhausted or weekly_exhausted:
+        # Collect the active resets so skip_until covers ALL exhausted
+        # buckets — if both are capped, the LATER reset wins.
+        candidates: list[datetime] = []
+        parts: list[str] = []
+        if session_exhausted:
+            if snap.five_hour_resets_at is not None:
+                candidates.append(snap.five_hour_resets_at)
+            parts.append(
+                f"session utilization {util_session:.1f}% >= 100%; "
+                f"resets {_iso(snap.five_hour_resets_at)}"
+            )
+        if weekly_exhausted:
+            if snap.seven_day_resets_at is not None:
+                candidates.append(snap.seven_day_resets_at)
+            parts.append(
+                f"weekly utilization {util_weekly:.1f}% "
+                f">= {threshold:.0f}% threshold; "
+                f"resets {_iso(snap.seven_day_resets_at)}"
+            )
+        new_skip_until = max(candidates) if candidates else None
+        new_reason = "; ".join(parts)
         decision = "skip_set"
-    elif util <= clear_below and prior_skip is not None:
-        new_skip_until = None
-        new_reason = None
-        decision = "skip_cleared"
+    elif prior_skip is not None:
+        # Clear ONLY when BOTH buckets are confirmed healthy: weekly
+        # below the hysteresis floor AND session below 100%. A missing
+        # value (None) is treated as healthy so we don't strand a
+        # skip on a provider whose scraper temporarily lost a window.
+        weekly_ok = (util_weekly is None) or (util_weekly <= clear_below)
+        session_ok = (util_session is None) or (util_session < 100.0)
+        if weekly_ok and session_ok:
+            new_skip_until = None
+            new_reason = None
+            decision = "skip_cleared"
+        else:
+            decision = "no_change"
     else:
-        # In the hysteresis band → don't change state, just report
         decision = "no_change"
 
     if new_skip_until != prior_skip or new_reason != prior_reason:
@@ -144,7 +190,8 @@ async def evaluate_rules_for_provider(
     out = {
         "provider_id": provider.id,
         "provider_name": provider.name,
-        "seven_day_utilization": util,
+        "seven_day_utilization": util_weekly,
+        "five_hour_utilization": util_session,    # v5.0.15
         "threshold_pct": threshold,
         "decision": decision,
         "auto_skip_until": _iso(new_skip_until),
