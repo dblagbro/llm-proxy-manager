@@ -121,6 +121,20 @@ async def _seed_peers_from_env_if_empty(db_factory) -> int:
         async with db_factory() as db:
             existing = (await db.execute(select(func.count(ClusterPeer.id)))).scalar_one()
             if existing > 0:
+                # BUG-066 — operators were editing CLUSTER_PEERS env
+                # and silently getting no behavior change because the
+                # DB had taken over. Log so the env edit is visible
+                # and not mysteriously ignored.
+                env_peers = _parse_peers()
+                if env_peers:
+                    logger.info(
+                        "cluster_peers: %d rows in DB; CLUSTER_PEERS "
+                        "env is set (%d entries) but ignored — DB is "
+                        "authoritative after first boot. Edit via "
+                        "Settings → Cluster Peers UI or "
+                        "POST /cluster/peers.",
+                        existing, len(env_peers),
+                    )
                 return 0
             env_peers = _parse_peers()
             if not env_peers:
