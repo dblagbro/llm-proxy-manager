@@ -178,7 +178,16 @@ async def lifespan(app: FastAPI):
             await refresh_task
         except asyncio.CancelledError:
             pass
+        # v5.0.22 / remediation Batch 2 (BUG-065): explicitly remove
+        # the context-level statsig listener before tearing down the
+        # context. Harmless on _context.close() in current Playwright,
+        # but eliminates the latent leak risk if the bridge ever runs
+        # multiple contexts or hot-reloads.
         if _context:
+            try:
+                _context.remove_listener("request", _on_context_request)
+            except Exception:
+                pass
             await _context.close()
         if _playwright:
             await _playwright.stop()
@@ -378,10 +387,19 @@ async def _cookie_refresh_loop():
             await asyncio.sleep(COOKIE_REFRESH_INTERVAL_SEC)
             if _page is None:
                 continue
+            # v5.0.22 / remediation Batch 2 (BUG-055): the refresh
+            # tick navigates the SAME _page that /api/chat is using.
+            # Without serialization, a tick mid-chat navigates away
+            # from /c/<conv_id> → chat returns "no usable textarea
+            # found". Hold _lock for the navigation so an in-flight
+            # chat completes before the refresh starts (and vice
+            # versa). The sleep above stays OUTSIDE the lock so we
+            # never block chats during the 25-min idle window.
             try:
-                await _page.goto(GROK_BASE + "/", wait_until="domcontentloaded", timeout=20_000)
-                _last_refresh_at = time.time()
-                _last_refresh_status = "ok"
+                async with _lock:
+                    await _page.goto(GROK_BASE + "/", wait_until="domcontentloaded", timeout=20_000)
+                    _last_refresh_at = time.time()
+                    _last_refresh_status = "ok"
                 logger.info("cookie-refresh tick: %s", _last_refresh_status)
             except Exception as e:
                 _last_refresh_status = f"error: {e}"
@@ -1508,34 +1526,43 @@ async def chat(req: Request, _: None = Depends(require_bridge_token)):
     #   3. fresh capture (provoke a keystroke + listen)
     # The cache is the meaningful fix: as long as SPA activity is
     # occurring SOMEWHERE in the browser, we have a fresh nonce.
-    if not statsig_id:
-        # Accept cache up to 10 minutes old. Statsig nonces don't
-        # encode a strict timestamp but they do rotate; staleness
-        # beyond ~10min reads as suspicious to grok's anti-bot.
-        if _last_valid_statsig and (time.time() - _last_valid_statsig_at) < 600:
-            statsig_id = _last_valid_statsig
-            logger.info("chat: using cached statsig (age=%.1fs)",
-                        time.time() - _last_valid_statsig_at)
-        else:
-            statsig_id = await _capture_statsig_id(timeout_sec=8.0)
-            if statsig_id:
-                logger.info("chat: captured fresh statsig")
+    #
+    # v5.0.22 / remediation Batch 2 (BUG-052): the SPA-driven flow
+    # mutates _page state (goto, textarea typing, button click,
+    # response listener). Concurrent /api/chat calls without
+    # serialization corrupt each other — confirmed via 2-call
+    # reproducer (one returned wrong content, the other failed with
+    # "chat-submit not found"). The whole flow now runs under _lock.
+    # 429 cool-off check above remains outside (read-only state).
+    async with _lock:
+        if not statsig_id:
+            # Accept cache up to 10 minutes old. Statsig nonces don't
+            # encode a strict timestamp but they do rotate; staleness
+            # beyond ~10min reads as suspicious to grok's anti-bot.
+            if _last_valid_statsig and (time.time() - _last_valid_statsig_at) < 600:
+                statsig_id = _last_valid_statsig
+                logger.info("chat: using cached statsig (age=%.1fs)",
+                            time.time() - _last_valid_statsig_at)
+            else:
+                statsig_id = await _capture_statsig_id(timeout_sec=8.0)
+                if statsig_id:
+                    logger.info("chat: captured fresh statsig")
 
-    # First attempt
-    status, text = await _post_to_grok(conv_id, body, statsig_id)
-
-    # On 401/403: refresh page (Playwright will silently solve any CF
-    # challenge), then retry once. The retry goes through
-    # _post_to_grok → _send_via_spa_ui, which drives the SPA itself; a
-    # passed-in statsig_id is ignored on that path (the SPA mints its
-    # own per-request statsig). The pre-retry capture below is kept
-    # only because the bridge could fall back to the legacy httpx
-    # path in a future revision.
-    if status in (401, 403) and INFERENCE_RETRY_AFTER_REFRESH:
-        logger.warning("grok.com %s — refreshing playwright page and retrying", status)
-        await _force_refresh()
-        statsig_id = await _capture_statsig_id(timeout_sec=8.0) or statsig_id
+        # First attempt
         status, text = await _post_to_grok(conv_id, body, statsig_id)
+
+        # On 401/403: refresh page (Playwright will silently solve any CF
+        # challenge), then retry once. The retry goes through
+        # _post_to_grok → _send_via_spa_ui, which drives the SPA itself; a
+        # passed-in statsig_id is ignored on that path (the SPA mints its
+        # own per-request statsig). The pre-retry capture below is kept
+        # only because the bridge could fall back to the legacy httpx
+        # path in a future revision.
+        if status in (401, 403) and INFERENCE_RETRY_AFTER_REFRESH:
+            logger.warning("grok.com %s — refreshing playwright page and retrying", status)
+            await _force_refresh()
+            statsig_id = await _capture_statsig_id(timeout_sec=8.0) or statsig_id
+            status, text = await _post_to_grok(conv_id, body, statsig_id)
 
     if status != 200:
         raise HTTPException(status if 400 <= status < 600 else 502, f"grok.com {status}: {text[:300]}")
