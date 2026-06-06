@@ -399,7 +399,13 @@ async def _test_claude_oauth(provider: Provider) -> dict:
     from app.api._messages_streaming import _inject_claude_code_system
     from app.routing.circuit_breaker import record_failure, record_success, is_billing_error
 
-    model = provider.default_model or "claude-sonnet-4-6"
+    # v5.2.2 / Batch V3 — central default lookup; vendor-neutral fallback
+    # asymmetry was caught during the v5.2 audit.
+    from app.routing.litellm_binding import PROVIDER_DEFAULT_MODELS
+    model = provider.default_model or PROVIDER_DEFAULT_MODELS.get(
+        getattr(provider, "provider_type", "claude-oauth"),
+        "claude-sonnet-4-6",
+    )
 
     if not provider.api_key:
         return {

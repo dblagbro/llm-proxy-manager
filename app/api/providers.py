@@ -240,7 +240,15 @@ async def create_provider(
         data["oauth_refresh_token"] = creds.refresh_token
         data["oauth_expires_at"] = creds.expires_at
         if not data.get("default_model"):
-            data["default_model"] = "claude-sonnet-4-6"
+            # v5.2.2 / Batch V3 — defer to the central PROVIDER_DEFAULT_MODELS
+            # lookup so vendor-neutrality fixups happen in one place. The
+            # hardcoded "claude-sonnet-4-6" here predates v5.2 and was
+            # asymmetric vs codex-oauth (which never hardcoded an
+            # OpenAI model in the equivalent position).
+            from app.routing.litellm_binding import PROVIDER_DEFAULT_MODELS
+            data["default_model"] = PROVIDER_DEFAULT_MODELS.get(
+                "claude-oauth", "claude-sonnet-4-6",
+            )
     elif body.provider_type == "ChatGPT-oauth-plan":
         # v3.0.15: OpenAI Codex CLI / ChatGPT subscription OAuth.
         if not blob:
