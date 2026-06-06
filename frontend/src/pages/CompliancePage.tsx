@@ -2,9 +2,11 @@
 // compliance_policy_changes, and the cluster preflight readiness card
 // (decision 32). Filterable + CSV-exportable per spec §3.2 / §9.3.
 import { useMemo, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Download, RefreshCw, ShieldAlert, Server } from 'lucide-react'
-import { complianceApi, keysApi } from '@/api'
+import { complianceApi, keysApi, loggingApi } from '@/api'
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
+import { useToast } from '@/components/ui/Toast'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
 import { Badge } from '@/components/ui/Badge'
@@ -74,6 +76,8 @@ export function CompliancePage() {
 
   return (
     <div className="p-6 space-y-6 max-w-7xl">
+      {/* v5.1.0 / Batch C1 — activity-log on/off panic button */}
+      <LoggingControlsPanel />
       <div className="flex items-start justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-xl font-bold text-gray-900 dark:text-gray-100 flex items-center gap-2">
@@ -373,5 +377,123 @@ export function CompliancePage() {
         </CardContent>
       </Card>
     </div>
+  )
+}
+
+
+// ── v5.1.0 / Batch C1 — Activity-log toggle ─────────────────────────
+function LoggingControlsPanel() {
+  const qc = useQueryClient()
+  const toast = useToast()
+  const { user } = useAuth()
+  const { data: status, isLoading } = useQuery({
+    queryKey: ['logging-status'],
+    queryFn: loggingApi.status,
+    refetchInterval: 30_000,
+  })
+  const [reason, setReason] = useState('')
+  const [confirmOff, setConfirmOff] = useState(false)
+
+  const toggleMut = useMutation({
+    mutationFn: (enabled: boolean) => loggingApi.toggle(enabled, reason || undefined),
+    onSuccess: (r) => {
+      qc.invalidateQueries({ queryKey: ['logging-status'] })
+      toast.success(`Activity logging ${r.enabled ? 'ENABLED' : 'DISABLED'}` + (r.noop ? ' (no-op)' : ''))
+      setReason('')
+      setConfirmOff(false)
+    },
+    onError: (e: Error) => toast.error(e.message),
+  })
+
+  if (isLoading || !status) {
+    return (
+      <Card>
+        <CardContent className="py-3 flex items-center justify-center">
+          <Spinner />
+        </CardContent>
+      </Card>
+    )
+  }
+
+  const on = status.enabled
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Activity Logging</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <div className="flex flex-col sm:flex-row sm:items-start gap-4">
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className={
+                'inline-flex items-center gap-1.5 text-sm font-semibold px-2 py-0.5 rounded ' +
+                (on
+                  ? 'bg-emerald-100 dark:bg-emerald-900/40 text-emerald-800 dark:text-emerald-300'
+                  : 'bg-red-100 dark:bg-red-900/40 text-red-800 dark:text-red-300 ring-2 ring-red-500/40')
+              }>
+                {on ? '● ON' : '◯ OFF'}
+              </span>
+              <span className="text-sm text-gray-700 dark:text-gray-300">
+                {on
+                  ? 'capturing full request + response metadata to activity_log + SSE dashboard'
+                  : 'NO new activity log entries are being persisted or streamed. Compliance audit (this page) is unaffected.'}
+              </span>
+            </div>
+            {status.last_flip && (
+              <p className="text-xs text-gray-500 dark:text-gray-400 mt-1.5">
+                Last flip: {formatTimeForUser(status.last_flip.changed_at, user)}{' '}
+                by <strong>{status.last_flip.changed_by ?? 'unknown'}</strong>
+                {status.last_flip.reason && (
+                  <> — <span className="italic">{status.last_flip.reason}</span></>
+                )}
+              </p>
+            )}
+            <div className="mt-3 flex flex-col sm:flex-row gap-2">
+              <input
+                type="text"
+                placeholder={on
+                  ? 'Reason for turning OFF (encouraged for audit)…'
+                  : 'Reason for turning ON…'}
+                value={reason}
+                onChange={e => setReason(e.target.value)}
+                className="flex-1 px-2.5 py-1.5 text-sm rounded border bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600"
+                maxLength={2000}
+              />
+              {on ? (
+                <Button
+                  size="sm" variant="danger"
+                  onClick={() => setConfirmOff(true)}
+                  loading={toggleMut.isPending}
+                >
+                  Turn OFF
+                </Button>
+              ) : (
+                <Button
+                  size="sm"
+                  onClick={() => toggleMut.mutate(true)}
+                  loading={toggleMut.isPending}
+                >
+                  Turn ON
+                </Button>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <ConfirmDialog
+          open={confirmOff}
+          title="Disable activity logging?"
+          message={
+            'Activity log capture will halt until re-enabled. Existing rows are NOT deleted; the daily ' +
+            'compliance audit chain continues for this page. This flip is itself recorded in compliance_policy_changes.'
+          }
+          confirmLabel="Disable logging"
+          variant="danger"
+          loading={toggleMut.isPending}
+          onConfirm={() => toggleMut.mutate(false)}
+          onCancel={() => setConfirmOff(false)}
+        />
+      </CardContent>
+    </Card>
   )
 }

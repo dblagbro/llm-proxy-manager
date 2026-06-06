@@ -38,6 +38,11 @@ class PeerNode:
     latency_ms: float = 0.0
     healthy_providers: int = 0
     total_providers: int = 0
+    # v5.1.0 / Batch A2 — peer's reported __version__ from /health.
+    # None on first contact or when peer is unreachable; populated
+    # opportunistically by the heartbeat loop. Used by the Settings →
+    # Cluster UI to surface version skew at a glance.
+    version: Optional[str] = None
 
 
 peers: dict[str, PeerNode] = {}
@@ -264,6 +269,11 @@ async def _ping_peer(peer: PeerNode, notify_fn=None):
         peer.healthy_providers = data.get("healthyProviders", 0)
         peer.total_providers = data.get("totalProviders", 0)
         peer.status = data.get("status", "healthy")
+        # v5.1.0 / Batch A2 — capture peer's reported version for the
+        # Settings → Cluster skew display. /health is the only endpoint
+        # that surfaces __version__; capturing here means we don't add
+        # an extra round-trip.
+        peer.version = data.get("version")
 
         if was_unreachable:
             logger.info(f"Cluster peer {peer.id} recovered")
@@ -900,6 +910,11 @@ async def push_policy_change_with_quorum(
 
 
 def get_cluster_status() -> dict:
+    # v5.1.0 / Batch A2 — include version on local + peer entries so
+    # the UI can flag skew at a glance. Local version is the canonical
+    # source (from __version__); peer versions come from their /health
+    # responses as captured by _ping_peer.
+    from app.__version__ import __version__ as _local_version
     return {
         "cluster_enabled": settings.cluster_enabled,
         "local_node": {
@@ -907,6 +922,7 @@ def get_cluster_status() -> dict:
             "name": settings.cluster_node_name,
             "url": settings.cluster_node_url,
             "status": "healthy",
+            "version": _local_version,
         },
         "peers": [
             {
@@ -918,6 +934,7 @@ def get_cluster_status() -> dict:
                 "last_heartbeat": p.last_heartbeat,
                 "healthy_providers": p.healthy_providers,
                 "total_providers": p.total_providers,
+                "version": p.version,
             }
             for p in _peers.values()
         ],

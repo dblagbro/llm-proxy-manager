@@ -213,7 +213,10 @@ export const providersApi = {
 
 // ── API Keys ──────────────────────────────────────────────────────────────────
 export const keysApi = {
-  list:   ()                           => api.get<ApiKey[]>('/api/keys'),
+  list:    ()                          => api.get<ApiKey[]>('/api/keys'),
+  // v5.1.0 / Batch B1 — separate method for the admin Trash tab (kept
+  // distinct so the default ``list`` keeps a clean useQuery signature).
+  listAll: ()                          => api.get<ApiKey[]>('/api/keys?include_deleted=true'),
   create: (data: {
     name?: string
     key_type: string
@@ -221,8 +224,16 @@ export const keysApi = {
     blocked_companies?: string[] | null
     allowed_paths?: string[] | null
     debug_echo_enabled?: boolean
+    // v5.1.0 / Batch B2 — clone caps + compliance from an existing key.
+    copy_from_id?: string
   }) =>
     api.post<ApiKey & { raw_key: string }>('/api/keys', data),
+  // v5.1.0 / Batch B1 — restore tombstoned key within the
+  // api_key_tombstone_retention_days window.
+  restore: (id: string) =>
+    api.post<{ ok: boolean; id: string; restored_at: number }>(
+      `/api/keys/${id}/restore`, {},
+    ),
   // v5.0.0 — PATCH accepts the new compliance fields and a reason string
   // (required when blocked_companies or allowed_paths change, per
   // decision 6). Reason is logged into compliance_policy_changes.
@@ -284,6 +295,27 @@ export const complianceApi = {
   },
   clusterReady: () =>
     api.get<ClusterComplianceReadiness>('/api/admin/cluster/compliance-ready'),
+}
+
+// v5.1.0 / Batch C1 — activity-log on/off toggle (compliance panic button)
+export interface LoggingStatus {
+  enabled: boolean
+  setting_key: string
+  last_flip: {
+    changed_at: string | null
+    changed_by: string | null
+    reason: string | null
+    policy_change_id: string | null
+  } | null
+}
+
+export const loggingApi = {
+  status: () => api.get<LoggingStatus>('/api/admin/logging/status'),
+  toggle: (enabled: boolean, reason?: string) =>
+    api.post<{ ok: boolean; enabled: boolean; prior_state: boolean;
+               noop: boolean; audit_id: string }>(
+      '/api/admin/logging/toggle', { enabled, reason },
+    ),
 }
 
 // ── Users ─────────────────────────────────────────────────────────────────────

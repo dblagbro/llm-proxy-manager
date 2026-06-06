@@ -46,6 +46,12 @@ class KeyCreate(BaseModel):
     allowed_paths: Optional[List[str]] = None
     debug_echo_enabled: Optional[bool] = False
     reason: Optional[str] = None
+    # v5.1.0 / Batch B2 — copy caps + compliance fields from an existing
+    # key. When ``copy_from_id`` is set, ANY of the cap/compliance
+    # fields above that are left at their default (None / False) are
+    # populated from the source key. ``name`` + ``key_type`` are
+    # always taken from THIS body, never the source.
+    copy_from_id: Optional[str] = None
 
 
 class KeyUpdate(BaseModel):
@@ -73,18 +79,60 @@ class KeyUpdate(BaseModel):
 
 @router.get("")
 async def list_keys(
+    include_deleted: bool = False,
     db: AsyncSession = Depends(get_db),
     _: AdminUser = Depends(require_admin),
 ):
     # v3.0.20: hide tombstoned rows from the admin list — kept in DB only
     # for cluster-sync to propagate the delete to peers.
-    result = await db.execute(
-        select(ApiKey)
-        .where(ApiKey.deleted_at.is_(None))
-        .order_by(ApiKey.created_at.desc())
-    )
+    # v5.1.0 / Batch B1: pass ?include_deleted=true to surface the trash
+    # bin (admin Trash tab). Tombstoned rows show ``deleted_at`` so the
+    # UI can compute the remaining restore window relative to
+    # ``api_key_tombstone_retention_days``.
+    q = select(ApiKey).order_by(ApiKey.created_at.desc())
+    if not include_deleted:
+        q = q.where(ApiKey.deleted_at.is_(None))
+    result = await db.execute(q)
     keys = result.scalars().all()
     return [_serialize(k) for k in keys]
+
+
+@router.post("/{key_id}/restore")
+async def restore_key(
+    key_id: str,
+    db: AsyncSession = Depends(get_db),
+    _: AdminUser = Depends(require_admin),
+):
+    """v5.1.0 / Batch B1 — restore a tombstoned key by clearing
+    ``deleted_at`` + re-enabling. Returns 404 if the key was never
+    tombstoned OR if it has passed the retention window.
+    """
+    from datetime import datetime, timezone, timedelta
+    from app.config import settings as _s
+    rs = await db.execute(select(ApiKey).where(ApiKey.id == key_id))
+    k = rs.scalar_one_or_none()
+    if k is None:
+        raise HTTPException(404, "key not found")
+    if k.deleted_at is None:
+        raise HTTPException(400, "key is not deleted; nothing to restore")
+    # Honor the retention window — past it, the key is considered
+    # purged-pending-prune and cannot be restored.
+    retention_days = int(getattr(_s, "api_key_tombstone_retention_days", 90) or 90)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
+    dt = k.deleted_at if k.deleted_at.tzinfo else k.deleted_at.replace(tzinfo=timezone.utc)
+    if dt < cutoff:
+        raise HTTPException(
+            410,
+            f"key was deleted more than {retention_days} days ago "
+            f"(retention window expired). The next prune sweep will "
+            f"hard-delete it.",
+        )
+    k.deleted_at = None
+    k.enabled = True
+    import time as _t
+    k.last_user_edit_at = _t.time()
+    await db.commit()
+    return {"ok": True, "id": k.id, "restored_at": _t.time()}
 
 
 @router.post("")
@@ -94,6 +142,43 @@ async def create_key(
     user: AdminUser = Depends(require_admin),
 ):
     raw_key, key_hash = generate_api_key()
+    # v5.1.0 / Batch B2 — copy-from-existing. Populate any unset
+    # cap/compliance fields from the source key. Operator UX: pick a
+    # key from the dropdown, type a new name, hit Create — no need to
+    # re-enter all the caps and policy by hand.
+    if body.copy_from_id:
+        src_rs = await db.execute(
+            select(ApiKey).where(ApiKey.id == body.copy_from_id,
+                                 ApiKey.deleted_at.is_(None))
+        )
+        src = src_rs.scalar_one_or_none()
+        if src is None:
+            raise HTTPException(404, f"copy_from_id key {body.copy_from_id} not found")
+        if body.spending_cap_usd is None:
+            body.spending_cap_usd = src.spending_cap_usd
+        if body.rate_limit_rpm is None:
+            body.rate_limit_rpm = src.rate_limit_rpm
+        if body.rate_limit_tier is None:
+            body.rate_limit_tier = src.rate_limit_tier
+        if body.daily_soft_cap_usd is None:
+            body.daily_soft_cap_usd = src.daily_soft_cap_usd
+        if body.daily_hard_cap_usd is None:
+            body.daily_hard_cap_usd = src.daily_hard_cap_usd
+        if body.hourly_cap_usd is None:
+            body.hourly_cap_usd = src.hourly_cap_usd
+        if body.semantic_cache_enabled is False:
+            body.semantic_cache_enabled = bool(src.semantic_cache_enabled)
+        if body.blocked_companies is None:
+            body.blocked_companies = list(src.blocked_companies) if src.blocked_companies else None
+        if body.allowed_paths is None:
+            body.allowed_paths = list(src.allowed_paths) if src.allowed_paths else None
+        if body.debug_echo_enabled is False:
+            body.debug_echo_enabled = bool(src.debug_echo_enabled)
+        # Reason is auto-set if copied compliance fields and the
+        # operator didn't provide one explicitly.
+        if (body.blocked_companies or body.allowed_paths) and not body.reason:
+            body.reason = f"copied from key {src.key_prefix} ({src.name})"
+
     # v5.0.0 — validate compliance fields. ``blocked_companies`` must be
     # known company IDs; reason required when policy is set at create time.
     if body.blocked_companies:

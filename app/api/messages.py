@@ -524,6 +524,11 @@ async def messages(
         new_route.served_model_native = None
         from app.routing.litellm_binding import build_litellm_model as _bld
         new_route.litellm_model = _bld(new_route.provider, body.get("model"))
+        # v5.1.0 / Batch A4 — swap extra (litellm_kwargs) to the new
+        # provider's. See completions.py for the rationale.
+        for _k in list(route.litellm_kwargs.keys()):
+            extra.pop(_k, None)
+        extra.update(new_route.litellm_kwargs)
         route = new_route
         resp_headers["X-Grok-Web-Failover"] = "true"
         resp_headers["X-Grok-Web-Failover-Target"] = new_route.provider.provider_type
