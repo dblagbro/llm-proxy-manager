@@ -160,6 +160,76 @@ async def raise_if_banned_client_ua(
     )
 
 
+async def raise_if_llm_emergency_stopped(
+    db: AsyncSession,
+    key_record: Any,
+    *,
+    endpoint: str,
+    requested_model: Optional[str] = None,
+) -> None:
+    """v5.2.0 / Batch V1 — global LLM kill-switch.
+
+    When ``compliance.llm_emergency_stop`` is True the operator has
+    halted ALL upstream dispatch. This helper short-circuits the
+    request with HTTP 503 + an audit row, BEFORE provider selection.
+
+    Distinct from the v5.1.0 ``activity_logging_enabled`` toggle: that
+    one suppresses log writes; this one refuses LLM calls. They are
+    composed orthogonally — an operator can have logging OFF and
+    routing OFF independently.
+
+    The stop is unconditional — it does NOT consult the per-key
+    blocklist, the requested model, or the UA. The audit row still
+    records the api_key_id and (if known) ``requested_model`` so the
+    operator can reconstruct who was trying what when the switch was
+    engaged.
+
+    Caller pattern (after raise_if_banned_client_ua):
+        await raise_if_llm_emergency_stopped(
+            db, key_record, endpoint="messages",
+        )
+
+    Raises HTTPException(503) with ``llm-emergency-stop`` reason_code.
+    """
+    from app.monitoring.llm_emergency_stop import is_llm_stopped, REASON_CODE
+
+    if not await is_llm_stopped(db):
+        return
+
+    audit_id = generate_audit_id()
+    await emit_event(
+        db,
+        audit_id=audit_id,
+        api_key_id=key_record.id,
+        event_type="llm_emergency_stop",
+        reason_code=REASON_CODE,
+        http_status=503,
+        requested_model=requested_model,
+        commit=True,
+    )
+    raise HTTPException(
+        status_code=503,
+        detail={"error": {
+            "type": "llm_emergency_stop",
+            "code": REASON_CODE,
+            "audit_id": audit_id,
+            "endpoint": endpoint,
+            "reason": (
+                "LLM routing is halted by operator (emergency stop "
+                "engaged). All upstream dispatch is refused until an "
+                "administrator disengages the stop. This is a "
+                "fleet-wide compliance refusal — retrying will not "
+                "help. Contact your administrator."
+            ),
+        }},
+        headers={
+            "X-Compliance-Refused": "llm-emergency-stop",
+            "X-Compliance-Audit-Id": audit_id,
+            "Retry-After": "60",
+        },
+    )
+
+
 async def raise_for_no_substitute_exception(
     exc: ComplianceNoSubstituteError,
     *,

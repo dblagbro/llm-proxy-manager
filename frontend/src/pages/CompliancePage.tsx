@@ -4,7 +4,7 @@
 import { useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Download, RefreshCw, ShieldAlert, Server } from 'lucide-react'
-import { complianceApi, keysApi, loggingApi, type RetentionEntry } from '@/api'
+import { complianceApi, keysApi, loggingApi, llmEmergencyApi, type RetentionEntry } from '@/api'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { useToast } from '@/components/ui/Toast'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card'
@@ -76,6 +76,8 @@ export function CompliancePage() {
 
   return (
     <div className="p-6 space-y-6 max-w-7xl">
+      {/* v5.2.0 / Batch V1 — LLM-call emergency stop (kill switch) */}
+      <LLMEmergencyStopPanel />
       {/* v5.1.0 / Batch C1 — activity-log on/off panic button */}
       <LoggingControlsPanel />
       {/* v5.1.1 / Batch C2 — time-range bulk purge */}
@@ -381,6 +383,129 @@ export function CompliancePage() {
         </CardContent>
       </Card>
     </div>
+  )
+}
+
+
+// ── v5.2.0 / Batch V1 — LLM emergency stop (kill switch) ───────────
+function LLMEmergencyStopPanel() {
+  const qc = useQueryClient()
+  const toast = useToast()
+  const { user } = useAuth()
+  const { data: status, isLoading } = useQuery({
+    queryKey: ['llm-emergency-status'],
+    queryFn: llmEmergencyApi.status,
+    refetchInterval: 30_000,
+  })
+  const [reason, setReason] = useState('')
+  const [confirmOn, setConfirmOn] = useState(false)
+
+  const toggleMut = useMutation({
+    mutationFn: (enabled: boolean) => llmEmergencyApi.toggle(enabled, reason || undefined),
+    onSuccess: (r) => {
+      qc.invalidateQueries({ queryKey: ['llm-emergency-status'] })
+      toast.success(`LLM emergency stop ${r.enabled ? 'ENGAGED' : 'DISENGAGED'}` + (r.noop ? ' (no-op)' : ''))
+      setReason('')
+      setConfirmOn(false)
+    },
+    onError: (e: Error) => toast.error(e.message),
+  })
+
+  if (isLoading || !status) {
+    return (
+      <Card>
+        <CardContent className="py-3 flex items-center justify-center">
+          <Spinner />
+        </CardContent>
+      </Card>
+    )
+  }
+
+  const on = status.enabled
+  return (
+    <Card className={on ? 'border-2 border-red-500' : undefined}>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <ShieldAlert className={'h-5 w-5 ' + (on ? 'text-red-500' : 'text-gray-400')} />
+          LLM Emergency Stop
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        <div className="flex flex-col sm:flex-row sm:items-start gap-4">
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className={
+                'inline-flex items-center gap-1.5 text-sm font-semibold px-2 py-0.5 rounded ' +
+                (on
+                  ? 'bg-red-100 dark:bg-red-900/40 text-red-800 dark:text-red-300 ring-2 ring-red-500/40'
+                  : 'bg-emerald-100 dark:bg-emerald-900/40 text-emerald-800 dark:text-emerald-300')
+              }>
+                {on ? '⛔ ENGAGED' : '● ROUTING'}
+              </span>
+              <span className="text-sm text-gray-700 dark:text-gray-300">
+                {on
+                  ? 'ALL upstream LLM dispatch is refused with 503 + compliance audit row. Per-key blocklists are bypassed (this is the master switch). Background workers also halt.'
+                  : 'Provider routing is operating normally. Per-key + system blocklists apply as configured.'}
+              </span>
+            </div>
+            {status.last_flip && (
+              <p className="text-xs text-gray-500 dark:text-gray-400 mt-1.5">
+                Last flip: {formatTimeForUser(status.last_flip.changed_at, user)}{' '}
+                by <strong>{status.last_flip.changed_by ?? 'unknown'}</strong>
+                {status.last_flip.reason && (
+                  <> — <span className="italic">{status.last_flip.reason}</span></>
+                )}
+              </p>
+            )}
+            <div className="mt-3 flex flex-col sm:flex-row gap-2">
+              <input
+                type="text"
+                placeholder={on
+                  ? 'Reason for disengaging (audit trail)…'
+                  : 'Reason for engaging (incident/cutover/investigation)…'}
+                value={reason}
+                onChange={e => setReason(e.target.value)}
+                className="flex-1 px-2.5 py-1.5 text-sm rounded border bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600"
+                maxLength={2000}
+              />
+              {on ? (
+                <Button
+                  size="sm"
+                  onClick={() => toggleMut.mutate(false)}
+                  loading={toggleMut.isPending}
+                >
+                  Disengage Stop
+                </Button>
+              ) : (
+                <Button
+                  size="sm" variant="danger"
+                  onClick={() => setConfirmOn(true)}
+                  loading={toggleMut.isPending}
+                >
+                  Engage Emergency Stop
+                </Button>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <ConfirmDialog
+          open={confirmOn}
+          title="Engage LLM emergency stop?"
+          message={
+            'This halts ALL upstream LLM dispatch fleet-wide via cluster sync (~60s). Every /v1/messages, ' +
+            '/v1/chat/completions, and background worker request returns 503 until disengaged. Use for ' +
+            'compliance incidents, vendor outage cascades, or cutover windows. This flip and every blocked ' +
+            'request are themselves recorded in compliance_events / compliance_policy_changes.'
+          }
+          confirmLabel="Engage emergency stop"
+          variant="danger"
+          loading={toggleMut.isPending}
+          onConfirm={() => toggleMut.mutate(true)}
+          onCancel={() => setConfirmOn(false)}
+        />
+      </CardContent>
+    </Card>
   )
 }
 

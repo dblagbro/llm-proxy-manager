@@ -95,6 +95,19 @@ async def acompletion_with_retry(
     max_retries: int = 3,
     **kwargs,
 ):
+    # v5.2.0 / Batch V1 — LLM emergency stop also gates background
+    # callers (runs/worker, runs/compaction, cot/branches,
+    # cot/structured_output, routing/cascade). The API entry points
+    # raise an HTTPException in `_compliance_handler`; here we raise a
+    # plain `LLMEmergencyStopError` so background tasks can decide
+    # whether to mark a run as failed vs. requeue. The TTL cache
+    # shared with the API path means most calls don't touch the DB.
+    from app.monitoring.llm_emergency_stop import (
+        is_llm_stopped_session_less, LLMEmergencyStopError,
+    )
+    if await is_llm_stopped_session_less():
+        raise LLMEmergencyStopError()
+
     deprecation_retry_done = False
     current_model = model
     for attempt in range(max_retries + 1):

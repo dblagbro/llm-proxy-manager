@@ -345,6 +345,30 @@ export const loggingApi = {
     }>('/api/admin/logging/retention', body),
 }
 
+// v5.2.0 / Batch V1 — LLM-call emergency stop (kill switch).
+// Distinct from the v5.1.0 logging toggle: this one halts ROUTING,
+// not log writes. UI lives in CompliancePage.tsx next to the
+// LoggingControlsPanel.
+export interface LLMEmergencyStatus {
+  enabled: boolean
+  setting_key: string
+  last_flip: {
+    changed_at: string | null
+    changed_by: string | null
+    reason: string | null
+    policy_change_id: string | null
+  } | null
+}
+
+export const llmEmergencyApi = {
+  status: () => api.get<LLMEmergencyStatus>('/api/admin/llm-emergency-stop/status'),
+  toggle: (enabled: boolean, reason?: string) =>
+    api.post<{ ok: boolean; enabled: boolean; prior_state: boolean;
+               noop: boolean; audit_id: string }>(
+      '/api/admin/llm-emergency-stop/toggle', { enabled, reason },
+    ),
+}
+
 // v5.1.2 / Batch C3
 export interface RetentionEntry {
   override: number | null

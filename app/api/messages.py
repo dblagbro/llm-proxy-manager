@@ -92,6 +92,16 @@ async def messages(
     from app.api._compliance_handler import raise_if_banned_client_ua
     await raise_if_banned_client_ua(request, db, key_record)
 
+    # v5.2.0 / Batch V1 — LLM emergency stop. Fires BEFORE provider
+    # selection so a halted fleet doesn't waste a select_provider call.
+    # Separate from the v5.1.0 ``activity_logging_enabled`` toggle:
+    # that one suppresses log WRITES; this one refuses LLM CALLS.
+    # Body isn't parsed yet, so ``requested_model`` is captured later
+    # via the audit row's ``X-Compliance-Requested-Model`` header path
+    # — the stop is unconditional regardless of model.
+    from app.api._compliance_handler import raise_if_llm_emergency_stopped
+    await raise_if_llm_emergency_stopped(db, key_record, endpoint="messages")
+
     # v4.4.15 (F-OBS-003) — record whether the caller-memory gating
     # header is present, so the operator can see when a consumer
     # starts sending it (caller_memory write-back has had 0 prod
