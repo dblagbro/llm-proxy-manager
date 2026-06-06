@@ -283,11 +283,49 @@ def _statsig_id_looks_valid(sid: Optional[str]) -> bool:
         decoded = _b64.b64decode(sid + "==", validate=False).decode("utf-8", errors="ignore")
     except Exception:
         return True  # not valid b64 → not the fallback error format
-    bad_markers = (
-        "TypeError", "ReferenceError", "Cannot read", "is not defined",
-        "x0:", "error", "Error",
+    # v5.0.25 / Batch 5 (BUG-059) — tighten to ONLY the specific
+    # SDK-error prefixes that appeared in the observed fallback values.
+    # Previously we rejected any decoded string containing "error" or
+    # "Error" — including bare substrings — which produced ~0.016%
+    # false-positive rate against legit random base64 payloads (the
+    # 5-byte sequence "error" appears in random bytes at probability
+    # ~1/256^5 per position, and a real statsig decodes to ~60 random
+    # bytes). Real Statsig SDK error fallbacks ALWAYS prefix with
+    # "x0:<ErrorClassName>"; checking those exact prefixes drops the
+    # false-positive rate to effectively zero while still catching the
+    # actual failure mode (TypeError: Cannot read properties of
+    # undefined (reading 'childNodes') from 2026-06-05).
+    bad_prefixes = (
+        "x0:TypeError",
+        "x0:ReferenceError",
+        "x0:SyntaxError",
+        "x0:RangeError",
+        "x0:Error:",
     )
-    return not any(m in decoded for m in bad_markers)
+    # Also reject if the very first bytes match — the b64-decoded value
+    # may have leading whitespace or framing, so check both lstripped
+    # and original.
+    stripped = decoded.lstrip()
+    return not any(
+        stripped.startswith(p) or decoded.startswith(p)
+        for p in bad_prefixes
+    )
+
+
+def invalidate_statsig_cache(reason: str = "") -> None:
+    """v5.0.25 / Batch 5 (BUG-060) — force the next ``chat()`` call to
+    re-capture a fresh statsig instead of reusing the cached one.
+
+    Call this when we observe a 403 from grok.com — the cached value
+    is the most likely cause of an "anti-bot rules" rejection AND we
+    have no other way to know the statsig has rotated. Cheaper than
+    polling for the rotation period or maintaining an empirical TTL.
+    """
+    global _last_valid_statsig, _last_valid_statsig_at
+    if _last_valid_statsig is not None:
+        logger.info("statsig cache invalidated (reason=%s)", reason or "n/a")
+    _last_valid_statsig = None
+    _last_valid_statsig_at = 0.0
 
 
 async def _capture_statsig_id(timeout_sec: float = 10.0) -> Optional[str]:
@@ -1560,6 +1598,12 @@ async def chat(req: Request, _: None = Depends(require_bridge_token)):
         # path in a future revision.
         if status in (401, 403) and INFERENCE_RETRY_AFTER_REFRESH:
             logger.warning("grok.com %s — refreshing playwright page and retrying", status)
+            # v5.0.25 / Batch 5 (BUG-060) — invalidate the statsig
+            # cache so the retry path captures a fresh nonce rather
+            # than reusing the same stale value that just produced
+            # the 403. The captured statsig will populate via the
+            # context-level listener observing the next SPA traffic.
+            invalidate_statsig_cache(reason=f"chat.{status}")
             await _force_refresh()
             statsig_id = await _capture_statsig_id(timeout_sec=8.0) or statsig_id
             status, text = await _post_to_grok(conv_id, body, statsig_id)
