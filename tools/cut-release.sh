@@ -31,7 +31,7 @@
 #         Was the v4.3.3 release-deploy footgun: without this step the
 #         first `docker compose up -d --force-recreate` on tmrwww01
 #         silently kept the prior container's image.
-#  10. Backup tarball to /home/dblagbro/backups/
+#  10. Backup tarball to /mnt/s/tmrwww01-home-backups/backups/
 #  11. Print verification + per-node redeploy commands
 #
 # Fleet compose-image-reference inconsistency (read once and remember):
@@ -219,9 +219,11 @@ run sudo docker push "${DOCKER_REPO}:latest"
 #     release-deploy footgun on 2026-05-19.)
 run sudo docker tag "${DOCKER_REPO}:${VERSION}" "llm-proxy2:latest"
 
-# 6. Backup tarball
+# 6. Backup tarball — write directly to NFS to avoid local-disk fill-up.
 TS=$(date -u +%Y%m%dT%H%M%SZ)
-TARBALL="/home/dblagbro/backups/llm-proxy-v2-${TAG}-${TS}.tar.gz"
+BACKUP_DIR="/mnt/s/tmrwww01-home-backups/backups"
+mkdir -p "$BACKUP_DIR"
+TARBALL="$BACKUP_DIR/llm-proxy-v2-${TAG}-${TS}.tar.gz"
 run tar \
   --exclude='llm-proxy-v2/.git' \
   --exclude='llm-proxy-v2/__pycache__' \

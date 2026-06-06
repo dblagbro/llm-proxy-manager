@@ -355,14 +355,29 @@ async def test_openai_dispatch_records_failure_on_error(monkeypatch):
     route.provider.name = "P"
 
     import time
-    with pytest.raises(HTTPException):
-        await dispatch_grok_web_openai(
-            route=route,
-            body={"model": "grok-3", "messages": [{"role": "user", "content": "x"}]},
-            stream=False,
-            resp_headers={},
-            db="fake", key_record_id="k", t0=time.monotonic(),
-        )
+    # v5.0.23 / Batch 2.5 — contract changed: failover-eligible
+    # GrokWebError no longer raises HTTPException; the dispatcher
+    # returns None so the caller (messages.py / completions.py) can
+    # re-select a provider and fall through to litellm. Recording
+    # behavior is unchanged.
+    # Also stub out record_failure (CB trip) so it doesn't try to
+    # touch the real provider registry.
+    async def fake_trip(*a, **kw):
+        pass
+    monkeypatch.setattr(
+        "app.routing.circuit_breaker.record_failure", fake_trip
+    )
+    result = await dispatch_grok_web_openai(
+        route=route,
+        body={"model": "grok-3", "messages": [{"role": "user", "content": "x"}]},
+        stream=False,
+        resp_headers={},
+        db="fake", key_record_id="k", t0=time.monotonic(),
+    )
+    assert result is None, (
+        "v5.0.23: failover-eligible GrokWebError must return None "
+        "(not raise) so callers can re-select a provider."
+    )
     assert captured.get("success") is False
     assert "GrokWebError" in (captured.get("error_str") or "")
 

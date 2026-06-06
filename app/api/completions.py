@@ -415,13 +415,54 @@ async def chat_completions(
     # v3.2.0: grok-web on /v1/chat/completions. Operator's grok.com web
     # subscription. v3.2.9 extracted dispatch into a shared module; see
     # _grok_web_dispatch.dispatch_grok_web_openai.
+    # v5.0.23 / Batch 2.5 — failover wiring (see messages.py for the
+    # symmetric comment + decision rationale).
     if route.provider.provider_type == "grok-web":
         from app.api._grok_web_dispatch import dispatch_grok_web_openai
-        return await dispatch_grok_web_openai(
+        gw_resp = await dispatch_grok_web_openai(
             route=route, body=body, stream=stream, resp_headers=resp_headers,
             db=db, key_record_id=key_record.id, t0=time.monotonic(),
             llm_hint=llm_hint,
         )
+        if gw_resp is not None:
+            return gw_resp
+        # Failover — re-resolve excluding the failed grok-web provider.
+        from app.routing.router import select_provider
+        failed_id = route.provider.id
+        new_route = await select_provider(
+            db=db, hint=hint,
+            has_tools=False, has_images=False,
+            key_type=key_record.key_type or "standard",
+            model_override=body.get("model"),
+            exclude_provider_id=failed_id,
+        )
+        if new_route is None or new_route.provider.provider_type == "grok-web":
+            raise HTTPException(
+                502,
+                "grok-web upstream failed and no alternative provider "
+                "is available for the requested model.",
+            )
+        logger.info(
+            "grok_web.failover_to provider=%s (was=%s, model=%s)",
+            new_route.provider.name, failed_id, body.get("model"),
+        )
+        # v5.0.23 — preserve the caller's model intent through the
+        # failover. select_provider sets cross_family_fallback +
+        # rewrites litellm_model to OpenRouter's default
+        # (openai/gpt-4o) when the OpenRouter provider's capability
+        # scan doesn't list grok-3. For grok-web → openrouter we
+        # want the original model (build_litellm_model maps
+        # `grok-3` to `openrouter/x-ai/grok-3`). Clear the flag AND
+        # rebuild litellm_model from the original model.
+        new_route.cross_family_fallback = False
+        new_route.served_model_native = None
+        from app.routing.litellm_binding import build_litellm_model as _bld
+        new_route.litellm_model = _bld(new_route.provider, body.get("model"))
+        route = new_route
+        resp_headers["X-Grok-Web-Failover"] = "true"
+        resp_headers["X-Grok-Web-Failover-Target"] = new_route.provider.provider_type
+        # Fall through to the litellm dispatch path below with the
+        # new route.
 
     # Semantic cache — check before anything LLM-ish runs.
     # v3.5.x R1 (2026-05-09): orchestration extracted to

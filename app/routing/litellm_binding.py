@@ -255,6 +255,20 @@ def build_litellm_model(provider: Provider, model_override: Optional[str] = None
     prefix = PROVIDER_TYPE_TO_LITELLM.get(provider.provider_type, "openai")
     default = PROVIDER_DEFAULT_MODELS.get(provider.provider_type, "gpt-4o")
     model = model_override or provider.default_model or default
+    # v5.0.23 / remediation Batch 2.5 — when failover lands on an
+    # OpenRouter provider for a model whose family canonically lives
+    # under a vendor namespace, translate the bare name. Without this,
+    # `grok-3` becomes `openrouter/grok-3` which OpenRouter doesn't
+    # recognize (it expects `openrouter/x-ai/grok-3`); litellm
+    # silently falls back to its provider default (gpt-4o) — the
+    # failover plumbing works but the SERVED model is wrong.
+    if provider.provider_type == "openrouter" and "/" not in model:
+        bare_to_vendor = {
+            "grok-3":   "x-ai/grok-3",
+            "grok-4":   "x-ai/grok-4",
+            "grok-3-beta": "x-ai/grok-3-beta",
+        }
+        model = bare_to_vendor.get(model, model)
     return f"{prefix}/{model}"
 
 
