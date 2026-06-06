@@ -420,6 +420,16 @@ async def init_db():
             # are read by the router pre-filter + allowed_paths middleware.
             "ALTER TABLE api_keys ADD COLUMN blocked_companies TEXT",
             "ALTER TABLE api_keys ADD COLUMN allowed_paths TEXT",
+            # v5.2.0 / Batch V2 — fine-grained vendor-neutrality policy.
+            # allowed_companies = positive allowlist (NULL = no allowlist);
+            # blocked_models + allowed_models = per-model exact-or-glob
+            # gates that apply on top of company rules. See
+            # ``app/compliance/policy.evaluate_policy`` for the merge
+            # semantics. Deny wins everywhere; per-key unions with the
+            # system-wide settings of the same names.
+            "ALTER TABLE api_keys ADD COLUMN allowed_companies TEXT",
+            "ALTER TABLE api_keys ADD COLUMN blocked_models TEXT",
+            "ALTER TABLE api_keys ADD COLUMN allowed_models TEXT",
             # debug_echo_enabled gates the /api/debug/echo-client sandbox
             # endpoint; production keys leave it 0.
             "ALTER TABLE api_keys ADD COLUMN debug_echo_enabled BOOLEAN DEFAULT 0",

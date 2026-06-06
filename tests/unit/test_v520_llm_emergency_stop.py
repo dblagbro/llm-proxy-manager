@@ -29,6 +29,21 @@ async def _fresh_db():
     return async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 
+@pytest.fixture(autouse=True)
+def _clear_emergency_stop_cache():
+    """The llm_emergency_stop module keeps a process-wide TTL cache so
+    the hot path doesn't touch the DB on every call. Tests engage and
+    disengage the stop using their own in-memory DBs; the cache value
+    is module-global and would carry over into the next test in the
+    same process, causing false-positive 503s in unrelated test files
+    (notably test_v5_messages_ua_block which exercises the same
+    request handler path). Wipe before AND after every test."""
+    from app.monitoring import llm_emergency_stop as les
+    les.invalidate_cache()
+    yield
+    les.invalidate_cache()
+
+
 # ── Source-level pins ───────────────────────────────────────────────
 
 
