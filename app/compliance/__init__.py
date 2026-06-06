@@ -32,6 +32,11 @@ from app.compliance.policy import (
     invalidate_blocklist_cache,
     filter_providers,
     is_company_banned,
+    # v5.2.0 / Batch V2 — fine-grained policy
+    Policy,
+    evaluate_policy,
+    filter_providers_v2,
+    get_effective_policy,
 )
 from app.compliance.ua_detect import detect_client_company
 from app.compliance.disclosure import (
@@ -69,6 +74,11 @@ __all__ = [
     "invalidate_blocklist_cache",
     "filter_providers",
     "is_company_banned",
+    # v5.2.0 / Batch V2 — fine-grained policy
+    "Policy",
+    "evaluate_policy",
+    "filter_providers_v2",
+    "get_effective_policy",
     # UA detection
     "detect_client_company",
     # Disclosure

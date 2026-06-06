@@ -84,6 +84,22 @@ class ApiKey(Base):
     # detector 451s requests whose client User-Agent is a product of a banned
     # company.
     blocked_companies = Column(JSON, nullable=True)
+    # v5.2.0 / Batch V2 — vendor-neutrality fine-grained policy.
+    # allowed_companies: positive-allowlist counterpart to blocked_companies.
+    # NULL = no allowlist (legacy behavior, all companies permitted unless
+    # they appear in blocked_companies). When set, ONLY companies in this
+    # list pass the filter; everything else is dropped + audited.
+    # blocked/allowed work in tandem: a company in both is blocked
+    # (deny wins). The system-wide setting unions per the same rules.
+    allowed_companies = Column(JSON, nullable=True)
+    # blocked_models / allowed_models: per-model fine-grained gates.
+    # Each is list[str] where entries can be exact model names OR fnmatch
+    # glob patterns ("claude-*", "gpt-4-*-turbo"). Matched against the
+    # provider's default_model. NULL on either = no filter on that side.
+    # Per-model rules apply ON TOP of company rules — a company allowed
+    # broadly can still have specific models blocked.
+    blocked_models = Column(JSON, nullable=True)
+    allowed_models = Column(JSON, nullable=True)
     # allowed_paths: list[str] of normalized request paths the key is allowed
     # to call. NULL = unrestricted (legacy behavior). When set, the
     # allowed_paths middleware 403s anything that doesn't exact-match. Used to

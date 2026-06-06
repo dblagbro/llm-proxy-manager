@@ -363,12 +363,28 @@ async def select_provider(
     # layer (translated to 503 there). Resolves blocklist lazily from
     # api_key_id when caller didn't pass it explicitly; skipped entirely
     # when the result is empty so unflipped deployments pay zero overhead.
-    if blocked_companies is None and api_key_id:
-        from app.compliance import get_effective_blocklist
-        blocked_companies = await get_effective_blocklist(db, api_key_id)
-    if blocked_companies:
-        from app.compliance import filter_providers
-        providers = filter_providers(providers, blocked_companies, model_override)
+    #
+    # v5.2.0 / Batch V2 — promoted to the fine-grained ``Policy`` bundle.
+    # ``get_effective_policy`` collects per-key + system blocked_companies,
+    # allowed_companies, blocked_models, allowed_models in one DB round
+    # trip. ``filter_providers_v2`` handles fnmatch glob model matching
+    # (e.g. "claude-*", "gpt-4-*-turbo"). The v5.0.0 ``filter_providers``
+    # is still exported for sites that already constructed a
+    # ``Set[str]`` blocklist directly; this routing site uses the v2
+    # path because it has the api_key_id and benefits from the full
+    # policy resolution.
+    if blocked_companies is not None:
+        # Caller pre-resolved a bare blocklist (legacy callers like
+        # tests / direct cluster-tools). Honor it via the v1 filter
+        # to avoid forcing them through Policy construction.
+        if blocked_companies:
+            from app.compliance import filter_providers
+            providers = filter_providers(providers, blocked_companies, model_override)
+    elif api_key_id:
+        from app.compliance import get_effective_policy, filter_providers_v2
+        policy = await get_effective_policy(db, api_key_id)
+        if not policy.is_empty():
+            providers = filter_providers_v2(providers, policy, model_override)
 
     # Hedge path: exclude the primary before CB/availability filtering
     if exclude_provider_id:

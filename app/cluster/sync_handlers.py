@@ -703,6 +703,23 @@ async def _apply_api_keys(
                     invalidate_blocklist_cache(existing.id)
                 except Exception:
                     pass
+            # v5.2.0 / Batch V2 — fine-grained policy fields. Same
+            # membership-test pattern as blocked_companies so pre-v5.2.0
+            # peers (which don't push these keys) don't clobber local
+            # state on the receiver. Same cache invalidation applies.
+            if "allowed_companies" in k_data:
+                existing.allowed_companies = k_data["allowed_companies"]
+                try:
+                    from app.compliance.policy import (
+                        invalidate_blocklist_cache,
+                    )
+                    invalidate_blocklist_cache(existing.id)
+                except Exception:
+                    pass
+            if "blocked_models" in k_data:
+                existing.blocked_models = k_data["blocked_models"]
+            if "allowed_models" in k_data:
+                existing.allowed_models = k_data["allowed_models"]
             if "allowed_paths" in k_data:
                 existing.allowed_paths = k_data["allowed_paths"]
             if "debug_echo_enabled" in k_data:
@@ -734,6 +751,9 @@ async def _apply_api_keys(
                 lmrh_polling_rpm=k_data.get("lmrh_polling_rpm"),
                 lmrh_quotes_rpm=k_data.get("lmrh_quotes_rpm"),
                 blocked_companies=k_data.get("blocked_companies"),
+                allowed_companies=k_data.get("allowed_companies"),
+                blocked_models=k_data.get("blocked_models"),
+                allowed_models=k_data.get("allowed_models"),
                 allowed_paths=k_data.get("allowed_paths"),
                 debug_echo_enabled=bool(
                     k_data.get("debug_echo_enabled", False)

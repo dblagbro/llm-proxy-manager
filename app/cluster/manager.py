@@ -349,6 +349,13 @@ async def _build_sync_payload(db) -> dict:
          # one node never reaches peers.
          "blocked_companies": getattr(k, "blocked_companies", None),
          "allowed_paths": getattr(k, "allowed_paths", None),
+         # v5.2.0 / Batch V2 — fine-grained vendor-neutrality policy
+         # field coverage. Mirrors blocked_companies' discipline. The
+         # apply handler uses membership-test pattern so pre-v5.2.0
+         # peers omitting these keys don't clobber receiver state.
+         "allowed_companies": getattr(k, "allowed_companies", None),
+         "blocked_models": getattr(k, "blocked_models", None),
+         "allowed_models": getattr(k, "allowed_models", None),
          "debug_echo_enabled": bool(getattr(k, "debug_echo_enabled", False)),
          # v4.4.20 — LWW gate, mirrors providers. Pre-v4.4.20 peers
          # omit this; apply handler treats absence as "legacy peer"

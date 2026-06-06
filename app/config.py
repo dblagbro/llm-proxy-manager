@@ -316,6 +316,23 @@ class Settings(BaseSettings):
     compliance_backfill_applied: bool = Field(
         False, alias="COMPLIANCE_BACKFILL_APPLIED"
     )
+    # v5.2.0 / Batch V2 — vendor-neutrality fine-grained policy.
+    # JSON-encoded list[str]. Mirror the per-key fields of the same name.
+    # ``allowed_companies`` non-empty switches to allowlist mode (only
+    # listed companies pass; everything else dropped). ``blocked_models``
+    # and ``allowed_models`` entries can be exact names or fnmatch globs
+    # ("claude-*", "gpt-4-*-turbo"). Cluster-synced via the existing
+    # settings sync loop. Deny wins everywhere: a model in both
+    # allowed_models and blocked_models is blocked.
+    compliance_system_allowed_companies: str = Field(
+        "", alias="COMPLIANCE_SYSTEM_ALLOWED_COMPANIES"
+    )
+    compliance_system_blocked_models: str = Field(
+        "", alias="COMPLIANCE_SYSTEM_BLOCKED_MODELS"
+    )
+    compliance_system_allowed_models: str = Field(
+        "", alias="COMPLIANCE_SYSTEM_ALLOWED_MODELS"
+    )
 
     # v4.4.13: retention for the AI supervisor review tables. These
     # accumulate ~250 rows/day on a 30-min cadence × 10 providers and

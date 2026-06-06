@@ -21,8 +21,10 @@ Plus two exception classes the dispatch layer catches:
 """
 from __future__ import annotations
 
+import fnmatch
 import time
-from typing import Any, Dict, List, Optional, Set
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from sqlalchemy import select
 
@@ -32,6 +34,108 @@ from app.compliance.company_map import (
     model_family_companies,
 )
 from app.models.db import ApiKey
+
+
+# v5.2.0 / Batch V2 — fine-grained vendor-neutrality policy bundle.
+
+
+@dataclass(frozen=True)
+class Policy:
+    """Resolved effective policy for one (api_key, request) pair.
+
+    All four dimensions union per-key + system. Deny wins everywhere:
+    a company/model that appears in both the allow and the block side
+    is BLOCKED.
+
+    Empty allowlist (the default for legacy keys) = blocklist-only
+    behavior, identical to pre-v5.2.0. Non-empty allowlist switches to
+    positive-allowlist mode for that dimension.
+
+    Model patterns are fnmatch-style (`claude-*`, `gpt-4-*-turbo`); an
+    entry without a wildcard is an exact match. The match target is
+    the provider's ``default_model`` (without the litellm ``provider/``
+    prefix) AND the request's ``requested_model`` when present — both
+    must clear the model gates for a provider to pass.
+    """
+    blocked_companies: Set[str] = field(default_factory=set)
+    allowed_companies: Set[str] = field(default_factory=set)
+    blocked_models: Tuple[str, ...] = field(default_factory=tuple)
+    allowed_models: Tuple[str, ...] = field(default_factory=tuple)
+
+    def is_empty(self) -> bool:
+        return not (
+            self.blocked_companies or self.allowed_companies
+            or self.blocked_models or self.allowed_models
+        )
+
+
+def _model_matches_any(model: Optional[str], patterns: Tuple[str, ...]) -> bool:
+    """fnmatch-style match (exact strings are a degenerate glob).
+    Empty model never matches. Empty pattern set never matches.
+    Comparison is case-insensitive — providers occasionally normalize
+    case differently for the same model id.
+    """
+    if not model or not patterns:
+        return False
+    m = model.lower()
+    for pat in patterns:
+        if fnmatch.fnmatchcase(m, pat.lower()):
+            return True
+    return False
+
+
+def evaluate_policy(
+    policy: Policy,
+    provider: Any,
+    requested_model: Optional[str] = None,
+) -> Tuple[bool, str]:
+    """Return (allowed, reason_code). reason_code is empty on allow.
+
+    Order (deny wins):
+      1. Company blocked → "blocked-company"
+      2. Company-family blocked (Bedrock-Anthropic edge case) → "blocked-model-family"
+      3. Model blocked (default_model OR requested_model) → "blocked-model"
+      4. Allowlist present + company not in it → "company-not-in-allowlist"
+      5. Allowlist present + model patterns not in allowed_models → "model-not-in-allowlist"
+      6. Otherwise → allow.
+
+    The reason_code feeds the audit row's ``reason_code`` field.
+    """
+    if policy.is_empty():
+        return True, ""
+
+    owner = getattr(provider, "owner_company", None)
+    provider_default_model = getattr(provider, "default_model", None)
+
+    if owner and owner in policy.blocked_companies:
+        return False, "blocked-company"
+
+    families = model_family_companies(provider_default_model)
+    if families & policy.blocked_companies:
+        return False, "blocked-model-family"
+
+    if (
+        _model_matches_any(provider_default_model, policy.blocked_models)
+        or _model_matches_any(requested_model, policy.blocked_models)
+    ):
+        return False, "blocked-model"
+
+    if policy.allowed_companies:
+        company_ok = (owner and owner in policy.allowed_companies) or bool(
+            families & policy.allowed_companies
+        )
+        if not company_ok:
+            return False, "company-not-in-allowlist"
+
+    if policy.allowed_models:
+        model_ok = (
+            _model_matches_any(provider_default_model, policy.allowed_models)
+            or _model_matches_any(requested_model, policy.allowed_models)
+        )
+        if not model_ok:
+            return False, "model-not-in-allowlist"
+
+    return True, ""
 
 
 class ComplianceNoSubstituteError(Exception):
@@ -199,6 +303,120 @@ async def get_effective_blocklist(db, api_key_id: str) -> Set[str]:
     return effective
 
 
+def _get_system_setting_list(attr: str) -> Tuple[str, ...]:
+    """v5.2.0 — pull a JSON-encoded list[str] setting and return a
+    tuple. Empty/parse-error → (). Used by allowed_companies /
+    blocked_models / allowed_models system-wide settings (parallel
+    to ``_get_system_blocklist`` for ``blocked_companies``).
+    """
+    import json
+    try:
+        from app.config import settings
+        raw = getattr(settings, attr, "") or ""
+        if not raw or not raw.strip():
+            return tuple()
+        parsed = json.loads(raw)
+        if isinstance(parsed, list):
+            return tuple(str(x) for x in parsed if x)
+        return tuple()
+    except Exception:
+        return tuple()
+
+
+def _coerce_list(raw: Any) -> List[str]:
+    """ApiKey JSON columns deserialize as list (SQLAlchemy JSON) or
+    string (some sync paths roundtrip through TEXT). Normalize to
+    list[str].
+    """
+    if raw is None:
+        return []
+    if isinstance(raw, list):
+        return [str(x) for x in raw if x]
+    if isinstance(raw, str):
+        import json
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, list):
+                return [str(x) for x in parsed if x]
+        except Exception:
+            return []
+    return []
+
+
+async def get_effective_policy(db, api_key_id: Optional[str]) -> Policy:
+    """v5.2.0 — resolve the full effective policy for one (api_key, request)
+    pair. Per-key fields union with the system-wide settings of the
+    same name. Cache shares the 30s TTL of ``_BLOCKLIST_CACHE`` (a
+    Policy is a small immutable bundle); invalidated on the same
+    triggers (PATCH /api/keys, PATCH /api/settings, cluster sync apply).
+    """
+    sys_block_companies = _get_system_blocklist()
+    sys_allow_companies = set(_get_system_setting_list("compliance_system_allowed_companies"))
+    sys_block_models = _get_system_setting_list("compliance_system_blocked_models")
+    sys_allow_models = _get_system_setting_list("compliance_system_allowed_models")
+
+    per_key_block_companies: Set[str] = set()
+    per_key_allow_companies: Set[str] = set()
+    per_key_block_models: Tuple[str, ...] = tuple()
+    per_key_allow_models: Tuple[str, ...] = tuple()
+
+    if api_key_id:
+        try:
+            result = await db.execute(
+                select(
+                    ApiKey.blocked_companies, ApiKey.allowed_companies,
+                    ApiKey.blocked_models, ApiKey.allowed_models,
+                ).where(ApiKey.id == api_key_id)
+            )
+            row = result.first()
+            if row:
+                per_key_block_companies = set(_coerce_list(row[0]))
+                per_key_allow_companies = set(_coerce_list(row[1]))
+                per_key_block_models = tuple(_coerce_list(row[2]))
+                per_key_allow_models = tuple(_coerce_list(row[3]))
+        except Exception:
+            pass  # fail-open on DB error; the bare blocklist path still gates
+
+    return Policy(
+        blocked_companies=per_key_block_companies | sys_block_companies,
+        allowed_companies=per_key_allow_companies | sys_allow_companies,
+        blocked_models=per_key_block_models + sys_block_models,
+        allowed_models=per_key_allow_models + sys_allow_models,
+    )
+
+
+def filter_providers_v2(
+    providers: List[Any],
+    policy: Policy,
+    requested_model: Optional[str] = None,
+) -> List[Any]:
+    """v5.2.0 — fine-grained filter using the full Policy bundle.
+
+    Mirror of ``filter_providers`` but evaluates allowlist, model
+    glob, and per-model patterns in addition to company blocklist.
+    Raises ``ComplianceNoSubstituteError`` if every candidate is
+    dropped (same 503 path as the v5.0.0 filter).
+    """
+    if policy.is_empty():
+        return list(providers)
+    out = []
+    for p in providers:
+        allowed, _reason = evaluate_policy(policy, p, requested_model)
+        if allowed:
+            out.append(p)
+    if not out and providers:
+        raise ComplianceNoSubstituteError(
+            f"All {len(providers)} candidates blocked by policy "
+            f"(companies blocked={sorted(policy.blocked_companies)} "
+            f"allowed={sorted(policy.allowed_companies) or 'ANY'}; "
+            f"models blocked={list(policy.blocked_models)} "
+            f"allowed={list(policy.allowed_models) or 'ANY'})",
+            blocked_companies=policy.blocked_companies,
+            n_dropped=len(providers),
+        )
+    return out
+
+
 def filter_providers(
     providers: List[Any],
     blocklist: Set[str],
@@ -269,4 +487,9 @@ __all__ = [
     "invalidate_blocklist_cache",
     "filter_providers",
     "is_company_banned",
+    # v5.2.0 / Batch V2 — fine-grained policy
+    "Policy",
+    "evaluate_policy",
+    "filter_providers_v2",
+    "get_effective_policy",
 ]
