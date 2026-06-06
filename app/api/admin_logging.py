@@ -95,3 +95,87 @@ async def logging_toggle(
         reason=body.reason,
     )
     return result
+
+
+# ── v5.1.2 / Batch C3 — retention editable in WebUI ────────────────
+
+
+class RetentionEdit(BaseModel):
+    # Per-severity retention overrides. Pass null to CLEAR an override
+    # (falls back to the env default).
+    info_days:    Optional[int] = Field(None, ge=1, le=36500)
+    warning_days: Optional[int] = Field(None, ge=1, le=36500)
+    error_days:   Optional[int] = Field(None, ge=1, le=36500)
+    # Explicit flags so the operator can request "clear this override"
+    # without ambiguity. When True, the corresponding *_days is
+    # treated as None regardless of the parsed value.
+    clear_info:    bool = False
+    clear_warning: bool = False
+    clear_error:   bool = False
+    reason: Optional[str] = Field(
+        None, max_length=2000,
+        description="Free-text justification captured in the audit row.",
+    )
+
+
+@router.get("/retention")
+async def retention_status(
+    db: AsyncSession = Depends(get_db),
+    _admin: AdminUser = Depends(require_admin),
+):
+    from app.monitoring.retention_settings import (
+        refresh_from_db, current_state,
+        KEY_INFO, KEY_WARNING, KEY_ERROR,
+    )
+    # Always refresh so the UI shows the authoritative state.
+    await refresh_from_db(db)
+    state = current_state()
+    # Reshape for friendlier client consumption.
+    return {
+        "info":    state[KEY_INFO],
+        "warning": state[KEY_WARNING],
+        "error":   state[KEY_ERROR],
+    }
+
+
+@router.post("/retention")
+async def retention_edit(
+    body: RetentionEdit,
+    db: AsyncSession = Depends(get_db),
+    admin: AdminUser = Depends(require_admin),
+):
+    """Set one or more retention overrides. Each non-None field that
+    differs from the current override is persisted + audit-rowed.
+    ``clear_*`` flags clear that key's override (falls back to env).
+    """
+    from app.monitoring.retention_settings import (
+        set_retention, current_state, refresh_from_db,
+        KEY_INFO, KEY_WARNING, KEY_ERROR,
+    )
+    await refresh_from_db(db)
+    audit_ids: list[str] = []
+
+    async def _apply(key: str, new_days: Optional[int]):
+        result = await set_retention(
+            db, key=key, days=new_days,
+            actor=admin.username, reason=body.reason,
+        )
+        audit_ids.append(result["audit_id"])
+
+    if body.clear_info or body.info_days is not None:
+        await _apply(KEY_INFO, None if body.clear_info else body.info_days)
+    if body.clear_warning or body.warning_days is not None:
+        await _apply(KEY_WARNING, None if body.clear_warning else body.warning_days)
+    if body.clear_error or body.error_days is not None:
+        await _apply(KEY_ERROR, None if body.clear_error else body.error_days)
+
+    state = current_state()
+    return {
+        "ok": True,
+        "audit_ids": audit_ids,
+        "current": {
+            "info":    state[KEY_INFO],
+            "warning": state[KEY_WARNING],
+            "error":   state[KEY_ERROR],
+        },
+    }
