@@ -71,8 +71,18 @@ export function APIKeysPage() {
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
   const [revealedKeys, setRevealedKeys] = useState<Record<string, string>>({})
   const [modelsModalKey, setModelsModalKey] = useState<ApiKey | null>(null)
+  // v5.1.1 / Batch B1 UI — Trash view toggle. When ON, swap the query
+  // to listAll() and show only soft-deleted rows + Restore actions.
+  const [trashMode, setTrashMode] = useState(false)
+  // v5.1.1 / Batch B2 UI — Copy-from picker. When set, the create
+  // request carries copy_from_id so caps + compliance pre-fill from
+  // the source key.
+  const [copyFromId, setCopyFromId] = useState<string>('')
 
-  const { data: keys, isLoading } = useQuery({ queryKey: ['apikeys'], queryFn: keysApi.list })
+  const { data: keys, isLoading } = useQuery({
+    queryKey: ['apikeys', trashMode ? 'all' : 'active'],
+    queryFn: () => trashMode ? keysApi.listAll() : keysApi.list(),
+  })
 
   // v3.10.8 — effective model catalog for the key whose "Copy models"
   // modal is open. Fetched only while the modal is open.
@@ -106,6 +116,9 @@ export function APIKeysPage() {
       blocked_companies: createBlockedCompanies.length > 0 ? createBlockedCompanies : null,
       allowed_paths: createAllowedPaths,
       debug_echo_enabled: createDebugEcho,
+      // v5.1.1 / Batch B2 UI — backend pre-fills unset caps + policy
+      // from the source key when this is set.
+      copy_from_id: copyFromId || undefined,
     }),
     onSuccess: (data) => {
       qc.invalidateQueries({ queryKey: ['apikeys'] })
@@ -196,6 +209,7 @@ export function APIKeysPage() {
     setCreateBlockedCompanies([])
     setCreateAllowedPaths(null)
     setCreateDebugEcho(false)
+    setCopyFromId('')
   }
 
   // v5.0.11 — one mutation handles both limits + compliance via a
@@ -293,6 +307,17 @@ export function APIKeysPage() {
     onError: (e: Error) => toast.error(e.message),
   })
 
+  // v5.1.1 / Batch B1 UI — Restore a tombstoned key (window =
+  // api_key_tombstone_retention_days, default 90).
+  const restoreMutation = useMutation({
+    mutationFn: (id: string) => keysApi.restore(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['apikeys'] })
+      toast.success('API key restored')
+    },
+    onError: (e: Error) => toast.error(e.message),
+  })
+
   const bulkDeleteMutation = useMutation({
     mutationFn: (ids: string[]) => keysApi.bulkDelete(ids),
     onSuccess: (data) => {
@@ -324,7 +349,14 @@ export function APIKeysPage() {
 
   const allSelected = !!keys && keys.length > 0 && selectedIds.size === keys.length
 
-  const sortedKeys = useMemo(() => sortKeys(keys ?? [], sortKey, sortDir), [keys, sortKey, sortDir])
+  // v5.1.1 / Batch B1 UI — when in trash mode, listAll returns BOTH
+  // active + tombstoned; filter down to tombstoned only.
+  const filteredKeys = useMemo(() => {
+    const ks = keys ?? []
+    if (trashMode) return ks.filter(k => k.deleted_at != null)
+    return ks
+  }, [keys, trashMode])
+  const sortedKeys = useMemo(() => sortKeys(filteredKeys, sortKey, sortDir), [filteredKeys, sortKey, sortDir])
 
   function handleSort(col: SortKey) {
     if (col === sortKey) {
@@ -413,6 +445,16 @@ export function APIKeysPage() {
             ) : (
               <><Eye className="h-4 w-4 mr-1.5" />Show keys</>
             )}
+          </Button>
+          {/* v5.1.1 / Batch B1 UI — Trash toggle */}
+          <Button
+            size="sm"
+            variant={trashMode ? 'primary' : 'ghost'}
+            onClick={() => setTrashMode(t => !t)}
+            title={trashMode ? 'Return to active keys' : 'Show trashed keys (90-day restore window)'}
+          >
+            <Trash2 className="h-4 w-4 mr-1.5" />
+            {trashMode ? 'Active keys' : 'Trash'}
           </Button>
           <Button size="sm" onClick={() => setShowCreate(true)}><Plus className="h-4 w-4 mr-1.5" />Create Key</Button>
         </div>
@@ -593,9 +635,20 @@ export function APIKeysPage() {
                   >
                     <ClipboardList className="h-4 w-4" />
                   </button>
-                  <Button size="sm" variant="danger" onClick={() => setDeleteId(k.id)}>
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </Button>
+                  {k.deleted_at ? (
+                    <Button
+                      size="sm"
+                      onClick={() => restoreMutation.mutate(k.id)}
+                      loading={restoreMutation.isPending}
+                      title="Restore this tombstoned key (clears deleted_at + re-enables)"
+                    >
+                      Restore
+                    </Button>
+                  ) : (
+                    <Button size="sm" variant="danger" onClick={() => setDeleteId(k.id)}>
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </Button>
+                  )}
                 </div>
               ))}
             </div>
@@ -624,6 +677,36 @@ export function APIKeysPage() {
             </div>
           ) : (
             <div className="space-y-4">
+              {/* v5.1.1 / Batch B2 UI — copy caps + compliance from an
+                  existing key. When set, the create request carries
+                  copy_from_id; backend pre-fills any unset cap/policy
+                  field from the source. Name + key_type are NEVER
+                  copied. */}
+              <div className="flex flex-col gap-1.5">
+                <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                  Copy caps + policy from existing key (optional)
+                </label>
+                <select
+                  value={copyFromId}
+                  onChange={e => setCopyFromId(e.target.value)}
+                  className="px-3 py-2 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 border border-gray-200 dark:border-gray-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                >
+                  <option value="">— blank slate (default) —</option>
+                  {(keys ?? [])
+                    .filter(k => k.deleted_at == null)
+                    .map(k => (
+                      <option key={k.id} value={k.id}>
+                        {k.name || k.key_prefix} ({k.key_prefix}…)
+                      </option>
+                    ))}
+                </select>
+                {copyFromId && (
+                  <p className="text-xs text-indigo-600 dark:text-indigo-400">
+                    Caps + compliance fields will be cloned from the selected key.
+                    Anything you fill in below takes precedence.
+                  </p>
+                )}
+              </div>
               <Input
                 label="Key Name (optional)"
                 tooltip="Human-friendly label that appears in the activity log + dashboards. Pick something that identifies the calling app or environment (‘production-paperless’, ‘devingpt-staging’). The key prefix is what callers actually authenticate with — the name is for your own bookkeeping."

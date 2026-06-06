@@ -515,6 +515,9 @@ def _serialize(k: ApiKey) -> dict:
         "can_reveal": bool(k.encrypted_key),
         "last_used_at": utc_iso(k.last_used_at),
         "created_at": utc_iso(k.created_at),
+        # v5.1.1 / Batch B1 UI — Trash tab needs deleted_at to render
+        # remaining-restore-window. Always emitted; null for live keys.
+        "deleted_at": utc_iso(k.deleted_at),
     }
 
 

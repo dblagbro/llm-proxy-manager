@@ -316,6 +316,18 @@ export const loggingApi = {
                noop: boolean; audit_id: string }>(
       '/api/admin/logging/toggle', { enabled, reason },
     ),
+  // v5.1.1 / Batch C2 — time-range bulk purge of activity_log rows.
+  // Fans out to peers via HMAC. Window is capped at 90 days
+  // server-side.
+  purge: (startTs: number, endTs: number, reason: string) =>
+    api.post<{
+      ok: boolean
+      local: { deleted: number; audit_id: string }
+      peers: { peer_id: string; peer_url: string; status: string;
+               deleted: number; error?: string }[]
+    }>('/api/admin/activity-log/purge', {
+      start_ts: startTs, end_ts: endTs, reason,
+    }),
 }
 
 // ── Users ─────────────────────────────────────────────────────────────────────
