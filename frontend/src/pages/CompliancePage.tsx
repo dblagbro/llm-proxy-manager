@@ -78,6 +78,8 @@ export function CompliancePage() {
     <div className="p-6 space-y-6 max-w-7xl">
       {/* v5.1.0 / Batch C1 — activity-log on/off panic button */}
       <LoggingControlsPanel />
+      {/* v5.1.1 / Batch C2 — time-range bulk purge */}
+      <ActivityLogPurgePanel />
       <div className="flex items-start justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-xl font-bold text-gray-900 dark:text-gray-100 flex items-center gap-2">
@@ -492,6 +494,135 @@ function LoggingControlsPanel() {
           loading={toggleMut.isPending}
           onConfirm={() => toggleMut.mutate(false)}
           onCancel={() => setConfirmOff(false)}
+        />
+      </CardContent>
+    </Card>
+  )
+}
+
+
+// ── v5.1.1 / Batch C2 — Time-range bulk purge ──────────────────────
+function ActivityLogPurgePanel() {
+  const qc = useQueryClient()
+  const toast = useToast()
+  const [start, setStart] = useState('')
+  const [end, setEnd] = useState('')
+  const [reason, setReason] = useState('')
+  const [confirmOpen, setConfirmOpen] = useState(false)
+
+  const purgeMut = useMutation({
+    mutationFn: () => {
+      // Convert local datetime-local inputs to UTC Unix seconds.
+      const s = new Date(start).getTime() / 1000
+      const e = new Date(end).getTime() / 1000
+      return loggingApi.purge(s, e, reason)
+    },
+    onSuccess: (r) => {
+      qc.invalidateQueries({ queryKey: ['compliance-events'] })
+      const peersFailed = r.peers.filter(p => p.status !== 'ok').length
+      if (peersFailed > 0) {
+        toast.error(
+          `Local deleted ${r.local.deleted}; ${peersFailed}/${r.peers.length} peers failed — retry recommended`,
+        )
+      } else {
+        toast.success(
+          `Purged ${r.local.deleted} local${
+            r.peers.length ? ` + ${r.peers.reduce((a,p)=>a+p.deleted,0)} across ${r.peers.length} peers` : ''
+          }`,
+        )
+      }
+      setStart(''); setEnd(''); setReason('')
+      setConfirmOpen(false)
+    },
+    onError: (e: Error) => toast.error(e.message),
+  })
+
+  const startMs = start ? new Date(start).getTime() : NaN
+  const endMs = end ? new Date(end).getTime() : NaN
+  const windowDays = (endMs - startMs) / 86400000
+  const validWindow = !!start && !!end && endMs > startMs && windowDays <= 90
+  const canSubmit = validWindow && reason.trim().length > 0 && !purgeMut.isPending
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Activity Log — Time-range purge</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
+          Permanently delete activity_log rows whose <code className="font-mono text-[10px]">created_at</code> falls in the window.
+          Fans out to all peers via HMAC. Window is capped at 90 days. <strong>compliance_events</strong> and <strong>compliance_policy_changes</strong> are
+          NOT touched — the audit chain stays intact. Every purge writes a system-scope audit row recording who, when, the window, the row count, and your reason.
+        </p>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <label className="flex flex-col gap-1">
+            <span className="text-xs font-medium text-gray-700 dark:text-gray-300">Start (local time)</span>
+            <input
+              type="datetime-local"
+              value={start}
+              onChange={e => setStart(e.target.value)}
+              className="px-2.5 py-1.5 text-sm rounded border bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600"
+            />
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-xs font-medium text-gray-700 dark:text-gray-300">End (local time)</span>
+            <input
+              type="datetime-local"
+              value={end}
+              onChange={e => setEnd(e.target.value)}
+              className="px-2.5 py-1.5 text-sm rounded border bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600"
+            />
+          </label>
+        </div>
+        <label className="flex flex-col gap-1 mt-3">
+          <span className="text-xs font-medium text-gray-700 dark:text-gray-300">Reason (required, captured in audit row)</span>
+          <input
+            type="text"
+            value={reason}
+            onChange={e => setReason(e.target.value)}
+            placeholder="e.g. PII captured during 2026-06-06 cursor-bridge debugging session"
+            className="px-2.5 py-1.5 text-sm rounded border bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600"
+            maxLength={2000}
+          />
+        </label>
+        <div className="mt-3 flex items-center gap-3 flex-wrap">
+          {validWindow && (
+            <span className="text-xs text-gray-500 dark:text-gray-400">
+              Window: <strong>{windowDays.toFixed(1)} days</strong>
+            </span>
+          )}
+          {start && end && endMs <= startMs && (
+            <span className="text-xs text-red-600 dark:text-red-400">End must be after start.</span>
+          )}
+          {windowDays > 90 && (
+            <span className="text-xs text-red-600 dark:text-red-400">Window exceeds 90-day cap.</span>
+          )}
+          <div className="ml-auto">
+            <Button
+              size="sm"
+              variant="danger"
+              onClick={() => setConfirmOpen(true)}
+              disabled={!canSubmit}
+              loading={purgeMut.isPending}
+            >
+              Purge window
+            </Button>
+          </div>
+        </div>
+
+        <ConfirmDialog
+          open={confirmOpen}
+          title="Purge activity log window?"
+          message={
+            `${windowDays.toFixed(1)} days of activity_log rows will be permanently deleted across this node ` +
+            `AND every reachable peer. compliance audit tables are untouched. An audit row is written recording ` +
+            `this action.`
+          }
+          confirmLabel="Purge"
+          variant="danger"
+          loading={purgeMut.isPending}
+          onConfirm={() => purgeMut.mutate()}
+          onCancel={() => setConfirmOpen(false)}
         />
       </CardContent>
     </Card>

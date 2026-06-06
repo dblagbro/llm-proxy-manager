@@ -202,6 +202,9 @@ export interface ApiKey {
   blocked_companies?: string[] | null
   allowed_paths?: string[] | null
   debug_echo_enabled?: boolean
+  // v5.1.1 / Batch B1 UI — present when ?include_deleted=true is used
+  // (Trash tab). null/undefined for live keys.
+  deleted_at?: string | null
 }
 
 // v5.0.0 — taxonomy of company IDs the operator can preset in the
