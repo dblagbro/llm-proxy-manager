@@ -477,16 +477,58 @@ async def messages(
     # Operator's grok.com web subscription. Like claude-oauth/codex-oauth,
     # short-circuits the rest of the pipeline (no CoT, no tool emulation,
     # no cascade) — Grok serves a single text response and we return it.
-    # Only one provider expected (per operator account) so no failover loop.
     # v3.2.9: shared dispatcher in _grok_web_dispatch (was duplicated 1:1
     # in completions.py). See design.md "Subscription-as-a-provider pattern".
+    # v5.0.23 / remediation Batch 2.5 — failover wiring: on a
+    # failover-eligible failure (any GrokWebError that maps to 502 or
+    # 429), the dispatcher returns None instead of raising. We
+    # re-select a provider that excludes the failed grok-web id (the
+    # router naturally picks OpenRouter for grok-3 next in priority)
+    # and fall through to the litellm dispatch path below.
     if route.provider.provider_type == "grok-web":
         from app.api._grok_web_dispatch import dispatch_grok_web_anthropic
-        return await dispatch_grok_web_anthropic(
+        gw_resp = await dispatch_grok_web_anthropic(
             route=route, body=body, stream=stream, resp_headers=resp_headers,
             db=db, key_record_id=key_record.id, t0=time.monotonic(),
             llm_hint=llm_hint,
         )
+        if gw_resp is not None:
+            return gw_resp
+        # Failover — re-resolve route excluding the failed grok-web
+        # provider. select_provider returns the next-priority match
+        # (OpenRouter for grok-3 in the standard fleet config). If
+        # nothing else can serve the request, propagate a 502 so the
+        # caller knows the chain is exhausted.
+        from app.routing.router import select_provider
+        failed_id = route.provider.id
+        new_route = await select_provider(
+            db=db, hint=hint,
+            has_tools=_has_tool_blocks, has_images=False,
+            key_type=key_record.key_type or "standard",
+            model_override=body.get("model"),
+            exclude_provider_id=failed_id,
+        )
+        if new_route is None or new_route.provider.provider_type == "grok-web":
+            raise HTTPException(
+                502,
+                "grok-web upstream failed and no alternative provider "
+                "is available for the requested model.",
+            )
+        logger.info(
+            "grok_web.failover_to provider=%s (was=%s, model=%s)",
+            new_route.provider.name, failed_id, body.get("model"),
+        )
+        # v5.0.23 — preserve the caller's model intent through the
+        # failover (see completions.py for the symmetric rationale).
+        new_route.cross_family_fallback = False
+        new_route.served_model_native = None
+        from app.routing.litellm_binding import build_litellm_model as _bld
+        new_route.litellm_model = _bld(new_route.provider, body.get("model"))
+        route = new_route
+        resp_headers["X-Grok-Web-Failover"] = "true"
+        resp_headers["X-Grok-Web-Failover-Target"] = new_route.provider.provider_type
+        # Fall through to the litellm dispatch path below with the
+        # new route in scope.
 
     # Semantic cache — check before anything LLM-ish runs.
     # v3.5.x R1 (2026-05-09): orchestration extracted to

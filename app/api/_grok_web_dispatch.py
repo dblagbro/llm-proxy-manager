@@ -40,6 +40,30 @@ logger = logging.getLogger(__name__)
 _GROKWEB_COOLOFF_PATTERN = re.compile(r"cool-off\s+(\d+)s\s+remaining", re.IGNORECASE)
 
 
+async def _trip_cb_for_failover(
+    db: Optional[AsyncSession], provider_id: str, err_msg: str,
+) -> None:
+    """v5.0.23 / remediation Batch 2.5 — when a grok-web call fails
+    with a transient/upstream error (anything that gets translated to
+    HTTP 502 by ``_map_upstream_status``, OR a 429), the dispatch path
+    now signals fallthrough to the next provider in the chain
+    (typically OpenRouter for grok-3) instead of raising HTTPException.
+
+    Before returning the fallthrough signal we trip the circuit
+    breaker so subsequent requests skip grok-web until the cool-off
+    elapses — saves both latency AND the cost of repeatedly probing a
+    known-broken provider.
+    """
+    try:
+        from app.routing.circuit_breaker import record_failure
+        await record_failure(provider_id, billing_error=False)
+        logger.info("grok_web.failover_trip provider=%s err=%s",
+                    provider_id, (err_msg or "")[:120])
+    except Exception as exc:
+        # Never block failover on circuit-breaker bookkeeping errors.
+        logger.warning("grok_web.cb_trip_failed err=%r", exc)
+
+
 async def _apply_grokweb_429_cooloff(
     db: AsyncSession, provider_id: str, err_msg: str,
 ) -> Optional[int]:
@@ -330,7 +354,11 @@ async def dispatch_grok_web_openai(
             # v3.9.16 (P5) — auto-skip on 429 cool-off
             if e.status_code == 429:
                 await _apply_grokweb_429_cooloff(db, route.provider.id, str(e))
-            raise HTTPException(e.status_code, str(e))
+            # v5.0.23 / Batch 2.5 — pre-first-chunk streaming failure
+            # is failover-eligible. Trip CB + signal fallthrough so the
+            # caller (completions.py) advances route to OpenRouter.
+            await _trip_cb_for_failover(db, route.provider.id, str(e))
+            return None  # caller: try next provider in the chain
         except StopAsyncIteration:
             if can_record:
                 await _record_grok_outcome(
@@ -399,7 +427,11 @@ async def dispatch_grok_web_openai(
         # v3.9.16 (P5) — auto-skip on 429 cool-off
         if e.status_code == 429:
             await _apply_grokweb_429_cooloff(db, route.provider.id, str(e))
-        raise HTTPException(e.status_code, str(e))
+        # v5.0.23 / Batch 2.5 — non-streaming failure is failover-
+        # eligible. Trip CB + signal fallthrough so completions.py
+        # advances to the next provider (OpenRouter for grok-3).
+        await _trip_cb_for_failover(db, route.provider.id, str(e))
+        return None  # caller: try next provider in the chain
 
     # Success — record with the actual token counts from upstream usage.
     if can_record:
@@ -484,7 +516,12 @@ async def dispatch_grok_web_anthropic(
             # v3.9.16 (P5) — auto-skip on 429 cool-off
             if e.status_code == 429:
                 await _apply_grokweb_429_cooloff(db, route.provider.id, str(e))
-            raise HTTPException(e.status_code, str(e))
+            # v5.0.23 / Batch 2.5 — pre-first-chunk streaming failure
+            # is failover-eligible. Trip CB + signal fallthrough so
+            # messages.py advances to the next provider (OpenRouter
+            # for grok-3).
+            await _trip_cb_for_failover(db, route.provider.id, str(e))
+            return None  # caller: try next provider in the chain
         except StopAsyncIteration:
             if can_record:
                 await _record_grok_outcome(
@@ -558,7 +595,11 @@ async def dispatch_grok_web_anthropic(
         # v3.9.16 (P5) — auto-skip on 429 cool-off
         if e.status_code == 429:
             await _apply_grokweb_429_cooloff(db, route.provider.id, str(e))
-        raise HTTPException(e.status_code, str(e))
+        # v5.0.23 / Batch 2.5 — non-streaming failure is failover-
+        # eligible. Trip CB + signal fallthrough so messages.py
+        # advances to the next provider (OpenRouter for grok-3).
+        await _trip_cb_for_failover(db, route.provider.id, str(e))
+        return None  # caller: try next provider in the chain
 
     if can_record:
         usage = openai_result.get("usage") or {}
