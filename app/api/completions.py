@@ -85,6 +85,11 @@ async def chat_completions(
     from app.api._compliance_handler import raise_if_banned_client_ua
     await raise_if_banned_client_ua(request, db, key_record)
 
+    # v5.2.0 / Batch V1 — LLM emergency stop. See messages.py for
+    # rationale + symmetry.
+    from app.api._compliance_handler import raise_if_llm_emergency_stopped
+    await raise_if_llm_emergency_stopped(db, key_record, endpoint="completions")
+
     # v4.4.15 (F-OBS-003) — caller-memory gating-header visibility.
     # See messages.py for the rationale.
     try:
