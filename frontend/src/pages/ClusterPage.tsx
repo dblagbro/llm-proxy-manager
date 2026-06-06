@@ -1,11 +1,12 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { RefreshCw, ShieldAlert, ShieldCheck, Server } from 'lucide-react'
-import { clusterApi, providersApi } from '@/api'
+import { clusterApi, providersApi, type ClusterPeerRow } from '@/api'
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
 import { Badge } from '@/components/ui/Badge'
 import { Spinner } from '@/components/ui/Spinner'
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { CircuitBreakerBadge } from '@/components/providers/CircuitBreakerBadge'
 import { useToast } from '@/components/ui/Toast'
 import { useAuth } from '@/context/AuthContext'
@@ -203,6 +204,11 @@ function ClusterPeersPanel() {
   const [id, setId] = useState('')
   const [url, setUrl] = useState('')
   const [name, setName] = useState('')
+  // v5.0.25 / Batch 4 (BUG-063) — replace browser confirm() with the
+  // app's ConfirmDialog component (autofocuses the action button +
+  // listens for Enter/Space — UX consistent with the other delete
+  // confirmations across the app, and Playwright-testable).
+  const [removeTarget, setRemoveTarget] = useState<ClusterPeerRow | null>(null)
 
   function submit() {
     const trim = (s: string) => s.trim()
@@ -292,12 +298,8 @@ function ClusterPeersPanel() {
                     <Button
                       size="sm"
                       variant="danger"
-                      onClick={() => {
-                        if (confirm(`Remove peer ${p.id}?\n\nThe local node will stop syncing to ${p.url} within 30s. The tombstone replicates to all peers, so they will also drop ${p.id}.`)) {
-                          removeMut.mutate(p.id)
-                        }
-                      }}
-                      loading={removeMut.isPending}
+                      onClick={() => setRemoveTarget(p)}
+                      loading={removeMut.isPending && removeTarget?.id === p.id}
                     >
                       Remove
                     </Button>
@@ -333,6 +335,25 @@ function ClusterPeersPanel() {
           </div>
         )}
       </CardContent>
+
+      {/* v5.0.25 / Batch 4 (BUG-063) — ConfirmDialog replaces browser confirm() */}
+      <ConfirmDialog
+        open={removeTarget !== null}
+        title={`Remove peer ${removeTarget?.id ?? ''}?`}
+        message={
+          removeTarget
+            ? `The local node will stop syncing to ${removeTarget.url} within 30s. The tombstone replicates to all peers, so they will also drop ${removeTarget.id}.`
+            : ''
+        }
+        confirmLabel="Remove"
+        variant="danger"
+        loading={removeMut.isPending}
+        onConfirm={() => {
+          if (removeTarget) removeMut.mutate(removeTarget.id)
+          setRemoveTarget(null)
+        }}
+        onCancel={() => setRemoveTarget(null)}
+      />
     </Card>
   )
 }

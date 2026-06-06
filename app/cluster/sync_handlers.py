@@ -562,16 +562,35 @@ def _parse_iso_naive_utc(v):
 def _parse_iso_keep_naive(v):
     """Like ``_parse_iso_naive_utc`` but accepts both ``datetime`` and
     ``str`` without further normalization — used for the api_keys
-    ``deleted_at`` field which is a plain datetime column."""
+    ``deleted_at`` field which is a plain datetime column.
+
+    v5.0.25 / Batch 4 (BUG-064) — returns ``None`` on any unrecognized
+    type (int, float, dict, list, …) and logs a debug breadcrumb,
+    rather than silently returning the raw value. Pre-fix, a peer
+    pushing ``deleted_at: 1780777200`` (Unix timestamp) would get
+    that int stored as-is, and the next LWW comparison against a
+    real ``datetime`` would raise TypeError and crash the section.
+    """
     from datetime import datetime as _dt
-    if not v:
+    if v is None or v == "":
         return None
+    if isinstance(v, _dt):
+        return v
     if isinstance(v, str):
         try:
             return _dt.fromisoformat(v.replace("Z", "+00:00"))
         except ValueError:
             return None
-    return v
+    # Unrecognized type — defensive fallback so a malformed peer
+    # payload skips the field rather than poisoning the sync section.
+    import logging as _lg
+    _lg.getLogger(__name__).warning(
+        "_parse_iso_keep_naive: unrecognized type=%s value=%r — "
+        "returning None (pre-v5.0.25 would have stored as-is and "
+        "crashed the next LWW comparison).",
+        type(v).__name__, str(v)[:80],
+    )
+    return None
 
 
 async def _apply_api_keys(

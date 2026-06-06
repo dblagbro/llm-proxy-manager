@@ -71,6 +71,13 @@ def _parse_peers() -> list[PeerNode]:
     return nodes
 
 
+# v5.0.25 / Batch 4 (BUG-061) — serialize the in-memory _peers swap.
+# Multiple coroutines can call _reload_peers_from_db (lifespan startup,
+# 30s refresh loop, admin restore endpoint…); without a lock the
+# heartbeat / sync push loops can read partial state during a swap.
+_peers_lock = asyncio.Lock()
+
+
 async def _reload_peers_from_db(db_factory) -> int:
     """v5.0.18 — Sync the in-memory ``_peers`` dict with the active rows
     in the ``cluster_peers`` table. Called at startup and on a 30s
@@ -78,6 +85,10 @@ async def _reload_peers_from_db(db_factory) -> int:
 
     Adds new peers (preserving their ``status`` if already known),
     removes tombstoned peers, and updates URLs in place.
+
+    v5.0.25 / Batch 4 (BUG-061) — wraps the in-memory swap in
+    ``_peers_lock`` so concurrent readers (heartbeat, sync push) see
+    a consistent snapshot.
     """
     from sqlalchemy import select
     from app.models.db import ClusterPeer
@@ -90,23 +101,65 @@ async def _reload_peers_from_db(db_factory) -> int:
         logger.warning("_reload_peers_from_db.failed err=%s — keeping current in-memory peers", exc)
         return len(_peers)
 
-    db_ids = {r.id for r in rows}
-    # Remove peers no longer in DB
-    for stale in [pid for pid in list(_peers.keys()) if pid not in db_ids]:
-        logger.info("cluster_peers: removing peer %s (no longer in DB)", stale)
-        _peers.pop(stale, None)
-    # Add / update peers from DB
-    for r in rows:
-        existing = _peers.get(r.id)
-        if existing is None:
-            _peers[r.id] = PeerNode(id=r.id, name=r.name or r.id, url=r.url)
-            logger.info("cluster_peers: adding peer %s -> %s", r.id, r.url)
-        else:
-            # URL/name may have been edited; refresh those fields without
-            # clobbering status/latency tracking.
-            existing.url = r.url
-            existing.name = r.name or r.id
-    return len(_peers)
+    async with _peers_lock:
+        db_ids = {r.id for r in rows}
+        # Remove peers no longer in DB
+        for stale in [pid for pid in list(_peers.keys()) if pid not in db_ids]:
+            logger.info("cluster_peers: removing peer %s (no longer in DB)", stale)
+            _peers.pop(stale, None)
+        # Add / update peers from DB
+        for r in rows:
+            existing = _peers.get(r.id)
+            if existing is None:
+                _peers[r.id] = PeerNode(id=r.id, name=r.name or r.id, url=r.url)
+                logger.info("cluster_peers: adding peer %s -> %s", r.id, r.url)
+            else:
+                # URL/name may have been edited; refresh those fields without
+                # clobbering status/latency tracking.
+                existing.url = r.url
+                existing.name = r.name or r.id
+        return len(_peers)
+
+
+async def _prune_self_row_from_db(db_factory) -> int:
+    """v5.0.25 / Batch 4 (BUG-057) — at startup, hard-delete any
+    cluster_peers row whose id matches THIS node's cluster_node_id.
+
+    Why: pre-v5.0.25, if an operator changed CLUSTER_NODE_ID and
+    restarted, the row keyed by the OLD node id remained in the
+    cluster_peers table. ``_apply_cluster_peers`` filtered it out only
+    when the id matched the current node id, leaving an orphan that
+    the manager pushed sync payloads to — infinite self-push loop OR
+    misdirected traffic to whatever URL was attached.
+
+    Pruning at startup makes the rename case safe. Operator-initiated
+    deletes (via the UI) still produce soft-delete tombstones; this
+    helper only hard-deletes rows whose id is OUR id (legitimately
+    orphaned).
+    """
+    self_id = settings.cluster_node_id or ""
+    if not self_id:
+        return 0
+    from sqlalchemy import delete
+    from app.models.db import ClusterPeer
+    try:
+        async with db_factory() as db:
+            result = await db.execute(
+                delete(ClusterPeer).where(ClusterPeer.id == self_id)
+            )
+            await db.commit()
+            n = int(result.rowcount or 0)
+            if n > 0:
+                logger.warning(
+                    "cluster_peers: pruned %d self-row(s) matching "
+                    "current cluster_node_id=%s (operator changed "
+                    "CLUSTER_NODE_ID since last boot?)",
+                    n, self_id,
+                )
+            return n
+    except Exception as exc:
+        logger.warning("_prune_self_row_from_db.failed err=%s", exc)
+        return 0
 
 
 async def _seed_peers_from_env_if_empty(db_factory) -> int:
@@ -897,6 +950,10 @@ def start_cluster(db_factory, notify_fn=None):
     # the async DB factory. Pre-v5.0.18 used the synchronous env parse
     # only; that path is now the safety-net inside _reload_peers_from_db.
     async def _bootstrap():
+        # v5.0.25 / Batch 4 (BUG-057) — prune any stale self-row
+        # BEFORE the seed/load so the rest of bootstrap operates on
+        # a clean cluster_peers table.
+        await _prune_self_row_from_db(db_factory)
         await _seed_peers_from_env_if_empty(db_factory)
         await _reload_peers_from_db(db_factory)
         # If both DB and env failed, fall back to env-only legacy behavior

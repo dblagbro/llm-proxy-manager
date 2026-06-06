@@ -386,6 +386,19 @@ async def add_cluster_peer(
         raise HTTPException(400, "cannot add self as peer")
     if "://" not in body.url:
         raise HTTPException(400, "url must include scheme (http:// or https://)")
+    # v5.0.25 / Batch 4 (BUG-062) — enforce HTTPS in production.
+    # Cluster sync carries every api_key + provider config across the
+    # wire; plaintext http:// would leak the entire credential store
+    # on any path between nodes. Allow http:// only when DEBUG=true
+    # (operator dev environments).
+    if not body.url.startswith("https://"):
+        if not getattr(settings, "debug", False):
+            raise HTTPException(
+                400,
+                "cluster peer URLs must use https:// in production "
+                "(cluster sync carries credentials). Set DEBUG=true "
+                "to allow http:// for local development.",
+            )
     existing = (await db.execute(
         select(ClusterPeer).where(ClusterPeer.id == body.id).limit(1)
     )).scalar_one_or_none()
