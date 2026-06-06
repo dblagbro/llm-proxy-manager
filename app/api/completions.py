@@ -458,6 +458,16 @@ async def chat_completions(
         new_route.served_model_native = None
         from app.routing.litellm_binding import build_litellm_model as _bld
         new_route.litellm_model = _bld(new_route.provider, body.get("model"))
+        # v5.1.0 / Batch A4 — swap ``extra`` (litellm_kwargs) to the
+        # new provider's. Pre-fix, the existing ``extra`` was built
+        # from the grok-web provider's kwargs (no api_key for the
+        # OpenRouter call); the litellm dispatch silently fell back
+        # to whatever litellm could resolve, served openai/gpt-4o.
+        # Mirrors the claude-oauth → litellm chain swap pattern
+        # (messages.py:471).
+        for _k in list(route.litellm_kwargs.keys()):
+            extra.pop(_k, None)
+        extra.update(new_route.litellm_kwargs)
         route = new_route
         resp_headers["X-Grok-Web-Failover"] = "true"
         resp_headers["X-Grok-Web-Failover-Target"] = new_route.provider.provider_type

@@ -440,6 +440,9 @@ export interface ClusterNode {
   last_heartbeat?: number
   healthy_providers?: number
   total_providers?: number
+  // v5.1.0 / Batch A2 — peer's __version__ (from local; from /health for peers).
+  // Used by the UI to surface version skew at a glance.
+  version?: string | null
 }
 
 export interface ClusterStatus {

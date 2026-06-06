@@ -39,6 +39,7 @@ from app.api.cluster import router as cluster_router
 from app.api.monitoring import router as monitoring_router
 from app.api.settings_api import router as settings_router
 from app.api.audit import router as audit_router
+from app.api.admin_logging import router as admin_logging_router
 from app.api.oauth_capture import router as oauth_capture_router
 from app.api.runs import router as runs_router
 from app.api.lmrh import router as lmrh_router
@@ -538,6 +539,7 @@ app.include_router(monitoring_router)
 app.include_router(settings_router)
 app.include_router(aliases_router)
 app.include_router(audit_router)
+app.include_router(admin_logging_router)  # v5.1.0 / C1 — compliance panic button
 app.include_router(oauth_capture_router)
 app.include_router(runs_router)
 app.include_router(lmrh_router)

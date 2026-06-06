@@ -29,6 +29,16 @@ async def log_event(
     api_key_id: Optional[str] = None,
     metadata: Optional[dict[str, Any]] = None,
 ):
+    # v5.1.0 / Batch C1 (compliance panic button) — check the
+    # persistent toggle BEFORE writing the DB row OR fanning out to
+    # SSE subscribers. When off, the call is a complete no-op (no
+    # disk write, no in-memory copy, no SSE leak). The audit row for
+    # the toggle flip itself rides a separate code path (compliance_
+    # policy_changes table) so the operator's proof-of-flip is
+    # preserved even when activity logging is silent.
+    from app.monitoring.logging_controls import is_logging_enabled
+    if not await is_logging_enabled(db):
+        return
     entry = ActivityLog(
         event_type=event_type,
         severity=severity,

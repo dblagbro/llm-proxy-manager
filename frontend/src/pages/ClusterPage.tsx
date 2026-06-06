@@ -90,35 +90,57 @@ export function ClusterPage() {
             </div>
           ) : (
             <div className="divide-y divide-gray-100 dark:divide-gray-700">
-              {allNodes.map(node => {
-                const online = node.status === 'healthy'
-                return (
-                  <div key={node.id} className="flex items-center gap-3 py-3">
-                    <div className={`h-2 w-2 rounded-full shrink-0 ${online ? 'bg-green-500' : 'bg-red-500'}`} />
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2">
-                        <p className="font-medium text-gray-900 dark:text-gray-100">{node.name || node.id}</p>
-                        {'isLocal' in node && node.isLocal && (
-                          <span className="text-xs bg-indigo-100 dark:bg-indigo-900 text-indigo-700 dark:text-indigo-300 px-1.5 py-0.5 rounded">this node</span>
+              {(() => {
+                // v5.1.0 / Batch A2 — version skew detection. Use the
+                // local node's version as the reference; any peer whose
+                // version differs gets its version badge highlighted.
+                const localVersion = cluster?.local_node?.version
+                return allNodes.map(node => {
+                  const online = node.status === 'healthy'
+                  const isLocal = 'isLocal' in node && node.isLocal
+                  const versionSkew = !!localVersion && !!node.version && node.version !== localVersion
+                  return (
+                    <div key={node.id} className="flex items-center gap-3 py-3">
+                      <div className={`h-2 w-2 rounded-full shrink-0 ${online ? 'bg-green-500' : 'bg-red-500'}`} />
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <p className="font-medium text-gray-900 dark:text-gray-100">{node.name || node.id}</p>
+                          {isLocal && (
+                            <span className="text-xs bg-indigo-100 dark:bg-indigo-900 text-indigo-700 dark:text-indigo-300 px-1.5 py-0.5 rounded">this node</span>
+                          )}
+                          {node.version && (
+                            <span
+                              className={
+                                'text-[10px] font-mono px-1.5 py-0.5 rounded ' +
+                                (versionSkew
+                                  ? 'bg-amber-100 dark:bg-amber-900/40 text-amber-800 dark:text-amber-300 ring-1 ring-amber-400/40'
+                                  : 'bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400')
+                              }
+                              title={versionSkew ? `Version skew vs local (${localVersion}). Deploy must cover all nodes in lockstep.` : undefined}
+                            >
+                              v{node.version}
+                              {versionSkew && ' ⚠'}
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-xs text-gray-500 dark:text-gray-400">{node.url}</p>
+                        {'healthy_providers' in node && node.healthy_providers != null && (
+                          <p className="text-xs text-gray-400">{node.healthy_providers}/{node.total_providers} providers healthy</p>
                         )}
                       </div>
-                      <p className="text-xs text-gray-500 dark:text-gray-400">{node.url}</p>
-                      {'healthy_providers' in node && node.healthy_providers != null && (
-                        <p className="text-xs text-gray-400">{node.healthy_providers}/{node.total_providers} providers healthy</p>
-                      )}
+                      <Badge variant={online ? 'success' : 'danger'}>{online ? 'Online' : node.status}</Badge>
+                      {'last_heartbeat' in node && node.last_heartbeat ? (
+                        <span className="text-xs text-gray-400">
+                          {formatTimeForUser(node.last_heartbeat * 1000, user, 'time')}
+                        </span>
+                      ) : null}
+                      {'latency_ms' in node && node.latency_ms ? (
+                        <span className="text-xs text-gray-400">{Math.round(node.latency_ms)}ms</span>
+                      ) : null}
                     </div>
-                    <Badge variant={online ? 'success' : 'danger'}>{online ? 'Online' : node.status}</Badge>
-                    {'last_heartbeat' in node && node.last_heartbeat ? (
-                      <span className="text-xs text-gray-400">
-                        {formatTimeForUser(node.last_heartbeat * 1000, user, 'time')}
-                      </span>
-                    ) : null}
-                    {'latency_ms' in node && node.latency_ms ? (
-                      <span className="text-xs text-gray-400">{Math.round(node.latency_ms)}ms</span>
-                    ) : null}
-                  </div>
-                )
-              })}
+                  )
+                })
+              })()}
             </div>
           )}
         </CardContent>

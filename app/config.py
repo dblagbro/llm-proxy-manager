@@ -179,6 +179,13 @@ class Settings(BaseSettings):
         20, alias="GROK_WEB_USER_TIMEOUT_SEC"
     )
 
+    # v5.1.0 / Batch B1 — ApiKey tombstone retention window. After a
+    # soft-delete via DELETE /api/keys/{id}, the row stays in the table
+    # with deleted_at set for this many days. The admin UI exposes a
+    # Trash tab and a Restore endpoint during this window; after, the
+    # next prune sweep hard-deletes the row.
+    api_key_tombstone_retention_days: int = Field(90, alias="API_KEY_TOMBSTONE_RETENTION_DAYS")
+
     # v3.0.7: activity_log + provider_metrics + run_events retention (days)
     activity_log_retention_days: int = Field(30, alias="ACTIVITY_LOG_RETENTION_DAYS")
     # v3.7.22 (#254): severity-tiered retention. info events are >99% of volume
