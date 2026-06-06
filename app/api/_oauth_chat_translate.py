@@ -178,8 +178,16 @@ def openai_tools_to_anthropic(tools: list[dict] | None) -> list[dict] | None:
 def openai_request_to_anthropic(body: dict) -> dict:
     """Translate full OpenAI Chat Completions request body → Anthropic Messages body."""
     system, messages = openai_messages_to_anthropic(body.get("messages") or [])
+    # v5.2.2 / Batch V3 — central default lookup. This translator only
+    # fires on claude-oauth + cursor-oauth dispatch paths (the only ones
+    # that translate OpenAI-shape → Anthropic-shape), so the claude-oauth
+    # default is correct; the hardcoded asymmetry was just an audit
+    # cleanup, not a behavior change.
+    from app.routing.litellm_binding import PROVIDER_DEFAULT_MODELS
     out: dict[str, Any] = {
-        "model": body.get("model") or "claude-sonnet-4-6",
+        "model": body.get("model") or PROVIDER_DEFAULT_MODELS.get(
+            "claude-oauth", "claude-sonnet-4-6",
+        ),
         "max_tokens": body.get("max_tokens") or 4096,
         "messages": messages,
     }
