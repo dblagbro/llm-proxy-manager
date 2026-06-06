@@ -303,6 +303,16 @@ class ExternalUsageSnapshot(Base):
     extra_usage_used_credits = Column(Float, nullable=True)
     extra_usage_utilization = Column(Float, nullable=True)
     extra_usage_currency = Column(String, nullable=True)
+    # v5.0.24 — Cursor membership tier (free / pro / business). Used to
+    # detect plan downgrades that silently break routing. When a Pro
+    # account is downgraded to Free, Cursor's API returns
+    # ``ERROR_RATE_LIMITED_CHANGEABLE`` "Named models unavailable.
+    # Free plans can only use Auto" — the cursor-bridge wraps this as
+    # an HTTP 200 with empty content, so the proxy can't tell from the
+    # response alone. The billing scrape DOES see the membership
+    # change, so we record it here and the rotation evaluator auto-
+    # skips the provider on Pro→Free.
+    membership_tier = Column(String, nullable=True)  # "free" | "pro" | "business" | …
     # Forward-compat catch-all so we can decode new fields without a
     # migration each time Anthropic adds one
     raw_response = Column(Text, nullable=True)

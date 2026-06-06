@@ -150,6 +150,13 @@ def parse_usage_response(merged: dict) -> dict:
         out["extra_usage_used_credits"] = float(total_cents) / 100.0
         out["extra_usage_currency"] = "USD"
 
+    # v5.0.24 — capture membershipType so downstream rotation can
+    # detect Pro→Free downgrade (BUG-053). Cursor returns the field
+    # in usage_summary at the top level.
+    mt = summary.get("membershipType")
+    if isinstance(mt, str) and mt.strip():
+        out["membership_tier"] = mt.strip().lower()
+
     return out
 
 
@@ -282,6 +289,57 @@ async def scrape_provider_into_snapshot(db, provider) -> dict:
     db.add(snap)
     await db.flush()  # populate snap.id before the rotation evaluator runs
 
+    # v5.0.24 — membership-tier downgrade detection (BUG-053). Compare
+    # this snapshot's tier to the prior one for the same provider; if
+    # we transitioned Pro→Free (or any → Free), auto-skip the provider
+    # for 24h so the next requests don't silently hit empty-content
+    # responses. On Free→Pro upgrade, clear the auto-skip if the
+    # current skip reason matches our downgrade marker.
+    membership_event: Optional[str] = None
+    new_tier = snap_kwargs.get("membership_tier")
+    if result.ok and new_tier:
+        from sqlalchemy import select, desc
+        from datetime import datetime, timedelta
+        prev_q = await db.execute(
+            select(ExternalUsageSnapshot)
+            .where(ExternalUsageSnapshot.provider_id == provider.id)
+            .where(ExternalUsageSnapshot.id != snap.id)
+            .where(ExternalUsageSnapshot.membership_tier.is_not(None))
+            .order_by(desc(ExternalUsageSnapshot.captured_at))
+            .limit(1)
+        )
+        prev = prev_q.scalar_one_or_none()
+        prev_tier = prev.membership_tier if prev else None
+        if prev_tier and prev_tier != new_tier:
+            if prev_tier != "free" and new_tier == "free":
+                # Pro/Business → Free downgrade. Auto-skip 24h.
+                provider.auto_skip_until = datetime.utcnow() + timedelta(hours=24)
+                provider.auto_skip_reason = (
+                    f"cursor membership downgraded {prev_tier} → {new_tier} "
+                    f"(named models unavailable on Free; auto-routed away)"
+                )
+                membership_event = f"downgrade_{prev_tier}_to_free"
+                logger.warning(
+                    "cursor_billing.membership_downgrade",
+                    extra={"provider_id": provider.id,
+                           "prev_tier": prev_tier, "new_tier": new_tier,
+                           "auto_skip_until": str(provider.auto_skip_until)},
+                )
+            elif prev_tier == "free" and new_tier != "free":
+                # Free → Pro/Business upgrade. Clear any auto-skip
+                # whose reason looks like the downgrade marker.
+                if (provider.auto_skip_until is not None
+                        and (provider.auto_skip_reason or "").startswith(
+                            "cursor membership downgraded")):
+                    provider.auto_skip_until = None
+                    provider.auto_skip_reason = None
+                    membership_event = f"upgrade_free_to_{new_tier}"
+                    logger.info(
+                        "cursor_billing.membership_upgrade_cleared_skip",
+                        extra={"provider_id": provider.id,
+                               "prev_tier": prev_tier, "new_tier": new_tier},
+                    )
+
     rotation_decision: dict = {}
     if result.ok:
         try:
@@ -324,4 +382,6 @@ async def scrape_provider_into_snapshot(db, provider) -> dict:
         "http_status": result.http_status,
         "rotation": rotation_decision,
         "utilization_pct": snap_kwargs.get("seven_day_utilization"),
+        "membership_tier": snap_kwargs.get("membership_tier"),
+        "membership_event": membership_event,
     }

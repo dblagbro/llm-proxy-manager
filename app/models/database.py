@@ -256,6 +256,12 @@ async def init_db():
             # last_user_edit_at carry the LWW intent across nodes.
             "ALTER TABLE users ADD COLUMN deleted_at DATETIME",
             "ALTER TABLE users ADD COLUMN last_user_edit_at REAL",
+            # v5.0.24 — cursor billing scrape captures membership tier
+            # (BUG-053). Pro→Free downgrade silently breaks Cursor
+            # routing; the scrape lands the new tier, the rotation
+            # evaluator auto-skips on downgrade. Free→Pro upgrade
+            # clears any auto-skip set by the downgrade.
+            "ALTER TABLE external_usage_snapshot ADD COLUMN membership_tier TEXT",
             # v3.0.25 — LMRH self-extension protocol tables
             # (idempotent ALTERs; CREATE handled by Base.metadata.create_all above)
             # v3.0.29 — soft-delete tombstones on LMRH dim/proposal rows so
