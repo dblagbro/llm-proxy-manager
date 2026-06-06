@@ -328,6 +328,33 @@ export const loggingApi = {
     }>('/api/admin/activity-log/purge', {
       start_ts: startTs, end_ts: endTs, reason,
     }),
+  // v5.1.2 / Batch C3 — retention period editable in WebUI.
+  retention: () =>
+    api.get<RetentionState>('/api/admin/logging/retention'),
+  setRetention: (body: {
+    info_days?: number | null
+    warning_days?: number | null
+    error_days?: number | null
+    clear_info?: boolean
+    clear_warning?: boolean
+    clear_error?: boolean
+    reason?: string
+  }) =>
+    api.post<{
+      ok: boolean; audit_ids: string[]; current: RetentionState
+    }>('/api/admin/logging/retention', body),
+}
+
+// v5.1.2 / Batch C3
+export interface RetentionEntry {
+  override: number | null
+  env_default: number
+  effective_days: number
+}
+export interface RetentionState {
+  info:    RetentionEntry
+  warning: RetentionEntry
+  error:   RetentionEntry
 }
 
 // ── Users ─────────────────────────────────────────────────────────────────────

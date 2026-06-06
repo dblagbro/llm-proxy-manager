@@ -56,7 +56,19 @@ _DEFAULT_TOMBSTONE_RETENTION_DAYS = 7
 
 
 def _retention_days() -> int:
-    """Admin-tunable retention; default 30 days, minimum 1 day."""
+    """Admin-tunable retention; default 30 days, minimum 1 day.
+
+    v5.1.2 / Batch C3 — prefers the operator override stored in
+    system_settings (``compliance.activity_log_retention_days``).
+    The retention_settings module caches the override; the sweep
+    loop calls refresh_from_db() before each pass so a UI edit
+    takes effect within one sweep cycle.
+    """
+    try:
+        from app.monitoring.retention_settings import info_days
+        return int(info_days())
+    except Exception:
+        pass
     try:
         v = int(getattr(settings, "activity_log_retention_days",
                         _DEFAULT_RETENTION_DAYS))
@@ -68,6 +80,11 @@ def _retention_days() -> int:
 def _warning_retention_days() -> int:
     """Admin-tunable warning-severity retention; default 365 days."""
     try:
+        from app.monitoring.retention_settings import warning_days
+        return int(warning_days())
+    except Exception:
+        pass
+    try:
         v = int(getattr(settings, "activity_log_warning_retention_days",
                         _DEFAULT_WARNING_RETENTION_DAYS))
         return max(1, v)
@@ -77,6 +94,11 @@ def _warning_retention_days() -> int:
 
 def _error_retention_days() -> int:
     """Admin-tunable error-severity retention; default 1825 days (5y)."""
+    try:
+        from app.monitoring.retention_settings import error_days
+        return int(error_days())
+    except Exception:
+        pass
     try:
         v = int(getattr(settings, "activity_log_error_retention_days",
                         _DEFAULT_ERROR_RETENTION_DAYS))
@@ -359,6 +381,18 @@ async def _prune_activity_log_orphans() -> int:
 async def _sweep_once() -> dict:
     """One full prune pass across activity_log + provider_metrics +
     run_events. Returns counts so the log line is interpretable."""
+    # v5.1.2 / Batch C3 — refresh the retention override cache before
+    # reading. A UI edit takes effect on the very next sweep without
+    # waiting for the soft TTL.
+    try:
+        from app.monitoring.retention_settings import refresh_from_db
+        from app.models.database import AsyncSessionLocal
+        async with AsyncSessionLocal() as _db:
+            await refresh_from_db(_db)
+    except Exception:
+        # Best-effort; helpers fall back to env on cache-miss anyway.
+        pass
+
     keep_days = _retention_days()
     probe_keep_days = _probe_retention_days()
     warning_keep_days = _warning_retention_days()

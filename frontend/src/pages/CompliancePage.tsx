@@ -4,7 +4,7 @@
 import { useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Download, RefreshCw, ShieldAlert, Server } from 'lucide-react'
-import { complianceApi, keysApi, loggingApi } from '@/api'
+import { complianceApi, keysApi, loggingApi, type RetentionEntry } from '@/api'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { useToast } from '@/components/ui/Toast'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card'
@@ -80,6 +80,8 @@ export function CompliancePage() {
       <LoggingControlsPanel />
       {/* v5.1.1 / Batch C2 — time-range bulk purge */}
       <ActivityLogPurgePanel />
+      {/* v5.1.2 / Batch C3 — retention period editable */}
+      <RetentionPanel />
       <div className="flex items-start justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-xl font-bold text-gray-900 dark:text-gray-100 flex items-center gap-2">
@@ -624,6 +626,141 @@ function ActivityLogPurgePanel() {
           onConfirm={() => purgeMut.mutate()}
           onCancel={() => setConfirmOpen(false)}
         />
+      </CardContent>
+    </Card>
+  )
+}
+
+
+// ── v5.1.2 / Batch C3 — Retention editable ────────────────────────
+function RetentionPanel() {
+  const qc = useQueryClient()
+  const toast = useToast()
+  const { data: state, isLoading } = useQuery({
+    queryKey: ['retention-state'],
+    queryFn: loggingApi.retention,
+  })
+  const [infoDays,    setInfoDays]    = useState<string>('')
+  const [warningDays, setWarningDays] = useState<string>('')
+  const [errorDays,   setErrorDays]   = useState<string>('')
+  const [reason,      setReason]      = useState<string>('')
+
+  const saveMut = useMutation({
+    mutationFn: () => {
+      const body: {
+        info_days?: number | null
+        warning_days?: number | null
+        error_days?: number | null
+        clear_info?: boolean
+        clear_warning?: boolean
+        clear_error?: boolean
+        reason?: string
+      } = { reason: reason || undefined }
+      // Send only fields the operator changed. Empty string + the
+      // explicit "use default" radio means "clear" (handled by the
+      // clear_* flag); a typed number sends that value.
+      if (infoDays === 'clear')    body.clear_info = true
+      else if (infoDays !== '')    body.info_days = Number(infoDays)
+      if (warningDays === 'clear') body.clear_warning = true
+      else if (warningDays !== '') body.warning_days = Number(warningDays)
+      if (errorDays === 'clear')   body.clear_error = true
+      else if (errorDays !== '')   body.error_days = Number(errorDays)
+      return loggingApi.setRetention(body)
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['retention-state'] })
+      toast.success('Retention updated; next prune sweep honors the new values')
+      setInfoDays(''); setWarningDays(''); setErrorDays(''); setReason('')
+    },
+    onError: (e: Error) => toast.error(e.message),
+  })
+
+  if (isLoading || !state) {
+    return (
+      <Card>
+        <CardContent className="py-3 flex items-center justify-center">
+          <Spinner />
+        </CardContent>
+      </Card>
+    )
+  }
+
+  function row(
+    label: string, color: 'gray' | 'amber' | 'red',
+    entry: RetentionEntry,
+    value: string, setter: (v: string) => void,
+  ) {
+    const pill = (
+      color === 'gray'  ? 'bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300' :
+      color === 'amber' ? 'bg-amber-100 dark:bg-amber-900/40 text-amber-800 dark:text-amber-300' :
+                          'bg-red-100   dark:bg-red-900/40   text-red-800   dark:text-red-300'
+    )
+    return (
+      <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 items-center py-2 border-b border-gray-200 dark:border-gray-700 last:border-0">
+        <div className="sm:col-span-3">
+          <span className={`inline-block text-xs font-semibold uppercase px-2 py-0.5 rounded ${pill}`}>{label}</span>
+        </div>
+        <div className="sm:col-span-3 text-xs text-gray-500 dark:text-gray-400">
+          env default <strong>{entry.env_default}d</strong> ·
+          override <strong>{entry.override ?? '—'}</strong> ·
+          effective <strong>{entry.effective_days}d</strong>
+        </div>
+        <div className="sm:col-span-6 flex items-center gap-2">
+          <input
+            type="number" min={1} max={36500}
+            value={value === 'clear' ? '' : value}
+            onChange={e => setter(e.target.value)}
+            placeholder={`new days (default ${entry.env_default})`}
+            className="flex-1 px-2.5 py-1.5 text-sm rounded border bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600"
+          />
+          <label className="flex items-center gap-1 text-xs text-gray-500 dark:text-gray-400">
+            <input
+              type="checkbox"
+              checked={value === 'clear'}
+              onChange={e => setter(e.target.checked ? 'clear' : '')}
+            />
+            use default
+          </label>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Activity Log Retention</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
+          Per-severity retention. Each severity-tier of activity_log row is auto-deleted
+          after its number of days. Override the env default per tier; clearing the override
+          falls back to env. Edits land in <code className="font-mono text-[10px]">system_settings</code>{' '}
+          (cluster-synced) and the next prune sweep honors them within ~24 hours.
+        </p>
+        <div className="rounded border border-gray-200 dark:border-gray-700">
+          {row('info',    'gray',  state.info,    infoDays,    setInfoDays)}
+          {row('warning', 'amber', state.warning, warningDays, setWarningDays)}
+          {row('error',   'red',   state.error,   errorDays,   setErrorDays)}
+        </div>
+        <div className="mt-3 flex flex-col sm:flex-row gap-2 items-stretch">
+          <input
+            type="text"
+            value={reason}
+            onChange={e => setReason(e.target.value)}
+            placeholder="Reason (captured in audit row)"
+            className="flex-1 px-2.5 py-1.5 text-sm rounded border bg-white dark:bg-gray-800 border-gray-300 dark:border-gray-600"
+            maxLength={2000}
+          />
+          <Button
+            size="sm"
+            onClick={() => saveMut.mutate()}
+            loading={saveMut.isPending}
+            disabled={infoDays === '' && warningDays === '' && errorDays === ''}
+          >
+            Save retention edits
+          </Button>
+        </div>
       </CardContent>
     </Card>
   )
