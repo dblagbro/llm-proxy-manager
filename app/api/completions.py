@@ -804,6 +804,30 @@ async def chat_completions(
             # v3.6.1 — X-Quality-Hint thin-content detector
             from app.api._quality_hint import merge_into_headers
             _result_body = result.model_dump()
+            # v5.0.24 / Batch 3 — empty-success guard (BUG-053). Some
+            # bridges (cursor-bridge confirmed; pattern likely broader)
+            # wrap upstream errors as HTTP 200 with empty content +
+            # zero tokens. Detect that pattern and treat as a real
+            # upstream failure so the routing layer can record + skip.
+            # See app/api/_response_validators.py for the heuristic.
+            from app.api._response_validators import (
+                looks_like_empty_success_failure,
+                empty_success_failure_message,
+            )
+            if looks_like_empty_success_failure(response_dict=_result_body):
+                msg = empty_success_failure_message(_result_body)
+                logger.warning(
+                    "completions.empty_success_blocked provider=%s err=%s",
+                    route.provider.name, msg,
+                )
+                # Record failure + trip CB so subsequent requests skip
+                # this provider during the cool-off window.
+                try:
+                    from app.routing.circuit_breaker import record_failure
+                    await record_failure(route.provider.id, billing_error=False)
+                except Exception:
+                    pass
+                raise HTTPException(502, f"upstream: {msg}")
             merge_into_headers(resp_headers, _result_body, endpoint="completions")
             return JSONResponse(content=_result_body, headers=resp_headers)
 
