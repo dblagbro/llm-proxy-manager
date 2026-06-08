@@ -23,12 +23,25 @@ interface Props {
   setAllowedPaths: (v: string[] | null) => void
   debugEchoEnabled: boolean
   setDebugEchoEnabled: (v: boolean) => void
+  // v5.3.0 — fine-grained policy fields. null = no per-key restriction
+  // (system policy still applies). Non-empty allowedCompanies switches
+  // that dimension to allowlist mode. Model lists accept exact names
+  // OR fnmatch globs ("claude-*", "gpt-4-*-turbo").
+  allowedCompanies: string[] | null
+  setAllowedCompanies: (v: string[] | null) => void
+  blockedModels: string[] | null
+  setBlockedModels: (v: string[] | null) => void
+  allowedModels: string[] | null
+  setAllowedModels: (v: string[] | null) => void
 }
 
 export function ComplianceFieldsEditor({
   blockedCompanies, setBlockedCompanies,
   allowedPaths, setAllowedPaths,
   debugEchoEnabled, setDebugEchoEnabled,
+  allowedCompanies, setAllowedCompanies,
+  blockedModels, setBlockedModels,
+  allowedModels, setAllowedModels,
 }: Props) {
   const [customCompany, setCustomCompany] = useState('')
 
@@ -231,6 +244,26 @@ export function ComplianceFieldsEditor({
         )}
       </div>
 
+      {/* v5.3.0 — Allowed companies (allowlist mode) */}
+      <CompanyAllowlistEditor
+        value={allowedCompanies}
+        setValue={setAllowedCompanies}
+      />
+
+      {/* v5.3.0 — Blocked models (deny wins) */}
+      <ModelPatternEditor
+        kind="blocked"
+        value={blockedModels}
+        setValue={setBlockedModels}
+      />
+
+      {/* v5.3.0 — Allowed models (allowlist mode) */}
+      <ModelPatternEditor
+        kind="allowed"
+        value={allowedModels}
+        setValue={setAllowedModels}
+      />
+
       {/* Debug echo */}
       <div className="flex items-start justify-between gap-4">
         <div className="flex-1">
@@ -247,6 +280,183 @@ export function ComplianceFieldsEditor({
           ariaLabel="Enable debug echo endpoint"
         />
       </div>
+    </div>
+  )
+}
+
+
+// ── v5.3.0 / Batch V2 UI ───────────────────────────────────────────
+//
+// CompanyAllowlistEditor mirrors the existing blocked-companies grid
+// but with allowlist semantics: non-empty list switches that dimension
+// to allowlist mode (only listed companies pass; everything else
+// dropped). null = no allowlist active; [] is illegal (the toggle
+// flips between null and a non-empty list as the operator picks).
+function CompanyAllowlistEditor({
+  value, setValue,
+}: { value: string[] | null; setValue: (v: string[] | null) => void }) {
+  const enabled = value !== null
+  const list = value ?? []
+  const [custom, setCustom] = useState('')
+
+  function toggle(on: boolean) {
+    setValue(on ? [] : null)
+  }
+  function toggleCompany(id: string) {
+    if (list.includes(id)) setValue(list.filter(c => c !== id))
+    else setValue([...list, id])
+  }
+  function addCustom() {
+    const v = custom.trim().toLowerCase()
+    if (!v || list.includes(v)) { setCustom(''); return }
+    setValue([...list, v])
+    setCustom('')
+  }
+
+  const customSelections = list.filter(
+    id => !KNOWN_COMPANIES.some(c => c.id === id),
+  )
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1.5">
+        <div className="flex items-center gap-1">
+          <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
+            Allowed companies (allowlist mode)
+          </label>
+          <HelpHint text="When ON, ONLY the listed companies are eligible for routing — every other company is dropped + audited as 'company-not-in-allowlist'. Blocked-companies still wins over this (deny is unconditional). Use for compliance-locked deployments that need positive enforcement instead of enumerating bans. OFF (default) preserves v5.0 behavior." />
+        </div>
+        <Switch checked={enabled} onChange={toggle} ariaLabel="Enable company allowlist" />
+      </div>
+      {enabled && (
+        <>
+          <div role="group" aria-label="Allowed companies" className="grid grid-cols-2 gap-2">
+            {KNOWN_COMPANIES.map(c => (
+              <label key={c.id} className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={list.includes(c.id)}
+                  onChange={() => toggleCompany(c.id)}
+                  aria-label={`Allow ${c.label}`}
+                  className="h-4 w-4 rounded border-gray-300 text-emerald-600 focus:ring-emerald-500"
+                />
+                <span>{c.label}</span>
+                <span className="text-xs text-gray-400 font-mono">{c.id}</span>
+              </label>
+            ))}
+          </div>
+          {customSelections.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {customSelections.map(id => (
+                <span key={id} className="inline-flex items-center gap-1 text-xs bg-emerald-100 dark:bg-emerald-900/40 text-emerald-800 dark:text-emerald-300 rounded-full px-2 py-0.5 font-mono">
+                  {id}
+                  <button type="button" onClick={() => toggleCompany(id)} aria-label={`Remove ${id}`} className="text-emerald-600 hover:text-red-500">×</button>
+                </span>
+              ))}
+            </div>
+          )}
+          <div className="mt-2 flex items-center gap-2">
+            <input
+              type="text"
+              value={custom}
+              onChange={e => setCustom(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addCustom() } }}
+              placeholder="add custom company id (lowercase)"
+              className="flex-1 px-3 py-2 text-sm rounded-lg border bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 border-gray-300 dark:border-gray-600 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500 focus:outline-none"
+            />
+            <Button size="sm" variant="outline" type="button" onClick={addCustom} disabled={!custom.trim()}>Add</Button>
+          </div>
+          {list.length === 0 && (
+            <p className="text-xs text-amber-500 mt-2">
+              Allowlist ON with no entries → every provider is dropped on every request.
+            </p>
+          )}
+        </>
+      )}
+    </div>
+  )
+}
+
+// Shared editor for blocked_models + allowed_models. Both accept
+// list[str] of exact names OR fnmatch globs ("claude-*",
+// "gpt-4-*-turbo"). null = no per-key restriction.
+function ModelPatternEditor({
+  kind, value, setValue,
+}: {
+  kind: 'blocked' | 'allowed'
+  value: string[] | null
+  setValue: (v: string[] | null) => void
+}) {
+  const enabled = value !== null
+  const list = value ?? []
+  const isBlocked = kind === 'blocked'
+
+  function toggle(on: boolean) {
+    setValue(on ? [] : null)
+  }
+  function updateRow(i: number, next: string) {
+    const out = [...list]
+    out[i] = next
+    setValue(out)
+  }
+  function removeRow(i: number) {
+    setValue(list.filter((_, j) => j !== i))
+  }
+  function addRow() {
+    setValue([...list, ''])
+  }
+
+  const title = isBlocked ? 'Blocked models' : 'Allowed models (allowlist mode)'
+  const hint = isBlocked
+    ? 'Each entry is an exact model name OR an fnmatch glob ("claude-*", "gpt-4-*-turbo"). Match is case-insensitive against the provider\'s default_model AND the request\'s requested_model — defense in depth against misconfigured providers. Deny wins: a model in both blocked and allowed lists is BLOCKED.'
+    : 'When ON, only models matching one of these patterns are eligible. fnmatch globs ("claude-*") and exact names both work. A non-matching provider OR a non-matching requested_model drops the candidate. blocked_models wins over this.'
+  const accent = isBlocked ? 'red' : 'emerald'
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1.5">
+        <div className="flex items-center gap-1">
+          <label className="text-sm font-medium text-gray-700 dark:text-gray-300">{title}</label>
+          <HelpHint text={hint} />
+        </div>
+        <Switch checked={enabled} onChange={toggle} ariaLabel={`Enable ${kind} models`} />
+      </div>
+      {enabled && (
+        <div className="space-y-2">
+          {list.map((p, i) => (
+            <div key={i} className="flex items-center gap-2">
+              <input
+                type="text"
+                value={p}
+                onChange={e => updateRow(i, e.target.value)}
+                placeholder={isBlocked ? 'claude-opus-4-* or claude-3-5-sonnet' : 'gpt-*'}
+                className="flex-1 px-3 py-2 text-sm rounded-lg border bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 border-gray-300 dark:border-gray-600 focus:outline-none font-mono"
+              />
+              <button
+                type="button"
+                onClick={() => removeRow(i)}
+                aria-label={`Remove ${kind} model row ${i + 1}`}
+                className="p-1.5 text-gray-400 hover:text-red-500 rounded"
+              >
+                <Trash2 className="h-4 w-4" />
+              </button>
+            </div>
+          ))}
+          <Button size="sm" variant="outline" type="button" onClick={addRow}>
+            <Plus className="h-3.5 w-3.5 mr-1" />Add pattern
+          </Button>
+          {list.length === 0 && !isBlocked && (
+            <p className="text-xs text-amber-500">
+              Allowlist ON with no patterns → every provider is dropped (the model gate never passes).
+            </p>
+          )}
+          <p className={`text-xs text-${accent}-500 dark:text-${accent}-400`}>
+            {isBlocked
+              ? 'Empty list = block nothing (toggle OFF instead to be explicit).'
+              : 'Patterns match case-insensitively against provider.default_model + requested_model.'}
+          </p>
+        </div>
+      )}
     </div>
   )
 }

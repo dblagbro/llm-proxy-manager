@@ -223,7 +223,12 @@ export const keysApi = {
     rate_limit_rpm?: number
     blocked_companies?: string[] | null
     allowed_paths?: string[] | null
+    // v5.2.1 / Batch V2 — fine-grained policy on create.
+    allowed_companies?: string[] | null
+    blocked_models?: string[] | null
+    allowed_models?: string[] | null
     debug_echo_enabled?: boolean
+    reason?: string
     // v5.1.0 / Batch B2 — clone caps + compliance from an existing key.
     copy_from_id?: string
   }) =>
