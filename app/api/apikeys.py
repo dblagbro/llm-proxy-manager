@@ -44,6 +44,15 @@ class KeyCreate(BaseModel):
     # blocked_companies/allowed_paths are non-empty (policy edit).
     blocked_companies: Optional[List[str]] = None
     allowed_paths: Optional[List[str]] = None
+    # v5.2.1 / Batch V2 — fine-grained policy fields. Non-empty
+    # ``allowed_companies`` switches that dimension to allowlist mode.
+    # ``*_models`` entries can be exact model names or fnmatch globs
+    # ("claude-*", "gpt-4-*-turbo"); matched against the provider's
+    # default_model AND the request's requested_model. See
+    # ``docs/vendor-neutrality.md`` for semantics + examples.
+    allowed_companies: Optional[List[str]] = None
+    blocked_models: Optional[List[str]] = None
+    allowed_models: Optional[List[str]] = None
     debug_echo_enabled: Optional[bool] = False
     reason: Optional[str] = None
     # v5.1.0 / Batch B2 — copy caps + compliance fields from an existing
@@ -73,6 +82,11 @@ class KeyUpdate(BaseModel):
     # when either ``blocked_companies`` or ``allowed_paths`` change.
     blocked_companies: Optional[List[str]] = None
     allowed_paths: Optional[List[str]] = None
+    # v5.2.1 — fine-grained policy fields. ``reason`` is mandatory on
+    # change for these too (audit-trail consistency with blocked_companies).
+    allowed_companies: Optional[List[str]] = None
+    blocked_models: Optional[List[str]] = None
+    allowed_models: Optional[List[str]] = None
     debug_echo_enabled: Optional[bool] = None
     reason: Optional[str] = None
 
@@ -172,19 +186,44 @@ async def create_key(
             body.blocked_companies = list(src.blocked_companies) if src.blocked_companies else None
         if body.allowed_paths is None:
             body.allowed_paths = list(src.allowed_paths) if src.allowed_paths else None
+        # v5.2.1 — copy fine-grained policy too. Same null-means-"take-source"
+        # semantics so an operator cloning a strict-policy key gets the
+        # same allowlist + per-model rules by default.
+        if body.allowed_companies is None and getattr(src, "allowed_companies", None):
+            body.allowed_companies = list(src.allowed_companies)
+        if body.blocked_models is None and getattr(src, "blocked_models", None):
+            body.blocked_models = list(src.blocked_models)
+        if body.allowed_models is None and getattr(src, "allowed_models", None):
+            body.allowed_models = list(src.allowed_models)
         if body.debug_echo_enabled is False:
             body.debug_echo_enabled = bool(src.debug_echo_enabled)
         # Reason is auto-set if copied compliance fields and the
         # operator didn't provide one explicitly.
-        if (body.blocked_companies or body.allowed_paths) and not body.reason:
+        if (
+            body.blocked_companies or body.allowed_paths
+            or body.allowed_companies or body.blocked_models or body.allowed_models
+        ) and not body.reason:
             body.reason = f"copied from key {src.key_prefix} ({src.name})"
 
     # v5.0.0 — validate compliance fields. ``blocked_companies`` must be
     # known company IDs; reason required when policy is set at create time.
+    # v5.2.1 — extended to allowed_companies + per-model patterns. Same
+    # reason-on-policy-set rule applies.
     if body.blocked_companies:
         _validate_blocked_companies(body.blocked_companies)
-        if not (body.reason and body.reason.strip()):
-            raise HTTPException(422, "reason required when setting blocked_companies")
+    if body.allowed_companies:
+        _validate_blocked_companies(body.allowed_companies)
+    if body.blocked_models:
+        _validate_model_patterns(body.blocked_models)
+    if body.allowed_models:
+        _validate_model_patterns(body.allowed_models)
+    _v521_set = any((
+        body.allowed_companies, body.blocked_models, body.allowed_models,
+    ))
+    if (body.blocked_companies or body.allowed_paths or _v521_set) and not (
+        body.reason and body.reason.strip()
+    ):
+        raise HTTPException(422, "reason required when setting compliance policy")
     key = ApiKey(
         id=secrets.token_hex(8),
         name=body.name,
@@ -202,17 +241,30 @@ async def create_key(
         semantic_cache_enabled=body.semantic_cache_enabled,
         blocked_companies=body.blocked_companies,
         allowed_paths=body.allowed_paths,
+        # v5.2.1 — fine-grained policy fields persisted on create
+        allowed_companies=body.allowed_companies,
+        blocked_models=body.blocked_models,
+        allowed_models=body.allowed_models,
         debug_echo_enabled=bool(body.debug_echo_enabled),
     )
     db.add(key)
     await db.commit()
     await db.refresh(key)
-    if body.blocked_companies or body.allowed_paths:
+    if body.blocked_companies or body.allowed_paths or _v521_set:
         await _emit_compliance_policy_change(
             db, key=key,
-            before={"blocked_companies": None, "allowed_paths": None},
-            after={"blocked_companies": body.blocked_companies,
-                   "allowed_paths": body.allowed_paths},
+            before={
+                "blocked_companies": None, "allowed_paths": None,
+                "allowed_companies": None,
+                "blocked_models": None, "allowed_models": None,
+            },
+            after={
+                "blocked_companies": body.blocked_companies,
+                "allowed_paths":     body.allowed_paths,
+                "allowed_companies": body.allowed_companies,
+                "blocked_models":    body.blocked_models,
+                "allowed_models":    body.allowed_models,
+            },
             reason=body.reason or "initial-policy-on-create",
             user_id=user.user_id,
         )
@@ -264,7 +316,11 @@ async def update_key(
     policy_changed = False
     before = {
         "blocked_companies": list(k.blocked_companies) if k.blocked_companies else None,
-        "allowed_paths": list(k.allowed_paths) if k.allowed_paths else None,
+        "allowed_paths":     list(k.allowed_paths)     if k.allowed_paths     else None,
+        # v5.2.1 — fine-grained policy snapshot in the audit row
+        "allowed_companies": list(k.allowed_companies) if k.allowed_companies else None,
+        "blocked_models":    list(k.blocked_models)    if k.blocked_models    else None,
+        "allowed_models":    list(k.allowed_models)    if k.allowed_models    else None,
     }
     if body.blocked_companies is not None:
         _validate_blocked_companies(body.blocked_companies)
@@ -274,6 +330,26 @@ async def update_key(
     if body.allowed_paths is not None:
         if (k.allowed_paths or None) != (body.allowed_paths or None):
             k.allowed_paths = body.allowed_paths or None
+            policy_changed = True
+    # v5.2.1 — fine-grained policy update wiring. Allowed_companies
+    # reuses the company-id validator (same constraint applies). Model
+    # patterns are accepted as strings — the policy engine evaluates
+    # them via fnmatch at match time, so the only thing to validate is
+    # that they're non-empty strings.
+    if body.allowed_companies is not None:
+        _validate_blocked_companies(body.allowed_companies)
+        if (k.allowed_companies or None) != (body.allowed_companies or None):
+            k.allowed_companies = body.allowed_companies or None
+            policy_changed = True
+    if body.blocked_models is not None:
+        _validate_model_patterns(body.blocked_models)
+        if (k.blocked_models or None) != (body.blocked_models or None):
+            k.blocked_models = body.blocked_models or None
+            policy_changed = True
+    if body.allowed_models is not None:
+        _validate_model_patterns(body.allowed_models)
+        if (k.allowed_models or None) != (body.allowed_models or None):
+            k.allowed_models = body.allowed_models or None
             policy_changed = True
     if body.debug_echo_enabled is not None:
         k.debug_echo_enabled = bool(body.debug_echo_enabled)
@@ -288,7 +364,10 @@ async def update_key(
     if policy_changed:
         after = {
             "blocked_companies": list(k.blocked_companies) if k.blocked_companies else None,
-            "allowed_paths": list(k.allowed_paths) if k.allowed_paths else None,
+            "allowed_paths":     list(k.allowed_paths)     if k.allowed_paths     else None,
+            "allowed_companies": list(k.allowed_companies) if k.allowed_companies else None,
+            "blocked_models":    list(k.blocked_models)    if k.blocked_models    else None,
+            "allowed_models":    list(k.allowed_models)    if k.allowed_models    else None,
         }
         await _emit_compliance_policy_change(
             db, key=k, before=before, after=after,
@@ -509,6 +588,10 @@ def _serialize(k: ApiKey) -> dict:
         # v5.0.0 — compliance per-key fields
         "blocked_companies": list(k.blocked_companies) if k.blocked_companies else None,
         "allowed_paths": list(k.allowed_paths) if k.allowed_paths else None,
+        # v5.2.1 / Batch V2 — fine-grained vendor-neutrality policy
+        "allowed_companies": list(getattr(k, "allowed_companies", None) or []) or None,
+        "blocked_models":    list(getattr(k, "blocked_models",    None) or []) or None,
+        "allowed_models":    list(getattr(k, "allowed_models",    None) or []) or None,
         "debug_echo_enabled": bool(getattr(k, "debug_echo_enabled", False)),
         "day_cost_usd": float(k.day_cost_usd or 0.0),
         "hour_cost_usd": float(k.hour_cost_usd or 0.0),
@@ -532,6 +615,32 @@ def _validate_blocked_companies(ids: List[str]) -> None:
             400,
             f"Unknown company IDs in blocked_companies: {bad}. "
             f"Allowed: {sorted(allowed)}",
+        )
+
+
+# v5.2.1 / Batch V2 — model patterns can be exact names ("claude-opus-4-0")
+# or fnmatch globs ("claude-*", "gpt-4-*-turbo"). The policy engine
+# evaluates them with fnmatch at match time, so the boundary check is
+# narrow: non-empty strings, no whitespace, plausible length. Anything
+# else falls through to the matcher which simply won't match.
+_MAX_MODEL_PATTERN_LEN = 128
+
+
+def _validate_model_patterns(patterns: List[str]) -> None:
+    if not patterns:
+        return
+    bad = [
+        p for p in patterns
+        if not isinstance(p, str) or not p.strip()
+        or len(p) > _MAX_MODEL_PATTERN_LEN
+        or any(ch.isspace() for ch in p)
+    ]
+    if bad:
+        raise HTTPException(
+            400,
+            f"Invalid model patterns: {bad}. Each must be a non-empty "
+            f"string ≤{_MAX_MODEL_PATTERN_LEN} chars with no whitespace. "
+            f"Wildcards (*, ?) are honored by the matcher.",
         )
 
 

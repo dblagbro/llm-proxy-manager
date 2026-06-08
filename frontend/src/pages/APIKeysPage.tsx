@@ -58,9 +58,19 @@ export function APIKeysPage() {
   const [createBlockedCompanies, setCreateBlockedCompanies] = useState<string[]>([])
   const [createAllowedPaths, setCreateAllowedPaths] = useState<string[] | null>(null)
   const [createDebugEcho, setCreateDebugEcho] = useState(false)
+  // v5.3.0 — fine-grained policy state on create. null = no per-key
+  // restriction (legacy behavior); non-empty allowedCompanies switches
+  // that dimension to allowlist mode. Model lists accept fnmatch globs.
+  const [createAllowedCompanies, setCreateAllowedCompanies] = useState<string[] | null>(null)
+  const [createBlockedModels, setCreateBlockedModels] = useState<string[] | null>(null)
+  const [createAllowedModels, setCreateAllowedModels] = useState<string[] | null>(null)
   const [editBlockedCompanies, setEditBlockedCompanies] = useState<string[]>([])
   const [editAllowedPaths, setEditAllowedPaths] = useState<string[] | null>(null)
   const [editDebugEcho, setEditDebugEcho] = useState(false)
+  // v5.3.0 — fine-grained policy state on edit
+  const [editAllowedCompanies, setEditAllowedCompanies] = useState<string[] | null>(null)
+  const [editBlockedModels, setEditBlockedModels] = useState<string[] | null>(null)
+  const [editAllowedModels, setEditAllowedModels] = useState<string[] | null>(null)
   const [reasonPrompt, setReasonPrompt] = useState<{
     summary: string
     payload: Partial<ApiKey>
@@ -115,7 +125,21 @@ export function APIKeysPage() {
       // server records "explicit no per-key block" vs "no opinion".
       blocked_companies: createBlockedCompanies.length > 0 ? createBlockedCompanies : null,
       allowed_paths: createAllowedPaths,
+      // v5.3.0 / Batch V2 UI — fine-grained policy on create. null = no
+      // per-key restriction; empty list isn't a meaningful state for the
+      // editor (it toggles between null and a non-empty list).
+      allowed_companies: createAllowedCompanies && createAllowedCompanies.length > 0 ? createAllowedCompanies : null,
+      blocked_models:    createBlockedModels    && createBlockedModels.length    > 0 ? createBlockedModels    : null,
+      allowed_models:    createAllowedModels    && createAllowedModels.length    > 0 ? createAllowedModels    : null,
       debug_echo_enabled: createDebugEcho,
+      // Auto-reason when any policy field is set; backend requires one
+      // on policy-bearing create per decision 6.
+      reason: (
+        createBlockedCompanies.length > 0 || createAllowedPaths !== null
+        || (createAllowedCompanies && createAllowedCompanies.length > 0)
+        || (createBlockedModels && createBlockedModels.length > 0)
+        || (createAllowedModels && createAllowedModels.length > 0)
+      ) ? `initial policy on create (${form.name || 'new key'})` : undefined,
       // v5.1.1 / Batch B2 UI — backend pre-fills unset caps + policy
       // from the source key when this is set.
       copy_from_id: copyFromId || undefined,
@@ -260,8 +284,19 @@ export function APIKeysPage() {
     const blockedChanged = !_arrayEqual(original.blocked_companies ?? null, nextBlocked)
     const pathsChanged = !_arrayEqual(original.allowed_paths ?? null, editAllowedPaths)
     const echoChanged = Boolean(original.debug_echo_enabled) !== editDebugEcho
+    // v5.3.0 — fine-grained policy diff. Each dimension uses the same
+    // null-vs-list state machine as allowed_paths.
+    const nextAllowedCompanies = editAllowedCompanies && editAllowedCompanies.length > 0 ? editAllowedCompanies : null
+    const nextBlockedModels    = editBlockedModels    && editBlockedModels.length    > 0 ? editBlockedModels    : null
+    const nextAllowedModels    = editAllowedModels    && editAllowedModels.length    > 0 ? editAllowedModels    : null
+    const allowedCompaniesChanged = !_arrayEqual(original.allowed_companies ?? null, nextAllowedCompanies)
+    const blockedModelsChanged    = !_arrayEqual(original.blocked_models    ?? null, nextBlockedModels)
+    const allowedModelsChanged    = !_arrayEqual(original.allowed_models    ?? null, nextAllowedModels)
 
-    if (!capChanged && !rpmChanged && !blockedChanged && !pathsChanged && !echoChanged) {
+    if (
+      !capChanged && !rpmChanged && !blockedChanged && !pathsChanged && !echoChanged
+      && !allowedCompaniesChanged && !blockedModelsChanged && !allowedModelsChanged
+    ) {
       setEditKey(null)
       return
     }
@@ -273,13 +308,23 @@ export function APIKeysPage() {
     if (blockedChanged) payload.blocked_companies = nextBlocked
     if (pathsChanged)   payload.allowed_paths    = editAllowedPaths
     if (echoChanged)    payload.debug_echo_enabled = editDebugEcho
+    if (allowedCompaniesChanged) payload.allowed_companies = nextAllowedCompanies
+    if (blockedModelsChanged)    payload.blocked_models    = nextBlockedModels
+    if (allowedModelsChanged)    payload.allowed_models    = nextAllowedModels
 
-    if (blockedChanged || pathsChanged) {
+    const policyChanged = (
+      blockedChanged || pathsChanged
+      || allowedCompaniesChanged || blockedModelsChanged || allowedModelsChanged
+    )
+    if (policyChanged) {
       // Decision 6: policy changes require a reason. Hand control to the
       // ReasonPromptModal; the actual PATCH fires from its onConfirm.
       const parts: string[] = []
-      if (blockedChanged) parts.push('blocked_companies')
-      if (pathsChanged)   parts.push('allowed_paths')
+      if (blockedChanged)          parts.push('blocked_companies')
+      if (pathsChanged)            parts.push('allowed_paths')
+      if (allowedCompaniesChanged) parts.push('allowed_companies')
+      if (blockedModelsChanged)    parts.push('blocked_models')
+      if (allowedModelsChanged)    parts.push('allowed_models')
       setReasonPrompt({
         summary: `Changing ${parts.join(' + ')} on key ${original.name || original.key_prefix}.`,
         payload,
@@ -397,6 +442,12 @@ export function APIKeysPage() {
     setEditBlockedCompanies(k.blocked_companies ?? [])
     setEditAllowedPaths(k.allowed_paths ?? null)
     setEditDebugEcho(Boolean(k.debug_echo_enabled))
+    // v5.3.0 — seed fine-grained policy state. Backend returns null for
+    // legacy keys with no opinion on these dimensions; that preserves
+    // the editor's null-vs-list state machine (allowlist-mode-OFF vs ON).
+    setEditAllowedCompanies(k.allowed_companies ?? null)
+    setEditBlockedModels(k.blocked_models ?? null)
+    setEditAllowedModels(k.allowed_models ?? null)
   }
 
   function fmtDate(ts: string) {
@@ -751,6 +802,12 @@ export function APIKeysPage() {
                 setAllowedPaths={setCreateAllowedPaths}
                 debugEchoEnabled={createDebugEcho}
                 setDebugEchoEnabled={setCreateDebugEcho}
+                allowedCompanies={createAllowedCompanies}
+                setAllowedCompanies={setCreateAllowedCompanies}
+                blockedModels={createBlockedModels}
+                setBlockedModels={setCreateBlockedModels}
+                allowedModels={createAllowedModels}
+                setAllowedModels={setCreateAllowedModels}
               />
             </div>
           )}
@@ -809,6 +866,12 @@ export function APIKeysPage() {
               setAllowedPaths={setEditAllowedPaths}
               debugEchoEnabled={editDebugEcho}
               setDebugEchoEnabled={setEditDebugEcho}
+              allowedCompanies={editAllowedCompanies}
+              setAllowedCompanies={setEditAllowedCompanies}
+              blockedModels={editBlockedModels}
+              setBlockedModels={setEditBlockedModels}
+              allowedModels={editAllowedModels}
+              setAllowedModels={setEditAllowedModels}
             />
           </ModalBody>
           <ModalFooter>

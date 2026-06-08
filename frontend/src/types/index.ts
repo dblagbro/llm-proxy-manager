@@ -201,6 +201,13 @@ export interface ApiKey {
   // still applies). debug_echo_enabled gates /api/debug/echo-client.
   blocked_companies?: string[] | null
   allowed_paths?: string[] | null
+  // v5.2.1 / Batch V2 — fine-grained policy. allowed_companies non-empty
+  // switches that dimension to allowlist mode. blocked_models /
+  // allowed_models entries can be exact names or fnmatch globs
+  // ("claude-*", "gpt-4-*-turbo"); null = no per-key restriction.
+  allowed_companies?: string[] | null
+  blocked_models?: string[] | null
+  allowed_models?: string[] | null
   debug_echo_enabled?: boolean
   // v5.1.1 / Batch B1 UI — present when ?include_deleted=true is used
   // (Trash tab). null/undefined for live keys.
