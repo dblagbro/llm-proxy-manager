@@ -116,10 +116,18 @@ def test_toggle_writes_audit_row_to_compliance_policy_changes():
     """The toggle MUST write to compliance_policy_changes (the right
     audit home for system-scope policy edits); the daily audit chain
     sweeper covers that table, so tampering after a flip breaks the
-    chain."""
-    src = Path("app/monitoring/logging_controls.py").read_text()
-    assert "from app.models.db import CompliancePolicyChange" in src
-    assert 'scope="system"' in src
+    chain.
+
+    v5.3.3 — the audit-write machinery moved from logging_controls.py
+    into the shared ``_bool_system_setting`` factory, but the guarantee
+    is still that the toggle flow writes a system-scope policy-change
+    row. Two-file pin: factory holds the write; shim still has to
+    construct the factory."""
+    factory_src = Path("app/monitoring/_bool_system_setting.py").read_text()
+    assert "from app.models.db import SystemSetting, CompliancePolicyChange" in factory_src
+    assert 'scope="system"' in factory_src
+    shim_src = Path("app/monitoring/logging_controls.py").read_text()
+    assert "BoolSystemSetting(" in shim_src
 
 
 # ── Batch B1: trash bin + restore ──────────────────────────────────
