@@ -38,6 +38,86 @@ class CredentialParseError(ValueError):
     """Raised by parse_credentials when the blob can't be interpreted."""
 
 
+def normalize_messages_for_bridge(messages: list) -> list:
+    """v5.3.6 — emulate OpenAI Chat Completions tolerance for messages
+    whose ``content`` is a list (multimodal / parts shape).
+
+    The JiuZ-Chn ``cursor-to-openai`` bridge enforces ``content: string``
+    strictly — anything else is rejected with::
+
+        Error: request.messages.content: string expected
+        at generateCursorBody (src/utils/utils.js:79)
+
+    Real OpenAI accepts either ``string`` OR ``list[part]``. To keep
+    callers (claude-cli, opencode-bin, our own coordinator-hub bot)
+    working against cursor-oauth providers without forcing every caller
+    to know about the bridge's stricter shape, this helper coerces
+    every ``role:*`` message's ``content`` list to a single joined
+    string before dispatch.
+
+    Coercion rules:
+    - ``str`` → unchanged
+    - ``list`` of typed parts:
+      - ``{type:"text", text:...}`` (OpenAI) → ``text`` field
+      - ``{type:"image_url", ...}`` (OpenAI) → ``[image]`` placeholder
+      - ``{type:"input_text"|"output_text", text:...}`` (Responses
+        shape) → ``text`` field
+      - other shapes are stringified via ``json.dumps`` so the bridge
+        sees SOMETHING, never silently dropped.
+    - empty / falsy list → empty string (the cursor-oauth
+      ``_oauth_chat_translate`` path stamps a placeholder upstream so
+      this rarely fires)
+    - ``None`` → unchanged (assistant tool_calls turns legitimately
+      carry ``content: null``)
+
+    This is PROVIDER-ADAPTER emulation scope — we're matching the
+    bridge's specific shape constraint, NOT silently rewriting caller
+    intent. The text content is preserved verbatim; only the SHAPE
+    changes.
+    """
+    import json as _json
+    if not isinstance(messages, list):
+        return messages
+    out: list = []
+    for m in messages:
+        if not isinstance(m, dict):
+            out.append(m)
+            continue
+        content = m.get("content")
+        if not isinstance(content, list):
+            out.append(m)
+            continue
+        parts: list[str] = []
+        for blk in content:
+            if isinstance(blk, str):
+                parts.append(blk)
+                continue
+            if not isinstance(blk, dict):
+                parts.append(_json.dumps(blk))
+                continue
+            t = blk.get("type")
+            if t in ("text", "input_text", "output_text", "summary_text"):
+                txt = blk.get("text") or ""
+                if txt:
+                    parts.append(txt)
+            elif t == "image_url" or t == "image":
+                parts.append("[image]")
+            elif t == "refusal":
+                refusal_text = blk.get("refusal") or ""
+                if refusal_text:
+                    parts.append(f"[refusal: {refusal_text}]")
+            else:
+                # Unknown shape — preserve via JSON dump so the bridge
+                # sees SOMETHING. Never silently drop, so a future block
+                # type addition (proxy or upstream) surfaces in the
+                # bridge's request log instead of vanishing.
+                parts.append(_json.dumps(blk))
+        new_msg = dict(m)
+        new_msg["content"] = "\n".join(parts)
+        out.append(new_msg)
+    return out
+
+
 def looks_like_cursor_token(s: str) -> bool:
     """Cheap shape-test the dispatcher uses to flag a malformed
     Provider.api_key before sending it upstream. Cursor cookies look
