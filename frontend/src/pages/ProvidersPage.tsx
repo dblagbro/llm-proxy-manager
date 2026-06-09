@@ -184,24 +184,85 @@ export function ProvidersPage() {
     onError: (e: Error) => toast.error(e.message),
   })
 
-  // v3.9.19 — bulk-refresh Anthropic Console usage for every claude-oauth
-  // account, re-evaluating rotation rules. Used after Anthropic resets
-  // counters early so over-cap accounts drop back into service without
-  // waiting for the next 4-hour scrape cycle.
+  // v3.9.19 (initial) + v5.3.5 (parity ship): bulk-refresh subscription
+  // usage stats for EVERY credentialed claude-oauth + ChatGPT-oauth-plan +
+  // cursor-oauth provider, re-evaluating rotation rules across all three.
+  // Pre-v5.3.5 only fired the Anthropic endpoint; Codex + Cursor were
+  // worker-only (4h cadence) with no manual trigger. Now fans out to all
+  // three vendors in parallel and aggregates the per-vendor counts into
+  // a single toast.
   const refreshBillingMutation = useMutation({
-    mutationFn: () => providersApi.refreshAllBilling(),
+    mutationFn: async () => {
+      const [anth, codex, cursor] = await Promise.allSettled([
+        providersApi.refreshAllBilling(),
+        providersApi.refreshAllCodexBilling(),
+        providersApi.refreshAllCursorBilling(),
+      ])
+      const pick = <T extends { providers: number; scraped_ok: number; returned_to_service: number }>(
+        r: PromiseSettledResult<T>,
+      ): T => r.status === 'fulfilled' ? r.value : ({ providers: 0, scraped_ok: 0, returned_to_service: 0 } as T)
+      const a = pick(anth)
+      const c = pick(codex)
+      const cu = pick(cursor)
+      return {
+        providers: a.providers + c.providers + cu.providers,
+        scraped_ok: a.scraped_ok + c.scraped_ok + cu.scraped_ok,
+        returned_to_service: a.returned_to_service + c.returned_to_service + cu.returned_to_service,
+        per_vendor: {
+          anthropic: { providers: a.providers, scraped_ok: a.scraped_ok, error: anth.status === 'rejected' ? anth.reason?.message : undefined },
+          codex:     { providers: c.providers, scraped_ok: c.scraped_ok, error: codex.status === 'rejected' ? codex.reason?.message : undefined },
+          cursor:    { providers: cu.providers, scraped_ok: cu.scraped_ok, error: cursor.status === 'rejected' ? cursor.reason?.message : undefined },
+        },
+      }
+    },
     onSuccess: (data) => {
       qc.invalidateQueries({ queryKey: ['providers'] })
       qc.invalidateQueries({ queryKey: ['claude-oauth-snapshots'] })
+      qc.invalidateQueries({ queryKey: ['subscription-snapshots'] })
       if (data.providers === 0) {
-        toast.error('No claude-oauth accounts have billing credentials configured')
+        toast.error('No subscription accounts (claude-oauth / codex-oauth / cursor-oauth) configured')
       } else if (data.scraped_ok === 0) {
-        toast.error(`Usage refresh failed for all ${data.providers} account${data.providers !== 1 ? 's' : ''} — check session cookies`)
+        toast.error(`Usage refresh failed for all ${data.providers} accounts — check OAuth tokens / cookies`)
       } else if (data.returned_to_service > 0) {
         toast.success(`Refreshed ${data.scraped_ok}/${data.providers} accounts — ${data.returned_to_service} returned to service`)
       } else {
-        toast.success(`Refreshed ${data.scraped_ok}/${data.providers} account${data.providers !== 1 ? 's' : ''} — usage stats updated`)
+        toast.success(`Refreshed ${data.scraped_ok}/${data.providers} accounts — usage stats updated`)
       }
+    },
+    onError: (e: Error) => toast.error(e.message),
+  })
+
+  // v5.3.5 — per-provider scrape (mirrors the bulk button above but
+  // for one row in the expanded card). Routes to the correct vendor
+  // endpoint based on the provider's type. Single mutation handle so
+  // the Expanded card's loading state only spins for the row that was
+  // clicked (checked via .variables?.id === p.id in the render).
+  const refreshOneUsageMutation = useMutation({
+    mutationFn: async (provider: Provider) => {
+      if (provider.provider_type === 'claude-oauth') {
+        return await providersApi.refreshBillingNow(provider.id)
+      }
+      if (provider.provider_type === 'ChatGPT-oauth-plan') {
+        return await providersApi.refreshCodexBillingNow(provider.id)
+      }
+      if (provider.provider_type === 'cursor-oauth') {
+        return await providersApi.refreshCursorBillingNow(provider.id)
+      }
+      throw new Error(`No billing scrape endpoint for provider_type=${provider.provider_type}`)
+    },
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: ['providers'] })
+      qc.invalidateQueries({ queryKey: ['subscription-snapshots'] })
+      if (!data.ok) {
+        toast.error(`Scrape failed: ${data.auth_state}${data.http_status ? ` (HTTP ${data.http_status})` : ''}`)
+        return
+      }
+      const fh = (data as { five_hour_utilization?: number | null }).five_hour_utilization
+      const sd = (data as { seven_day_utilization?: number | null }).seven_day_utilization
+      const fhStr = fh != null ? `5h: ${fh.toFixed(0)}%` : null
+      const sdStr = sd != null ? `7d: ${sd.toFixed(0)}%` : null
+      const parts = [fhStr, sdStr].filter(Boolean)
+      toast.success(parts.length > 0 ? `Scrape OK — ${parts.join(' · ')}` : 'Scrape OK')
     },
     onError: (e: Error) => toast.error(e.message),
   })
@@ -318,7 +379,15 @@ export function ProvidersPage() {
   const claudeOauthPreferred: string | null = pickPerType('claude-oauth')
   const cursorOauthPreferred: string | null = pickPerType('cursor-oauth')
 
-  const hasClaudeOauth = (providers ?? []).some(p => p.provider_type === 'claude-oauth')
+  // v5.3.5 — gate the bulk button on ANY subscription provider type
+  // (was just claude-oauth; now also includes ChatGPT-oauth-plan and
+  // cursor-oauth so the button appears on the compliance-locked cluster
+  // where claude-oauth is intentionally tombstoned).
+  const hasAnySubscriptionProvider = (providers ?? []).some(
+    p => p.provider_type === 'claude-oauth'
+      || p.provider_type === 'ChatGPT-oauth-plan'
+      || p.provider_type === 'cursor-oauth',
+  )
 
   return (
     <div className="p-6 space-y-6 max-w-6xl">
@@ -328,13 +397,13 @@ export function ProvidersPage() {
           <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">{providers?.length ?? 0} configured</p>
         </div>
         <div className="flex items-center gap-2 shrink-0">
-          {hasClaudeOauth && (
+          {hasAnySubscriptionProvider && (
             <Button
               onClick={() => refreshBillingMutation.mutate()}
               loading={refreshBillingMutation.isPending}
               size="sm"
               variant="outline"
-              title="Scrape fresh Anthropic Console usage for every claude-oauth account and re-evaluate rotation rules. Use after Anthropic resets counters early to drop over-cap accounts back into service."
+              title="Scrape fresh subscription usage for every claude-oauth + ChatGPT-oauth-plan + cursor-oauth account in parallel and re-evaluate rotation rules. Use after a vendor resets counters early, after re-auth, or right after a tier upgrade to confirm propagation."
             >
               <RefreshCw className="h-4 w-4 mr-1.5" />Refresh Usage Stats
             </Button>
@@ -644,6 +713,25 @@ export function ProvidersPage() {
                       <Button size="sm" variant="outline" onClick={() => scanMutation.mutate(p.id)} loading={scanMutation.isPending}>
                         <RefreshCw className="h-3.5 w-3.5 mr-1" />Scan Models
                       </Button>
+                      {/* v5.3.5 — per-provider usage scrape button in the
+                          expanded card, so the operator doesn't have to
+                          open the Edit modal just to refresh one account's
+                          subscription stats. Only rendered for provider
+                          types with a billing scrape endpoint configured
+                          (claude-oauth / ChatGPT-oauth-plan / cursor-oauth). */}
+                      {(p.provider_type === 'claude-oauth'
+                        || p.provider_type === 'ChatGPT-oauth-plan'
+                        || p.provider_type === 'cursor-oauth') && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => refreshOneUsageMutation.mutate(p)}
+                          loading={refreshOneUsageMutation.isPending && refreshOneUsageMutation.variables?.id === p.id}
+                          title={`Scrape this account's subscription usage from ${p.provider_type === 'claude-oauth' ? 'Anthropic Console' : p.provider_type === 'ChatGPT-oauth-plan' ? 'ChatGPT' : 'Cursor dashboard'} immediately and re-evaluate rotation rules.`}
+                        >
+                          <RefreshCw className="h-3.5 w-3.5 mr-1" />Refresh Usage
+                        </Button>
+                      )}
                       <Button size="sm" variant="outline" onClick={() => toggleMutation.mutate(p.id)} loading={toggleMutation.isPending}>
                         {p.enabled ? <ToggleRight className="h-3.5 w-3.5 mr-1" /> : <ToggleLeft className="h-3.5 w-3.5 mr-1" />}
                         {p.enabled ? 'Disable' : 'Enable'}

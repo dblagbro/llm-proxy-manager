@@ -205,6 +205,47 @@ export const providersApi = {
       http_status: number | null
       snapshot_id: number | null
     }>(`/api/providers/${id}/codex-billing-refresh`, {}),
+  // v5.3.5 — Cursor billing parity (mirrors codex/anthropic above)
+  refreshCursorBillingNow: (id: string) =>
+    api.post<{
+      ok: boolean
+      auth_state: string
+      http_status: number | null
+      snapshot_id: number | null
+      seven_day_utilization?: number | null
+      five_hour_utilization?: number | null
+    }>(`/api/providers/${id}/cursor-billing-refresh`, {}),
+  refreshAllCursorBilling: () =>
+    api.post<{
+      providers: number
+      scraped_ok: number
+      returned_to_service: number
+      results: Array<{
+        provider_id: string
+        provider_name: string
+        ok: boolean
+        error?: string
+        auth_state?: string | null
+        seven_day_utilization?: number | null
+        rotation_decision?: string | null
+      }>
+    }>('/api/providers/_refresh-all-cursor-billing', {}),
+  // v5.3.5 — Codex bulk equivalent of refreshAllBilling (Anthropic)
+  refreshAllCodexBilling: () =>
+    api.post<{
+      providers: number
+      scraped_ok: number
+      returned_to_service: number
+      results: Array<{
+        provider_id: string
+        provider_name: string
+        ok: boolean
+        error?: string
+        auth_state?: string | null
+        seven_day_utilization?: number | null
+        rotation_decision?: string | null
+      }>
+    }>('/api/providers/_refresh-all-codex-billing', {}),
   // v3.7.28 (#252 phase 1) — bulk-release all manual override locks
   // (the "Release all to AI control" banner button)
   releaseManualOverrides: () =>

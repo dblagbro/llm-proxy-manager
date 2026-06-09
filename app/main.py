@@ -51,6 +51,8 @@ from app.api.lmrh import router as lmrh_router
 from app.api.llm_models import router as llm_models_router
 from app.api.anthropic_billing import router as anthropic_billing_router
 from app.api.codex_billing import router as codex_billing_router
+# v5.3.5 — cursor billing parity (Anthropic + Codex equivalent).
+from app.api.cursor_billing import router as cursor_billing_router
 from app.api.admin_cluster_read import router as admin_cluster_read_router
 from app.api.ai_provider_supervisor import router as ai_provider_supervisor_router
 from app.api.airi import router as airi_router
@@ -559,6 +561,7 @@ app.include_router(lmrh_router)
 app.include_router(llm_models_router)
 app.include_router(anthropic_billing_router)
 app.include_router(codex_billing_router)
+app.include_router(cursor_billing_router)  # v5.3.5
 app.include_router(admin_cluster_read_router)  # v4.3.5 HMAC-auth admin reads (hub)
 app.include_router(ai_provider_supervisor_router)
 app.include_router(airi_router)  # v4.0 — AIRI chat (feature-flagged)

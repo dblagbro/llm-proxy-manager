@@ -189,7 +189,13 @@ def test_providers_page_has_refresh_button():
     assert "refreshBillingMutation" in src
     assert "refreshAllBilling" in src
     assert "Refresh Usage Stats" in src
-    # Button only shown when claude-oauth providers exist
-    assert "hasClaudeOauth" in src
+    # v5.3.5 — gate generalized from hasClaudeOauth to
+    # hasAnySubscriptionProvider so the button appears on the
+    # compliance-locked cluster (where claude-oauth is intentionally
+    # tombstoned but ChatGPT-oauth-plan + cursor-oauth are present).
+    assert "hasAnySubscriptionProvider" in src
     # Refreshed data invalidates the providers + snapshots queries
     assert "claude-oauth-snapshots" in src
+    # v5.3.5 — bulk button fans out to all 3 subscription vendors.
+    assert "refreshAllCodexBilling" in src
+    assert "refreshAllCursorBilling" in src
