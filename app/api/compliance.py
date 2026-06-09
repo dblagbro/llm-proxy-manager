@@ -355,6 +355,50 @@ async def admin_compliance_audit_worker(
     return {"worker": snap, "chain_recent": chain}
 
 
+@router.get("/api/compliance/taxonomy")
+async def compliance_taxonomy(_: AdminUser = Depends(require_admin)):
+    """v5.3.2 — lightweight company taxonomy for the frontend policy
+    editor's multi-select dropdowns. Returns just ``{id, label, source}``
+    triples so the editor can render the same labels the runtime
+    resolver uses, including any operator-defined custom companies
+    that were previously invisible to the WebUI (hardcoded
+    ``KNOWN_COMPANIES`` in ``frontend/src/types/index.ts`` was the
+    v5.2 audit deferral noted in
+    ``docs/v5.2-vendor-neutrality-compliance-report.md`` risks #1 + #2).
+
+    ``source`` distinguishes built-in companies from operator-defined
+    custom entries so the UI can badge them differently if desired.
+    Sorted by label for stable rendering.
+
+    Admin-only because the policy editor is admin-only. The much
+    richer ``/api/admin/policy-snapshot`` returns the full taxonomy
+    (model prefixes, provider types, UA patterns) for the hub team's
+    canonical-policy import path; this endpoint is the trim version
+    that the UI dropdown needs.
+    """
+    custom = get_custom_companies()
+    items: list[dict] = []
+    for cid, info in KNOWN_COMPANIES.items():
+        items.append({
+            "id": cid,
+            "label": info.get("display_name", cid),
+            "source": "known",
+        })
+    for cid, entry in custom.items():
+        # Skip if this custom entry is overriding a known one — the
+        # known entry already covered it in the loop above. The runtime
+        # resolver follows the same precedence.
+        if cid in KNOWN_COMPANIES:
+            continue
+        items.append({
+            "id": cid,
+            "label": entry.get("display_name", cid),
+            "source": "custom",
+        })
+    items.sort(key=lambda x: x["label"].lower())
+    return {"companies": items}
+
+
 @router.get("/api/admin/policy-snapshot")
 async def admin_policy_snapshot(_: AdminUser = Depends(require_admin)):
     """v5.0.7 — single-shot snapshot of the canonical compliance policy.

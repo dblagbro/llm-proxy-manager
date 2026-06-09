@@ -8,11 +8,29 @@
 //
 // Designed to be small and reusable; the parent owns state.
 import { useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { Plus, Trash2 } from 'lucide-react'
 import { Switch } from '@/components/ui/Switch'
 import { Button } from '@/components/ui/Button'
 import { HelpHint } from '@/components/ui/HelpHint'
-import { KNOWN_COMPANIES } from '@/types'
+import { KNOWN_COMPANIES, type CompanyChoice } from '@/types'
+import { complianceApi } from '@/api'
+
+// v5.3.2 — fetch the live taxonomy so operator-defined custom
+// companies (COMPLIANCE_CUSTOM_COMPANIES env JSON) surface in the
+// policy-editor dropdowns. Falls back to the static KNOWN_COMPANIES
+// list during the first paint, on fetch error, and on legacy
+// deployments where the endpoint hasn't shipped yet (defense-in-depth).
+function useCompanyTaxonomy(): CompanyChoice[] {
+  const { data } = useQuery({
+    queryKey: ['compliance-taxonomy'],
+    queryFn: complianceApi.taxonomy,
+    staleTime: 5 * 60_000,  // 5 min — taxonomy is near-static
+    retry: 1,
+  })
+  if (!data?.companies?.length) return KNOWN_COMPANIES
+  return data.companies.map(c => ({ id: c.id, label: c.label }))
+}
 
 const PROD_CLI_PRESET = ['/v1/chat/completions', '/v1/models', '/health']
 
@@ -44,6 +62,8 @@ export function ComplianceFieldsEditor({
   allowedModels, setAllowedModels,
 }: Props) {
   const [customCompany, setCustomCompany] = useState('')
+  // v5.3.2 — live taxonomy with KNOWN_COMPANIES fallback.
+  const companies = useCompanyTaxonomy()
 
   function toggleCompany(id: string) {
     if (blockedCompanies.includes(id)) {
@@ -95,7 +115,7 @@ export function ComplianceFieldsEditor({
   }
 
   const customSelections = blockedCompanies.filter(
-    id => !KNOWN_COMPANIES.some(c => c.id === id),
+    id => !companies.some(c => c.id === id),
   )
 
   return (
@@ -117,7 +137,7 @@ export function ComplianceFieldsEditor({
           aria-label="Blocked companies"
           className="grid grid-cols-2 gap-2"
         >
-          {KNOWN_COMPANIES.map(c => (
+          {companies.map(c => (
             <label
               key={c.id}
               className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300 cursor-pointer"
@@ -298,6 +318,10 @@ function CompanyAllowlistEditor({
   const enabled = value !== null
   const list = value ?? []
   const [custom, setCustom] = useState('')
+  // v5.3.2 — same live taxonomy as the parent; useQuery dedupes via
+  // queryKey so this is one HTTP call regardless of how many
+  // sub-pickers mount.
+  const companies = useCompanyTaxonomy()
 
   function toggle(on: boolean) {
     setValue(on ? [] : null)
@@ -314,7 +338,7 @@ function CompanyAllowlistEditor({
   }
 
   const customSelections = list.filter(
-    id => !KNOWN_COMPANIES.some(c => c.id === id),
+    id => !companies.some(c => c.id === id),
   )
 
   return (
@@ -331,7 +355,7 @@ function CompanyAllowlistEditor({
       {enabled && (
         <>
           <div role="group" aria-label="Allowed companies" className="grid grid-cols-2 gap-2">
-            {KNOWN_COMPANIES.map(c => (
+            {companies.map(c => (
               <label key={c.id} className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300 cursor-pointer">
                 <input
                   type="checkbox"
