@@ -7,6 +7,7 @@ import type { ProviderType, Provider } from '@/types'
 import { GrokWebProviderFields } from './GrokWebProviderFields'
 import { AnthropicBillingPanel } from './AnthropicBillingPanel'
 import { CodexBillingPanel } from './CodexBillingPanel'
+import { CursorBillingPanel } from './CursorBillingPanel'
 import { NodeBridgeStatusPanel } from './NodeBridgeStatusPanel'
 
 const PROVIDER_TYPES: ProviderType[] = [
@@ -461,6 +462,17 @@ export function ProviderForm({ form, onChange, editing, provider, onProviderUpda
           the analytics endpoint URL since it isn't documented. */}
       {editing && provider && form.provider_type === 'ChatGPT-oauth-plan' && (
         <CodexBillingPanel
+          provider={provider}
+          onUpdated={onProviderUpdated}
+        />
+      )}
+
+      {/* v5.3.5 — Cursor dashboard usage scrape parity. v4.4.41 added
+          the scraper + worker but never wired the manual-trigger UI;
+          this panel closes the gap. Same OAuth-token-based design as
+          the Codex panel above. */}
+      {editing && provider && form.provider_type === 'cursor-oauth' && (
+        <CursorBillingPanel
           provider={provider}
           onUpdated={onProviderUpdated}
         />

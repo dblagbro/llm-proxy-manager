@@ -92,3 +92,58 @@ async def codex_refresh_now(
             "provider has no OAuth access_token — complete the ChatGPT-oauth-plan login flow first",
         )
     return await scrape_provider_into_snapshot(db, provider)
+
+
+@router.post("/_refresh-all-codex-billing")
+async def refresh_all_codex_billing(
+    db: AsyncSession = Depends(get_db),
+    _: AdminUser = Depends(require_admin),
+):
+    """v5.3.5 — bulk equivalent to ``_refresh-all-anthropic-billing``.
+    Fires a Codex scrape for every ChatGPT-oauth-plan provider with a
+    stored OAuth access_token. One bad provider doesn't abort the
+    sweep; per-provider results returned for operator review."""
+    from app.providers.codex_billing import scrape_provider_into_snapshot
+
+    rs = await db.execute(
+        select(Provider)
+        .where(Provider.provider_type == "ChatGPT-oauth-plan")
+        .where(Provider.deleted_at.is_(None))
+        .where(Provider.api_key.is_not(None))
+    )
+    providers = rs.scalars().all()
+
+    results: list[dict] = []
+    scraped_ok = 0
+    returned_to_service = 0
+    for provider in providers:
+        try:
+            r = await scrape_provider_into_snapshot(db, provider)
+        except Exception as exc:  # noqa: BLE001 — one bad provider must not abort the sweep
+            results.append({
+                "provider_id": provider.id,
+                "provider_name": provider.name,
+                "ok": False,
+                "error": str(exc),
+            })
+            continue
+        decision = (r.get("rotation_decision") or {}).get("decision")
+        ok = bool(r.get("ok", False))
+        if ok:
+            scraped_ok += 1
+        if decision == "returned_to_service":
+            returned_to_service += 1
+        results.append({
+            "provider_id": provider.id,
+            "provider_name": provider.name,
+            "ok": ok,
+            "auth_state": r.get("auth_state"),
+            "seven_day_utilization": r.get("seven_day_utilization"),
+            "rotation_decision": decision,
+        })
+    return {
+        "providers": len(providers),
+        "scraped_ok": scraped_ok,
+        "returned_to_service": returned_to_service,
+        "results": results,
+    }
