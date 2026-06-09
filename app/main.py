@@ -97,6 +97,12 @@ logging.getLogger("uvicorn.access").addFilter(_HealthAccessLogFilter())
 # longer invisible to observability.
 from app.observability.infra_error_tap import install_infra_error_tap
 install_infra_error_tap()
+# v5.3.4 — tap openai-python's transparent-retry INFO line into a
+# Prometheus counter + stop it from spamming stdout. Pre-tap, the
+# openai-python http layer would absorb 14 retries during a 13-min
+# burst (c1conv 2026-06-09 04:22-04:35 UTC) with no signal anywhere.
+from app.observability.openai_retry_tap import install_openai_retry_tap
+install_openai_retry_tap()
 
 # v3.0.24 (#136): tone down litellm's INFO-level chatter (per-call
 # "LiteLLM completion() model=..." lines). Errors / warnings still flow.
