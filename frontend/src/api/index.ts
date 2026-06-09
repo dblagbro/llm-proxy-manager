@@ -300,6 +300,13 @@ export const complianceApi = {
   },
   clusterReady: () =>
     api.get<ClusterComplianceReadiness>('/api/admin/cluster/compliance-ready'),
+  // v5.3.2 — lightweight company list for the policy-editor dropdowns.
+  // Returns KNOWN_COMPANIES + any operator-defined custom entries
+  // (COMPLIANCE_CUSTOM_COMPANIES env JSON). Sorted by label.
+  taxonomy: () =>
+    api.get<{ companies: { id: string; label: string; source: 'known' | 'custom' }[] }>(
+      '/api/compliance/taxonomy',
+    ),
 }
 
 // v5.1.0 / Batch C1 — activity-log on/off toggle (compliance panic button)
