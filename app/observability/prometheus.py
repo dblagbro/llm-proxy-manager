@@ -177,6 +177,24 @@ INFRA_ERRORS_TOTAL = Counter(
     ["source", "fault_class"],  # source: pool|asgi ; fault_class: disconnect|fault
 )
 
+# v5.3.4 — openai-python client transparent-retry counter. The
+# openai-python http layer retries on its own (default 2 retries) and
+# absorbs the resulting transient upstream errors before they reach
+# ``litellm``'s response object. From our app's view a request that
+# took 14s with 3 underlying upstream errors looks identical to a
+# successful 200 in 14s. This counter taps the
+# ``INFO:openai._base_client:Retrying request to <endpoint> in N
+# seconds`` log line so we can spot rising upstream flakiness BEFORE
+# the openai client exhausts its retries and returns a 500 to us.
+# Today's c1conv finding: 14 retries clustered in a 13-min burst on
+# 2026-06-09 04:22-04:35 UTC, invisible to activity_log because
+# everything returned 200 eventually.
+OPENAI_RETRIES_TOTAL = Counter(
+    "llm_proxy_openai_retries_total",
+    "openai-python client transparent retries, tapped from its INFO logger.",
+    ["endpoint"],  # /chat/completions | /messages | other
+)
+
 SERVICE_INFO = Info("llm_proxy_service", "Service metadata.")
 
 _CB_STATE_MAP = {"closed": 0, "half-open": 1, "open": 2}
@@ -187,6 +205,17 @@ def observe_infra_error(source: str, fault_class: str) -> None:
     logging handler, which must not fail."""
     try:
         INFRA_ERRORS_TOTAL.labels(source=source, fault_class=fault_class).inc()
+    except Exception:
+        pass
+
+
+def observe_openai_retry(endpoint: str) -> None:
+    """Increment the openai-python retry counter for ``endpoint``
+    (e.g. ``"/chat/completions"``). Never raises — called from a
+    logging handler, which must not fail. ``endpoint`` collapses to
+    ``"other"`` when unparseable so the cardinality stays bounded."""
+    try:
+        OPENAI_RETRIES_TOTAL.labels(endpoint=endpoint or "other").inc()
     except Exception:
         pass
 
