@@ -108,6 +108,22 @@ async def acompletion_with_retry(
     if await is_llm_stopped_session_less():
         raise LLMEmergencyStopError()
 
+    # v5.3.6 — cursor-bridge content-shape emulation. The third-party
+    # JiuZ-Chn cursor-to-openai bridge that backs cursor-oauth
+    # providers rejects messages where ``content`` is a list (it
+    # requires ``string``). Real OpenAI accepts both. Coerce here so
+    # every caller (request handlers + background workers) benefits
+    # without each having to remember the bridge's stricter shape.
+    # Cheap detection: cursor-oauth providers always have a base_url
+    # pointing at ``llm-proxy2-cursor-bridge`` and the model is
+    # always litellm-prefixed ``openai/...`` per
+    # ``PROVIDER_TYPE_TO_LITELLM``; the api_base kwarg passed by the
+    # router is the cleanest discriminator.
+    api_base = kwargs.get("api_base") or ""
+    if "cursor-bridge" in api_base:
+        from app.providers.cursor_oauth import normalize_messages_for_bridge
+        messages = normalize_messages_for_bridge(messages)
+
     deprecation_retry_done = False
     current_model = model
     for attempt in range(max_retries + 1):
