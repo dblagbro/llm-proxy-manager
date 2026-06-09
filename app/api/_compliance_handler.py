@@ -341,6 +341,21 @@ async def emit_substitution_disclosure_for_route(
     if not getattr(route, "compliance_substituted", False):
         return {}, None, False
 
+    # v5.3.1 — defense-in-depth no-op skip. The router occasionally
+    # marks a route as ``compliance_substituted=True`` even when the
+    # served model ends up identical to what the caller asked for
+    # (cross-family normalization paths). Emitting a
+    # ``model_substitution`` audit row that says "we substituted X
+    # with X" adds noise to the audit trail without information.
+    # Observed 2026-06-08: 6 such rows/week/node on the hub canary
+    # (gemini-2.5-flash → gemini/gemini-2.5-flash). Match is
+    # case-insensitive + strips the litellm ``provider/`` prefix on
+    # the served side so anthropic/claude-haiku == claude-haiku.
+    _req = (orig_request_model or "").lower()
+    _served = (route.litellm_model or orig_request_model or "").lower().split("/", 1)[-1]
+    if _req and _req == _served:
+        return {}, None, False
+
     audit_id = generate_audit_id()
     served_model = route.litellm_model or orig_request_model
     disclosure = build_disclosure_payload(
