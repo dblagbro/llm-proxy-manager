@@ -269,6 +269,32 @@ def build_base_response_headers(
 # ── 5. Provider selection (with 503 conversion + auto-model resolution) ──────
 
 
+def _layer_logical_alias_hint(hint, alias_name: str):
+    """v5.3.8 — layer ``LOGICAL_ALIASES[alias]["hint"]`` into the request's
+    LMRH hint, as the v5.0.0 design intended (``aliases.resolve_logical_alias``
+    docstring promised this happened in the caller — it never did, so
+    logical-alias requests carried NO routing constraints and the alias
+    string itself leaked into the capability filter as a model name).
+
+    Caller-supplied dimensions win: alias dims are only appended for keys
+    the caller didn't set, so an explicit ``LLM-Hint: task=reasoning``
+    still overrides coordinator-code's ``task=code``.
+    """
+    from app.routing.lmrh.parse import parse_hint
+    from app.routing.aliases import logical_alias_hint
+
+    alias_hint = parse_hint(logical_alias_hint(alias_name))
+    if alias_hint is None:
+        return hint
+    if hint is None:
+        return alias_hint
+    existing_keys = {d.key for d in hint.dimensions}
+    for dim in alias_hint.dimensions:
+        if dim.key not in existing_keys:
+            hint.dimensions.append(dim)
+    return hint
+
+
 async def select_provider_with_503(
     db: AsyncSession,
     hint,
@@ -307,6 +333,27 @@ async def select_provider_with_503(
     # v3.0.46 cross-family-fallback path.
     requested_model = (alias.model_id if alias else parsed_slug.bare_model) or None
 
+    # v5.3.8 — logical aliases (coordinator-code/-fast/-reasoning/-local)
+    # are routing DIRECTIVES, not model names. Two fixes here:
+    #   1. Layer the alias's LMRH hint into the request hint (the v5.0.0
+    #      design said the caller does this — no caller ever did, so the
+    #      aliases carried zero routing constraints).
+    #   2. Do NOT pass the alias as ``model_override``. No provider has a
+    #      capability row matching "coordinator-code", so the v3.0.22
+    #      capability filter excluded every SCANNED provider and left only
+    #      never-scanned ones ("give it a try") — on GCP that made an
+    #      unscanned cursor-oauth provider the SOLE candidate, the alias
+    #      went verbatim to the cursor-bridge, and Cursor's
+    #      ERROR_BAD_MODEL_NAME came back 200-wrapped as an empty
+    #      completion (fleet-wide deterministic opencode EMPTY).
+    # Dispatch substitution happens in ``resolve_auto_model_into_body``
+    # (logical aliases now substitute like ``auto``). An operator-created
+    # ModelAlias DB row with the same name still wins (alias pin above).
+    from app.routing.aliases import is_logical_alias
+    _logical = alias is None and is_logical_alias(requested_model)
+    if _logical:
+        hint = _layer_logical_alias_hint(hint, requested_model)
+
     # v5.0.4 — F-anomaly fix (hub-team-flagged 2026-06-04). When the
     # caller requests ``coordinator-local`` (CADC §6.2 logical alias),
     # enforce the self-hosted hard filter HERE so the 503 carries the
@@ -337,7 +384,10 @@ async def select_provider_with_503(
             has_images=has_images,
             key_type=key_record.key_type,
             pinned_provider_id=alias.provider_id if alias else None,
-            model_override=requested_model,
+            # v5.3.8 — logical aliases bypass the family/capability filters
+            # entirely (the LMRH hint layered above carries the routing
+            # constraints); a literal model name still flows through.
+            model_override=None if _logical else requested_model,
             sort_mode=parsed_slug.sort_mode,
             api_key_id=key_record.id,  # v3.0.45 tenant scoping
             est_input_tokens=_estimate_input_tokens(messages),  # v4.1 context gate
@@ -378,16 +428,24 @@ def resolve_auto_model_into_body(body: dict, route, is_auto: bool) -> dict:
     downstream dispatch (claude-oauth direct, codex-oauth direct, litellm)
     sees a real model name. Idempotent if ``is_auto`` is False.
 
+    v5.3.8 — logical aliases (coordinator-code etc.) substitute the same
+    way. Before this, the alias string went verbatim into the dispatch
+    (Cursor upstream answered ERROR_BAD_MODEL_NAME, 200-wrapped by the
+    bridge into an empty completion).
+
     Raises HTTP 502 if auto-routing chose a provider with no
     ``default_model`` to fall back to.
     """
     if not is_auto:
-        return body
+        from app.routing.aliases import is_logical_alias
+        if not is_logical_alias(body.get("model")):
+            return body
     resolved_model = route.profile.model_id or route.provider.default_model
     if not resolved_model:
         raise HTTPException(
             502,
-            f"auto-routing chose {route.provider.name!r} but it has no default_model set",
+            f"routing chose {route.provider.name!r} for {body.get('model')!r} "
+            f"but it has no default_model set",
         )
     return {**body, "model": resolved_model}
 
