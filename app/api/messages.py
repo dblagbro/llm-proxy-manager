@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.database import get_db
 from app.auth.keys import verify_api_key
 from app.routing.router import select_provider
+from app.routing.litellm_binding import clamp_thinking_budget
 from app.cot.tool_emulation import (
     build_anthropic_tool_prompt,
     normalize_anthropic_messages,
@@ -389,6 +390,8 @@ async def messages(
     # - Anthropic extended-thinking: forward the client's `thinking` block as-is
     if route.native_thinking_params:
         extra.update(route.native_thinking_params)
+        # v5.3.7 — keep Gemini thinking budget below max_tokens (empty-success fix)
+        clamp_thinking_budget(extra)
     elif thinking and route.profile.provider_type == "anthropic":
         extra["thinking"] = thinking
 
@@ -729,6 +732,8 @@ async def messages(
                         if tools: b_extra["tools"] = tools
                         if backup_route.native_thinking_params:
                             b_extra.update(backup_route.native_thinking_params)
+                            # v5.3.7 — keep Gemini thinking budget below max_tokens (empty-success fix)
+                            clamp_thinking_budget(b_extra)
                         return _stream_anthropic(
                             backup_route.litellm_model, messages_list, b_extra,
                             backup_route.provider.id,
@@ -823,6 +828,8 @@ async def messages(
                     local_extra["tools"] = tools
                 if r.native_thinking_params:
                     local_extra.update(r.native_thinking_params)
+                    # v5.3.7 — keep Gemini thinking budget below max_tokens (empty-success fix)
+                    clamp_thinking_budget(local_extra)
                 elif thinking and r.profile.provider_type == "anthropic":
                     local_extra["thinking"] = thinking
                 if anthropic_beta and r.profile.provider_type == "anthropic":

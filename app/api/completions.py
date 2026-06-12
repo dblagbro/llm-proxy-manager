@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.database import get_db
 from app.auth.keys import verify_api_key
 from app.routing.router import select_provider
+from app.routing.litellm_binding import clamp_thinking_budget
 from app.monitoring.helpers import record_outcome
 from app.api.image_utils import has_images_openai, strip_images_openai
 from app.routing.aliases import resolve_alias
@@ -241,6 +242,8 @@ async def chat_completions(
         extra.update(route.native_thinking_params)
         if "reasoning_effort" in route.native_thinking_params and body.get("reasoning_effort"):
             extra["reasoning_effort"] = body["reasoning_effort"]
+        # v5.3.7 — keep Gemini thinking budget below max_tokens (empty-success fix)
+        clamp_thinking_budget(extra)
 
     vision_routed_count = 0
     if route.vision_stripped:
@@ -644,6 +647,7 @@ async def chat_completions(
                         if body.get("temperature") is not None: b_extra["temperature"] = body["temperature"]
                         if backup_route.native_thinking_params:
                             b_extra.update(backup_route.native_thinking_params)
+                            clamp_thinking_budget(b_extra)
                         return _stream_openai(
                             backup_route.litellm_model, messages_list, b_extra,
                             backup_route.provider.id,
@@ -766,6 +770,7 @@ async def chat_completions(
                     local_extra.update(r.native_thinking_params)
                     if "reasoning_effort" in r.native_thinking_params and body.get("reasoning_effort"):
                         local_extra["reasoning_effort"] = body["reasoning_effort"]
+                    clamp_thinking_budget(local_extra)
                 return await acompletion_with_retry(
                     model=r.litellm_model, messages=messages_list,
                     stream=False, **local_extra,
