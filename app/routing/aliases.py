@@ -37,6 +37,27 @@ LOGICAL_ALIASES: dict[str, dict[str, Any]] = {
 }
 
 
+def is_logical_alias(model: Optional[str]) -> bool:
+    """True when ``model`` is one of the four CADC logical aliases.
+
+    v5.3.8 — logical aliases are ROUTING DIRECTIVES, not model names.
+    They must never reach the router's family/capability filters as a
+    ``model_override`` (no provider has a capability row matching
+    "coordinator-code", so the filter excludes every SCANNED provider
+    and leaves only never-scanned ones — the exact misroute that sent
+    the whole GCP alias workload to an unscanned cursor-oauth provider,
+    which then 200-wrapped Cursor's ERROR_BAD_MODEL_NAME as an empty
+    completion). They must also never be dispatched verbatim upstream.
+    """
+    return bool(model) and model in LOGICAL_ALIASES
+
+
+def logical_alias_hint(alias: str) -> Optional[str]:
+    """Return the LMRH hint string for a logical alias, or None."""
+    entry = LOGICAL_ALIASES.get(alias)
+    return entry["hint"] if entry else None
+
+
 # Provider types that are inherently self-hosted. The
 # ``is_self_hosted_provider`` predicate also accepts opt-in marker fields
 # on the generic ``openai-compatible`` / ``custom`` types and on the

@@ -36,6 +36,7 @@ logger = logging.getLogger(__name__)
 # successful". Extend this list as new patterns are observed.
 _ERROR_MARKERS = (
     "ERROR_RATE_LIMITED_CHANGEABLE",
+    "ERROR_BAD_MODEL_NAME",  # v5.3.8 — Cursor "Model name is not valid"
     "resource_exhausted",
     "Named models unavailable",
     "Free plans can only use Auto",
@@ -130,6 +131,20 @@ def looks_like_empty_success_failure(
     evaluated.
     """
     try:
+        # v5.3.8 — shapeless error body: a 2xx response with NEITHER
+        # ``choices`` (OpenAI) NOR ``content`` (Anthropic) but an
+        # ``error`` key is a wrapped upstream failure, full stop. The
+        # cursor-bridge passes upstream error JSON through with HTTP 200
+        # and no completion shape at all; pre-v5.3.8 this fell through
+        # every branch below and forwarded as success.
+        if (
+            isinstance(response_dict, dict)
+            and "choices" not in response_dict
+            and "content" not in response_dict
+            and response_dict.get("error")
+        ):
+            return True
+
         # OpenAI shape first
         choices = response_dict.get("choices") if isinstance(response_dict, dict) else None
         if choices is not None:
