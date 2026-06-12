@@ -37,6 +37,7 @@ from app.routing.aliases import resolve_alias
 from app.api._messages_streaming import (
     _stream_cot_anthropic, _stream_anthropic, _webhook_completion_anthropic,
     preflight_sse, http_status_for_stream_error,
+    buffer_sse_until_content, stream_with_empty_guard,
 )
 from app.api._messages_dispatch import (
     dispatch_claude_oauth_chain, _select_excluding,
@@ -763,14 +764,29 @@ async def messages(
                             f"Upstream error before streaming began: {_herr}",
                         )
 
-                    async def _replay_hedged_stream(_f=_hfirst, _g=racer):
-                        yield _f
-                        async for _c in _g:
-                            yield _c
+                    # v5.3.9 — empty-success guard on the hedged winner;
+                    # on a content-free 200 stream record the breaker
+                    # failure and fall through to the guarded non-hedged
+                    # path below. (Mirrors completions.py.)
+                    _hframes, _h_has_content, racer = await buffer_sse_until_content(_hfirst, racer)
+                    if _h_has_content:
+                        async def _replay_hedged_stream(_fs=_hframes, _g=racer):
+                            for _f in _fs:
+                                yield _f
+                            async for _c in _g:
+                                yield _c
 
-                    return StreamingResponse(
-                        _replay_hedged_stream(),
-                        media_type="text/event-stream", headers=resp_headers,
+                        return StreamingResponse(
+                            _replay_hedged_stream(),
+                            media_type="text/event-stream", headers=resp_headers,
+                        )
+                    await racer.aclose()
+                    from app.routing.circuit_breaker import record_failure as _rec_fail
+                    _dead_id = route.provider.id if winner == "primary" else backup_route.provider.id
+                    await _rec_fail(_dead_id, billing_error=False)
+                    logger.warning(
+                        "hedged stream empty-success (winner=%s provider=%s) — "
+                        "falling through to guarded non-hedged path", winner, _dead_id,
                     )
             elif wait_ms is not None:
                 observe_hedge_bucket_reject()
@@ -781,27 +797,48 @@ async def messages(
             # frame. Matches the claude-oauth streaming path, which already
             # pre-flights. A mid-stream failure (after message_start) still
             # degrades to an SSE error frame — the 200 is already sent.
-            _gen = _stream_anthropic(
-                route.litellm_model, messages_list, extra, route.provider.id,
-                db, key_record.id, time.monotonic(), max_tokens,
-                cache_decision=cache_decision,
-                llm_hint=llm_hint,
-                api_key_id=key_record.id,
-                conversation_id=x_conversation_id,
-                memory_tag=x_memory_tag,
-                compliance_disclosure=_compliance_disclosure,
-                accept_compliance_events=_compliance_wants_sse_prelude,
-            )
-            _first, _stream_err, _gen = await preflight_sse(_gen)
-            if _stream_err is not None:
-                await _gen.aclose()
-                raise HTTPException(
-                    http_status_for_stream_error(_stream_err),
-                    f"Upstream error before streaming began: {_stream_err}",
+            # v5.3.9 — wrapped in stream_with_empty_guard: a 200 +
+            # content-free SSE stream (dead cursor-bridge pattern) records
+            # a breaker failure and fails over instead of piping the
+            # emptiness to the caller. (Mirrors completions.py.)
+            def _start_anthropic_stream(_r):
+                if _r is route:
+                    _e, _cd = extra, cache_decision
+                else:
+                    _e = {**_r.litellm_kwargs, "max_tokens": max_tokens}
+                    if system: _e["system"] = system
+                    if tools: _e["tools"] = tools
+                    if _r.native_thinking_params:
+                        _e.update(_r.native_thinking_params)
+                        clamp_thinking_budget(_e)
+                    _cd = None  # don't store failover output under primary's key
+                return _stream_anthropic(
+                    _r.litellm_model, messages_list, _e, _r.provider.id,
+                    db, key_record.id, time.monotonic(), max_tokens,
+                    cache_decision=_cd,
+                    llm_hint=llm_hint,
+                    api_key_id=key_record.id,
+                    conversation_id=x_conversation_id,
+                    memory_tag=x_memory_tag,
+                    compliance_disclosure=_compliance_disclosure,
+                    accept_compliance_events=_compliance_wants_sse_prelude,
                 )
 
-            async def _replay_anthropic_stream(_f=_first, _g=_gen):
-                yield _f
+            from app.routing.aliases import is_logical_alias as _is_logical_alias
+            _req_model = (alias.model_id if alias else parsed_slug.bare_model) or None
+            _frames, _gen, _served_route = await stream_with_empty_guard(
+                start_stream=_start_anthropic_stream, route=route, db=db,
+                hint=hint, has_tools=has_tools, has_images=has_images,
+                key_type=key_record.key_type, api_key_id=key_record.id,
+                model_override=None if (is_auto or (alias is None and _is_logical_alias(_req_model))) else _req_model,
+            )
+            if _served_route is not route:
+                resp_headers["X-Empty-Stream-Failover"] = "true"
+                resp_headers["X-Empty-Stream-Failover-Target"] = _served_route.provider.provider_type
+
+            async def _replay_anthropic_stream(_fs=_frames, _g=_gen):
+                for _f in _fs:
+                    yield _f
                 async for _c in _g:
                     yield _c
 
