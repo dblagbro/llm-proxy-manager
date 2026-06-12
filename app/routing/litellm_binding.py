@@ -25,8 +25,11 @@ callers (every `from app.routing.router import …` site in the tree)
 keep working without changes — this is a behavior-preserving move."""
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -299,3 +302,42 @@ def _native_thinking_params(provider_type: str, model_id: str) -> dict:
     if provider_type == "openai" and _O_SERIES.match(m):
         return {"reasoning_effort": settings.native_reasoning_effort}
     return {}
+
+
+# v5.3.7 (BUG: Gemini empty-success completions) — thinking tokens count
+# toward maxOutputTokens on Gemini 2.5, so a fixed budget_tokens (default
+# 8192) >= the caller's max_tokens lets the model burn the ENTIRE output
+# cap on internal reasoning and return HTTP 200 with empty content + zero
+# completion text. Observed fleet-wide on coordinator-hub callers
+# 2026-06-10..12 (10-30% empty-completion rate at max_tokens=1024..4096;
+# 0% at max_tokens=32768). 128 is the floor because Gemini 2.5 Pro's
+# thinkingBudget minimum is 128 (Flash accepts 0 but Pro 400s below 128).
+_THINKING_CONTENT_HEADROOM = 1024
+_THINKING_BUDGET_MIN = 128
+
+
+def clamp_thinking_budget(extra: dict) -> dict:
+    """Shrink ``extra['thinking'].budget_tokens`` so content tokens always
+    have headroom under ``extra['max_tokens']``. No-op unless both are
+    present. Mutates and returns ``extra``. Never raises — a malformed
+    thinking dict is left untouched (litellm will surface its own error).
+    """
+    try:
+        thinking = extra.get("thinking")
+        max_tokens = extra.get("max_tokens")
+        if not isinstance(thinking, dict) or not isinstance(max_tokens, int):
+            return extra
+        budget = thinking.get("budget_tokens")
+        if not isinstance(budget, int) or max_tokens <= 0:
+            return extra
+        if budget + _THINKING_CONTENT_HEADROOM > max_tokens:
+            new_budget = max(_THINKING_BUDGET_MIN, min(budget, max_tokens // 2))
+            if new_budget != budget:
+                logger.info(
+                    "thinking-budget clamp: %s -> %s (max_tokens=%s)",
+                    budget, new_budget, max_tokens,
+                )
+                thinking["budget_tokens"] = new_budget
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.warning("clamp_thinking_budget failed: %r — forwarding as-is", exc)
+    return extra
