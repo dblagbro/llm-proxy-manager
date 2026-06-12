@@ -66,7 +66,55 @@ async def get_state(provider_id: str) -> CBState:
                 s.state = CBState.HALF_OPEN
                 s.successes = 0
                 _export_gauge(provider_id, s.state)
+            # v5.3.9 — auto-probe on hold-down expiry. Pre-fix, a CB
+            # in half-open would wait for ORGANIC traffic to test it;
+            # for low-volume providers that means the CB could stay in
+            # half-open for tens of minutes showing "tripped" in the UI
+            # while nothing was actually wrong with the upstream. Fire
+            # one keepalive probe immediately — if it succeeds, the CB
+            # closes (after the existing 2-success hysteresis); if it
+            # fails, back to open with a fresh hold-down. Run as a
+            # detached task so the caller (route selection) doesn't
+            # wait on the probe — best-effort.
+            _schedule_auto_probe(provider_id)
     return s.state
+
+
+def _schedule_auto_probe(provider_id: str) -> None:
+    """Fire-and-forget one synthetic probe when a CB transitions to
+    half-open. Uses the existing keepalive probe path so the success/
+    failure flows through ``record_outcome`` and the CB state machine
+    closes itself if the upstream is actually fine.
+
+    Defensive — any failure to schedule (no event loop, import error
+    during shutdown, etc.) is swallowed so it can't break route
+    selection."""
+    try:
+        import asyncio
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return  # not in an async context
+    async def _probe():
+        try:
+            from app.models.database import AsyncSessionLocal
+            from app.models.db import Provider
+            from sqlalchemy import select as _select
+            async with AsyncSessionLocal() as db:
+                rs = await db.execute(_select(Provider).where(Provider.id == provider_id))
+                provider = rs.scalar_one_or_none()
+                if provider is None or provider.deleted_at is not None:
+                    return
+                from app.monitoring.keepalive import _probe_one
+                await _probe_one(provider)
+        except Exception as exc:
+            logger.debug(
+                "circuit_breaker.auto_probe_failed provider=%s err=%r",
+                provider_id, exc,
+            )
+    try:
+        loop.create_task(_probe())
+    except Exception:
+        pass
 
 
 async def is_available(provider_id: str) -> bool:
@@ -198,6 +246,44 @@ BILLING_ERROR_PATTERNS = [
 def is_billing_error(error_text: str) -> bool:
     low = error_text.lower()
     return any(p in low for p in BILLING_ERROR_PATTERNS)
+
+
+# v5.3.9 — caller-side error classifier. Today the CB increments
+# failures on ANY error class, which means a malformed body from a
+# caller (the bot sent an orphan tool_call_id, a list-content where
+# the upstream wanted string, etc.) trips OUR provider's CB as if the
+# UPSTREAM had failed. 2026-06-12 c1conv audit: ~62% of CB trips that
+# day were caused by caller bugs, not by the providers themselves.
+# Punishing the provider for the bot's mistake forces operator
+# intervention (manual re-test) when nothing is actually wrong with the
+# upstream.
+#
+# Classes that ARE caller-side (proxy or upstream-spec rejection of a
+# malformed body — the upstream is rejecting the SHAPE, not failing):
+#   - Vertex Gemini strict-shape: "Missing corresponding tool call"
+#   - Cursor-bridge: "request.messages.content: string expected"
+#   - OpenAI strictness: "Invalid user message at index"
+#   - Generic body validation: "invalid request" + 400-class shape
+#     complaints. (Real "invalid auth"-type 400/401 already routes
+#     through is_auth_error and is treated separately.)
+#
+# When this classifier fires, ``record_outcome`` skips the
+# ``record_failure`` call (no CB increment). Activity log still
+# captures the row with severity=warning so the failure is visible —
+# operators can still see "bot is sending malformed bodies" but the
+# CB stays healthy.
+CALLER_SIDE_ERROR_PATTERNS = (
+    "missing corresponding tool call",
+    "request.messages.content: string expected",
+    "invalid user message at index",
+    "invalid 'messages[",
+    "missing corresponding tool call for tool response",
+)
+
+
+def is_caller_side_error(error_text: str) -> bool:
+    low = (error_text or "").lower()
+    return any(p in low for p in CALLER_SIDE_ERROR_PATTERNS)
 
 
 # v2.7.8 BUG-002: Auth errors are PERMANENT until admin re-keys the provider.

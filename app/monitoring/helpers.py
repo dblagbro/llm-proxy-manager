@@ -660,8 +660,18 @@ async def record_outcome(
         # v2.7.8 BUG-002: classify the error. Auth errors are PERMANENT
         # (admin must re-key) — record them in a separate map and open the
         # breaker for 24h so we stop re-trying the broken provider.
+        # v5.3.9 — caller-side errors (the bot sent a malformed body
+        # that the upstream correctly rejected — orphan tool_call_id,
+        # string-expected, etc.) don't increment the CB. The upstream
+        # isn't broken; the caller is. Audit row still written below
+        # so the rate is visible, but the provider's CB stays healthy.
+        from app.routing.circuit_breaker import is_caller_side_error
+        _caller_side = is_caller_side_error(error_str)
         if is_auth_error(error_str):
             await record_auth_failure(provider_id, error_str)
+        elif _caller_side:
+            # Skip CB increment — log via the activity row only.
+            pass
         else:
             await record_failure(provider_id, billing_error=is_billing_error(error_str))
         # v3.3.3: same is_probe gate on the failure path so probe-only
