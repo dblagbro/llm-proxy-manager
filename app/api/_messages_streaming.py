@@ -11,6 +11,9 @@ Functions defined HERE:
   _sse_frame_error               — detect terminal SSE error frames
   preflight_sse                  — first-frame extract for fail-loud streams
   http_status_for_stream_error   — map error msg → HTTP status
+  _sse_frame_has_content         — detect a meaningful content/tool delta frame
+  buffer_sse_until_content       — v5.3.9 streaming empty-success detection
+  stream_with_empty_guard        — v5.3.9 guarded dispatch + provider failover
   _stream_cot_anthropic          — pass-through around run_cot_pipeline + metrics
   _stream_anthropic              — the main Anthropic streaming translator (litellm path)
   _webhook_completion_anthropic  — fire-and-forget async delivery
@@ -31,6 +34,7 @@ import time
 from typing import AsyncIterator, Optional
 
 import httpx
+from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.cot.pipeline import run_cot_pipeline
@@ -115,6 +119,182 @@ def http_status_for_stream_error(msg: str) -> int:
     if "rate limit" in low or "rate_limit" in low or "429" in low:
         return 429
     return 502
+
+
+def _sse_frame_has_content(frame: bytes) -> bool:
+    """v5.3.9 — True when an SSE frame carries a *meaningful* delta: text
+    content, a tool call, reasoning/thinking output, or partial tool-input
+    JSON. Recognizes both wire shapes this proxy emits:
+
+      OpenAI chunk:    ``choices[0].delta.{content,tool_calls,function_call,
+                       reasoning_content}`` non-empty
+      Anthropic event: ``content_block_delta`` with a non-empty
+                       ``text``/``partial_json``/``thinking`` delta, or a
+                       ``content_block_start`` opening a ``tool_use`` block
+
+    ``message_start``, role-only chunks, finish-reason-only chunks,
+    ``[DONE]``, compliance preludes, and budget frames are all non-content.
+    """
+    if b"data:" not in frame:
+        return False
+    try:
+        payload = json.loads(frame.split(b"data:", 1)[1].strip())
+    except Exception:
+        return False
+    if not isinstance(payload, dict):
+        return False
+    # Anthropic event shapes
+    ptype = payload.get("type")
+    if ptype == "content_block_delta":
+        delta = payload.get("delta") or {}
+        return bool(
+            delta.get("text") or delta.get("partial_json") or delta.get("thinking")
+        )
+    if ptype == "content_block_start":
+        block = payload.get("content_block") or {}
+        return block.get("type") == "tool_use"
+    # OpenAI chunk shape
+    choices = payload.get("choices")
+    if isinstance(choices, list) and choices:
+        delta = (choices[0] or {}).get("delta") or {}
+        return bool(
+            delta.get("content")
+            or delta.get("tool_calls")
+            or delta.get("function_call")
+            or delta.get("reasoning_content")
+        )
+    return False
+
+
+async def buffer_sse_until_content(first, gen, max_frames: int = 64):
+    """v5.3.9 — streaming counterpart of the non-streaming empty-success
+    guard (``looks_like_empty_success_failure``).
+
+    Root cause this exists for: a dead upstream (observed: cursor-bridge
+    with an expired Cursor session) answers HTTP 200 + a syntactically
+    valid SSE stream that contains ZERO content deltas — message_start /
+    role chunk / finish chunk / [DONE] and nothing else. ``preflight_sse``
+    passes it (the first frame is not an error frame), the 200 streams
+    end-to-end, and the caller sees an empty completion with rc=0. On
+    GCP -s23 both cursor-oauth providers served 0 output tokens across
+    400+ requests and every streaming caller got silent EMPTYs while the
+    non-streaming path correctly 502'd and failed over.
+
+    Pulls frames (starting with ``first``, already consumed by
+    ``preflight_sse``) until a meaningful content delta appears or the
+    stream exhausts. Returns ``(frames, has_content, gen)``:
+
+      has_content=True  — replay ``frames`` then iterate ``gen``.
+      has_content=False — the stream exhausted with zero content; treat
+                          the provider as failed (empty-success).
+
+    ``max_frames`` bounds buffering memory; a stream still alive past the
+    cap is passed through as success (never misclassify a slow-but-alive
+    stream — the cap is far above any real preamble length).
+    """
+    frames = [first]
+    if _sse_frame_has_content(first):
+        return frames, True, gen
+    while len(frames) < max_frames:
+        try:
+            frame = await gen.__anext__()
+        except StopAsyncIteration:
+            return frames, False, gen
+        frames.append(frame)
+        if _sse_frame_has_content(frame):
+            return frames, True, gen
+    return frames, True, gen
+
+
+async def stream_with_empty_guard(
+    *,
+    start_stream,            # callable(route) -> fresh async SSE generator
+    route,                   # primary RouteResult (already selected)
+    db: AsyncSession,
+    hint,
+    has_tools: bool,
+    has_images: bool,
+    key_type: str,
+    api_key_id: Optional[str],
+    model_override: Optional[str],   # None for auto / logical aliases
+    max_attempts: int = 3,
+):
+    """v5.3.9 — dispatch a streaming request with pre-flight + empty-success
+    detection + provider failover. Shared by /v1/chat/completions and
+    /v1/messages (the ``start_stream`` closure owns the wire format and
+    per-route ``extra`` rebuild).
+
+    On an empty-success stream: ``record_failure`` on the provider (same
+    breaker semantics as the non-streaming guard at completions.py), then
+    re-select excluding it — mirroring the grok-web failover pattern. A
+    re-selected provider that ALREADY empty-failed this request gets a
+    second ``record_failure`` (deterministic dead-provider signal — pushes
+    its breaker open) and selection retries, so two dead same-priority
+    providers (the -s23 cursor pair) can't ping-pong a request to death.
+
+    Returns ``(frames, gen, served_route)``; raises HTTPException(502) when
+    every candidate streams empty.
+    """
+    from app.routing.circuit_breaker import record_failure
+    from app.routing.router import select_provider
+
+    attempt_route = route
+    empty_failed: set = set()
+    for attempt in range(1, max_attempts + 1):
+        gen = start_stream(attempt_route)
+        first, err, gen = await preflight_sse(gen)
+        if err is not None:
+            await gen.aclose()
+            raise HTTPException(
+                http_status_for_stream_error(err),
+                f"Upstream error before streaming began: {err}",
+            )
+        frames, has_content, gen = await buffer_sse_until_content(first, gen)
+        if has_content:
+            return frames, gen, attempt_route
+        await gen.aclose()
+        await record_failure(attempt_route.provider.id, billing_error=False)
+        empty_failed.add(attempt_route.provider.id)
+        logger.warning(
+            "streaming empty-success failure provider=%s model=%s "
+            "(attempt %d/%d) — failing over",
+            attempt_route.provider.name, attempt_route.litellm_model,
+            attempt, max_attempts,
+        )
+        if attempt >= max_attempts:
+            break
+        # Re-select, skipping candidates that already empty-failed this
+        # request (record another failure on them — see docstring).
+        next_route = None
+        last_excluded = attempt_route.provider.id
+        for _ in range(max_attempts):
+            try:
+                cand = await select_provider(
+                    db, hint,
+                    has_tools=has_tools, has_images=has_images,
+                    key_type=key_type,
+                    model_override=model_override,
+                    exclude_provider_id=last_excluded,
+                    excluded_provider_types={"claude-oauth", "grok-web", "ChatGPT-oauth-plan"},
+                    api_key_id=api_key_id,
+                )
+            except Exception:
+                cand = None
+            if cand is None:
+                break
+            if cand.provider.id not in empty_failed:
+                next_route = cand
+                break
+            await record_failure(cand.provider.id, billing_error=False)
+            last_excluded = cand.provider.id
+        if next_route is None:
+            break
+        attempt_route = next_route
+    raise HTTPException(
+        502,
+        "upstream: empty-success failure (streaming upstream produced no "
+        f"content; {len(empty_failed)} provider(s) tried)",
+    )
 
 
 async def _stream_cot_anthropic(

@@ -35,7 +35,10 @@ from app.cot.sse import (
 from app.api._completions_streaming import (
     _stream_cot_openai, _stream_openai, _webhook_completion_openai,
 )
-from app.api._messages_streaming import preflight_sse, http_status_for_stream_error
+from app.api._messages_streaming import (
+    preflight_sse, http_status_for_stream_error,
+    buffer_sse_until_content, stream_with_empty_guard,
+)
 from app.routing.retry import acompletion_with_retry
 from app.observability.otel import llm_span
 from app.cache.middleware import maybe_store
@@ -672,14 +675,29 @@ async def chat_completions(
                             f"Upstream error before streaming began: {_herr}",
                         )
 
-                    async def _replay_hedged_stream(_f=_hfirst, _g=racer):
-                        yield _f
-                        async for _c in _g:
-                            yield _c
+                    # v5.3.9 — empty-success guard on the hedged winner.
+                    # On a content-free 200 stream: record the breaker
+                    # failure and fall through to the guarded non-hedged
+                    # path below (which fails over across providers).
+                    _hframes, _h_has_content, racer = await buffer_sse_until_content(_hfirst, racer)
+                    if _h_has_content:
+                        async def _replay_hedged_stream(_fs=_hframes, _g=racer):
+                            for _f in _fs:
+                                yield _f
+                            async for _c in _g:
+                                yield _c
 
-                    return StreamingResponse(
-                        _replay_hedged_stream(),
-                        media_type="text/event-stream", headers=resp_headers,
+                        return StreamingResponse(
+                            _replay_hedged_stream(),
+                            media_type="text/event-stream", headers=resp_headers,
+                        )
+                    await racer.aclose()
+                    from app.routing.circuit_breaker import record_failure as _rec_fail
+                    _dead_id = route.provider.id if winner == "primary" else backup_route.provider.id
+                    await _rec_fail(_dead_id, billing_error=False)
+                    logger.warning(
+                        "hedged stream empty-success (winner=%s provider=%s) — "
+                        "falling through to guarded non-hedged path", winner, _dead_id,
                     )
             elif wait_ms is not None:
                 observe_hedge_bucket_reject()
@@ -687,23 +705,45 @@ async def chat_completions(
             # v3.10.13 BUG-001 — pre-flight so a pre-stream upstream
             # failure surfaces as a real HTTP status, not a 200 + a
             # terminal SSE error frame. (Mirrors the /v1/messages path.)
-            _gen = _stream_openai(
-                route.litellm_model, messages_list, extra, route.provider.id,
-                db, key_record.id, time.monotonic(), budget_total,
-                cache_decision=cache_decision,
-                compliance_disclosure=_compliance_disclosure,
-                accept_compliance_events=_compliance_wants_sse_prelude,
-            )
-            _first, _stream_err, _gen = await preflight_sse(_gen)
-            if _stream_err is not None:
-                await _gen.aclose()
-                raise HTTPException(
-                    http_status_for_stream_error(_stream_err),
-                    f"Upstream error before streaming began: {_stream_err}",
+            # v5.3.9 — wrapped in stream_with_empty_guard: an upstream that
+            # answers 200 + a content-free SSE stream (observed: dead
+            # cursor-bridge sessions — 0 output tokens on 400+ requests)
+            # now records a breaker failure and fails over to the next
+            # provider instead of piping the emptiness to the caller.
+            def _start_openai_stream(_r):
+                if _r is route:
+                    _e, _cd = extra, cache_decision
+                else:
+                    _e = {**_r.litellm_kwargs}
+                    if tools: _e["tools"] = tools
+                    if body.get("max_tokens"): _e["max_tokens"] = body["max_tokens"]
+                    if body.get("temperature") is not None: _e["temperature"] = body["temperature"]
+                    if _r.native_thinking_params:
+                        _e.update(_r.native_thinking_params)
+                        clamp_thinking_budget(_e)
+                    _cd = None  # don't store failover output under primary's key
+                return _stream_openai(
+                    _r.litellm_model, messages_list, _e, _r.provider.id,
+                    db, key_record.id, time.monotonic(), budget_total,
+                    cache_decision=_cd,
+                    compliance_disclosure=_compliance_disclosure,
+                    accept_compliance_events=_compliance_wants_sse_prelude,
                 )
 
-            async def _replay_openai_stream(_f=_first, _g=_gen):
-                yield _f
+            from app.routing.aliases import is_logical_alias as _is_logical_alias
+            _frames, _gen, _served_route = await stream_with_empty_guard(
+                start_stream=_start_openai_stream, route=route, db=db,
+                hint=hint, has_tools=has_tools, has_images=has_images,
+                key_type=key_record.key_type, api_key_id=key_record.id,
+                model_override=None if (is_auto or (alias is None and _is_logical_alias(requested_model))) else requested_model,
+            )
+            if _served_route is not route:
+                resp_headers["X-Empty-Stream-Failover"] = "true"
+                resp_headers["X-Empty-Stream-Failover-Target"] = _served_route.provider.provider_type
+
+            async def _replay_openai_stream(_fs=_frames, _g=_gen):
+                for _f in _fs:
+                    yield _f
                 async for _c in _g:
                     yield _c
 
