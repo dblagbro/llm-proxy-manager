@@ -9,6 +9,18 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v5.4.x — Worker-liveness observability + supervisor diagnostics
 
+### v5.4.3 — Compliance-epoch purge admin endpoint (2026-06-12)
+
+Closes the security-team-mandated cleanup of pre-compliance data. Operator-decided epoch is **2026-06-06 00:00 UTC** (v5.2.0 vendor-neutrality stack ship date); the security team's posture is that pre-v5.2 rows did not have vendor-neutrality policy fields evaluated, so they must be hard-deleted.
+
+- **`POST /api/admin/compliance-epoch-purge`** — admin-gated, body `{cutoff_date, tables, dry_run, reason?}`. Defaults to `dry_run=true`. Returns per-table `rows_matched` + `rows_deleted` + `oldest_timestamp`.
+- **Allow-list (PURGABLE_TABLES):** `activity_log` (created_at), `provider_metrics` (bucket_ts), `provider_ai_review` (captured_at). Adding a table requires a code change + security-team sign-off (pinned at `test_purgable_tables_is_security_team_approved`).
+- **Forbidden-list (FORBIDDEN_TABLES, defence-in-depth):** `compliance_events`, `compliance_policy_changes`, `compliance_audit_chain`, `api_keys`, `users`, `providers`, `system_settings`. The endpoint returns 400 if any of these names appear in the request body, even with `dry_run=true`.
+- **Audit guarantee:** in live mode the `compliance_policy_changes` audit row is committed BEFORE the DELETEs run, so a crash mid-purge still records intent in the chain. Audit row's `before_state` captures per-table matched counts; `after_state` captures intent + cutoff + table list.
+- Applied to all 6 instances 2026-06-12 (3 `/llm-proxy2/` + 2 `/llm-proxy/` clone + smoke). Purge counts per instance recorded in `bug-log.md`.
+
+Tests: 9/9 in `test_v543_compliance_epoch_purge.py` covering allow-list / forbidden-list contracts, table rejection, cutoff validation, dry-run no-modify, live-mode audit-before-delete sequencing. Full suite **2951 passed, 2 skipped** (~50s).
+
 ### v5.4.2 — Wire remaining 11 background workers to WorkerHeartbeat (2026-06-12)
 
 Completes the BUG-069 follow-up by wiring every long-running background loop to the v5.4.0 `WorkerHeartbeat` factory. Roster grows from 5 to 16 instrumented workers:
