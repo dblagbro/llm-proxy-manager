@@ -45,6 +45,7 @@ from app.api.admin_activity_purge import router as admin_activity_purge_router
 # v5.1.0 logging panic button; this one stops LLM dispatch, not log
 # writes).
 from app.api.admin_llm_emergency import router as admin_llm_emergency_router
+from app.api.admin_ai_supervisor import router as admin_ai_supervisor_router
 from app.api.oauth_capture import router as oauth_capture_router
 from app.api.runs import router as runs_router
 from app.api.lmrh import router as lmrh_router
@@ -555,6 +556,7 @@ app.include_router(audit_router)
 app.include_router(admin_logging_router)  # v5.1.0 / C1 — compliance panic button
 app.include_router(admin_activity_purge_router)  # v5.1.1 / C2 — time-range bulk purge
 app.include_router(admin_llm_emergency_router)  # v5.2.0 / V1 — LLM emergency stop
+app.include_router(admin_ai_supervisor_router)  # v5.4.0 — supervisor diagnostic (BUG-070)
 app.include_router(oauth_capture_router)
 app.include_router(runs_router)
 app.include_router(lmrh_router)

@@ -35,6 +35,7 @@ async def health():
     """Public health endpoint — also used by cluster peers for heartbeat.
     DB lookup result is cached for 3 seconds; CB state is always live.
     """
+    from app.monitoring.worker_heartbeat import snapshot_all as _workers_snapshot
     now = _time.time()
     if _HEALTH_CACHE["body"] is not None and now - _HEALTH_CACHE["ts"] < _HEALTH_CACHE_TTL_SEC:
         # Re-evaluate CB state + pool snapshot on every call; only the
@@ -43,11 +44,13 @@ async def health():
         # absent on every cache hit (i.e. ~2 of every 3s window). Both
         # are excluded from the cached body (line below) precisely so
         # they stay live — both must therefore be re-added here.
+        # v5.4.0 — worker heartbeats join CB + dbPool as always-live.
         cached = _HEALTH_CACHE["body"]
         return {
             **cached,
             "circuitBreakers": get_all_states(),
             "dbPool": _db_pool_snapshot(),
+            "workers": await _workers_snapshot(),
         }
 
     from app.models.database import AsyncSessionLocal
@@ -83,9 +86,15 @@ async def health():
         #   overflow > 0 = pool is saturated and burning overflow budget
         #   waited > 0 (cumulative) on subsequent calls = checkouts blocked
         "dbPool": _db_pool_snapshot(),
+        # v5.4.0 — per-worker liveness (BUG-069 / BUG-074). Each entry:
+        # ``{name, last_run, age_sec, status, note, stale}``. ``stale``
+        # is True when ``age_sec > 3 * expected_interval_sec`` (the
+        # interval each worker registers at startup); None for workers
+        # whose cadence is dynamic.
+        "workers": await _workers_snapshot(),
     }
     _HEALTH_CACHE["ts"] = now
-    _HEALTH_CACHE["body"] = {k: v for k, v in body.items() if k not in ("circuitBreakers", "dbPool")}
+    _HEALTH_CACHE["body"] = {k: v for k, v in body.items() if k not in ("circuitBreakers", "dbPool", "workers")}
     return body
 
 

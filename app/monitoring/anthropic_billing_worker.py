@@ -174,19 +174,25 @@ async def _scrape_loop() -> None:
     # the first-to-fire node ~60s lead over the rest within a deploy
     # window, which combined with the freshness guard prevents all
     # peers from scraping the same cycle.
+    from app.monitoring.worker_heartbeat import WorkerHeartbeat, register_expected_interval
+    hb = WorkerHeartbeat(name="anthropic_billing")
     jitter = random.uniform(0.0, _STARTUP_JITTER_MAX_SEC)
     await asyncio.sleep(WARMUP_DELAY_SEC + jitter)
     while True:
         interval = _interval_sec()
+        register_expected_interval("anthropic_billing", interval or 14400)
         if interval <= 0:
+            await hb.tick(status="disabled", note=f"interval_sec={interval}")
             await asyncio.sleep(300)  # 5 min before re-checking the disable setting
             continue
         try:
             n = await _scrape_all_once()
             if n:
                 logger.info("anthropic_billing.swept providers=%d", n)
+            await hb.tick(status="ok", note=f"scraped={n}")
         except Exception as e:
             logger.warning("anthropic_billing.sweep_failed err=%s", e)
+            await hb.tick(status="error", note=str(e)[:200])
         await asyncio.sleep(interval)
 
 

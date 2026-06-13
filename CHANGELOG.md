@@ -7,6 +7,23 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ---
 
+## v5.4.x — Worker-liveness observability + supervisor diagnostics
+
+### v5.4.0 — WorkerHeartbeat factory + /health.workers + supervisor run-once (2026-06-12)
+
+Closes BUG-069 / BUG-070 / BUG-074 from the 2026-06-12 post-refactor regression sweep. Background loops were previously invisible to a snapshot probe — `cluster_sync_last_run`, `ai_provider_supervisor_last_run`, billing scrape last-run, and the openai retry tap were never persisted. A worker could be hung and an operator wouldn't know until a downstream symptom surfaced it hours/days later.
+
+- **`app/monitoring/worker_heartbeat.py`** — `WorkerHeartbeat(name=…)` writes `worker.<name>.{last_run, last_status, last_note}` rows to `system_settings` on every tick (UPSERT, bounded row count). Mirrors the `BoolSystemSetting` factory pattern. Failures inside `tick()` are swallowed and logged at WARNING — a heartbeat write must NEVER crash the worker it's measuring. `register_expected_interval(name, sec)` lets `/health` flag `stale=true` when `age_sec > 3 * expected`.
+- **4 representative workers wired:** `keepalive`, `ai_provider_supervisor`, `anthropic_billing`, `cluster_sync_push`. Each writes status `ok` / `error` / `disabled` / `partial` with a one-line note summarising the tick. The remaining 11 background workers (`compliance_audit_worker`, `cursor_billing_worker`, `codex_billing_worker`, `cursor_oauth_expiry_monitor`, `caller_memory_ttl_sweeper`, `observability_sampler`, `tool_capability_prober`, `usage_rotator`, `prune`, `_heartbeat_loop`, `_peer_refresh_loop`) follow the same one-line pattern and will be wired in v5.4.x point releases.
+- **`/health` envelope gains `workers: [{name, last_run, age_sec, status, note, stale}]`** — single keyspace scan, no caching (heartbeats already tick at ~60s+). Joins `circuitBreakers` and `dbPool` in the always-live re-evaluation block (excluded from the 3s response cache).
+- **`POST /api/admin/ai-supervisor/run-once`** — closes BUG-070 (supervisor showed zero activity in 7 days). Admin-gated, forces one synchronous tick of `_scan_all_once()`, returns `{ok, counts}` on success or `{ok: false, error, error_type}` on crash. Bypasses the `enabled` flag intentionally — the whole point is diagnosing a worker that may not be running.
+
+**Bug retraction:** BUG-075 (from the 2026-06-12 sweep) was a false positive. `/health` already carries the full `dbPool` block on all 6 endpoints — `size`, `checked_out`, `overflow`, `in_use`, `max`, plus `oldest_checkout_age_sec` when `db_pool_trace=true`. The QA probe only inspected the DB snapshot, not the actual `/health` JSON. Retraction notice added to `bug-log.md`.
+
+Tests: 13/13 pins in `test_v540_worker_heartbeat.py`. Full suite **2923 passed, 2 skipped** (~45s). The v3.9.8 `test_v398_pool_diagnostics_in_health` exclusion-tuple assertion updated to include `workers` (3-element tuple).
+
+---
+
 ## v5.3.x — Vendor-neutrality + CB hardening + cursor parity
 
 ### v5.3.9 — CB lifecycle hardening (2026-06-12)
