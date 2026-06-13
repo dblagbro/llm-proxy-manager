@@ -7,6 +7,95 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ---
 
+## v5.3.x — Vendor-neutrality + CB hardening + cursor parity
+
+### v5.3.9 — CB lifecycle hardening (2026-06-12)
+
+Three changes that together stop the "providers constantly tripped" perception on chatty deployments (notably c1conv):
+
+- **Caller-side error classifier** (`app/routing/circuit_breaker.py::is_caller_side_error`) — recognises five upstream-spec-rejection patterns (orphan tool_call_id, cursor-bridge string-expected, OpenAI Invalid user message, generic shape-rejection) and lets `record_outcome` skip the CB increment for those. The upstream isn't broken; the caller is. Activity log row still written for visibility. 2026-06-12 audit on c1conv: ~62% of CB trips that day were caused by caller-side malformed bodies, not provider failures.
+- **Auto-probe on hold-down expiry** (`app/routing/circuit_breaker.py::_schedule_auto_probe`) — when `get_state()` transitions OPEN → HALF_OPEN, a detached asyncio task fires one `_probe_one()` so the CB closes itself within seconds instead of waiting for organic traffic. Low-volume providers no longer sit in half-open showing "Recovering" for tens of minutes.
+- **Hysteresis pin** — `circuit_breaker_success_needed >= 2` locked via pin test so a refactor can't regress it to 1 (single lucky success closing the CB only to fail the next call).
+
+Operator-side complement (applied via direct DB updates on c1conv, not version-bound):
+
+- `ai_provider_supervisor_auto_apply = True` so the supervisor acts on deprioritize/disable verdicts without operator click.
+- `C1 Anthropic Claude` (intentional failing fixture) `failure_threshold = 1_000_000` so its expected 100% failure rate stops tripping its own CB and polluting the dashboard.
+
+Tests (10/10 in `test_v539_cb_hardening.py`). Full suite 2910 passed, 2 skipped.
+
+### v5.3.8 — Logical-alias routing fix (2026-06-12)
+
+THE deterministic opencode `EMPTY` root cause. Aliases (`coordinator-fast`, `coordinator-code`, `coordinator-reasoning`) were being passed verbatim as `model_override`, which the capability filter then misrouted to the cursor-bridge, which returned a 200-wrapped `ERROR_BAD_MODEL_NAME`. Fix: aliases now route via LMRH hint, never as `model_override`; default-model substitution + guard hardening. Companion to v5.3.7.
+
+### v5.3.7 — Clamp Gemini thinking budget below caller `max_tokens` (2026-06-12)
+
+Intermittent empties on Gemini path: when the caller set a small `max_tokens` and the model used most of it for thinking blocks, the final answer came back empty. Clamp thinking budget to `floor(caller_max_tokens / 2)`. Set `relay_min_max_tokens=16384` on both clusters. Real but secondary to v5.3.8.
+
+### v5.3.6 — Cursor-bridge list-content emulation (2026-06-09)
+
+JiuZ-Chn `cursor-to-openai` bridge rejects messages with `content: list` ("request.messages.content: string expected"). Real OpenAI accepts both. `app/providers/cursor_oauth.py::normalize_messages_for_bridge` coerces list-of-text-parts to a single newline-joined string before dispatch. Hooked into `acompletion_with_retry` via `kwargs["api_base"]` discriminator so every caller (request handlers + background workers) benefits. Provider-adapter emulation scope, NOT request mutation. Tests (14/14).
+
+### v5.3.5 — Cursor billing parity (2026-06-09)
+
+Audit gap from v4.4.41: cursor_billing.py scrape worker shipped but no manual-trigger UI. Brought Cursor to parity with Anthropic + Codex: `POST /api/providers/{id}/cursor-billing-refresh`, `POST /api/providers/_refresh-all-cursor-billing`, also added missing bulk Codex endpoint, `CursorBillingPanel.tsx`, expanded-card per-provider Refresh Usage button, bulk button fans out across all 3 vendors via `Promise.allSettled`. Tests (10/10).
+
+### v5.3.4 — Tap openai-python transparent retries (2026-06-09)
+
+Today's c1conv finding: 14 openai-python client retries clustered in a 13-min burst at 04:22-04:35 UTC, totally invisible to `activity_log` because the openai-python http layer retries internally then returns the final 200. Ship A: `app/observability/openai_retry_tap.py` — `logging.Handler` taps `openai._base_client` INFO, matches "Retrying request to X in N seconds", increments `llm_proxy_openai_retries_total{endpoint=...}`. Ship B: `propagate=False` on the same logger so the chatter stops bubbling to stdout. Bundled so suppression can't ship before capture.
+
+### v5.3.3 — `BoolSystemSetting` factory; collapse logging_controls + llm_emergency_stop duplication (2026-06-09)
+
+Pre-refactor, `logging_controls.py` (175 LOC) + `llm_emergency_stop.py` (180 LOC) shared ~80% identical TTL-cache + `_read_setting` + audit-on-set machinery. Extracted to `app/monitoring/_bool_system_setting.py::BoolSystemSetting`. Each shim becomes ~65 LOC routing to a single factory instance with default + on/off labels + audit subject. Future toggles now cost ~25 LOC instead of ~80. Tests (10/10 in `test_v533_bool_system_setting.py`).
+
+### v5.3.2 — `/api/compliance/taxonomy` endpoint + frontend rewire (2026-06-09)
+
+Closes v5.2 audit deferral risks #1+#2: custom companies added via `COMPLIANCE_CUSTOM_COMPANIES` env JSON were invisible to the WebUI because `frontend/src/types/index.ts` hardcoded the company list. New admin-gated endpoint returns merged `{id, label, source}` triples sorted by label. Frontend `useCompanyTaxonomy()` hook (TanStack `useQuery`, 5-min staleTime, 1 retry, falls back to static `KNOWN_COMPANIES` on loading/error/legacy). `ComplianceFieldsEditor` + its inner `CompanyAllowlistEditor` both consume the live list. Tests (5/5 in `test_v532_compliance_taxonomy.py`).
+
+### v5.3.1 — Skip no-op substitution audit events (2026-06-09)
+
+`emit_substitution_disclosure_for_route` gains a second short-circuit: when `requested_model == served_model` (case-insensitive, modulo litellm `provider/` prefix), skip the audit row + disclosure entirely. Observed 6 noise rows/week/node on hub canary where router marked `compliance_substituted=True` for cross-family normalization but no actual substitution happened. Tests (4/4).
+
+### v5.3.0 — ApiKey policy editor UI for v5.2.1 fine-grained fields (2026-06-07)
+
+Closes v5.2 "Risks remaining" item #1. Backend `KeyCreate` + `KeyUpdate` accept `allowed_companies` / `blocked_models` / `allowed_models`. `_validate_model_patterns` rejects empty/whitespace/oversize. Frontend `ComplianceFieldsEditor` extended with `CompanyAllowlistEditor` (toggle + multi-select + custom-id) and `ModelPatternEditor` (shared for blocked/allowed model lists). `APIKeysPage` plumbs 6 new state hooks through create + edit + reason prompt. Tests (10/10 in `test_v530_apikey_v2_policy_editor.py`).
+
+---
+
+## v5.2.x — Vendor-neutrality audit + remediation
+
+Three-batch closeout of the operator-issued vendor-neutrality audit (find/fix/report). Full compliance report at `docs/v5.2-vendor-neutrality-compliance-report.md`.
+
+### v5.2.2 — Cosmetic + docs + final report (2026-06-06)
+
+Replaced 3 hardcoded `claude-sonnet-4-6` defaults with `PROVIDER_DEFAULT_MODELS.get(provider_type, ...)` lookups in `app/api/providers.py:243`, `app/api/_oauth_chat_translate.py:182`, `app/providers/scanner.py:402`. Authored `docs/vendor-neutrality.md` (operator policy guide) + `docs/emergency-stop-runbook.md` + the final compliance report.
+
+### v5.2.1 — Allowlist + per-model block + runtime wildcards (2026-06-06)
+
+Added 3 ApiKey columns (`allowed_companies`, `blocked_models`, `allowed_models`) + 3 system-wide settings. `Policy` dataclass + `evaluate_policy(policy, provider, requested_model)` + `get_effective_policy(db, api_key_id)` + `filter_providers_v2`. fnmatch glob support (`claude-*`, `gpt-4-*-turbo`). Deny wins. Cluster sync field coverage (push + apply) with membership-test pattern. Tests (27/27).
+
+### v5.2.0 — LLM emergency stop (kill switch) (2026-06-06)
+
+`app/monitoring/llm_emergency_stop.py` separate from v5.1.0 logging stop. Gates `/v1/messages` + `/v1/chat/completions` + `acompletion_with_retry` (covers 5 background callers). Per-flip audit row + per-blocked-request audit row. Cluster-replicated via `system_settings` (~60s convergence). 30s TTL cache invalidates eagerly on flip. Frontend `LLMEmergencyStopPanel` on `CompliancePage` (red 2px border when engaged). Tests (15/15).
+
+---
+
+## v5.1.x — Compliance logging controls
+
+### v5.1.2 — Retention editable in WebUI (2026-06-05)
+
+`app/monitoring/retention_settings.py` — 3 system_settings keys for activity_log info/warning/error retention, refresh_from_db pattern, set_retention with audit row. `GET/POST /api/admin/logging/retention` admin endpoints. Frontend `RetentionPanel` on `CompliancePage`. Prune sweep refreshes cache before each pass so flips land within one sweep cycle. Tests.
+
+### v5.1.1 — Time-range purge + Trash tab + Copy-from picker (2026-06-05)
+
+`POST /api/admin/activity-log/purge` (90-day window cap) with cluster-replicated `POST /cluster/activity-log/purge`. APIKeysPage Trash mode with per-row Restore (90-day retention). Add Key modal gains copy-from-existing-key picker.
+
+### v5.1.0 — Compliance panic button + API key trash/copy (2026-06-05)
+
+`app/monitoring/logging_controls.py` — `compliance.activity_logging_enabled` toggle, 30s TTL cache, audit row on flip. `GET/POST /api/admin/logging/{status,toggle}`. Tombstone-based API key delete with 90-day restore. Cluster_peers hardening + daily-backup integration. Grok-3 model name correction.
+
+---
+
 ## v5.0.x — Compliance enforcement milestone
 
 The v5.0.x line landed the gov-compliance subsystem (per-key + system-wide company block list, model substitution, audit chain) and the operational ship-rate that followed it. Spec set: `docs/5.0-compliance-design.md`, `docs/5.0-impact-map.md`, `docs/compliance-taxonomy-v5.0.0.md`. Cross-team memo trail with the Coordinator Hub team in `docs/2026-06-04-reply-{1..9}-to-hub-team-*.md`.

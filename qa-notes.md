@@ -4,6 +4,51 @@ Operational quirks, environment assumptions, flaky behavior, and risk
 notes accumulated during regression sweeps. Update freely; this file is
 deliberately less structured than `bug-log.md` or `test-plan.md`.
 
+## Post-refactor regression sweep (2026-06-12 — v5.1.0 → v5.3.9)
+
+Findings BUG-069..BUG-075 in `bug-log.md`. No hotfixes shipped during
+this sweep (no defects severe enough to gate the v5.3.9 release tag).
+
+- **The release-tag-then-QA pattern is the new failure mode.** v5.3.x
+  shipped *eight* point releases in a week (5.3.0 → 5.3.9) under
+  operator urgency around a possible code freeze; the entire v5.2
+  vendor-neutrality stack and v5.3 supervisor / CB hardening went out
+  with per-release unit pins but no consolidated regression sweep
+  until this one. Unit baseline grew from 2670 → 2910 (+240) without
+  intermediate QA. **Mitigation already-in-place:** the 2026-06-08
+  daily fleet-health routine catches version skew within 24h; this
+  sweep gives it the first ground-truth snapshot to compare against.
+- **All four high/medium findings cluster around observability, not
+  correctness.** v5.3.9 ships clean — the unit suite is green, the
+  classifier behaves, the fleet is on parity. What's missing is the
+  ability to *see* whether the proxy is doing what we shipped. BUG-069
+  (worker heartbeat), BUG-070 (supervisor silent), BUG-071 (policy
+  not exercised), BUG-072 (retry tap silent), BUG-073 (audit chain
+  zero-row signing), BUG-074 (cluster sync silent), BUG-075 (no
+  dbPool in /health). One worker-heartbeat refactor (BoolSystemSetting
+  pattern applied to a `WorkerHeartbeat` factory) closes ≥4 of these.
+- **Coordinator-hub key has had no compliance policy for the entire
+  v5.2 lifetime.** The v5.2 vendor-neutrality work is the largest
+  feature shipped in 2026 so far; its dominant production caller
+  generates ~all the audit-trail signal that proves the subsystem
+  works. With all four policy columns NULL on the coordinator-hub
+  key, the subsystem has effectively been in dry-run mode against
+  prod traffic since v5.2 cut. This is an operator policy decision,
+  not a code defect — but the audit-chain dutifully signing daily
+  zero-row windows reads as theatre on inspection.
+- **The AI supervisor enablement / auto_apply / fixture-noise Tier A
+  (2026-06-11) presumed the supervisor was already running.** It
+  isn't — zero `supervisor_*` activity-log rows in 7 days on tmrwww01.
+  The v5.3.9 CB hardening (caller-side classifier + auto-probe + hysteresis)
+  is doing the right thing in isolation but its self-healing partner
+  is silent. BUG-070 needs to be diagnosed before claiming the
+  fleet is properly self-healing.
+- **The intentional failing-provider fixtures continue to dominate
+  the snapshot.** C1 Anthropic Claude (priority 112) is OPEN on
+  tmrwww01 at sweep time, as expected; the v5.3.9 hardening should
+  prevent it from tripping its now-`failure_threshold = 1_000_000`
+  fixture-mode peers. Resist any urge to "investigate" it.
+
 ## Post-refactor deep regression sweep (2026-06-05 PM — v5.0.21)
 
 Findings BUG-049..BUG-068 in `bug-log.md`. Hotfixes shipped during sweep:
