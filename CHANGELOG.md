@@ -9,6 +9,18 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v5.4.x — Worker-liveness observability + supervisor diagnostics
 
+### v5.4.1 — Audit-chain zero-row warning + openai retry tap hardening (2026-06-12)
+
+Closes BUG-072 + BUG-073 from the 2026-06-12 sweep. Both findings were observability holes left by v5.3.x ships.
+
+- **BUG-073 — `audit_chain_zero_row_streak` warning.** `app/monitoring/compliance_audit_worker.py::_emit_zero_row_warning_if_threshold` checks the last 3 daily chain rows after each sign; if all have `row_count = 0`, emits one `warning`-severity `activity_log` row. Idempotent — re-running the worker on the same streak in a 24h window won't multiply the noise. Threshold pinned at 3 (long weekend won't trigger). Surfaces in the existing activity feed.
+- **BUG-072 — retry tap also writes to activity_log.** `app/observability/openai_retry_tap.py` now writes an `openai_client_retry` `activity_log` row alongside the Prometheus increment. Pre-v5.4.1 the v5.3.4 tap was Prometheus-only, so SQL probes against `activity_log` for `%retry%` event types returned zero rows even when the counter was advancing — read as "tap broken" on inspection. The write is best-effort (background task; errors swallowed); the Prometheus counter remains the source-of-truth.
+- **BUG-072 — `is_installed()` + `self_test()` introspection.** New helpers surface whether the tap was attached at boot and synthesize a retry record to confirm end-to-end wiring.
+- **`POST /api/admin/ai-supervisor/retry-tap-self-test`** — admin-gated, exercises `self_test()`. Pairs with `/run-once` as the second supervisor diagnostic.
+- **`compliance_audit_worker` also wired to WorkerHeartbeat.** Brings the count of heartbeat-instrumented workers from 4 → 5 (BUG-069 follow-up).
+
+Tests: +7 (BUG-073) + +8 (BUG-072) = 15 new pins in `test_v540_audit_chain_zero_row_warning.py` + `test_v540_openai_retry_tap_hardening.py`. Full suite **2938 passed, 2 skipped** (~45s).
+
 ### v5.4.0 — WorkerHeartbeat factory + /health.workers + supervisor run-once (2026-06-12)
 
 Closes BUG-069 / BUG-070 / BUG-074 from the 2026-06-12 post-refactor regression sweep. Background loops were previously invisible to a snapshot probe — `cluster_sync_last_run`, `ai_provider_supervisor_last_run`, billing scrape last-run, and the openai retry tap were never persisted. A worker could be hung and an operator wouldn't know until a downstream symptom surfaced it hours/days later.

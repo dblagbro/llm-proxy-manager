@@ -53,6 +53,68 @@ _LAST_SWEEP_RESULT: Dict[str, Any] = {
 }
 
 
+# v5.4.0 (BUG-073): how many consecutive zero-row signed days before
+# the worker emits a warning to activity_log. 3 = a long weekend won't
+# trigger; a Mon-Wed silent week does.
+_ZERO_ROW_WARN_THRESHOLD = 3
+
+
+async def _emit_zero_row_warning_if_threshold(db, just_signed_day) -> None:
+    """If the last N consecutive ``compliance_audit_chain`` rows
+    (including ``just_signed_day``) all have ``row_count = 0``, emit
+    one ``audit_chain_zero_row_streak`` warning event to activity_log.
+
+    Idempotent — the warning is only emitted once per streak threshold
+    boundary; subsequent zero-row days don't multiply the noise.
+    """
+    from app.models.db import ComplianceAuditChain, ActivityLog
+    from sqlalchemy import select, desc
+
+    rs = await db.execute(
+        select(ComplianceAuditChain)
+        .order_by(desc(ComplianceAuditChain.day))
+        .limit(_ZERO_ROW_WARN_THRESHOLD)
+    )
+    rows = rs.scalars().all()
+    if len(rows) < _ZERO_ROW_WARN_THRESHOLD:
+        return
+    if not all(r.row_count == 0 for r in rows):
+        return
+
+    # Suppress duplicate warnings: skip if we've already emitted one for
+    # this same starting day in the last 24h.
+    streak_oldest_day = rows[-1].day
+    look_back = datetime.utcnow() - timedelta(hours=24)
+    existing = await db.execute(
+        select(ActivityLog)
+        .where(ActivityLog.event_type == "audit_chain_zero_row_streak")
+        .where(ActivityLog.created_at >= look_back)
+        .where(ActivityLog.message.like(f"%streak_start={streak_oldest_day}%"))
+        .limit(1)
+    )
+    if existing.scalar_one_or_none():
+        return
+
+    db.add(ActivityLog(
+        created_at=datetime.utcnow(),
+        severity="warning",
+        event_type="audit_chain_zero_row_streak",
+        message=(
+            f"compliance_audit_chain has signed {_ZERO_ROW_WARN_THRESHOLD} "
+            f"consecutive zero-row days (streak_start={streak_oldest_day}, "
+            f"streak_end={rows[0].day}). The chain is cryptographically valid "
+            f"but no compliance_events have fired in this window — usually a "
+            f"sign that the dominant API key has no policy applied (BUG-071) "
+            f"or the subsystem is in dry-run mode."
+        ),
+    ))
+    await db.commit()
+    logger.warning(
+        "compliance_audit.zero_row_streak threshold=%d span=%s..%s",
+        _ZERO_ROW_WARN_THRESHOLD, streak_oldest_day, rows[0].day,
+    )
+
+
 def get_last_sweep() -> Dict[str, Any]:
     """Read-only snapshot of the last sweep. Same surface as
     ``prune.get_last_sweep()`` so the admin debug endpoint can read both
@@ -92,6 +154,19 @@ async def _run_one_sweep() -> None:
             exc,
         )
 
+    # Step 1.5 — v5.4.0 (BUG-073): emit warning when N consecutive
+    # zero-row days are signed. A fully-signed chain of zero-row days
+    # is correct cryptographically but reads as "audit healthy" on
+    # inspection when in fact zero events have fired. Common operator
+    # mistake: dominant API key has no compliance policy (BUG-071), so
+    # the subsystem never enforces and the chain dutifully signs
+    # daily zero-row windows.
+    try:
+        async with AsyncSessionLocal() as db:
+            await _emit_zero_row_warning_if_threshold(db, prior_day)
+    except Exception as exc:
+        logger.warning("compliance_audit.zero_row_check_failed err=%s", exc)
+
     # Step 2 — retention purge
     purged = 0
     try:
@@ -118,15 +193,24 @@ async def _run_one_sweep() -> None:
 async def _sweep_loop() -> None:
     """Daily loop. Boot-delayed so init_db migrations + first-traffic
     settling finish first."""
+    from app.monitoring.worker_heartbeat import WorkerHeartbeat, register_expected_interval
+    hb = WorkerHeartbeat(name="compliance_audit")
+    register_expected_interval("compliance_audit", _SWEEP_INTERVAL_SEC)
     await asyncio.sleep(_INITIAL_DELAY_SEC)
     while True:
         try:
             await _run_one_sweep()
+            await hb.tick(
+                status="ok",
+                note=f"purged={_LAST_SWEEP_RESULT.get('last_purge_count', 0)} "
+                     f"day={_LAST_SWEEP_RESULT.get('last_hash_day', '?')}",
+            )
         except Exception as exc:
             # Defence-in-depth — _run_one_sweep already catches at the
             # step level; this catches anything unexpected at the loop
             # level so the task never dies silently.
             logger.warning("compliance_audit.sweep_failed err=%s", exc)
+            await hb.tick(status="error", note=str(exc)[:200])
         await asyncio.sleep(_SWEEP_INTERVAL_SEC)
 
 

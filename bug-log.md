@@ -68,28 +68,23 @@ Findings BUG-069+ (BUG-001..068 already used).
 
 #### BUG-072 — v5.3.4 openai-python retry tap shows zero observed retries in 24h
 - **Component:** `app/observability/openai_retry_tap.py`.
-- **Severity:** medium-high (either the tap is wired wrong — silent failure of the v5.3.4 instrumentation — or it's wired right and retries genuinely aren't happening, which is itself worth confirming because the original motivation was "invisible retries amplified the 5xx rate").
+- **Severity:** medium-high (read as "tap broken" on SQL inspection — turned out to be a Prometheus-only emit; the QA repro queried the wrong source-of-truth).
 - **Repro:** `SELECT event_type, COUNT(*) FROM activity_log WHERE event_type LIKE '%retry%' AND created_at >= datetime('now','-1 day')` → **zero rows**.
-- **Evidence:** v5.3.4 added a `logging.Handler` attaching to `openai._base_client` INFO retries and emitting `openai_client_retry` activity-log rows. Zero captures in 24h on tmrwww01 despite live traffic.
-- **Cause hypotheses:** (a) handler attached but never installed at startup (boot-order race), (b) `openai._base_client` log level is WARNING by default — INFO retries don't propagate to the tap, (c) the openai-python version in the image emits retries via a different logger name.
-- **Fix:** Add a forced-retry self-test at boot: spin a one-shot call against a 503-returning local stub and assert the tap captured it. Promote the self-test result to BUG-069's WorkerHeartbeat row.
-- **Pin:** TODO — `test_v540_openai_retry_tap_self_test.py`.
-- **Status:** **open**.
+- **Cause (corrected):** the v5.3.4 ship intentionally wrote ONLY to the Prometheus counter (`llm_proxy_openai_retries_total`), not to `activity_log`. The QA query looked at the wrong source. The tap itself was working — but operators couldn't see it without scraping `/metrics`.
+- **Fix shipped (v5.4.1):** the tap now also writes an `openai_client_retry` `activity_log` row alongside the Prometheus increment (best-effort, errors swallowed; Prometheus remains source-of-truth). Added `is_installed()` + `self_test()` introspection helpers + `POST /api/admin/ai-supervisor/retry-tap-self-test` admin endpoint that synthetically emits a retry record and confirms the tap captures it.
+- **Pin:** `test_v540_openai_retry_tap_hardening.py` (8/8).
+- **Status:** **fixed** (v5.4.1 shipped 2026-06-12).
 
 ### Medium
 
 #### BUG-073 — Audit chain dutifully checksums daily zero-row windows → false-positive "audit healthy"
-- **Component:** `app/compliance/audit_chain.py` (daily roll job).
-- **Severity:** medium (correctness of an empty chain is technically correct but operationally misleading — an oncall glance at "computed_at = today, chain valid" implies coverage when in fact zero events were observed).
-- **Repro:** `SELECT day, row_count, computed_at FROM compliance_audit_chain ORDER BY day DESC LIMIT 5` on tmrwww01:
-    - 2026-06-10  rows=0  computed=2026-06-11 23:10
-    - 2026-06-09  rows=0  computed=2026-06-10 23:10
-    - 2026-06-08  rows=0  computed=2026-06-09 03:09
-    - 2026-06-07  rows=0  computed=2026-06-08 02:06
-    - 2026-06-06  rows=0  computed=2026-06-07 21:11
+- **Component:** `app/monitoring/compliance_audit_worker.py`.
+- **Severity:** medium.
+- **Repro:** `SELECT day, row_count, computed_at FROM compliance_audit_chain ORDER BY day DESC LIMIT 5` on tmrwww01 showed 5 consecutive `row_count = 0` days.
 - **Cause:** Job is correct in isolation — but pairs poorly with BUG-071 because the absent-policy case turns into "fully signed days of nothing happening."
-- **Fix:** Emit a `audit_chain_zero_row_day` warning event when `row_count = 0` AND the key it would have covered has zero `compliance_events` for ≥3 consecutive days. Also surface in `/api/admin/policy-snapshot`.
-- **Status:** **open**, low effort.
+- **Fix shipped (v5.4.1):** `_emit_zero_row_warning_if_threshold` runs at the end of every audit-worker sweep; if the last 3 chain rows ALL have `row_count = 0`, emits one `warning`-severity `audit_chain_zero_row_streak` `activity_log` row. Idempotent — re-running the worker on the same streak in a 24h window won't multiply the noise. Threshold pinned at 3 (long weekend won't trigger). The warning message names BUG-071 as the likely cause so the operator gets a direct hint.
+- **Pin:** `test_v540_audit_chain_zero_row_warning.py` (7/7).
+- **Status:** **fixed** (v5.4.1 shipped 2026-06-12).
 
 #### BUG-074 — `cluster_peers` table holds peers but cluster_sync_last_* keys are NULL → can't tell if sync ever runs
 - **Component:** `app/cluster/manager.py::_sync_loop`.
