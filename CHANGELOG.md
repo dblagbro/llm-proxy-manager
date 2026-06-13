@@ -9,6 +9,20 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v5.4.x — Worker-liveness observability + supervisor diagnostics
 
+### v5.4.4 — Generalized OAuth expiry warnings + 15-day UI badge (2026-06-12)
+
+Operator ask 2026-06-12: "we need 15 day warnings on all expiry issues like this in the ui".
+
+Pre-v5.4.4 the `cursor_oauth_expiry_monitor` was cursor-specific, 14-day threshold, and only logged to stderr — operator couldn't see the warnings without exec'ing into the container. v5.4.4 widens + surfaces:
+
+- **Scope widened** — the scan now covers ALL providers with non-null `oauth_expires_at`, not just `provider_type == "cursor-oauth"`. Future OAuth provider types get warnings for free without a code change.
+- **Threshold bumped 14 → 15 days** to match the operator's ask.
+- **activity_log row written** when a warning fires (`event_type=oauth_expiry_warning`, severity=warning, provider_id stamped). Idempotent against re-firing within 24h for the same provider.
+- **UI badge added on the Provider card** (`frontend/src/pages/ProvidersPage.tsx`). Amber when `daysLeft <= 15`, red when `daysLeft <= 3` or already expired. Tooltip shows the ISO expiry timestamp + re-auth instructions.
+- Backfill logic + admin endpoint (`/api/admin/cursor-oauth-expiry`) preserved verbatim — they remain cursor-oauth-specific because only cursor-oauth has the `api_key` JWT-decode path.
+
+Tests: +5 pins in `test_v544_oauth_expiry_generalized.py` (threshold pin, scope-widened source-grep, activity_log emit + 24h dedup ordering, UI badge presence + threshold parity). Existing `test_cursor_oauth_expiry_monitor::test_get_last_sweep_returns_snapshot` updated 14 → 15. Full suite **2956 passed, 2 skipped** (~43s).
+
 ### v5.4.3 — Compliance-epoch purge admin endpoint (2026-06-12)
 
 Closes the security-team-mandated cleanup of pre-compliance data. Operator-decided epoch is **2026-06-06 00:00 UTC** (v5.2.0 vendor-neutrality stack ship date); the security team's posture is that pre-v5.2 rows did not have vendor-neutrality policy fields evaluated, so they must be hard-deleted.

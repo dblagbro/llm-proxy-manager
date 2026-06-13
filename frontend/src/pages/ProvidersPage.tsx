@@ -500,6 +500,34 @@ export function ProvidersPage() {
                           🥇 router&apos;s pick today
                         </span>
                       )}
+                      {/* v5.4.4 — OAuth token expiry badge. Renders
+                          whenever the provider carries an oauth_expires_at
+                          stamp (cursor-oauth, claude-oauth, codex-oauth,
+                          any future OAuth provider type). Color:
+                          - amber: within 15 days
+                          - red:   within 3 days OR already expired
+                          - green: > 15 days (informational, hidden by default)
+                          Threshold matches the backend watcher's
+                          OAUTH_EXPIRY_WARN_DAYS_DEFAULT. */}
+                      {p.oauth_expires_at && (() => {
+                        const daysLeft = (Number(p.oauth_expires_at) - Date.now() / 1000) / 86400
+                        if (daysLeft > 15) return null
+                        const expDate = new Date(Number(p.oauth_expires_at) * 1000)
+                        const tone = daysLeft <= 3
+                          ? 'bg-red-100 dark:bg-red-950 text-red-800 dark:text-red-200'
+                          : 'bg-amber-100 dark:bg-amber-950 text-amber-800 dark:text-amber-200'
+                        const label = daysLeft < 0
+                          ? `expired ${Math.abs(Math.round(daysLeft))}d ago`
+                          : `expires in ${Math.round(daysLeft)}d`
+                        return (
+                          <span
+                            className={clsx('inline-flex items-center rounded-full px-2 py-0.5 text-xs font-normal', tone)}
+                            title={`OAuth token expiry: ${expDate.toISOString()}. Schedule a re-auth via Edit Provider → Re-authorize before the JWT lapses.`}
+                          >
+                            ⏰ {label}
+                          </span>
+                        )
+                      })()}
                     </p>
                     <p className="text-xs text-gray-500 dark:text-gray-400">{p.provider_type} · {p.default_model ?? 'no default model'} · {ordinal(p.priority)} priority</p>
                     {/* v3.0.6: per-provider 24h metrics inline. Hidden when no
