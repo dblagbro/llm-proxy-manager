@@ -188,15 +188,23 @@ async def _sample_infra_errors() -> None:
 
 async def _loop() -> None:
     global _tick
+    from app.monitoring.worker_heartbeat import WorkerHeartbeat, register_expected_interval
+    hb = WorkerHeartbeat(name="observability_sampler")
+    register_expected_interval("observability_sampler", _INTERVAL_SEC)
     # Boot delay so we don't fight startup migrations / first scrape.
     await asyncio.sleep(15)
     while True:
-        await _sample_pool()
-        await _sample_scrape_freshness()
-        await _sample_infra_errors()
-        _tick += 1
-        if _tick % _ERROR_RATE_CHECK_EVERY == 0:
-            await _sample_error_rate()
+        try:
+            await _sample_pool()
+            await _sample_scrape_freshness()
+            await _sample_infra_errors()
+            _tick += 1
+            if _tick % _ERROR_RATE_CHECK_EVERY == 0:
+                await _sample_error_rate()
+            await hb.tick(status="ok", note=f"tick={_tick}")
+        except Exception as e:
+            logger.warning("observability_sampler.tick_failed err=%s", e)
+            await hb.tick(status="error", note=str(e)[:200])
         await asyncio.sleep(_INTERVAL_SEC)
 
 

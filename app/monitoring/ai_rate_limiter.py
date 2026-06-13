@@ -493,19 +493,25 @@ async def _scan_all_once() -> int:
 
 
 async def _scan_loop() -> None:
+    from app.monitoring.worker_heartbeat import WorkerHeartbeat, register_expected_interval
+    hb = WorkerHeartbeat(name="ai_rate_limiter")
     await asyncio.sleep(WARMUP_DELAY_SEC)
     while True:
         try:
             from app.config import settings
             if not getattr(settings, "ai_rate_limiter_enabled", False):
+                await hb.tick(status="disabled", note="ai_rate_limiter_enabled=false")
                 await asyncio.sleep(60)
                 continue
             interval = int(getattr(settings, "ai_rate_limiter_interval_sec", DEFAULT_INTERVAL_SEC))
+            register_expected_interval("ai_rate_limiter", interval)
             n = await _scan_all_once()
             if n:
                 logger.info("ai_rate_limiter.swept reviewed=%d", n)
+            await hb.tick(status="ok", note=f"reviewed={n}")
         except Exception as exc:
             logger.warning("ai_rate_limiter.sweep_failed err=%s", exc)
+            await hb.tick(status="error", note=str(exc)[:200])
             interval = DEFAULT_INTERVAL_SEC
         await asyncio.sleep(interval)
 

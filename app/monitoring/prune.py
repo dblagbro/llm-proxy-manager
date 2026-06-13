@@ -584,6 +584,9 @@ async def _wal_checkpoint_truncate() -> dict:
 
 async def _prune_loop() -> None:
     """Periodic loop. Sleeps an hour after boot, then sweeps daily."""
+    from app.monitoring.worker_heartbeat import WorkerHeartbeat, register_expected_interval
+    hb = WorkerHeartbeat(name="prune")
+    register_expected_interval("prune", _SWEEP_INTERVAL_SEC)
     await asyncio.sleep(_INITIAL_DELAY_SEC)
     while True:
         try:
@@ -618,8 +621,13 @@ async def _prune_loop() -> None:
                 counts["tombstone_keep_days"],
                 counts.get("ai_review_keep_days", 30),
             )
+            await hb.tick(
+                status="ok",
+                note=f"activity_log={counts.get('activity_log',0)} provider_metrics={counts.get('provider_metrics',0)} run_events={counts.get('run_events',0)}",
+            )
         except Exception as e:
             logger.warning("prune.sweep_failed err=%s", e)
+            await hb.tick(status="error", note=str(e)[:200])
         await asyncio.sleep(_SWEEP_INTERVAL_SEC)
 
 

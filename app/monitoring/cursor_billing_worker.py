@@ -130,19 +130,25 @@ async def _scrape_all_once() -> int:
 
 
 async def _scrape_loop() -> None:
+    from app.monitoring.worker_heartbeat import WorkerHeartbeat, register_expected_interval
+    hb = WorkerHeartbeat(name="cursor_billing")
     jitter = random.uniform(0.0, _STARTUP_JITTER_MAX_SEC)
     await asyncio.sleep(WARMUP_DELAY_SEC + jitter)
     while True:
         interval = _interval_sec()
+        register_expected_interval("cursor_billing", interval or 14400)
         if interval <= 0:
+            await hb.tick(status="disabled", note=f"interval_sec={interval}")
             await asyncio.sleep(300)
             continue
         try:
             n = await _scrape_all_once()
             if n:
                 logger.info("cursor_billing.swept providers=%d", n)
+            await hb.tick(status="ok", note=f"scraped={n}")
         except Exception as e:
             logger.warning("cursor_billing.sweep_failed err=%s", e)
+            await hb.tick(status="error", note=str(e)[:200])
         await asyncio.sleep(interval)
 
 

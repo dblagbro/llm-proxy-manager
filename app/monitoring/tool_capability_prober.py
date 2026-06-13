@@ -292,10 +292,14 @@ async def _probe_loop_once() -> dict:
 
 
 async def _scan_loop() -> None:
+    from app.monitoring.worker_heartbeat import WorkerHeartbeat, register_expected_interval
+    hb = WorkerHeartbeat(name="tool_capability_prober")
     jitter = random.uniform(0.0, _STARTUP_JITTER_MAX_SEC)
     await asyncio.sleep(WARMUP_DELAY_SEC + jitter)
     while True:
+        register_expected_interval("tool_capability_prober", _interval_sec())
         if not _enabled():
+            await hb.tick(status="disabled", note="ai_tool_prober disabled")
             await asyncio.sleep(300)
             continue
         try:
@@ -305,8 +309,13 @@ async def _scan_loop() -> None:
                     "ai_tool_prober.swept probed=%d skipped=%d native_tools_updates=%d",
                     counts["probed"], counts["skipped"], counts["updates"],
                 )
+            await hb.tick(
+                status="ok",
+                note=f"probed={counts.get('probed',0)} skipped={counts.get('skipped',0)}",
+            )
         except Exception as e:
             logger.warning("ai_tool_prober.sweep_failed err=%s", e)
+            await hb.tick(status="error", note=str(e)[:200])
         await asyncio.sleep(_interval_sec())
 
 

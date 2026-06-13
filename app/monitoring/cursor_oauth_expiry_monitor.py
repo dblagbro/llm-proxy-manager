@@ -182,12 +182,17 @@ async def _run_one_sweep(
 
 
 async def _sweep_loop() -> None:
+    from app.monitoring.worker_heartbeat import WorkerHeartbeat, register_expected_interval
+    hb = WorkerHeartbeat(name="cursor_oauth_expiry")
+    register_expected_interval("cursor_oauth_expiry", _SWEEP_INTERVAL_SEC)
     await asyncio.sleep(_INITIAL_DELAY_SEC)
     while True:
         try:
             await _run_one_sweep()
+            await hb.tick(status="ok", note="swept")
         except Exception as exc:
             logger.warning("cursor_oauth_expiry.sweep_failed err=%s", exc)
+            await hb.tick(status="error", note=str(exc)[:200])
         await asyncio.sleep(_SWEEP_INTERVAL_SEC)
 
 
