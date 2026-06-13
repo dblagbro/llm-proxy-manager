@@ -7,6 +7,33 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ---
 
+## v5.5.x — cursor-oauth noVNC sidecar (silent JWT rotation)
+
+### v5.5.0 — `cursor_bridge_session` scaffold (Phase 1 of 4) (2026-06-12)
+
+Operator-approved noVNC sidecar project — replaces operator-driven cursor-oauth re-auth (~60-day cadence) with a persistent Playwright + Chromium session that re-runs the PKCE flow silently every ~24h. The empirical `oauth_refresh_token = NULL` discovery on the existing Cursor-oAuth-C1acct provider closed the door on the cheap refresh-token alternative, so the noVNC path is the right move.
+
+**Scaffold-only ship.** Phase 1 commits the directory + Dockerfile + supervisord + FastAPI skeleton, no container running yet:
+
+- `cursor_bridge_session/` — new top-level directory mirroring the `grok_bridge/` pattern.
+- `Dockerfile` — Playwright base image + Xvfb + x11vnc + noVNC + websockify + fluxbox + supervisord (matching grok_bridge's proven shape).
+- `requirements.txt` — fastapi, uvicorn, httpx, playwright 1.45.0.
+- `supervisord.conf` — 4-program stack: xvfb → fluxbox → x11vnc → websockify.
+- `start.sh` — boots supervisord, waits for Xvfb to actually accept X11 connections (NOT just for the socket file — same BUG-025 hardening grok_bridge learned), then exec's uvicorn as PID 1.
+- `app.py` — FastAPI app v5.5.0. `/healthz` returns the scaffold sentinel (`{status: ok, phase: scaffold-v5.5.0, uptime_sec: N}`). `/api/status` returns the stub session-health shape (last_rotation_at, logged_in, all NULL in v5.5.0). `/api/rotate` explicitly returns `not-implemented-in-scaffold` with a v5.5.1 forward-pointer so the operator doesn't think rotation works yet.
+- `docs/cursor-oauth-novnc-design-v5.5.md` — full design doc: motivation, architecture, 4-phase ship plan with effort estimates, ready-to-paste compose entry block + nginx route + HMAC callback shape for v5.5.1-v5.5.2.
+
+**Not in v5.5.0:** Chromium launch, /vnc/ route, PKCE replay, rotation cron, HMAC callback, compose entry in `/home/dblagbro/docker/docker-compose.yml`. Operator gets to review the design + scaffold shape before any container exists.
+
+**Forward ship plan:**
+- **v5.5.1** (~4h): Playwright lifespan launches Chromium with persistent context under `/data/playwright-state`. `/vnc/` reverse-proxies to websockify. nginx route + compose entry wired. Operator can sign in to Cursor via noVNC tab.
+- **v5.5.2** (~4h): PKCE generator + `/loginDeepControl` drive + 24h rotation cron. HMAC-signed callback to new endpoint `POST /api/admin/cursor-oauth-rotate-callback` on llm-proxy2.
+- **v5.5.3** (~3h): "Session health" UI panel on ProvidersPage.
+
+Tests: 10/10 in `test_v550_cursor_bridge_session_scaffold.py` (directory + 5-file presence + Dockerfile base image + noVNC apt stack + supervisord program names + app.py endpoint surface + version pin + design doc presence + scaffold sentinels). Full suite **2966 passed, 2 skipped** (~45s).
+
+---
+
 ## v5.4.x — Worker-liveness observability + supervisor diagnostics
 
 ### v5.4.4 — Generalized OAuth expiry warnings + 15-day UI badge (2026-06-12)
