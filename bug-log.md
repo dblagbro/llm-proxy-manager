@@ -10,6 +10,32 @@ Status flow: **open** → **in-progress** → **fixed** → **verified-fixed** �
 
 ---
 
+## 2026-06-12 — security-team mandated pre-compliance data purge (v5.4.3)
+
+Not a regression finding — operator-filed backlog item from 2026-06-06 ("when clear up old metrics in the clusters — ask me more about this when done with all the ongoing work"). Scoping interview 2026-06-12 revealed the actual ask: delete data accumulated before the v5.2.0 vendor-neutrality stack shipped, per security team mandate.
+
+**Decision (operator, 2026-06-12):**
+- Cutoff: **2026-06-06 00:00 UTC** (v5.2.0 ship date)
+- Tables: `activity_log`, `provider_metrics`, `provider_ai_review`
+- Scope: 3 `/llm-proxy2/` instances ONLY (compliance-locked URL). `/llm-proxy/` clone left intact (outside the compliance envelope, like BUG-071).
+
+**Implementation:** v5.4.3 ships `POST /api/admin/compliance-epoch-purge` with PURGABLE/FORBIDDEN allow-lists, `dry_run` default, audit row written BEFORE deletes. 9/9 pin tests.
+
+**Applied 2026-06-12 21:20 UTC:**
+
+| Instance | activity_log | provider_metrics | provider_ai_review | Total | Audit row |
+|---|---|---|---|---|---|
+| tmrwww01 llm-proxy2 | 582 | 344 | 6,204 | 7,130 | `ppc_0019ebe94db2272bdaff8d1d5` |
+| tmrwww02 llm-proxy2 | 573 | 338 | 5,918 | 6,829 | `ppc_0019ebe94e906a5f74fc2816d` |
+| c1conv llm-proxy2 | 837 | 414 | 5,880 | 7,131 | `ppc_0019ebe94fea4444c08a9f9c6` |
+| **Total** | **1,992** | **1,096** | **18,002** | **21,090** | — |
+
+Post-purge dry-run survey on all 3 instances returned `matched=0` (zero remaining pre-cutoff rows). compliance_events table NOT touched (verified `oldest = 2026-06-04` preserved). The audit chain itself is untouched and continues signing daily.
+
+Smoke instance had zero pre-cutoff rows (sandbox). Clone instances (tmrwww01/02 `/llm-proxy/`) left intact per operator decision.
+
+---
+
 ## 2026-06-12 — post-refactor regression sweep (v5.1.0 → v5.3.9)
 
 Deep sweep covering **v5.1.0 → v5.3.9** (~36 release-level diffs over 7
