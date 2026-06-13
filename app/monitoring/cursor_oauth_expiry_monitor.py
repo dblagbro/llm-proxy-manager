@@ -1,4 +1,20 @@
-"""Cursor-oAuth JWT expiry monitor (v5.0.4 — P3 partial).
+"""OAuth JWT expiry monitor (v5.0.4; v5.4.4 generalized).
+
+v5.4.4 widens scope from cursor-oauth ONLY to ALL providers carrying a
+non-null ``oauth_expires_at`` (operator ask 2026-06-12: "we need 15
+day warnings on all expiry issues like this in the ui"). Also writes
+an idempotent ``oauth_expiry_warning`` activity_log row so the UI can
+surface the warning without scraping stderr; threshold bumped 14 → 15
+days per the same ask. Backfill logic remains cursor-oauth-specific
+(JWT decode + ``api_key`` field) because other provider types persist
+``oauth_expires_at`` directly via their billing scrape / token
+exchange path.
+
+Original module docstring follows for context.
+
+---
+
+Cursor-oAuth JWT expiry monitor (v5.0.4 — P3 partial).
 
 Context: cursor-oauth providers carry a JWT with ``scope: offline_access``
 and ``exp: <unix ts>`` typically ~60 days out. v4.4.37 added a probe to
@@ -59,7 +75,7 @@ _INITIAL_DELAY_SEC = 120 * 60
 # Alert threshold (days remaining before expiry). 14d gives the
 # operator enough lead time to schedule a manual re-auth window if the
 # refresh-flow isn't live yet.
-_DEFAULT_WARN_THRESHOLD_DAYS = 14
+_DEFAULT_WARN_THRESHOLD_DAYS = 15  # v5.4.4 bumped from 14 per operator ask
 
 
 _LAST_SWEEP: Dict[str, Any] = {
@@ -118,16 +134,25 @@ async def _run_one_sweep(
     Returns a list of dicts (one per provider) for ``get_last_sweep``.
     Operator-facing UI renders the days-until-expiry plus warn flag.
     """
+    from datetime import timedelta
     from sqlalchemy import select
     from app.models.database import AsyncSessionLocal
-    from app.models.db import Provider
+    from app.models.db import Provider, ActivityLog
 
     snapshots: List[Dict[str, Any]] = []
     async with AsyncSessionLocal() as db:
+        # v5.4.4 — scope widened from ``provider_type == "cursor-oauth"``
+        # to ALL providers that persist a ``oauth_expires_at``. This makes
+        # the monitor cover claude-oauth + codex-oauth + any future
+        # OAuth provider type with zero further code change.
         rs = await db.execute(
-            select(Provider).where(Provider.provider_type == "cursor-oauth")
+            select(Provider).where(
+                Provider.oauth_expires_at.is_not(None)
+                | (Provider.provider_type == "cursor-oauth")
+            )
         )
         providers = rs.scalars().all()
+        look_back = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=24)
         for p in providers:
             stored_exp = getattr(p, "oauth_expires_at", None)
             jwt_exp = _decode_jwt_exp(getattr(p, "api_key", None))
@@ -169,6 +194,41 @@ async def _run_one_sweep(
                     "days_left=%.1f threshold=%s",
                     p.id, p.name, days_left or 0.0, warn_threshold_days,
                 )
+                # v5.4.4 — also write to activity_log so the UI can
+                # surface the warning without scraping stderr. Idempotent
+                # against re-firing within 24h for the same provider.
+                try:
+                    existing = await db.execute(
+                        select(ActivityLog)
+                        .where(ActivityLog.event_type == "oauth_expiry_warning")
+                        .where(ActivityLog.provider_id == p.id)
+                        .where(ActivityLog.created_at >= look_back)
+                        .limit(1)
+                    )
+                    if existing.scalar_one_or_none() is None:
+                        exp_iso = (
+                            datetime.utcfromtimestamp(effective_exp).isoformat()
+                            if effective_exp else "unknown"
+                        )
+                        db.add(ActivityLog(
+                            created_at=datetime.utcnow(),
+                            severity="warning",
+                            event_type="oauth_expiry_warning",
+                            provider_id=p.id,
+                            message=(
+                                f"Provider '{p.name}' (type={p.provider_type}) "
+                                f"OAuth token expires in {days_left:.1f}d "
+                                f"(at {exp_iso}Z). Threshold: "
+                                f"{warn_threshold_days}d. Schedule re-auth "
+                                f"before the JWT lapses or the provider "
+                                f"will start returning auth-failed."
+                            ),
+                        ))
+                except Exception as exc:
+                    logger.warning(
+                        "oauth_expiry.activity_log_failed provider=%s err=%s",
+                        p.id, exc,
+                    )
         try:
             await db.commit()
         except Exception as exc:

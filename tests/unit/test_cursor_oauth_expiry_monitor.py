@@ -209,4 +209,4 @@ async def test_get_last_sweep_returns_snapshot():
     snap = get_last_sweep()
     assert snap["last_sweep_ts"] is not None
     assert any(p["provider_id"] == "cur1" for p in snap["providers"])
-    assert snap["warn_threshold_days"] == 14
+    assert snap["warn_threshold_days"] == 15  # v5.4.4 bumped 14 → 15 per operator ask
