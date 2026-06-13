@@ -59,12 +59,16 @@ Findings BUG-069+ (BUG-001..068 already used).
 #### BUG-071 — Compliance policy enforcement not exercised by the dominant production caller (`coordinator-hub`)
 - **Component:** v5.0.x + v5.2.x compliance subsystem applied to `api_keys.coordinator-hub`.
 - **Severity:** high (audit-trail amounts to "we shipped enforcement but nothing is being enforced for the customer that drives most traffic"; reads as compliance theatre on inspection).
-- **Repro:** `SELECT name, blocked_companies, allowed_companies, blocked_models, allowed_models FROM api_keys WHERE name = 'coordinator-hub'` → **all four columns NULL**. Sibling key `coordinator-code-prod-hub-v2` carries `blocked_companies = ["anthropic"]` so the schema works — but the dominant key has no policy.
-- **Evidence:** `compliance_events.created_at` max = 2026-06-05 23:42:50 (7 days silent on tmrwww01). Audit chain has dutifully checksummed `row_count = 0` for 5 consecutive days.
-- **Cause:** Operator decision after the v5.2 vendor-neutrality stack shipped that the coordinator-hub canary should run policy-free during the canary window. That window is now over (canary done; production live for ≥1 week), but the policy was never re-applied.
-- **Fix:** Operator call — pick at least a "no anthropic" or "only anthropic" stance and apply via `app/admin/policy-snapshot` or the v5.3.0 editor UI. Even a permissive `allowed_companies = [...]` allow-list documents intent and exercises the subsystem.
-- **Pin:** TODO — `test_v540_compliance_dominant_key_has_policy.py` asserting at least one of the 4 policy columns is non-NULL on any key whose 7-day `compliance_events` row count is 0 AND whose `llm_request` traffic share is > 10%.
-- **Status:** **open**, awaiting operator policy call.
+- **Repro (pre-fix):** `SELECT name, blocked_companies, allowed_companies, blocked_models, allowed_models FROM api_keys WHERE name = 'coordinator-hub'` → all four columns NULL on every `/llm-proxy2/` instance. Sibling key `coordinator-code-prod-hub-v2` already carried `blocked_companies = ["anthropic"]`.
+- **Cause:** Policy never applied to coordinator-hub key after the v5.2 vendor-neutrality stack shipped — the canary ran policy-free and the window was never closed.
+- **Fix applied 2026-06-12:** operator decision — `blocked_companies = ["anthropic"]` on the compliance-locked `/llm-proxy2/` URL + GCP; `/llm-proxy/` clone + TMR hosts (clone) left unrestricted. Applied via direct DB UPDATE (with `last_user_edit_at` bump) + `compliance_policy_changes` audit row on:
+    - **tmrwww01 llm-proxy2** — applied directly. audit_id `ppc_0019ebe87c8c18bcc49a7fcbf`.
+    - **tmrwww02 llm-proxy2** — replicated via cluster sync (LWW within ~60s).
+    - **c1conv llm-proxy2** — applied directly (cluster sync TMR→GCP is broken; c1conv is standalone). audit_id `ppc_0019ebe87ff8d7b1787c6d884`.
+    - smoke instance has no `coordinator-hub` key (only `sandbox-coordinator-code-profile`, already blocks anthropic).
+    - llm-proxy clone (tmrwww01/www2) — left unrestricted per operator decision.
+- **Pin:** carried as v5.4.3 candidate (`test_v543_compliance_dominant_key_has_policy.py`) — assert any key with 0 `compliance_events` in 7d AND >10% llm_request share has at least one non-NULL policy column. v5.4.1 zero-row chain warning remains as the safety net.
+- **Status:** **fixed** (2026-06-12; operator decision + 3-instance apply).
 
 #### BUG-072 — v5.3.4 openai-python retry tap shows zero observed retries in 24h
 - **Component:** `app/observability/openai_retry_tap.py`.
