@@ -215,10 +215,19 @@ async def _seed_peers_from_env_if_empty(db_factory) -> int:
 
 
 async def _heartbeat_loop(notify_fn=None):
+    from app.monitoring.worker_heartbeat import WorkerHeartbeat, register_expected_interval
+    hb = WorkerHeartbeat(name="cluster_heartbeat")
+    register_expected_interval("cluster_heartbeat", settings.cluster_heartbeat_sec)
     while True:
         await asyncio.sleep(settings.cluster_heartbeat_sec)
-        for peer in list(_peers.values()):
-            await _ping_peer(peer, notify_fn)
+        pinged = 0
+        try:
+            for peer in list(_peers.values()):
+                await _ping_peer(peer, notify_fn)
+                pinged += 1
+            await hb.tick(status="ok", note=f"pinged={pinged}")
+        except Exception as e:
+            await hb.tick(status="error", note=str(e)[:200])
 
 
 async def _ping_peer(peer: PeerNode, notify_fn=None):
@@ -968,12 +977,17 @@ async def _peer_refresh_loop(db_factory):
     """v5.0.18 — every 30s, refresh ``_peers`` from the cluster_peers
     table so UI-driven add/remove ops on this or any peer node take
     effect within one cycle without a container restart."""
+    from app.monitoring.worker_heartbeat import WorkerHeartbeat, register_expected_interval
+    hb = WorkerHeartbeat(name="cluster_peer_refresh")
+    register_expected_interval("cluster_peer_refresh", 30)
     while True:
         await asyncio.sleep(30)
         try:
             await _reload_peers_from_db(db_factory)
+            await hb.tick(status="ok", note=f"peers={len(_peers)}")
         except Exception as exc:
             logger.warning("peer_refresh_loop.iteration_failed err=%s", exc)
+            await hb.tick(status="error", note=str(exc)[:200])
 
 
 _peer_refresh_task: Optional[asyncio.Task] = None

@@ -109,14 +109,19 @@ async def _sweep_once() -> dict:
 
 
 async def _loop() -> None:
+    from app.monitoring.worker_heartbeat import WorkerHeartbeat, register_expected_interval
+    hb = WorkerHeartbeat(name="caller_memory_ttl_sweeper")
     # Boot delay so we don't fight startup migrations
     await asyncio.sleep(120)
     while True:
         interval = _interval_sec()
+        register_expected_interval("caller_memory_ttl_sweeper", interval or 3600)
         try:
             await _sweep_once()
+            await hb.tick(status="ok", note="swept")
         except Exception as e:
             logger.warning(f"caller_memory_ttl_sweeper.loop err={e!r}")
+            await hb.tick(status="error", note=str(e)[:200])
         await asyncio.sleep(interval)
 
 

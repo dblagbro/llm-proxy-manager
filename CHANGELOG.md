@@ -9,6 +9,25 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v5.4.x — Worker-liveness observability + supervisor diagnostics
 
+### v5.4.2 — Wire remaining 11 background workers to WorkerHeartbeat (2026-06-12)
+
+Completes the BUG-069 follow-up by wiring every long-running background loop to the v5.4.0 `WorkerHeartbeat` factory. Roster grows from 5 to 16 instrumented workers:
+
+- `cursor_billing` + `codex_billing` — vendor billing scrapes (parity with `anthropic_billing` already shipped in v5.4.0).
+- `cursor_oauth_expiry` — JWT lifetime monitor.
+- `caller_memory_ttl_sweeper` — caller-memory retention.
+- `observability_sampler` — pool + error-rate sampler (records `tick` counter in note).
+- `tool_capability_prober` — AI tool-use probe.
+- `usage_rotator` — usage-bucket rotation.
+- `prune` — daily activity_log retention sweep.
+- `ai_rate_limiter` — rate-limit suggestion loop.
+- `cluster_heartbeat` (in `app/cluster/manager.py::_heartbeat_loop`) — pings every peer.
+- `cluster_peer_refresh` (in `app/cluster/manager.py::_peer_refresh_loop`) — reloads `_peers` from DB every 30s.
+
+Every wired worker writes status `ok` / `error` / `disabled` with a one-line note. Each registers its expected interval so `/health.workers[].stale` flips True when the cadence is missed. No new schema, no admin endpoints — pure observability extension.
+
+Tests: +4 pins in `test_v542_remaining_worker_heartbeats.py` (source-grep contracts for all 11 wiring points + roster sanity-pin at 16 workers so a future loop addition without a heartbeat trips CI). Full suite **2942 passed, 2 skipped** (~54s).
+
 ### v5.4.1 — Audit-chain zero-row warning + openai retry tap hardening (2026-06-12)
 
 Closes BUG-072 + BUG-073 from the 2026-06-12 sweep. Both findings were observability holes left by v5.3.x ships.

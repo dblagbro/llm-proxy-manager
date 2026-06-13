@@ -197,15 +197,20 @@ async def _sweep_once() -> int:
 
 async def _loop() -> None:
     """Periodic loop. Boot-delayed 90s so usage_tracker has populated cache."""
+    from app.monitoring.worker_heartbeat import WorkerHeartbeat, register_expected_interval
+    hb = WorkerHeartbeat(name="usage_rotator")
     await asyncio.sleep(90)
     while True:
         interval = _interval_sec()
+        register_expected_interval("usage_rotator", interval or 60)
         try:
             n = await _sweep_once()
             if n:
                 logger.info("usage_rotator.swept rotations=%d", n)
+            await hb.tick(status="ok", note=f"rotations={n}")
         except Exception as e:
             logger.warning("usage_rotator.sweep_failed err=%s", e)
+            await hb.tick(status="error", note=str(e)[:200])
         await asyncio.sleep(interval)
 
 
