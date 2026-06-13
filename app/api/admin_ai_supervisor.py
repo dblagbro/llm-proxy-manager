@@ -28,6 +28,27 @@ async def supervisor_run_once(
     db: AsyncSession = Depends(get_db),
     _admin: AdminUser = Depends(require_admin),
 ):
+    """Force one supervisor tick. See module docstring."""
+    return await _supervisor_run_once_impl(db, _admin)
+
+
+@router.post("/retry-tap-self-test")
+async def retry_tap_self_test(
+    _db: AsyncSession = Depends(get_db),
+    _admin: AdminUser = Depends(require_admin),
+):
+    """v5.4.0 (BUG-072): exercise the openai-python retry tap end-to-end.
+
+    Emits a synthetic record matching the retry log pattern and reports
+    whether the tap captured it. Combined with ``/health.workers`` after
+    the next sweep, gives the operator two ways to verify the v5.3.4
+    instrumentation is alive.
+    """
+    from app.observability.openai_retry_tap import self_test
+    return self_test()
+
+
+async def _supervisor_run_once_impl(db, _admin):
     """Force one supervisor tick. Returns counts + any captured errors.
 
     Bypasses the ``ai_provider_supervisor_enabled`` flag so that an

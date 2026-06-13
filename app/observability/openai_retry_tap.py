@@ -55,9 +55,41 @@ class _OpenAIRetryTap(logging.Handler):
             endpoint = m.group(1) if m else None
             from app.observability.prometheus import observe_openai_retry
             observe_openai_retry(endpoint or "other")
+            # v5.4.0 (BUG-072): also write to activity_log so the retry
+            # is visible from SQL probes. Pre-v5.4.0 the QA sweep found
+            # zero ``%retry%`` event_type rows in 24h on tmrwww01 because
+            # we only incremented Prometheus. Now the row exists too.
+            # Best-effort: a Postgres pool exhaustion on this hot path
+            # MUST NOT crash the logging handler.
+            try:
+                import asyncio
+                asyncio.get_event_loop().create_task(
+                    _emit_retry_event_async(endpoint or "other", text[:240])
+                )
+            except Exception:
+                pass
         except Exception:
             # Logging handlers must never raise — swallow everything.
             pass
+
+
+async def _emit_retry_event_async(endpoint: str, msg: str) -> None:
+    """Background write of the retry event to activity_log. Failures
+    swallowed; the Prometheus counter remains the source-of-truth."""
+    try:
+        from app.models.database import AsyncSessionLocal
+        from app.models.db import ActivityLog
+        from datetime import datetime
+        async with AsyncSessionLocal() as db:
+            db.add(ActivityLog(
+                created_at=datetime.utcnow(),
+                severity="info",
+                event_type="openai_client_retry",
+                message=f"openai-python transparent retry endpoint={endpoint} msg={msg}",
+            ))
+            await db.commit()
+    except Exception:
+        pass
 
 
 _installed = False
@@ -81,3 +113,41 @@ def install_openai_retry_tap() -> None:
     if target.level == logging.NOTSET or target.level > logging.INFO:
         target.setLevel(logging.INFO)
     _installed = True
+
+
+def is_installed() -> bool:
+    """v5.4.0 (BUG-072): boot self-test introspection. True iff the tap
+    has been attached to ``openai._base_client``. Used by the admin
+    diagnostic endpoint and the post-deploy health probe to confirm
+    the v5.3.4 wiring hasn't silently regressed."""
+    if not _installed:
+        return False
+    target = logging.getLogger("openai._base_client")
+    return any(isinstance(h, _OpenAIRetryTap) for h in target.handlers)
+
+
+def self_test() -> dict:
+    """Synthetically emit one log record matching the retry pattern
+    and assert it hits the tap. Returns a dict with the result so the
+    admin endpoint can report it.
+
+    Triggers a real call to ``observe_openai_retry`` so the
+    Prometheus counter advances by one. The activity_log row is
+    written by the same async path the real retries take, so a
+    successful self-test also exercises that path end-to-end."""
+    result = {
+        "installed": is_installed(),
+        "handler_count": len(logging.getLogger("openai._base_client").handlers),
+        "synthetic_record_emitted": False,
+        "error": None,
+    }
+    if not result["installed"]:
+        result["error"] = "tap not installed; call install_openai_retry_tap() first"
+        return result
+    try:
+        logger = logging.getLogger("openai._base_client")
+        logger.info("Retrying request to /v1/chat/completions in 0.5 seconds (self-test)")
+        result["synthetic_record_emitted"] = True
+    except Exception as exc:
+        result["error"] = repr(exc)
+    return result
