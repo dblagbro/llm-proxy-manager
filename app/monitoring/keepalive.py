@@ -498,18 +498,24 @@ async def _probe_all_once() -> int:
 async def _probe_loop() -> None:
     """Periodic loop. Fires the first sweep ~30s after startup (so the
     rest of the boot finishes), then on the configured interval."""
+    from app.monitoring.worker_heartbeat import WorkerHeartbeat, register_expected_interval
+    hb = WorkerHeartbeat(name="keepalive")
     await asyncio.sleep(30)  # let providers register, db settle
     while True:
         interval = _probe_interval_sec()
+        register_expected_interval("keepalive", interval or 60)
         if interval == 0:
+            await hb.tick(status="disabled", note="probe_interval_sec=0")
             await asyncio.sleep(60)  # check setting again in a minute
             continue
         try:
             n = await _probe_all_once()
             if n:
                 logger.info("keepalive.swept count=%d", n)
+            await hb.tick(status="ok", note=f"swept count={n}")
         except Exception as e:
             logger.warning("keepalive.sweep_failed err=%s", e)
+            await hb.tick(status="error", note=str(e)[:200])
         await asyncio.sleep(interval)
 
 

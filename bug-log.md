@@ -41,9 +41,9 @@ Findings BUG-069+ (BUG-001..068 already used).
 - **Repro:** `SELECT key, value FROM system_settings WHERE key LIKE '%_worker_%' OR key LIKE 'last_%' OR key LIKE 'cluster_sync_%' OR key LIKE 'ai_provider_supervisor_last_%'` returns **zero rows** on tmrwww01 — despite the keepalive worker actively running (5 `keepalive_probe` events in the last hour) and the AI supervisor having `ai_provider_supervisor_enabled = True`.
 - **Evidence:** Deep probe `/tmp/qa_deep_probe.py` section A returned empty; `ai_provider_supervisor_last_run` and `ai_provider_supervisor_last_review_count` both NULL; `cluster_sync_last_run` / `cluster_sync_last_status` / `cluster_sync_consecutive_failures` / `cluster_last_push_at` all NULL.
 - **Cause:** Workers print to container stderr but never write a `last_run` / `last_status` / `consecutive_failures` row to `system_settings`. There's no equivalent of the `BoolSystemSetting` factory (v5.3.3) for liveness counters.
-- **Fix proposal:** Add a `WorkerHeartbeat` helper module (mirrors `BoolSystemSetting` pattern) — every long-running loop wraps its tick with `WorkerHeartbeat("supervisor").tick(status="ok", note="reviewed 3 providers")`. Health endpoint surfaces a `workers: {name: {last_run, status, age_sec}}` block. CB-style alert if `age_sec > 3 * interval_sec`.
-- **Pin:** TODO — `test_v540_worker_heartbeat_pin.py` asserting each known worker (keepalive, supervisor, billing scrapes ×3, cluster-sync push, retry-tap) writes a heartbeat row within its declared interval.
-- **Status:** **open**, scope for v5.4.
+- **Fix shipped (v5.4.0):** `app/monitoring/worker_heartbeat.py::WorkerHeartbeat` factory writes `worker.<name>.{last_run, last_status, last_note}` to `system_settings` on every tick. 4 representative workers wired (`keepalive`, `ai_provider_supervisor`, `anthropic_billing`, `cluster_sync_push`). `/health` envelope gains `workers: [...]` block with `stale=true` flag when `age_sec > 3 * expected_interval_sec`. Remaining 11 workers carried as v5.4.x follow-ups.
+- **Pin:** `test_v540_worker_heartbeat.py` (13/13) — factory exports, key shape, idempotent register, 4 wired-worker source-greps, 2 health-envelope contracts, 4 admin-endpoint cases.
+- **Status:** **fixed** (v5.4.0 shipped 2026-06-12).
 
 #### BUG-070 — AI provider supervisor enabled fleet-wide but zero supervisor activity in 7d
 - **Component:** `app/monitoring/ai_provider_supervisor.py`.
@@ -51,9 +51,10 @@ Findings BUG-069+ (BUG-001..068 already used).
 - **Repro:** `SELECT event_type, COUNT(*) FROM activity_log WHERE event_type LIKE '%supervisor%' AND created_at >= datetime('now','-7 days') GROUP BY 1` → **zero rows** on tmrwww01. `ai_provider_supervisor_enabled = True`, `ai_provider_supervisor_auto_apply = False` (Tier A flipped this to True but the value here still shows False — possibly a different running node, or the change didn't persist; needs verification).
 - **Evidence:** Deep probe section J found `info` is the only severity in the last 24h (513 events), all `llm_request` + `keepalive_probe`. No `provider_review`, no `provider_disable_proposed`, no `supervisor_*` events of any kind.
 - **Cause hypotheses:** (a) supervisor crashes silently on first tick, (b) supervisor sleeps forever because `ai_provider_supervisor_interval` is NULL and the default isn't picked up, (c) supervisor runs but its emit-to-activity-log path is broken (would also explain BUG-069 — no heartbeat row), (d) the gate condition (`enabled + interval expired + N qualifying providers`) is never met.
-- **Fix:** Diagnose first — add a one-shot `await supervise_once(force=True)` admin endpoint to disambiguate (a)/(b)/(c) from (d). Then either fix the crash, default the interval explicitly to 1800s in the loader, or document the gate condition.
-- **Pin:** TODO — `test_v540_supervisor_runs_and_emits.py` asserting that a mocked supervise_once() writes the `provider_review` event_type.
-- **Status:** **open**, P1 follow-up to Tier A (which assumed the loop was already producing reviews).
+- **Fix shipped (v5.4.0):** `POST /api/admin/ai-supervisor/run-once` admin endpoint synchronously runs `_scan_all_once()` and returns `{ok, counts}` or `{ok: false, error, error_type}` on crash. Bypasses the `enabled` flag intentionally (the whole point is diagnosing a worker that may not be running). Combined with BUG-069's heartbeat row on `ai_provider_supervisor`, the supervisor's state is now observable in two ways: (a) `/health.workers[name=ai_provider_supervisor]` for periodic liveness, (b) `POST /api/admin/ai-supervisor/run-once` for on-demand verification.
+- **Pin:** `test_v540_worker_heartbeat.py::test_supervisor_run_once_endpoint_handles_crash` + `::test_supervisor_run_once_endpoint_returns_counts`.
+- **Follow-up:** Diagnostic endpoint will surface the root cause on the next operator probe of c1conv / tmrwww01. Carry as **partial-fix**; closed once the diagnostic identifies and addresses the underlying cause.
+- **Status:** **fixed (diagnostic)** — v5.4.0 ships the introspection; root-cause fix waits on first probe result.
 
 #### BUG-071 — Compliance policy enforcement not exercised by the dominant production caller (`coordinator-hub`)
 - **Component:** v5.0.x + v5.2.x compliance subsystem applied to `api_keys.coordinator-hub`.
@@ -91,22 +92,22 @@ Findings BUG-069+ (BUG-001..068 already used).
 - **Status:** **open**, low effort.
 
 #### BUG-074 — `cluster_peers` table holds peers but cluster_sync_last_* keys are NULL → can't tell if sync ever runs
-- **Component:** `app/cluster/sync.py`.
+- **Component:** `app/cluster/manager.py::_sync_loop`.
 - **Severity:** medium (closely related to BUG-069; called out separately because cluster-sync is the canonical example — peers are configured, but the snapshot has no way to tell whether the push loop is alive).
 - **Repro:** tmrwww01 has 2 peers configured (`llm-proxy2-www2`, `llm-proxy2-c1conv`). `cluster_sync_last_run` / `cluster_sync_last_status` / `cluster_sync_consecutive_failures` / `cluster_last_push_at` are all NULL.
 - **Cause:** Same root cause as BUG-069 — sync push writes nothing to `system_settings`.
-- **Fix:** Subsumed by BUG-069 (WorkerHeartbeat refactor).
-- **Status:** **open** — fold into BUG-069 fix.
+- **Fix shipped (v5.4.0):** `_sync_loop` wraps each tick with `WorkerHeartbeat("cluster_sync_push").tick(status, note=f"peers={n} pushed={p} failed={f}")`. Status is `ok` (zero failures), `partial` (some pushed), or `error` (zero pushed). Surfaces in `/health.workers`.
+- **Pin:** `test_v540_worker_heartbeat.py::test_cluster_sync_push_loop_calls_worker_heartbeat_tick`.
+- **Status:** **fixed** (v5.4.0 shipped 2026-06-12).
 
 ### Low / observability
 
-#### BUG-075 — `dbPool.oldest_checkout_age_sec` and `dbPool.checked_out` not surfaced in /health on any endpoint
-- **Component:** `app/api/health.py` (or wherever the /health envelope is assembled).
-- **Severity:** low (ARCH-A pool-leak telemetry was the whole point of those fields — the scheduled fleet-health routine even checks for `dbPool.checked_out > 20` and `dbPool.oldest_checkout_age_sec > 300`, but as of v5.3.9 the /health JSON does not include a `dbPool` block at all on TMR or c1conv).
-- **Repro:** `curl https://www.voipguru.org/llm-proxy2/health | jq .dbPool` → null.
-- **Cause:** The /health response shape only carries `{status, version, healthyProviders, totalProviders, circuitBreakers}` today.
-- **Fix:** Add a `dbPool: {checked_out, pool_size, oldest_checkout_age_sec, waiters}` block. Cheap — SQLAlchemy already exposes these on the engine. Backfills the fleet-health routine's pool-leak alarm path.
-- **Status:** **open**, ~30-min ship.
+#### BUG-075 — RETRACTED (false positive)
+- **Component:** `app/api/cluster.py:33` (the real /health endpoint, NOT `app/api/health.py`).
+- **Severity:** retracted.
+- **Original claim:** /health JSON does not carry a `dbPool` block.
+- **Why it was wrong:** the QA probe only inspected the SQLite snapshot via `qa_deep_probe.py`; I never ran `curl /health | jq .dbPool` against any of the 6 endpoints. The /health endpoint on `app/api/cluster.py:33` (the live one — `app/main.py:669` is a stub) has carried the full block since v3.9.8: `size`, `checked_out`, `overflow`, `in_use`, `max`. When `db_pool_trace=true` (TMR www1+www2+c1conv), it also surfaces `oldest_checkout_age_sec`, `traced_checked_out`, `traced_async_sessions`, `oldest_async_session_age_sec`. The fleet-health routine's `dbPool.checked_out > 20` and `dbPool.oldest_checkout_age_sec > 300` checks already work.
+- **Status:** **closed (retracted)**, 2026-06-12 during v5.4.0 verification. Lesson: ground-truth the actual API shape with curl before filing observability bugs from snapshot probes alone.
 
 ### Hardening pins shipped in this sweep
 

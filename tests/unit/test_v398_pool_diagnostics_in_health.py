@@ -45,10 +45,11 @@ def test_dbPool_snapshot_never_raises():
 def test_health_cache_excludes_dbPool():
     """Pool state must be live (re-read on every /health call) — not
     cached for 3s like the static fields. Cluster.py already excludes
-    circuitBreakers from the cache; dbPool joins that exclusion."""
+    circuitBreakers from the cache; dbPool joins that exclusion.
+    v5.4.0 added ``workers`` to the same exclusion set (BUG-069)."""
     src = Path("app/api/cluster.py").read_text()
-    # The cache excludes dbPool
-    assert 'k not in ("circuitBreakers", "dbPool")' in src
+    # The cache excludes dbPool (and circuitBreakers + workers as of v5.4.0)
+    assert 'k not in ("circuitBreakers", "dbPool", "workers")' in src
 
 
 def test_snapshot_function_runs_against_live_engine():

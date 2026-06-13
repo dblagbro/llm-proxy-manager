@@ -297,11 +297,25 @@ async def _ping_peer(peer: PeerNode, notify_fn=None):
 
 async def _sync_loop(db_factory):
     """Push local users/keys to all peers every 60 seconds."""
+    from app.monitoring.worker_heartbeat import WorkerHeartbeat, register_expected_interval
+    hb = WorkerHeartbeat(name="cluster_sync_push")
+    register_expected_interval("cluster_sync_push", 60)
     while True:
         await asyncio.sleep(60)
+        pushed = 0
+        failed = 0
         for peer in list(_peers.values()):
             if peer.status != "unreachable":
-                await push_sync(peer, db_factory)
+                try:
+                    await push_sync(peer, db_factory)
+                    pushed += 1
+                except Exception:
+                    failed += 1
+        status = "ok" if failed == 0 else ("partial" if pushed else "error")
+        await hb.tick(
+            status=status,
+            note=f"peers={len(_peers)} pushed={pushed} failed={failed}",
+        )
 
 
 async def _build_sync_payload(db) -> dict:

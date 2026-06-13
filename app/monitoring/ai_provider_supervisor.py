@@ -322,10 +322,14 @@ async def _scan_all_once() -> dict:
 
 async def _scan_loop() -> None:
     """Periodic loop. No-op when ``ai_provider_supervisor_enabled=False``."""
+    from app.monitoring.worker_heartbeat import WorkerHeartbeat, register_expected_interval
+    hb = WorkerHeartbeat(name="ai_provider_supervisor")
     jitter = random.uniform(0.0, _STARTUP_JITTER_MAX_SEC)
     await asyncio.sleep(WARMUP_DELAY_SEC + jitter)
     while True:
+        register_expected_interval("ai_provider_supervisor", _interval_sec())
         if not _enabled():
+            await hb.tick(status="disabled", note="ai_provider_supervisor_enabled=false")
             await asyncio.sleep(300)
             continue
         try:
@@ -337,8 +341,13 @@ async def _scan_loop() -> None:
                     counts["reviewed"], counts["skipped_locked"],
                     counts["skipped_no_traffic"],
                 )
+            await hb.tick(
+                status="ok",
+                note=f"reviewed={counts['reviewed']} skipped_locked={counts['skipped_locked']} skipped_no_traffic={counts['skipped_no_traffic']}",
+            )
         except Exception as e:
             logger.warning("ai_provider_supervisor.sweep_failed err=%s", e)
+            await hb.tick(status="error", note=str(e)[:200])
         await asyncio.sleep(_interval_sec())
 
 
