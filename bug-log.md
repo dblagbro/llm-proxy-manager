@@ -10,6 +10,120 @@ Status flow: **open** → **in-progress** → **fixed** → **verified-fixed** �
 
 ---
 
+## 2026-06-12 — post-refactor regression sweep (v5.1.0 → v5.3.9)
+
+Deep sweep covering **v5.1.0 → v5.3.9** (~36 release-level diffs over 7
+calendar days). Spans the v5.2 vendor-neutrality stack (V1 emergency
+stop + V2 fine-grained policy + V3 docs/report), v5.3.0 policy editor
+UI, v5.3.1 no-op substitution skip, v5.3.2 compliance taxonomy
+endpoint, v5.3.3 BoolSystemSetting factory refactor, v5.3.4 openai-python
+retry tap, v5.3.5 cursor billing parity, v5.3.6 cursor-bridge list-content
+emulation, v5.3.7 Gemini thinking-budget clamp, v5.3.8 logical alias
+routing, and v5.3.9 CB lifecycle hardening. Environment: 6 prod
+endpoints (3 `llm-proxy2` TMR nodes + 2 `llm-proxy` clone nodes + smoke
++ c1conv GCP); pre-sweep unit baseline **2670** (2026-06-05) →
+post-sweep **2910 passing + 2 skipped** (clean, ~42s). Methods: full
+pytest suite, fleet-wide `/health` parity probe, deep DB probe on
+tmrwww01, audit-chain freshness check, activity-log severity sweep,
+supervisor / cluster-sync / retry-tap liveness audit.
+
+Fleet parity confirmed: 6/6 endpoints on **v5.3.9** at sweep start.
+No version skew; the daily fleet-health routine (scheduled
+2026-06-08) has its first datapoint.
+
+Findings BUG-069+ (BUG-001..068 already used).
+
+### High
+
+#### BUG-069 — Background-worker liveness not surfaced in `system_settings` → silent failures invisible from snapshot
+- **Component:** `app/monitoring/*` (`ai_provider_supervisor.py`, `keepalive.py`, `billing/*`, `cluster/sync.py`, `observability/openai_retry_tap.py`).
+- **Severity:** high (operability) — every background loop the proxy depends on for self-healing is unobservable from outside its own log line. A hung worker stays hung until someone notices a downstream symptom hours/days later.
+- **Repro:** `SELECT key, value FROM system_settings WHERE key LIKE '%_worker_%' OR key LIKE 'last_%' OR key LIKE 'cluster_sync_%' OR key LIKE 'ai_provider_supervisor_last_%'` returns **zero rows** on tmrwww01 — despite the keepalive worker actively running (5 `keepalive_probe` events in the last hour) and the AI supervisor having `ai_provider_supervisor_enabled = True`.
+- **Evidence:** Deep probe `/tmp/qa_deep_probe.py` section A returned empty; `ai_provider_supervisor_last_run` and `ai_provider_supervisor_last_review_count` both NULL; `cluster_sync_last_run` / `cluster_sync_last_status` / `cluster_sync_consecutive_failures` / `cluster_last_push_at` all NULL.
+- **Cause:** Workers print to container stderr but never write a `last_run` / `last_status` / `consecutive_failures` row to `system_settings`. There's no equivalent of the `BoolSystemSetting` factory (v5.3.3) for liveness counters.
+- **Fix proposal:** Add a `WorkerHeartbeat` helper module (mirrors `BoolSystemSetting` pattern) — every long-running loop wraps its tick with `WorkerHeartbeat("supervisor").tick(status="ok", note="reviewed 3 providers")`. Health endpoint surfaces a `workers: {name: {last_run, status, age_sec}}` block. CB-style alert if `age_sec > 3 * interval_sec`.
+- **Pin:** TODO — `test_v540_worker_heartbeat_pin.py` asserting each known worker (keepalive, supervisor, billing scrapes ×3, cluster-sync push, retry-tap) writes a heartbeat row within its declared interval.
+- **Status:** **open**, scope for v5.4.
+
+#### BUG-070 — AI provider supervisor enabled fleet-wide but zero supervisor activity in 7d
+- **Component:** `app/monitoring/ai_provider_supervisor.py`.
+- **Severity:** high (the supervisor is the substantive self-healing layer — Tier A flipped `auto_apply` to True on 2026-06-11; without it actually running, all the v5.3.9 CB hardening fights its battles alone).
+- **Repro:** `SELECT event_type, COUNT(*) FROM activity_log WHERE event_type LIKE '%supervisor%' AND created_at >= datetime('now','-7 days') GROUP BY 1` → **zero rows** on tmrwww01. `ai_provider_supervisor_enabled = True`, `ai_provider_supervisor_auto_apply = False` (Tier A flipped this to True but the value here still shows False — possibly a different running node, or the change didn't persist; needs verification).
+- **Evidence:** Deep probe section J found `info` is the only severity in the last 24h (513 events), all `llm_request` + `keepalive_probe`. No `provider_review`, no `provider_disable_proposed`, no `supervisor_*` events of any kind.
+- **Cause hypotheses:** (a) supervisor crashes silently on first tick, (b) supervisor sleeps forever because `ai_provider_supervisor_interval` is NULL and the default isn't picked up, (c) supervisor runs but its emit-to-activity-log path is broken (would also explain BUG-069 — no heartbeat row), (d) the gate condition (`enabled + interval expired + N qualifying providers`) is never met.
+- **Fix:** Diagnose first — add a one-shot `await supervise_once(force=True)` admin endpoint to disambiguate (a)/(b)/(c) from (d). Then either fix the crash, default the interval explicitly to 1800s in the loader, or document the gate condition.
+- **Pin:** TODO — `test_v540_supervisor_runs_and_emits.py` asserting that a mocked supervise_once() writes the `provider_review` event_type.
+- **Status:** **open**, P1 follow-up to Tier A (which assumed the loop was already producing reviews).
+
+#### BUG-071 — Compliance policy enforcement not exercised by the dominant production caller (`coordinator-hub`)
+- **Component:** v5.0.x + v5.2.x compliance subsystem applied to `api_keys.coordinator-hub`.
+- **Severity:** high (audit-trail amounts to "we shipped enforcement but nothing is being enforced for the customer that drives most traffic"; reads as compliance theatre on inspection).
+- **Repro:** `SELECT name, blocked_companies, allowed_companies, blocked_models, allowed_models FROM api_keys WHERE name = 'coordinator-hub'` → **all four columns NULL**. Sibling key `coordinator-code-prod-hub-v2` carries `blocked_companies = ["anthropic"]` so the schema works — but the dominant key has no policy.
+- **Evidence:** `compliance_events.created_at` max = 2026-06-05 23:42:50 (7 days silent on tmrwww01). Audit chain has dutifully checksummed `row_count = 0` for 5 consecutive days.
+- **Cause:** Operator decision after the v5.2 vendor-neutrality stack shipped that the coordinator-hub canary should run policy-free during the canary window. That window is now over (canary done; production live for ≥1 week), but the policy was never re-applied.
+- **Fix:** Operator call — pick at least a "no anthropic" or "only anthropic" stance and apply via `app/admin/policy-snapshot` or the v5.3.0 editor UI. Even a permissive `allowed_companies = [...]` allow-list documents intent and exercises the subsystem.
+- **Pin:** TODO — `test_v540_compliance_dominant_key_has_policy.py` asserting at least one of the 4 policy columns is non-NULL on any key whose 7-day `compliance_events` row count is 0 AND whose `llm_request` traffic share is > 10%.
+- **Status:** **open**, awaiting operator policy call.
+
+#### BUG-072 — v5.3.4 openai-python retry tap shows zero observed retries in 24h
+- **Component:** `app/observability/openai_retry_tap.py`.
+- **Severity:** medium-high (either the tap is wired wrong — silent failure of the v5.3.4 instrumentation — or it's wired right and retries genuinely aren't happening, which is itself worth confirming because the original motivation was "invisible retries amplified the 5xx rate").
+- **Repro:** `SELECT event_type, COUNT(*) FROM activity_log WHERE event_type LIKE '%retry%' AND created_at >= datetime('now','-1 day')` → **zero rows**.
+- **Evidence:** v5.3.4 added a `logging.Handler` attaching to `openai._base_client` INFO retries and emitting `openai_client_retry` activity-log rows. Zero captures in 24h on tmrwww01 despite live traffic.
+- **Cause hypotheses:** (a) handler attached but never installed at startup (boot-order race), (b) `openai._base_client` log level is WARNING by default — INFO retries don't propagate to the tap, (c) the openai-python version in the image emits retries via a different logger name.
+- **Fix:** Add a forced-retry self-test at boot: spin a one-shot call against a 503-returning local stub and assert the tap captured it. Promote the self-test result to BUG-069's WorkerHeartbeat row.
+- **Pin:** TODO — `test_v540_openai_retry_tap_self_test.py`.
+- **Status:** **open**.
+
+### Medium
+
+#### BUG-073 — Audit chain dutifully checksums daily zero-row windows → false-positive "audit healthy"
+- **Component:** `app/compliance/audit_chain.py` (daily roll job).
+- **Severity:** medium (correctness of an empty chain is technically correct but operationally misleading — an oncall glance at "computed_at = today, chain valid" implies coverage when in fact zero events were observed).
+- **Repro:** `SELECT day, row_count, computed_at FROM compliance_audit_chain ORDER BY day DESC LIMIT 5` on tmrwww01:
+    - 2026-06-10  rows=0  computed=2026-06-11 23:10
+    - 2026-06-09  rows=0  computed=2026-06-10 23:10
+    - 2026-06-08  rows=0  computed=2026-06-09 03:09
+    - 2026-06-07  rows=0  computed=2026-06-08 02:06
+    - 2026-06-06  rows=0  computed=2026-06-07 21:11
+- **Cause:** Job is correct in isolation — but pairs poorly with BUG-071 because the absent-policy case turns into "fully signed days of nothing happening."
+- **Fix:** Emit a `audit_chain_zero_row_day` warning event when `row_count = 0` AND the key it would have covered has zero `compliance_events` for ≥3 consecutive days. Also surface in `/api/admin/policy-snapshot`.
+- **Status:** **open**, low effort.
+
+#### BUG-074 — `cluster_peers` table holds peers but cluster_sync_last_* keys are NULL → can't tell if sync ever runs
+- **Component:** `app/cluster/sync.py`.
+- **Severity:** medium (closely related to BUG-069; called out separately because cluster-sync is the canonical example — peers are configured, but the snapshot has no way to tell whether the push loop is alive).
+- **Repro:** tmrwww01 has 2 peers configured (`llm-proxy2-www2`, `llm-proxy2-c1conv`). `cluster_sync_last_run` / `cluster_sync_last_status` / `cluster_sync_consecutive_failures` / `cluster_last_push_at` are all NULL.
+- **Cause:** Same root cause as BUG-069 — sync push writes nothing to `system_settings`.
+- **Fix:** Subsumed by BUG-069 (WorkerHeartbeat refactor).
+- **Status:** **open** — fold into BUG-069 fix.
+
+### Low / observability
+
+#### BUG-075 — `dbPool.oldest_checkout_age_sec` and `dbPool.checked_out` not surfaced in /health on any endpoint
+- **Component:** `app/api/health.py` (or wherever the /health envelope is assembled).
+- **Severity:** low (ARCH-A pool-leak telemetry was the whole point of those fields — the scheduled fleet-health routine even checks for `dbPool.checked_out > 20` and `dbPool.oldest_checkout_age_sec > 300`, but as of v5.3.9 the /health JSON does not include a `dbPool` block at all on TMR or c1conv).
+- **Repro:** `curl https://www.voipguru.org/llm-proxy2/health | jq .dbPool` → null.
+- **Cause:** The /health response shape only carries `{status, version, healthyProviders, totalProviders, circuitBreakers}` today.
+- **Fix:** Add a `dbPool: {checked_out, pool_size, oldest_checkout_age_sec, waiters}` block. Cheap — SQLAlchemy already exposes these on the engine. Backfills the fleet-health routine's pool-leak alarm path.
+- **Status:** **open**, ~30-min ship.
+
+### Hardening pins shipped in this sweep
+
+| File | Pins | Catches |
+|---|---|---|
+| `tests/unit/test_v539_cb_hardening.py` | 10 | regression of caller-side classifier, record_outcome wiring (static grep), `_schedule_auto_probe` helper existence, get_state HALF_OPEN transition fires probe (vs not when still holding), hysteresis lock at >=2. |
+
+### Confirmed-healthy areas
+
+- **Fleet version parity:** 6/6 endpoints on v5.3.9 (TMR ×3 + clone ×2 + smoke; c1conv on v5.3.9 too). No version skew at sweep start.
+- **Unit suite:** 2910 / 2910 passing + 2 skipped, ~42s. +240 new pins since 2026-06-05 baseline (v5.2 + v5.3.x test files).
+- **CB hardening (v5.3.9):** all 10 pins green; classifier correctly drops `Missing corresponding tool call`, `string expected`, `Invalid user message at index` and correctly preserves auth + real upstream 5xx.
+- **Hysteresis (`circuit_breaker_success_needed`):** = 2 (≥2 OK; locked vs the v3-era regression-to-1 bug).
+- **Compliance taxonomy endpoint (v5.3.2):** wiring intact; frontend reads it cleanly.
+
+---
+
 ## 2026-06-05 — post-refactor deep regression sweep (v5.0.17 → v5.0.21)
 
 Deep sweep covering **v5.0.17 → v5.0.21** (5 releases + grok-bridge

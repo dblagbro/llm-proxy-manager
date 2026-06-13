@@ -1,31 +1,57 @@
 # Test Plan — llm-proxy-v2
 
-Last refreshed: **2026-06-05** (post-refactor deep regression sweep, v5.0.21
-post-hotfixes; previous baseline 2026-05-15 v3.10.9 was 22 months stale).
+Last refreshed: **2026-06-12** (post-refactor regression sweep, v5.1.0 → v5.3.9).
 
-## Pytest baseline (2026-06-05, v5.0.21 + hotfixes)
+## Pytest baseline (2026-06-12, v5.3.9)
 
 | Suite | Command | Result |
 |---|---|---|
-| Unit | `python3 -m pytest tests/unit/` | **2670 / 2670 passing + 2 skipped** (~42s). +8 new pins in `test_v5021_disable_long_context.py`. Pre-hotfix: 7 failures in `test_v31015_buglog_fixes.py` (BUG-049). |
-| Integration (non-UI) | `pytest tests/integration/ --ignore=tests/integration/test_playwright_ui.py` | not re-run this sweep (stale baseline from v3.10.9 era; see Open Coverage Gaps) |
-| Integration UI (Playwright) | `pytest tests/integration/test_playwright_ui.py` | not run — no browser in this sweep environment. **Confirmed coverage gap**: would have caught BUG-051 (v5.0.18 frontend route mismatch). |
-| SDK | `pytest sdk/python/` | not re-run this sweep |
+| Unit | `python3 -m pytest tests/unit/` | **2910 / 2910 passing + 2 skipped** (~42s). +240 pins added since 2026-06-05 across v5.2 (vendor-neutrality V1-V3), v5.3.0–v5.3.9 (policy editor, taxonomy endpoint, BoolSystemSetting refactor, openai retry tap, cursor billing parity, cursor-bridge string emulation, Gemini thinking budget clamp, logical alias routing, CB lifecycle hardening). |
+| Integration (non-UI) | `pytest tests/integration/ --ignore=tests/integration/test_playwright_ui.py` | not re-run this sweep — env focus was live deep-probe. |
+| Integration UI (Playwright) | `pytest tests/integration/test_playwright_ui.py` | not run — no browser in this sweep environment. **Confirmed coverage gap**: no UI smoke for the v5.3.0 ApiKey policy editor; if it shipped DOA we wouldn't know until a customer toggled it. |
+| SDK | `pytest sdk/python/` | not re-run this sweep. |
 
 ### Critical pins added in this sweep
 
 | Test file | Pins | Catches |
 |---|---|---|
-| `tests/unit/test_v5021_disable_long_context.py` | 8 | BUG-049, BUG-050 regressions |
-| `tests/unit/test_v5018_cluster_peer_persistence.py` (pre-existing) | 7 | cluster_peers LWW/tombstone/self-ignore (does NOT pin the frontend path — BUG-051 slipped through). |
+| `tests/unit/test_v539_cb_hardening.py` | 10 | CB caller-side classifier, record_outcome wiring (static grep), `_schedule_auto_probe` helper existence, get_state HALF_OPEN transition fires probe, hysteresis pin. |
 
 ### Coverage gaps surfaced this sweep — recommended new tests
 
-1. **End-to-end Playwright test for ClusterPeersPanel** (would catch BUG-051 + future API path drift).
-2. **Bridge `_send_via_spa_ui` concurrency unit test** with mocked Playwright page (would catch BUG-052/054/055/058).
-3. **Cursor-bridge error-mapping fixture test** feeding the captured `ERROR_RATE_LIMITED_CHANGEABLE` JSON and asserting non-200 HTTP status (would catch BUG-053).
-4. **Cluster-peers integration test** spinning up 2 real proxy containers and verifying sync of add/remove/restore.
-5. **Compose-file ambiguity guard** — pytest fixture asserting CWD-resolved `docker-compose.yml` matches the canonical one (BUG-056).
+1. **`test_v540_worker_heartbeat_pin.py`** — assert each long-running worker (keepalive, supervisor, billing scrapes ×3, cluster-sync push, retry-tap) writes a heartbeat row within its declared interval (BUG-069 / BUG-074).
+2. **`test_v540_supervisor_runs_and_emits.py`** — assert `supervise_once(force=True)` writes a `provider_review` activity-log row (BUG-070).
+3. **`test_v540_compliance_dominant_key_has_policy.py`** — assert every key whose 7-day `compliance_events` count is 0 AND whose `llm_request` traffic share is > 10% has at least one non-NULL policy column (BUG-071).
+4. **`test_v540_openai_retry_tap_self_test.py`** — assert the v5.3.4 retry tap captures a synthetic openai retry at boot (BUG-072).
+5. **`test_v540_health_surfaces_db_pool.py`** — assert `/health` JSON carries `dbPool: {checked_out, pool_size, oldest_checkout_age_sec, waiters}` (BUG-075).
+6. **`test_v540_audit_chain_zero_row_alert.py`** — assert `audit_chain_zero_row_day` warning emits after 3 consecutive zero-row days (BUG-073).
+7. **Playwright UI smoke for the v5.3.0 ApiKey policy editor** — assert the four policy fields round-trip (load → edit → save → reload).
+8. (Carried) End-to-end Playwright test for ClusterPeersPanel.
+9. (Carried) Bridge `_send_via_spa_ui` concurrency unit test with mocked Playwright page.
+10. (Carried) Cursor-bridge error-mapping fixture test (BUG-053).
+11. (Carried) Cluster-peers integration test.
+12. (Carried) Compose-file ambiguity guard (BUG-056).
+
+### High-risk areas added this sweep
+
+- **AI supervisor auto_apply path** (v5.3.9 Tier A) — CB hardening relies on supervisor recovery; supervisor showed zero activity events in 7 days (BUG-070). Until BUG-069/070 land, supervisor failures are silent.
+- **Compliance enforcement on dominant key** (BUG-071) — subsystem shipped but not exercised; semantics could quietly drift.
+- **Background worker liveness** (BUG-069) — every self-healing loop is observability-blind from the snapshot.
+
+---
+
+## Pytest baseline (2026-06-05, v5.0.21 + hotfixes) — superseded by 2026-06-12 above
+
+| Suite | Command | Result |
+|---|---|---|
+| Unit | `python3 -m pytest tests/unit/` | **2670 / 2670 passing + 2 skipped** (~42s). +8 new pins in `test_v5021_disable_long_context.py`. Pre-hotfix: 7 failures in `test_v31015_buglog_fixes.py` (BUG-049). |
+
+### Pins from previous sweep
+
+| Test file | Pins | Catches |
+|---|---|---|
+| `tests/unit/test_v5021_disable_long_context.py` | 8 | BUG-049, BUG-050 regressions |
+| `tests/unit/test_v5018_cluster_peer_persistence.py` (pre-existing) | 7 | cluster_peers LWW/tombstone/self-ignore (does NOT pin the frontend path — BUG-051 slipped through). |
 
 ---
 
