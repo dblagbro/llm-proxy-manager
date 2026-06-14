@@ -162,19 +162,53 @@ async def messages(
     max_tokens = body.get("max_tokens", 1024)
     system = body.get("system")
     thinking = body.get("thinking")
-    # v5.6.0 — proxy-injected tools (Excel reader, etc.). Only for
-    # non-streaming requests; streaming injection lands in v5.6.1
-    # (needs buffered-stream tool_use detection). Inject BEFORE
-    # ``tools`` is captured so has_tools / routing decisions
-    # reflect the augmented tool list.
+    # v5.6.0 / v5.7.1 — proxy-injected tools. Only for non-streaming
+    # requests; streaming injection lands in v5.6.1 (needs buffered-
+    # stream tool_use detection). Inject BEFORE ``tools`` is captured
+    # so has_tools / routing decisions reflect the augmented tool
+    # list.
+    #
+    # v5.7.1: switched to ``inject_anthropic_async`` which sources
+    # from BOTH the static registry (v5.6.0 Excel) AND the FastMCP
+    # aggregator bridge (markitdown today, sub-server tools tomorrow).
+    # Every MCP-registered tool is automatically available with zero
+    # code change per tool.
     _proxy_tools_injected = False
     if not stream:
         try:
-            from app.proxy_tools import inject_anthropic
-            inject_anthropic(body)
+            from app.proxy_tools import inject_anthropic_async
+            await inject_anthropic_async(body)
             _proxy_tools_injected = True
         except Exception as exc:
             logger.warning("proxy_tools.inject_failed err=%s", exc)
+
+    # v5.7.1 — system-prompt augmentation. Per-key opt-in flag in
+    # ``api_keys.system_prompt_mcp_augmentation``. When True AND
+    # tools were injected, prepend a one-line nudge to ``body["system"]``
+    # telling the model that proxy-injected tools exist and to prefer
+    # them over saying "I can't read X". Default off — operator opts
+    # in per key.
+    if _proxy_tools_injected and getattr(key_record, "system_prompt_mcp_augmentation", False):
+        try:
+            _MCP_NUDGE = (
+                "You have access to proxy-injected tools for reading "
+                "Excel/Word/PDF/PowerPoint/HTML/EPUB documents, "
+                "fetching URLs, and converting documents to markdown. "
+                "When the user asks about content that would benefit "
+                "from these tools, call them instead of saying \"I "
+                "can't read X\" or \"I don't have access\"."
+            )
+            existing_system = body.get("system")
+            if isinstance(existing_system, str):
+                body["system"] = _MCP_NUDGE + "\n\n" + existing_system
+            elif isinstance(existing_system, list):
+                # Anthropic also accepts a list-of-text-blocks shape
+                body["system"] = [{"type": "text", "text": _MCP_NUDGE}] + existing_system
+            else:
+                body["system"] = _MCP_NUDGE
+            system = body.get("system")
+        except Exception as exc:
+            logger.warning("proxy_tools.system_nudge_failed err=%s", exc)
     tools = body.get("tools")
 
     from app.api._request_pipeline import (
@@ -984,21 +1018,24 @@ async def messages(
             remaining = max(0, max_tokens - out_tok)
             resp_headers["X-Token-Budget-Remaining"] = str(remaining)
             anthropic_result = to_anthropic_response(result)
-            # v5.6.0 — proxy-injected-tool interception. If the model
-            # invoked one of our injected tools (read_xlsx_to_markdown
-            # today), run it in-process and re-call the model with the
-            # tool_result so the assistant turn the CALLER sees has the
-            # file content already incorporated. Capped at 3 hops to
-            # prevent a runaway loop if the model keeps calling the
-            # tool. Each re-call is a fresh acompletion against the same
-            # route.
+            # v5.6.0 / v5.7.1 — proxy-injected-tool interception. If
+            # the model invoked one of our injected tools (Excel,
+            # markitdown, any MCP-aggregator tool), run it in-process
+            # and re-call the model with the tool_result so the
+            # assistant turn the CALLER sees has the file content
+            # already incorporated. Capped at 3 hops to prevent a
+            # runaway loop if the model keeps calling the tool.
+            #
+            # v5.7.1: switched to ``find_proxy_tool_use_async`` so
+            # both static-registry tools AND MCP-aggregator-bridge
+            # tools are recognized.
             if _proxy_tools_injected:
                 from app.proxy_tools import (
-                    find_proxy_tool_use, run_tool, build_tool_result_message,
+                    find_proxy_tool_use_async, run_tool, build_tool_result_message,
                 )
                 _proxy_hops = 0
                 while _proxy_hops < 3:
-                    match = find_proxy_tool_use(
+                    match = await find_proxy_tool_use_async(
                         anthropic_result.get("content") or []
                     )
                     if not match:

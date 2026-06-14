@@ -241,16 +241,20 @@ async def test_excel_runner_clamps_row_cap():
 
 def test_messages_handler_injects_proxy_tools_for_non_streaming():
     """The injection MUST be wrapped in ``if not stream:`` so streaming
-    requests don't see a tool the proxy can't handle yet."""
+    requests don't see a tool the proxy can't handle yet.
+
+    v5.7.1 — switched the call site from sync ``inject_anthropic`` to
+    async ``inject_anthropic_async`` (sources from MCP aggregator
+    bridge too). Either symbol satisfies the wiring contract."""
     src = Path("app/api/messages.py").read_text()
-    assert "from app.proxy_tools import inject_anthropic" in src
     assert "_proxy_tools_injected = False" in src
     # The if-not-stream guard
     idx = src.find("_proxy_tools_injected = False")
     assert idx != -1
-    window = src[idx: idx + 600]
+    window = src[idx: idx + 800]
     assert "if not stream:" in window
-    assert "inject_anthropic(body)" in window
+    # Either v5.6.0 sync OR v5.7.1+ async injection must be present
+    assert ("inject_anthropic(body)" in window) or ("inject_anthropic_async(body)" in window)
 
 
 def test_messages_handler_intercepts_tool_use_in_response():

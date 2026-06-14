@@ -69,12 +69,41 @@ def get_registry() -> List[ProxyTool]:
     return _REGISTRY_CACHE
 
 
+async def get_registry_async() -> List[ProxyTool]:
+    """v5.7.1 — async variant that ALSO sources from the FastMCP
+    aggregator (via the bridge). Use this from the /v1/messages
+    handler. Sync ``get_registry()`` remains for any test/diagnostic
+    paths that don't have an event loop handy.
+
+    Tools are deduplicated by name — if the same tool is registered
+    both as a static ProxyTool and via the MCP bridge (e.g.
+    ``read_xlsx_to_markdown`` is in both), the static one wins so
+    we don't accidentally double-inject the schema.
+    """
+    static = get_registry()
+    names = {t.name for t in static}
+    try:
+        from app.proxy_tools.mcp_bridge import get_bridge_proxy_tools
+        bridge = await get_bridge_proxy_tools()
+    except Exception:
+        bridge = []
+    out = list(static)
+    for t in bridge:
+        if t.name not in names:
+            out.append(t)
+            names.add(t.name)
+    return out
+
+
 def inject_anthropic(body: dict) -> List[dict]:
     """Append every registered tool's Anthropic schema to
     ``body["tools"]``. Idempotent — if a tool with the same ``name``
     is already in the list (e.g. the caller passed their own
     ``read_xlsx_to_markdown``), we don't re-add. Returns the new
     tools list (also assigned back to ``body``).
+
+    v5.7.1: sync — only sees static tools. Use ``inject_anthropic_async``
+    for the bridge-aware variant from the /v1/messages handler.
     """
     existing = body.get("tools") or []
     existing_names = {
@@ -85,6 +114,51 @@ def inject_anthropic(body: dict) -> List[dict]:
             existing = list(existing) + [proxy_tool.anthropic_schema]
     body["tools"] = existing
     return existing
+
+
+async def inject_anthropic_async(body: dict) -> List[dict]:
+    """v5.7.1 — async injection that sources from BOTH the static
+    registry AND the FastMCP aggregator bridge. The /v1/messages
+    handler should use this so every MCP-registered tool (markitdown,
+    aggregator sub-server tools, future capability-scout suggestions)
+    is automatically available to the model with zero code change
+    per tool.
+
+    Idempotency rules carry over from ``inject_anthropic``: if the
+    caller passed a tool with the same ``name`` we don't re-add.
+    """
+    existing = body.get("tools") or []
+    existing_names = {
+        t.get("name") for t in existing if isinstance(t, dict)
+    }
+    for proxy_tool in await get_registry_async():
+        if proxy_tool.name not in existing_names:
+            existing = list(existing) + [proxy_tool.anthropic_schema]
+            existing_names.add(proxy_tool.name)
+    body["tools"] = existing
+    return existing
+
+
+async def find_proxy_tool_use_async(
+    content_blocks: List[dict],
+) -> Optional[Tuple[ProxyTool, dict, str]]:
+    """v5.7.1 — async variant of ``find_proxy_tool_use`` that ALSO
+    matches against the FastMCP aggregator bridge tools. Returns the
+    first ``(tool, input_obj, tool_use_id)`` whose tool name matches
+    any registered (static or bridge) ProxyTool."""
+    if not isinstance(content_blocks, list):
+        return None
+    registry = await get_registry_async()
+    by_name = {t.name: t for t in registry}
+    for block in content_blocks:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") != "tool_use":
+            continue
+        name = block.get("name")
+        if name in by_name:
+            return (by_name[name], block.get("input") or {}, block.get("id") or "")
+    return None
 
 
 def find_proxy_tool_use(

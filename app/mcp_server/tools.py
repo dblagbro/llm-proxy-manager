@@ -1,18 +1,17 @@
-"""v5.7.0 — In-process MCP tools for the aggregation endpoint.
+"""v5.7.0/v5.7.1 — In-process MCP tools for the aggregation endpoint.
 
-Two tools registered:
-1. ``read_xlsx_to_markdown`` — port of v5.6.0's ``app/proxy_tools/excel.py``.
-   Shares the underlying renderer; the MCP wrapper just adapts the
-   input/output shape.
-2. ``fetch_url`` — HTTP GET with safety caps (https/http only, 5 MB
-   body cap, 30s timeout). Returns the response body as text or
-   ``error: ...`` if anything goes wrong.
+Tools registered:
+1. ``read_xlsx_to_markdown`` (v5.7.0) — port of v5.6.0's
+   ``app/proxy_tools/excel.py``. Shares the underlying renderer.
+2. ``fetch_url`` (v5.7.0) — HTTP GET with safety caps.
+3. ``convert_document_to_markdown`` (v5.7.1) — Microsoft markitdown
+   wrapper. Handles DOCX / PDF / PPTX / HTML / EPUB / CSV / Markdown
+   files and returns the content as markdown. Kills the largest
+   bucket of "I can't read this file format" failures.
 
-These two were chosen as the smallest scaffold that demonstrates the
-aggregation pattern without exposing dangerous tools (no filesystem,
-no command execution, no databases). v5.7.1 adds the FastMCP-mounted
-official servers (filesystem, fetch, git, markitdown) which have
-proper sandboxing of their own.
+No filesystem read, no command execution, no databases. v5.7.2 will
+add the FastMCP-mounted official sub-servers (server-git via uvx,
+server-filesystem) which have their own sandboxing.
 """
 from __future__ import annotations
 
@@ -124,6 +123,68 @@ async def fetch_url(url: str, max_bytes: int = _FETCH_MAX_BYTES) -> str:
             input_summary=f"url={(url or '')[:100]}",
             output_bytes=0,
             latency_ms=int((time.time() - t0) * 1000),
+            ok=False,
+            error_msg=f"{type(exc).__name__}: {exc}",
+        )
+        return f"error: {type(exc).__name__}: {exc}"
+
+
+async def convert_document_to_markdown(
+    file_b64: str | None = None,
+    url: str | None = None,
+    file_extension: str | None = None,
+) -> str:
+    """Convert a document (DOCX / PDF / PPTX / HTML / EPUB / CSV /
+    MD / TXT / JPG / PNG / ODT) to markdown using Microsoft markitdown.
+
+    Supply EITHER ``file_b64`` (base64-encoded file bytes) OR ``url``
+    (https URL the proxy fetches server-side). Optionally pass
+    ``file_extension`` (e.g. ``"pdf"``, ``"docx"``) to hint the
+    format detector if the URL doesn't have a clear extension.
+
+    Use this when the user asks about content in a document the model
+    can't natively read. Don't say you can't read PDFs/DOCX/etc. —
+    just call this tool.
+
+    Cap: 5 MB. Returns ``error: <reason>`` on failure (does NOT raise
+    to keep the tool loop alive for the model).
+    """
+    from app.proxy_tools.excel import _fetch_bytes
+    import io
+    import time as _time
+    t0 = _time.time()
+    try:
+        data = await _fetch_bytes({"file_b64": file_b64, "url": url})
+        # markitdown infers format from filename. If we have a URL,
+        # derive the extension from it; else use the operator-supplied
+        # hint or fall back to bytes-sniffing.
+        ext = (file_extension or "").lstrip(".").lower()
+        if not ext and url:
+            tail = url.rsplit(".", 1)
+            if len(tail) == 2 and 1 <= len(tail[1]) <= 6 and tail[1].isalnum():
+                ext = tail[1].lower()
+        fname = f"input.{ext}" if ext else "input.bin"
+        from markitdown import MarkItDown
+        md = MarkItDown()
+        # markitdown's convert_stream API takes a binary stream
+        result = md.convert_stream(io.BytesIO(data), file_extension=("." + ext) if ext else None)
+        out = (result.text_content or "").strip()
+        if not out:
+            out = "(empty document or markitdown returned no content)"
+        await _audit_tool_call(
+            tool_name="convert_document_to_markdown",
+            input_summary=f"src={'b64' if file_b64 else 'url'} ext={ext or '?'}",
+            output_bytes=len(out.encode()),
+            latency_ms=int((_time.time() - t0) * 1000),
+            ok=True,
+        )
+        return out
+    except Exception as exc:
+        await _audit_tool_call(
+            tool_name="convert_document_to_markdown",
+            input_summary=f"src={'b64' if file_b64 else 'url'}",
+            output_bytes=0,
+            latency_ms=int((_time.time() - t0) * 1000),
             ok=False,
             error_msg=f"{type(exc).__name__}: {exc}",
         )
