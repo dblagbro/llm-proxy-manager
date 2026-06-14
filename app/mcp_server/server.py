@@ -54,6 +54,9 @@ def build_mcp_app() -> Any:
     # ──── In-process tools ────────────────────────────────────────────
     mcp.tool(name="read_xlsx_to_markdown")(t.read_xlsx_to_markdown)
     mcp.tool(name="fetch_url")(t.fetch_url)
+    # v5.7.1 — convert_document_to_markdown kills the largest "can't
+    # read this file format" failure bucket (DOCX/PDF/PPTX/HTML/EPUB).
+    mcp.tool(name="convert_document_to_markdown")(t.convert_document_to_markdown)
 
     # ──── Auth middleware ────────────────────────────────────────────
     sub_app = mcp.streamable_http_app()

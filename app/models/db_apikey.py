@@ -112,6 +112,13 @@ class ApiKey(Base):
     # on so the hub team can echo back the proxy's view of UA + identity
     # headers without going through a real LLM call.
     debug_echo_enabled = Column(Boolean, default=False)
+    # v5.7.1 — system_prompt_mcp_augmentation: opt-in nudge added to
+    # body["system"] on non-streaming /v1/messages requests so the model
+    # actively reaches for proxy-injected tools (Excel/PDF/DOCX readers,
+    # fetch, MCP aggregator tools) instead of saying "I can't read X".
+    # Default False; operator flips per key. Mirrors the same shape as
+    # the existing per-key compliance policy fields.
+    system_prompt_mcp_augmentation = Column(Boolean, default=False)
 
 
 class ApiKeyAiReview(Base):

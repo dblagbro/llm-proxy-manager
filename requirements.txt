@@ -45,3 +45,6 @@ openpyxl>=3.1.0
 
 # v5.7.0 — MCP aggregation endpoint
 mcp>=1.27,<2
+
+# v5.7.1 — markitdown: DOCX/PDF/PPTX/HTML/EPUB → markdown for MCP tool
+markitdown>=0.1.0

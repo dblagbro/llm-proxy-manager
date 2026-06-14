@@ -433,6 +433,10 @@ async def init_db():
             # debug_echo_enabled gates the /api/debug/echo-client sandbox
             # endpoint; production keys leave it 0.
             "ALTER TABLE api_keys ADD COLUMN debug_echo_enabled BOOLEAN DEFAULT 0",
+            # v5.7.1 — system_prompt_mcp_augmentation: per-key opt-in
+            # nudge added to body["system"] so the model prefers calling
+            # proxy-injected tools over saying "I can't read X". Default 0.
+            "ALTER TABLE api_keys ADD COLUMN system_prompt_mcp_augmentation BOOLEAN DEFAULT 0",
             # owner_company is auto-derived at provider create/update time
             # from provider_type via app.compliance.company_map; operator
             # can override for unusual rows. The router pre-filter drops

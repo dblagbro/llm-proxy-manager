@@ -9,6 +9,35 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v5.7.x — MCP aggregation endpoint
 
+### v5.7.1 — Bridge MCP tools into /v1/messages injection + markitdown + system-prompt nudge (2026-06-14)
+
+Operator-approved 2026-06-14 (recommended-plan continuation). v5.7.1 makes the MCP aggregation endpoint actually USE its tools on every existing bot without any client-side config change. Three additive ships in one release:
+
+- **`app/proxy_tools/mcp_bridge.py`** — new bridge module. Reads the live tool list from the FastMCP root via `list_tools` (60s TTL cache), converts each MCP tool to an Anthropic-shape `ProxyTool`, and routes tool invocations back through `mcp.call_tool`. Means: every tool registered on `/mcp` is automatically injected into `/v1/messages` requests, zero per-tool code in proxy_tools.
+- **`app/proxy_tools/__init__.py`** gains `get_registry_async`, `inject_anthropic_async`, `find_proxy_tool_use_async` — async variants that source from BOTH the v5.6.0 static registry AND the bridge. Static tools win on dedup by name (so the v5.6.0 Excel implementation stays canonical until v5.8.x deprecation). The sync helpers remain for diagnostics + tests.
+- **`app/api/messages.py`** switched the non-streaming `/v1/messages` injection + interception call sites to the async variants. Live bots now see markitdown + every future MCP tool without a config touch.
+
+**New tool: `convert_document_to_markdown`** (`app/mcp_server/tools.py`):
+- Microsoft `markitdown` wrapper. Handles DOCX / PDF / PPTX / HTML / EPUB / CSV / MD / TXT / JPG / PNG / ODT.
+- Same input contract as `read_xlsx_to_markdown`: `file_b64` OR `url`. Optional `file_extension` hint when URL doesn't carry one.
+- Reuses the v5.6.0 `_fetch_bytes` 5 MB cap + URL scheme validation.
+- Registered on the FastMCP root AND surfaced through the bridge — bots see it automatically via `/v1/messages` injection.
+
+**System-prompt augmentation (per-key opt-in):**
+- New ApiKey column `system_prompt_mcp_augmentation BOOLEAN DEFAULT 0`. ALTER runs on upgrade so existing keys default off.
+- When True AND tools were injected, prepends a one-line nudge to `body["system"]` telling the model: *"You have access to proxy-injected tools for reading Excel/Word/PDF/PowerPoint/HTML/EPUB documents, fetching URLs, and converting documents to markdown. When the user asks about content that would benefit from these tools, call them instead of saying 'I can't read X' or 'I don't have access'."*
+- Handles both `body["system"]` as string OR as list-of-text-blocks (both shapes Anthropic accepts).
+- Default off mirrors how `ai_provider_supervisor_auto_apply` shipped initially. Operator flips per key once observed to be helpful.
+
+**markitdown dep added** (`markitdown>=0.1.0`). Base install only (no `[all]` extra — that brought ~300 MB of Azure cloud-OCR / audio / youtube deps).
+
+**Not in v5.7.1 (deferred to v5.7.2 / v5.7.3):**
+- External stdio sub-servers (git via uvx, filesystem via Node). Filesystem requires Node-in-image — separate decision; git is fine but defers cleanly.
+- Per-key tool allow-list / token-budget enforcement / `list_tools` schema cache trimming.
+- Capability scout (refusal-pattern detector worker).
+
+Tests: 13/13 in `test_v571_mcp_injection_extension.py`. `test_v560_proxy_excel_tool::test_messages_handler_injects_proxy_tools_for_non_streaming` updated to accept either sync or async injection (forward-compat). Full suite **3015 passed, 2 skipped** (~43s).
+
 ### v5.7.0 — MCP aggregation scaffold + 2 in-process tools (2026-06-14)
 
 Operator-approved 2026-06-14 after a 5-agent research dive. The proxy now exposes a single Streamable HTTP MCP endpoint at **`/mcp`** that downstream clients (Claude Code / opencode / Cursor / Continue) can register as ONE MCP server URL and get N aggregated capabilities. v5.7.0 is intentionally scaffold-only — 2 in-process tools, no external sub-servers yet — to keep the v1 risk surface tight.
