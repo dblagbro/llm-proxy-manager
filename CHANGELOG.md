@@ -7,6 +7,27 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ---
 
+## v5.6.x — Proxy-injected tools
+
+### v5.6.0 — `read_xlsx_to_markdown` tool (non-streaming) (2026-06-14)
+
+Operator ask 2026-06-14: "some bots have said they can't do excel docs — can we insert tools to do this for them?"
+
+The proxy now appends a small set of helper tools to every non-streaming `/v1/messages` request before forwarding. When the model invokes one, the proxy runs the tool in-process and re-issues the conversation with the `tool_result` injected, so the caller sees a final answer with file content already incorporated. The caller never sees the `tool_use` block.
+
+- **`app/proxy_tools/__init__.py`** — `ProxyTool` dataclass + module-level `REGISTRY` + `inject_anthropic(body)` + `find_proxy_tool_use(content)` + `build_tool_result_message(tool_use_id, output)`. Idempotent injection (skips if the caller already supplied a tool with the same name).
+- **`app/proxy_tools/excel.py`** — `EXCEL_TOOL` (`read_xlsx_to_markdown`). Input accepts either `file_b64` (base64-encoded xlsx blob) OR `url` (https URL the proxy fetches). 5 MB cap; default 200 rows × 30 cols; per-sheet markdown tables; `data_only=True` so formula cells return cached eval (no macro execution).
+- **Wired into `app/api/messages.py`** — injection guarded by `if not stream` (streaming returns 400 on tool fire until v5.6.1). After the non-streaming response, up to 3 hops of tool-use → run → re-call → response are executed; `X-Proxy-Tool-Hops` response header reports the count.
+- `openpyxl>=3.1.0` added to `requirements.txt`.
+
+Limitations / forward work:
+- **v5.6.1**: streaming support (buffer upstream stream, detect `tool_use` across chunks, inject `tool_result`, continue).
+- **v5.6.2**: `/v1/chat/completions` (OpenAI shape — different tool envelope `{type: "function", function: {...}}`).
+
+Tests: 19/19 in `test_v560_proxy_excel_tool.py` (registry shape, injection idempotency, find/build helpers, Excel runner: b64 path + URL scheme rejection + sheet filter + row cap, source-grep contracts for messages.py wiring). Full suite **2985 passed, 2 skipped** (~48s).
+
+---
+
 ## v5.5.x — cursor-oauth noVNC sidecar (silent JWT rotation)
 
 ### v5.5.0 — `cursor_bridge_session` scaffold (Phase 1 of 4) (2026-06-12)

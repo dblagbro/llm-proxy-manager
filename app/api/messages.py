@@ -162,6 +162,19 @@ async def messages(
     max_tokens = body.get("max_tokens", 1024)
     system = body.get("system")
     thinking = body.get("thinking")
+    # v5.6.0 — proxy-injected tools (Excel reader, etc.). Only for
+    # non-streaming requests; streaming injection lands in v5.6.1
+    # (needs buffered-stream tool_use detection). Inject BEFORE
+    # ``tools`` is captured so has_tools / routing decisions
+    # reflect the augmented tool list.
+    _proxy_tools_injected = False
+    if not stream:
+        try:
+            from app.proxy_tools import inject_anthropic
+            inject_anthropic(body)
+            _proxy_tools_injected = True
+        except Exception as exc:
+            logger.warning("proxy_tools.inject_failed err=%s", exc)
     tools = body.get("tools")
 
     from app.api._request_pipeline import (
@@ -971,6 +984,43 @@ async def messages(
             remaining = max(0, max_tokens - out_tok)
             resp_headers["X-Token-Budget-Remaining"] = str(remaining)
             anthropic_result = to_anthropic_response(result)
+            # v5.6.0 — proxy-injected-tool interception. If the model
+            # invoked one of our injected tools (read_xlsx_to_markdown
+            # today), run it in-process and re-call the model with the
+            # tool_result so the assistant turn the CALLER sees has the
+            # file content already incorporated. Capped at 3 hops to
+            # prevent a runaway loop if the model keeps calling the
+            # tool. Each re-call is a fresh acompletion against the same
+            # route.
+            if _proxy_tools_injected:
+                from app.proxy_tools import (
+                    find_proxy_tool_use, run_tool, build_tool_result_message,
+                )
+                _proxy_hops = 0
+                while _proxy_hops < 3:
+                    match = find_proxy_tool_use(
+                        anthropic_result.get("content") or []
+                    )
+                    if not match:
+                        break
+                    _proxy_hops += 1
+                    proxy_tool, input_obj, tool_use_id = match
+                    tool_output = await run_tool(proxy_tool, input_obj)
+                    messages_list = list(messages_list) + [
+                        {
+                            "role": "assistant",
+                            "content": anthropic_result.get("content") or [],
+                        },
+                        build_tool_result_message(tool_use_id, tool_output),
+                    ]
+                    result = await acompletion_with_retry(
+                        model=route.litellm_model,
+                        messages=messages_list,
+                        stream=False,
+                        **extra,
+                    )
+                    anthropic_result = to_anthropic_response(result)
+                resp_headers["X-Proxy-Tool-Hops"] = str(_proxy_hops)
             # v3.9.0 (#267) Phase 5 — memory-tool write-back on litellm path.
             from app.memory.extract import maybe_extract_memory_writes
             mem_writes = await maybe_extract_memory_writes(
