@@ -793,7 +793,12 @@ if os.path.isdir(_static_dir):
         # namespaces. A wrong-method or unknown path under these prefixes
         # must return a JSON 404 — a 200 + HTML page silently breaks
         # non-browser API clients, which parse the HTML as a success body.
-        if full_path.split("/", 1)[0] in ("v1", "api", "cluster", "lmrh", "metrics", "health", "version"):
+        # v5.7.1 hotfix — add ``mcp`` to the API-namespace allow-list so
+        # the SPA catch-all doesn't serve index.html for requests to /mcp.
+        # The /mcp mount returns its own 404/405/JSON responses, but FastAPI
+        # resolves explicit routes BEFORE mounts; without this guard the
+        # SPA catch-all swallowed every /mcp request as a 200-HTML response.
+        if full_path.split("/", 1)[0] in ("v1", "api", "cluster", "lmrh", "metrics", "health", "version", "mcp"):
             return JSONResponse({"detail": "Not Found"}, status_code=404)
         index = os.path.join(_static_dir, "index.html")
         if os.path.isfile(index):

@@ -9,6 +9,16 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v5.7.x — MCP aggregation endpoint
 
+### v5.7.2 — Hotfix: SPA catch-all swallowed bare /mcp (2026-06-14)
+
+Surfaced during the v5.7.1 fleet roll log-watch sweep: `GET /mcp` (no trailing slash) returned HTTP 200 + the React SPA index.html instead of the FastMCP endpoint. Root cause: Starlette mounts require the path to end in the mount prefix + `/` (or have additional path). Bare `/mcp` fell through to the catch-all `@app.get("/{full_path:path}")`, which served the SPA shell.
+
+`/mcp/` (with trailing slash) worked correctly all along — that's the path real MCP clients send. This was a UX bug for API clients probing without the slash, NOT a security hole (the SPA HTML doesn't leak data; the actual MCP endpoint behind the slash still required bearer-key auth).
+
+Fix: added `"mcp"` to the API-namespace short-circuit in `spa_catch_all`. Bare `/mcp` now returns JSON 404; `/mcp/` continues to hit the FastMCP endpoint with auth.
+
+Tests: 1 pin in `test_v572_spa_catchall_mcp_guard.py` (source-grep contract on the namespace skip list).
+
 ### v5.7.1 — Bridge MCP tools into /v1/messages injection + markitdown + system-prompt nudge (2026-06-14)
 
 Operator-approved 2026-06-14 (recommended-plan continuation). v5.7.1 makes the MCP aggregation endpoint actually USE its tools on every existing bot without any client-side config change. Three additive ships in one release:
