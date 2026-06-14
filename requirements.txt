@@ -42,3 +42,6 @@ jsonschema>=4.20.0
 
 # v5.6.0 — Excel reader for proxy-injected read_xlsx_to_markdown tool
 openpyxl>=3.1.0
+
+# v5.7.0 — MCP aggregation endpoint
+mcp>=1.27,<2

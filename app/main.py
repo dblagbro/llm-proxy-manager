@@ -377,8 +377,28 @@ async def lifespan(app: FastAPI):
         logger.warning(f"ai_rate_limiter failed to start: {e}")
 
     logger.info("llm-proxy v2 started port=%s cluster=%s", settings.port, settings.cluster_enabled)
+    # v5.7.0 — MCP aggregation endpoint. The FastMCP session manager
+    # MUST run inside the lifespan so the sub-app's task group is
+    # initialized (SDK issue #1367 — without this the first request
+    # raises "Task group is not initialized"). The session manager is
+    # an async context manager that holds for the lifetime of the
+    # FastAPI app.
+    _mcp_session_mgr_ctx = None
+    try:
+        if _mcp_sub_app is not None:
+            _mcp_session_mgr_ctx = _mcp_sub_app.state.mcp.session_manager.run()
+            await _mcp_session_mgr_ctx.__aenter__()
+            logger.info("mcp_aggregation.lifespan_entered endpoint=/mcp")
+    except Exception as e:
+        logger.warning("mcp_aggregation.lifespan_failed err=%s", e)
+        _mcp_session_mgr_ctx = None
     yield
     logger.info("llm-proxy v2 shutting down")
+    if _mcp_session_mgr_ctx is not None:
+        try:
+            await _mcp_session_mgr_ctx.__aexit__(None, None, None)
+        except Exception as e:
+            logger.warning("mcp_aggregation.shutdown_failed err=%s", e)
 
 
 async def _notify_provider_degraded(severity: str, message: str, provider_id: str):
@@ -559,6 +579,18 @@ app.include_router(admin_activity_purge_router)  # v5.1.1 / C2 — time-range bu
 app.include_router(admin_llm_emergency_router)  # v5.2.0 / V1 — LLM emergency stop
 app.include_router(admin_ai_supervisor_router)  # v5.4.0 — supervisor diagnostic (BUG-070)
 app.include_router(admin_compliance_epoch_purge_router)  # v5.4.3 — pre-compliance data purge
+
+# v5.7.0 — MCP aggregation endpoint mounted at /mcp. The FastMCP
+# session_manager is started inside the lifespan (see above) so the
+# sub-app's task group is alive when the first request arrives.
+try:
+    from app.mcp_server.server import build_mcp_app
+    _mcp_sub_app = build_mcp_app()
+    app.mount("/mcp", _mcp_sub_app)
+    logger.info("mcp_aggregation.mounted path=/mcp")
+except Exception as _e:
+    logger.warning("mcp_aggregation.mount_failed err=%s", _e)
+    _mcp_sub_app = None
 app.include_router(oauth_capture_router)
 app.include_router(runs_router)
 app.include_router(lmrh_router)
