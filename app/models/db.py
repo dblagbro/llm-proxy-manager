@@ -54,6 +54,11 @@ from app.models.db_activity import (
     ActivityLog,
 )
 
+# v5.7.0 — MCP tool-call audit
+from app.models.db_mcp import (
+    McpToolCall,
+)
+
 # Run runtime (v3.0)
 from app.models.db_run import (
     Run,
@@ -124,6 +129,8 @@ __all__ = [
     # Activity / IP block
     "BlockedIp",
     "ActivityLog",
+    # v5.7.0 — MCP tool-call audit
+    "McpToolCall",
     # Run runtime
     "Run",
     "RunMessage",

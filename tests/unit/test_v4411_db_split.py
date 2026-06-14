@@ -54,6 +54,7 @@ def test_all_domain_modules_load_cleanly():
         "app.models.db_airi",
         "app.models.db_compliance",
         "app.models.db_cluster_peer",
+        "app.models.db_mcp",  # v5.7.0
     ):
         importlib.import_module(mod)
 
@@ -79,6 +80,7 @@ def test_re_export_shim_includes_every_model_class():
         "app.models.db_airi",
         "app.models.db_compliance",
         "app.models.db_cluster_peer",
+        "app.models.db_mcp",  # v5.7.0
     ):
         expected |= _classes_in(mod_name)
     # Also add Base itself
@@ -103,6 +105,7 @@ def test_registry_has_all_tables():
     Pre-v5.0.0 the count was 32; v5.0.0 added 3 (compliance_events,
     compliance_policy_changes, compliance_audit_chain) → 35.
     v5.0.18 added 1 (cluster_peers — UI-configurable peer list) → 36.
+    v5.7.0 added 1 (mcp_tool_calls — MCP aggregation audit) → 37.
     If this count drops, a new table was likely added to a domain
     module but ``db.py`` doesn't import that domain module (so
     ``Base.metadata`` never sees it)."""
@@ -110,8 +113,8 @@ def test_registry_has_all_tables():
     from app.models import db  # noqa: F401
     from app.models.db_base import Base
     tables = set(Base.metadata.tables.keys())
-    assert len(tables) == 36, (
-        f"Expected 36 tables in Base.metadata, got {len(tables)}: "
+    assert len(tables) == 37, (
+        f"Expected 37 tables in Base.metadata, got {len(tables)}: "
         f"{sorted(tables)}"
     )
 

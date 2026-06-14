@@ -7,6 +7,32 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ---
 
+## v5.7.x — MCP aggregation endpoint
+
+### v5.7.0 — MCP aggregation scaffold + 2 in-process tools (2026-06-14)
+
+Operator-approved 2026-06-14 after a 5-agent research dive. The proxy now exposes a single Streamable HTTP MCP endpoint at **`/mcp`** that downstream clients (Claude Code / opencode / Cursor / Continue) can register as ONE MCP server URL and get N aggregated capabilities. v5.7.0 is intentionally scaffold-only — 2 in-process tools, no external sub-servers yet — to keep the v1 risk surface tight.
+
+- **`app/mcp_server/`** — new package: `__init__.py` (ContextVars for per-request `api_key_id` + `parent_request_id`), `tools.py` (the 2 tools), `server.py` (FastMCP root + bearer-key auth middleware).
+- **`app/mcp_server/server.py::build_mcp_app`** — constructs the FastMCP root with `stateless_http=True, json_response=True, streamable_http_path="/"`. Production combo from the research dive: no sticky sessions, scales horizontally, dodges SDK issue #1367 (trailing-slash 307→404 on FastAPI mount).
+- **2 in-process tools registered:** `read_xlsx_to_markdown` reuses v5.6.0's `_render_workbook` so there's no code drift between the two surfaces; `fetch_url` is a fresh HTTP GET with safety caps (http/https only, 5 MB body cap, 30s timeout, 5 redirects). Explicitly NO `list_directory` / no shell / no command-execution tools — pinned anti-tests prevent slipping them in.
+- **`BearerKeyAuthMiddleware`** — Starlette middleware reuses the existing `verify_api_key` flow. No new IdP, no new bearer surface. Returns 401 with proper `WWW-Authenticate` headers on miss; sets the `current_api_key_id` ContextVar on success.
+- **`McpToolCall` table** (`app/models/db_mcp.py`) — per-tool-call audit row: `api_key_id`, `parent_request_id`, `tool_name`, `mcp_server_id`, `input_summary` (capped 480 chars; intentionally NOT the full payload to avoid PII leaks), `output_bytes`, `latency_ms`, `ok`, `error_msg`. v5.7.x will migrate this into `compliance_events` for cluster replication.
+- **`app/main.py` integration** — `_mcp_sub_app = build_mcp_app()` constructed at module init; mounted on `/mcp`; FastMCP `session_manager.run()` entered inside the lifespan BEFORE yield so the sub-app's task group is alive when the first request arrives (the SDK issue #1367 fix).
+- **`mcp>=1.27,<2`** pinned in `requirements.txt`. v5.8.0 will branch for the 2026-07-28 spec drop (session removal, new `Mcp-Method`/`Mcp-Name` headers).
+
+**Open decisions defaulted (operator can redirect):** keep v5.6.0's in-process Excel tool live alongside the new MCP path; include MarkItDown in v5.7.1; capability-scout auto-enable defaults off; token-budget hard-fail with `X-Token-Budget-Exceeded` header; `mcp<2` pin.
+
+**Forward plan (operator-confirmed priority order):**
+- **v5.7.1** (~4h): mount 4 external stdio sub-servers via FastMCP `mount()` — filesystem, fetch, git, markitdown.
+- **v5.7.2** (~3h): per-key tool allow-list in `compliance_policy.mcp` + token-budget enforcement + `list_tools` cache.
+- **v5.7.3** (~6h): capability scout v1 — refusal-pattern detector worker + `mcp_capability_map` seed + `mcp_suggestion` table + LMRH Link-header injection.
+- **v5.7.4** (~3h): per-MCP-server telemetry + UI panel.
+
+Tests: 17/17 in `test_v570_mcp_aggregation_scaffold.py` (deps, package layout, model registration, FastMCP production-settings source-grep, bearer-auth contracts including 4 dispatch behaviors, tool registration anti-pins for dangerous tools, main.py mount + lifespan ordering, tool implementations). `test_v4411_db_split` extended for the new `db_mcp` domain module (registry 36 → 37 tables). Full suite **3002 passed, 2 skipped** (~39s).
+
+---
+
 ## v5.6.x — Proxy-injected tools
 
 ### v5.6.0 — `read_xlsx_to_markdown` tool (non-streaming) (2026-06-14)
