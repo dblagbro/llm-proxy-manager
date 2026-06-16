@@ -136,8 +136,17 @@ async def classify_with_llm(provider_name: str, provider_type: str, stats: dict)
         )
         return None
     prompt = build_prompt(provider_name, provider_type, stats)
+    # v5.7.12: bumped from 30 → 90s. The supervisor's internal probe
+    # routes through the proxy's own /v1/messages, which on the TMR
+    # cluster cascades through anthropic substitution (BUG-071 blocks
+    # anthropic on /llm-proxy2/) → Gemini fallback. Observed routing
+    # times during the 2026-06-16 log-watch sweep: ~33s typical for
+    # the substitution chain, with a 50% timeout rate at the prior
+    # 30s ceiling. 90s gives plenty of headroom without hiding a real
+    # slow-routing regression (a slow routing path would still warn).
+    timeout_sec = float(getattr(settings, "ai_provider_supervisor_http_timeout_sec", 90.0))
     try:
-        async with httpx.AsyncClient(timeout=30.0, verify=False) as client:
+        async with httpx.AsyncClient(timeout=timeout_sec, verify=False) as client:
             resp = await client.post(
                 "http://localhost:3000/v1/messages",
                 json={

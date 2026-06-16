@@ -9,6 +9,14 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v5.7.x — MCP aggregation endpoint
 
+### v5.7.12 — Bumped ai_provider_supervisor HTTP timeout 30s → 90s (2026-06-16)
+
+Log-watch find. The supervisor's internal probe POSTs to `http://localhost:3000/v1/messages` and on TMR cluster routes through anthropic substitution (BUG-071 blocks anthropic on `/llm-proxy2/`) → Gemini fallback. Observed routing chain time ~33s — caused a 50%+ supervisor-skip rate at the prior 30s ceiling. The retried sweeps eventually catch up but each timeout is a logged WARNING and a skipped provider review.
+
+Fix: bumped to 90s, sourced from `ai_provider_supervisor_http_timeout_sec` system_setting (default 90.0). Operators on faster-routing clusters can tighten back down via the setting; slower setups can go higher.
+
+Tests: 2 pins in `test_v5712_supervisor_timeout.py` (timeout literal moved off the function body + the setting key is consulted). Full suite **3089 passed, 2 skipped** (~60s).
+
 ### v5.7.11 — Per-instance suppression for audit-chain zero-row-streak warning (2026-06-16)
 
 Log-watch find. The v5.4.1 `audit_chain_zero_row_streak` warning was firing daily on tmrwww01 + tmrwww02 because the coordinator-hub canary key (the only source of `path_not_allowed` events on those instances) moved to c1conv on 2026-06-05. Real condition — but on instances without enforcement-eligible traffic the daily warning is noise.
