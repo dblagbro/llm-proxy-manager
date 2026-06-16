@@ -9,6 +9,22 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v5.7.x — MCP aggregation endpoint
 
+### v5.7.11 — Per-instance suppression for audit-chain zero-row-streak warning (2026-06-16)
+
+Log-watch find. The v5.4.1 `audit_chain_zero_row_streak` warning was firing daily on tmrwww01 + tmrwww02 because the coordinator-hub canary key (the only source of `path_not_allowed` events on those instances) moved to c1conv on 2026-06-05. Real condition — but on instances without enforcement-eligible traffic the daily warning is noise.
+
+Fix: new system_setting `compliance_audit.zero_row_warning_enabled` (default True). When set to `false`/`0`/`no`/`off`, the worker short-circuits BEFORE reading the chain — no chain query, no dedup query, no warning row. Cluster-sync replicates the setting like every other system_setting, so flipping on the active node propagates fleet-wide.
+
+Fail-open: DB read failure on the setting probe defaults to the prior firing behavior (same posture as `logging_controls`).
+
+To silence on tmrwww01/02:
+```
+INSERT OR REPLACE INTO system_settings (key, value)
+VALUES ('compliance_audit.zero_row_warning_enabled', 'false');
+```
+
+Tests: 4 pins in `test_v5711_zero_row_warning_opt_out.py` (suppression honored, absent setting fires, explicit `true` fires, key string present in source). v5.4.0 mock-side-effects updated for the extra setting-probe execute(). Full suite **3087 passed, 2 skipped** (~48s).
+
 ### v5.7.10 — Observability: %r for monitoring-loop exceptions (2026-06-16)
 
 Log-watch find. `ai_provider_supervisor.llm_call_failed err=` was logging with no class hint after the `err=` because `str(httpx.TimeoutException(""))` is the empty string. Same `err=%s` formatter exists in 7 other monitoring loop exception handlers.
