@@ -9,6 +9,18 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v5.7.x — MCP aggregation endpoint
 
+### v5.7.8 — MCP test hardening — edge-case pins across the v5.7.x surface (2026-06-16)
+
+Pre-freeze sprint item 6 (closing). Adds 13 pins in `test_v577_mcp_hardening.py` covering edge cases noticed during the v5.7.x ship cadence:
+
+- **Policy edge cases**: `read_*` glob doesn't accidentally match `preread_anything`; deny-wins beats specific-allow; `allow=[]` denies all (NOT same as NULL); `budget=0` means deny all (NOT unlimited); tools missing `inputSchema` count as 0 tokens; filter preserves input order.
+- **Capability scout edge cases**: long response with late refusal (no scan window bound); quoted refusal documented as a fires (known false-positive risk); unicode-mixed response works; empty/whitespace safe.
+- **`patch_inbound_tool_results` idempotency**: second call on the same patched messages is a no-op (the first call's output is now non-placeholder).
+- **Admin summary aggregator**: zero-call DB returns well-shaped empty lists.
+- **Capability suggestions endpoint signature**: pins `limit` + `api_key_id` query parameters.
+
+No source changes — pure test additions. Full suite **3074 passed, 2 skipped** (~56s).
+
 ### v5.7.7 — Streaming /v1/messages tool injection (was: v5.6.1) (2026-06-16)
 
 Pre-freeze sprint item 5. Closes the "streaming requests skip tool injection" gap from v5.6.0 / v5.7.1. Streaming bots now get the same proxy-injected tool surface (Excel, markitdown, fetch_url, every MCP-bridge tool) as non-streaming ones, AND the tool-use round-trip works end-to-end via a follow-up call from the client.
