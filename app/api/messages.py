@@ -162,19 +162,25 @@ async def messages(
     max_tokens = body.get("max_tokens", 1024)
     system = body.get("system")
     thinking = body.get("thinking")
-    # v5.6.0 / v5.7.1 — proxy-injected tools. Only for non-streaming
-    # requests; streaming injection lands in v5.6.1 (needs buffered-
-    # stream tool_use detection). Inject BEFORE ``tools`` is captured
-    # so has_tools / routing decisions reflect the augmented tool
-    # list.
+    # v5.6.0 / v5.7.1 / v5.6.1 — proxy-injected tools.
     #
+    # v5.6.0: Anthropic-shape tool injection on /v1/messages (non-stream).
     # v5.7.1: switched to ``inject_anthropic_async`` which sources
-    # from BOTH the static registry (v5.6.0 Excel) AND the FastMCP
-    # aggregator bridge (markitdown today, sub-server tools tomorrow).
-    # Every MCP-registered tool is automatically available with zero
-    # code change per tool.
+    #   from BOTH the static registry (Excel) AND the FastMCP
+    #   aggregator bridge (markitdown + future sub-server tools).
+    # v5.6.1: lifted the ``if not stream`` gate. Streaming requests
+    #   now get the same tool injection. Round-trip works via the
+    #   client-side flow:
+    #     1. Stream emits ``tool_use`` for the proxy tool.
+    #     2. Client sends a follow-up /v1/messages with placeholder
+    #        ``tool_result`` block.
+    #     3. ``patch_inbound_tool_results`` (called BEFORE upstream
+    #        dispatch) detects the tool_use → tool_result pair, runs
+    #        the proxy tool server-side, and patches the placeholder
+    #        with the real output. Upstream model never sees the
+    #        placeholder.
     _proxy_tools_injected = False
-    if not stream:
+    if True:  # was: if not stream — lifted in v5.6.1
         # v5.7.4 — propagate the API key's MCP policy into the
         # ContextVar the FastMCP wrapper consults so the bridge's
         # list_tools / call_tool round-trip filters by the same
@@ -198,6 +204,19 @@ async def messages(
             _proxy_tools_injected = True
         except Exception as exc:
             logger.warning("proxy_tools.inject_failed err=%s", exc)
+        # v5.6.1 — server-side tool_result patcher for streaming
+        # round-trips. When a streaming client receives a tool_use it
+        # can't execute, it sends a follow-up /v1/messages with a
+        # placeholder tool_result. We detect the (tool_use →
+        # tool_result) pair, execute the real tool, and replace the
+        # placeholder content BEFORE the upstream model sees it.
+        try:
+            from app.proxy_tools import patch_inbound_tool_results
+            _patched = await patch_inbound_tool_results(body.get("messages") or [])
+            if _patched:
+                logger.info("proxy_tools.tool_result_patched count=%d", _patched)
+        except Exception as exc:
+            logger.warning("proxy_tools.patch_inbound_failed err=%s", exc)
         # Note: we INTENTIONALLY do not reset _policy_token here.
         # The response interception path (find_proxy_tool_use_async +
         # run_tool) also goes through the FastMCP wrapper and needs
