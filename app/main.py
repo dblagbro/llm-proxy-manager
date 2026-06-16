@@ -49,6 +49,7 @@ from app.api.admin_ai_supervisor import router as admin_ai_supervisor_router
 from app.api.admin_compliance_epoch_purge import router as admin_compliance_epoch_purge_router
 from app.api.admin_mcp_policy import router as admin_mcp_policy_router
 from app.api.admin_mcp_summary import router as admin_mcp_summary_router
+from app.api.admin_mcp_capability_suggestions import router as admin_mcp_capability_router
 from app.api.oauth_capture import router as oauth_capture_router
 from app.api.runs import router as runs_router
 from app.api.lmrh import router as lmrh_router
@@ -583,6 +584,7 @@ app.include_router(admin_ai_supervisor_router)  # v5.4.0 — supervisor diagnost
 app.include_router(admin_compliance_epoch_purge_router)  # v5.4.3 — pre-compliance data purge
 app.include_router(admin_mcp_policy_router)  # v5.7.4 — per-key MCP allow/deny/budget
 app.include_router(admin_mcp_summary_router)  # v5.7.5 — MCP dashboard aggregator
+app.include_router(admin_mcp_capability_router)  # v5.7.6 — capability scout suggestions
 
 # v5.7.0 — MCP aggregation endpoint mounted at /mcp. The FastMCP
 # session_manager is started inside the lifespan (see above) so the
