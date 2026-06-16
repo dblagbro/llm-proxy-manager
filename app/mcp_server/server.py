@@ -27,6 +27,17 @@ from app.mcp_server import current_api_key_id
 logger = logging.getLogger(__name__)
 
 
+# v5.7.4 — per-request ContextVar carrying the auth'd key's MCP policy
+# (allow/deny lists + token budget). Set by BearerKeyAuthMiddleware
+# during dispatch; read by the policy hooks that wrap list_tools and
+# call_tool. Defaulting to permissive (no filter) means a request
+# without the middleware (e.g. tests) gets the full registry.
+import contextvars
+current_mcp_policy: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
+    "mcp_current_policy", default=None,
+)
+
+
 def build_mcp_app() -> Any:
     """Build the FastMCP root + register tools + wrap with auth.
 
@@ -58,6 +69,13 @@ def build_mcp_app() -> Any:
     # read this file format" failure bucket (DOCX/PDF/PPTX/HTML/EPUB).
     mcp.tool(name="convert_document_to_markdown")(t.convert_document_to_markdown)
 
+    # ──── v5.7.4 — per-key policy enforcement ─────────────────────────
+    # Wrap list_tools and call_tool to consult current_mcp_policy
+    # before returning anything to the client (or bridge). When no
+    # policy is active (test path, unauth'd dev path), pass through.
+    _wrap_list_tools_with_policy(mcp)
+    _wrap_call_tool_with_policy(mcp)
+
     # ──── Auth middleware ────────────────────────────────────────────
     sub_app = mcp.streamable_http_app()
     sub_app.add_middleware(BearerKeyAuthMiddleware)
@@ -66,6 +84,72 @@ def build_mcp_app() -> Any:
     # a separate reference.
     sub_app.state.mcp = mcp
     return sub_app
+
+
+def _wrap_list_tools_with_policy(mcp: Any) -> None:
+    """v5.7.4 — wrap mcp.list_tools so it applies per-key allow/deny
+    + token-budget gating before returning the tool list."""
+    from app.mcp_server.policy import filter_tools_for_key, check_token_budget
+
+    _orig = mcp.list_tools
+
+    async def filtered_list_tools(*args, **kwargs):  # type: ignore[no-untyped-def]
+        all_tools = await _orig(*args, **kwargs)
+        policy = current_mcp_policy.get()
+        if policy is None:
+            return all_tools
+        # Allow/deny filter first
+        filtered = filter_tools_for_key(
+            all_tools,
+            policy.get("mcp_tools_allow"),
+            policy.get("mcp_tools_deny"),
+        )
+        # Token-budget gate — raises so the protocol layer can convert
+        # to a 400 response (Streamable HTTP path handles exceptions).
+        ok, total = check_token_budget(
+            filtered, policy.get("mcp_schema_token_budget"),
+        )
+        if not ok:
+            logger.warning(
+                "mcp.token_budget_exceeded budget=%s total=%d tools=%d",
+                policy.get("mcp_schema_token_budget"), total, len(filtered),
+            )
+            raise PermissionError(
+                f"X-Token-Budget-Exceeded: total={total} "
+                f"budget={policy.get('mcp_schema_token_budget')}"
+            )
+        return filtered
+
+    mcp.list_tools = filtered_list_tools
+
+
+def _wrap_call_tool_with_policy(mcp: Any) -> None:
+    """v5.7.4 — wrap mcp.call_tool so a denied tool returns an error
+    instead of executing. Without this guard, a malicious / buggy
+    client could call a denied tool by name even though list_tools
+    didn't surface it (security 101 — never rely on UI hiding)."""
+    from app.mcp_server.policy import is_tool_allowed_for_key
+
+    _orig = mcp.call_tool
+
+    async def gated_call_tool(name, *args, **kwargs):  # type: ignore[no-untyped-def]
+        policy = current_mcp_policy.get()
+        if policy is not None:
+            if not is_tool_allowed_for_key(
+                name,
+                policy.get("mcp_tools_allow"),
+                policy.get("mcp_tools_deny"),
+            ):
+                logger.info(
+                    "mcp.tool_denied tool=%s api_key=%s",
+                    name, current_api_key_id.get(),
+                )
+                raise PermissionError(
+                    f"tool {name!r} is denied by the API key's MCP policy"
+                )
+        return await _orig(name, *args, **kwargs)
+
+    mcp.call_tool = gated_call_tool
 
 
 class BearerKeyAuthMiddleware(BaseHTTPMiddleware):
@@ -99,9 +183,22 @@ class BearerKeyAuthMiddleware(BaseHTTPMiddleware):
                 status_code=401,
                 headers={"WWW-Authenticate": "Bearer error=\"invalid_token\""},
             )
+        # v5.7.4 — surface the key's MCP policy via ContextVar so the
+        # downstream list_tools / call_tool hooks can enforce it
+        # without re-querying the DB on every call. JSON-typed columns
+        # come back as Python lists/ints already.
+        policy = {
+            "mcp_tools_allow": getattr(key_record, "mcp_tools_allow", None),
+            "mcp_tools_deny": getattr(key_record, "mcp_tools_deny", None),
+            "mcp_schema_token_budget": getattr(
+                key_record, "mcp_schema_token_budget", None,
+            ),
+        }
         token = current_api_key_id.set(key_record.id)
+        policy_token = current_mcp_policy.set(policy)
         try:
             response: Response = await call_next(request)
         finally:
             current_api_key_id.reset(token)
+            current_mcp_policy.reset(policy_token)
         return response

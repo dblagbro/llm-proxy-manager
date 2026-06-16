@@ -119,6 +119,18 @@ class ApiKey(Base):
     # Default False; operator flips per key. Mirrors the same shape as
     # the existing per-key compliance policy fields.
     system_prompt_mcp_augmentation = Column(Boolean, default=False)
+    # v5.7.4 — MCP per-key policy fields.
+    # mcp_tools_allow: JSON list of fnmatch globs (e.g. ["read_*", "fetch_*"]).
+    #   NULL = all tools allowed; [] = NO tools allowed (effectively disables MCP).
+    # mcp_tools_deny: JSON list of fnmatch globs. Takes precedence over allow.
+    #   NULL or [] = no denies.
+    # mcp_schema_token_budget: INT. If the total tool-schema tokens for a
+    #   list_tools response would exceed this, return 400 with
+    #   X-Token-Budget-Exceeded header. NULL = unlimited. Default-set at
+    #   30_000 by the admin UI; operator can tune.
+    mcp_tools_allow = Column(JSON, nullable=True)
+    mcp_tools_deny = Column(JSON, nullable=True)
+    mcp_schema_token_budget = Column(Integer, nullable=True)
 
 
 class ApiKeyAiReview(Base):
