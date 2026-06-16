@@ -9,6 +9,22 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v5.7.x — MCP aggregation endpoint
 
+### v5.7.4 — Per-key MCP allow/deny + token-budget enforcement (2026-06-16)
+
+Pre-freeze sprint: lock down the MCP surface BEFORE bots start hitting it.
+
+- **`api_keys` gains 3 columns**: `mcp_tools_allow` (JSON list of fnmatch globs, NULL=permissive, []=restrictive), `mcp_tools_deny` (deny-wins), `mcp_schema_token_budget` (INT, NULL=unlimited).
+- **`app/mcp_server/policy.py`** — `is_tool_allowed_for_key(name, allow, deny)`, `filter_tools_for_key(tools, allow, deny)`, `check_token_budget(tools, budget)`, `estimate_schema_tokens(schema)` (conservative 4 chars/token).
+- **`app/mcp_server/server.py`** — `_wrap_list_tools_with_policy(mcp)` and `_wrap_call_tool_with_policy(mcp)` monkey-patch the FastMCP instance's `list_tools` / `call_tool` to consult `current_mcp_policy` ContextVar before returning anything. Bearer auth middleware sets the ContextVar from the key record on every authed request.
+- **Path B (`/v1/messages` injection)** — messages.py now also sets `current_mcp_policy` after `verify_api_key`, so the bridge → `mcp.list_tools()` round-trip filters by the same rules as the /mcp endpoint. No drift between the two surfaces.
+- **`POST/GET/DELETE /api/admin/mcp/keys/{key_id}/policy`** — admin-gated CRUD over the three fields. Every write emits a `CompliancePolicyChange` audit row (same audit table as v5.2.x policy edits).
+
+Tests: 17 new pins in `test_v574_mcp_per_key_policy.py`. `test_v560_proxy_excel_tool::test_messages_handler_injects_proxy_tools_for_non_streaming` window widened to 2000 chars to accommodate the v5.7.4 policy block. Full suite **3033 passed, 2 skipped** (~56s).
+
+### v5.7.3 — Hub-team memo: Path A MCP client config snippets (2026-06-16)
+
+Drafted at `docs/memos/2026-06-16-hub-team-mcp-client-config.md`. Operator forwards to coordinator-hub team. Adds installer blocks for Claude Code / opencode / Cursor / Continue / Cline that point each bot client at `/llm-proxy2/mcp/` with the existing per-bot API key as bearer. Path B (proxy-side auto-injection) already works for every bot today — Path A surfaces the MCP tools in the bot client's own UI + per-tool audit story. The two paths are additive, dedup'd by tool name on the injection side.
+
 ### v5.7.2 — Hotfix: SPA catch-all swallowed bare /mcp (2026-06-14)
 
 Surfaced during the v5.7.1 fleet roll log-watch sweep: `GET /mcp` (no trailing slash) returned HTTP 200 + the React SPA index.html instead of the FastMCP endpoint. Root cause: Starlette mounts require the path to end in the mount prefix + `/` (or have additional path). Bare `/mcp` fell through to the catch-all `@app.get("/{full_path:path}")`, which served the SPA shell.
