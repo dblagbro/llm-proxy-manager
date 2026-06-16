@@ -9,6 +9,19 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v5.7.x — MCP aggregation endpoint
 
+### v5.7.9 — Hotfix: Google status monitor false-positive circuit opens (2026-06-16)
+
+Log-watch find. The status monitor was force-opening the Vertex AI and Gemini circuits on every 5-minute poll because `status.cloud.google.com/incidents.json` had an active India-ingress packet-loss incident (Hybrid Connectivity / Media CDN / VPC affected products — no LLM API impact).
+
+Two bugs in `app/monitoring/status.py`:
+
+1. **Field name typo** — code read `external-desc` (kebab); Google's field is `external_desc` (snake). Every warning log emitted an empty description (`Status monitor: google degraded — ; opening circuit for …`), masking the real bug.
+2. **No product filter** — ANY active GCP incident triggered `degraded=True`. GCP lists 100+ products; the monitor must only react to incidents whose `affected_products[].title` matches one of: Vertex AI, Vertex AI Online Prediction, Generative Language API, Gemini API, Gemini, Google Cloud Generative AI App Builder, AI Platform.
+
+Fix: filter incidents by affected_products before deciding `degraded`; read `external_desc` correctly. Once shipped, the stuck-open Vertex + Gemini circuits will be force-closed via the existing supervisor / first-request half-open cycle.
+
+Tests: 4 pins in `test_v579_status_monitor_google_filter.py` covering the India-ingress non-incident, a Vertex AI real incident with non-empty desc, a Generative Language API incident, and the no-active-incidents case. Full suite **3078 passed, 2 skipped** (~45s).
+
 ### v5.7.8 — MCP test hardening — edge-case pins across the v5.7.x surface (2026-06-16)
 
 Pre-freeze sprint item 6 (closing). Adds 13 pins in `test_v577_mcp_hardening.py` covering edge cases noticed during the v5.7.x ship cadence:

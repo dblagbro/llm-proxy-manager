@@ -73,10 +73,48 @@ async def _check_one(provider_type: str) -> tuple[bool, str]:
             data = resp.json()
 
         if provider_type == "google":
-            # Google uses a different format — array of active incidents
-            incidents = [i for i in (data if isinstance(data, list) else []) if not i.get("end")]
-            degraded = len(incidents) > 0
-            desc = incidents[0].get("external-desc", "") if incidents else ""
+            # Google uses a different format — array of active incidents.
+            # v5.7.9 fix: the previous code flagged degraded on ANY active
+            # GCP incident. status.cloud.google.com lists 100+ products
+            # and most incidents have nothing to do with the LLM APIs we
+            # consume (Vertex AI / Generative Language). Two issues
+            # caused noisy false-positive circuit opens:
+            #   1. ``external-desc`` (hyphen) was read instead of
+            #      ``external_desc`` (Google's snake-case field) — every
+            #      warning logged an empty description.
+            #   2. No filter on affected_products → a network incident
+            #      in Delhi/Mumbai with affected products ["Hybrid
+            #      Connectivity","Media CDN","VPC"] tripped our Vertex
+            #      and Gemini circuits.
+            # Filter to incidents whose ``affected_products`` mentions a
+            # product we actually depend on.
+            active = [
+                i for i in (data if isinstance(data, list) else [])
+                if not i.get("end")
+            ]
+            relevant_titles = {
+                "Vertex AI",
+                "Vertex AI Online Prediction",
+                "Google Cloud Generative AI App Builder",
+                "Generative Language API",
+                "Gemini API",
+                "Gemini",
+                "AI Platform",
+            }
+            def _touches_llm(inc: dict) -> bool:
+                for p in inc.get("affected_products") or []:
+                    title = (p.get("title") or "").strip()
+                    if title in relevant_titles:
+                        return True
+                # Fallback: if affected_products absent but service_name
+                # is one of the relevant ones (older incidents).
+                return (inc.get("service_name") or "") in relevant_titles
+            relevant = [i for i in active if _touches_llm(i)]
+            degraded = len(relevant) > 0
+            desc = (
+                relevant[0].get("external_desc", "")
+                if relevant else ""
+            )
         else:
             degraded = _is_degraded_statuspage(data, provider_type)
             desc = data.get("status", {}).get("description", "")
