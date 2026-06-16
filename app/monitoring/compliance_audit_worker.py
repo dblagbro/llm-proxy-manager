@@ -66,9 +66,33 @@ async def _emit_zero_row_warning_if_threshold(db, just_signed_day) -> None:
 
     Idempotent — the warning is only emitted once per streak threshold
     boundary; subsequent zero-row days don't multiply the noise.
+
+    v5.7.11: operator-controllable suppression via
+    ``compliance_audit.zero_row_warning_enabled`` system_setting
+    (default True). Flip False on instances that legitimately don't
+    see compliance-enforcement-eligible traffic (canary moved away,
+    instance dedicated to non-substituting workload, etc.) so the
+    daily warning stops without disabling the audit chain itself.
     """
-    from app.models.db import ComplianceAuditChain, ActivityLog
+    from app.models.db import ComplianceAuditChain, ActivityLog, SystemSetting
     from sqlalchemy import select, desc
+
+    # v5.7.11 — per-instance opt-out
+    try:
+        rs0 = await db.execute(
+            select(SystemSetting).where(
+                SystemSetting.key == "compliance_audit.zero_row_warning_enabled"
+            )
+        )
+        row0 = rs0.scalar_one_or_none()
+        if row0 is not None and (row0.value or "").strip().lower() in (
+            "false", "0", "no", "off",
+        ):
+            return
+    except Exception:
+        # Read failure → keep firing the warning (fail-open for
+        # observability, same posture as logging_controls).
+        pass
 
     rs = await db.execute(
         select(ComplianceAuditChain)

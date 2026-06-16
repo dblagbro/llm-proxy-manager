@@ -107,14 +107,18 @@ async def test_zero_row_check_fires_on_unbroken_streak(monkeypatch):
         MagicMock(row_count=0, day="2026-06-11"),
         MagicMock(row_count=0, day="2026-06-10"),
     ]
+    # v5.7.11 — first execute() is the opt-out setting probe; None means
+    # "absent" → default-fire behaviour preserved.
+    rs_setting = MagicMock()
+    rs_setting.scalar_one_or_none.return_value = None
     rs_chain = MagicMock()
     rs_chain.scalars.return_value.all.return_value = rows
 
-    # Second execute() call is the duplicate-check; return None
+    # Third execute() call is the duplicate-check; return None
     rs_dup = MagicMock()
     rs_dup.scalar_one_or_none.return_value = None
 
-    db.execute = AsyncMock(side_effect=[rs_chain, rs_dup])
+    db.execute = AsyncMock(side_effect=[rs_setting, rs_chain, rs_dup])
     db.commit = AsyncMock()
 
     await _emit_zero_row_warning_if_threshold(db, datetime.utcnow().date())
@@ -141,6 +145,9 @@ async def test_zero_row_check_is_idempotent_within_24h(monkeypatch):
         MagicMock(row_count=0, day="2026-06-11"),
         MagicMock(row_count=0, day="2026-06-10"),
     ]
+    # v5.7.11 — first execute() is the opt-out setting probe; None → fire
+    rs_setting = MagicMock()
+    rs_setting.scalar_one_or_none.return_value = None
     rs_chain = MagicMock()
     rs_chain.scalars.return_value.all.return_value = rows
 
@@ -148,7 +155,7 @@ async def test_zero_row_check_is_idempotent_within_24h(monkeypatch):
     rs_dup = MagicMock()
     rs_dup.scalar_one_or_none.return_value = MagicMock()  # an existing row
 
-    db.execute = AsyncMock(side_effect=[rs_chain, rs_dup])
+    db.execute = AsyncMock(side_effect=[rs_setting, rs_chain, rs_dup])
 
     await _emit_zero_row_warning_if_threshold(db, datetime.utcnow().date())
     db.add.assert_not_called()
