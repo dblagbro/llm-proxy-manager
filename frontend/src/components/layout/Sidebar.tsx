@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 import {
   LayoutDashboard, Server, GitBranch, Key, Users,
   Network, BarChart2, Activity, Settings, ChevronLeft, ChevronRight,
-  Zap, ShieldCheck, ShieldAlert,
+  Zap, ShieldCheck, ShieldAlert, Puzzle,
 } from 'lucide-react'
 import { clusterApi } from '@/api'
 import { useAuth } from '@/context/AuthContext'
@@ -60,6 +60,9 @@ export function Sidebar({
     // visible); /admin/compliance is the admin events table.
     { to: '/compliance', icon: ShieldCheck,    label: 'My Compliance' },
     { to: '/admin/compliance', icon: ShieldAlert, label: 'Compliance Events', hidden: !isAdmin },
+    // v5.7.5 — MCP aggregation dashboard. Admin-only because it shows
+    // per-key tool inventories + activity.
+    { to: '/admin/mcp', icon: Puzzle, label: 'MCP', hidden: !isAdmin },
     'divider',
     { to: '/settings', icon: Settings,         label: 'Settings' },
   ]
