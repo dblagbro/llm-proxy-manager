@@ -9,6 +9,20 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v5.7.x — MCP aggregation endpoint
 
+### v5.7.10 — Observability: %r for monitoring-loop exceptions (2026-06-16)
+
+Log-watch find. `ai_provider_supervisor.llm_call_failed err=` was logging with no class hint after the `err=` because `str(httpx.TimeoutException(""))` is the empty string. Same `err=%s` formatter exists in 7 other monitoring loop exception handlers.
+
+Fix: swap `%s` → `%r` in:
+- `ai_provider_supervisor.llm_call_failed`
+- `ai_rate_limiter.llm_call_failed` + `ai_rate_limiter.sweep_failed`
+- `compliance_audit.{zero_row_check_failed, purge_failed, sweep_failed}`
+- `cursor_oauth_expiry.{commit_failed, sweep_failed}`
+
+`%r` renders the exception's class name even when the message is empty (e.g. `TimeoutException()` instead of just blank).
+
+Tests: 5 pins in `test_v5710_monitoring_err_repr.py` (parametrized source-grep contract + sanity that `repr(TimeoutException(""))` carries the class name).
+
 ### v5.7.9 — Hotfix: Google status monitor false-positive circuit opens (2026-06-16)
 
 Log-watch find. The status monitor was force-opening the Vertex AI and Gemini circuits on every 5-minute poll because `status.cloud.google.com/incidents.json` had an active India-ingress packet-loss incident (Hybrid Connectivity / Media CDN / VPC affected products — no LLM API impact).

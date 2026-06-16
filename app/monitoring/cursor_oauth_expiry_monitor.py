@@ -232,7 +232,7 @@ async def _run_one_sweep(
         try:
             await db.commit()
         except Exception as exc:
-            logger.warning("cursor_oauth_expiry.commit_failed err=%s", exc)
+            logger.warning("cursor_oauth_expiry.commit_failed err=%r", exc)
     _LAST_SWEEP.update({
         "last_sweep_ts": datetime.now(timezone.utc).isoformat(),
         "providers": snapshots,
@@ -251,7 +251,7 @@ async def _sweep_loop() -> None:
             await _run_one_sweep()
             await hb.tick(status="ok", note="swept")
         except Exception as exc:
-            logger.warning("cursor_oauth_expiry.sweep_failed err=%s", exc)
+            logger.warning("cursor_oauth_expiry.sweep_failed err=%r", exc)
             await hb.tick(status="error", note=str(exc)[:200])
         await asyncio.sleep(_SWEEP_INTERVAL_SEC)
 
