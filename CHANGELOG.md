@@ -9,6 +9,27 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v5.7.x — MCP aggregation endpoint
 
+### v5.7.5 — Frontend MCP dashboard + `/api/admin/mcp/summary` aggregator (2026-06-16)
+
+Pre-freeze sprint item 3. Operators need a single panel to see what the MCP surface is doing — live tool inventory, 24h call counts by tool + by key, p50/p95 latency by tool — without poking the DB.
+
+- **`GET /api/admin/mcp/summary`** (`app/api/admin_mcp_summary.py`). Admin-gated. Returns:
+  - `tools_live: [{name, description}]` — pulled from the live FastMCP root via `list_tools()` (defensive try/except → `tools_live_error` field on failure so the panel keeps loading)
+  - `calls_by_tool_24h: [{tool_name, count, errors}]` — `mcp_tool_calls` rolled up over the last 24h
+  - `calls_by_key_24h: [{api_key_id, count}]` — top callers
+  - `latency_by_tool_24h: [{tool_name, p50_ms, p95_ms, n}]` — successful calls only, computed in Python (SQLite has no `percentile_disc`)
+  - `total_calls_24h`, `total_errors_24h` — headline figures
+- **Frontend** (`frontend/src/pages/McpPage.tsx`):
+  - `useQuery` against `/api/admin/mcp/summary`, 30s refetch interval, cached under `['admin','mcp','summary']`.
+  - 3 headline `Stat` cards (calls, errors %, tools registered) — errors tone green/amber/red at 2%/10% thresholds.
+  - Live tool inventory list (mono font for the tool name + description below).
+  - 3 tables: calls-by-tool, latency-by-tool (p50/p95/n), top callers.
+  - Banner when `tools_live_error` or `agg_error` populated — surfaces the underlying message so degraded mode is obvious.
+- **Routing** (`frontend/src/App.tsx`): new route `admin/mcp` behind `<AdminGate>`. Sidebar gets a `Puzzle` icon link under the Compliance Events row, `hidden: !isAdmin`.
+- Read-only on this page; per-key allow/deny editing surfaces through the existing API Keys page (v5.7.4 endpoint). Keeps the panel scope tight.
+
+Tests: 6 pins in `test_v575_mcp_dashboard.py` (router registered, endpoint present, empty-DB shape stable, page + route + nav link all wired). Full suite **3039 passed, 2 skipped** (~48s).
+
 ### v5.7.4 — Per-key MCP allow/deny + token-budget enforcement (2026-06-16)
 
 Pre-freeze sprint: lock down the MCP surface BEFORE bots start hitting it.

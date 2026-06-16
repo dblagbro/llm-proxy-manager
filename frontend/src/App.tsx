@@ -17,6 +17,7 @@ import { ActivityPage } from '@/pages/ActivityPage'
 import { SettingsPage } from '@/pages/SettingsPage'
 import { MyCompliancePage } from '@/pages/MyCompliancePage'
 import { CompliancePage } from '@/pages/CompliancePage'
+import { McpPage } from '@/pages/McpPage'
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1, staleTime: 10_000 } },
@@ -61,6 +62,7 @@ function AppRoutes() {
         <Route path="settings" element={<SettingsPage />} />
         <Route path="compliance" element={<MyCompliancePage />} />
         <Route path="admin/compliance" element={<AdminGate><CompliancePage /></AdminGate>} />
+        <Route path="admin/mcp" element={<AdminGate><McpPage /></AdminGate>} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
     </Routes>
