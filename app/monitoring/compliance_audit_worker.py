@@ -165,7 +165,7 @@ async def _run_one_sweep() -> None:
         async with AsyncSessionLocal() as db:
             await _emit_zero_row_warning_if_threshold(db, prior_day)
     except Exception as exc:
-        logger.warning("compliance_audit.zero_row_check_failed err=%s", exc)
+        logger.warning("compliance_audit.zero_row_check_failed err=%r", exc)
 
     # Step 2 — retention purge
     purged = 0
@@ -179,7 +179,7 @@ async def _run_one_sweep() -> None:
                 retention_days,
             )
     except Exception as exc:
-        logger.warning("compliance_audit.purge_failed err=%s", exc)
+        logger.warning("compliance_audit.purge_failed err=%r", exc)
 
     _LAST_SWEEP_RESULT.update({
         "last_sweep_ts": datetime.utcnow().isoformat(),
@@ -209,7 +209,7 @@ async def _sweep_loop() -> None:
             # Defence-in-depth — _run_one_sweep already catches at the
             # step level; this catches anything unexpected at the loop
             # level so the task never dies silently.
-            logger.warning("compliance_audit.sweep_failed err=%s", exc)
+            logger.warning("compliance_audit.sweep_failed err=%r", exc)
             await hb.tick(status="error", note=str(exc)[:200])
         await asyncio.sleep(_SWEEP_INTERVAL_SEC)
 

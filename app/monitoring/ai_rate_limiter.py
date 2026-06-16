@@ -332,7 +332,7 @@ async def classify_with_llm(
         text = content[0].get("text", "") if isinstance(content[0], dict) else ""
         return parse_llm_response(text)
     except Exception as exc:
-        logger.warning("ai_rate_limiter.llm_call_failed err=%s", exc)
+        logger.warning("ai_rate_limiter.llm_call_failed err=%r", exc)
         return None
 
 
@@ -510,7 +510,7 @@ async def _scan_loop() -> None:
                 logger.info("ai_rate_limiter.swept reviewed=%d", n)
             await hb.tick(status="ok", note=f"reviewed={n}")
         except Exception as exc:
-            logger.warning("ai_rate_limiter.sweep_failed err=%s", exc)
+            logger.warning("ai_rate_limiter.sweep_failed err=%r", exc)
             await hb.tick(status="error", note=str(exc)[:200])
             interval = DEFAULT_INTERVAL_SEC
         await asyncio.sleep(interval)

@@ -168,7 +168,7 @@ async def classify_with_llm(provider_name: str, provider_type: str, stats: dict)
         text = content[0].get("text", "") if isinstance(content[0], dict) else ""
         return parse_llm_response(text)
     except Exception as exc:
-        logger.warning("ai_provider_supervisor.llm_call_failed err=%s", exc)
+        logger.warning("ai_provider_supervisor.llm_call_failed err=%r", exc)
         return None
 
 
