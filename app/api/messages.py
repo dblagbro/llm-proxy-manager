@@ -175,12 +175,34 @@ async def messages(
     # code change per tool.
     _proxy_tools_injected = False
     if not stream:
+        # v5.7.4 — propagate the API key's MCP policy into the
+        # ContextVar the FastMCP wrapper consults so the bridge's
+        # list_tools / call_tool round-trip filters by the same
+        # allow/deny rules that the /mcp endpoint enforces. Without
+        # this, Path B injection would expose tools the key is denied.
+        _policy_token = None
+        try:
+            from app.mcp_server.server import current_mcp_policy
+            _policy_token = current_mcp_policy.set({
+                "mcp_tools_allow": getattr(key_record, "mcp_tools_allow", None),
+                "mcp_tools_deny": getattr(key_record, "mcp_tools_deny", None),
+                "mcp_schema_token_budget": getattr(
+                    key_record, "mcp_schema_token_budget", None,
+                ),
+            })
+        except Exception:
+            pass  # mcp module not available (graceful)
         try:
             from app.proxy_tools import inject_anthropic_async
             await inject_anthropic_async(body)
             _proxy_tools_injected = True
         except Exception as exc:
             logger.warning("proxy_tools.inject_failed err=%s", exc)
+        # Note: we INTENTIONALLY do not reset _policy_token here.
+        # The response interception path (find_proxy_tool_use_async +
+        # run_tool) also goes through the FastMCP wrapper and needs
+        # the policy visible. The contextvar dies with the request
+        # naturally when the handler returns.
 
     # v5.7.1 — system-prompt augmentation. Per-key opt-in flag in
     # ``api_keys.system_prompt_mcp_augmentation``. When True AND

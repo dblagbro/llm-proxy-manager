@@ -251,7 +251,10 @@ def test_messages_handler_injects_proxy_tools_for_non_streaming():
     # The if-not-stream guard
     idx = src.find("_proxy_tools_injected = False")
     assert idx != -1
-    window = src[idx: idx + 800]
+    # v5.7.4 — widened window because the v5.7.4 policy ContextVar
+    # propagation adds ~600 chars between the `if not stream:` and
+    # the actual `inject_anthropic_async(body)` call.
+    window = src[idx: idx + 2000]
     assert "if not stream:" in window
     # Either v5.6.0 sync OR v5.7.1+ async injection must be present
     assert ("inject_anthropic(body)" in window) or ("inject_anthropic_async(body)" in window)

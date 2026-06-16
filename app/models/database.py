@@ -437,6 +437,12 @@ async def init_db():
             # nudge added to body["system"] so the model prefers calling
             # proxy-injected tools over saying "I can't read X". Default 0.
             "ALTER TABLE api_keys ADD COLUMN system_prompt_mcp_augmentation BOOLEAN DEFAULT 0",
+            # v5.7.4 — MCP per-key policy. JSON-typed fields hold lists of
+            # fnmatch globs (e.g. ["read_*"]) or NULL. mcp_schema_token_budget
+            # is an INT (NULL = unlimited).
+            "ALTER TABLE api_keys ADD COLUMN mcp_tools_allow TEXT",
+            "ALTER TABLE api_keys ADD COLUMN mcp_tools_deny TEXT",
+            "ALTER TABLE api_keys ADD COLUMN mcp_schema_token_budget INTEGER",
             # owner_company is auto-derived at provider create/update time
             # from provider_type via app.compliance.company_map; operator
             # can override for unusual rows. The router pre-filter drops
