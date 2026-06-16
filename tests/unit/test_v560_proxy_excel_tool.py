@@ -239,23 +239,19 @@ async def test_excel_runner_clamps_row_cap():
 # ── Wiring contracts (source-grep) ─────────────────────────────────
 
 
-def test_messages_handler_injects_proxy_tools_for_non_streaming():
-    """The injection MUST be wrapped in ``if not stream:`` so streaming
-    requests don't see a tool the proxy can't handle yet.
+def test_messages_handler_injects_proxy_tools():
+    """The injection MUST be wired into the request handler.
 
     v5.7.1 — switched the call site from sync ``inject_anthropic`` to
     async ``inject_anthropic_async`` (sources from MCP aggregator
-    bridge too). Either symbol satisfies the wiring contract."""
+    bridge too).
+    v5.6.1 — gate lifted so streaming requests also get injection;
+    server-side tool_result patcher handles the streaming round-trip."""
     src = Path("app/api/messages.py").read_text()
     assert "_proxy_tools_injected = False" in src
-    # The if-not-stream guard
     idx = src.find("_proxy_tools_injected = False")
     assert idx != -1
-    # v5.7.4 — widened window because the v5.7.4 policy ContextVar
-    # propagation adds ~600 chars between the `if not stream:` and
-    # the actual `inject_anthropic_async(body)` call.
     window = src[idx: idx + 2000]
-    assert "if not stream:" in window
     # Either v5.6.0 sync OR v5.7.1+ async injection must be present
     assert ("inject_anthropic(body)" in window) or ("inject_anthropic_async(body)" in window)
 

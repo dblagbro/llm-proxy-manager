@@ -9,6 +9,31 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v5.7.x — MCP aggregation endpoint
 
+### v5.7.7 — Streaming /v1/messages tool injection (was: v5.6.1) (2026-06-16)
+
+Pre-freeze sprint item 5. Closes the "streaming requests skip tool injection" gap from v5.6.0 / v5.7.1. Streaming bots now get the same proxy-injected tool surface (Excel, markitdown, fetch_url, every MCP-bridge tool) as non-streaming ones, AND the tool-use round-trip works end-to-end via a follow-up call from the client.
+
+**Design**:
+1. **Gate lifted** in `app/api/messages.py` — proxy_tools injection runs on every `/v1/messages` regardless of `stream` flag. The model sees the augmented tool list and can choose to call a proxy tool from a streaming response.
+2. **Server-side `tool_result` patcher** (`app/proxy_tools.patch_inbound_tool_results`). When the client sends a follow-up `/v1/messages` containing an `assistant: tool_use(proxy_tool_X)` block followed by a `user: tool_result(placeholder)` block, the patcher:
+   - Finds the preceding assistant turn's `tool_use` for the matching `tool_use_id`.
+   - If the tool name matches a proxy-registered tool, executes the tool server-side with the original `input`.
+   - REPLACES the placeholder `content` in the tool_result with the real output.
+   - Idempotent: skips when the existing content is clearly non-placeholder (real markdown, real bytes, …) so a caller who DOES implement the tool isn't overwritten.
+
+**End-to-end flow** for streaming clients:
+
+1. Client streams a `/v1/messages` with `stream: true`.
+2. Model emits `tool_use { name: "read_xlsx_to_markdown", input: {...} }` in the stream.
+3. Client receives the tool_use, recognises it has no implementation, and sends a follow-up `/v1/messages` with `messages: [..., assistant_with_tool_use, user_with_placeholder_tool_result]`.
+4. Proxy patches the placeholder with the real Excel-to-markdown output.
+5. Upstream model gets the real content and returns the final assistant text.
+6. Client streams (or non-streams) that final answer normally.
+
+Tests: 8 pins in `test_v561_streaming_tool_injection.py` (gate lifted, hook wired, placeholder replaced, non-placeholder skipped, no-proxy-tool no-op, empty-list handling, multi-tool batch). v5.6.0 test contract updated to drop the now-removed `if not stream:` assertion. Full suite **3061 passed, 2 skipped** (~59s).
+
+**Buffered same-request interception** (the model calls a proxy tool *during* a streaming response and the proxy completes the round-trip server-side without a second client call) is deliberately deferred. The current patcher path makes streaming tool-use *work* with one extra round trip — buffered interception is a TTFB optimization for the same outcome.
+
 ### v5.7.6 — Capability scout v1 — refusal-pattern detector + suggestion log (2026-06-16)
 
 Pre-freeze sprint item 4. Ships the *detector* half of the original operator MCP vision: "AI that monitors traffic, if it detects traffic could benefit from MCP features, it would add them". v5.7.6 watches every non-streaming `/v1/messages` response for refusal phrasings ("I can't read Excel files", "I don't have internet access", …) and emits a structured `mcp_capability_suggestion` activity_log row pointing at the MCP tool that would have closed the gap. Operator reviews and flips per-key opt-ins (v5.7.4 endpoint).

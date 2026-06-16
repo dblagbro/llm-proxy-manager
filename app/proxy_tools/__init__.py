@@ -211,3 +211,90 @@ def build_tool_result_message(tool_use_id: str, output: str) -> dict:
             "content": output,
         }],
     }
+
+
+async def patch_inbound_tool_results(messages_list: list) -> int:
+    """v5.6.1 — server-side patcher for streaming round-trips.
+
+    Scan ``messages_list`` for ``user``-role messages whose ``content``
+    contains ``tool_result`` blocks. For each tool_result, find the
+    preceding assistant turn's matching ``tool_use`` (by ``tool_use_id``).
+    If the tool_use's ``name`` refers to a proxy-injected tool, EXECUTE
+    the tool server-side with the original ``input`` and REPLACE the
+    tool_result's ``content`` with the actual output.
+
+    This is how streaming tool-use works in v5.6.1: the streaming
+    client receives a ``tool_use`` block it can't execute, sends a
+    follow-up ``/v1/messages`` with a PLACEHOLDER ``tool_result``, and
+    the proxy fills in the real content before the upstream model
+    sees the message. The client never needs to implement the tool.
+
+    Idempotent: if the tool_result content is already non-placeholder
+    (i.e. the caller already executed the tool themselves), we don't
+    overwrite. Heuristic: only patch when the existing content is
+    empty / whitespace / a known placeholder marker.
+
+    Returns the number of tool_result blocks patched.
+    """
+    if not isinstance(messages_list, list) or len(messages_list) < 2:
+        return 0
+    registry = await get_registry_async()
+    by_name = {t.name: t for t in registry}
+    # Build a lookup: tool_use_id → (proxy_tool, input_obj)
+    tool_uses: dict[str, tuple[ProxyTool, dict]] = {}
+    for msg in messages_list:
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") != "assistant":
+            continue
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") != "tool_use":
+                continue
+            name = block.get("name")
+            if name in by_name:
+                tool_uses[block.get("id") or ""] = (
+                    by_name[name],
+                    block.get("input") or {},
+                )
+    if not tool_uses:
+        return 0
+    patched = 0
+    for msg in messages_list:
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") != "user":
+            continue
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") != "tool_result":
+                continue
+            tuid = block.get("tool_use_id") or ""
+            match = tool_uses.get(tuid)
+            if not match:
+                continue
+            existing = block.get("content")
+            # Idempotency heuristic: only patch placeholders.
+            if isinstance(existing, str) and existing.strip() and existing.strip() not in (
+                "PLACEHOLDER", "pending", "TODO", "...", "n/a",
+            ):
+                # Already has a real result — caller executed the tool.
+                continue
+            proxy_tool, input_obj = match
+            try:
+                output = await run_tool(proxy_tool, input_obj)
+                block["content"] = output
+                patched += 1
+            except Exception:
+                # Leave the block alone on error — caller-supplied
+                # content survives.
+                pass
+    return patched
