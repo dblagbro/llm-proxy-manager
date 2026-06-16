@@ -1091,6 +1091,21 @@ async def messages(
             )
             if mem_writes:
                 resp_headers["X-Caller-Memory-Writes"] = str(mem_writes)
+            # v5.7.6 — capability scout. Off by default; flips on via
+            # the capability_scout.enabled system_setting. Fire-and-
+            # forget; never blocks the response.
+            try:
+                from app.capability_scout.scout import scan_and_emit_for_response
+                _n = await scan_and_emit_for_response(
+                    db=db,
+                    api_key_id=key_record.id,
+                    provider_id=route.provider.id,
+                    anthropic_response=anthropic_result,
+                )
+                if _n:
+                    resp_headers["X-Capability-Scout-Suggestions"] = str(_n)
+            except Exception:
+                pass
             return JSONResponse(
                 content=anthropic_result,
                 headers=resp_headers,

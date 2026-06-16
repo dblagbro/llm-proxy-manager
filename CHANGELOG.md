@@ -9,6 +9,19 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v5.7.x — MCP aggregation endpoint
 
+### v5.7.6 — Capability scout v1 — refusal-pattern detector + suggestion log (2026-06-16)
+
+Pre-freeze sprint item 4. Ships the *detector* half of the original operator MCP vision: "AI that monitors traffic, if it detects traffic could benefit from MCP features, it would add them". v5.7.6 watches every non-streaming `/v1/messages` response for refusal phrasings ("I can't read Excel files", "I don't have internet access", …) and emits a structured `mcp_capability_suggestion` activity_log row pointing at the MCP tool that would have closed the gap. Operator reviews and flips per-key opt-ins (v5.7.4 endpoint).
+
+- **`app/capability_scout/scout.py`** — `REFUSAL_PATTERNS` (8 mappings: cant_read_excel → `read_xlsx_to_markdown`, cant_read_document → `convert_document_to_markdown`, cant_fetch_url → `fetch_url`, no_internet_access → `fetch_url`, no_realtime_data → `fetch_url`, cant_read_files_generic → `convert_document_to_markdown`, no_file_system_access → `convert_document_to_markdown`). `scan_response_text(text) → list[dict]` is a pure function (~50 µs for 4 KB). `emit_suggestions(...)` dedups by `(api_key_id, suggested_tool)` within 1h so a noisy bot doesn't fire 200 rows.
+- **Hook in `app/api/messages.py`** — non-streaming `/v1/messages` return path calls `scan_and_emit_for_response(...)` after the response is built. Fire-and-forget — wrapped in try/except, NEVER blocks the response. `X-Capability-Scout-Suggestions: <n>` response header surfaces hit count.
+- **OFF by default** — controlled by `capability_scout.enabled` system_setting. Mirrors the v5.7.1 system-prompt augmentation default; operator flips per-cluster once observed to be helpful.
+- **Privacy** — only the matched phrase + 40-char-each-side context window is stored (`matched_snippet`). Never copies the full response into activity_log.
+- **`GET /api/admin/mcp/capability-suggestions`** — admin-gated. Returns `{items, by_tool, total_suggestions_lifetime, shown}` for the v5.7.5 MCP dashboard. Supports `?limit=<1..500>&api_key_id=<id>` filters.
+- Streaming path is covered by v5.6.1 (separate ship).
+
+Tests: 14 pins in `test_v576_capability_scout.py` (pattern hits, dedup, malformed-response handling, hook wiring, router registration, emit row count). Full suite **3053 passed, 2 skipped** (~53s).
+
 ### v5.7.5 — Frontend MCP dashboard + `/api/admin/mcp/summary` aggregator (2026-06-16)
 
 Pre-freeze sprint item 3. Operators need a single panel to see what the MCP surface is doing — live tool inventory, 24h call counts by tool + by key, p50/p95 latency by tool — without poking the DB.
