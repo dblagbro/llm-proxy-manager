@@ -221,6 +221,7 @@ async def select_provider(
     pinned_provider_id: Optional[str] = None,
     model_override: Optional[str] = None,
     exclude_provider_id: Optional[str] = None,
+    exclude_provider_ids: Optional[set[str]] = None,
     prefer_cheapest: bool = False,
     sort_mode: Optional[str] = None,
     excluded_provider_types: Optional[set[str]] = None,
@@ -391,6 +392,20 @@ async def select_provider(
         providers = [p for p in providers if p.id != exclude_provider_id]
         if not providers:
             raise RuntimeError("No backup provider available (only one provider)")
+    # v5.7.13 — cumulative exclusion for empty-success failover. Single
+    # exclude_provider_id cannot escape a ping-pong between same-family
+    # candidates (e.g. two Google providers that both empty-stream); the
+    # streaming guard now passes the full set of empty-failed providers
+    # here so the next select_provider picks something outside the
+    # already-failed pool (e.g. cursor-oauth when Gemini providers are
+    # all empty-failing).
+    if exclude_provider_ids:
+        providers = [p for p in providers if p.id not in exclude_provider_ids]
+        if not providers:
+            raise RuntimeError(
+                "No provider available after excluding empty-failed candidates "
+                f"({len(exclude_provider_ids)} excluded)"
+            )
 
     # v3.0.45: tenant boundary on personal providers. When a provider has
     # owned_by_key_id set, only that key may route to it. Closes the

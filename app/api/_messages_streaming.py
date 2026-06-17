@@ -263,30 +263,32 @@ async def stream_with_empty_guard(
         )
         if attempt >= max_attempts:
             break
-        # Re-select, skipping candidates that already empty-failed this
-        # request (record another failure on them — see docstring).
+        # v5.7.13 — cumulative exclusion + cross-family fallback.
+        # Previously: exclude_provider_id was single-valued, which made
+        # the inner loop ping-pong between two same-family empty-failed
+        # providers (e.g. AvaFea ↔ CoE during a Gemini hiccup) and
+        # never reach cursor-oauth / anthropic. Now: pass the entire
+        # ``empty_failed`` set via ``exclude_provider_ids`` so the
+        # router lands on the highest-priority NON-failed provider —
+        # any family — first try. If that's a different family from
+        # the original model, build_litellm_model substitutes the
+        # provider's default chat slug (v3.0.36 cross-family path) and
+        # the upstream sees a model it actually serves.
         next_route = None
-        last_excluded = attempt_route.provider.id
-        for _ in range(max_attempts):
-            try:
-                cand = await select_provider(
-                    db, hint,
-                    has_tools=has_tools, has_images=has_images,
-                    key_type=key_type,
-                    model_override=model_override,
-                    exclude_provider_id=last_excluded,
-                    excluded_provider_types={"claude-oauth", "grok-web", "ChatGPT-oauth-plan"},
-                    api_key_id=api_key_id,
-                )
-            except Exception:
-                cand = None
-            if cand is None:
-                break
-            if cand.provider.id not in empty_failed:
-                next_route = cand
-                break
-            await record_failure(cand.provider.id, billing_error=False)
-            last_excluded = cand.provider.id
+        try:
+            cand = await select_provider(
+                db, hint,
+                has_tools=has_tools, has_images=has_images,
+                key_type=key_type,
+                model_override=model_override,
+                exclude_provider_ids=set(empty_failed),
+                excluded_provider_types={"claude-oauth", "grok-web", "ChatGPT-oauth-plan"},
+                api_key_id=api_key_id,
+            )
+        except Exception:
+            cand = None
+        if cand is not None and cand.provider.id not in empty_failed:
+            next_route = cand
         if next_route is None:
             break
         attempt_route = next_route
