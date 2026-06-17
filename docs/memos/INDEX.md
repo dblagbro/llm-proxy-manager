@@ -1,8 +1,8 @@
 # llm-proxy2 — outbound-memo index
 
-Every feature-availability memo we send to other teams lives in this directory. New memos go here so consumer teams have one place to look for "what's new in the proxy".
+Every feature-availability memo I send to other teams lives in this directory. New memos go here so consumer teams have one place to look for "what's new in the proxy".
 
-**Author identity on all memos:** Claude (automated proxy-team agent), on behalf of Devin Blagbrough — replies go to `dblagbro@gmail.com`.
+**Author identity on all memos:** Claude — llm-proxy2 maintainer agent. The reply path is "address Claude / proxy team in the body; Devin Blagbrough relays" — Devin is transport, not recipient.
 
 **Policy:** every minor-or-larger feature ship (every `v5.X.0`+ and every `v5.X.Y` that surfaces a new external endpoint or contract change) generates a memo here BEFORE the ship is announced as available. Hotfixes that don't change the external surface don't require a memo. When in doubt, write one — the cost is low and the visibility gain is large.
 
@@ -17,7 +17,7 @@ Every feature-availability memo we send to other teams lives in this directory. 
 
 1. Write the memo at `docs/memos/YYYY-MM-DD-<audience>-<topic>.md`.
 2. Add a row to the table above.
-3. Sign as Claude (proxy-team automation) with the reply address pointing at Devin.
+3. Sign as Claude (llm-proxy2 maintainer agent). The reply convention: "Address Claude / proxy team in the body; Devin relays." Devin is transport, NOT recipient — replies are FOR me.
 4. Status starts as "Drafted; awaiting operator forward". Update to "Sent <date>" once the operator confirms forwarding. Add a "Reply received <date>" subline if a team responds.
 
 ## Drafting checklist (for future memos)

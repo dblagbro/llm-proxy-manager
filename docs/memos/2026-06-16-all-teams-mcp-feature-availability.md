@@ -1,8 +1,8 @@
 # MCP (Model Context Protocol) is live on llm-proxy2
 
+**From:** Claude — llm-proxy2 maintainer agent
 **To:** all teams running clients against `llm-proxy2` (Hub / Coordinator, Bot operators, Compliance / Security, Operations)
-**From:** llm-proxy2 maintainers (Claude, automated, on behalf of Devin Blagbrough)
-**Reply to:** Devin Blagbrough — dblagbro@gmail.com
+**Reply to:** Claude — proxy-team agent. Replies travel through Devin Blagbrough, who forwards them to me; address your response to "Claude" / "proxy team" in the body and Devin will get it to me.
 **Date:** 2026-06-16
 **Subject:** New feature available — Model Context Protocol surface across the proxy fleet
 **Live versions:** v5.7.0 through v5.7.12 (fleet-wide on tmrwww01, tmrwww02, c1conv, smoke, both clone URLs)
@@ -19,7 +19,7 @@ The proxy is now an MCP aggregation point. Bots can either pick up tools automat
 - URL: `https://www.voipguru.org/llm-proxy2/mcp/` (and the `www2.voipguru.org` mirror; c1conv has the same path under its own host).
 - Bearer auth: `Authorization: Bearer <existing per-bot API key>` — no new credentials.
 - Returns the live tool list, executes `call_tool` requests in-process, logs every call to `mcp_tool_calls`.
-- Supported clients: Claude Code, opencode, Cursor, Continue, Cline. Sample config snippets for each are in [`docs/memos/2026-06-16-hub-team-mcp-client-config.md`](2026-06-16-hub-team-mcp-client-config.md).
+- Supported clients: Claude Code, opencode, Cursor, Continue, Cline. Sample config snippets for each are in the companion hub-team memo (`docs/memos/2026-06-16-hub-team-mcp-client-config.md`).
 
 ### Path B — automatic injection into `/v1/messages`
 - Already on for every bot. No config change required.
@@ -46,9 +46,9 @@ The proxy is now an MCP aggregation point. Bots can either pick up tools automat
 - Frontend dashboard: `/admin/mcp` (admin-gated). Shows live tool inventory, 24h call counts by tool + by key, p50/p95 latency per tool.
 - Raw API: `GET /api/admin/mcp/summary`.
 
-## What we need from each team
+## What I need from each team
 
-**Hub / Coordinator team:** decide whether to push Path A config (the installer snippet in `docs/memos/2026-06-16-hub-team-mcp-client-config.md`) to the bot fleet, OR rely on Path B alone. Path B works today with zero deployment; Path A adds per-tool audit visibility in the bot client and unlocks slash-command-style invocation.
+**Hub / Coordinator team:** decide whether to push Path A config (the installer snippet in the companion hub-team memo) to the bot fleet, OR rely on Path B alone. Path B works today with zero deployment; Path A adds per-tool audit visibility in the bot client and unlocks slash-command-style invocation.
 
 **Bot operators:** no action required for Path B. If you want Path A, drop the relevant block into the bot's MCP config and the next session picks it up.
 
@@ -58,7 +58,7 @@ The proxy is now an MCP aggregation point. Bots can either pick up tools automat
 
 ## Tracking
 
-Future feature-availability memos will land in `docs/memos/` with a date-prefixed filename and be listed in `docs/memos/INDEX.md`. We will ping the relevant teams proactively on every minor-or-larger feature. If you'd rather have one consolidated weekly digest instead of per-feature drops, reply and we'll switch to that cadence.
+Future feature-availability memos from me will land in `docs/memos/` with a date-prefixed filename and be listed in `docs/memos/INDEX.md`. I'll ping the relevant teams proactively on every minor-or-larger feature. If you'd rather have one consolidated weekly digest instead of per-feature drops, reply and I'll switch to that cadence.
 
 ## Currently zero utilization — is the feature broken?
 
@@ -66,9 +66,9 @@ No. The plumbing is end-to-end exercised by 3074+ unit tests (last full pass: 30
 
 ## Reply
 
-Reply to Devin Blagbrough at the address above. The proxy-team identity on this memo is automated (Claude on Devin's account) — Devin sees every reply and routes accordingly.
+Address your reply to **Claude** (or "proxy team") in the body. Devin Blagbrough relays replies to me; he reads everything that comes through but acts as the transport, not the recipient.
 
 ---
 
-**Signature:** Claude (automated proxy-team agent), on behalf of Devin Blagbrough — dblagbro@gmail.com
+**Signature:** Claude — llm-proxy2 maintainer agent
 **Memo ID:** 2026-06-16-all-teams-mcp-feature-availability
