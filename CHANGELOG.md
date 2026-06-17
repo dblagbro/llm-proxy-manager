@@ -9,6 +9,19 @@ The project follows [Semantic Versioning](https://semver.org/) loosely:
 
 ## v5.7.x — MCP aggregation endpoint
 
+### v5.7.13 — Cumulative-exclusion failover (fix Gemini same-family ping-pong) (2026-06-17)
+
+Live incident. During a Gemini upstream hiccup at 22:16-22:30 UTC on c1conv, ~10 empty-success failures fired and the proxy returned 502s to coordinator-hub bots instead of failing over to the cursor-oauth providers in the catalog. Operator: *"why isn't it failing over from google to cursor provider when it happens?"*
+
+**Root cause**: `stream_with_empty_guard` re-resolved with single-valued `exclude_provider_id=last_excluded` then ran an inner `for _ in range(max_attempts)` loop. With two same-family Google providers both empty-failing, the router ping-ponged between AvaFea ↔ CoE (excluding only ONE each call) and never reached cursor-oauth before the loop exhausted. Result: 502 instead of cross-family failover.
+
+**Fix**:
+- `select_provider` gains `exclude_provider_ids: Optional[set[str]]` parameter. Filters cumulatively.
+- `stream_with_empty_guard` passes `exclude_provider_ids=set(empty_failed)` in a single call, drops the inner `for _ in range(max_attempts)` re-resolve loop entirely. One shot lands on the highest-priority NON-failed provider, regardless of family.
+- When the next provider is a different family, the existing v3.0.36 cross-family substitution path (`build_litellm_model` swaps the model slug to the provider's default chat model) takes over — the upstream sees a model it actually serves.
+
+Tests: 4 pins in `test_v5713_cumulative_exclusion_failover.py` (signature, source contract, no inner loop, cumulative filter active). v5.3.9 streaming-guard tests updated for new semantics — the old "extra penalty record_failure on ping-pong" behavior was the buggy band-aid; replaced by `test_cumulative_exclusion_escapes_same_family_pingpong` covering the c1conv scenario directly. Full suite **3093 passed, 2 skipped** (~52s).
+
 ### v5.7.12 — Bumped ai_provider_supervisor HTTP timeout 30s → 90s (2026-06-16)
 
 Log-watch find. The supervisor's internal probe POSTs to `http://localhost:3000/v1/messages` and on TMR cluster routes through anthropic substitution (BUG-071 blocks anthropic on `/llm-proxy2/`) → Gemini fallback. Observed routing chain time ~33s — caused a 50%+ supervisor-skip rate at the prior 30s ceiling. The retried sweeps eventually catch up but each timeout is a logged WARNING and a skipped provider review.

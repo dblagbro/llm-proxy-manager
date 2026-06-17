@@ -201,7 +201,9 @@ async def test_failover_from_empty_provider(monkeypatch):
         failures.append(pid)
 
     async def fake_select_provider(db, hint, **kw):
-        assert kw["exclude_provider_id"] == "dead-1"
+        # v5.7.13: failover now passes cumulative excluded set instead
+        # of single exclude_provider_id.
+        assert kw.get("exclude_provider_ids") == {"dead-1"}
         return alive
 
     import app.routing.circuit_breaker as cb
@@ -235,8 +237,15 @@ async def test_all_empty_raises_502(monkeypatch):
     routes = {"dead-1": dead1, "dead-2": dead2}
 
     async def fake_select_provider(db, hint, **kw):
-        # Router keeps alternating between the two dead providers.
-        return routes["dead-2" if kw["exclude_provider_id"] == "dead-1" else "dead-1"]
+        # v5.7.13: cumulative exclusion. With {dead-1} excluded, router
+        # returns dead-2. With {dead-1, dead-2} excluded, router has
+        # nothing left and raises (caught by the guard → break the
+        # outer loop and raise 502).
+        excluded = kw.get("exclude_provider_ids") or set()
+        for pid, route in routes.items():
+            if pid not in excluded:
+                return route
+        raise RuntimeError("no provider available")
 
     import app.routing.circuit_breaker as cb
     import app.routing.router as router
@@ -258,25 +267,34 @@ async def test_all_empty_raises_502(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_reselected_already_failed_provider_gets_extra_failure(monkeypatch):
-    # -s23 pair scenario: two same-priority dead cursor providers. When
-    # selection bounces back to an already-empty-failed provider, the
-    # guard records ANOTHER failure on it (pushes its breaker open) and
-    # retries selection instead of re-streaming it.
-    dead1 = _FakeRoute("dead-1", "cursor-1")
-    dead2 = _FakeRoute("dead-2", "cursor-2")
-    alive = _FakeRoute("alive-1", "google")
+async def test_cumulative_exclusion_escapes_same_family_pingpong(monkeypatch):
+    """v5.7.13: when two same-family providers both empty-fail (the
+    Gemini hiccup pattern observed on c1conv 2026-06-17), cumulative
+    exclusion lets the router land on cross-family alive provider on
+    the very next select_provider call — no inner ping-pong, no
+    "extra penalty" record_failure tax.
+
+    Pre-v5.7.13 the guard would ping-pong between dead-1 and dead-2
+    until max_attempts inner-loop iterations exhausted, then 502.
+    """
+    dead1 = _FakeRoute("dead-1", "google-1")
+    dead2 = _FakeRoute("dead-2", "google-2")
+    alive = _FakeRoute("alive-1", "cursor-oauth")
     failures = []
     selections = []
 
     async def fake_record_failure(pid, billing_error=False):
         failures.append(pid)
 
-    seq = [dead2, dead1, alive]  # dead2 empty → reselect: dead1 (already failed) → alive
-
     async def fake_select_provider(db, hint, **kw):
-        selections.append(kw["exclude_provider_id"])
-        return seq.pop(0)
+        selections.append(kw.get("exclude_provider_ids"))
+        excluded = kw.get("exclude_provider_ids") or set()
+        # With {dead-1} excluded → dead-2 (same family, will also empty).
+        # With {dead-1, dead-2} excluded → alive (cross-family).
+        for pid, r in [("dead-1", dead1), ("dead-2", dead2), ("alive-1", alive)]:
+            if pid not in excluded:
+                return r
+        return None
 
     import app.routing.circuit_breaker as cb
     import app.routing.router as router
@@ -292,9 +310,12 @@ async def test_reselected_already_failed_provider_gets_extra_failure(monkeypatch
         api_key_id="k1", model_override=None,
     )
     assert served is alive
-    # dead-1: empty-failure + re-selection penalty; dead-2: empty-failure
-    assert failures.count("dead-1") == 2
+    # Each dead provider recorded EXACTLY ONE empty-success failure —
+    # no double-tax from the old ping-pong re-select penalty.
+    assert failures.count("dead-1") == 1
     assert failures.count("dead-2") == 1
+    # The router was called twice: once with {dead-1}, once with both.
+    assert selections == [{"dead-1"}, {"dead-1", "dead-2"}]
 
 
 @pytest.mark.asyncio
