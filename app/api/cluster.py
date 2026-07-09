@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.database import get_db
+from app.utils.disconnect_watchdog import watch_for_disconnect
 from app.auth.admin import require_admin, AdminUser
 from app.cluster.manager import get_cluster_status, apply_sync, peers as cluster_peers
 from app.cluster.auth import verify_cluster_request, sign_payload, verify_payload
@@ -51,6 +52,8 @@ async def health():
             "circuitBreakers": get_all_states(),
             "dbPool": _db_pool_snapshot(),
             "workers": await _workers_snapshot(),
+            "clusterSync": _cluster_sync_snapshot(),
+            "oauthAccounts": await _oauth_accounts_snapshot(),
         }
 
     from app.models.database import AsyncSessionLocal
@@ -92,9 +95,17 @@ async def health():
         # interval each worker registers at startup); None for workers
         # whose cadence is dynamic.
         "workers": await _workers_snapshot(),
+        # v5.14.2 (#492) — peer-sync escalation block. Driven by the
+        # in-process ring buffer in ``cluster_sync_metrics``; companion
+        # ``cluster_sync_403_monitor`` worker emits an activity_log warning
+        # when ``recent_403_pct`` crosses the configured threshold.
+        "clusterSync": _cluster_sync_snapshot(),
+        # v5.15.3 (#508 P1-5) — OAuth fan-out state. Answers "is the
+        # picker actually rotating?" without touching the DB.
+        "oauthAccounts": await _oauth_accounts_snapshot(),
     }
     _HEALTH_CACHE["ts"] = now
-    _HEALTH_CACHE["body"] = {k: v for k, v in body.items() if k not in ("circuitBreakers", "dbPool", "workers")}
+    _HEALTH_CACHE["body"] = {k: v for k, v in body.items() if k not in ("circuitBreakers", "dbPool", "workers", "clusterSync", "oauthAccounts")}
     return body
 
 
@@ -134,6 +145,29 @@ def _db_pool_snapshot() -> dict:
                 async_trace[0]["age_sec"] if async_trace else 0.0
             )
         return snap
+    except Exception as e:
+        return {"error": str(e)[:200]}
+
+
+def _cluster_sync_snapshot() -> dict:
+    """v5.14.2 — snapshot of recent peer-sync attempt outcomes. Best-effort."""
+    try:
+        from app.monitoring.cluster_sync_metrics import snapshot
+        return snapshot()
+    except Exception as e:
+        return {"error": str(e)[:200]}
+
+
+async def _oauth_accounts_snapshot() -> dict:
+    """v5.15.3 (#508 P1-5) — OAuth fan-out state summary. Owns its own
+    DB session so /health stays independent of the request-scoped
+    get_db dependency (health should never fail because the caller's
+    session was closed)."""
+    try:
+        from app.api._oauth_accounts_health import snapshot_oauth_accounts
+        from app.models.database import AsyncSessionLocal
+        async with AsyncSessionLocal() as _s:
+            return await snapshot_oauth_accounts(_s)
     except Exception as e:
         return {"error": str(e)[:200]}
 
@@ -178,7 +212,18 @@ async def cluster_db_pool_trace(_: AdminUser = Depends(require_admin)):
 
 
 @router.post("/cluster/sync")
-async def cluster_sync(request: Request, db: AsyncSession = Depends(get_db)):
+async def cluster_sync(
+    request: Request,
+    # v5.9.10 — disconnect watchdog. Peer disconnects during apply_sync
+    # (peer-side httpx timeout, network blip, peer process restart) were
+    # leaking DB sessions: handler kept running, ``async with db: ...``
+    # never released. Caught 2026-06-27 on www2 (oldest_checkout_age_sec
+    # plateaued at ~8 sessions per 24h on a node that receives ~1088
+    # syncs/day). MUST be listed before ``db`` so the watcher is armed
+    # before the session is checked out — same contract as v5.7.17.
+    _watchdog: None = Depends(watch_for_disconnect),
+    db: AsyncSession = Depends(get_db),
+):
     if not settings.cluster_enabled:
         raise HTTPException(403, "Cluster mode not enabled")
 

@@ -237,6 +237,12 @@ async def stream_with_empty_guard(
     """
     from app.routing.circuit_breaker import record_failure
     from app.routing.router import select_provider
+    # v5.7.14 — persist empty-success failovers to activity_log so the
+    # AI provider supervisor (and burst-trigger logic in subsequent
+    # ships) can see them at sweep time. Pre-5.7.14 these only landed
+    # in stdout via logger.warning, invisible to the database-driven
+    # supervisor and to the operator dashboard's recent-events panel.
+    from app.monitoring.activity import log_event
 
     attempt_route = route
     empty_failed: set = set()
@@ -261,6 +267,27 @@ async def stream_with_empty_guard(
             attempt_route.provider.name, attempt_route.litellm_model,
             attempt, max_attempts,
         )
+        try:
+            await log_event(
+                db,
+                event_type="streaming.empty_success_failover",
+                severity="warning",
+                message=(
+                    f"empty-success stream from {attempt_route.provider.name} "
+                    f"({attempt_route.litellm_model}); attempt {attempt}/{max_attempts}"
+                ),
+                provider_id=attempt_route.provider.id,
+                api_key_id=api_key_id,
+                metadata={
+                    "litellm_model": attempt_route.litellm_model,
+                    "attempt": attempt,
+                    "max_attempts": max_attempts,
+                    "empty_failed_count": len(empty_failed),
+                },
+            )
+        except Exception:
+            # Audit write must never break the failover loop.
+            pass
         if attempt >= max_attempts:
             break
         # v5.7.13 — cumulative exclusion + cross-family fallback.
@@ -292,6 +319,28 @@ async def stream_with_empty_guard(
         if next_route is None:
             break
         attempt_route = next_route
+    # v5.7.14 — terminal exhaust event. The 502 we raise next is the
+    # symptom; this audit row is the signal supervisor's burst-trigger
+    # path will key on once it ships.
+    try:
+        await log_event(
+            db,
+            event_type="streaming.failover_exhausted",
+            severity="error",
+            message=(
+                f"empty-success failover exhausted after {len(empty_failed)} "
+                f"provider(s); returning 502 to caller"
+            ),
+            provider_id=route.provider.id,
+            api_key_id=api_key_id,
+            metadata={
+                "tried_provider_ids": sorted(empty_failed),
+                "initial_provider": route.provider.id,
+                "max_attempts": max_attempts,
+            },
+        )
+    except Exception:
+        pass
     raise HTTPException(
         502,
         "upstream: empty-success failure (streaming upstream produced no "

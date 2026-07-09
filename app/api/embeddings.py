@@ -146,6 +146,23 @@ async def create_embeddings(
         "X-Resolved-Model": litellm_model,
         "X-Embed-Latency-Ms": f"{elapsed_ms:.1f}",
     }
+    # v5.14.1 — response-shaping hook runner. Same contract as messages.py.
+    try:
+        from app.api._response_hook_runner import apply_response_hooks, HookContext
+        await apply_response_hooks(
+            handler_id="embeddings",
+            resp_headers=headers,
+            context=HookContext(
+                requested_model=body.get("model") if isinstance(body, dict) else None,
+                served_model=litellm_model,
+                api_key_id=getattr(key_record, "id", None),
+                provider_id=getattr(provider, "id", None),
+                key_record=key_record,
+                request=request,
+            ),
+        )
+    except Exception:
+        pass
     return JSONResponse(content=body_out, headers=headers)
 
 

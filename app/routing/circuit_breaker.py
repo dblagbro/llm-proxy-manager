@@ -29,6 +29,12 @@ class _LocalState:
     successes: int = 0
     opened_at: float = 0.0
     hold_down_until: float = 0.0
+    # v5.9.6 — count of consecutive open→reopen cycles without a successful
+    # close in between. Resets in ``record_success`` when CB transitions to
+    # CLOSED. Used to scale hold_down exponentially for chronically-dead
+    # providers (cap at 2^5 = 32× base) so the keepalive/auto-probe path
+    # backs off instead of probing every 60s forever.
+    consecutive_opens: int = 0
 
 
 _local_states: dict[str, _LocalState] = {}
@@ -61,7 +67,18 @@ async def get_state(provider_id: str) -> CBState:
     s = _get_local(provider_id)
     now = time.time()
     if s.state == CBState.OPEN:
-        if now >= s.opened_at + settings.circuit_breaker_timeout_sec:
+        # v5.9.7 — gate the half-open transition on BOTH the global
+        # circuit_breaker_timeout_sec AND hold_down_until. Pre-fix,
+        # only the static 60s timeout was checked, which meant the
+        # exponential hold_down computed in record_failure (v5.9.6)
+        # was logged but never actually enforced — a chronically-dead
+        # provider went HALF_OPEN every 60s no matter how large its
+        # hold_down had grown. The v3.0.53 billing-error 6h hold had
+        # the same hidden bug. Pick the later of the two thresholds
+        # so transient blips still get the snappy 60s probe but a
+        # backed-off provider waits its full hold_down.
+        ready_at = max(s.opened_at + settings.circuit_breaker_timeout_sec, s.hold_down_until)
+        if now >= ready_at:
             async with _lock:
                 s.state = CBState.HALF_OPEN
                 s.successes = 0
@@ -144,6 +161,7 @@ async def record_success(provider_id: str):
                 s.state = CBState.CLOSED
                 s.failures = 0
                 s.successes = 0
+                s.consecutive_opens = 0  # v5.9.6 — provider recovered, reset backoff
                 logger.info("circuit_breaker.closed", extra={"provider": provider_id})
                 _export_gauge(provider_id, s.state)
         elif s.state == CBState.CLOSED:
@@ -173,19 +191,41 @@ async def record_failure(provider_id: str, billing_error: bool = False):
             return
 
         if s.failures >= _failure_threshold(provider_id):
+            # v5.9.6 — only log + reset hold_down on an actual state
+            # *transition* into OPEN (from CLOSED or HALF_OPEN). Pre-fix,
+            # the auto-probe path (v5.3.9) caused every chronically-dead
+            # provider to cycle OPEN→HALF_OPEN→probe-fails→back here every
+            # ~60s forever, each cycle re-logging "circuit_breaker.opened"
+            # and resetting the hold-down to the base 120s. Result: 17+
+            # noise lines per provider per 30min and an effective 60s
+            # retest cadence on dead upstreams (vs the intended 120s base
+            # × exponential backoff for chronic failures).
+            was_open = s.state == CBState.OPEN
+            if was_open:
+                # Already OPEN — failure counter already incremented above,
+                # nothing else to do. Notably: don't reset opened_at or
+                # hold_down_until (would drift the half-open timeout forward
+                # indefinitely under sustained failures) and don't re-log.
+                return
+            # State transition CLOSED|HALF_OPEN → OPEN: register a fresh
+            # open cycle and compute backoff. Exponential backoff is capped
+            # at 32× base (≈64 min at default 120s), bridging the gap
+            # between transient (1× base) and billing-error (180× = 6h)
+            # without operator tuning.
+            s.consecutive_opens += 1
             s.state = CBState.OPEN
             s.opened_at = now
-            s.hold_down_until = now + _hold_down_sec(provider_id)
-            # v3.0.30: include provider + failure count + hold-down in the
-            # message string itself. The structlog ``extra`` was correct but
-            # the std-logger formatter dropped them, so the log line was bare
-            # "circuit_breaker.opened" with no provider context. Useless when
-            # several providers misbehave and you're trying to find the
-            # culprit by tail -f.
+            base = _hold_down_sec(provider_id)
+            multiplier = 1 << min(s.consecutive_opens - 1, 5)
+            s.hold_down_until = now + base * multiplier
             logger.warning(
-                "circuit_breaker.opened provider=%s failures=%d hold_down_sec=%d",
-                provider_id, s.failures, _hold_down_sec(provider_id),
-                extra={"provider": provider_id, "failures": s.failures},
+                "circuit_breaker.opened provider=%s failures=%d hold_down_sec=%d consecutive_opens=%d",
+                provider_id, s.failures, base * multiplier, s.consecutive_opens,
+                extra={
+                    "provider": provider_id,
+                    "failures": s.failures,
+                    "consecutive_opens": s.consecutive_opens,
+                },
             )
             _export_gauge(provider_id, s.state)
 
@@ -205,6 +245,7 @@ async def force_close(provider_id: str):
         s.failures = 0
         s.successes = 0
         s.hold_down_until = 0.0
+        s.consecutive_opens = 0  # v5.9.6 — operator override clears backoff state
         _export_gauge(provider_id, s.state)
 
 
@@ -216,8 +257,20 @@ def get_all_states() -> dict[str, dict]:
             "state": s.state.value,
             "failures": s.failures,
             "hold_down_remaining": max(0, s.hold_down_until - now),
+            # v5.17.1 — surface consecutive_opens so keepalive can gate
+            # its probes on chronic re-open cycles. Same field the v5.9.6
+            # exponential backoff already reads internally.
+            "consecutive_opens": s.consecutive_opens,
         }
     return result
+
+
+def get_consecutive_opens(provider_id: str) -> int:
+    """v5.17.1 — helper for keepalive-side chronic-CB gating. Returns 0
+    if the provider isn't in the CB state table (no probes have run
+    for it yet)."""
+    s = _local_states.get(provider_id)
+    return s.consecutive_opens if s is not None else 0
 
 
 BILLING_ERROR_PATTERNS = [

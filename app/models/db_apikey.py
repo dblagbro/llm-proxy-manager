@@ -131,6 +131,39 @@ class ApiKey(Base):
     mcp_tools_allow = Column(JSON, nullable=True)
     mcp_tools_deny = Column(JSON, nullable=True)
     mcp_schema_token_budget = Column(Integer, nullable=True)
+    # v5.20.0 — refusal-detection controls (per-API-key opt-in).
+    # refusal_detection_enabled: master switch. When True, response-tail
+    #   runs refusal_detection.detect_refusal over the response text and
+    #   emits X-Refusal-Detected header + activity_log event on hit.
+    # refusal_prompt_hardening: when True, augments body["system"] with
+    #   REFUSAL_HARDENING_INSTRUCTION — telling the model to reply
+    #   "REFUSED: <reason>" instead of substituting the task with
+    #   adjacent content. Makes refusals machine-detectable.
+    # refusal_retry_enabled: reserved for v5.20.1. When True, a detected
+    #   refusal triggers a retry via a different provider. NOT wired in
+    #   v5.20.0 — column is present so admin UI can pre-set it before
+    #   the retry path lands.
+    # All default False so existing keys see no behavior change.
+    refusal_detection_enabled = Column(Boolean, default=False)
+    refusal_prompt_hardening = Column(Boolean, default=False)
+    refusal_retry_enabled = Column(Boolean, default=False)
+    # v5.20.1 — how many alternate-provider attempts the cascade will
+    # try before returning the original refusal. Defaults to 3 when
+    # NULL; caller can set to 0 to disable retries even when
+    # refusal_retry_enabled=True (useful for measurement mode).
+    refusal_retry_max_attempts = Column(Integer, nullable=True)
+    # v5.20.2 — self-edit permissions. JSON list of field names the
+    # caller's AI can update via POST /api/integration/self-update
+    # using this key's own credentials. NULL = self-edit disabled (the
+    # caller must go through admin UI for any change). Example:
+    #   ["mcp_tools_allow", "refusal_detection_enabled",
+    #    "system_prompt_mcp_augmentation"]
+    # Fields NEVER self-editable (regardless of what's in this list):
+    #   spending_cap_usd, blocked_companies, enabled, key_type,
+    #   self_edit_permissions itself (no privilege escalation), any
+    #   compliance_ column, any oauth_ column. Enforced server-side
+    #   at the endpoint — see app/integration/self_update.py::ALLOWED_FIELDS.
+    self_edit_permissions = Column(JSON, nullable=True)
 
 
 class ApiKeyAiReview(Base):

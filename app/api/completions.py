@@ -11,6 +11,7 @@ from fastapi.responses import StreamingResponse, JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.database import get_db
+from app.utils.disconnect_watchdog import watch_for_disconnect
 from app.auth.keys import verify_api_key
 from app.routing.router import select_provider
 from app.routing.litellm_binding import clamp_thinking_budget
@@ -58,6 +59,8 @@ router = APIRouter()
 async def chat_completions(
     request: Request,
     background_tasks: BackgroundTasks,
+    # v5.7.17 — see app/api/messages.py for the watchdog rationale.
+    _watchdog: None = Depends(watch_for_disconnect),
     db: AsyncSession = Depends(get_db),
     authorization: Optional[str] = Header(None),
     x_api_key: Optional[str] = Header(None, alias="x-api-key"),
@@ -75,66 +78,33 @@ async def chat_completions(
     x_conversation_id: Optional[str] = Header(None, alias="x-conversation-id"),
     x_memory_tag: Optional[str] = Header(None, alias="x-memory-tag"),
 ):
-    # Accept Bearer token or x-api-key
+    # Accept Bearer token or x-api-key (completions.py only — the
+    # Anthropic-compatible /v1/messages requires x-api-key).
     token = x_api_key
     if not token and authorization and authorization.startswith("Bearer "):
         token = authorization[7:]
-    key_record = await verify_api_key(db, token)
-    # v3.0.45: tenant context for ownership filter (covers internal call sites)
-    from app.routing.tenant import current_api_key_id
-    current_api_key_id.set(key_record.id)
-
-    # v5.0.0 → v5.0.9 — compliance UA pre-check extracted to
-    # ``_compliance_handler.raise_if_banned_client_ua``.
-    from app.api._compliance_handler import raise_if_banned_client_ua
-    await raise_if_banned_client_ua(request, db, key_record)
-
-    # v5.2.0 / Batch V1 — LLM emergency stop. See messages.py for
-    # rationale + symmetry.
-    from app.api._compliance_handler import raise_if_llm_emergency_stopped
-    await raise_if_llm_emergency_stopped(db, key_record, endpoint="completions")
-
-    # v4.4.15 (F-OBS-003) — caller-memory gating-header visibility.
-    # See messages.py for the rationale.
-    try:
-        from app.observability.prometheus import CONVERSATION_ID_REQUESTS_TOTAL
-        CONVERSATION_ID_REQUESTS_TOTAL.labels(
-            endpoint="completions",
-            has_conversation_id="true" if x_conversation_id else "false",
-        ).inc()
-    except Exception:
-        pass  # telemetry must never break the request path
-
-    # v4.4.23 — per-request header-presence contextvars, mirror of
-    # the equivalent block in messages.py. See request_context.py for
-    # the rationale (DevinGPT 2026-05-27 follow-up).
-    try:
-        from app.observability.request_context import set_caller_memory_headers
-        set_caller_memory_headers(
-            has_conversation_id=bool(x_conversation_id),
-            has_memory_tag=bool(x_memory_tag),
-        )
-    except Exception:
-        pass
+    # v5.7.23 — Phase 2 refactor: tenant ctx + compliance UA +
+    # emergency stop + telemetry + contextvars all live in the shared
+    # helper now (was duplicated verbatim with messages.py). The
+    # helper does its own ``verify_api_key`` so we pass the resolved
+    # ``token`` instead of repeating the auth dance.
+    from app.api._handler_shared import prepare_request_context
+    key_record = await prepare_request_context(
+        request, db, token,
+        endpoint="completions",
+        x_conversation_id=x_conversation_id,
+        x_memory_tag=x_memory_tag,
+    )
 
     body = await request.json()
-    # v5.0.6 — capture the caller's ORIGINAL model name before any
-    # rewriting downstream. See messages.py:168 for the full
-    # rationale. The v3.0.36 cross-family-fallback rewrite at line
-    # ~290 mutates body["model"] to the served-model-native, so audit
-    # writes downstream that read body.get("model") get the served
-    # model. Capturing here is the single-point fix.
-    _orig_request_model = body.get("model") if isinstance(body, dict) else None
-    # v3.5.8 BUG-004 fix — validate request shape at the input boundary
-    # so missing model/messages return 400 instead of cascading to a
-    # 502 with upstream error leakage. See _input_validation.py +
-    # docs/bug-log.md BUG-004 for the rationale.
-    from app.api._input_validation import (
-        validate_completion_request,
-        validate_webhook_url,
+    # v5.7.23 — Phase 2 refactor: shared normalization (input
+    # validation + suffix-strip + embedding guard + auto-resolve +
+    # alias). Returns the (possibly rebound) body + the four derived
+    # values. Behavior unchanged.
+    from app.api._handler_shared import normalize_request_body
+    body, _orig_request_model, parsed_slug, is_auto, alias = await normalize_request_body(
+        body, x_webhook_url, db, endpoint="completions",
     )
-    validate_completion_request(body, endpoint="completions")
-    validate_webhook_url(x_webhook_url)
     messages_list = body.get("messages", [])
     stream = body.get("stream", False)
     tools = body.get("tools")
@@ -153,18 +123,14 @@ async def chat_completions(
     # post-route-selection so we can gate on route.provider.memory_disabled.
     _mem_injected = False
 
-    # v2.8.0: parse :floor / :nitro / :exacto suffix + auto-routing alias.
-    from app.routing.model_slug import parse_model_slug, is_auto_model
-    parsed_slug = parse_model_slug(body.get("model"))
-    if parsed_slug.sort_mode is not None:
-        body = {**body, "model": parsed_slug.bare_model}
-
-    is_auto = is_auto_model(parsed_slug.bare_model)
-    # v3.0.27: reject embedding-only model names at chat entry. Cohere's
-    # chat API returns 400 on `embed-*` slugs; OpenAI does the same on
-    # `text-embedding-*`. Misroute discovered when Devin-Cohere's
-    # default_model (embed-english-v3.0) was reached via the
-    # default-fallthrough path on a chat call. Better to 400 here with
+    # v5.7.23 — parse_model_slug + is_auto_model + embedding guard
+    # moved into ``normalize_request_body`` above. parsed_slug,
+    # is_auto, alias unpacked at the call site.
+    # v3.0.27 inline rationale (preserved): reject embedding-only model
+    # names at chat entry. Cohere's chat API returns 400 on `embed-*`
+    # slugs; OpenAI does the same on `text-embedding-*`. Misroute
+    # discovered when Devin-Cohere's default_model (embed-english-v3.0)
+    # was reached via the default-fallthrough path on a chat call.
     # a clear pointer than let it fail upstream.
     from app.routing.router import _is_embedding_model
     if _is_embedding_model(parsed_slug.bare_model):
@@ -243,8 +209,21 @@ async def chat_completions(
     # Native reasoning: inject router-computed params; allow per-request reasoning_effort override
     if route.native_thinking_params:
         extra.update(route.native_thinking_params)
-        if "reasoning_effort" in route.native_thinking_params and body.get("reasoning_effort"):
-            extra["reasoning_effort"] = body["reasoning_effort"]
+        # v5.18.1 (#512 additive) — reasoning_effort can now also come
+        # from the ``x-llmproxy-config`` blob. Body wins over blob
+        # (matches the general precedence pattern documented in the
+        # config-header module). Empty string is treated as absent.
+        _re_from_body = body.get("reasoning_effort")
+        _re_from_blob = None
+        if not _re_from_body:
+            try:
+                from app.api._llmproxy_config_header import read_config_key
+                _re_from_blob = read_config_key(request, "reasoning_effort")
+            except Exception:
+                pass
+        _re_effective = _re_from_body or _re_from_blob
+        if "reasoning_effort" in route.native_thinking_params and _re_effective:
+            extra["reasoning_effort"] = _re_effective
         # v5.3.7 — keep Gemini thinking budget below max_tokens (empty-success fix)
         clamp_thinking_budget(extra)
 
@@ -889,6 +868,56 @@ async def chat_completions(
                     pass
                 raise HTTPException(502, f"upstream: {msg}")
             merge_into_headers(resp_headers, _result_body, endpoint="completions")
+            # v5.10.0 Ship 1 — emit X-Proxy-MCP-Suggestion when this
+            # caller's accumulated score crosses the threshold. Same
+            # contract as the messages.py path.
+            try:
+                from app.capability_scout.suggestion_emit import apply_suggestion_header
+                await apply_suggestion_header(db, key_record.id, resp_headers)
+            except Exception:
+                pass
+            # v5.12.2 Ship 3 — accept handler. See messages.py for contract.
+            # v5.16.0 (#512) — also read via consolidated x-llmproxy-config
+            # blob; individual header wins on precedence.
+            try:
+                from app.capability_scout.accept_handler import process_accept_header
+                from app.api._llmproxy_config_header import read_config_key
+                _accept_value = read_config_key(
+                    request, "accept_mcp", header_fallback="X-Proxy-Accept-MCP",
+                )
+                if _accept_value is not None:
+                    if isinstance(_accept_value, list):
+                        _accept_value = ",".join(str(x) for x in _accept_value)
+                    elif not isinstance(_accept_value, str):
+                        _accept_value = str(_accept_value)
+                    if _accept_value:
+                        await process_accept_header(db, key_record.id, _accept_value, resp_headers)
+            except Exception:
+                pass
+            # v5.16.0 — echo parsed config blob.
+            try:
+                from app.api._llmproxy_config_header import emit_config_applied_header
+                emit_config_applied_header(resp_headers, request)
+            except Exception:
+                pass
+            # v5.14.0 — response-hook runner. See messages.py for contract.
+            try:
+                from app.api._response_hook_runner import apply_response_hooks, HookContext
+                await apply_response_hooks(
+                    handler_id="completions",
+                    resp_headers=resp_headers,
+                    context=HookContext(
+                        requested_model=body.get("model") if isinstance(body, dict) else None,
+                        served_model=getattr(route, "litellm_model", None),
+                        api_key_id=getattr(key_record, "id", None),
+                        provider_id=getattr(route.provider, "id", None) if hasattr(route, "provider") else None,
+                        substituted=bool(getattr(route, "compliance_substituted", False)),
+                        key_record=key_record,
+                        request=request,
+                    ),
+                )
+            except Exception:
+                pass
             return JSONResponse(content=_result_body, headers=resp_headers)
 
     except Exception as e:

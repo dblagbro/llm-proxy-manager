@@ -238,6 +238,38 @@ SCHEMA: dict[str, dict] = {
         "label": "Audit export — local retention (days before prune removes old files)",
         "group": "Audit export",
     },
+    # ── v5.8.1 AI Integration Protocol ───────────────────────────────
+    "integration_enabled": {
+        "type": "bool", "default": settings.integration_enabled,
+        "label": "AI Integration — accept /api/integration/chat requests (gated by passphrase below)",
+        "group": "AI Integration",
+    },
+    "integration_passphrase": {
+        "type": "str", "default": settings.integration_passphrase or "",
+        "label": "AI Integration — shared passphrase that integrating AIs must provide on every request",
+        "group": "AI Integration",
+        "secret": True,
+    },
+    "integration_default_daily_budget_usd": {
+        "type": "float", "default": settings.integration_default_daily_budget_usd,
+        "label": "AI Integration — default daily budget USD for minted keys",
+        "group": "AI Integration",
+    },
+    "integration_max_daily_budget_usd": {
+        "type": "float", "default": settings.integration_max_daily_budget_usd,
+        "label": "AI Integration — hard cap on minted-key daily budget (management AI cannot mint above this)",
+        "group": "AI Integration",
+    },
+    "integration_max_messages_per_session": {
+        "type": "int", "default": settings.integration_max_messages_per_session,
+        "label": "AI Integration — max messages per chat session before forcing a new session",
+        "group": "AI Integration",
+    },
+    "integration_model": {
+        "type": "str", "default": settings.integration_model,
+        "label": "AI Integration — model used by the management AI",
+        "group": "AI Integration",
+    },
     # ── Wave 6 — PII masking ─────────────────────────────────────────────────
     "pii_masking_enabled": {
         "type": "bool", "default": settings.pii_masking_enabled,

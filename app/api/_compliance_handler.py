@@ -72,6 +72,60 @@ from app.compliance import (
 logger = logging.getLogger(__name__)
 
 
+# v5.9.3 — fields on ApiKey that indicate the operator has applied a
+# compliance policy for this key. ANY non-empty field flips the
+# disposition from `pass-through` to `false`. Kept conservative: a
+# present-but-empty list (e.g. `blocked_companies: []`) is treated as
+# "no policy" the same as null, matching the router's interpretation.
+_KEY_POLICY_FIELDS = (
+    "blocked_companies",
+    "allowed_companies",
+    "blocked_models",
+    "allowed_models",
+    "allowed_paths",
+)
+
+
+def _key_has_compliance_policy(key_record: Any) -> bool:
+    """True when this key has any per-key compliance policy applied.
+    Drives the v5.9.3 `false` vs `pass-through` disposition signal.
+    """
+    if key_record is None:
+        return False
+    for field in _KEY_POLICY_FIELDS:
+        v = getattr(key_record, field, None)
+        if v is None:
+            continue
+        # JSON-list fields land here as Python list when SQLAlchemy
+        # parses them, or as a string when the row was hand-written.
+        if isinstance(v, list) and len(v) > 0:
+            return True
+        if isinstance(v, str) and v.strip() not in ("", "[]", "null"):
+            return True
+    return False
+
+
+def _disposition_only_headers(key_record: Any) -> Dict[str, str]:
+    """v5.9.3 — `X-Compliance-Substitution` header for the no-substitution
+    case. As of v5.14.0 the emission is owned by the response-hook
+    registry (``app/api/_response_hook_runner.py``); this function
+    remains as a thin compat shim that synchronously builds the same
+    headers the runner would produce so existing call sites don't
+    need to rewire into the async hook path. The async runner is
+    invoked from each endpoint's response-write site; this helper is
+    kept for the inline-merge pattern in ``_compliance_handler`` and
+    its peers.
+
+    Hub-side scanners still treat header absence as a hard error
+    (v5.9.3 contract).
+    """
+    return {
+        "X-Compliance-Substitution": (
+            "false" if _key_has_compliance_policy(key_record) else "pass-through"
+        ),
+    }
+
+
 def _coordinator_identity_headers(request: Request) -> Dict[str, Any]:
     """Pull the four `X-Coordinator-*` identity headers for audit
     correlation (CADC decision 33). Returns a plain dict with None for
@@ -339,7 +393,17 @@ async def emit_substitution_disclosure_for_route(
     `body.get("model")` and produced mislabeled audit rows.
     """
     if not getattr(route, "compliance_substituted", False):
-        return {}, None, False
+        # v5.9.3 — always emit X-Compliance-Substitution so hub-side
+        # defense-in-depth scanners (coordinator-hub
+        # `_scan_anthropic_response_model`) can treat absence as a hard
+        # error instead of a heuristic. Pre-v5.9.3 the header was only
+        # set when substitution actually fired — absence meant either
+        # "no substitution needed" (policy evaluated, served model
+        # passed) OR "no policy gates this key" OR "proxy bug". Hub
+        # scanner couldn't disambiguate. Now: false = policy evaluated
+        # + no substitution needed; pass-through = no policy on this
+        # key + no cluster-default compliance gate.
+        return _disposition_only_headers(key_record), None, False
 
     # v5.3.1 — defense-in-depth no-op skip. The router occasionally
     # marks a route as ``compliance_substituted=True`` even when the
@@ -354,7 +418,9 @@ async def emit_substitution_disclosure_for_route(
     _req = (orig_request_model or "").lower()
     _served = (route.litellm_model or orig_request_model or "").lower().split("/", 1)[-1]
     if _req and _req == _served:
-        return {}, None, False
+        # v5.9.3 — see above; emit disposition even on the no-op
+        # substitution skip path so hub scanner sees the header.
+        return _disposition_only_headers(key_record), None, False
 
     audit_id = generate_audit_id()
     served_model = route.litellm_model or orig_request_model

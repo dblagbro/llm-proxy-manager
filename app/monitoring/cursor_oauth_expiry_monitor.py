@@ -66,16 +66,39 @@ logger = logging.getLogger(__name__)
 
 # How often to scan. JWT exp doesn't move on the order of minutes, so
 # 6h gives plenty of headroom for catching a ~14-day-before-expiry
-# transition.
-_SWEEP_INTERVAL_SEC = 6 * 60 * 60
-# Boot delay — let the cursor billing scraper land first (it runs at
-# 4h interval, see CursorBillingWorker). Avoid hitting the same provider
-# row twice from two workers on cold start.
-_INITIAL_DELAY_SEC = 120 * 60
+# transition. v5.7.21: dropped from 6h to 1h. Now that the sweep also
+# proactively refreshes tokens within 24h of expiry (was lazy-on-401),
+# a 6h sweep meant a failed refresh wouldn't retry for 6h — risk of
+# missing the window on a 1-day-out token. 1h gives 5+ retry slots
+# within the 24h window.
+_SWEEP_INTERVAL_SEC = 60 * 60
+# Boot delay — give the rest of the app startup a few seconds to
+# settle. v5.7.21: dropped from 2h to 5min. The 2h delay was a
+# legacy don't-race-the-cursor-billing-scraper concern; with the
+# proactive-refresh path now in this worker, sweeping promptly after
+# boot is what fixes the operator-flagged "expires in 0d" badge.
+_INITIAL_DELAY_SEC = 5 * 60
 # Alert threshold (days remaining before expiry). 14d gives the
 # operator enough lead time to schedule a manual re-auth window if the
 # refresh-flow isn't live yet.
 _DEFAULT_WARN_THRESHOLD_DAYS = 15  # v5.4.4 bumped from 14 per operator ask
+
+# v5.7.21 — proactive refresh threshold. Providers carrying a refresh
+# token AND below this many days remaining get an automatic refresh on
+# the next sweep cycle. Default 1.0 = refresh within 24h of expiry,
+# the same lead time the previous "lazy on 401" flow needed traffic to
+# trigger. With this on, low-priority claude-oauth / codex-oauth
+# providers stay fresh even when the routing chain never selects them,
+# so the "expires in 0d" badge no longer surfaces for healthy tokens.
+_DEFAULT_REFRESH_LEAD_DAYS = 1.0
+# Provider types that support proactive refresh — must each have a
+# ``refresh_with_provider(provider)`` (or equivalent) in their
+# *_oauth_flow.py module. cursor-oauth's refresh path is gated on
+# operator empirical confirmation (#cursor-oauth-noVNC backlog); the
+# JWT carries ``offline_access`` scope and v4.4.37 added the
+# refresh_token capture probe but no real refresh attempt has landed
+# yet — so cursor is NOT in this list until the flow is verified.
+_PROACTIVE_REFRESH_TYPES = ("claude-oauth", "ChatGPT-oauth-plan")
 
 
 _LAST_SWEEP: Dict[str, Any] = {
@@ -172,7 +195,121 @@ async def _run_one_sweep(
                 except Exception:
                     pass
             days_left = _days_until(effective_exp)
-            warn = days_left is not None and days_left <= warn_threshold_days
+
+            # v5.7.21 — proactive refresh path. Was: the existing lazy
+            # "refresh on 401" flow needed traffic to fire; low-priority
+            # claude-oauth / codex-oauth providers (priority 7-8 behind
+            # 5+ higher-priority providers) sat untouched and counted
+            # down to "expires in 0d" in the UI. With this, ANY OAuth
+            # provider type in ``_PROACTIVE_REFRESH_TYPES`` whose token
+            # is within ``_DEFAULT_REFRESH_LEAD_DAYS`` (default 1.0d) of
+            # expiry, has a refresh token, AND is enabled gets refreshed
+            # right here on this sweep cycle. Failures are logged + the
+            # provider's existing auth_failed dict is set so the UI
+            # surfaces "needs re-auth" without waiting for the next
+            # real request to 401 twice.
+            refresh_attempted = False
+            refresh_outcome = None
+            # v5.8.6 — skip proactive refresh when the provider is already
+            # auto-skipped for persistent_auth_failure. The previous gate
+            # would retry every sweep on a long-revoked refresh_token,
+            # producing repeated `proactive_refresh_failed` warnings AND
+            # repeated record_auth_failure calls that just re-extend the
+            # same auto_skip_until (no-op signal, lots of log noise). On
+            # smoke, two test providers (`codex-test`, `Codex-Smoke`)
+            # whose tokens have been revoked for 41+ days were producing
+            # 8+ warnings per sweep cycle until v5.8.6 added this gate.
+            auto_skip_until = getattr(p, "auto_skip_until", None)
+            auto_skipped_now = False
+            if auto_skip_until is not None:
+                try:
+                    from datetime import datetime as _dt, timezone as _tz
+                    if hasattr(auto_skip_until, "tzinfo"):
+                        askdt = auto_skip_until
+                    else:
+                        s = str(auto_skip_until).replace("Z", "+00:00")
+                        askdt = _dt.fromisoformat(s)
+                    if askdt.tzinfo is None:
+                        askdt = askdt.replace(tzinfo=_tz.utc)
+                    auto_skipped_now = askdt > _dt.now(_tz.utc)
+                except Exception:
+                    pass
+            if (
+                days_left is not None
+                and days_left <= _DEFAULT_REFRESH_LEAD_DAYS
+                and p.provider_type in _PROACTIVE_REFRESH_TYPES
+                and getattr(p, "oauth_refresh_token", None)
+                and p.enabled
+                and not p.deleted_at
+                and not auto_skipped_now
+            ):
+                refresh_attempted = True
+                try:
+                    if p.provider_type == "claude-oauth":
+                        from app.providers.claude_oauth_flow import refresh_and_persist
+                    else:  # ChatGPT-oauth-plan
+                        from app.providers.codex_oauth_flow import refresh_and_persist
+                    result = await refresh_and_persist(p, db)
+                    refresh_outcome = "refreshed"
+                    # ``refresh_and_persist`` already mutated p.oauth_expires_at
+                    # and persisted; recompute days_left for the snapshot.
+                    new_exp = getattr(result, "expires_at", None) or p.oauth_expires_at
+                    if new_exp is not None:
+                        effective_exp = float(new_exp)
+                        days_left = _days_until(effective_exp)
+                    logger.info(
+                        "oauth_expiry.proactive_refresh provider=%s type=%s "
+                        "new_days_left=%.1f",
+                        p.id, p.provider_type, days_left or 0.0,
+                    )
+                except Exception as exc:
+                    refresh_outcome = f"failed:{type(exc).__name__}"
+                    logger.warning(
+                        "oauth_expiry.proactive_refresh_failed provider=%s "
+                        "type=%s err=%r",
+                        p.id, p.provider_type, exc,
+                    )
+                    # Mark auth-failed so the UI shows it; operator can
+                    # re-auth before traffic hits the dead token.
+                    try:
+                        from app.routing.circuit_breaker import record_auth_failure
+                        await record_auth_failure(p.id, f"proactive refresh failed: {exc!r}"[:300])
+                    except Exception:
+                        pass
+
+            # v5.19.2 — gate on auto-refresh ELIGIBILITY, not recent
+            # success. v5.17.2's `_refresh_ok = refresh_outcome ==
+            # "refreshed"` only suppressed the warning when refresh
+            # actually RAN this sweep. But refresh only runs when
+            # ``days_left <= _DEFAULT_REFRESH_LEAD_DAYS`` (default 1
+            # day). So a provider with a working refresh_token that's
+            # 7 days out from expiry: refresh doesn't run (7 > 1),
+            # `_refresh_ok=False`, warning fires. Nothing for the
+            # operator to act on — refresh will handle it at day 1.
+            # Devin-Codex-Gmail was firing daily warnings for 6 days
+            # ahead of its refresh window.
+            #
+            # New gate: suppress the warning if the provider IS
+            # eligible for auto-refresh (type in list + has token)
+            # AND we haven't SEEN a refresh failure this sweep. If
+            # refresh failed, warn (operator action required). If
+            # refresh ran successfully OR simply hasn't been triggered
+            # yet, suppress.
+            _has_refresh = bool(getattr(p, "oauth_refresh_token", None))
+            _refresh_failed = (
+                refresh_outcome is not None
+                and str(refresh_outcome).startswith("failed:")
+            )
+            _is_auto_refresh_eligible = (
+                _has_refresh
+                and p.provider_type in _PROACTIVE_REFRESH_TYPES
+                and not _refresh_failed
+            )
+            warn = (
+                days_left is not None
+                and days_left <= warn_threshold_days
+                and not _is_auto_refresh_eligible
+            )
             snapshot = {
                 "provider_id": p.id,
                 "provider_name": p.name,
@@ -186,6 +323,10 @@ async def _run_one_sweep(
                 ),
                 "warn": warn,
                 "has_refresh_token": bool(getattr(p, "oauth_refresh_token", None)),
+                # v5.7.21 — surface what the proactive-refresh path did
+                # this sweep (or didn't); admin endpoint exposes it.
+                "refresh_attempted": refresh_attempted,
+                "refresh_outcome": refresh_outcome,
             }
             snapshots.append(snapshot)
             if warn and not p.deleted_at and p.enabled:

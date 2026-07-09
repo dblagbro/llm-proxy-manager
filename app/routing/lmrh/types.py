@@ -25,6 +25,9 @@ WEIGHTS: dict[str, int] = {
     # exclude = negative selection bias (soft). Both go hard with ;require.
     "provider-hint": 5,
     "exclude": 5,
+    # v5.21.0 — per-request refuse tolerance (strict/default/lenient).
+    # Weight matches ``safety-max`` (8) — it's expressing the same axis.
+    "refuse-tolerance": 8,
 }
 
 TASK_ALIASES: dict[str, list[str]] = {
@@ -48,6 +51,41 @@ _REFUSAL_RATE_TO_SAFETY_CEIL: dict[str, int] = {
 }
 _REFUSAL_RATE_TO_SAFETY_FLOOR: dict[str, int] = {
     "permissive": 1, "standard": 2, "strict": 3, "maximum": 4,
+}
+
+# v5.21.0 — refuse-tolerance dim: per-request routing hint for how
+# strict/lenient the CALLER wants the model to be for THIS request.
+# Complements the existing per-provider ``refusal-rate`` (which
+# describes the provider's baseline behavior).
+#
+# Semantics (from DevinGPT team's named use cases):
+#   strict   — creative-writing / policy-sensitive contexts; caller
+#              wants a model that WILL refuse edgy content
+#   default  — no opinion; leave routing alone
+#   lenient  — automation / tool-firing contexts; caller wants a model
+#              LESS likely to refuse legitimate operational calls
+#              (fewer "I can't do that" for edge cases the caller
+#              is authorized for)
+#
+# Wire mapping mirrors refusal-rate but with a coarser 3-way scale
+# because per-request routing hints are typed by humans and simpler
+# vocab wins:
+#
+#   strict   → prefers safety >= 4 (same as refusal-rate=strict)
+#   default  → prefers safety in [2, 4] range (broad middle)
+#   lenient  → prefers safety <= 2 (same as refusal-rate=permissive)
+#
+# Taxonomy is v1 — after the 2026-07-12 rollup, we may add
+# ``ambivalent`` / ``domain-specific`` if the data warrants it.
+_REFUSE_TOLERANCE_TO_SAFETY_FLOOR: dict[str, int] = {
+    "strict":  4,
+    "default": 2,
+    "lenient": 1,
+}
+_REFUSE_TOLERANCE_TO_SAFETY_CEIL: dict[str, int] = {
+    "strict":  5,
+    "default": 4,
+    "lenient": 2,
 }
 
 

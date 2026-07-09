@@ -66,6 +66,8 @@ def _probe_interval_sec() -> int:
 # every 5min unconditionally — when grok.com rate-limited us, the
 # next probe re-hit the same window and the cycle continued for hours.
 _probe_backoff_until: dict[str, float] = {}
+# v5.17.1 — separate cache for chronic-CB-open gating (see sweep).
+_chronic_backoff_until: dict[str, float] = {}
 _consecutive_rate_limits: dict[str, int] = {}
 
 
@@ -79,6 +81,29 @@ def _is_rate_limit_error(error_str: str) -> bool:
     return any(p in low for p in (
         "429", "rate_limit", "rate limit", "too many requests",
         "ratelimit", "throttled",
+    ))
+
+
+# v5.9.1 — consecutive probe auth-failure streak. Re-persists
+# auto_skip_until after threshold so the v5.8.6/7 gates re-engage on
+# permanently-dead refresh_tokens whose auto_skip_until has expired.
+_PROBE_AUTH_FAILURE_STREAK: dict[str, int] = {}
+_PROBE_AUTH_FAILURE_RE_SKIP_THRESHOLD = 10
+
+
+def _looks_like_auth_failure(error_str: str) -> bool:
+    """Pattern match — true when the probe error implies persistent
+    auth failure (revoked token, missing scopes, 401). Tolerates
+    classifier drift by listing canonical OAuth refusal phrases.
+    """
+    if not error_str:
+        return False
+    low = error_str.lower()
+    return any(p in low for p in (
+        "401", "unauthorized", "invalid authentication",
+        "invalid_grant", "invalid_token", "missing scopes",
+        "refresh_token_reused", "refresh_token_expired",
+        "needs_reauth", "needs re-auth", "permission denied",
     ))
 
 
@@ -164,7 +189,46 @@ async def _had_recent_traffic(db: AsyncSession, provider_id: str, lookback_sec: 
 
 async def _probe_one(provider: Provider) -> None:
     """Send one synthetic call to a provider. All errors swallowed —
-    keep-alive is best-effort, doesn't block routing."""
+    keep-alive is best-effort, doesn't block routing.
+
+    v5.19.1 — chronic-CB gate moved here from the sweep loop. Both call
+    paths now honor it: the sweep loop calls this after its own filters,
+    AND the CB's auto-probe path (circuit_breaker._auto_probe) calls
+    this directly. v5.17.1 gated only the sweep, so the CB auto-probe
+    kept slipping through and re-cycling Grok every ~65 min. Fix: gate
+    at the choke point instead of the caller.
+    """
+    # v5.19.1 — chronic-CB gate. Same logic as v5.17.1 sweep gate but
+    # applied here so ALL callers benefit. When consecutive_opens >= N
+    # (default 5) AND the backoff window is still active, drop this
+    # probe. Backoff is per-provider, 6h by default.
+    from app.routing.circuit_breaker import get_consecutive_opens
+    _co = get_consecutive_opens(provider.id)
+    _co_threshold = getattr(settings, "keepalive_chronic_cb_open_threshold", 5)
+    if _co >= _co_threshold:
+        _co_backoff_sec = getattr(
+            settings, "keepalive_chronic_cb_open_backoff_sec", 21600,
+        )
+        _key = f"chronic_cb_{provider.id}"
+        _now = time.time()
+        _next = _chronic_backoff_until.get(_key, 0.0)
+        if _next == 0.0:
+            _chronic_backoff_until[_key] = _now + _co_backoff_sec
+            logger.info(
+                "keepalive.chronic_cb_gated provider=%s consecutive_opens=%d "
+                "backoff_sec=%d (v5.19.1 — at _probe_one)",
+                provider.id, _co, _co_backoff_sec,
+            )
+            return
+        if _now < _next:
+            logger.debug(
+                "keepalive.skipped_chronic_cb_gated provider=%s remaining=%.0fs",
+                provider.id, _next - _now,
+            )
+            return
+        # Backoff elapsed — clear + let this probe fire to detect recovery.
+        _chronic_backoff_until.pop(_key, None)
+
     # v3.0.32: shared helper resolves chat-capable model when default is
     # embedding-only. Replaces inline logic that was previously duplicated
     # here and in scanner.test_provider — see resolve_chat_model_for_provider
@@ -432,6 +496,49 @@ async def _probe_one(provider: Provider) -> None:
     # doesn't entangle with in-memory dict state.
     _record_probe_outcome_for_backoff(provider.id, err_str if not success else "")
 
+    # v5.9.1 — persistent-auth-failure-via-probe streak. v5.8.3 fix #3
+    # routed probe auth failures through ``record_failure`` (not
+    # ``record_auth_failure``) so a single transient 401 wouldn't
+    # auto_skip the provider for 24h. The unintended consequence:
+    # when a provider's refresh_token is permanently revoked AND the
+    # auto_skip_until set by an organic-traffic 401 eventually
+    # expires, probes resume and the CB cycles indefinitely
+    # (open → 120s hold-down → reopen at failures+1 → repeat). The
+    # v5.8.7 keepalive gate catches it while auto_skip is set, but
+    # once auto_skip expires there's no re-engagement.
+    #
+    # Fix: track consecutive probe auth-failures per provider; when
+    # the streak crosses ``_PROBE_AUTH_FAILURE_RE_SKIP_THRESHOLD``
+    # (default 10 ≈ 50min at the default 5min probe cadence), persist
+    # auto_skip_until = +24h. That re-engages the v5.8.6/7 gates and
+    # silences the cycle. Any success resets the streak.
+    if not success and _looks_like_auth_failure(err_str):
+        _PROBE_AUTH_FAILURE_STREAK[provider.id] = (
+            _PROBE_AUTH_FAILURE_STREAK.get(provider.id, 0) + 1
+        )
+        if _PROBE_AUTH_FAILURE_STREAK[provider.id] >= _PROBE_AUTH_FAILURE_RE_SKIP_THRESHOLD:
+            try:
+                from app.routing.circuit_breaker import _persist_auto_skip
+                await _persist_auto_skip(
+                    provider.id,
+                    f"persistent_auth_failure_via_probe_streak "
+                    f"(n={_PROBE_AUTH_FAILURE_STREAK[provider.id]})",
+                )
+                logger.info(
+                    "keepalive.persisted_auto_skip_via_streak provider=%s "
+                    "streak=%d",
+                    provider.id, _PROBE_AUTH_FAILURE_STREAK[provider.id],
+                )
+                # Reset so the next streak counts from 0.
+                _PROBE_AUTH_FAILURE_STREAK[provider.id] = 0
+            except Exception as _e:
+                logger.warning(
+                    "keepalive.persist_auto_skip_via_streak_failed "
+                    "provider=%s err=%r", provider.id, _e,
+                )
+    elif success:
+        _PROBE_AUTH_FAILURE_STREAK.pop(provider.id, None)
+
 
 async def _probe_all_once() -> int:
     """Probe every eligible provider once. Returns count probed."""
@@ -477,9 +584,40 @@ async def _probe_all_once() -> int:
                 p.id, p.provider_type,
             )
             continue
+        # v5.9.2 — check auto_skip_until BEFORE is_available. v5.8.7
+        # added the auto_skip_until gate but placed it AFTER the
+        # is_available CB check. The CB's hold_down expires every 120s,
+        # and the keepalive sweep aligns close enough to that window
+        # that probes slip through, fail, record_failure resets
+        # hold_down → 120s, and the cycle repeats indefinitely. Moving
+        # the auto_skip_until check first means "operator must re-auth"
+        # is the strongest signal — it strictly dominates CB hysteresis
+        # and silences the cycle.
+        auto_skip_until = getattr(p, "auto_skip_until", None)
+        if auto_skip_until is not None:
+            try:
+                from datetime import datetime as _dt, timezone as _tz
+                if hasattr(auto_skip_until, "tzinfo"):
+                    askdt = auto_skip_until
+                else:
+                    askdt = _dt.fromisoformat(str(auto_skip_until).replace("Z", "+00:00"))
+                if askdt.tzinfo is None:
+                    askdt = askdt.replace(tzinfo=_tz.utc)
+                if askdt > _dt.now(_tz.utc):
+                    logger.debug(
+                        "keepalive.skipped_auto_skip provider=%s until=%s",
+                        p.id, askdt.isoformat(),
+                    )
+                    continue
+            except Exception:
+                pass
         if not await is_available(p.id):
             logger.debug("keepalive.skipped_breaker_open provider=%s", p.id)
             continue
+        # v5.17.1 chronic-CB gate MOVED to ``_probe_one`` in v5.19.1 so
+        # both the sweep path AND the ``circuit_breaker._auto_probe`` path
+        # honor it. The auto-probe was slipping through the sweep-side
+        # gate and re-cycling Grok every ~65 min (CB hold-down window).
         # v3.3.3: skip providers in rate-limit back-off window.
         if _backoff_skip(p.id):
             logger.debug(

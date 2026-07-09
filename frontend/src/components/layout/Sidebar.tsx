@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 import {
   LayoutDashboard, Server, GitBranch, Key, Users,
   Network, BarChart2, Activity, Settings, ChevronLeft, ChevronRight,
-  Zap, ShieldCheck, ShieldAlert, Puzzle,
+  Zap, ShieldCheck, ShieldAlert, Puzzle, Share2,
 } from 'lucide-react'
 import { clusterApi } from '@/api'
 import { useAuth } from '@/context/AuthContext'
@@ -63,6 +63,8 @@ export function Sidebar({
     // v5.7.5 — MCP aggregation dashboard. Admin-only because it shows
     // per-key tool inventories + activity.
     { to: '/admin/mcp', icon: Puzzle, label: 'MCP', hidden: !isAdmin },
+    // v5.8.1 — AI Integration admin: passphrase + dev-handoff package.
+    { to: '/admin/integration', icon: Share2, label: 'AI Integration', hidden: !isAdmin },
     'divider',
     { to: '/settings', icon: Settings,         label: 'Settings' },
   ]

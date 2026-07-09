@@ -780,6 +780,15 @@ async def push_sync(peer: PeerNode, db_factory):
         # which is why a fully-broken cluster sync went undetected for ~6
         # days while heartbeat still reported "healthy". A non-200 here is
         # the peer rejecting our payload — surface it loudly.
+        # v5.14.2 (#492) — record each peer-sync attempt's outcome so the
+        # ``cluster_sync_403_monitor`` worker can surface elevated 403 rates
+        # via an activity_log warning. ``record_attempt`` is in-process and
+        # non-blocking; failures are swallowed (best-effort metric).
+        try:
+            from app.monitoring.cluster_sync_metrics import record_attempt
+            record_attempt(peer.id, resp.status_code)
+        except Exception:
+            pass
         if resp.status_code != 200:
             body_preview = resp.text[:300] if resp.text else "(empty body)"
             logger.warning(
@@ -787,6 +796,13 @@ async def push_sync(peer: PeerNode, db_factory):
                 peer.id, resp.status_code, body_preview,
             )
     except Exception as e:
+        # v5.14.2: transport-level failures get status=0 so the 403-rate
+        # stat isn't conflated with network outages. Same swallow policy.
+        try:
+            from app.monitoring.cluster_sync_metrics import record_attempt
+            record_attempt(peer.id, 0)
+        except Exception:
+            pass
         # v4.4.13: render the exception with both class name AND str(),
         # because empty-message exceptions like ``httpx.ReadTimeout()`` and
         # ``ConnectError("")`` rendered as a bare "Sync to X failed: "

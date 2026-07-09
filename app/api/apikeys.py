@@ -88,6 +88,20 @@ class KeyUpdate(BaseModel):
     blocked_models: Optional[List[str]] = None
     allowed_models: Optional[List[str]] = None
     debug_echo_enabled: Optional[bool] = None
+    # v5.20.7 — refusal detection + cascade toggles surfaced on the
+    # PATCH surface. These are NOT compliance-policy fields (no reason
+    # required); they're per-key debug/behavior flags that DevinGPT
+    # and others toggle at will. Values are pass-through: True/False
+    # sets the flag; None means "don't touch."
+    refusal_detection_enabled: Optional[bool] = None
+    refusal_prompt_hardening: Optional[bool] = None
+    refusal_retry_enabled: Optional[bool] = None
+    refusal_retry_max_attempts: Optional[int] = None
+    # v5.20.10 — self-edit permissions list (JSON column). Set to a
+    # list of field names to grant the caller's AI self-update rights.
+    # Empty list = revoke all (self-edit disabled). NULL/None (via
+    # omission in the PATCH) leaves the existing setting unchanged.
+    self_edit_permissions: Optional[List[str]] = None
     reason: Optional[str] = None
 
 
@@ -353,6 +367,31 @@ async def update_key(
             policy_changed = True
     if body.debug_echo_enabled is not None:
         k.debug_echo_enabled = bool(body.debug_echo_enabled)
+    # v5.20.7 — refusal fields. Not policy-gated (no reason required).
+    if body.refusal_detection_enabled is not None:
+        k.refusal_detection_enabled = bool(body.refusal_detection_enabled)
+    if body.refusal_prompt_hardening is not None:
+        k.refusal_prompt_hardening = bool(body.refusal_prompt_hardening)
+    if body.refusal_retry_enabled is not None:
+        k.refusal_retry_enabled = bool(body.refusal_retry_enabled)
+    if body.refusal_retry_max_attempts is not None:
+        # Sentinel -1 = clear back to NULL (worker default of 3 applies).
+        val = int(body.refusal_retry_max_attempts)
+        k.refusal_retry_max_attempts = None if val < 0 else val
+    # v5.20.10 — self_edit_permissions JSON list. None (not in payload)
+    # = untouched; [] = revoke all; ["field","field"] = grant listed.
+    if body.self_edit_permissions is not None:
+        # Filter to ELIGIBLE_FIELDS server-side so a stale frontend can't
+        # accidentally send a never-editable field into the DB.
+        try:
+            from app.integration.self_update import ELIGIBLE_FIELDS
+            filtered = [
+                f for f in body.self_edit_permissions
+                if f in ELIGIBLE_FIELDS
+            ]
+        except Exception:
+            filtered = list(body.self_edit_permissions or [])
+        k.self_edit_permissions = filtered or None
     if policy_changed and not (body.reason and body.reason.strip()):
         raise HTTPException(422, "reason required for compliance policy edits")
     # v4.4.20 — stamp the LWW gate. Mirror of provider PATCH: only
@@ -568,15 +607,23 @@ async def _get_or_404(db: AsyncSession, key_id: str) -> ApiKey:
 
 
 def _serialize(k: ApiKey) -> dict:
+    # v5.9.5 — coalesce counter fields to 0. Pre-v5.9.5 these came back
+    # as raw column values; a never-used key (e.g. just-created) or a
+    # key written before the columns existed could land as NULL. The
+    # frontend APIKeysPage renders ``k.total_requests.toLocaleString()``
+    # with no null guard, so a single NULL row would throw
+    # ``TypeError: Cannot read properties of null (reading 'toLocaleString')``
+    # and the entire /keys page would render-error to a white screen.
+    # The v580-integration-internal key hit this on 2026-06-22.
     return {
         "id": k.id,
         "name": k.name,
         "key_prefix": k.key_prefix,
         "key_type": k.key_type,
         "enabled": k.enabled,
-        "total_requests": k.total_requests,
-        "total_tokens": k.total_tokens,
-        "total_cost_usd": k.total_cost_usd,
+        "total_requests": int(k.total_requests or 0),
+        "total_tokens": int(k.total_tokens or 0),
+        "total_cost_usd": float(k.total_cost_usd or 0.0),
         "spending_cap_usd": k.spending_cap_usd,
         "rate_limit_rpm": k.rate_limit_rpm,
         "rate_limit_tier": getattr(k, "rate_limit_tier", None),
@@ -593,6 +640,15 @@ def _serialize(k: ApiKey) -> dict:
         "blocked_models":    list(getattr(k, "blocked_models",    None) or []) or None,
         "allowed_models":    list(getattr(k, "allowed_models",    None) or []) or None,
         "debug_echo_enabled": bool(getattr(k, "debug_echo_enabled", False)),
+        # v5.20.7 — refusal detection + cascade flags for the admin UI
+        "refusal_detection_enabled": bool(getattr(k, "refusal_detection_enabled", False)),
+        "refusal_prompt_hardening":  bool(getattr(k, "refusal_prompt_hardening",  False)),
+        "refusal_retry_enabled":     bool(getattr(k, "refusal_retry_enabled",     False)),
+        "refusal_retry_max_attempts": getattr(k, "refusal_retry_max_attempts", None),
+        # v5.20.10 — self_edit_permissions JSON list. null = self-edit
+        # disabled (default); [] treated as disabled too (server-side
+        # normalization).
+        "self_edit_permissions": list(getattr(k, "self_edit_permissions", None) or []) or None,
         "day_cost_usd": float(k.day_cost_usd or 0.0),
         "hour_cost_usd": float(k.hour_cost_usd or 0.0),
         "can_reveal": bool(k.encrypted_key),

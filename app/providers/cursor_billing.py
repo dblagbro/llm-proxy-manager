@@ -266,13 +266,51 @@ async def fetch_usage(*, cookie_value: str, timeout: float = 15.0) -> FetchResul
 async def scrape_provider_into_snapshot(db, provider) -> dict:
     """High-level helper: fetch, parse, write one ``ExternalUsageSnapshot``
     row + run the rotation evaluator. Same shape as
-    ``anthropic_billing.scrape_provider_into_snapshot``."""
-    from app.models.db import ExternalUsageSnapshot
+    ``anthropic_billing.scrape_provider_into_snapshot``.
 
-    if not provider.api_key:
+    v5.17.0 (#508 P1-4): scrapes using the LEAST-RECENTLY-SCRAPED enabled
+    account's access_token (falls back to legacy Provider.api_key when
+    no accounts exist). After the scrape lands, propagates the resulting
+    ``seven_day_utilization`` to that account's ``utilization_pct`` so
+    the v5.15.1 ``least_utilized`` picker can actually distinguish
+    accounts by utilization. Without this propagation, all accounts on
+    the same provider read utilization_pct=0 forever and the picker
+    degenerates to LRU.
+
+    Future v5.17.x: fan the scrape across ALL accounts once per sweep
+    so per-account utilization is truly independent. Today's slice
+    scrapes ONE account per sweep and rotates through them across
+    sweeps — cheap step toward per-account independence.
+    """
+    from app.models.db import ExternalUsageSnapshot, ProviderOAuthAccount
+    from sqlalchemy import select, update
+
+    # Pick the least-recently-scraped enabled account on this provider,
+    # if any exist. Falls back to legacy Provider.api_key when none.
+    q = (
+        select(ProviderOAuthAccount)
+        .where(
+            ProviderOAuthAccount.provider_id == provider.id,
+            ProviderOAuthAccount.enabled == True,  # noqa: E712
+            ProviderOAuthAccount.deleted_at.is_(None),
+        )
+        .order_by(ProviderOAuthAccount.last_used_at.asc().nulls_first())
+        .limit(1)
+    )
+    _acc_result = await db.execute(q)
+    _account = _acc_result.scalar_one_or_none()
+
+    if _account is not None:
+        scrape_token = _account.access_token
+        _account_id_for_writeback = _account.id
+    else:
+        scrape_token = provider.api_key
+        _account_id_for_writeback = None
+
+    if not scrape_token:
         return {"ok": False, "reason": "cursor-oauth provider has no api_key (stored cookie) configured"}
 
-    result = await fetch_usage(cookie_value=provider.api_key)
+    result = await fetch_usage(cookie_value=scrape_token)
 
     snap_kwargs: dict = {
         "provider_id": provider.id,
@@ -339,6 +377,25 @@ async def scrape_provider_into_snapshot(db, provider) -> dict:
                         extra={"provider_id": provider.id,
                                "prev_tier": prev_tier, "new_tier": new_tier},
                     )
+
+    # v5.17.0 (#508 P1-4) — propagate this scrape's utilization to the
+    # account whose token we scraped from. Feeds the v5.15.1 picker
+    # sort so ``least_utilized`` actually spreads load. Best-effort;
+    # never fail the scrape on writeback failure.
+    if _account_id_for_writeback is not None and result.ok:
+        util = snap_kwargs.get("seven_day_utilization")
+        if util is not None:
+            try:
+                await db.execute(
+                    update(ProviderOAuthAccount)
+                    .where(ProviderOAuthAccount.id == _account_id_for_writeback)
+                    .values(utilization_pct=float(util))
+                )
+            except Exception as _write_e:
+                logger.debug(
+                    "cursor_billing.per_account_util_writeback_failed account=%s err=%s",
+                    _account_id_for_writeback, _write_e,
+                )
 
     rotation_decision: dict = {}
     if result.ok:

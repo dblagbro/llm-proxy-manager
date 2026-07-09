@@ -220,6 +220,108 @@ class Settings(BaseSettings):
     ai_provider_supervisor_max_priority_delta: int = Field(2, alias="AI_PROVIDER_SUPERVISOR_MAX_PRIORITY_DELTA")
     ai_provider_supervisor_max_auto_skip_hours: int = Field(24, alias="AI_PROVIDER_SUPERVISOR_MAX_AUTO_SKIP_HOURS")
 
+    # v5.7.15 — burst-trigger force-open. Independent of the LLM
+    # supervisor: a cheap DB-only sweep that fires every
+    # ``empty_success_burst_interval_sec`` (default 60s) and force-opens
+    # the CB on any provider with >= ``empty_success_burst_threshold``
+    # ``streaming.empty_success_failover`` rows in
+    # ``empty_success_burst_window_sec``. Closes the 30-min "supervisor
+    # hasn't swept yet" gap that the 2026-06-17 c1conv incident sat in.
+    # Default ON — the gap it closes is the operator-escalated one.
+    empty_success_burst_trigger_enabled: bool = Field(True, alias="EMPTY_SUCCESS_BURST_TRIGGER_ENABLED")
+    empty_success_burst_interval_sec: int = Field(60, alias="EMPTY_SUCCESS_BURST_INTERVAL_SEC")
+    empty_success_burst_window_sec: int = Field(300, alias="EMPTY_SUCCESS_BURST_WINDOW_SEC")
+    empty_success_burst_threshold: int = Field(3, alias="EMPTY_SUCCESS_BURST_THRESHOLD")
+
+    # v5.14.2 (#492) — cluster-sync 403-rate escalation trigger. The
+    # tmrwww02-peer misconfig produces a known ~50% baseline; this monitor
+    # fires an activity_log warning ONLY when the rolling-1h rate climbs
+    # above ``cluster_sync_403_alert_threshold_pct`` (default 70%), staying
+    # quiet at the baseline but catching any regression. ``min_attempts``
+    # gates noise from single-403-in-idle-window cases.
+    cluster_sync_403_monitor_enabled: bool = Field(True, alias="CLUSTER_SYNC_403_MONITOR_ENABLED")
+    cluster_sync_403_monitor_interval_sec: int = Field(300, alias="CLUSTER_SYNC_403_MONITOR_INTERVAL_SEC")
+    cluster_sync_403_alert_threshold_pct: float = Field(70.0, alias="CLUSTER_SYNC_403_ALERT_THRESHOLD_PCT")
+    cluster_sync_403_alert_min_attempts: int = Field(4, alias="CLUSTER_SYNC_403_ALERT_MIN_ATTEMPTS")
+    cluster_sync_403_alert_cooldown_sec: int = Field(3600, alias="CLUSTER_SYNC_403_ALERT_COOLDOWN_SEC")
+
+    # v5.15.0 Phase 1 (#508) — per-account OAuth fan-out. Kill-switch on the
+    # feature: when False, dispatch will always fall back to legacy
+    # Provider.api_key even after v5.15.1 wires the account-picker. Safe-revert
+    # for surprise behavior. In Phase 1 (schema + admin endpoints only)
+    # this setting doesn't gate anything yet — reserved for Phase 2.
+    oauth_account_fanout_enabled: bool = Field(True, alias="OAUTH_ACCOUNT_FANOUT_ENABLED")
+    # Default account-pick strategy for providers whose oauth_account_strategy
+    # column is NULL. Operator confirmed 2026-06-30: 'least_utilized' — Cursor's
+    # pain is utilization-driven. Values: least_utilized | round_robin |
+    # least_recently_used.
+    oauth_account_default_strategy: str = Field("least_utilized", alias="OAUTH_ACCOUNT_DEFAULT_STRATEGY")
+
+    # v5.17.1 — chronic-CB keepalive gate. Providers whose CB has
+    # re-opened >=threshold times consecutively (default 5) get a
+    # 6h backoff on keepalive probes so we stop writing an activity_log
+    # warning per sweep for known-broken upstreams. Grok-Web-Devin post-#513
+    # was the trigger — bridge timeouts on /api/chat had generated 19+
+    # keepalive_probe events in 24h with zero diagnostic value.
+    keepalive_chronic_cb_open_threshold: int = Field(5, alias="KEEPALIVE_CHRONIC_CB_OPEN_THRESHOLD")
+    keepalive_chronic_cb_open_backoff_sec: int = Field(21600, alias="KEEPALIVE_CHRONIC_CB_OPEN_BACKOFF_SEC")
+
+    # v5.7.17 — client-disconnect watchdog. Closes the supervisor DB
+    # pool leak (2026-06-16): handler kept running + held its DB
+    # connection after the client disconnected. Polls
+    # ``request.is_disconnected()`` every ``disconnect_watchdog_interval_sec``
+    # and cancels the handler task on disconnect — CancelledError
+    # propagates through ``async with db: ...`` and releases the
+    # connection. Default ON. Set ``DISCONNECT_WATCHDOG_ENABLED=false``
+    # to confirm the pool leak returns (clean A/B repro).
+    disconnect_watchdog_enabled: bool = Field(True, alias="DISCONNECT_WATCHDOG_ENABLED")
+    disconnect_watchdog_interval_sec: float = Field(2.0, alias="DISCONNECT_WATCHDOG_INTERVAL_SEC")
+
+    # v5.10.0 — MCP capability back-pressure (Ship 1+2). The capability
+    # scout already writes activity_log rows when it sees refusal
+    # patterns that map to known MCP tools; v5.10 also bumps a per-
+    # (api_key, tool) score. When the score exceeds the threshold,
+    # responses carry X-Proxy-MCP-Suggestion so the caller can decide
+    # to wire the tool. Operator picked threshold=50 in the 2026-06-30
+    # interview (≈ 3 refusals at the default +20 per bump). Master
+    # switch is on; settings-side flip drops emission fleet-wide.
+    mcp_suggestion_emission_enabled: bool = Field(True, alias="MCP_SUGGESTION_EMISSION_ENABLED")
+    mcp_suggestion_threshold: int = Field(50, alias="MCP_SUGGESTION_THRESHOLD")
+
+    # v5.14.0 — Response-shaping callback registry. Hub team's Tier 1
+    # ask from the 2026-06-30 peer-comparison memo. Per-hook timeout
+    # default 2s. Fail-closed default (opposite of Portkey's
+    # webhook default-true) per our v2.0.0 banned-vendor 451 posture.
+    # Settings keys reserved for hub-managed hooks:
+    #   callbacks.fail_closed: bool  — global default fail-closed
+    #   callbacks.<hook_name>.timeout_sec: float  — per-hook timeout
+    #   callbacks.<hook_name>.enabled: bool       — per-hook on/off
+    # Hub team registers its substitution-mirror hook via these.
+    callbacks_fail_closed: bool = Field(True, alias="CALLBACKS_FAIL_CLOSED")
+    callbacks_default_timeout_sec: float = Field(2.0, alias="CALLBACKS_DEFAULT_TIMEOUT_SEC")
+
+    # v5.18.0 — outbound substitution callback POST. Hub team's v2.6.6
+    # receiver lives at POST /api/compliance/callbacks/substitution.
+    # Empty URL = hook is a no-op (safe default: operator must opt in
+    # per-cluster). Shared secret goes in the X-Proxy-Callback-Token
+    # header; empty = dev-mode passthrough (hub accepts unauthed
+    # bodies until it sets its own callbacks.shared_secret).
+    substitution_callback_url: str = Field("", alias="SUBSTITUTION_CALLBACK_URL")
+    substitution_callback_shared_secret: str = Field("", alias="SUBSTITUTION_CALLBACK_SHARED_SECRET")
+
+    # v5.8.0 — AI integration protocol. Lets other AI projects discover
+    # the proxy's capabilities via a public ``/announce`` URL, then
+    # negotiate API key configuration through a passphrase-gated chat
+    # endpoint ``/api/integration/chat``. The management chat is
+    # LLM-backed (same internal key as the supervisor) and may mint
+    # keys via the create_api_key tool. Disabled by default.
+    integration_enabled: bool = Field(False, alias="INTEGRATION_ENABLED")
+    integration_passphrase: str = Field("", alias="INTEGRATION_PASSPHRASE")
+    integration_default_daily_budget_usd: float = Field(5.00, alias="INTEGRATION_DEFAULT_DAILY_BUDGET_USD")
+    integration_max_daily_budget_usd: float = Field(20.00, alias="INTEGRATION_MAX_DAILY_BUDGET_USD")
+    integration_max_messages_per_session: int = Field(20, alias="INTEGRATION_MAX_MESSAGES_PER_SESSION")
+    integration_model: str = Field("claude-haiku-4-5-20251001", alias="INTEGRATION_MODEL")
+
     # v4.0 — AIRI (AI Router Interface): the conversational chat UI for the
     # AI Provider Supervisor, on the Routing page. ``airi_enabled`` is the
     # feature flag for the whole 4.0 arc — off by default. ``airi_model``
@@ -247,6 +349,15 @@ class Settings(BaseSettings):
     # answers aloud; synthesis runs on the self-hosted whisper-bridge sidecar
     # (Piper TTS) and audio is never persisted. See docs/4.3-tts-design.md.
     airi_tts_enabled: bool = Field(False, alias="AIRI_TTS_ENABLED")
+
+    # v5.9.0 — public OpenAI-compatible /v1/audio/* endpoints fall back to
+    # the whisper-bridge sidecar (Piper TTS + Whisper STT) when the upstream
+    # provider call errors. Disable to force upstream-only (e.g. for strict
+    # cost-accounting environments where the bridge bypass would skew the
+    # bill).
+    audio_fallback_to_whisper_bridge: bool = Field(
+        True, alias="AUDIO_FALLBACK_TO_WHISPER_BRIDGE"
+    )
 
     # v3.8.4 (#264): tool-call capability prober. Fires a standard
     # get_weather(city) probe at every (provider, default_model) on

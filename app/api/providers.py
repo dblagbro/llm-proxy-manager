@@ -377,6 +377,26 @@ async def create_provider(
     # New provider — clear any stale auth-failure flag carried by id collision (defensive)
     from app.routing.circuit_breaker import clear_auth_failure as _clear_af
     _clear_af(provider.id)
+    # v5.15.3 (#508) — seed a matching provider_oauth_accounts row for
+    # newly-created OAuth-flavored providers so the v5.15.1 dispatch picker
+    # sees at least one account on first use. Without this hook the boot-
+    # time seeder (which runs once at init_db) never catches providers
+    # created AFTER boot — meaning new OAuth providers would silently fall
+    # back to legacy Provider.api_key until an operator manually POSTs to
+    # /api/admin/providers/{id}/oauth-accounts. Found while Playwright-
+    # scouting v5.15.2: a smoke-instance test provider had 0 accounts
+    # right after create.
+    if provider.provider_type in ("cursor-oauth", "ChatGPT-oauth-plan", "claude-oauth"):
+        try:
+            from app.providers.oauth_account_seeder import seed_missing_accounts
+            await seed_missing_accounts(db)
+        except Exception as _e:
+            # Non-fatal — dispatch falls back to Provider.api_key.
+            import logging as _lg
+            _lg.getLogger(__name__).warning(
+                "v5.15.3 seeder-on-create failed for provider=%s err=%s",
+                provider.id, _e,
+            )
     return _serialize(provider)
 
 
@@ -703,6 +723,9 @@ def _serialize(p: Provider) -> dict:
         # for claude-oauth providers. Never expose refresh_token.
         "oauth_expires_at": p.oauth_expires_at,
         "has_oauth_refresh_token": bool(p.oauth_refresh_token),
+        # v5.15.0/.2 — per-provider account-pick strategy override for
+        # the #508 OAuth fan-out. null = inherit app-wide default.
+        "oauth_account_strategy": getattr(p, "oauth_account_strategy", None),
         # v2.7.8: auth-failure state. Frontend renders a red "Needs re-auth"
         # badge when this is non-null; admin clears via re-key save or
         # POST /api/providers/{id}/clear-auth-failure.

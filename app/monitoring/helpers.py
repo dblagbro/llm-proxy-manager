@@ -668,7 +668,19 @@ async def record_outcome(
         from app.routing.circuit_breaker import is_caller_side_error
         _caller_side = is_caller_side_error(error_str)
         if is_auth_error(error_str):
-            await record_auth_failure(provider_id, error_str)
+            # v5.8.3 — keepalive-probe 401s no longer trip the persistent
+            # auth-failure breaker on their own. Probes fire every ~60s,
+            # so a transient cluster-wide refresh race (see
+            # claude_oauth_flow:_refresh_locks) could send 1380 errors/24h
+            # to record_auth_failure → auto_skip_until=+24h, even though
+            # actual user requests would have failed over cleanly.
+            # Real user traffic still trips the breaker; probes only
+            # increment the regular failure counter so an outage stays
+            # visible without misclassifying as "needs re-auth".
+            if is_probe:
+                await record_failure(provider_id, billing_error=False)
+            else:
+                await record_auth_failure(provider_id, error_str)
         elif _caller_side:
             # Skip CB increment — log via the activity row only.
             pass

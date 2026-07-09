@@ -267,6 +267,26 @@ def score_candidate(profile: CapabilityProfile, hint: LMRHHint) -> tuple[float, 
                         return float("-inf"), [dim.key]
                     unmet.append(dim.key)
 
+            # v5.21.0 — per-request refuse tolerance. Coarser 3-way scale
+            # than refusal-rate; maps to a floor/ceil range on safety.
+            # Provider's ``safety`` must fall within [floor, ceil] to score.
+            case "refuse-tolerance":
+                from app.routing.lmrh.types import (
+                    _REFUSE_TOLERANCE_TO_SAFETY_FLOOR,
+                    _REFUSE_TOLERANCE_TO_SAFETY_CEIL,
+                )
+                v = dim.value.lower()
+                floor_ = _REFUSE_TOLERANCE_TO_SAFETY_FLOOR.get(v)
+                ceil_ = _REFUSE_TOLERANCE_TO_SAFETY_CEIL.get(v)
+                if floor_ is None or ceil_ is None:
+                    unmet.append(dim.key)
+                elif floor_ <= profile.safety <= ceil_:
+                    score += WEIGHTS["refuse-tolerance"]
+                else:
+                    if dim.required:
+                        return float("-inf"), [dim.key]
+                    unmet.append(dim.key)
+
     # TTFT bonus: up to +5 for fast providers (0 ms→+5, 3000 ms→0, no data→no adjustment)
     if profile.avg_ttft_ms > 0:
         score += 5.0 * max(0.0, 1.0 - profile.avg_ttft_ms / 3000.0)

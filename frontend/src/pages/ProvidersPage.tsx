@@ -503,16 +503,48 @@ export function ProvidersPage() {
                       {/* v5.4.4 — OAuth token expiry badge. Renders
                           whenever the provider carries an oauth_expires_at
                           stamp (cursor-oauth, claude-oauth, codex-oauth,
-                          any future OAuth provider type). Color:
-                          - amber: within 15 days
-                          - red:   within 3 days OR already expired
-                          - green: > 15 days (informational, hidden by default)
+                          any future OAuth provider type).
+                          v5.7.22 — distinguish "auto-rotating healthy"
+                          from "needs operator action": if the provider
+                          has a refresh token AND no auth_failed state,
+                          short-lived tokens are routine (Anthropic
+                          claude-oauth issues ~7-8h tokens that the
+                          v5.7.21 sweep rotates every hour). Show
+                          green "🔄 auto-rotating (Nh)" instead of the
+                          alarmist red "expires in 0d". Without a
+                          refresh token (or with auth_failed set), the
+                          old amber/red urgency colors apply.
                           Threshold matches the backend watcher's
                           OAUTH_EXPIRY_WARN_DAYS_DEFAULT. */}
                       {p.oauth_expires_at && (() => {
                         const daysLeft = (Number(p.oauth_expires_at) - Date.now() / 1000) / 86400
                         if (daysLeft > 15) return null
                         const expDate = new Date(Number(p.oauth_expires_at) * 1000)
+                        // v5.7.22 — auto-rotating green path. Triggers when:
+                        //   - a refresh token exists (backend will use it), AND
+                        //   - no auth_failed flag (last refresh didn't 401)
+                        // Shows hours-remaining for sub-day tokens; "auto"
+                        // for multi-day tokens with refresh. Either way the
+                        // operator can see at a glance that no manual
+                        // re-auth is needed.
+                        const autoRotating = p.has_oauth_refresh_token && !p.auth_failed
+                        if (autoRotating) {
+                          const hours = Math.max(0, Math.round(daysLeft * 24))
+                          const remaining = daysLeft < 1
+                            ? `${hours}h left, auto-rotating`
+                            : `auto-rotating · ${Math.round(daysLeft)}d`
+                          return (
+                            <span
+                              className="inline-flex items-center rounded-full bg-emerald-100 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-200 px-2 py-0.5 text-xs font-normal"
+                              title={`OAuth refresh-token present; the proactive sweep refreshes within 24h of expiry. Next access-token expiry: ${expDate.toISOString()}. Manual re-auth NOT needed.`}
+                            >
+                              🔄 {remaining}
+                            </span>
+                          )
+                        }
+                        // Original "operator action needed" red/amber path
+                        // — no refresh token, OR auth_failed is set, OR the
+                        // proactive refresh is misconfigured for this type.
                         const tone = daysLeft <= 3
                           ? 'bg-red-100 dark:bg-red-950 text-red-800 dark:text-red-200'
                           : 'bg-amber-100 dark:bg-amber-950 text-amber-800 dark:text-amber-200'

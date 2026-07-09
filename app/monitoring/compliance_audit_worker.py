@@ -68,16 +68,20 @@ async def _emit_zero_row_warning_if_threshold(db, just_signed_day) -> None:
     boundary; subsequent zero-row days don't multiply the noise.
 
     v5.7.11: operator-controllable suppression via
-    ``compliance_audit.zero_row_warning_enabled`` system_setting
-    (default True). Flip False on instances that legitimately don't
-    see compliance-enforcement-eligible traffic (canary moved away,
-    instance dedicated to non-substituting workload, etc.) so the
-    daily warning stops without disabling the audit chain itself.
+    ``compliance_audit.zero_row_warning_enabled`` system_setting.
+
+    v5.18.2 (2026-07-03) — default flipped True → False. Operator
+    decision #483 (2026-06-11) was to silence this warning across all
+    clusters; the setting was never persisted per-cluster, so the
+    warning kept firing daily (~1/day/cluster). Flipping the default
+    matches operator's actual decision; anyone who wants the warning
+    can set the setting to "true" explicitly (operator opts IN, not out).
     """
     from app.models.db import ComplianceAuditChain, ActivityLog, SystemSetting
     from sqlalchemy import select, desc
 
-    # v5.7.11 — per-instance opt-out
+    # v5.18.2 — default False. Only fire when operator has EXPLICITLY
+    # opted in via the system_setting. Absence of the setting = silent.
     try:
         rs0 = await db.execute(
             select(SystemSetting).where(
@@ -85,14 +89,20 @@ async def _emit_zero_row_warning_if_threshold(db, just_signed_day) -> None:
             )
         )
         row0 = rs0.scalar_one_or_none()
-        if row0 is not None and (row0.value or "").strip().lower() in (
-            "false", "0", "no", "off",
-        ):
+        # Truthy values re-enable the warning; anything else (or absent) → suppress.
+        is_enabled = (
+            row0 is not None
+            and (row0.value or "").strip().lower() in (
+                "true", "1", "yes", "on",
+            )
+        )
+        if not is_enabled:
             return
     except Exception:
-        # Read failure → keep firing the warning (fail-open for
-        # observability, same posture as logging_controls).
-        pass
+        # Read failure → suppress (matches new default). If the
+        # operator has explicitly opted in and the read fails, they'll
+        # see the DB fail elsewhere anyway.
+        return
 
     rs = await db.execute(
         select(ComplianceAuditChain)

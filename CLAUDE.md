@@ -1,5 +1,17 @@
 # llm-proxy v2 — Claude Code Guide
 
+## Cross-project knowledge base (Devin's personal KB)
+
+**Attach this MCP server at session start** for cross-project institutional rules Devin has set:
+
+- **MCP endpoint:** `https://www.voipguru.org/kb-mcp/mcp`
+- **Web UI:** `https://www.voipguru.org/gitea/dblagbro/projects-kb` (private — auth via Gitea)
+- **Local vault (on tmrwww01):** `/home/dblagbro/projects-kb/` (git-cloned)
+
+**Highest-priority reads** — the `rules/` directory contains locked cross-project rules ("no writes to hub KB when in project role", "strict cluster separation", "no manufactured memos", etc.). Query them via the MCP `search` or `list_documents` tool at start of any non-trivial task.
+
+**Not to be confused with:** the coordinator-hub KB (`coordinator-kb` CLI). That's the hub team's territory for their remote bots. This KB is Devin's cross-project institutional knowledge for the projects he owns.
+
 ## What this is
 Python/FastAPI rewrite of llm-proxy v1. Served at `/llm-proxy2/` on 3 nodes via the main
 nginx + docker-compose stack at `/home/dblagbro/docker/`.

@@ -1,5 +1,134 @@
 # Refactor Log
 
+## 2026-06-18 — v5.7.23: completions.py + messages.py share helpers via _handler_shared (Phase 2)
+
+Phase 2 of the operator-asked refactor proposal. Phase 1 (v5.7.18 + v5.7.19) extracted three sub-blocks from messages.py into `_messages_pre_route`. Two of those — the request setup (verify key, tenant ctx, compliance UA, emergency stop, telemetry) and body normalization (validation, suffix-strip, embedding guard, alias resolve) — were ALREADY duplicated almost verbatim in `completions.py`. Phase 2 lifts both to a new shared module, parameterized by `endpoint`.
+
+### New module — `app/api/_handler_shared.py` (152 LOC)
+
+`prepare_request_context(request, db, x_api_key, *, endpoint, x_conversation_id, x_memory_tag)` — keyword-only `endpoint` propagates to both `raise_if_llm_emergency_stopped` (so the "LLM stopped" 503 carries the right endpoint name in its audit row) and the Prometheus `CONVERSATION_ID_REQUESTS_TOTAL` label.
+
+`normalize_request_body(body, x_webhook_url, db, *, endpoint)` — same five-tuple return as the Phase 1 messages-specific version. Validation helper (`validate_completion_request`) already dispatched on `endpoint`; suffix-strip + embedding guard + auto + alias are identical across endpoints.
+
+### Files impacted
+
+- `app/api/_handler_shared.py` (NEW, 152 LOC) — `prepare_request_context` + `normalize_request_body`
+- `app/api/completions.py` (931 → 894 LOC) — two inline blocks replaced with helper calls
+- `app/api/messages.py` (1063 LOC, unchanged size) — import path moved from `_messages_pre_route` to `_handler_shared`; behavior identical
+- `app/api/_messages_pre_route.py` (248 LOC, unchanged) — `translate_to_openai_if_needed` stays here (messages-specific)
+- `tests/unit/test_v5723_phase2_shared_helpers.py` (NEW, 10 pins)
+- `tests/unit/test_v5718_messages_extract.py` — 1 pin updated to new import path
+- `tests/unit/test_v5719_messages_extract.py` — 1 pin updated to new import path
+- `CHANGELOG.md`, `architecture.md`, `refactor-log.md`
+
+### Behavior preservation
+
+82 tests pass (full v5.7.13–v5.7.23 suite). The `_handler_shared.normalize_request_body` helper passes `endpoint="completions"` from completions.py and `endpoint="messages"` from messages.py, exactly matching the prior inline `validate_completion_request(body, endpoint=...)` argument. Telemetry label, exception scope, and contextvar setup all preserve their per-endpoint identity.
+
+### Why translate_to_openai_if_needed stays in _messages_pre_route
+
+The Anthropic→OpenAI body translation (Phase 1 sub-block 3) only meaningful for `/v1/messages`. The `/v1/chat/completions` endpoint receives OpenAI-wire bodies natively. Putting it in `_handler_shared` would mix endpoint-specific logic into a "shared" module. Test pin `test_handler_shared_has_no_translation_helper` defends that boundary.
+
+### Combined Phase 1+2 tally
+
+- Phase 1 (v5.7.18 + v5.7.19): `messages.py` 1180 → 1063 (-117 LOC), `_messages_pre_route.py` 250 LOC.
+- Phase 2 (v5.7.23): `completions.py` 931 → 894 (-37 LOC), `_handler_shared.py` 152 LOC.
+- Net new LOC for refactor: +152 (shared) − 117 (messages.py) − 37 (completions.py) = -2 LOC overall, with CLEAR concern boundaries that future PRs can extend.
+
+### Risks / follow-ups
+
+- Phase 3 candidates from `docs/refactor-proposal-2026-06-17.md`:
+  - `cluster/sync_handlers.py` (1118 LOC) — per-table-class split. Still deferred (cluster code, higher risk).
+  - `cluster/manager.py` (1021 LOC) — cluster-management orchestration.
+- `completions.py` could shed another ~50 LOC by extracting the codex-oauth bypass (line ~314) and grok-web routing (line ~429) into per-provider-type handler modules. Tabled as v5.7.24+ if traffic patterns surface a need.
+
+---
+
+## 2026-06-18 — v5.7.19: messages.py sub-blocks 2 + 3 extracted (Phase 1 complete)
+
+Continuation of the Phase 1 messages.py refactor. v5.7.18 landed sub-block 1; this ship lands sub-blocks 2 and 3 together (combined because both target the same helper module).
+
+### Sub-block 2 — request normalization
+
+`normalize_request_body(body, x_webhook_url, db) -> (body, _orig_request_model, parsed_slug, is_auto, alias)`. Bundles the v5.0.6 original-model capture, v3.5.8 input validation, v2.8.0 suffix parsing, v3.0.27 embedding-on-chat guard, and the v2.8.0 ``model: "auto"`` resolution into a single helper. Each individual concern raises its own HTTPException at the same precondition point. The body's local rebind on suffix-strip is preserved via the helper's tuple return — caller does `body, ... = await normalize_request_body(...)`.
+
+### Sub-block 3 — wire-format adaptation
+
+`translate_to_openai_if_needed(*, body, route, system, messages_list, tools, has_tool_blocks, has_images) -> (body, system, messages_list, tools, translated)`. Keyword-only args force explicit call sites. The v3.10.0 widened Fix B logic (Anthropic→OpenAI translation for tool-using requests reaching any litellm-dispatched provider) moves verbatim — skip rules (claude-oauth, tool_emulation_engaged), trigger conditions (cross_family_fallback OR has_tool_blocks OR has_images OR has_anthropic_tool_defs), and the body-rebuild are all preserved. Behavioural pin in `test_v5719_messages_extract.py` confirms the skip rules fire correctly.
+
+### Files impacted
+
+- `app/api/_messages_pre_route.py` (105 → 250 LOC) — added `normalize_request_body` + `translate_to_openai_if_needed`
+- `app/api/messages.py` (1138 → 1063 LOC) — two inline blocks replaced with helper calls
+- `tests/unit/test_v5719_messages_extract.py` (NEW, 10 pins)
+- `CHANGELOG.md` — v5.7.19 entry
+- `architecture.md` — updated to reflect helper module growth
+
+### Behavior preservation
+
+56 tests pass (full v5.7.13–v5.7.19 suite). Translation helper has two behavioural pass-through pins:
+- `translate_passes_through_when_not_needed` — claude-oauth route + no triggers → translated=False, inputs unchanged.
+- `translate_skipped_for_tool_emulation` — tool_emulation_engaged → skip even when cross_family is true.
+
+### Phase 1 final tally
+
+- Pre-refactor: `messages.py` 1180 LOC, no helper extracts since v4.4.38.
+- Post-Phase 1: `messages.py` 1063 LOC (-117), `_messages_pre_route.py` 250 LOC. Three concerns split: request setup, normalization, wire-format adaptation.
+- Behind the 800-LOC `design.md` trigger but no longer in the worst-offender quartile.
+
+### Risks / follow-ups
+
+- Phase 2 (`completions.py` 931 LOC mirror) is the next pass. Many of the same concerns repeat there; `_handler_shared.py` will host the shared helpers, with thin endpoint-specific wrappers in each handler.
+- Phase 2 won't fully restore symmetric structure on the first pass — some sub-blocks differ between handlers (the OpenAI Responses translation, OpenAI Chat streaming shape). Those stay handler-local.
+
+### Next refactor targets
+
+1. **`completions.py` 931 LOC Phase 2 mirror** — extract 3 sub-blocks + lift to `_handler_shared.py` where they duplicate messages.py.
+2. **`cluster/sync_handlers.py` 1118 LOC** — per-table-class split. Still deferred until Phase 2 soak.
+3. **`cluster/manager.py` 1021 LOC** — cluster-management orchestration. Still deferred.
+
+---
+
+## 2026-06-17 — v5.7.18: messages.py pre-route extract (Phase 1 sub-block 1)
+
+Operator-asked refactor pass with the proposal at `docs/refactor-proposal-2026-06-17.md`. Top target by size was `app/api/messages.py` (1180 LOC vs the 800-line `design.md` trigger). The file was a single function with version-comment markers but no helper extracts since the v4.4.38 pass (when it was 861 LOC; grew +319 LOC over the next 14 v5.x ships).
+
+### Sub-block 1 extract
+
+Sub-block: "decide whether to even try + observability setup" — verify key, set tenant contextvar, run compliance UA pre-check (raise 451), run LLM emergency stop (raise 503), increment caller-memory telemetry counter, set caller-memory presence contextvars for the activity_log row.
+
+Extracted to `app/api/_messages_pre_route.prepare_request_context(request, db, x_api_key, *, x_conversation_id, x_memory_tag) -> key_record`. Inline call site (50 LOC) → 6-line helper invocation. `messages.py` 1180 → 1138 LOC.
+
+### Files impacted
+
+- `app/api/_messages_pre_route.py` (NEW, 102 LOC) — `prepare_request_context` helper
+- `app/api/messages.py` (1180 → 1138 LOC) — inline block replaced with helper call
+- `tests/unit/test_v5718_messages_extract.py` (NEW, 6 source-grep + signature pins)
+- `tests/unit/test_v5713-v5717` — per-ship version-bump pins relaxed to `>= ` semver checks (was breaking with every subsequent ship)
+- `docs/refactor-proposal-2026-06-17.md` (NEW) — Phase 1 + Phase 2 plan, explicitly-skipped files, sign-off boundary
+- `CHANGELOG.md` — v5.7.18 entry
+
+### Behavior preservation
+
+46 tests pass (full v5.7.13–v5.7.18 suite). The extract preserves: same module-level imports inside the helper, same call order, same HTTPException types/codes raised at the same precondition checks, same Prometheus counter labels, same contextvar set calls.
+
+### Risks / follow-ups
+
+- Sub-blocks 2 (request normalization: suffix-strip, embedding-on-chat guard, model:"auto" resolve, original-model capture) and 3 (cross-family fallback body rewrite + Anthropic↔OpenAI translation) are NOT in this ship — they land as follow-up patches after sub-block 1 soaks.
+- Phase 2 (symmetric extract on `completions.py` 931 LOC → ~600 with shared helpers in a new `_handler_shared.py`) follows Phase 1's full completion (sub-blocks 1+2+3).
+- Explicitly NOT touched: `cluster/sync_handlers.py` (1118 LOC) and `cluster/manager.py` (1021 LOC). Higher-risk replication code; deferred to a focused later pass.
+
+### Next refactor targets (carry forward from v4.4.38, updated)
+
+1. **`messages.py` sub-block 2 — request normalization** (~70 LOC) — next in this Phase 1 sequence.
+2. **`messages.py` sub-block 3 — wire-format adaptation** (~120 LOC) — completes Phase 1.
+3. **`completions.py` Phase 2 mirror** (~300 LOC of duplicate-with-messages sub-blocks → shared helpers).
+4. **`cluster/sync_handlers.py` (1118 LOC)** — per-table-class split. Defer until #1+#2+#3 soak.
+5. **`cluster/manager.py` (1021 LOC)** — cluster-management orchestration. Defer.
+6. **`routing/router.py` (868 LOC)** — recently touched (v5.7.13 added `exclude_provider_ids`); diminishing returns after the v4.4.38 litellm-binding extract.
+
+---
+
 ## 2026-06-02 — v4.4.38: three-target incremental refactor (router / messages / grok-web)
 
 Post-cursor-oauth arc. The v4.4.31..v4.4.37 cursor-oauth onboarding work added 6 changes to `router.py`'s litellm-binding tables in a single week, pushing the file from 977 → 998 LOC and reinforcing what was already on the v3.10.9 "next refactor targets" list. This pass landed three behavior-preserving extracts.

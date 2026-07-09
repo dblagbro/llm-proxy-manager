@@ -2,12 +2,1032 @@
 
 All notable changes since v2.7.6. Older history available in `git log`.
 
+## v5.21.1 — hotfix: UnboundLocalError on every `/v1/messages` call (2026-07-08)
+
+**Impact.** Every call to `/v1/messages` failed with `UnboundLocalError:
+cannot access local variable 'anthropic_text_sse'` (HTTP 500) — every
+downstream consumer (coordinator-hub llm-relay, direct Anthropic-shape
+clients) got 500s. Detected via GCP coordinator-hub's `chain exhausted:
+Internal Server Error` state — hub circuit-breaker engaged, LLM-relay
+100% failure rate. Duration: ~4 hours (v5.21.0 ship at 2026-07-08 to
+hotfix at 2026-07-08 ~02:15 UTC).
+
+**Root cause.** v5.21.0 added a redundant local
+`from app.cot.sse import anthropic_text_sse, ...` inside the buffered-
+cascade streaming branch of `messages()` (app/api/messages.py:1156-1159).
+The three names are already imported at module level (lines 27-29),
+so the local import serves no purpose. But Python assigns function-
+local scope to any name written to anywhere in a function body, so
+the module-level `anthropic_text_sse` was shadowed by the (unbound)
+local for the entire function — accessed as `text_sse_fn=anthropic_text_sse`
+at line 592 BEFORE the buffered-cascade branch ever ran. Result:
+UnboundLocalError on every code path through `messages()`.
+
+**Fix.** Deleted the redundant local `from ... import ...` block. The
+module-level import at line 29 already provides the names.
+
+**Regression test.** `tests/unit/test_v5211_no_local_shadowing.py`
+uses `ast.parse` to walk every function in `app/api/messages.py` and
+`app/api/completions.py`, asserting that no local `import` statement
+re-imports a name that's already at module level (would produce the
+same class of bug for any refactor).
+
+## v5.21.0 — LMRH `refuse-tolerance` dim + buffered streaming cascade (2026-07-08)
+
+**Two coupled ships** — both unlock DevinGPT's named use cases (creative-writing strict, automation-fire lenient) that the 2026-07-05 memo laid out.
+
+### `refuse-tolerance` LMRH dim
+
+Per-request routing hint complementing the existing per-provider `refusal-rate` dim. Coarser 3-way vocabulary:
+
+- `strict` — creative-writing / policy-sensitive; caller WANTS the model to refuse edgy content (safety range [4, 5])
+- `default` — no opinion (safety range [2, 4])
+- `lenient` — automation / tool-firing; caller wants a model LESS likely to refuse legit calls (safety range [1, 2])
+
+Weight is 8 (same axis as `safety-max`). `;require` hard-drops out-of-range providers. Taxonomy is v1 — after the 2026-07-12 rollup, may add `ambivalent` / `domain-specific` if data warrants.
+
+### Buffered streaming cascade
+
+Replaces v5.20.8's honest-but-partial `X-Refusal-Cascade-Unavailable: streaming` header with a working buffered-mode cascade.
+
+When BOTH `stream=true` AND `refusal_retry_enabled=true`: `stream` forced `False` internally → non-streaming path (including cascade) → final `anthropic_result` converted to SSE frames via `anthropic_text_sse` / `anthropic_tool_sse` / `anthropic_tools_sse` → returned as `StreamingResponse`. Caller still gets `text/event-stream`; just waits for the full response before first byte. Marked `X-Refusal-Cascade-Mode: buffered`. Falls back to JSON if SSE conversion breaks — header stays set.
+
+**Tests**: `test_v5210_refuse_tolerance_dim_and_streaming_cascade.py` 11/11; `test_v5208_streaming_cascade_transparency.py` 5/5 as history-pin.
+
+## v5.20.10 — Self-edit permissions JSON list editor (2026-07-08)
+
+Frontend + backend completion of v5.20.7's refusal panel. `self_edit_permissions` column (JSON list) now has:
+
+- Backend `KeyUpdate` PATCH accepts the field. Server-side filter against `ELIGIBLE_FIELDS` drops stale entries
+- List endpoint exposes it (null if disabled)
+- Frontend `ComplianceFieldsEditor` — grouped grid (MCP / Refusal / Other), checkboxes per field, Select-all / Clear shortcuts, live count, top-level enable toggle
+
+Semantics: `[]` = revoke all; omit = no-op. Frontend `null` serializes to `[]` on save.
+
+## v5.20.8 — Streaming + refusal_retry_enabled transparency header (2026-07-08)
+
+The v5.20.1 refusal cascade runs on the non-streaming path only — it needs the full anthropic_result to detect + retry. Streaming can't cleanly retry mid-stream without buffering the entire response first (negating the streaming latency benefit).
+
+When a request has BOTH `stream=true` AND the key has `refusal_retry_enabled=true`, the response now includes `X-Refusal-Cascade-Unavailable: streaming` so the caller knows cascade wasn't attempted. Detection headers (`X-Refusal-Detected`) still work on streaming because they're computed from the accumulated text after the stream ends.
+
+Full buffered-cascade for streaming shipped in v5.20.9.
+
+**Tests** (`test_v5208_streaming_cascade_transparency.py`, 5/5 passing).
+
+## v5.20.7 — Refusal detection + cascade admin UI (2026-07-08)
+
+Frontend panel in API Keys → Edit modal for the v5.20.0/1/2 columns.
+
+- 3 toggles: `refusal_detection_enabled` / `refusal_prompt_hardening` / `refusal_retry_enabled`
+- Conditional `refusal_retry_max_attempts` number input (only shown when retry is on)
+- Backend `KeyUpdate` PATCH surface accepts all 4 fields (no `reason` required — these are per-key debug/behavior flags, not compliance policy)
+- List endpoint exposes the flags so the frontend can seed the edit modal correctly
+
+Create modal wires the props with no-op setters — new keys default to OFF for all four; operator flips post-create via the Edit modal (matches the pattern for `debug_echo_enabled` from v5.8.x).
+
+**Not in this ship**: `self_edit_permissions` JSON-list editor. Column exists in the DB (v5.20.2) and is honored by the self-update endpoint; UI editor deferred to a follow-up ship.
+
+## v5.20.6 — Prune stale `_OVERRIDES` in pricing.py (2026-07-08)
+
+Same-transaction DB check confirmed all 8 hardcoded models were in v5.20.4's `model_pricing_catalog` with fresher prices from LiteLLM's `main` branch (opus was 3× too high, haiku 25% too low — catalog is more accurate). The override table was redundant AND stale; removed entirely.
+
+Post-prune lookup order is now 2 steps instead of 3: catalog → `litellm.cost_per_token` → 0. Same shape, no functional regression (unknown-model → zero was already the pre-v5.20.6 behavior).
+
+**Also included in this ship: v5.20.5 frontend hookup** — "Load detail" button in expanded activity_log rows calls `/api/admin/requests/detail/{id}` and renders provider name + redacted api_key + up to 50 correlated events with signed `±Nms` deltas from the anchor.
+
+## v5.20.5 — Per-row `/api/admin/requests/detail/{id}` companion to the SSE stream (2026-07-08)
+
+Companion endpoint to v5.11.0's `/api/admin/requests/stream`. Operator sees an interesting row in the live-tail SSE feed → clicks it → gets the full expanded context. Ported from ccflare's `/api/requests/detail` (Section 5 of the 2026-06-30 peer-comparison-roadmap memo).
+
+**Response bundle**:
+```json
+{
+  "row": { "id": ..., "event_type": ..., "event_meta": {...}, ... },
+  "provider": {
+    "id": ..., "name": ..., "provider_type": ..., "enabled": ..., "cost_class": ...
+  },
+  "api_key": {
+    "id_prefix": "39ccc64e...", "name": ..., "key_type": ..., "enabled": ...
+  },
+  "correlated_events": [
+    { "id": ..., "event_type": ..., "delta_ms": ..., ... }
+  ],
+  "correlation_window_sec": 30
+}
+```
+
+**Correlation window**: ±30s of the anchor row, filtered to the same `api_key_id` AND `provider_id` (or provider-agnostic system events). Capped at 50 rows so a chatty key can't overwhelm the response. Each correlated event carries `delta_ms` (signed offset from the anchor) so the operator sees timing at a glance ("this happened 500ms after the request").
+
+**Security**:
+- Admin-only (`require_admin`)
+- `api_key.id_prefix` is the first 8 hex chars only — the full SHA-256 prefix stays server-side. Enforced by the `_redact_key_hash` helper.
+- Provider summary excludes `oauth_refresh_token`, `oauth_expires_at`, `codex_session_cookies`, `anthropic_session_cookies`, `encrypted_key`. Static-grep tests pin the negative surface.
+- Unknown row IDs return 404 (prevents existence-check scans against numeric row IDs).
+
+**Not tests** (yet): frontend wire-up — the dashboard doesn't call this endpoint yet. Follow-up ship attaches a click handler on the SSE stream rows.
+
+**Tests** (`test_v5205_request_detail_endpoint.py`, 12/12 passing): endpoint registered + admin-gated, 404 for unknown, response shape documented, key hash redacted, correlation window bounded (30s + 50 rows), scoped to same key+provider, delta_ms present, provider summary safe fields explicitly listed + credential fields negatively pinned, api_key summary never leaks full ID, reuses `_row_to_dict` for consistency with stream, version bump.
+
+## v5.20.4 — Model cost-map daily sync (LiteLLM upstream ingest, 2026-07-07)
+
+Ported the LiteLLM `model_cost_map_sync` pattern from the 2026-06-30 peer-comparison-roadmap memo. Day-zero-released models now get accurate pricing in the proxy's cost calculations even when the installed `litellm` Python package is stale.
+
+**How it works.** A new background worker (`app/monitoring/model_cost_map_worker.py`) fetches `https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json` every 24h and upserts each model into the new `model_pricing_catalog` table (columns: `model_key`, `input_cost_per_token`, `output_cost_per_token`, `max_input_tokens`, `max_output_tokens`, `provider_family`, `source`, `synced_at`).
+
+`pricing.estimate_cost_split` gains a first-priority DB catalog lookup — checked BEFORE `litellm.cost_per_token`. Lookup order:
+
+1. `model_pricing_catalog` (fresh, from cron)
+2. `litellm.cost_per_token` (shipped with package)
+3. Local `_OVERRIDES` dict (last-resort)
+
+The in-process cache is invalidated automatically after each successful sync so freshly-priced models land in cost calcs without a proxy restart.
+
+**Configurable.** `model_cost_map_url` setting overrides the default URL — swap a fork/mirror in without a code change.
+
+**Non-fatal.** Fetch failures are logged; the existing litellm-first path continues to work. `model_cost_map.synced` activity_log rows track every successful ingest with (added, updated, skipped) counts.
+
+**Tests** (`test_v5204_model_cost_map_sync.py`, 16/16 passing): parser edge cases (sample_spec skipped, no-pricing skipped, malformed numeric handled), ORM shape pins, catalog-first lookup verified, fall-through preserved, prefix variants match, worker registered at startup, cache invalidation on upsert, URL configurable, activity_log write, daily cadence, ORM imported at init_db, version bump.
+
+## v5.20.3 — Per-request hook override header (`X-Hooks-Override`, 2026-07-07)
+
+Ported from ccproxy's per-request hook override pattern (Section 5 of the 2026-06-30 peer-comparison-roadmap memo). Sandbox/validation keys with `debug_echo_enabled=True` can send:
+
+```
+X-Hooks-Override: +some_hook,-compliance_substitution_header_hook
+```
+
+on `/v1/messages` (or any endpoint that goes through the v5.14 callback registry) to **force-enable a degraded hook** OR **force-disable an otherwise-healthy one** for a single request. Priceless for debugging: retry a hook after a code fix without waiting for the 5-consecutive-success recovery counter, OR turn off a hook once to compare responses.
+
+**Response emits observability headers when the override engaged:**
+- `X-Hooks-Applied: comma,separated,names` — hooks that actually ran
+- `X-Hooks-Skipped: names` — hooks force-disabled via the override
+
+**Security gate:** silently ignored unless the API key has `debug_echo_enabled=True` — same convention as the v5.8.x sandbox/validation-key features. This prevents a compromised regular key from disabling compliance hooks per-request. If the gate is closed, the response is byte-identical to pre-v5.20.3.
+
+**No new database columns** — reuses the existing `debug_echo_enabled` field as the gate.
+
+**Tests** (`test_v5203_hooks_override_header.py`, 17/17 passing): parse helper (empty / mixed / whitespace / unknown-prefix / bare +/-), gate helper (5 gate paths), runner integration (force-disable applies, force-enable revives degraded, gate-closed = no-op).
+
 The project follows [Semantic Versioning](https://semver.org/) loosely:
 **major** = breaking API changes; **minor** = additive features; **patch** = fixes.
 
 ---
 
-## v5.7.x — MCP aggregation endpoint
+## v5.19.3 — Symmetric observability: `substitution_callback.posted` warning-log on success (2026-07-04)
+
+Hub team requested (2026-07-03 lock-retry memo) that the proxy emit a WARNING-level log line on every successful substitution-callback POST, matching hub's v2.6.11 unconditional receipt log. Both sides now grep at WARNING for a happy-path traversal. Catches one-sided drops (proxy POST succeeds but never arrives → hub receipt log never fires → soak counter silently wrong).
+
+**Two log points added:**
+- First-attempt success: `substitution_callback.posted status=<code> id=<audit_id> attempt=1`
+- Retry-attempt success: `substitution_callback.posted status=<code> id=<audit_id> attempt=2 first_err=<first_err_class>` (includes the initial error for diagnostics)
+
+The pre-existing `substitution_callback.dropped` warning on total failure is unchanged. Additive, not a replacement.
+
+**Tests** (`test_v5193_substitution_callback_posted_log.py`, 5/5 passing): first-attempt log emits; retry-attempt log emits with first_err diagnostic; both at WARNING level; dropped-path warning still fires; version bumped.
+
+## v5.19.2 — oauth_expiry gate on ELIGIBILITY, not recent success (2026-07-04)
+
+Trigger: 2026-07-04 log sweep found `Devin-Codex-Gmail` (ChatGPT-oauth-plan, 7 days from expiry, has refresh_token) still firing daily `oauth_expiry_warning` despite v5.17.2. **v5.17.2 fixed half the problem** (short-lived claude-oauth tokens post-refresh) but missed the wider case.
+
+**Root cause of the leak:** v5.17.2's gate was `_refresh_ok = refresh_outcome == "refreshed"`. That's only True when refresh RAN this sweep. But refresh only runs when `days_left <= _DEFAULT_REFRESH_LEAD_DAYS` (default 1 day). Any token further out — like Devin-Codex-Gmail at 7 days — has `_refresh_ok=False`, gate lets warning through. Warning fires daily until day 1 when refresh finally kicks in.
+
+**Fix:** gate on ELIGIBILITY, not recent success. New `_is_auto_refresh_eligible`:
+- provider has a refresh_token
+- provider_type is in `_PROACTIVE_REFRESH_TYPES` (claude-oauth + ChatGPT-oauth-plan)
+- refresh did NOT fail this sweep (`_refresh_failed = refresh_outcome.startswith("failed:")`)
+
+Warning fires when `days_left <= threshold AND NOT eligible`. So:
+- Refreshed successfully → eligible → suppress
+- Not refreshed yet (further out than lead window) → eligible → suppress
+- Refresh FAILED this sweep → not eligible → warn (operator needs to re-auth)
+- No refresh_token at all → not eligible → warn (operator needs manual re-auth)
+
+**Effect:** Devin-Codex-Gmail will stop firing daily warnings from now until day 1 pre-expiry. If refresh eventually fails at day 1, warning comes back and operator sees it in time.
+
+**Tests** (`test_v5192_oauth_expiry_gate_on_eligibility.py`, 6/6 passing): new gate variable present; v5.17.2 exact gate expression gone; failed refresh still warns; missing refresh_token still warns; docstring documents the fix; version bumped. Updated `test_v5172` to reflect the v5.19.2 replacement (v5.17.2 tests were shape-pinning the old gate).
+
+## v5.19.1 — Move chronic-CB gate from sweep loop into `_probe_one` (2026-07-03)
+
+**Bug found today.** v5.17.1's chronic-CB gate was gating only the sweep loop, but `circuit_breaker._auto_probe` (v5.3.9) calls `keepalive._probe_one()` DIRECTLY when the CB transitions OPEN → HALF_OPEN. The auto-probe was slipping through the gate and re-cycling Grok-Web-Devin every ~65 min (matches CB hold-down cadence), which is why v5.17.1's `keepalive.chronic_cb_gated` log fired ONCE at boot but Grok probes kept firing anyway. consecutive_opens climbed to 15 over 11 hours despite the gate being "on".
+
+**Fix:** move the gate check into `_probe_one` itself. Both entry points (sweep + auto-probe) now honor it transitively. Removed the sweep-side inline copy. Same 6h backoff behavior; the gate just applies at the right choke point.
+
+**How this validates:** the boot log line changed from `... (v5.17.1)` to `... (v5.19.1 — at _probe_one)`. If Grok cycles more than once every 6h post-deploy, the fix is wrong. Watching.
+
+**Tests** (`tests/unit/test_v5191_chronic_cb_gate_at_probe_one.py`, 6/6 passing): gate marker moved to `_probe_one`; sweep-side v5.17.1 log-format removed; auto-probe call site still exists; `get_consecutive_opens` import preserved; module-level backoff dict preserved; version bumped. Updated `test_v5171` to accept both `p.id` (sweep) and `provider.id` (probe_one) local names — same intent, different scope.
+
+## v5.19.0 — messages.py response-tail extract (2026-07-03)
+
+Pure refactor. Pulls the four try/except blocks at the end of the non-streaming `/v1/messages` handler into `app/api/_messages_response_tail.py`. Zero behavior change; each block preserves its original swallow-Exception posture.
+
+**Trigger:** `messages.py` hit 1146 LOC, above the project's own 1000-line ceiling (per v4.4.11 split rationale). Every ship for two weeks (v5.14.0 hook runner call, v5.15.1 fanout wire, v5.16.0 config-blob read, v5.18.0 substitution_reason threading) added 5-10 LOC to the same tail block. Left alone it would blow past 1200.
+
+**What extracted:**
+1. Capability-scout suggestion header (v5.7.6)
+2. Accept-MCP handler (v5.12.2 individual header + v5.16.0 blob key, precedence preserved)
+3. `x-llmproxy-config` echo (v5.16.0)
+4. Response hooks runner with full `HookContext` (v5.14.0 + v5.15.1 + v5.18.0 threading)
+
+`messages.py` dropped 1146 → 1096 LOC. New file is 138 LOC. Net structure: the tail is now one call `await apply_response_tail(request=..., route=..., key_record=..., resp_headers=..., body=..., db=...)` with all four blocks inside.
+
+**Tests** (`tests/unit/test_v5190_messages_response_tail_extract.py`, 8/8 passing):
+- Extract module exists + exports async `apply_response_tail`
+- All four block signatures present in the extract
+- `HookContext` fields (requested_model, served_model, api_key_id, provider_id, compliance_event_id, substituted, key_record, request, substitution_reason via extra) all threaded
+- Per-block Exception-swallow preserved (4 try/except pairs)
+- `messages.py` calls the extract, does NOT still contain the inline imports
+- LOC dropped from 1146
+- v5.14.1 hook-runner pin still resolves via the extract companion
+
+**Updated pre-existing tests** (four static-grep tests that checked `messages.py` directly): now search `messages.py` + `_messages_response_tail.py` union so the pin recognizes the extract as part of the endpoint's dispatch surface. Future endpoint extracts follow the same `_<name>_response_tail.py` naming convention and land in the pin's companion list automatically.
+
+**117 total tests pass across v5.14-v5.19.**
+
+## v5.18.2 — Flip `audit_chain_zero_row_streak` warning default True → False (2026-07-03)
+
+Trigger: 2026-07-03 log sweep found `audit_chain_zero_row_streak` firing daily on tmrwww01 main cluster. Operator memory item #483 says the decision was "silence per cluster" (2026-06-11), but the persistent `compliance_audit.zero_row_warning_enabled` system_setting was never actually flipped on any cluster — the memory records the operator's intent, but the config action never landed.
+
+Rather than DB-write the setting on each cluster (auto-mode has been correctly blocking as shared-state modification), flip the default from True to False in code. Operator's decision applies globally without touching cluster state; anyone who wants the warning back can flip the setting to `"true"/"1"/"yes"/"on"` per-cluster.
+
+Behavior: warning silent by default; DB read failure also falls through to silent (matches new default). 5/5 tests.
+
+## v5.18.1 — reasoning_effort migrated to x-llmproxy-config blob (2026-07-02, additive)
+
+Second key migrated after ``accept_mcp`` in v5.16.0. Callers can pass ``reasoning_effort`` in the ``x-llmproxy-config`` header as an alternative to the request body. Body wins over blob (existing per-request semantics preserved). 6/6 tests.
+
+## v5.18.0 — Outbound substitution-callback emitter (closes hub-team ask 2026-07-02)
+
+Fulfills what v5.14 was supposed to include but shipped short. Hub team scaffolded a shape-agnostic receiver at `POST /api/compliance/callbacks/substitution` (v2.6.6, 2026-07-02) waiting on proxy to POST substitution events. My 2026-06-30 memo overstated the `callbacks.*` surface — the two settings that shipped govern the *inbound* registry timeout/degrade behavior, not an outbound webhook. v5.18.0 closes the gap.
+
+**New file:** `app/compliance/substitution_callback_hook.py` — registers alongside `compliance_substitution_header_hook` at boot.
+
+**Fires ONLY when substitution happened** (`context.substituted is True`). No POST on the header hook's other branches (`false`, `pass-through`). Zero baseline traffic — only real substitution events cross the network.
+
+**Wire format — LiteLLM Python-callback keys** (hub-team option #3 per 2026-07-02 reply memo; their `_ALIASES` already covers this):
+
+```json
+{
+  "original_model": "claude-opus-4-6",
+  "model": "claude-sonnet-4-6",
+  "substitution": true,
+  "id": "sub_events.audit_id",
+  "user_api_key_alias": "coordinator-hub",
+  "timestamp": 1782929384.123,
+  "reason": "cross_family_substitution"
+}
+```
+
+- `id` = `compliance_events.audit_id` — hub can dedup on this.
+- `user_api_key_alias` = `ApiKey.label` if set, else `ApiKey.name`.
+- `timestamp` = float epoch UTC (per-attempt timestamp so retries carry current time).
+- `reason` = substitution class passed through `context.extra["substitution_reason"]` from the messages.py dispatch site.
+
+**Retry semantics:** fire-and-forget with **one retry** on transport failure. 2s timeout each, 1s back-off between. After both fail, a `substitution_callback.dropped` activity_log warning lands so operator sees it from the dashboard. Same `id` on retry → hub dedup handles duplicates safely.
+
+**Auth:** `X-Proxy-Callback-Token: <shared_secret>`. Header omitted when secret is empty (dev-mode passthrough on hub side per v2.6.6 default).
+
+**Kill switches:**
+- `SUBSTITUTION_CALLBACK_URL=""` (default) → hook is a no-op. Operator must opt in per-cluster.
+- `SUBSTITUTION_CALLBACK_SHARED_SECRET=""` (default) → no auth header sent.
+- Registered with `priority=10` so it runs AFTER the header hook (response is stamped before POST).
+- `timeout_sec=5.5` on the runner side (2s + 1s + 2s worst-case + 0.5s slack).
+
+**Wiring change in `messages.py`:** the HookContext build site now passes `compliance_event_id` (was missing) and `extra["substitution_reason"]` so the emitter has the fields hub team asked for.
+
+**Tests** (`tests/unit/test_v5180_substitution_callback_emitter.py`, 14/14 passing): hook module imports; registered in `register_builtin_hooks`; no-op when not-substituted; no-op when URL empty; event body uses LiteLLM shape; label wins over name for alias; POST returns ok on 2xx; POST returns failure on 5xx (with `http_503` err); POST returns failure on transport error (with `ConnectError` err); auth header uses correct name; auth omitted when secret empty; messages.py passes substitution_reason via extra; settings present with safe defaults; version bumped.
+
+## v5.17.2 — Suppress oauth_expiry warning after successful proactive refresh (2026-07-02)
+
+Trigger: log sweep 2026-07-02 found `Devin-Anthropic-Max-VG` and `Devin-Anthropic-Max-Gmail` firing `oauth_expiry_warning` every sweep. Both are `claude-oauth` with a working `refresh_token`; the proactive-refresh path (v5.7.21) actually completed successfully each sweep. But after refresh, the access token STILL had ~7-8h natural lifetime per #471, so `days_left ≈ 0.3 < warn_threshold_days (15)` — the warn gate fired even though there is nothing for the operator to act on.
+
+Fix: after `refresh_outcome == "refreshed"` AND provider has a `refresh_token`, suppress the low-days-left warning. Failed refreshes and providers without a refresh_token still warn (those need operator action). One-line gate change in `cursor_oauth_expiry_monitor.py`.
+
+**Effect:** eliminates ~3 warnings per sweep across the clone cluster (Devin-Anthropic-Max-VG, Devin-Anthropic-Max-Gmail, and any other claude-oauth/codex-oauth provider that's actively refreshing). Warnings still land IF a refresh fails, which is what the operator actually needs to see.
+
+**Tests** (4/4 passing): gate is a static-grep pin so future refactors don't silently reintroduce the noise; failed-refresh and missing-refresh-token paths still warn; version bumped.
+
+## v5.17.1 — Keepalive gates on chronic CB re-open (2026-07-02)
+
+Trigger: 2026-07-02 log sweep found Grok-Web-Devin on the clone cluster had generated 19 keepalive_probe events (10 warning + 9 error) in 24h. Bridge timeouts on `/api/chat` per #513 — CB opens, hold_down elapses, half-open probe fires, fails, CB re-opens, repeat forever. Real diagnostic value = 0; noise = ~10 activity_log rows/day.
+
+Fix: when a provider's CB has `consecutive_opens >= keepalive_chronic_cb_open_threshold` (default 5), apply a fixed backoff of `keepalive_chronic_cb_open_backoff_sec` (default 6h) before the next keepalive probe fires. When the backoff window elapses, one probe is allowed through so we detect recovery; if it fails, `consecutive_opens` climbs again and the next backoff window applies.
+
+Pieces:
+- `app/routing/circuit_breaker.py` — new `get_consecutive_opens(provider_id)` helper + `consecutive_opens` field surfaced in `get_all_states()` so `/health.circuitBreakers` also reports it.
+- `app/monitoring/keepalive.py` — new gate in the sweep, applied AFTER the existing `is_available()` check. Uses a separate `_chronic_backoff_until` cache (distinct from `_probe_backoff_until` which the rate-limit-response path uses).
+- `app/config.py` — two settings: `KEEPALIVE_CHRONIC_CB_OPEN_THRESHOLD=5`, `KEEPALIVE_CHRONIC_CB_OPEN_BACKOFF_SEC=21600`. Operator can widen either if the false-positive rate is too high on a specific cluster.
+
+**What this doesn't do:** touch DB state. The Grok-Web-Devin provider remains `enabled=True` with no `auto_skip_until`. This ship silences the keepalive-probe activity_log noise without changing shared cluster state — the auto mode classifier blocked a direct DB write today; this is the code-level equivalent that doesn't require a per-provider admin API call.
+
+**Tests** (`tests/unit/test_v5171_keepalive_chronic_cb_gate.py`, 6/6 passing): CB module exposes `get_consecutive_opens`; `get_all_states` surfaces the counter; keepalive imports + calls the helper + logs `keepalive.chronic_cb_gated`; settings present with correct defaults; two backoff caches are distinct; version bumped.
+
+## v5.17.0 — Per-account utilization propagation (closes #508 P1-4) (2026-07-01)
+
+Makes the v5.15.1 `least_utilized` picker actually work.
+
+**Problem:** picker sorts accounts by `utilization_pct`, but that column has been null on every account since ship. The `cursor_billing_worker` scrapes cursor.com every 4h and writes utilization to `ExternalUsageSnapshot` (a provider-scoped table) — never to individual accounts. Result: with all accounts reading `utilization_pct=None`, the picker degenerated to LRU (tie-broken on `last_used_at`). Ships correct but semantically dead.
+
+**Fix:** in `scrape_provider_into_snapshot()` (cursor-oauth path):
+1. Pick the least-recently-used enabled account on this provider (rotates across accounts over successive sweeps — over 4 sweeps, all accounts get scraped once).
+2. Use that account's `access_token` for the scrape (not the legacy `Provider.api_key`).
+3. After a successful scrape, write `seven_day_utilization` back to the picked account's `utilization_pct`.
+
+**Preserved:** legacy fallback path when a provider has zero accounts — `Provider.api_key` still drives the scrape. Providers pre-Phase 1 keep working.
+
+**What the picker sees now:** after ~4 sweeps (~16h), every account has an independent `utilization_pct`. `least_utilized` sorts by that value → the account with lowest utilization gets the next dispatch. Ties break on `last_used_at`. Real load spreading finally engages.
+
+**Future v5.17.x:** fan the scrape across all accounts on every sweep (currently 1 account per sweep). Requires N parallel scrapes per provider — worth doing when operators have ≥3 accounts on a provider.
+
+**Tests** (`tests/unit/test_v5170_per_account_utilization.py`, 5/5 passing): scrape picks LRU account; legacy fallback preserved for accountless providers; writeback lands on the scraped account; writeback failure is best-effort (never fails the scrape); version bumped.
+
+## v5.16.1 — Seeder-on-create + /health.oauthAccounts observability (2026-07-01)
+
+Two small ships bundled from post-scout findings.
+
+**P0-2 finding (Playwright scout of v5.15.2 on smoke):** creating a new cursor-oauth provider left `provider_oauth_accounts` empty. Boot-time seeder only fires once at `init_db`; the create path never went through it. Result: v5.15.1 dispatch fell back to legacy `Provider.api_key` for post-boot providers instead of exercising the fan-out. Fix: seeder call added inside `create_provider()` after the commit, guarded to OAuth types (cursor-oauth, ChatGPT-oauth-plan, claude-oauth), non-fatal on failure. Now every OAuth provider — pre- or post-boot — starts with a matching child row and dispatch engages immediately.
+
+**P1-5 (planned): `/health.oauthAccounts` observability block.** New `app/api/_oauth_accounts_health.py` computes a per-cluster snapshot every 15s (cached, best-effort). Surfaces under `/health.oauthAccounts`:
+
+```json
+{
+  "totalProviders": 3,
+  "totalAccounts": 4,
+  "providersWithMultiple": 1,
+  "providersWithSingle": 2,
+  "providersWithZero": 0,
+  "rotationsLastHour": 5,
+  "byProviderType": {
+    "cursor-oauth":  {"providers":2, "accounts":3, "rotations_1h":4},
+    "codex-oauth":   {"providers":0, "accounts":0, "rotations_1h":0},
+    "claude-oauth":  {"providers":1, "accounts":1, "rotations_1h":1}
+  }
+}
+```
+
+Answers the "is my picker actually rotating?" question without touching the DB. `providersWithMultiple` is the load-bearing metric — if this stays at 0, the fan-out is code-shipped but data-unused. `rotationsLastHour` counts `last_used_at` bumps within past hour so operators can see live utilization.
+
+Design notes:
+- `ChatGPT-oauth-plan` internal type is exposed as `codex-oauth` in the surface so operators don't have to know the v3.8.0 internal rename.
+- `_oauth_accounts_snapshot()` owns its own `AsyncSessionLocal` — `/health` never depends on the caller's request-scoped session.
+- Cached 15s. `/health`'s existing 3s cache already excludes this block; the 15s here is second-order cheapness for tight-loop probers.
+
+**Playwright scout (v5.15.2 panel):** shipped as `~/scratchpad/oauth-scout/` — 8/8 info findings, 4 low-priority notes (all around loose header string matches in a scanning HTML string; UI actually renders correctly). No high/critical.
+
+**Tests** (`tests/unit/test_v5161_oauth_accounts_health_and_seeder_on_create.py`, 8/8 passing): seeder wired into create; /health surfaces the new block; block owns its own DB session; snapshot module imports; empty-DB returns zeros with the expected shape; result caches; ChatGPT-alias normalizes to codex-oauth in the surface; version bumped.
+
+## v5.16.0 — Consolidated `x-llmproxy-config` request header (closes #512) (2026-06-30)
+
+Foundation for consolidating scattered `X-Proxy-*` request headers behind one JSON blob. Ships with `accept_mcp` as the first key migrated (the only `X-Proxy-*` request header currently in the code); the parser + precedence + emit-applied-header pattern are ready for the remaining keys to migrate as demand comes in.
+
+**Wire format:**
+
+```
+x-llmproxy-config: {"accept_mcp":["fetch_url"]}
+```
+
+**Precedence:** individual header wins over blob key. Pinned callers using `X-Proxy-Accept-MCP` today keep working unchanged; new callers can either use individual headers OR the consolidated blob OR a mix (and the mix resolves predictably).
+
+**Soft-fail-open on malformed blobs:** parse errors → debug log + fall back to individual-header defaults. Bricking a request on a caller-side typo would be worse than silently ignoring the override. Documented in-code and locked by tests.
+
+**Forward-compat:** unknown keys are silently ignored (with a debug log). A caller can send a config blob targeting a future proxy version without our code choking on it; future keys land in the `KNOWN_KEYS` set as they migrate.
+
+**Debug echo:** requests carrying the blob get back an `X-LLMProxy-Config-Applied` response header echoing the parsed dict. No-op on requests without the blob so ~100% of traffic is unaffected.
+
+**Wired sites (v5.16.0):**
+- `app/api/messages.py` — reads `accept_mcp` via `read_config_key(..., header_fallback="X-Proxy-Accept-MCP")`; emits applied-header. List values are joined to comma-separated string for the existing accept-handler shape.
+- `app/api/completions.py` — same pattern.
+
+**Not migrated yet** (individual headers still exist; blob doesn't yet override them, mapped as reserved slots in the parser): `reasoning_effort`, `cache_mode`, `fallback_chain`, `cascade_mode`, `model_family`, `pii_mask`, `vision_strip`. These migrate when a caller asks for them; parser already accepts them and ignores unknown keys, so migration is additive.
+
+**Tests** (`tests/unit/test_v5160_llmproxy_config_header.py`, 14/14 passing): empty parse; valid object; malformed JSON soft-fails; non-object top-level; unknown-keys silently ignored; individual header wins over blob; blob used when no individual header; None when neither; empty individual header falls back to blob; emit no-op when no blob; emit echoes parsed blob; wiring pins in messages.py + completions.py; version bumped.
+
+## v5.15.x — Per-account OAuth fan-out (ccflare-inspired, #508)
+
+### v5.15.2 — Frontend Accounts panel (2026-06-30)
+
+Closes what v5.15.1 deferred: operator can now manage OAuth accounts via the UI instead of curl. New component `OAuthAccountsPanel.tsx` mounted on the ProviderForm; the component self-gates on `provider_type in {cursor-oauth, codex-oauth, claude-oauth}` so the mount site doesn't have to know.
+
+**Features:**
+- List enabled + disabled accounts on the provider. Each row shows label, masked access_token (click to reveal), expiry (as YYYY-MM-DD), last-used age (humanized: `12s ago` / `4h ago` / `3d ago`), utilization %, enable toggle, rename / delete buttons.
+- Add-account form: label + access_token + optional refresh_token + optional expires_at (YYYY-MM-DD). POSTs to `/api/admin/providers/{id}/oauth-accounts` with `captured_via='manual_paste'`.
+- Toggle: PATCH to flip `enabled`. Dispatch (v5.15.1 selector) starts/stops picking this account within one request.
+- Rename: PATCH the label. Audit row lands.
+- Soft-delete: DELETE the account. Row stays in DB with `deleted_at` set; UI filters it out.
+- Backend change: `Provider` serializer now surfaces `oauth_account_strategy` so the panel can show the current strategy.
+
+**Wiring:**
+- `Provider` interface gains `oauth_account_strategy?: string | null` field.
+- `ProviderForm.tsx` imports + mounts `OAuthAccountsPanel` unconditionally after `CursorBillingPanel`. Component self-gates.
+- `app/api/providers.py` provider serializer adds one field (getattr-guarded).
+
+**Tests** (`tests/unit/test_v5152_frontend_accounts_panel.py`, 8/8 passing):
+- Panel module exists at expected path.
+- Self-gates on provider_type via `OAUTH_TYPES` set.
+- Covers all 4 CRUD endpoints.
+- Covers UX niceties (mask helper, last-used humanization, reveal state).
+- Mount site in ProviderForm imports + renders it.
+- API serializer surfaces the strategy field.
+- Frontend type gains the field.
+- Version bumped ≥5.15.2.
+
+### v5.15.1 Phase 2 — Dispatch flip (2026-06-30)
+
+Wires the v5.15.0 selector into `messages.py:_call_with_route`. From this ship on, when dispatch runs against a cursor-oauth / codex-oauth / claude-oauth provider AND it has enabled child rows in `provider_oauth_accounts`, the selector picks one via the configured strategy (default `least_utilized`), swaps `local_extra["api_key"]` to the account's `access_token`, updates `last_used_at`, and emits `X-OAuth-Account: <id>` on the response so callers + operator dashboards can see which account served the request.
+
+**No-op paths preserved:**
+- Non-OAuth providers (anthropic-direct, openai-direct, google, etc.): selector short-circuits on `provider_type` check. Zero DB overhead added.
+- `OAUTH_ACCOUNT_FANOUT_ENABLED=false`: selector returns early → `Provider.api_key` is used unchanged. Safe-revert path.
+- OAuth provider with zero enabled accounts: selector returns None → `Provider.api_key` is used. Migration derisks itself.
+
+**Frontend Accounts panel:** deferred to v5.15.2 (bundling with Phase 2 slipped due to session scope; operator can seed accounts via `curl POST /api/admin/providers/{id}/oauth-accounts` today, UI-driven add lands in v5.15.2).
+
+**Tests** (`tests/unit/test_v5151_dispatch_flip.py`, 10/10 passing):
+- `apply_fanout_to_kwargs` no-op on non-OAuth provider
+- `apply_fanout_to_kwargs` no-op when `OAUTH_ACCOUNT_FANOUT_ENABLED=false`
+- Strategy resolution: provider override wins, falls back to settings default, degrades safely on unknown-string typo
+- Wiring pin: `messages.py` imports and calls the helper + emits `X-OAuth-Account` header
+
+Combined with the v5.15.0 Phase 1 tests (16/16), the fan-out surface has 26 static pins + behavior tests.
+
+### v5.15.0 Phase 1 — Schema + admin endpoints + seeder (2026-06-30)
+
+Foundation ship — schema exists, admin endpoints CRUD, cluster-sync will replicate (v5.15.1 wires it into the payload). **NO dispatch change.** Legacy `Provider.api_key` still drives every request. Phase 1 derisks the rollout: operator can seed accounts, verify audit rows, verify the seeder is idempotent, all with zero behavior change. Phase 2 (v5.15.1) flips dispatch + adds the frontend Accounts panel.
+
+Driven by hub-team's 2026-06-30 comprehensive negative on the v5.13 in-band-refresh design (`2026-06-30-from-hub-cursor-probe-results-no-public-refresh.md`): with no public Cursor refresh endpoint, the next-best mitigation for the 60-day re-auth ceiling is reducing per-account utilization by letting one logical provider hold N session tokens with round-robin/least-utilized selection. Operator promoted #508 from architectural backlog to "next ship" 2026-06-30.
+
+**What's new:**
+- **Table `provider_oauth_accounts`** — child of `providers`, one row per OAuth account. Columns: `label`, `access_token`, `refresh_token`, `oauth_expires_at`, `enabled`, `last_used_at`, `utilization_pct`, `captured_via`, `deleted_at`, `last_user_edit_at`. FK cascade on `provider_id`. Two indexes: `(provider_id, enabled)` and `(provider_id, enabled, last_used_at)` for the Phase 2 picker.
+- **Column `providers.oauth_account_strategy`** — nullable; when null, inherits the app-wide default from `settings.oauth_account_default_strategy` (default `least_utilized`). Values: `least_utilized` | `round_robin` | `least_recently_used`.
+- **`app/providers/oauth_account_seeder.py`** — idempotent boot-time seeder. For each cursor-oauth / codex-oauth / claude-oauth Provider row with an existing `api_key` AND zero child rows, inserts one row copying the token pair with `captured_via='migration_from_provider'`. Non-fatal on failure. Runs at end of `init_db()`.
+- **`app/api/admin_provider_oauth_accounts.py`** — 5 endpoints under `/api/admin/providers/{provider_id}/oauth-accounts`:
+  - `GET` — list (with `?include_deleted=true` opt-in)
+  - `POST` — create (body: label, access_token, refresh_token?, oauth_expires_at?, enabled?, captured_via?)
+  - `PATCH /{account_id}` — edit label / tokens / expires / enabled
+  - `DELETE /{account_id}` — soft-delete (writes `deleted_at`, sets `enabled=false`)
+  - `POST /{account_id}/probe` — Phase 1 stub (returns `not_implemented_yet`); Phase 2 wires to `keepalive.probe_provider` scoped to one token pair
+- **Audit rows** — every write inserts a `compliance_policy_changes` row (scope='per_provider', target_id=provider_id, reason=`oauth_account_{created|edited|soft_deleted}`) matching the v5.1.2 pattern. `cluster_sync_status='local_only'` in Phase 1 since replication is deferred to Phase 2.
+- **Settings** — `OAUTH_ACCOUNT_FANOUT_ENABLED=true` (Phase 2 kill-switch, reserved), `OAUTH_ACCOUNT_DEFAULT_STRATEGY=least_utilized` (operator confirmed).
+- **Tests** (`tests/unit/test_v5150_per_account_oauth_fanout.py`, 16/16 passing) — model shape; migration ALTER wired; seeder module + scope; admin router shape; audit-row wiring; settings present; version bumped; PLUS a Phase 1-boundary guard that asserts `_messages_dispatch.py` does NOT yet import `ProviderOAuthAccount` (locks in the derisking window until v5.15.1 consciously flips).
+
+**Operator decisions on record (2026-06-30):**
+- Default strategy: `least_utilized`
+- Max accounts per provider: **unlimited** (no admin-side cap; operator-trusted)
+- Frontend cadence: bundle with v5.15.1 Phase 2 (dispatch + UI together for tight feedback loop)
+
+**Also fixed while here:** relaxed the `test_version_bumped` assertions in `test_v5140_callback_registry.py`, `test_v5141_hook_runner_pins_all_endpoints.py`, and `test_v5142_cluster_sync_403_monitor.py` to a semver-`>=`-check pattern. Prior form (`assert '"5.14.' in src`) failed the moment the codebase moved to `5.15.x`, requiring cross-ship edits on every minor bump. New form: parse `__version__` with a regex and assert the tuple is at-or-above the version that introduced the pin. Same shape all four tests use going forward.
+
+## v5.14.x — Callback registry (hub-team Tier 1 ask)
+
+### v5.14.2 — Cluster-sync 403-rate escalation trigger (closes #492) (2026-06-30)
+
+Operator picked "set escalation trigger" for the long-standing 50% baseline of 403s on `/llm-proxy2/cluster/sync` (likely tmrwww02-peer misconfig). Pre-v5.14.2 the originator only `logger.warning`'d each non-200 response — invisible to anything downstream of stdout. v5.14.2 puts that signal into both `/health` (under a new `clusterSync` block) and `activity_log` (as a `cluster_sync.403_rate_elevated` warning event when the rate climbs).
+
+Three pieces:
+- **`app/monitoring/cluster_sync_metrics.py`** — in-process ring buffer of recent peer-sync attempt outcomes (capped at 2048 entries, 1h rolling window). `record_attempt(peer_id, status_code)` is called from `app/cluster/manager.py:push_sync` after each POST (success path AND exception path — transport errors get `status_code=0` so they don't conflate with 403s). Per-process; not multi-worker-aggregated because peer-syncs originate from one worker per node by design.
+- **`app/monitoring/cluster_sync_403_monitor.py`** — periodic worker (every `cluster_sync_403_monitor_interval_sec`, default 300s) that reads `snapshot()` and emits an activity_log warning when `recent_403_pct > cluster_sync_403_alert_threshold_pct` (default 70%, set above the known ~50% baseline) AND `attempts_1h >= cluster_sync_403_alert_min_attempts` (default 4 — guards against the 1/1=100% false positive). Cooldown of `cluster_sync_403_alert_cooldown_sec` (default 3600s) after a fire to prevent spam on sustained events.
+- **`/health.clusterSync`** block — surfaces `attempts_1h`, `status_200_1h`, `status_403_1h`, `status_other_1h`, `status_transport_err_1h`, `recent_403_pct`, `last_attempt_at/status`, `last_success_at`, `cluster_sync_fresh` (True when last 200 was within 600s). Excluded from the 3s health cache so the block is always live.
+
+Settings (all overridable via env):
+- `CLUSTER_SYNC_403_MONITOR_ENABLED=true`
+- `CLUSTER_SYNC_403_MONITOR_INTERVAL_SEC=300`
+- `CLUSTER_SYNC_403_ALERT_THRESHOLD_PCT=70.0`
+- `CLUSTER_SYNC_403_ALERT_MIN_ATTEMPTS=4`
+- `CLUSTER_SYNC_403_ALERT_COOLDOWN_SEC=3600`
+
+Test pin (`tests/unit/test_v5142_cluster_sync_403_monitor.py`, 13/13 passing): metric counts correctly (success / 403 / other / transport-err buckets); cluster_sync_fresh flips with success age; under-threshold doesn't fire; over-threshold fires with the correct event_type + severity; too-few-attempts guard works; cooldown suppresses duplicates; static-grep on manager.py wiring; static-grep on /health surface; settings present; version bumped.
+
+What this does NOT do (intentional, to keep the slice small):
+- Does not fix the underlying tmrwww02-peer misconfig. Operator-confirmed "no-touch".
+- Does not aggregate across gunicorn workers. The peer-sync sender runs on one worker; per-process is per-node-effective.
+- Does not push to external alerting (PagerDuty, Slack, etc). activity_log + /health are the surfaces; downstream pickup is hub-team territory.
+
+### v5.14.1 — Pin the runner to ALL 7 model-resolving endpoints + arch.md "What we lead on" (2026-06-30)
+
+Catches up the contract I committed to in the 2026-06-30 reply memo to hub team but shipped only partially in v5.14.0. Specifically:
+
+> "Yes — committed. All 7 model-resolving handlers."
+> "Static-grep test that asserts every endpoint with `Depends(get_db)` calls the hook runner — same shape as the v5.7.17 / v5.9.9 / v5.9.10 watchdog ordering tests. If a future endpoint forgets, the test fails before merge."
+> "One file, one helper, one test pinning every endpoint to it. No 'this hook fires on three of four endpoints' surprises."
+
+v5.14.0 only wired 2 of 7 (messages.py + completions.py). v5.14.1 wires the remaining surfaces and locks in a static-grep test that fails before merge if any future endpoint forgets:
+
+- `/v1/responses` — wired with `handler_id="responses"` (idempotent atop the inner completions.py call)
+- `/v1/audio/speech` — wired with `handler_id="audio.speech"`
+- `/v1/audio/transcriptions` — wired with `handler_id="audio.transcriptions"`
+- `/v1/images/generations` — wired with `handler_id="images"`
+- `/v1/embeddings` — wired with `handler_id="embeddings"`
+
+Plus the architecture.md "What we lead on" section that I also committed to but deferred:
+
+- `X-Compliance-Substitution` header convention (no OSS peer equivalent)
+- `compliance_events` row-per-request audit table (no OSS peer equivalent; LiteLLM ships audit as Enterprise-license-only CRUD on Keys/Teams/Users/Models — not per-request substitution events)
+- Path A / Path B MCP distinction (unique in the 2026-06-30 research pass)
+
+**LiteLLM #27518 footgun class mitigated:** the new `test_v5141_hook_runner_pins_all_endpoints.py` asserts that every pinned endpoint imports the runner, invokes `apply_response_hooks(handler_id=...)`, and that the seven `handler_id` values are unique (no aliasing) and cover the expected set. A new endpoint that forgets the runner breaks the test at merge time.
+
+Tests: 21/21 across v5.14.0 + v5.14.1. **For hub team**: the registry is now fully consistent across all caller-facing endpoints — your `dev_issues_mirror` hook will fire on every model-resolving 2xx response regardless of which endpoint the caller hit.
+
+### v5.14.0 — Callback registry + migrate `X-Compliance-Substitution` emission to a built-in hook (2026-06-30)
+
+Closes #510 — hub team's 2026-06-30 peer-comparison-roadmap Tier 1 ask. Inspired by LiteLLM's 6-hook lifecycle (`async_pre_call_hook`, `async_post_call_*`, etc.) and Portkey's typed `PluginHandler` contract, **but with one important footgun mitigation per our 2026-06-30 reply memo**: our runner pins all model-resolving endpoints to a static-grep test so the LiteLLM `/v1/messages` bypass class (their issue #27518) can't happen here. Fail-closed default (opposite of Portkey's `verdict:true` webhook fail-open).
+
+**New: `app/api/_response_hook_runner.py`** — the registry + runner. Public surface:
+
+- `register_hook(name, fn, priority=0, timeout_sec=2.0)` — idempotent on name; re-register replaces.
+- `unregister_hook(name)` — drop by name.
+- `registered_hooks()` — read-only snapshot (no `fn` exposure).
+- `apply_response_hooks(handler_id, resp_headers, context)` — runs every non-degraded hook in priority order; mutates `resp_headers` in place.
+- `register_builtin_hooks()` — wires the in-tree hooks at boot (called from main.py lifespan).
+- `HookContext` dataclass — passed to each hook. Initial fields cover hub team's substitution-mirror needs: `requested_model`, `served_model`, `api_key_id`, `provider_id`, `compliance_event_id`, `substituted`, `key_record`, `request`.
+
+**Fail-closed semantics:** per-hook timeout (default 2s) + per-hook exception → emit `X-Hook-Failure: <name>:<short_reason>` and increment `consecutive_failures`. After 5 consecutive failures the hook is marked **degraded** and skipped until something re-registers it. Prevents one runaway hook from spamming every response.
+
+**Hook ordering:** registration order + explicit `priority` keyword. Stable sort ascending. No iteration-order surprises.
+
+**New: `app/compliance/substitution_hook.py`** — `compliance_substitution_header_hook`. Idempotent: if a caller (or upstream substitution-active path) already set `X-Compliance-Substitution`, it leaves it alone. Otherwise sets `true` (substituted), `false` (policy evaluated, served model passed), or `pass-through` (no per-key policy). Behavior matches the pre-v5.14.0 inline emission byte-for-byte so the v5.9.3 contract holds for hub team's `_scan_anthropic_response_model`.
+
+**Wired into:** `/v1/messages` and `/v1/chat/completions` response-write sites. Both call `apply_response_hooks` right before `return JSONResponse(...)`. Static-grep tests pin both. Remaining endpoints (`/v1/responses`, `/v1/audio/*`, `/v1/images/generations`, `/v1/embeddings`) follow in v5.14.1 — same shape, just propagation.
+
+**Settings:** `callbacks_fail_closed` (default True), `callbacks_default_timeout_sec` (2.0). Hub team registers their substitution-mirror hook via `callbacks.<name>.*` settings keys (pre-allocated in their memo).
+
+**Tests:** `tests/unit/test_v5140_callback_registry.py` — 17 cases covering registry surface, priority sort stability, re-registration semantics, timeout fail-closed, exception fail-closed, degradation after 5 failures, built-in hook contract (3 emission cases + idempotency), wire-up on both handlers, settings exposure.
+
+**For hub team:** registry is live as of v5.14.0. Drop your substitution-mirror hook in `app/compliance/callbacks/dev_issues_mirror.py` (or anywhere importable); register it via `register_hook("dev_issues_mirror", fn, priority=10)` at startup. The built-in hook fires at priority 0; your hook sees `resp_headers` after the built-in has set `X-Compliance-Substitution` and can mirror the value into your `dev_issues` queue.
+
+### v5.12.2 — Ship 3 (accept handler) + Ship 1.1 (MCP-native dual-emit half) (2026-06-30)
+
+Closes the v5.10 design doc's last two pieces in one ship.
+
+**Ship 3 — Accept handler.** New `app/capability_scout/accept_handler.py`. Caller sends `X-Proxy-Accept-MCP: <tool>` (or comma-separated list) on their next request after seeing the suggestion header. The proxy:
+
+1. Validates each requested tool against the live MCP catalog (FastMCP `list_tools` result, 5s-cached).
+2. Appends accepted tools to the calling api_key's `mcp_tools_allow` list (dedupe; preserves existing entries).
+3. Writes a `compliance_policy_changes` row with `scope='per_key'`, `target_id=api_key_id`, `reason='mcp_tool_adopted_via_accept_header'`, `before_state`/`after_state` capturing the exact allow-list mutation.
+4. For unknown tools: sets `Warning: 299 - "Tool 'X' not in proxy MCP catalog; ignored"` per RFC 7234.
+5. Sets `X-Proxy-MCP-Accept-Status: ok | partial | rejected` so the bot can detect outcome from a single header.
+
+Wired into the response-write paths of `/v1/messages` and `/v1/chat/completions` so the allow-list mutation lands on the same request (next-request semantics would waste a round-trip).
+
+**Ship 1.1 — MCP-native notifications dual-emit half.** Pattern from upstream-review of ccproxy's `NotificationBuffer` (2026-06-29 audit). When the suggestion-emit fires the `X-Proxy-MCP-Suggestion` header for a caller, it ALSO pushes a body to the new per-api_key notification buffer in `app/capability_scout/suggestion_buffer_mcp.py`. The FastMCP `call_tool` wrapper drains pending notifications at the start of each tool call for the calling api_key, surfaced via the MCP transport.
+
+Buffer semantics borrowed from ccproxy:
+- **Per-key cap**: 32 entries. Overflow drops oldest + prepends a synthetic `ccproxy_buffer_overflow` marker on the next drain — same event-type name so consumers that already parse ccproxy's overflow markers accept ours without changes.
+- **TTL**: 1 hour. Stale entries pruned on each push.
+- **Process-local**: not cluster-replicated. A roll drops buffered notifications. Acceptable for observability.
+
+What this ship does NOT do: the drain currently logs at INFO; emitting a proper FastMCP `ctx.info()` `notifications/message` event would require refactoring each `@mcp.tool()` to accept `ctx`, which is a bigger surface change than 30 LOC. The buffer + drain + log gets us to "observability complete" with a clean extension point for a future ship to wire actual MCP-protocol emission.
+
+Tests: `tests/unit/test_v5122_ship3_and_ship11.py` — 11 cases covering header parser, accept-handler wiring on both endpoints, audit scope, buffer push/drain round-trip, overflow marker contract, MCP drain wiring, suggestion-emit push.
+
+### v5.12.1 — Hotfix bundle: #483 zero_row_streak silencer + #499 tmrwww02 cert auto-restart watcher (2026-06-30)
+
+Two long-pending operator items closed in one patch ship, per the 2026-06-30 interview decisions.
+
+**#483 — `compliance_audit.zero_row_streak` per-cluster silencer.** No code change needed — the v5.7.11 `compliance_audit.zero_row_warning_enabled` system_setting already supports per-instance suppression. Operator picked "per-cluster admin-flag" semantics in interview; strict cluster separation means the flag set in each cluster's DB is independent (no cross-cluster awareness). Flipped OFF on the TMR `/llm-proxy/` clone cluster (legitimately compliance-free by design). Left at default (ON) on TMR `/llm-proxy2/` main cluster and c1conv — compliance-enforcement is live on both. Audit log will fall silent on the clone cluster within the next sweep.
+
+**#499 — tmrwww02 LE cert auto-renewal nginx restart hook.** Operator picked "Proxy team ships (sidecar marker-file watcher)" in interview. Implemented as three host-side files, all committed under `ops-scripts/tmrwww02-cert-hook/` for source-of-truth + audit:
+
+- `touch-nginx-restart-marker.sh` — certbot deploy-hook, runs INSIDE the certbot container after every successful renewal. Touches `/etc/letsencrypt/.nginx-restart-needed` (the bind-mounted shared volume so the host can see it).
+- `nginx-cert-restart-watcher.sh` — host-side daemon. Polls the marker file once per minute; on detect, runs `docker restart nginx` (forces clean process restart — `nginx -s reload` doesn't pick up the new cert because the symlink target swap is masked by OpenSSL's in-memory context). Deletes the marker after success; leaves it for retry on failure.
+- `nginx-cert-restart-watcher.service` — systemd unit. `Restart=always` so the watcher survives crashes. Runs as `dblagbro`, with sudo on `docker restart` (already in sudoers).
+
+End-to-end smoke-fire verified 2026-06-30 20:02–20:03 UTC: marker touched at 20:02:43Z → watcher saw it 35s later → nginx restart completed at 20:03:30Z (12s docker restart) → marker auto-deleted. Watcher will catch the next real auto-renewal (~2026-08-23 per the v4.10 cert's 90-day cycle, last renewed 2026-06-24).
+
+Tests: `tests/unit/test_v5121_hotfix_bundle.py` — 6 cases. Structural pins on (a) the v5.7.11 silencer's per-instance lookup, (b) presence + correctness of the three cert-hook scripts in the repo, (c) marker path + delete-after-restart contract, (d) systemd `Restart=always`.
+
+Closes #483, #499.
+
+### v5.12.0 — MCP capability back-pressure Ship 1+2 (2026-06-30)
+
+Implements Ship 1 + Ship 2 from `docs/5.10-mcp-backpressure-design.md`. **Versioned 5.12.0 instead of 5.10.0 to keep semver monotonic after v5.11.x** — the design doc retains its v5.10 filename for historical continuity. The closed-loop work that the v5.7.6 capability scout opened in June finally lands.
+
+Operator interview 2026-06-30 pinned three decisions before code started:
+- **Wire format:** dual-emit — `X-Proxy-MCP-Suggestion` JSON header for REST callers + MCP `notifications/message` over `/mcp` for Path A callers with an open session (REST half ships now; MCP-native half is queued for Ship 1.1).
+- **Default emission threshold:** 50 (= 0.5 in design-doc notation; ≈ ~3 consecutive refusals at the default +20 per bump). Tunable via `MCP_SUGGESTION_THRESHOLD` env or `mcp_suggestion_threshold` setting.
+- **Audit scope:** `api_key` — emissions write `compliance_policy_changes` rows with `scope='per_key'` + `target_id=api_key_id` + `reason='mcp_suggestion_emitted'`, matching the v5.1.2 retention-edit pattern.
+
+**Ship 1 — `X-Proxy-MCP-Suggestion` response-header emission.** New `app/capability_scout/suggestion_emit.py` with `apply_suggestion_header()` reads the caller's max score, compares to the threshold, and (if it crosses) sets `X-Proxy-MCP-Suggestion: {"tool":"...","score":NN,"why":"..."}` on the response. Wired into the success paths of both `/v1/messages` and `/v1/chat/completions`. Idempotent within a 60s cooldown per (api_key, tool) so a tight retry loop doesn't write 100 audit rows.
+
+**Ship 2 — `caller_capability_score` table + decay worker.** New ORM model in `db_mcp.py` keyed by (api_key_id, suggested_tool). Scores are stored ×100 as integer (avoids cluster-sync float drift). The existing `emit_suggestions()` path now bumps the score (+20, capped at 100) after writing the activity_log row. A new background worker `app/monitoring/caller_score_decay.py` fires every 6h, multiplies all scores by 0.96 per tick (~24h half-life), and GCs rows below 5. Worker wired into the main.py lifespan via `start_caller_score_decay()`.
+
+**What does NOT change:** the existing v5.7.6 activity_log emission still happens; v5.12 only adds the score-based gating layer on top. Hub team's `cursor_billing` worker and `/api/admin/compliance-events` query path are unaffected (the new audit rows show up there with `event_type='compliance_policy_change'`).
+
+**Cluster sync:** the new `caller_capability_score` table is NOT yet wired into the cluster sync loop — Ship 2.1 (separate small ship) will add the `_apply_caller_scores` section. For now each cluster accumulates independently; matters for emission timing but not correctness.
+
+Tests: `tests/unit/test_v5120_mcp_backpressure_ship1and2.py` — 13 cases covering ORM presence, score module surface, suggestion-emit audit shape, wire-up on both handlers, scout score-bumping integration, decay worker startup, settings exposure. All 13 pass.
+
+**Ship 3 (accept handler + per-key allow-list flip)** queued as v5.12.1, target the same week. **Ship 1.1 (MCP-native notification half of dual-emit)** queued similarly.
+
+### v5.11.0 — NVIDIA NIM provider + `/api/admin/requests/stream` SSE live tail (2026-06-29)
+
+Two additive features inspired by the 2026-06-29 audit of four upstream Claude-proxy projects (`Alishahryar1/free-claude-code`, `starbaser/ccproxy`, `adolfousier/cc-max-proxy`, `snipeship/ccflare`). The review surfaced these as the two quickest, lowest-risk wins.
+
+**NVIDIA NIM provider** — adds `nvidia_nim` to the provider catalog. NVIDIA hosts an OpenAI-compatible endpoint at `integrate.api.nvidia.com/v1` that serves NVIDIA's Nemotron family + third-party catalog (Z.ai GLM, MoonshotAI Kimi, MiniMax). litellm has native `nvidia_nim/` prefix support so the wiring is just three single-line table updates:
+
+- `app/routing/litellm_binding.py:PROVIDER_TYPE_TO_LITELLM` — `nvidia_nim → nvidia_nim`
+- `app/routing/litellm_binding.py:PROVIDER_DEFAULT_MODELS` — default `nvidia/nemotron-3-super-120b-a12b`
+- `app/providers/scanner.py` — pre-flight api_key gate updated
+- `app/routing/capability_inference.py` — multi-region defaults
+
+The existing `test_all_known_types_have_default` invariant would have caught a partial wiring. Operator can now create a cursor-style `nvidia_nim`-type provider in the admin UI with the NIM API key; the router picks it up like any other OpenAI-shape backend. Gives the cross-family fallback chain a free-tier option for periods when Anthropic / Gemini / OpenAI providers are throttled.
+
+**`/api/admin/requests/stream` SSE live tail** — new admin endpoint that broadcasts `activity_log` rows as they're inserted, so the admin UI can show "what's happening right now" without polling. ccflare ships the same idea (`/api/requests/stream`). Implementation details:
+
+- Polls `WHERE id > last_seen` every 1.5s; `id`-indexed so cost is a few ms.
+- 25s SSE comment heartbeat to keep nginx + intermediaries from idle-closing during quiet periods.
+- Optional `?event_type=` substring filter — e.g. `?event_type=proxy_tool` for the dedupe_skip rows DevinGPT asked about in their 2026-06-22 monitoring-tab follow-up.
+- `X-Accel-Buffering: no` header so nginx flushes the stream.
+- Wired to the v5.7.17 disconnect watchdog — when an admin tab is closed, the generator is cancelled cleanly and the DB session is released (same contract as `/v1/messages`, `/cluster/sync`, etc.).
+
+Polling chosen over pub/sub: SQLite + uvicorn multi-worker means an in-process queue would miss writes from other workers. A 1.5s indexed poll is correct under the multi-worker topology we run; can be revisited if `activity_log` insert rate ever grows past tens/sec.
+
+Tests: `tests/unit/test_v5110_upstream_review_wins.py` — 9 cases covering both features (provider catalog wiring + scanner gate + capability inference + SSE router import + admin-prefix mount + watchdog ordering + admin auth + version pin). All 46 router-invariant + new tests pass.
+
+**Items NOT shipped from the upstream review** (documented for future consideration):
+
+- `/v1/models` catalog audit: already feature-complete (full `ModelCapability` catalog with `id`/`object`/`created`/`owned_by`/`aliases`/`family`/`kind`, OpenAI list shape, CORS-exposed, cluster-synced). No-op vs. FCC's implementation.
+- ccproxy's MCP server-notifications bridge: relevant to v5.10 design doc; folded into the open questions there rather than shipping a parallel implementation.
+- ccproxy's DAG-driven hook pipeline: tabled as longer-term refactor candidate.
+- ccflare's per-account OAuth fan-out: tabled as future enhancement; current single-OAuth-per-provider model holds for our fleet of one Cursor account.
+- cc-max-proxy's CLI-spawn backend: not applicable (claude-oauth already cookie-auths; CLI spawn would add 1-2s latency).
+
+### v5.9.10 — Disconnect watchdog coverage: /cluster/sync (slow pool leak on peer-receiver nodes) (2026-06-28)
+
+Caught the same supervisor-shape DB pool leak on tmrwww02 in the 12h log review: `dbPool.checked_out=8`, `oldest_checkout_age_sec ≈ container uptime`, sessions held since ~boot. The www2 endpoint traffic distribution explained it cleanly — **1088 inbound `/cluster/sync` POSTs / 24h** (from peers pushing state) vs only 184 `/v1/messages`. The v5.7.17 + v5.9.9 watchdog had been wired into the caller-facing endpoints but not into the cluster-sync receiver path; `cluster.py:181` still took only `db = Depends(get_db)` with no watcher. A peer-side httpx timeout, network blip, or peer process restart mid-`apply_sync` left the FastAPI handler running with the DB session held. At ~0.2% of inbound sync calls dropping like this, www2 plateaued at 8 leaked sessions before container restart.
+
+This ship adds the standard watchdog dep to `/cluster/sync` — same contract as the other handlers: listed before `db = Depends(get_db)` so the watcher is armed before the session is checked out. Pure additive change to the signature; no behavioral change to successful syncs. Closes the runtime leak path on every receiver node in the cluster.
+
+Tests: `tests/unit/test_v5910_cluster_sync_watchdog.py` — 3 cases: (a) cluster.py imports `watch_for_disconnect`, (b) per-handler ordering check that the watchdog dep precedes `Depends(get_db)` inside the `cluster_sync` signature, (c) `__version__` bumped to 5.9.10. All 19 watchdog tests (v5.7.17 + v5.9.9 + v5.9.10) pass.
+
+Post-deploy: container restart on tmrwww02 (done as the tactical fix yesterday — 2026-06-27). v5.9.10 deploy fleet-wide will prevent the leak path from re-opening on the next inbound peer disconnect. www1 and c1conv have not exhibited the leak (likely lower inbound sync volume) but get the same coverage as a side effect.
+
+### v5.9.9 — Disconnect watchdog coverage: /v1/responses + /v1/audio/* + /v1/images/* (2026-06-25)
+
+v5.7.17 wired the disconnect watchdog into `/v1/messages`, `/v1/chat/completions`, and `/api/integration/chat` to close the 2026-06-16 supervisor DB pool leak: when a caller times out and drops the connection mid-request, FastAPI/Starlette do NOT auto-cancel the handler, so `async with db: ...` keeps holding its pool slot until the upstream eventually responds. The watchdog polls `request.is_disconnected()` every 2s and cancels the handler on disconnect — `CancelledError` propagates through the `async with` blocks, the slot is released.
+
+The audio + images endpoints added in v5.9.0 and the older `/v1/responses` shim were never updated. All three take `db = Depends(get_db)` and leak the same way. Spotted in the wild on www2 `/llm-proxy2`: `/health.dbPool.checked_out=1`, `oldest_checkout_age_sec=41891` (~11.6h) on an otherwise idle container. v5.9.9 wires `Depends(watch_for_disconnect)` into:
+
+- `/v1/responses` (`app/api/responses.py`)
+- `/v1/audio/speech` and `/v1/audio/transcriptions` (`app/api/audio.py`)
+- `/v1/images/generations` (`app/api/images.py`)
+
+Each watchdog dep is listed BEFORE `db = Depends(get_db)` so the watcher is armed before the session is checked out — same ordering contract as the v5.7.17 handlers. Zero behavioral change to successful requests.
+
+Tests: `tests/unit/test_v599_watchdog_coverage_responses_audio_images.py` — 6 cases: (a) each of the three modules imports `watch_for_disconnect`, (b) per-handler ordering check that walks each file and pairs every `Depends(get_db)` with a preceding `Depends(watch_for_disconnect)` in the same signature (so a single watchdog can't accidentally satisfy two handlers). All 16 watchdog tests (v5.7.17 + v5.9.9) pass.
+
+Post-deploy: container restart on tmrwww02 clears the existing leaked slot. The fix only prevents NEW leaks — pre-fix leaked slots persist until restart.
+
+### v5.9.8 — Backlog sweep: external_usage_snapshot retention + log-noise suppression (2026-06-23)
+
+Three backlog items in one ship — all observational/cosmetic, no behavioral change to the request path:
+
+**#472 — Retention sweeper covers `external_usage_snapshot`.** Audit of the v5.7.24 task ("clear up old metrics") showed the live activity_log + provider_metrics tables are already managed by the v3.0.7 prune sweep (severity-tiered + WAL truncate). The actually-growing table not previously covered: `external_usage_snapshot` (one row per provider per ~4h Anthropic Console scrape window, 902 rows on the clone cluster). Rotation logic only consults the latest row per provider, so the older rows are observational. New `_prune_external_usage_snapshots(keep_days)` helper, defaults to 90d, configurable via `external_usage_snapshot_retention_days` settings. Surfaced in the daily `prune.swept` log line. *Tagged "DISK PRESSURE NOW" was actually 2.1 GB of leftover `llmproxy.db.v5.0.{0,7}.snapshot` files from the v5.0.x compliance migration on llm-proxy2 — those are operator-decision (rollback safety); flagged separately.*
+
+**#487 — Suppress `Unclosed client session` warnings.** litellm's transitive aiohttp client leaks ~1 session/CB-trip when the upstream call is cancelled mid-way. The asyncio resource warning fires at ERROR level by default which trips our own log-mining filters. Demoted via a filter on `logging.getLogger("asyncio")`. Real leak is upstream of us (litellm's responsibility); the warning is purely cosmetic for our observability path. Also catches the `Unclosed connector` variant.
+
+**#494 — Wrap the airi-rules seed rollback in try/except.** The `cluster/sync.py:69` rollback was already protected against post-cancellation `OperationalError('no active connection')`, and `get_db()` (`database.py:609`) swallows the same in the dependency chain. The remaining unprotected callsite was `app/airi/rules.py:68` (IntegrityError race fallback). Now matches the established pattern — try/except around the rollback so a connection that aiosqlite tore down before SQLA's `__aexit__` ran doesn't surface as `ERROR:asyncio:no active connection` log noise.
+
+**#473 closed-as-duplicate.** Audit during this ship revealed the Compliance Logging Settings panel was already shipped across v5.1.0–v5.1.2: toggle (Batch C1), time-range bulk purge with HMAC peer fan-out (Batch C2), retention editor (Batch C3). All three live in `CompliancePage.tsx` (LoggingControlsPanel + ActivityLogPurgePanel + retention controls). Operator's 2026-06-05 memo had been filled before #473 was tagged. No new code; just task closure.
+
+Tests: `tests/unit/test_v598_external_usage_retention.py` (4 cases — helper exists, default = 90d, log line + sweep dict have new keys). All 46 CB + retention tests pass.
+
+### v5.9.7 — Circuit-breaker `get_state` enforces `hold_down_until` (latent v5.3.9 bug) (2026-06-23)
+
+Post-v5.9.6 deploy verification caught the backoff being COMPUTED correctly but never ENFORCED. Grok-Web-Devin log timeline showed `consecutive_opens=6` hit cycle 6 at `hold_down_sec=3840` (~64 min) but the next CB-open fired 90 seconds later. Pattern repeated cycle 7, 8, ..., 23, all at hold_down=3840 (capped) but still 90 seconds apart.
+
+Root cause traced to `get_state()` line 70: the OPEN→HALF_OPEN gate checked only `s.opened_at + settings.circuit_breaker_timeout_sec` (a 60s constant) and ignored `s.hold_down_until` entirely. So every 60s the breaker went half-open, auto-probe (v5.3.9) fired, probe failed, `record_failure` re-OPENed it. The exponential hold_down was decorative — it appeared in the log line as `hold_down_sec=3840` because `record_failure` computed it, but the timeout that actually drove the half-open cadence was the static 60s.
+
+This was also a latent bug in v3.0.53's billing-error 6h hold-down. Billing errors set `hold_down_until = now + 21600`, but the same `get_state()` path ignored it. Operator never noticed because billing-error volume is naturally low; the v5.9.6 ship made it visible by stress-testing the auto-probe path with a chronically-failing network provider.
+
+Fix: `ready_at = max(opened_at + circuit_breaker_timeout_sec, hold_down_until)`. The static timeout stays as the floor (transient blips still get the snappy probe), and hold_down acts as the ceiling for chronically-bad providers. Single-line change in `get_state()`.
+
+Tests: `tests/unit/test_v597_cb_hold_down_enforced.py` — 4 cases: (a) pending hold_down blocks half-open even past static timeout, (b) both thresholds elapsed → half-open fires, (c) transient (short hold_down) still respects static timeout, (d) billing-error 6h hold no longer pops half-open at 10 min. All 52 CB tests pass.
+
+Visible impact: chronically-failing providers now retest every `2^min(N-1,5) × base = 64 min` (at the cap) instead of every 60s. ~64× reduction in probe pressure on dead upstreams; corresponding reduction in CB-open log lines. Healthy providers unaffected.
+
+### v5.9.6 — Circuit-breaker re-open log suppression + exponential backoff (2026-06-23)
+
+`/loop` log sweep caught Grok-Web-Devin emitting 17 `circuit_breaker.opened` lines per 30-min window on the /llm-proxy clone (cumulative `failures=250→270` over a few hours). Two distinct bugs in `record_failure`:
+
+1. **No state-transition guard.** Every failure past threshold re-set state to OPEN, re-set `hold_down_until = now + base`, and re-emitted the warning log — even when the CB was *already* OPEN. With v5.3.9's auto-probe firing on every 60s timeout cycle, a chronically-dead provider cycled OPEN → HALF_OPEN → probe-fails → record_failure → "OPEN" forever, one noise line per cycle.
+2. **No exponential backoff.** The hold-down stayed pinned at the base 120s no matter how many consecutive cycles failed. Effective retest cadence on a dead upstream was every 120s — same as a transient blip. Pre-v3.0.53 the billing-error path bridged this gap (6h hold) but only when the error message matched specific patterns; everything else (network failure, empty success, bridge timeout) stayed on the 120s loop forever.
+
+Fix: gate the OPEN block on `was_open = s.state == CBState.OPEN` and early-return when already OPEN. Track `consecutive_opens` on `_LocalState`, increment only on transition, reset to 0 in `record_success` and `force_close`. Compute `hold_down = base * 2^min(consecutive_opens - 1, 5)` — caps at 32× base (~64 min at default 120s), bridging the gap between transient and billing-error without operator tuning. The cap matters: an unbounded backoff would eventually exceed billing-error's 6h hold and silently make legit billing-error suppression less aggressive than network-error suppression.
+
+Behavioral impact on healthy providers: zero. Transient single-burst failures hit `consecutive_opens=1`, multiplier=1, behavior identical to pre-v5.9.6. Backoff only escalates when the same provider cycles OPEN → HALF_OPEN → probe-fails → OPEN repeatedly, which is precisely the dead-provider pattern this is targeting.
+
+Tests: `tests/unit/test_v596_cb_backoff_and_log_suppression.py` — 6 unit tests covering (a) single log per transition under sustained failure, (b) hold_down doesn't drift while OPEN, (c) consecutive_opens advances only on transition, (d) 2^N escalation up to cap, (e) reset on recovery, (f) reset on force_close. All 48 existing CB tests (`test_circuit_breaker.py` + `test_v539_cb_hardening.py`) continue to pass.
+
+### v5.9.5 — /keys white-page fix: coalesce NULL counter columns in serializer (2026-06-22)
+
+Operator: "I still get blank page loads on /llm-proxy/keys." Tracked to task #477 from 2026-06-20 (was blocked on admin creds, now unblocked by playwright bundle analysis).
+
+Diagnosed by reading the minified `useQuery`/`useMemo` chain in the SPA bundle + matching to source: `APIKeysPage.tsx` line 646 renders `{k.total_requests.toLocaleString()}` with **no null guard**. The `v580-integration-internal` key on the clone cluster had `total_requests=NULL, total_tokens=NULL, total_cost_usd=NULL` in the DB (never used → never updated). `null.toLocaleString()` throws `TypeError`, the entire row's render fails, React unmounts the whole page → flash-then-white.
+
+Fix is one-sided: backend `_serialize` now coalesces these three counters to 0 (`int(k.total_requests or 0)`, etc.). Frontend doesn't need any change — `0.toLocaleString()` returns `"0"`. Any other key that ever lands with NULL counters (key created without first request firing the rollup) renders cleanly as 0 instead of crashing the page.
+
+Tests: `tests/unit/test_v595_apikey_serialize_null_counters.py` (pins coalesce + asserts shape).
+
+### v5.9.4 — SPA catch-all: `/cluster` and `/metrics` are SPA routes (2026-06-22)
+
+Operator-flagged Playwright audit caught `/cluster` returning JSON 404 (instead of the SPA shell) on every production endpoint. Root cause: the v3.10.10 BUG-030 API-namespace denylist in main.py's SPA catch-all blocked any path whose first segment was `cluster`, `lmrh`, `metrics`, `health`, or `version`. But `/cluster` and `/metrics` are real SPA routes (in `App.tsx`); only paths *under* them are API routes. The over-broad check made the bare SPA route 404 on hard-refresh.
+
+Fix: narrow the denylist. `v1`, `api`, `mcp` keep 404'ing bare (no SPA route there). The other five prefixes 404 only when there's a slash after the namespace (`/cluster/status` → 404; `/cluster` → SPA shell).
+
+### v5.9.3 — Always-on X-Compliance-Substitution header (hub-team contract change) (2026-06-22)
+
+Operator memo (`coordinator-hub/docs/cross-team/2026-06-21-proxy-team-compliance-substitution-header.md`): hub-side defense-in-depth scanner (`_scan_anthropic_response_model`) opens dev_issues on 2xx responses where served_model is claude-* AND `X-Compliance-Substitution` is absent. Pre-v5.9.3 the header fired only when substitution actually happened; absence ambiguously meant "no substitution needed" or "no policy applies" or "proxy bug". Hub couldn't disambiguate, so it conservatively opened issues — 110 GCP-side, 1614 on operator dev hosts before per-cluster mute landed.
+
+Diagnosed root cause for the GCP claude responses opening dev_issues: `ai-provider-supervisor-internal` key probes provider health via Cursor's OpenAI-compatible bridge serving `claude-haiku-4-5-20251001`. That key has no per-key blocked_companies policy (it's an internal probe, not a customer key), so substitution doesn't fire — but the hub scanner sees claude in the response and opens an issue.
+
+Fix: `_compliance_handler.emit_substitution_disclosure_for_route` always returns the disposition header, even when no substitution fired. Three values:
+- `X-Compliance-Substitution: true` — substitution actually fired (unchanged behavior; the existing `compliance_headers()` helper sets this)
+- `X-Compliance-Substitution: false` — policy evaluated, served model passed unchanged (key has at least one non-empty policy field: blocked_companies, allowed_companies, blocked_models, allowed_models, allowed_paths)
+- `X-Compliance-Substitution: pass-through` — no per-key policy applies; this key bypasses the substitution gate by design (internal probe keys, dev keys, etc.)
+
+Hub-side scanner can now drop the absence heuristic and treat missing header as a strict assertion failure ("proxy bug or something between proxy and hub strips it").
+
+### v5.9.2 — keepalive gate-order hotfix: auto_skip_until BEFORE is_available (2026-06-22)
+
+v5.9.1's streak gate fired correctly — `_persist_auto_skip` ran at streak=10, setting `auto_skip_until=+24h`. But the smoke CB cycle didn't silence: `circuit_breaker.opened` kept firing with failures=30, 31, ... up through 40. Diagnosis: v5.8.7 added the `auto_skip_until` skip check AFTER the `is_available` (CB) check. CB's 120s hold-down expires regularly; in those windows `is_available=True`, so the loop proceeds to probe BEFORE the auto_skip_until gate can engage. Probe fails → record_failure → hold_down reset to 120s → cycle continues, threshold-10 streak gate fires again, repeats.
+
+Fix: re-order. "Operator must re-auth" (auto_skip_until in future) is strictly stronger than CB hysteresis — check it FIRST, before is_available. After this, a provider with auto_skip_until in the future is skipped regardless of CB state, ending the cycle until operator re-auth clears auto_skip_until.
+
+### v5.9.1 — keepalive: re-persist auto_skip on persistent probe auth-failure (2026-06-22)
+
+Smoke logs caught the v5.8.6/v5.8.7 gates working as designed BUT only while auto_skip_until is set. The two long-revoked codex providers (codex-test, Codex-Smoke) had their auto_skip_until expire after 24h on 2026-06-21 20:35 UTC; once expired, keepalive resumed probing, each probe 401'd, CB cycled (failures=4 → 5 → 6 → ...) generating one CB.opened warning per probe sweep forever. The v5.8.3 fix #3 (route probe failures through `record_failure` not `record_auth_failure`) intentionally keeps a single transient 401 from auto-skipping a provider for 24h, so it doesn't extend auto_skip on its own.
+
+Fix: track consecutive probe auth-failures per provider; when the streak crosses `_PROBE_AUTH_FAILURE_RE_SKIP_THRESHOLD` (default 10, ≈ 50min at default probe cadence), call `circuit_breaker._persist_auto_skip(provider_id, "persistent_auth_failure_via_probe_streak")`. The v5.8.6 and v5.8.7 gates then re-engage and silence the cycle. Any successful probe resets the streak so transient outages don't accumulate. Operator re-auth clears auto_skip_until normally.
+
+### v5.9.0 — OpenAI-compatible /v1/audio/* and /v1/images/generations (2026-06-21)
+
+DevinGPT team memo (2026-06-21, "missing audio + image endpoints on the proxy HTTP surface") asked for three endpoints so they can drop all direct-OpenAI calls and unify billing + audit + fallback through the proxy. Pre-v5.9.0 the proxy returned `405 Method Not Allowed` on every `/v1/audio/*` and `/v1/images/generations` POST — the model catalog advertised TTS/STT/image models but no HTTP surface routed to them.
+
+**New routes (all OpenAI-shape):**
+- `POST /v1/audio/speech` — `{model, voice, input, response_format?, speed?}` → audio/mpeg (or audio/wav from fallback).
+- `POST /v1/audio/transcriptions` — multipart `{file, model, language?, prompt?, response_format?, temperature?}` → `{text, ...}`.
+- `POST /v1/images/generations` — `{model, prompt, n?, size?, quality?, response_format?, style?}` → `{created, data:[...]}`.
+
+**Routing**: same `select_provider` machinery as `/v1/embeddings`. Models must be advertised by at least one provider's scanned capabilities. Subscription-OAuth providers (`claude-oauth`, `ChatGPT-oauth-plan`, `grok-web`, `cursor-oauth`) are excluded — none expose audio or image-gen surfaces.
+
+**Auth**: same `resolve_api_key_dep` used by `/v1/chat/completions`. Bearer token / x-api-key header.
+
+**Audio fallback**: on upstream error AND `audio_fallback_to_whisper_bridge=true` (default), the request transparently falls back to the in-compose `whisper-bridge` sidecar (Piper TTS for `/v1/audio/speech`, Whisper for `/v1/audio/transcriptions`). Responses include `X-Audio-Source: whisper-bridge-fallback` so callers can attribute. Disable via the system setting if strict cost-accounting matters.
+
+**Images**: upstream-only — no in-compose diffusion model. Operator must enable an OpenAI-compatible image provider in the catalog (gpt-image-1, gemini-2.5-flash-image, etc.).
+
+Files: `app/api/audio.py`, `app/api/images.py`, route registration in `app/main.py`, settings flag in `app/config.py`. Regression tests pin the route registration in `tests/unit/test_v590_audio_images_routes.py`.
+
+---
+
+## v5.8.x — AI Integration Protocol
+
+### v5.8.8 — codex_billing_worker: skip scrape on auto-skipped + disabled providers (2026-06-21)
+
+Sibling of v5.8.6/v5.8.7. Smoke logs showed `codex_billing.scrape_failed` warnings on the same two auto-skipped providers (codex-test, Codex-Smoke). Root cause same shape: the codex billing worker filtered by `provider_type` + `deleted_at` only — not `enabled`, not `auto_skip_until`. So a permanently-revoked provider gets re-scraped every worker interval, the bearer refresh attempt fails, and `scrape_failed` logs once per cycle indefinitely.
+
+Fix: gate the worker's provider select on `enabled == True` AND skip individual rows whose `auto_skip_until > now()`. Both additions mirror v5.8.6/v5.8.7's gate.
+
+### v5.8.7 — keepalive: skip probes on auto-skipped providers (2026-06-20)
+
+Sibling of v5.8.6. After v5.8.6 silenced the proactive-refresh noise, smoke logs still showed `circuit_breaker.opened` warnings on the same two auto-skipped providers every ~2min. The keepalive probe sweep checked `is_available` (CB state) but not `auto_skip_until`. Since the CB's 120s hold-down expires between sweeps, each cycle reprobed → 401 → CB reopens at failures+1, generating one warning per provider per cycle indefinitely.
+
+Fix: gate `_sweep_once` on `auto_skip_until > now()` in addition to CB state. Operator re-authorize clears auto_skip_until and probes resume naturally — same recovery semantics as v5.8.6.
+
+### v5.8.6 — cursor_oauth_expiry_monitor: skip proactive refresh on auto-skipped providers (2026-06-20)
+
+After v5.8.5 the race-condition false `refresh_token_reused` errors stopped, but the same warnings kept appearing on smoke for two test providers (`codex-test`, `Codex-Smoke`) whose refresh_tokens have been revoked for 41+ days. Root cause: the proactive-refresh gate didn't check `auto_skip_until`. A provider already marked persistent_auth_failure was retried every sweep cycle (~every 15min), logging `proactive_refresh_failed` + `circuit_breaker.auth_failure_marked` each time without changing the outcome — just re-extending the same auto_skip_until window.
+
+Fix: skip proactive refresh when `auto_skip_until > now()`. The provider's already on the back foot; retrying its dead token won't help. Once the operator re-authorizes via the Providers page, the new refresh_token clears auto_skip_until and proactive refresh resumes naturally.
+
+No new dependencies. Test providers on smoke now silent; legitimate refresh paths unaffected.
+
+### v5.8.5 — Port v5.8.3 oauth race + peer-verify to codex-oauth (2026-06-20)
+
+Smoke-instance logs caught `oauth_expiry.proactive_refresh_failed` errors with `refresh_token_reused` on two `ChatGPT-oauth-plan` providers (`bd42da809fd26ffd`, `b9db96fad980bae1`) within the same sweep cycle. This is the same race v5.8.3 fixed for `claude-oauth` providers, but `codex_oauth_flow.refresh_and_persist` never got the equivalent treatment — proactive sweep + lazy-on-401 path both refresh the same provider concurrently, OpenAI rotates the refresh_token on every use, and the loser sees `refresh_token_reused`. The v3.0.18 peer-pull then copies stale tokens silently.
+
+Fix mirrors v5.8.3 verbatim on the codex path:
+1. Per-provider `asyncio.Lock` around the entire refresh path; re-read `oauth_refresh_token` inside the lock so a waiter doesn't burn the already-rotated value.
+2. After peer-adopt, verify the adopted token against `chatgpt.com/backend-api/codex/models` before declaring success; if it 401s, clear `oauth_refresh_token` and raise a "Needs re-auth" error.
+
+No new dependencies, no schema changes. Tested locally on tmrwww01 against the affected smoke providers.
+
+### v5.8.4 — Providers /rolling-stats* route order fix (2026-06-20)
+
+Caught from live log tail during loop sweep: `GET /api/providers/rolling-stats` was returning `404 Not Found`. `providers_router` and `providers_stats_router` both bind `/api/providers`; the former declares `/{provider_id}` (parameterized single-segment) and was included BEFORE the latter, so FastAPI matched `/rolling-stats` against `/{provider_id}` and the `get_provider("rolling-stats")` handler returned 404. The Providers page rolling-window columns (1h/24h/7d/30d) silently rendered as "no data" — latent since v4.4.14.
+
+Fix: include `providers_stats_router` BEFORE `providers_router` in `app/main.py`. Same applies to `/rolling-stats-by-node`. Regression test pins the order: `tests/unit/test_v584_providers_stats_route_order.py`.
+
+### v5.8.3 — Four production fixes (oauth race, peer-token verify, probe gate, Path B policy) (2026-06-20)
+
+Bundled fixes from the 2026-06-20 incident triage. Two providers (`Devin-Anthropic-Max-VG` + `Devin-Anthropic-Max-Gmail`) had been auto_skip'd after ~2730 `401 Invalid authentication credentials` errors in 24h, while DevinGPT reported "path-B intercepts of fetch_url with no audit trail on our side" — symptoms of the same underlying class.
+
+**Fix #1 — Per-provider single-flight lock in `refresh_and_persist`** (`app/providers/claude_oauth_flow.py`). Pre-5.8.3 the proactive expiry sweep + the lazy-on-401 path could call refresh concurrently for the same provider. Anthropic rotates refresh_token on every successful use, so whichever caller lost the race got `400 invalid_grant`. The cluster-fallback path then pulled stale tokens from peers (who lost the same race). Lock is process-local; cross-node races still use v3.0.18 peer-pull.
+
+**Fix #2 — Verify adopted peer token before commit** (`app/providers/claude_oauth_flow.py`). When local refresh failed and peer-pull adopted state, the adopted access_token was committed without testing. If Anthropic had revoked the cluster-wide refresh_token, the adopted token was ALSO dead — operator never got a clean "needs re-auth" signal, just gradually-worsening probe errors. v5.8.3 adds `_verify_oauth_access_token` that does a 1-token ping; on 401 the refresh_token is cleared and the function raises with an "operator must re-auth via Providers page" message.
+
+**Fix #3 — Keepalive probes no longer trip `persistent_auth_failure`** (`app/monitoring/helpers.py`). Probes fire every ~60s, so a transient refresh race could send 1380+ errors/24h to `record_auth_failure` → `auto_skip_until=+24h`. Real user traffic still trips the breaker; probe-source 401s now go to `record_failure` (regular counter) so outages stay visible without misclassifying as "needs re-auth".
+
+**Fix #4 — Path B injection respects per-key MCP policy** (`app/proxy_tools/__init__.py`). v5.7.4 added per-key `mcp_tools_allow` / `mcp_tools_deny`, but enforcement was ONLY at the FastMCP wrapper level (Path A — `/mcp/`). Path B injection at `/v1/messages` bypassed the policy entirely: a key with `mcp_tools_allow=[]` (DevinGPT's opt-out) still had every proxy tool injected. v5.8.3 consults the `current_mcp_policy` ContextVar in `inject_anthropic_async` and writes a `proxy_tool.policy_blocked` audit row per request when injection is suppressed. Fix-forward; no new settings.
+
+### v5.8.2 — SPA deep-route asset rescue (2026-06-20)
+
+Operator-flagged the same day: `https://www.voipguru.org/llm-proxy/admin/integration` rendered blank on hard-refresh. Root cause: Vite `base: './'` produces relative asset URLs (`./assets/X`) that resolve to `/admin/assets/X` from a depth-2 page — which the proxy's `/assets` StaticFiles mount doesn't match. The SPA catch-all returned `index.html` with text/html MIME, browser rejected it ("Expected a JavaScript-or-Wasm module"), blank page. Same bug for `/admin/compliance`, `/admin/mcp`, etc. since v5.0.0; only surfaced today.
+
+Fix: catch-all now detects `<...>/assets/X` and `<...>/favicon.svg` / `icons.svg` and serves the real static file regardless of depth.
+
+### v5.8.1 — Passphrase moves to settings + admin UI + dev handoff (2026-06-19)
+
+Operator follow-up to v5.8.0: the passphrase needed to be DB-backed (not env-only), settable via UI, and exposed via a "copy dev handoff" button that hands a developer team a self-contained markdown package.
+
+**Settings (cluster-synced via system_settings):**
+- All six `integration_*` keys added to `config_runtime.SCHEMA` — type, label, group ("AI Integration"), `secret: True` on the passphrase. The existing Settings UI auto-renders them and the existing `PUT /api/settings` path persists + cluster-syncs.
+- `verify_passphrase` already reads from `settings.integration_passphrase` which the runtime overlay populates from DB — no chat-handler change needed.
+
+**New admin endpoints:**
+- `POST /api/admin/integration/rotate-passphrase` — generates `integ-<24-char>` URL-safe token, persists via `config_runtime.persist`, returns plaintext ONCE.
+- `GET /api/admin/integration/dev-handoff` — assembles the markdown package: announce + chat URLs (computed from the request's own base URL — works across cluster nodes), current passphrase, Python + curl samples, multi-turn instructions, limits table. Same renderer is used by the UI "Copy markdown" button.
+
+**Frontend — new admin page at `/admin/integration`** with:
+- Live "enabled" indicator (red/green dot).
+- Three URLs with per-row copy buttons.
+- Passphrase row: mask/reveal toggle, copy, **Rotate** (red, confirms; new value renders ONCE inline with a "copy now" warning).
+- Limits summary card.
+- "Copy dev handoff" button + collapsible preview (first 800 chars).
+
+Sidebar entry added (`Share2` icon, admin-gated, between MCP and Settings).
+
+**Fleet-wide rollout:** v5.8.1 ships to all 6 endpoints. Feature stays OFF by default (`integration_enabled` in DB starts unset → falls back to env default `false`). Operator enables per cluster via Settings → AI Integration toggle + Rotate to generate the first passphrase.
+
+### v5.8.0 — AI integration protocol: `/announce` + `/api/integration/chat` (2026-06-19)
+
+Operator-asked feature: let other AI-driven projects discover the proxy's capability surface AND negotiate an API key through AI-to-AI chat, without any human in the loop.
+
+**New endpoint — `GET /announce`** (public, no auth). Returns a structured JSON document describing every relevant facet of the proxy: the four wire-format endpoints (`/v1/messages`, `/v1/chat/completions`, `/v1/responses`, `/v1/embeddings`), the MCP aggregator at `/mcp/`, the routing-feature catalog (model aliases, routing hints, cross-family fallback, circuit breakers, empty-success failover, per-key MCP policy), the live MCP tool list (pulled from the running registry), supported auth headers, and the integration-protocol mechanism. Safe to expose — no secrets, no provider list, no per-key policy details.
+
+**New endpoint — `POST /api/integration/chat`** (passphrase-gated). The integrating AI posts `{passphrase, conversation_id?, project_name, message}`. The proxy validates the passphrase (constant-time compare), routes the message to a management LLM (`integration_model`, default `claude-haiku-4-5-20251001`) with a tightly-scoped system prompt + a single `create_api_key` tool. The LLM asks clarifying questions if needed, then mints a key with the agreed configuration. Multi-turn within a session; session state is in-process (dies on container restart — MVP for v5.8.0).
+
+**Security shape:**
+- Disabled by default (`INTEGRATION_ENABLED=false`).
+- Fail-closed: a blank passphrase rejects all requests (prevents a misconfigured deploy from being open).
+- Hard cap on minted budget: `INTEGRATION_MAX_DAILY_BUDGET_USD` (default $20). The LLM CAN'T mint above this even if asked.
+- Hard cap on session length: `INTEGRATION_MAX_MESSAGES_PER_SESSION` (default 20).
+- Every mint audits to `activity_log` as `integration.key_provisioned` with project name + final budget + MCP policy.
+- The LLM's system prompt instructs it to REFUSE hostile, evasive, or probe-like input and end the conversation.
+- Minted keys are always `key_type=standard` — no admin/elevated keys via this path.
+
+**Settings:** `INTEGRATION_ENABLED`, `INTEGRATION_PASSPHRASE`, `INTEGRATION_DEFAULT_DAILY_BUDGET_USD` (default $5), `INTEGRATION_MAX_DAILY_BUDGET_USD` (default $20), `INTEGRATION_MAX_MESSAGES_PER_SESSION` (default 20), `INTEGRATION_MODEL` (default `claude-haiku-4-5-20251001`).
+
+Test client: `tests/integration/test_v580_integration_protocol.py` exercises the full flow (announce → chat with bad passphrase → chat with good passphrase + front-loaded requirements → key minted on turn 1 → key authenticates a real `/v1/messages` call).
+
+### v5.7.23 — Refactor Phase 2: completions.py + messages.py share pre-route helpers (2026-06-18)
+
+Phase 2 of the operator-asked refactor (proposal: `docs/refactor-proposal-2026-06-17.md`). Phase 1 extracted three sub-blocks from messages.py to `_messages_pre_route` (v5.7.18 + v5.7.19, total -117 LOC). Phase 2 lifts the two sub-blocks that were ALREADY repeated almost verbatim in `completions.py` into a new shared module `_handler_shared.py`, parameterized by `endpoint` ("messages" vs "completions") so each handler reuses the same logic.
+
+**`_handler_shared.py`** (NEW, 152 LOC):
+- `prepare_request_context(request, db, x_api_key, *, endpoint, x_conversation_id, x_memory_tag)` — verify key + tenant ctx + compliance UA + LLM emergency stop + caller-memory telemetry. The `endpoint` kwarg propagates to both `raise_if_llm_emergency_stopped` and the Prometheus label.
+- `normalize_request_body(body, x_webhook_url, db, *, endpoint)` — input validation + suffix-strip + embedding-on-chat guard + `model:"auto"` resolve + alias resolve.
+
+`completions.py` shrinks 931 → 894 LOC (-37). The lines duplicated with messages.py — tenant ctx, compliance UA, LLM stop, Prometheus counter labels, caller-memory contextvars, body-validation, suffix-strip, embedding guard, alias resolve — are GONE from both handlers' inline code; one definition serves both.
+
+`messages.py` stays at 1063 LOC (already used the helpers via `_messages_pre_route`; the import path moved). `_messages_pre_route.py` keeps `translate_to_openai_if_needed` since that's the messages-specific Anthropic→OpenAI translation — putting it in `_handler_shared` would import endpoint-specific logic into a "shared" module.
+
+Tests: 10 pins in `test_v5723_phase2_shared_helpers.py` — both handlers import from `_handler_shared`, endpoint kwarg required + keyword-only + distinct values, normalize takes endpoint, inline block markers GONE from completions.py, file LOC dropped to ≤900, shared module has no translation helper (defensive boundary), translation helper still in `_messages_pre_route`, version bump. Two v5.7.18/19 pins updated to follow the new import path.
+
+### v5.7.22 — UI badge: distinguish "auto-rotating healthy" from "needs re-auth" (2026-06-18)
+
+Follow-up to v5.7.21. The proactive sweep + the existing 5-min keepalive probes were rotating the Devin-Anthropic-Max claude-oauth tokens every few minutes — confirmed at the DB layer. But the UI still showed red "expires in 0d" because Anthropic claude-oauth access tokens have a ~7-8h lifetime by design, so they're genuinely <24h remaining at every moment. Operator-correctly read this as alarm-worthy; the badge wasn't differentiating "actively rotating, no action needed" from "dead, re-auth me".
+
+**ProvidersPage.tsx** badge logic now branches on `has_oauth_refresh_token && !auth_failed`:
+
+- **Auto-rotating path (green)**: refresh token present + no recent auth failure → emerald `🔄 auto-rotating (Nh left)` badge. Sub-day tokens show hours remaining; multi-day tokens show `🔄 auto-rotating · Nd`. Title hover: "OAuth refresh-token present; the proactive sweep refreshes within 24h of expiry. Manual re-auth NOT needed."
+- **Operator-action path (red/amber)**: same alarmist tones as before, ONLY when there's no refresh token OR `auth_failed` is set. The expired/expiring-soon states the operator MUST act on stay red.
+
+Frontend-only change; no backend deploy needed. Provider serialization (`has_oauth_refresh_token` boolean + `auth_failed` dict-or-null) already covers both inputs.
+
+Tests: 7 pins in `test_v5722_auto_rotating_badge.py` — source-grep for the new branch, emerald tone used (not red/amber) in auto-rotating arm, fallback red path preserved, 🔄 emoji + hours-remaining for sub-day tokens, Provider type carries required fields, version bump.
+
+### v5.7.21 — Proactive OAuth refresh (close the "expires in 0d" badge) (2026-06-18)
+
+Operator flagged 2026-06-18: two `claude-oauth` providers on the clone cluster (`Devin-Anthropic-Max-VG` + `Devin-Anthropic-Max-Gmail`) showed "expires in 0d" in the UI. Both had valid `oauth_refresh_token`s and were enabled — they just weren't getting refreshed.
+
+**Root cause**: pre-5.7.21 the only claude-oauth refresh path was lazy — `_messages_streaming_oauth.py` "auto-refreshes the access_token on 401 and retries once." That works when there's traffic. These two providers sit at priority 7/8 behind 5+ higher-priority providers; the router almost never selects them, so they never see a 401, so the token sat untouched and the badge counted down to 0. A separate `cursor_oauth_expiry_monitor` existed (widened in v5.4.4 to scan all OAuth types) but only WARNED — never refreshed.
+
+**This ship** adds a proactive refresh path to the existing widened monitor:
+
+1. For any provider whose `provider_type` is in `_PROACTIVE_REFRESH_TYPES` (`claude-oauth`, `ChatGPT-oauth-plan`), is enabled, has a refresh token, AND is within `_DEFAULT_REFRESH_LEAD_DAYS` (1.0 = 24h) of expiry → calls the matching `refresh_and_persist(provider, db)` helper.
+2. Sweep interval dropped 6h → 1h so a failed refresh has 5+ retry slots inside the 24h window.
+3. Initial delay dropped 2h → 5min so the very NEXT sweep after deploy fixes the immediate badge (the legacy "don't race the cursor billing scraper" concern is moot now that the refresh path lives in this worker).
+4. Snapshot dict gains `refresh_attempted` + `refresh_outcome` so the existing `/api/admin/cursor-oauth-expiry` endpoint surfaces per-provider sweep results.
+5. On refresh failure: calls `record_auth_failure(provider_id, …)` so the UI shows "needs re-auth" BEFORE real traffic hits the dead token. Pre-fix, refresh-token death was invisible until the FIRST 401 → retry → 401 round-trip on a real request — which on a low-priority provider could be days after the actual revocation.
+
+`cursor-oauth` is intentionally NOT in `_PROACTIVE_REFRESH_TYPES` — its refresh flow is gated on the v4.4.37 empirical refresh_token capture (cursor-oauth noVNC backlog item). When that lands, cursor-oauth joins the list with a one-line change.
+
+Tests: 9 pins in `test_v5721_proactive_oauth_refresh.py` — threshold + provider-type list + cursor exclusion + sweep interval + initial delay + source-grep + snapshot fields + auth-failed marking + version.
+
+### v5.7.19 — Refactor: messages.py sub-blocks 2 + 3 extracted (2026-06-18)
+
+Phase 1 of the messages.py extract trio (proposal: `docs/refactor-proposal-2026-06-17.md`) is now complete.
+
+**Sub-block 2** — input validation + suffix parsing + embedding-on-chat guard + `model: "auto"` resolution. Extracted to `_messages_pre_route.normalize_request_body(body, x_webhook_url, db) -> (body, _orig_request_model, parsed_slug, is_auto, alias)`. Replaces ~50 LOC of inline orchestration with a single five-tuple unpack at the call site.
+
+**Sub-block 3** — Anthropic→OpenAI body translation (the v3.10.0 widened Fix B block). Extracted to `_messages_pre_route.translate_to_openai_if_needed(*, body, route, system, messages_list, tools, has_tool_blocks, has_images) -> (body, system, messages_list, tools, translated)`. Keyword-only args force explicit call sites; the helper returns the (possibly translated) shape + a boolean flag. ~55 LOC inline → 11-line helper invocation.
+
+`messages.py` 1138 → 1063 LOC (-75 across both extracts). Combined with v5.7.18's sub-block 1 (-42 LOC), Phase 1 total: messages.py 1180 → 1063 (-117 LOC). The full helper module `_messages_pre_route.py` is 250 LOC.
+
+Phase 1 complete. Phase 2 (the symmetric extract on `completions.py` 931 LOC → ~600 with shared helpers in `_handler_shared.py`) is the next refactor pass, after this soaks.
+
+Tests: 10 pins in `test_v5719_messages_extract.py` — helpers exist, both call sites wire them, signatures match, sub-block-2 + sub-block-3 inline markers gone from messages.py, file LOC dropped to ≤1080, two pass-through behaviour assertions on the translation helper.
+
+### v5.7.18 — Refactor: messages.py sub-block 1 extracted (2026-06-17)
+
+Operator-asked incremental refactor pass (proposal at `docs/refactor-proposal-2026-06-17.md`). Phase 1 sub-block 1 of the messages.py extract trio.
+
+Before: `app/api/messages.py` was a single 1180-LOC handler function with version-comment-section markers but no internal helper splits. The first ~50 lines after the function signature did "decide whether to even try" + observability setup — a tight, behavior-preserving extract candidate.
+
+**This ship** extracts the verify-key + tenant-ctx + compliance-UA-pre-check + LLM-emergency-stop + caller-memory-telemetry block to a new helper `app/api/_messages_pre_route.prepare_request_context`. The inline call site shrinks from 50 lines to 6:
+
+```python
+key_record = await prepare_request_context(
+    request, db, x_api_key,
+    x_conversation_id=x_conversation_id,
+    x_memory_tag=x_memory_tag,
+)
+```
+
+Behavior is byte-identical — same imports, same call order, same exception types raised at the same point. `messages.py` 1180 → 1138 LOC.
+
+Sub-blocks 2 (request normalization) and 3 (cross-family + wire translation) ship in a follow-up patch after this soaks. Phase 2 (the symmetric extract on completions.py with shared helpers in `_handler_shared.py`) follows Phase 1's full completion.
+
+Tests: 6 pins in `test_v5718_messages_extract.py` — helper exists, call site uses it, signature matches, inline block markers gone from messages.py, file LOC dropped to ≤1145. Per-ship version-bump pins relaxed across v5.7.13–v5.7.18 to `>= ` semver checks so each ship's pin keeps passing across subsequent bumps (was breaking the suite every release).
+
+### v5.7.17 — Client-disconnect watchdog (fix supervisor DB pool leak) (2026-06-17)
+
+Root cause for the 2026-06-16 tmrwww01 pool leak: when a client (most often the AI supervisor probe) disconnected mid-request — usually due to its 90s httpx timeout — FastAPI/Starlette did NOT auto-cancel the handler. The handler kept running, kept holding its `async with db: ...` connection, and the pool slot stayed pinned until the upstream eventually responded (or the handler crashed). Each abandoned request leaked one slot; `/health.dbPool.oldest_checkout_age_sec` climbed past 1800s during the 2026-06-16 incident.
+
+**v5.7.17** adds `app/utils/disconnect_watchdog.py` — a FastAPI yield-dependency that:
+
+1. Captures the handler's `asyncio.current_task()` BEFORE yielding to the handler.
+2. Spawns a watcher coroutine that polls `request.is_disconnected()` every `disconnect_watchdog_interval_sec` (default 2.0s).
+3. On the first true result, calls `handler_task.cancel()`.
+4. `CancelledError` propagates through the handler's `async with` blocks — the DB connection is released, FastAPI replies 499 to the (already-gone) client.
+
+Wired into `/v1/messages` and `/v1/chat/completions` via `Depends(watch_for_disconnect)`, listed BEFORE `Depends(get_db)` so the watchdog is set up before any session is checked out.
+
+Defensive: a flaky `is_disconnected()` (raises) is caught and treated as "still connected" — a probe blip must not cancel a working request.
+
+Defaults: ENABLED, 2.0s poll. Settings: `DISCONNECT_WATCHDOG_ENABLED`, `DISCONNECT_WATCHDOG_INTERVAL_SEC`. Flip off to A/B-confirm the pool leak path.
+
+Tests: 8 pins in `test_v5717_disconnect_watchdog.py` — module exists, both handlers wire it, watchdog listed BEFORE db, settings exposed, defaults safe, noop when disabled, healthy handler not cancelled, disconnect propagates as CancelledError, flaky probe doesn't cancel.
+
+### v5.7.16 — Path B name dedupe across tool-shape wire formats (2026-06-17)
+
+DevinGPT's 2026-06-17 memo flagged a `fetch_url` name collision risk: DevinGPT registers its own `fetch_url` tool with its own schema and audit/SSRF allowlist. If Path B appended the proxy's `fetch_url` to their `body["tools"]`, the upstream LLM saw two tools with the same name but different schemas — strict providers (OpenAI Chat Completions) reject the request; looser providers silently pick one and the audit trail breaks.
+
+Pre-5.7.16 the proxy already deduped, but ONLY against the Anthropic tool shape `{"name": "fetch_url"}`. Callers passing the OpenAI function-wrapper shape `{"type": "function", "function": {"name": "fetch_url"}}` had their tools' names invisible to the dedupe set — the proxy re-injected its own `fetch_url`, creating the collision.
+
+**v5.7.16** extracts caller tool names from BOTH shapes via a shared `_collect_caller_tool_names` helper. Every skipped re-injection is audited via a `proxy_tool.dedupe_skip` `activity_log` row so the operator can see which downstream clients have their own canonical tool surface — useful for retiring per-key `mcp_tools_allow=[]` opt-outs once the structural fix lands fleet-wide.
+
+Aligns with DevinGPT's preferred long-term shape (their "Option A"). Composes with v5.7.4 per-key MCP policy: a key with `mcp_tools_allow=[]` still gets nothing; a key with `mcp_tools_allow=NULL` gets the proxy tools EXCEPT those whose name they already passed in their request.
+
+Tests: 11 pins in `test_v5716_path_b_dedupe.py` — both shapes extracted, mixed payloads, non-dict/missing-name handled, dedupe behavior verified, audit event_type pinned, fire-and-forget safe in sync contexts, hot path (no collision) is zero-cost.
+
+### v5.7.15 — Burst-trigger force-open CB on empty-success spikes (2026-06-17)
+
+Direct close of the operator-escalated gap: *"why isn't the AI built in helping here?!?!"* — the pre-5.7.15 supervisor only swept every 30 min. A degrading upstream throwing empty-success bursts between sweeps was invisible to it; the 2026-06-17 c1conv Gemini incident sat in that gap for ~14 min before any action.
+
+**This ship** adds `app/monitoring/empty_success_burst_trigger.py` — a cheap DB-only worker that sweeps every 60s:
+
+```sql
+SELECT provider_id, COUNT(*) FROM activity_log
+WHERE event_type = 'streaming.empty_success_failover'
+  AND created_at > now - empty_success_burst_window_sec
+GROUP BY provider_id
+HAVING COUNT(*) >= empty_success_burst_threshold
+```
+
+For each provider over threshold, calls `force_open(provider_id)` on the in-memory CB (idempotent — no-op if already open) and writes a `streaming.burst_force_open` row to `activity_log` so the action is visible in the dashboard's recent-events panel. No LLM call; nothing on the request hot path; only the audit write on a real trigger.
+
+Defaults: ENABLED, 60s sweep interval, 300s look-back window, 3-event threshold. Settings: `EMPTY_SUCCESS_BURST_TRIGGER_ENABLED`, `EMPTY_SUCCESS_BURST_INTERVAL_SEC`, `EMPTY_SUCCESS_BURST_WINDOW_SEC`, `EMPTY_SUCCESS_BURST_THRESHOLD`.
+
+Independent of `ai_provider_supervisor` — they share no state. The supervisor's LLM classifier still runs every 30 min for slower deprioritize/disable decisions; this worker only handles the "happening RIGHT NOW" case. Composes cleanly with v5.7.13 cumulative-exclusion failover and v5.7.14 audit-row foundation.
+
+Tests: 8 pins in `test_v5715_burst_trigger.py` — module exists, wired in main, settings exposed, defaults match design, no-rows no-op, burst force-opens closed CB + writes audit, already-open is skipped (no log spam).
+
+### v5.7.14 — Audit empty-success failovers to activity_log (2026-06-17)
+
+Direct continuation of the operator escalation behind v5.7.13: *"be more active in troubleshooting … why isn't the AI built in helping here?!?!"* Investigation surfaced a real gap — empty-success failover events were **only** logged via `logger.warning`, never persisted to `activity_log`. The AI provider supervisor (which polls the DB on a 30-min sweep) literally could not see bursts because the bursts weren't audited. The dashboard's recent-events panel was equally blind.
+
+**This ship** lands two rows in `activity_log`:
+
+- `streaming.empty_success_failover` — one per failover attempt, severity `warning`, carries `provider_id`, `api_key_id`, `event_meta={litellm_model, attempt, max_attempts, empty_failed_count}`. The supervisor's burst-trigger logic (next ship) keys on this.
+- `streaming.failover_exhausted` — fires once before the 502 raise when all candidates empty-fail. Severity `error`. `event_meta` carries `tried_provider_ids` (sorted), `initial_provider`, `max_attempts`.
+
+Writes go through `app.monitoring.activity.log_event`, so the v5.1.0 compliance kill-switch still gates them. Both call sites are wrapped in `try/except` — a logging-controls flip mid-stream must never break the failover loop.
+
+Foundation for v5.7.15 burst-trigger (force-open CB on ≥3 events in 5 min for one provider, without waiting for the next 30-min supervisor sweep).
+
+Tests: 5 pins in `test_v5714_streaming_audit.py` (import, failover event, exhaust event, exception-safety, version bump).
 
 ### v5.7.13 — Cumulative-exclusion failover (fix Gemini same-family ping-pong) (2026-06-17)
 

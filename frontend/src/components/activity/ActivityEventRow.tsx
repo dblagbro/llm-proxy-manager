@@ -4,6 +4,24 @@ import { ChevronRight, ChevronDown } from 'lucide-react'
 import type { ActivityEvent } from '@/types'
 import { useAuth } from '@/context/AuthContext'
 import { formatTimeForUser } from '@/utils/time'
+import { getBasePath } from '@/lib/basePath'
+
+// v5.20.5 — /api/admin/requests/detail/{id} response shape.
+interface CorrelatedEvent {
+  id: number
+  event_type: string
+  severity: string
+  message: string
+  created_at: string | null
+  delta_ms: number | null
+}
+
+interface RequestDetail {
+  provider: { id: string; name: string; provider_type: string; enabled: boolean; cost_class: string | null } | null
+  api_key: { id_prefix: string; name: string; key_type: string; enabled: boolean } | null
+  correlated_events: CorrelatedEvent[]
+  correlation_window_sec: number
+}
 
 const SEVERITY_DOT: Record<string, string> = {
   info: 'bg-blue-400',
@@ -133,6 +151,31 @@ export function ActivityEventRow({ event, compact }: Props) {
   // (existing behavior); some operators prefer raw for copy-paste into curl.
   const [prettyReq, setPrettyReq] = useState(true)
   const [prettyResp, setPrettyResp] = useState(true)
+  // v5.20.5 — lazy-loaded correlated-events + provider/key context via
+  // GET /api/admin/requests/detail/{id}. Fetched on button click, not
+  // on row expand — most rows don't need this + the DB query has a ±30s
+  // window scan cost.
+  const [detail, setDetail] = useState<RequestDetail | null>(null)
+  const [detailLoading, setDetailLoading] = useState(false)
+  const [detailError, setDetailError] = useState<string | null>(null)
+  async function loadDetail() {
+    if (detail || detailLoading) return
+    setDetailLoading(true)
+    setDetailError(null)
+    try {
+      const resp = await fetch(
+        `${getBasePath()}/api/admin/requests/detail/${event.id}`,
+        { credentials: 'include' },
+      )
+      if (!resp.ok) throw new Error(`${resp.status}`)
+      const body = await resp.json() as RequestDetail
+      setDetail(body)
+    } catch (exc) {
+      setDetailError(String(exc))
+    } finally {
+      setDetailLoading(false)
+    }
+  }
   const summary = summarize(meta)
   // v3.0.34: prefer server-side previews when present — they're extracted
   // from the live request/response objects before truncation, so they don't
@@ -267,6 +310,70 @@ export function ActivityEventRow({ event, compact }: Props) {
               </pre>
             </div>
           )}
+          {/* v5.20.5 — lazy-load button for the /api/admin/requests/detail/{id}
+              companion endpoint. Fetches provider + api_key context + any
+              activity_log rows within ±30s of the same key+provider. */}
+          <div>
+            <div className="flex items-center justify-between mb-1">
+              <p className="text-[11px] font-medium text-gray-500 dark:text-gray-400">Correlated events (±30s)</p>
+              {!detail && !detailLoading && (
+                <button
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); loadDetail() }}
+                  className="text-[10px] uppercase tracking-wide font-medium text-gray-500 dark:text-gray-400 hover:text-indigo-500 dark:hover:text-indigo-400 px-2 py-0.5 rounded border border-gray-200 dark:border-gray-700 hover:border-indigo-300 dark:hover:border-indigo-600"
+                >
+                  Load detail
+                </button>
+              )}
+              {detailLoading && (
+                <span className="text-[10px] text-gray-400">Loading…</span>
+              )}
+            </div>
+            {detailError && (
+              <p className="text-[11px] text-red-500">Error: {detailError}</p>
+            )}
+            {detail && (
+              <div className="bg-gray-50 dark:bg-gray-900 rounded p-2 space-y-1.5 text-[11px]">
+                {detail.provider && (
+                  <p>
+                    <span className="text-gray-500 dark:text-gray-400">Provider:</span>{' '}
+                    <span className="font-mono text-gray-700 dark:text-gray-200">{detail.provider.name}</span>
+                    <span className="text-gray-400 ml-1">({detail.provider.provider_type})</span>
+                  </p>
+                )}
+                {detail.api_key && (
+                  <p>
+                    <span className="text-gray-500 dark:text-gray-400">API Key:</span>{' '}
+                    <span className="font-mono text-gray-700 dark:text-gray-200">{detail.api_key.name}</span>
+                    <span className="text-gray-400 ml-1">({detail.api_key.id_prefix})</span>
+                  </p>
+                )}
+                {detail.correlated_events.length === 0 ? (
+                  <p className="text-gray-500 dark:text-gray-400 italic">No correlated events within ±30s</p>
+                ) : (
+                  <div>
+                    <p className="text-gray-500 dark:text-gray-400 mb-1">
+                      {detail.correlated_events.length} correlated event(s):
+                    </p>
+                    <div className="space-y-0.5 max-h-40 overflow-auto">
+                      {detail.correlated_events.map(ce => (
+                        <div key={ce.id} className="flex items-baseline gap-2 font-mono text-gray-700 dark:text-gray-300">
+                          <span className={clsx(
+                            'tabular-nums shrink-0 w-14 text-right',
+                            (ce.delta_ms ?? 0) < 0 ? 'text-blue-500' : 'text-emerald-500',
+                          )}>
+                            {ce.delta_ms != null ? `${ce.delta_ms > 0 ? '+' : ''}${ce.delta_ms}ms` : '?'}
+                          </span>
+                          <span className="text-gray-600 dark:text-gray-400 shrink-0">{ce.event_type}</span>
+                          <span className="text-gray-500 dark:text-gray-400 truncate">{ce.message}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
         </div>
       )}
     </div>

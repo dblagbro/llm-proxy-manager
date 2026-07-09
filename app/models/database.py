@@ -199,6 +199,9 @@ if settings.db_pool_trace:
 
 
 async def init_db():
+    # v5.20.4 — import the ModelPricingEntry ORM class so
+    # Base.metadata.create_all sees the new table.
+    from app.models import db_model_pricing  # noqa: F401
     async with engine.begin() as conn:
         # v3.0.3: enable WAL + busy_timeout for SQLite. Without these,
         # concurrent writers (cluster /sync receivers + keep-alive probes
@@ -443,6 +446,21 @@ async def init_db():
             "ALTER TABLE api_keys ADD COLUMN mcp_tools_allow TEXT",
             "ALTER TABLE api_keys ADD COLUMN mcp_tools_deny TEXT",
             "ALTER TABLE api_keys ADD COLUMN mcp_schema_token_budget INTEGER",
+            # v5.20.0 — per-key refusal detection + prompt hardening. All
+            # default 0 (False) so pre-existing keys see no behavior
+            # change. refusal_retry_enabled is reserved for v5.20.1 —
+            # column is present so admins can pre-toggle it before the
+            # retry path ships. See app/refusal_detection.py.
+            "ALTER TABLE api_keys ADD COLUMN refusal_detection_enabled INTEGER DEFAULT 0",
+            "ALTER TABLE api_keys ADD COLUMN refusal_prompt_hardening INTEGER DEFAULT 0",
+            "ALTER TABLE api_keys ADD COLUMN refusal_retry_enabled INTEGER DEFAULT 0",
+            # v5.20.1 — cascade attempts cap. NULL = default 3.
+            "ALTER TABLE api_keys ADD COLUMN refusal_retry_max_attempts INTEGER",
+            # v5.20.2 — self-edit permissions for the AI Integration
+            # Protocol. JSON list of field names the key holder can
+            # update via POST /api/integration/self-update. NULL =
+            # self-edit disabled.
+            "ALTER TABLE api_keys ADD COLUMN self_edit_permissions TEXT",
             # owner_company is auto-derived at provider create/update time
             # from provider_type via app.compliance.company_map; operator
             # can override for unusual rows. The router pre-filter drops
@@ -456,6 +474,14 @@ async def init_db():
             # unknown=blocked, so NULL is also treated as blocked).
             "ALTER TABLE caller_memory ADD COLUMN source_company TEXT",
             "ALTER TABLE caller_memory_marker ADD COLUMN source_company TEXT",
+            # v5.15.0 (#508) — per-account OAuth fan-out. Provider-level
+            # override for account-pick strategy; NULL = inherit app-wide
+            # default (currently 'least_utilized'). Values:
+            # 'least_utilized' | 'round_robin' | 'least_recently_used'.
+            # The new provider_oauth_accounts TABLE is created by
+            # Base.metadata.create_all above; only the column ALTER lands
+            # here.
+            "ALTER TABLE providers ADD COLUMN oauth_account_strategy TEXT",
         ]:
             try:
                 await conn.exec_driver_sql(stmt)
@@ -602,6 +628,21 @@ async def init_db():
         except Exception as e:
             # Non-fatal — provider rows can be backfilled manually via PATCH.
             logger.warning(f"v5.0.0 owner_company backfill skipped: {type(e).__name__}: {e}")
+
+    # v5.15.0 Phase 1 (#508) — seed provider_oauth_accounts from legacy
+    # Provider rows. Idempotent: skips providers that already have any
+    # child rows. Non-fatal on failure (Phase 1 doesn't gate dispatch on
+    # this data anyway; the seed is prep for the v5.15.1 dispatch flip).
+    try:
+        from app.providers.oauth_account_seeder import seed_missing_accounts
+        async with AsyncSessionLocal() as _seed_session:
+            counts = await seed_missing_accounts(_seed_session)
+            if counts.get("seeded", 0) > 0:
+                logger.info(
+                    f"v5.15.0 seed provider_oauth_accounts: {counts}"
+                )
+    except Exception as e:
+        logger.warning(f"v5.15.0 oauth_account_seeder skipped: {type(e).__name__}: {e}")
 
     logger.info("Database initialized")
 

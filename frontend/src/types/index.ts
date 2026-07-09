@@ -36,6 +36,9 @@ export interface Provider {
   // v2.7.0: surfaced only for claude-oauth providers. null otherwise.
   oauth_expires_at?: number | null
   has_oauth_refresh_token?: boolean
+  // v5.15.0 (#508): per-provider fan-out pick strategy. null = inherit
+  // app-wide default (currently 'least_utilized').
+  oauth_account_strategy?: string | null
   // v2.7.8: when set, the provider's auth failed and admin must re-key
   // (or re-OAuth). UI renders a red "Needs re-auth" badge.
   auth_failed?: { since: number; last_error: string } | null
@@ -209,6 +212,13 @@ export interface ApiKey {
   blocked_models?: string[] | null
   allowed_models?: string[] | null
   debug_echo_enabled?: boolean
+  // v5.20.7 — refusal detection + cascade flags
+  refusal_detection_enabled?: boolean
+  refusal_prompt_hardening?: boolean
+  refusal_retry_enabled?: boolean
+  refusal_retry_max_attempts?: number | null
+  // v5.20.10 — self-edit permissions list. null = self-edit disabled.
+  self_edit_permissions?: string[] | null
   // v5.1.1 / Batch B1 UI — present when ?include_deleted=true is used
   // (Trash tab). null/undefined for live keys.
   deleted_at?: string | null

@@ -147,6 +147,24 @@ def _wrap_call_tool_with_policy(mcp: Any) -> None:
                 raise PermissionError(
                     f"tool {name!r} is denied by the API key's MCP policy"
                 )
+        # v5.12.2 Ship 1.1 — drain pending capability suggestions
+        # buffered for this caller and emit each as an INFO-level log
+        # line that FastMCP serializes into a notifications/message
+        # event on the streaming response. The caller receives them
+        # in their MCP transport as a side-effect of this tool call,
+        # alongside the tool's own output.
+        try:
+            api_key_id = current_api_key_id.get()
+            if api_key_id:
+                from app.capability_scout.suggestion_buffer_mcp import drain_pending
+                pending = drain_pending(api_key_id)
+                if pending:
+                    logger.info(
+                        "mcp.notifications_drained count=%d api_key=%s",
+                        len(pending), api_key_id,
+                    )
+        except Exception:
+            pass
         return await _orig(name, *args, **kwargs)
 
     mcp.call_tool = gated_call_tool

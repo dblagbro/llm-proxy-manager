@@ -1437,14 +1437,37 @@ async def _send_via_spa_ui(conv_id: str, message: str) -> tuple[int, str]:
             return 599, "SPA-UI: no usable textarea found"
 
         # ── Step 4: click chat-submit via React-fiber ────────────────
+        # v5.0.20 (2026-06-18) — broaden selector chain to match the
+        # /api/conversation/new flow at app.py:914. grok.com periodically
+        # renames data-testid attributes; pre-v5.0.20 the chat path had
+        # only two selectors and silently failed when neither matched.
+        # The wider chain probes by testid, aria-label, button type,
+        # form context, and the SVG-icon-near-textarea pattern. Also
+        # emits a button_inventory dump on 'no-button' so the next
+        # selector update is surfaced from logs instead of needing
+        # noVNC inspection.
         clicked = await _page.evaluate(
             """() => {
-                const btn = document.querySelector(
-                    'button[data-testid="chat-submit"]:not([disabled])'
-                ) || document.querySelector(
-                    'button[data-testid*="submit" i]:not([disabled])'
-                );
-                if (!btn) return 'no-button';
+                const selectors = [
+                    'button[data-testid="chat-submit"]:not([disabled])',
+                    'button[data-testid*="submit" i]:not([disabled])',
+                    'button[data-testid*="send" i]:not([disabled])',
+                    'button[aria-label*="Send" i]:not([disabled])',
+                    'button[aria-label*="submit" i]:not([disabled])',
+                    'button[type="submit"]:not([disabled])',
+                    'form button[type="submit"]:not([disabled])',
+                    'div:has(textarea) button:has(svg):not([disabled])',
+                    'div:has([contenteditable="true"]) button:has(svg):not([disabled])',
+                ];
+                let btn = null;
+                let used_sel = null;
+                for (const sel of selectors) {
+                    try {
+                        const found = document.querySelector(sel);
+                        if (found) { btn = found; used_sel = sel; break; }
+                    } catch (e) { /* :has() can throw in older engines */ }
+                }
+                if (!btn) return {result: 'no-button'};
                 const propsKey = Object.keys(btn).find(k =>
                     k.startsWith('__reactProps')
                 );
@@ -1461,16 +1484,48 @@ async def _send_via_spa_ui(conv_id: str, message: str) -> tuple[int, str]:
                                 isTrusted: true,
                                 nativeEvent: new MouseEvent('click', {bubbles: true}),
                             });
-                            return 'react_fiber';
+                            return {result: 'react_fiber', selector: used_sel};
                         } catch (e) { /* fall through */ }
                     }
                 }
-                try { btn.click(); return 'native_click'; }
-                catch (e) { return 'click_failed:' + String(e); }
+                try {
+                    btn.click();
+                    return {result: 'native_click', selector: used_sel};
+                } catch (e) {
+                    return {result: 'click_failed', error: String(e), selector: used_sel};
+                }
             }"""
         )
-        logger.info("SPA-UI: send click result=%s", clicked)
-        if isinstance(clicked, str) and clicked == "no-button":
+        # v5.0.20 — clicked is now an object {result, selector?, error?}.
+        # Preserve back-compat with the old string shape by extracting.
+        click_result = clicked.get("result") if isinstance(clicked, dict) else str(clicked)
+        click_selector = clicked.get("selector") if isinstance(clicked, dict) else None
+        if click_selector:
+            logger.info("SPA-UI: send click result=%s sel=%r", click_result, click_selector)
+        else:
+            logger.info("SPA-UI: send click result=%s", click_result)
+        if click_result == "no-button":
+            # v5.0.20 — dump a button inventory so the next selector update
+            # is informed by data instead of noVNC inspection.
+            try:
+                inv = await _page.evaluate("""() => {
+                    return Array.from(document.querySelectorAll('button')).slice(0, 20).map(b => ({
+                        testid: b.getAttribute('data-testid'),
+                        aria: b.getAttribute('aria-label'),
+                        type: b.getAttribute('type'),
+                        text: (b.textContent || '').trim().slice(0, 30),
+                        disabled: b.disabled,
+                        visible: !!(b.offsetWidth || b.offsetHeight),
+                        has_svg: !!b.querySelector('svg'),
+                    }));
+                }""")
+                visible_inv = [b for b in inv if b.get("visible")]
+                logger.warning(
+                    "SPA-UI: chat-submit not found; button_inventory=%s",
+                    visible_inv[:10],
+                )
+            except Exception as exc:
+                logger.warning("SPA-UI: button_inventory dump failed: %r", exc)
             return 599, "SPA-UI: chat-submit button not found"
 
         # ── Step 5: wait for the SPA-fired response ──────────────────

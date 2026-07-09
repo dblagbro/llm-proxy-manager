@@ -545,6 +545,28 @@ export const settingsApi = {
   }>('/api/settings/cluster-diff'),
 }
 
+// v5.8.1 — AI Integration admin
+export interface DevHandoff {
+  markdown: string
+  announce_url: string
+  chat_url: string
+  passphrase: string
+  enabled: boolean
+  limits: {
+    default_daily_budget_usd: number
+    max_daily_budget_usd: number
+    max_messages_per_session: number
+  }
+}
+
+export const integrationApi = {
+  devHandoff: () => api.get<DevHandoff>('/api/admin/integration/dev-handoff'),
+  rotatePassphrase: () =>
+    api.post<{ passphrase: string; rotated_by: string }>(
+      '/api/admin/integration/rotate-passphrase', {}
+    ),
+}
+
 // ── OAuth capture (v2.5.0) ──────────────────────────────────────────────────
 // Removed from the main UI in v2.8.1 — Claude Pro Max OAuth setup now lives
 // in the Providers page (claude-oauth provider type). Backend

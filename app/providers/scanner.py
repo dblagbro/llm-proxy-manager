@@ -330,7 +330,7 @@ async def test_provider(provider: Provider) -> dict:
     # Pre-flight: catch the common "no API key configured" case before we hit
     # litellm and get a 600-char Python traceback back. Anthropic/OpenAI/Grok
     # store the key on the provider row; ollama and compatible can be keyless.
-    if provider.provider_type in ("anthropic", "openai", "google", "vertex", "grok", "cohere", "mistral", "groq", "together", "fireworks", "azure", "openrouter") and not provider.api_key:
+    if provider.provider_type in ("anthropic", "openai", "google", "vertex", "grok", "cohere", "mistral", "groq", "together", "fireworks", "azure", "openrouter", "nvidia_nim") and not provider.api_key:
         return {
             "success": False,
             "error": f"No API key configured for this {provider.provider_type} provider. Open the Edit modal and paste a key.",

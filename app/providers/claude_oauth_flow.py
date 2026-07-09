@@ -305,6 +305,30 @@ async def refresh_access_token(refresh_token: str) -> ExchangeResult:
     return await _internal_refresh_access_token(refresh_token)
 
 
+# v5.8.3 — per-provider single-flight lock. Pre-5.8.3 the proactive
+# expiry sweep + the lazy-on-401 refresh path could both call this
+# function for the same provider within milliseconds. Anthropic
+# rotates the refresh_token on every successful use, so whichever
+# caller LOST the race got 400 ``invalid_grant: Refresh token not
+# found or invalid`` (Anthropic has already revoked the now-stale
+# refresh_token it gave the winner). The cluster-fallback path then
+# pulled stale tokens from peers (who lost the same race), surfacing
+# as steady 401 storms on keepalive probes. The 2026-06-20 incident
+# (1369+1363 errors in 24h on Devin-Anthropic-Max-{Gmail,VG}) was
+# this. Lock is process-local; cluster-level races between nodes
+# still use the v3.0.18 peer-pull path.
+_refresh_locks: dict[str, "asyncio.Lock"] = {}
+
+
+def _get_refresh_lock(provider_id: str) -> "asyncio.Lock":
+    import asyncio
+    lock = _refresh_locks.get(provider_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _refresh_locks[provider_id] = lock
+    return lock
+
+
 async def refresh_and_persist(provider, db) -> ExchangeResult:
     """Refresh a claude-oauth Provider's access_token and write the rotated
     refresh_token + new expiry back to the DB in the same transaction.
@@ -317,37 +341,100 @@ async def refresh_and_persist(provider, db) -> ExchangeResult:
     v3.0.18: on ``invalid_grant`` (peer rotated the refresh_token first in
     a cluster-race), fan out to peers via /cluster/oauth-pull and adopt
     the freshest valid state. Only raises if no peer has fresher tokens.
+
+    v5.8.3:
+      - single-flight per-provider lock (intra-process race fix)
+      - on adopted peer state, verify the adopted token actually
+        authenticates against Anthropic before keeping it; if it 401s,
+        clear oauth_refresh_token and raise so the operator sees
+        ``Needs re-auth`` in the UI instead of a silent cluster-wide
+        dead-token state.
     """
     if not provider.oauth_refresh_token:
         raise OAuthFlowError(
             f"Provider {provider.id} ({provider.name!r}) has no refresh_token — "
             "admin must re-run the Generate Auth URL flow."
         )
-    try:
-        result = await refresh_access_token(provider.oauth_refresh_token)
-    except OAuthFlowError as e:
-        # v3.0.18: invalid_grant means a peer beat us to the rotation. Try
-        # to recover by adopting the peer's fresher state instead of
-        # tripping the 24h auth-failure breaker.
-        if "invalid_grant" in str(e).lower():
-            from app.cluster.oauth_recovery import (
-                pull_oauth_state_from_peers, adopt_peer_state,
+    lock = _get_refresh_lock(provider.id)
+    async with lock:
+        # v5.8.3 — re-read the row inside the lock. If another waiter just
+        # rotated the token, our pre-lock copy of refresh_token is now
+        # stale; the value just persisted is in the DB.
+        await db.refresh(provider, attribute_names=["oauth_refresh_token", "api_key", "oauth_expires_at"])
+        if not provider.oauth_refresh_token:
+            raise OAuthFlowError(
+                f"Provider {provider.id} ({provider.name!r}) lost its "
+                "refresh_token mid-refresh (likely v5.8.3 verify-after-adopt "
+                "cleared it). Re-run the Generate Auth URL flow."
             )
-            peer_state = await pull_oauth_state_from_peers(provider.id)
-            if peer_state is not None:
-                await adopt_peer_state(provider, db, peer_state)
-                # Synthesize an ExchangeResult from the adopted state so the
-                # caller's "refresh succeeded" path runs unchanged.
-                return ExchangeResult(
-                    access_token=peer_state.api_key,
-                    refresh_token=peer_state.oauth_refresh_token,
-                    expires_at=peer_state.oauth_expires_at,
-                    raw={"recovered_from_peer": peer_state.source_peer_id},
+        try:
+            result = await refresh_access_token(provider.oauth_refresh_token)
+        except OAuthFlowError as e:
+            # v3.0.18 + v5.8.3: invalid_grant might mean a peer beat us
+            # OR Anthropic permanently revoked the refresh_token. Try
+            # peer-pull, then verify the adopted token before keeping it.
+            if "invalid_grant" in str(e).lower():
+                from app.cluster.oauth_recovery import (
+                    pull_oauth_state_from_peers, adopt_peer_state,
                 )
-        raise
-    provider.api_key = result.access_token
-    if result.refresh_token:
-        provider.oauth_refresh_token = result.refresh_token
-    provider.oauth_expires_at = result.expires_at
-    await db.commit()
-    return result
+                peer_state = await pull_oauth_state_from_peers(provider.id)
+                if peer_state is not None:
+                    await adopt_peer_state(provider, db, peer_state)
+                    # v5.8.3 — verify the adopted token authenticates.
+                    # Use a tiny ping (1-token max) so it costs ~nothing.
+                    verified = await _verify_oauth_access_token(peer_state.api_key)
+                    if verified:
+                        return ExchangeResult(
+                            access_token=peer_state.api_key,
+                            refresh_token=peer_state.oauth_refresh_token,
+                            expires_at=peer_state.oauth_expires_at,
+                            raw={"recovered_from_peer": peer_state.source_peer_id},
+                        )
+                    # Adopted state is also dead — clear refresh_token so
+                    # the operator gets a hard "Needs re-auth" signal.
+                    provider.oauth_refresh_token = None
+                    provider.api_key = peer_state.api_key  # keep for audit visibility
+                    await db.commit()
+                    raise OAuthFlowError(
+                        f"Provider {provider.id} ({provider.name!r}) refresh "
+                        "failed AND the peer-adopted state also failed to "
+                        "authenticate against Anthropic. Refresh token "
+                        "appears permanently revoked. Operator must re-auth "
+                        "via Providers page → Re-authorize."
+                    ) from e
+            raise
+        provider.api_key = result.access_token
+        if result.refresh_token:
+            provider.oauth_refresh_token = result.refresh_token
+        provider.oauth_expires_at = result.expires_at
+        await db.commit()
+        return result
+
+
+async def _verify_oauth_access_token(token: str) -> bool:
+    """v5.8.3 — cheap probe that confirms ``token`` actually authenticates
+    against platform.claude.com. Used after peer-adopt to make sure we're
+    not committing a token the rest of the cluster has already lost. Any
+    non-401 response (including 429 rate-limit) counts as authenticated.
+    Returns ``False`` only when Anthropic explicitly rejects the token."""
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=8.0, verify=False) as cli:
+            resp = await cli.post(
+                "https://platform.claude.com/v1/messages?beta=true",
+                json={
+                    "model": "claude-haiku-4-5-20251001",
+                    "max_tokens": 1,
+                    "messages": [{"role": "user", "content": "."}],
+                },
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "anthropic-version": "2023-06-01",
+                    "anthropic-beta": "oauth-2025-04-20",
+                },
+            )
+        return resp.status_code != 401
+    except Exception:
+        # Network errors don't count as a failed-auth verdict; only
+        # an explicit 401 from Anthropic does.
+        return True

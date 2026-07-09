@@ -34,6 +34,7 @@ from app.api.auth import router as auth_router
 from app.api.providers import router as providers_router
 from app.api.providers_oauth import router as providers_oauth_router
 from app.api.apikeys import router as apikeys_router
+from app.api.integration import router as integration_router
 from app.api.users import router as users_router
 from app.api.cluster import router as cluster_router
 from app.api.monitoring import router as monitoring_router
@@ -50,6 +51,7 @@ from app.api.admin_compliance_epoch_purge import router as admin_compliance_epoc
 from app.api.admin_mcp_policy import router as admin_mcp_policy_router
 from app.api.admin_mcp_summary import router as admin_mcp_summary_router
 from app.api.admin_mcp_capability_suggestions import router as admin_mcp_capability_router
+from app.api.admin_requests_stream import router as admin_requests_stream_router
 from app.api.oauth_capture import router as oauth_capture_router
 from app.api.runs import router as runs_router
 from app.api.lmrh import router as lmrh_router
@@ -128,6 +130,30 @@ try:
     # version. Belt-and-suspenders: even after the keepalive fix, real
     # upstream errors during normal traffic shouldn't decorate stderr.
     _litellm.suppress_debug_info = True
+except Exception:
+    pass
+
+
+# v5.9.8 (#487) — suppress aiohttp "Unclosed client session" warnings.
+# The asyncio resource warning fires when an aiohttp.ClientSession is
+# GC'd without being closed — this happens inside litellm's provider
+# clients when the CB on Grok-Web (and occasionally other providers)
+# trips mid-call: the underlying aiohttp session loses its event-loop
+# reference before __aexit__ runs. Not actionable from our side without
+# patching litellm; the leaked session is one HTTPS connection-pool
+# entry per CB trip, GC'd at the next sweep. The warning is pure log
+# noise but it surfaces as ERROR (asyncio module default) which trips
+# our own "ERROR" log-mining filters. Demote to DEBUG so the signal is
+# preserved if anyone explicitly enables debug logging.
+try:
+    class _UnclosedSessionFilter(logging.Filter):
+        def filter(self, record: logging.LogRecord) -> bool:
+            msg = str(record.getMessage())
+            return not (
+                "Unclosed client session" in msg
+                or "Unclosed connector" in msg
+            )
+    logging.getLogger("asyncio").addFilter(_UnclosedSessionFilter())
 except Exception:
     pass
 
@@ -239,6 +265,35 @@ async def lifespan(app: FastAPI):
         start_compliance_audit()
     except Exception as e:
         logger.warning(f"compliance audit worker failed to start: {e}")
+
+    # v5.14.0 — register built-in response-shaping hooks (currently:
+    # compliance_substitution_header_hook). Hub team's substitution-mirror
+    # registers separately via the callbacks.* settings (loaded after this).
+    try:
+        from app.api._response_hook_runner import register_builtin_hooks
+        register_builtin_hooks()
+        # v5.20.4 — Model cost-map sync worker. Pulls the LiteLLM
+        # upstream ``model_prices_and_context_window.json`` daily so
+        # day-zero-released models get accurate pricing without a
+        # ``litellm`` package upgrade. Runs immediately + then every
+        # 24h. Failure-mode: log + retry next tick — the existing
+        # litellm.cost_per_token path continues to work.
+        try:
+            from app.monitoring.model_cost_map_worker import start as _start_cost_map
+            _start_cost_map()
+        except Exception as exc:
+            logger.warning("model_cost_map_worker.start_failed err=%r", exc)
+    except Exception as e:
+        logger.warning(f"failed to register built-in response hooks: {e}")
+
+    # v5.10.0 Ship 2: caller_capability_score decay worker — 6h cadence,
+    # 0.96 per tick (~24h half-life), GC rows below 5. Bounds the
+    # back-pressure score table so it doesn't grow unbounded.
+    try:
+        from app.monitoring.caller_score_decay import start_decay_worker as start_caller_score_decay
+        start_caller_score_decay()
+    except Exception as e:
+        logger.warning(f"caller score decay worker failed to start: {e}")
 
     # v5.0.4 (P3 partial): cursor-oauth JWT expiry monitor — decodes the
     # exp claim on each cursor-oauth provider's stored JWT, backfills
@@ -352,6 +407,28 @@ async def lifespan(app: FastAPI):
         _ai_sup.start()
     except Exception as e:
         logger.warning(f"ai_provider_supervisor failed to start: {e}")
+
+    # v5.7.15 — burst-trigger force-open. Fast DB-only sweep (every 60s
+    # by default) that closes the 30-min gap between AI-supervisor LLM
+    # classifications. Catches the case the 2026-06-17 c1conv incident
+    # sat in: a degrading upstream throws empty-success bursts faster
+    # than the LLM supervisor sweeps. Default ON.
+    try:
+        from app.monitoring import empty_success_burst_trigger as _esbt
+        _esbt.start()
+    except Exception as e:
+        logger.warning(f"empty_success_burst_trigger failed to start: {e}")
+
+    # v5.14.2 (#492) — cluster-sync 403-rate escalation trigger. Watches
+    # the v5.14.2 in-process ``cluster_sync_metrics`` ring buffer and
+    # emits an activity_log warning when ``recent_403_pct`` crosses the
+    # configured threshold. Quiet at the known tmrwww02-peer 50% baseline;
+    # catches any regression above. Default ON.
+    try:
+        from app.monitoring import cluster_sync_403_monitor as _cs403m
+        _cs403m.start()
+    except Exception as e:
+        logger.warning(f"cluster_sync_403_monitor failed to start: {e}")
 
     # v4.0 (AIRI) — deterministic scheduled-rule evaluator. The loop idles
     # unless airi_enabled AND the automation kill switch are both on; no LLM
@@ -565,12 +642,25 @@ app.include_router(completions_router)
 app.include_router(responses_router)
 app.include_router(embeddings_router)
 app.include_router(models_router)
+# v5.9.0 — OpenAI-compatible audio + images endpoints (DevinGPT memo 2026-06-21).
+from app.api.audio import router as audio_router  # noqa: E402
+from app.api.images import router as images_router  # noqa: E402
+app.include_router(audio_router)
+app.include_router(images_router)
 
 # ── Admin API ────────────────────────────────────────────────────────────────
 app.include_router(auth_router)
+# v5.8.4 — providers_stats_router MUST come BEFORE providers_router. Both
+# share the /api/providers prefix; providers_router has /{provider_id}
+# (single-segment parameterized route) which would otherwise shadow the
+# literal /rolling-stats and /rolling-stats-by-node routes here, silently
+# 404ing the rolling-window columns on the Providers page.
+app.include_router(providers_stats_router)  # v4.4.14 — read-side / stats
 app.include_router(providers_router)
 app.include_router(providers_oauth_router)  # OAuth flow endpoints (same prefix)
 app.include_router(apikeys_router)
+# v5.8.0 — AI integration protocol: /announce (public) + /api/integration/chat (passphrase-gated)
+app.include_router(integration_router)
 app.include_router(users_router)
 app.include_router(cluster_router)
 app.include_router(monitoring_router)
@@ -585,6 +675,13 @@ app.include_router(admin_compliance_epoch_purge_router)  # v5.4.3 — pre-compli
 app.include_router(admin_mcp_policy_router)  # v5.7.4 — per-key MCP allow/deny/budget
 app.include_router(admin_mcp_summary_router)  # v5.7.5 — MCP dashboard aggregator
 app.include_router(admin_mcp_capability_router)  # v5.7.6 — capability scout suggestions
+app.include_router(admin_requests_stream_router)  # v5.11.0 — SSE live tail of activity_log
+# v5.15.0 Phase 1 (#508) — per-account OAuth fan-out admin endpoints. CRUD on
+# provider_oauth_accounts. Phase 1 doesn't change dispatch; the table + endpoints
+# exist so operator can seed accounts + verify audit rows before the v5.15.1
+# dispatch flip.
+from app.api.admin_provider_oauth_accounts import router as admin_provider_oauth_accounts_router
+app.include_router(admin_provider_oauth_accounts_router)
 
 # v5.7.0 — MCP aggregation endpoint mounted at /mcp. The FastMCP
 # session_manager is started inside the lifespan (see above) so the
@@ -614,7 +711,7 @@ app.include_router(memory_admin_router)
 app.include_router(memory_scoped_router)
 app.include_router(provider_lifecycle_router)
 app.include_router(provider_capabilities_router)
-app.include_router(providers_stats_router)  # v4.4.14 — read-side / stats
+# providers_stats_router moved up to ensure it registers before providers_router (v5.8.4)
 app.include_router(compliance_router)  # v5.0.0 — compliance admin + user endpoints
 # v3.3.0: LMRHv2 endpoints (feature-flagged via lmrh_v2_enabled).
 # Same /lmrh/* prefix as v1; new paths don't collide with existing ones.
@@ -804,8 +901,42 @@ if os.path.isdir(_static_dir):
         # The /mcp mount returns its own 404/405/JSON responses, but FastAPI
         # resolves explicit routes BEFORE mounts; without this guard the
         # SPA catch-all swallowed every /mcp request as a 200-HTML response.
-        if full_path.split("/", 1)[0] in ("v1", "api", "cluster", "lmrh", "metrics", "health", "version", "mcp"):
+        # v5.9.4 — narrow the API-namespace denylist to paths with a
+        # slash after the prefix. The pre-v5.9.4 check matched bare
+        # `cluster` / `metrics` / `health` etc., which blocks legit
+        # SPA routes — App.tsx ships `/cluster` and `/metrics` as
+        # real SPA pages. Effect was a JSON 404 instead of the SPA
+        # shell on hard-refresh + a "Page not found" from the
+        # operator's browser. Sibling prefixes (`/v1`, `/api`,
+        # `/mcp`) are never SPA routes; bare hits should keep
+        # 404'ing as before. The slash check is the discriminator.
+        head = full_path.split("/", 1)[0]
+        if head in ("v1", "api", "mcp"):
             return JSONResponse({"detail": "Not Found"}, status_code=404)
+        if head in ("cluster", "lmrh", "metrics", "health", "version") and "/" in full_path:
+            return JSONResponse({"detail": "Not Found"}, status_code=404)
+        # v5.8.2 — deep-route asset rescue. The bundle (Vite ``base: './'``)
+        # emits ``./assets/X`` so a single build serves multiple URL
+        # prefixes (/llm-proxy/, /llm-proxy2/, /llm-proxy2-smoke/). The
+        # downside: from a depth-2 URL like /admin/integration the
+        # browser resolves ``./assets/X`` to /admin/assets/X, which
+        # FastAPI's /assets mount doesn't match and the catch-all
+        # would otherwise serve as the index.html (text/html), which
+        # the browser then rejects ("Expected a JavaScript-or-Wasm
+        # module"). Pre-5.8.2 this broke ALL deep admin routes on
+        # hard-refresh (/admin/compliance, /admin/mcp, /admin/integration
+        # — surfaced 2026-06-20 by an operator-paste of the new
+        # integration page URL). Fix: detect ``<...>/assets/X`` (or
+        # ``<...>/favicon.svg`` / ``icons.svg``) and serve the real
+        # static file. Browser-side caches the corrected response and
+        # subsequent navigations behave normally.
+        import re as _re
+        m = _re.match(r"^(?:.+/)?(assets/.+|favicon\.svg|icons\.svg)$", full_path)
+        if m:
+            asset_path = m.group(1)
+            asset_local = os.path.join(_static_dir, asset_path)
+            if os.path.isfile(asset_local):
+                return FileResponse(asset_local)
         index = os.path.join(_static_dir, "index.html")
         if os.path.isfile(index):
             # v2.7.6 BUG-015: prevent browsers from caching the SPA shell so

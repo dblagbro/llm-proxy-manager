@@ -95,6 +95,72 @@ async def get_registry_async() -> List[ProxyTool]:
     return out
 
 
+def _collect_caller_tool_names(existing: list) -> set:
+    """v5.7.16 — extract names from the caller's ``body["tools"]``,
+    supporting BOTH wire shapes:
+
+    - Anthropic shape: ``{"name": "fetch_url", "input_schema": {...}}``
+    - OpenAI shape:    ``{"type": "function", "function": {"name": "fetch_url", ...}}``
+
+    /v1/messages is Anthropic-shape canonically, but callers
+    occasionally pass mixed payloads (e.g. an OpenAI-toolspec literal
+    copy-pasted into an Anthropic request). Catching both shapes is
+    cheap and prevents a class of "same-name, different schema" tool
+    collisions like the one DevinGPT flagged 2026-06-17 on ``fetch_url``.
+    """
+    names = set()
+    for t in existing:
+        if not isinstance(t, dict):
+            continue
+        n = t.get("name")
+        if n:
+            names.add(n)
+            continue
+        # OpenAI shape fallback
+        fn = t.get("function")
+        if isinstance(fn, dict):
+            n = fn.get("name")
+            if n:
+                names.add(n)
+    return names
+
+
+def _log_dedupe_skips(skipped: list[str]) -> None:
+    """v5.7.16 — async-fire-and-forget audit log when proxy-tool
+    dedupe skips one or more injections. Fires only on collision so
+    no impact on the steady-state hot path. Failures are swallowed —
+    this is observability, never gates injection."""
+    if not skipped:
+        return
+    import asyncio
+
+    async def _write():
+        try:
+            from app.models.database import AsyncSessionLocal
+            from app.monitoring.activity import log_event
+            async with AsyncSessionLocal() as db:
+                await log_event(
+                    db,
+                    event_type="proxy_tool.dedupe_skip",
+                    severity="info",
+                    message=(
+                        f"Path B dedupe: skipped {len(skipped)} proxy tool(s) "
+                        f"already present in caller's body['tools'] — "
+                        f"{', '.join(skipped[:8])}"
+                    ),
+                    metadata={"skipped_tool_names": skipped},
+                )
+        except Exception:
+            pass  # observability, never gate
+
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(_write())
+    except RuntimeError:
+        # No running loop (sync caller); skip the audit silently.
+        pass
+
+
 def inject_anthropic(body: dict) -> List[dict]:
     """Append every registered tool's Anthropic schema to
     ``body["tools"]``. Idempotent — if a tool with the same ``name``
@@ -104,15 +170,21 @@ def inject_anthropic(body: dict) -> List[dict]:
 
     v5.7.1: sync — only sees static tools. Use ``inject_anthropic_async``
     for the bridge-aware variant from the /v1/messages handler.
+    v5.7.16: dedupe handles both Anthropic + OpenAI tool shapes; logs
+    skips to ``activity_log`` so operator can see which clients have
+    their own canonical tool surface.
     """
     existing = body.get("tools") or []
-    existing_names = {
-        t.get("name") for t in existing if isinstance(t, dict)
-    }
+    existing_names = _collect_caller_tool_names(existing)
+    skipped = []
     for proxy_tool in get_registry():
-        if proxy_tool.name not in existing_names:
-            existing = list(existing) + [proxy_tool.anthropic_schema]
+        if proxy_tool.name in existing_names:
+            skipped.append(proxy_tool.name)
+            continue
+        existing = list(existing) + [proxy_tool.anthropic_schema]
+        existing_names.add(proxy_tool.name)
     body["tools"] = existing
+    _log_dedupe_skips(skipped)
     return existing
 
 
@@ -126,17 +198,102 @@ async def inject_anthropic_async(body: dict) -> List[dict]:
 
     Idempotency rules carry over from ``inject_anthropic``: if the
     caller passed a tool with the same ``name`` we don't re-add.
+    v5.7.16: dedupe handles both Anthropic + OpenAI tool shapes; logs
+    skips to ``activity_log`` so operator can see which clients have
+    their own canonical tool surface.
+    v5.8.3: consult the per-key MCP policy ContextVar set in
+    messages.py / completions.py. Without this gate, a key configured
+    with ``mcp_tools_allow=[]`` (the DevinGPT opt-out from v5.7.16)
+    STILL had every proxy tool injected at Path B because the v5.7.4
+    policy was only enforced at the FastMCP wrapper level (used by
+    Path A — the /mcp endpoint), not at the Path B injection point.
+    DevinGPT 2026-06-20 reported "path-B intercepts of fetch_url with
+    no audit trail on our side" — this is that fix.
     """
     existing = body.get("tools") or []
-    existing_names = {
-        t.get("name") for t in existing if isinstance(t, dict)
-    }
+    existing_names = _collect_caller_tool_names(existing)
+    # v5.8.3 — per-key policy gate. None policy = no key context set
+    # (admin paths, tests), behave like v5.7.4 → allow everything.
+    policy = _get_current_mcp_policy()
+    skipped = []
+    policy_blocked = []
     for proxy_tool in await get_registry_async():
-        if proxy_tool.name not in existing_names:
-            existing = list(existing) + [proxy_tool.anthropic_schema]
-            existing_names.add(proxy_tool.name)
+        if proxy_tool.name in existing_names:
+            skipped.append(proxy_tool.name)
+            continue
+        if policy is not None and not _is_tool_allowed_by_policy(proxy_tool.name, policy):
+            policy_blocked.append(proxy_tool.name)
+            continue
+        existing = list(existing) + [proxy_tool.anthropic_schema]
+        existing_names.add(proxy_tool.name)
     body["tools"] = existing
+    _log_dedupe_skips(skipped)
+    _log_policy_blocked(policy_blocked)
     return existing
+
+
+def _get_current_mcp_policy() -> Optional[dict]:
+    """Read the per-key MCP policy ContextVar set by the request
+    handler. Returns ``None`` when no context is set (admin / test
+    paths) so legacy callers behave as before."""
+    try:
+        from app.mcp_server.server import current_mcp_policy
+        return current_mcp_policy.get()
+    except Exception:
+        return None
+
+
+def _is_tool_allowed_by_policy(tool_name: str, policy: dict) -> bool:
+    """v5.8.3 — apply the same allow/deny semantics as the FastMCP
+    wrapper (``mcp_server.policy.is_tool_allowed_for_key``). Local
+    copy here to keep the import surface narrow + avoid a circular
+    import between ``proxy_tools`` and ``mcp_server``."""
+    try:
+        from app.mcp_server.policy import is_tool_allowed_for_key
+        return is_tool_allowed_for_key(
+            tool_name,
+            policy.get("mcp_tools_allow"),
+            policy.get("mcp_tools_deny"),
+        )
+    except Exception:
+        # If the policy module can't load, fail OPEN (legacy behaviour)
+        # rather than blocking — operators see surprises better than
+        # silent denials.
+        return True
+
+
+def _log_policy_blocked(blocked: list[str]) -> None:
+    """v5.8.3 — when the per-key policy blocked one or more proxy
+    tool injections, emit an ``activity_log`` row so operators can
+    confirm the gate is firing for the right keys. Fire-and-forget;
+    failures are swallowed."""
+    if not blocked:
+        return
+    import asyncio
+
+    async def _write():
+        try:
+            from app.models.database import AsyncSessionLocal
+            from app.monitoring.activity import log_event
+            async with AsyncSessionLocal() as db:
+                await log_event(
+                    db,
+                    event_type="proxy_tool.policy_blocked",
+                    severity="info",
+                    message=(
+                        f"Path B per-key policy blocked {len(blocked)} proxy "
+                        f"tool injection(s): {', '.join(blocked[:8])}"
+                    ),
+                    metadata={"blocked_tool_names": blocked},
+                )
+        except Exception:
+            pass
+
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(_write())
+    except RuntimeError:
+        pass
 
 
 async def find_proxy_tool_use_async(

@@ -51,7 +51,41 @@ interface Props {
   setBlockedModels: (v: string[] | null) => void
   allowedModels: string[] | null
   setAllowedModels: (v: string[] | null) => void
+  // v5.20.7 — refusal detection + cascade toggles. See v5.20.0/1/2
+  // ships in CHANGELOG for behavior. Not compliance-policy fields
+  // (no ``reason`` required on change) — per-key debug/behavior flags.
+  refusalDetectionEnabled: boolean
+  setRefusalDetectionEnabled: (v: boolean) => void
+  refusalPromptHardening: boolean
+  setRefusalPromptHardening: (v: boolean) => void
+  refusalRetryEnabled: boolean
+  setRefusalRetryEnabled: (v: boolean) => void
+  refusalRetryMaxAttempts: number | null
+  setRefusalRetryMaxAttempts: (v: number | null) => void
+  // v5.20.10 — self-edit permissions list. null / [] = self-edit
+  // disabled; ["field_name","field_name"] = grant those fields.
+  selfEditPermissions: string[] | null
+  setSelfEditPermissions: (v: string[] | null) => void
 }
+
+// v5.20.10 — mirror of app/integration/self_update.py::ELIGIBLE_FIELDS.
+// Keep in sync with backend or a stale frontend can send fields the
+// backend will silently filter. Grouped by purpose for UI clarity.
+export const SELF_EDIT_ELIGIBLE_FIELDS: {
+  key: string
+  label: string
+  group: 'MCP' | 'Refusal' | 'Other'
+}[] = [
+  { key: 'mcp_tools_allow',              label: 'MCP tools allow-list',      group: 'MCP' },
+  { key: 'mcp_tools_deny',               label: 'MCP tools deny-list',       group: 'MCP' },
+  { key: 'mcp_schema_token_budget',      label: 'MCP schema token budget',   group: 'MCP' },
+  { key: 'system_prompt_mcp_augmentation', label: 'System-prompt MCP nudge', group: 'MCP' },
+  { key: 'refusal_detection_enabled',    label: 'Refusal detection',         group: 'Refusal' },
+  { key: 'refusal_prompt_hardening',     label: 'Refusal prompt hardening',  group: 'Refusal' },
+  { key: 'refusal_retry_enabled',        label: 'Refusal retry (cascade)',   group: 'Refusal' },
+  { key: 'refusal_retry_max_attempts',   label: 'Refusal retry max attempts', group: 'Refusal' },
+  { key: 'semantic_cache_enabled',       label: 'Semantic cache',            group: 'Other' },
+]
 
 export function ComplianceFieldsEditor({
   blockedCompanies, setBlockedCompanies,
@@ -60,6 +94,11 @@ export function ComplianceFieldsEditor({
   allowedCompanies, setAllowedCompanies,
   blockedModels, setBlockedModels,
   allowedModels, setAllowedModels,
+  refusalDetectionEnabled, setRefusalDetectionEnabled,
+  refusalPromptHardening, setRefusalPromptHardening,
+  refusalRetryEnabled, setRefusalRetryEnabled,
+  refusalRetryMaxAttempts, setRefusalRetryMaxAttempts,
+  selfEditPermissions, setSelfEditPermissions,
 }: Props) {
   const [customCompany, setCustomCompany] = useState('')
   // v5.3.2 — live taxonomy with KNOWN_COMPANIES fallback.
@@ -291,7 +330,7 @@ export function ComplianceFieldsEditor({
             Debug echo enabled
           </p>
           <p className="text-xs text-gray-400">
-            Gates the sandbox /api/debug/echo-client endpoint. Leave OFF for production keys.
+            Gates the sandbox /api/debug/echo-client endpoint AND the v5.20.3 X-Hooks-Override request header. Leave OFF for production keys.
           </p>
         </div>
         <Switch
@@ -299,6 +338,167 @@ export function ComplianceFieldsEditor({
           onChange={setDebugEchoEnabled}
           ariaLabel="Enable debug echo endpoint"
         />
+      </div>
+
+      {/* v5.20.7 — Refusal detection + cascade panel. Ordered by
+          increasing invasiveness: detection (observe only), hardening
+          (mutates request), cascade (mutates response chain). */}
+      <div className="mt-6 pt-4 border-t border-gray-200 dark:border-gray-700">
+        <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-3">
+          Refusal detection &amp; cascade (v5.20.0-2)
+        </h4>
+
+        <div className="flex items-start justify-between gap-4 mb-4">
+          <div className="flex-1">
+            <p className="text-sm font-medium text-gray-700 dark:text-gray-300">
+              Refusal detection
+            </p>
+            <p className="text-xs text-gray-400">
+              Emits <code>X-Refusal-Detected</code> + <code>X-Refusal-Category</code> response headers when the model refuses a request (e.g. task_substitution, capability_deny). Also writes <code>refusal_detected</code> activity_log rows. Cheap regex, no LLM call.
+            </p>
+          </div>
+          <Switch
+            checked={refusalDetectionEnabled}
+            onChange={setRefusalDetectionEnabled}
+            ariaLabel="Enable refusal detection"
+          />
+        </div>
+
+        <div className="flex items-start justify-between gap-4 mb-4">
+          <div className="flex-1">
+            <p className="text-sm font-medium text-gray-700 dark:text-gray-300">
+              Refusal prompt hardening
+            </p>
+            <p className="text-xs text-gray-400">
+              Prepends "if you can't do this, reply <code>REFUSED: &lt;reason&gt;</code>" to the system prompt. Makes silent task substitution machine-detectable. Independent of detection above.
+            </p>
+          </div>
+          <Switch
+            checked={refusalPromptHardening}
+            onChange={setRefusalPromptHardening}
+            ariaLabel="Enable prompt hardening"
+          />
+        </div>
+
+        <div className="flex items-start justify-between gap-4 mb-4">
+          <div className="flex-1">
+            <p className="text-sm font-medium text-gray-700 dark:text-gray-300">
+              Refusal retry (cascade)
+            </p>
+            <p className="text-xs text-gray-400">
+              When detection fires, auto-cascade to a different provider (v5.20.1). Non-streaming only. DevinGPT team has this OFF by design — they use client-side retry chain instead.
+            </p>
+          </div>
+          <Switch
+            checked={refusalRetryEnabled}
+            onChange={setRefusalRetryEnabled}
+            ariaLabel="Enable refusal retry cascade"
+          />
+        </div>
+
+        {refusalRetryEnabled && (
+          <div className="flex items-start justify-between gap-4 pl-4 border-l-2 border-indigo-200 dark:border-indigo-800">
+            <div className="flex-1">
+              <p className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                Max retry attempts
+              </p>
+              <p className="text-xs text-gray-400">
+                Cap on cascade attempts before returning the original refusal. Default is 3 when empty.
+              </p>
+            </div>
+            <input
+              type="number"
+              min={1}
+              max={10}
+              placeholder="3"
+              value={refusalRetryMaxAttempts ?? ''}
+              onChange={e => {
+                const v = e.target.value.trim()
+                setRefusalRetryMaxAttempts(v === '' ? null : Number(v))
+              }}
+              className="w-20 text-sm px-2 py-1 border border-gray-200 dark:border-gray-700 rounded bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-200"
+            />
+          </div>
+        )}
+      </div>
+
+      {/* v5.20.10 — Self-edit permissions grid. The AI Integration
+          Protocol (v5.20.2) POST /api/integration/self-update endpoint
+          lets a key's owner update its own settings — but only the
+          fields granted here. Empty list = self-edit disabled (default). */}
+      <div className="mt-6 pt-4 border-t border-gray-200 dark:border-gray-700">
+        <div className="flex items-center justify-between mb-2">
+          <div className="flex items-center gap-1">
+            <h4 className="text-sm font-semibold text-gray-700 dark:text-gray-300">
+              Self-edit permissions
+            </h4>
+            <HelpHint text="Fields the caller's AI can update via POST /api/integration/self-update. Empty = self-edit disabled. Fields not listed here can only be changed via this admin UI." />
+          </div>
+          <Switch
+            checked={selfEditPermissions !== null}
+            onChange={on => setSelfEditPermissions(on ? [] : null)}
+            ariaLabel="Enable self-edit permissions"
+          />
+        </div>
+        {selfEditPermissions !== null && (
+          <>
+            <div className="mb-3 flex flex-wrap items-center gap-2">
+              <Button
+                size="sm"
+                variant="ghost"
+                type="button"
+                onClick={() => setSelfEditPermissions(SELF_EDIT_ELIGIBLE_FIELDS.map(f => f.key))}
+              >
+                Select all
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                type="button"
+                onClick={() => setSelfEditPermissions([])}
+              >
+                Clear
+              </Button>
+              <span className="text-xs text-gray-400">
+                {(selfEditPermissions ?? []).length}/{SELF_EDIT_ELIGIBLE_FIELDS.length} selected
+              </span>
+            </div>
+            {(['MCP', 'Refusal', 'Other'] as const).map(group => (
+              <div key={group} className="mb-2">
+                <p className="text-[11px] uppercase tracking-wide font-medium text-gray-500 dark:text-gray-400 mb-1">
+                  {group}
+                </p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-1">
+                  {SELF_EDIT_ELIGIBLE_FIELDS.filter(f => f.group === group).map(field => {
+                    const checked = (selfEditPermissions ?? []).includes(field.key)
+                    return (
+                      <label
+                        key={field.key}
+                        className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300 cursor-pointer p-1.5 rounded hover:bg-gray-50 dark:hover:bg-gray-800"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={e => {
+                            const cur = selfEditPermissions ?? []
+                            if (e.target.checked) {
+                              setSelfEditPermissions([...cur, field.key])
+                            } else {
+                              setSelfEditPermissions(cur.filter(k => k !== field.key))
+                            }
+                          }}
+                          className="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+                        />
+                        <span className="flex-1">{field.label}</span>
+                        <code className="text-[10px] text-gray-400 font-mono">{field.key}</code>
+                      </label>
+                    )
+                  })}
+                </div>
+              </div>
+            ))}
+          </>
+        )}
       </div>
     </div>
   )

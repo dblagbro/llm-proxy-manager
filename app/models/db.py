@@ -26,6 +26,7 @@ from app.models.db_base import Base, Session
 # Provider domain — heaviest module
 from app.models.db_provider import (
     Provider,
+    ProviderOAuthAccount,
     ProviderUsageWindow,
     ProviderNodeAuthState,
     ExternalUsageSnapshot,
@@ -57,6 +58,7 @@ from app.models.db_activity import (
 # v5.7.0 — MCP tool-call audit
 from app.models.db_mcp import (
     McpToolCall,
+    CallerCapabilityScore,  # v5.10.0
 )
 
 # Run runtime (v3.0)
@@ -131,6 +133,8 @@ __all__ = [
     "ActivityLog",
     # v5.7.0 — MCP tool-call audit
     "McpToolCall",
+    # v5.10.0 — capability back-pressure
+    "CallerCapabilityScore",
     # Run runtime
     "Run",
     "RunMessage",
