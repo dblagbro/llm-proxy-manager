@@ -8,6 +8,7 @@ import { GrokWebProviderFields } from './GrokWebProviderFields'
 import { AnthropicBillingPanel } from './AnthropicBillingPanel'
 import { CodexBillingPanel } from './CodexBillingPanel'
 import { CursorBillingPanel } from './CursorBillingPanel'
+import { OAuthAccountsPanel } from './OAuthAccountsPanel'
 import { NodeBridgeStatusPanel } from './NodeBridgeStatusPanel'
 
 const PROVIDER_TYPES: ProviderType[] = [
@@ -473,6 +474,18 @@ export function ProviderForm({ form, onChange, editing, provider, onProviderUpda
           the Codex panel above. */}
       {editing && provider && form.provider_type === 'cursor-oauth' && (
         <CursorBillingPanel
+          provider={provider}
+          onUpdated={onProviderUpdated}
+        />
+      )}
+
+      {/* v5.15.2 (#508) — Per-account OAuth fan-out panel. Renders for
+          cursor-oauth / codex-oauth / claude-oauth (component
+          self-gates on provider_type). Lets the operator add / rename /
+          toggle / soft-delete child accounts; dispatch (v5.15.1)
+          picks one per request via the configured strategy. */}
+      {editing && provider && (
+        <OAuthAccountsPanel
           provider={provider}
           onUpdated={onProviderUpdated}
         />

@@ -1,7 +1,23 @@
 """
 Cost estimation per request.
-Token prices are pulled from litellm's built-in model_cost dict,
-with a manual override table for models litellm may not know yet.
+
+Lookup order (v5.20.6):
+  1. DB ``model_pricing_catalog`` (fresh, ingested daily from
+     LiteLLM upstream by ``model_cost_map_worker``).
+  2. ``litellm.cost_per_token`` (whatever ships with the installed
+     ``litellm`` package).
+  3. Zero (unknown/free/local model).
+
+v5.20.6 removed the stale ``_OVERRIDES`` dict — the catalog covers
+every model that was in it, with fresher prices from LiteLLM's ``main``
+branch. Same-transaction DB check on 2026-07-08 confirmed all 8
+override entries are in the catalog; two even differed from the
+hardcodes (opus 3x, haiku 25%) — the catalog is more accurate.
+
+If the catalog is empty AND litellm doesn't know the model, cost
+returns zero — that's fine for the "free/local" case (e.g. an on-prem
+llama.cpp sidecar). Not a regression versus the pre-v5.20.6 shape,
+which would have also returned zero for the same input.
 """
 import logging
 from typing import Optional
@@ -10,17 +26,70 @@ import litellm
 
 logger = logging.getLogger(__name__)
 
-# Manual overrides (USD per 1M tokens): {litellm_model: (input, output)}
-_OVERRIDES: dict[str, tuple[float, float]] = {
-    "anthropic/claude-sonnet-4-6": (3.0, 15.0),
-    "anthropic/claude-opus-4-7": (15.0, 75.0),
-    "anthropic/claude-haiku-4-5-20251001": (0.80, 4.0),
-    "gemini/gemini-2.5-flash": (0.15, 0.60),
-    "gemini/gemini-2.5-pro": (1.25, 10.0),
-    "openai/gpt-4o": (2.50, 10.0),
-    "openai/gpt-4o-mini": (0.15, 0.60),
-    "xai/grok-2": (2.0, 10.0),
-}
+
+# v5.20.4 — In-process cache of the DB catalog. Populated lazily on
+# first lookup + refreshed by the sync worker (which calls
+# ``invalidate_catalog_cache`` on successful upsert). Keyed on
+# model name; value is (input_per_token, output_per_token).
+_CATALOG_CACHE: dict[str, tuple[float, float]] = {}
+_CATALOG_LOADED = False
+
+
+def invalidate_catalog_cache() -> None:
+    """Called by the sync worker after upsert so the next lookup
+    reloads from DB."""
+    global _CATALOG_LOADED
+    _CATALOG_CACHE.clear()
+    _CATALOG_LOADED = False
+
+
+def _load_catalog_cache_sync() -> None:
+    """Best-effort synchronous load — pricing lookups are on the
+    request hot path, so we can't await here. We use a synchronous
+    engine to hit the same SQLite DB. Failures leave the cache empty
+    (which just falls through to the existing litellm/override lookup)."""
+    global _CATALOG_LOADED
+    if _CATALOG_LOADED:
+        return
+    _CATALOG_LOADED = True  # set FIRST so a load failure doesn't loop
+    try:
+        from sqlalchemy import create_engine, text
+        from app.models.database import DATABASE_URL
+        # AsyncSessionLocal uses aiosqlite; swap to sync driver for
+        # this cheap read.
+        sync_url = DATABASE_URL.replace("sqlite+aiosqlite", "sqlite")
+        engine = create_engine(sync_url)
+        with engine.connect() as conn:
+            rows = conn.execute(text(
+                "SELECT model_key, input_cost_per_token, output_cost_per_token "
+                "FROM model_pricing_catalog"
+            )).fetchall()
+        for row in rows:
+            _CATALOG_CACHE[row[0]] = (float(row[1]), float(row[2]))
+    except Exception:
+        # Table may not exist yet on a fresh boot before init_db() —
+        # that's fine, the cache stays empty and lookups fall through
+        # to the litellm built-in.
+        pass
+
+
+def _catalog_lookup(model: str) -> Optional[tuple[float, float]]:
+    """Return (input_per_token, output_per_token) from the DB catalog
+    if present, else None. Tries the model as-is + with/without a
+    provider prefix (same variants as the _OVERRIDES lookup)."""
+    _load_catalog_cache_sync()
+    entry = _CATALOG_CACHE.get(model)
+    if entry is not None:
+        return entry
+    if "/" in model:
+        entry = _CATALOG_CACHE.get(model.split("/", 1)[1])
+        if entry is not None:
+            return entry
+    # Try prefix-adding for bare model names
+    for k, v in _CATALOG_CACHE.items():
+        if k.endswith("/" + model):
+            return v
+    return None
 
 
 def estimate_cost_split(
@@ -32,11 +101,19 @@ def estimate_cost_split(
     can track / report input and output separately. ``estimate_cost()``
     sums the two for back-compat.
 
-    Same lookup path as estimate_cost: litellm.cost_per_token first,
-    fall back to the local override table. Override table values are
-    in USD per million tokens (input_price, output_price).
+    v5.20.6 lookup order:
+      1. DB ``model_pricing_catalog`` (fresh, LiteLLM ``main`` daily)
+      2. ``litellm.cost_per_token`` (installed package)
+      3. Zero (unknown/free/local)
     """
-    # Try litellm's built-in cost lookup first
+    # 1) DB catalog
+    catalog_hit = _catalog_lookup(litellm_model)
+    if catalog_hit is not None:
+        in_per, out_per = catalog_hit
+        if in_per > 0 or out_per > 0:
+            return (input_tokens * in_per, output_tokens * out_per)
+
+    # 2) litellm's built-in cost lookup
     try:
         in_cost, out_cost = litellm.cost_per_token(
             model=litellm_model,
@@ -49,23 +126,6 @@ def estimate_cost_split(
             return (in_cost_f, out_cost_f)
     except Exception:
         pass
-
-    # Manual override table — try as-is first, then strip a provider prefix,
-    # then try the prefixed form for bare names.
-    override = _OVERRIDES.get(litellm_model)
-    if override is None and "/" in litellm_model:
-        override = _OVERRIDES.get(litellm_model.split("/", 1)[1])
-    if override is None:
-        for k, v in _OVERRIDES.items():
-            if k.endswith("/" + litellm_model):
-                override = v
-                break
-    if override:
-        in_price, out_price = override
-        return (
-            (input_tokens * in_price) / 1_000_000,
-            (output_tokens * out_price) / 1_000_000,
-        )
 
     # Unknown model: return zeros (free/local)
     return (0.0, 0.0)

@@ -65,6 +65,10 @@ def infer_capability_profile(
         # Use the union of common regions to avoid sovereignty filter rejecting
         # legitimate routes. Operator can override per-model via scan-models.
         profile.regions = ["us", "eu", "asia"]
+    elif provider_type == "nvidia_nim":
+        # v5.11.0: NVIDIA NIM hosts vendor models (NVIDIA's own + Z.ai +
+        # MoonshotAI + MiniMax + ...). Multi-region. Operator can refine.
+        profile.regions = ["us", "eu", "asia"]
     elif provider_type == "ollama":
         profile.regions = ["local"]
         profile.cost_tier = "economy"

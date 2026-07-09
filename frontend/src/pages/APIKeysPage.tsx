@@ -67,6 +67,13 @@ export function APIKeysPage() {
   const [editBlockedCompanies, setEditBlockedCompanies] = useState<string[]>([])
   const [editAllowedPaths, setEditAllowedPaths] = useState<string[] | null>(null)
   const [editDebugEcho, setEditDebugEcho] = useState(false)
+  // v5.20.7 — refusal detection + cascade toggles
+  const [editRefusalDetect, setEditRefusalDetect] = useState(false)
+  const [editRefusalHardening, setEditRefusalHardening] = useState(false)
+  const [editRefusalRetry, setEditRefusalRetry] = useState(false)
+  const [editRefusalMaxAttempts, setEditRefusalMaxAttempts] = useState<number | null>(null)
+  // v5.20.10 — self_edit_permissions list state
+  const [editSelfEditPerms, setEditSelfEditPerms] = useState<string[] | null>(null)
   // v5.3.0 — fine-grained policy state on edit
   const [editAllowedCompanies, setEditAllowedCompanies] = useState<string[] | null>(null)
   const [editBlockedModels, setEditBlockedModels] = useState<string[] | null>(null)
@@ -284,6 +291,21 @@ export function APIKeysPage() {
     const blockedChanged = !_arrayEqual(original.blocked_companies ?? null, nextBlocked)
     const pathsChanged = !_arrayEqual(original.allowed_paths ?? null, editAllowedPaths)
     const echoChanged = Boolean(original.debug_echo_enabled) !== editDebugEcho
+    // v5.20.7 — refusal diff
+    const refDetectChanged   = Boolean(original.refusal_detection_enabled) !== editRefusalDetect
+    const refHardChanged     = Boolean(original.refusal_prompt_hardening)  !== editRefusalHardening
+    const refRetryChanged    = Boolean(original.refusal_retry_enabled)     !== editRefusalRetry
+    const origMaxAttempts = original.refusal_retry_max_attempts ?? null
+    const refMaxChanged      = origMaxAttempts !== editRefusalMaxAttempts
+    // v5.20.10 — self_edit_permissions diff. Treat null and [] as equivalent
+    // (both = self-edit disabled).
+    const origPerms = (original.self_edit_permissions ?? null)
+    const editPerms = editSelfEditPerms
+    const permsEqual = (
+      (origPerms === null || origPerms.length === 0)
+      && (editPerms === null || editPerms.length === 0)
+    ) || _arrayEqual(origPerms, editPerms)
+    const selfEditPermsChanged = !permsEqual
     // v5.3.0 — fine-grained policy diff. Each dimension uses the same
     // null-vs-list state machine as allowed_paths.
     const nextAllowedCompanies = editAllowedCompanies && editAllowedCompanies.length > 0 ? editAllowedCompanies : null
@@ -296,6 +318,8 @@ export function APIKeysPage() {
     if (
       !capChanged && !rpmChanged && !blockedChanged && !pathsChanged && !echoChanged
       && !allowedCompaniesChanged && !blockedModelsChanged && !allowedModelsChanged
+      && !refDetectChanged && !refHardChanged && !refRetryChanged && !refMaxChanged
+      && !selfEditPermsChanged
     ) {
       setEditKey(null)
       return
@@ -308,6 +332,20 @@ export function APIKeysPage() {
     if (blockedChanged) payload.blocked_companies = nextBlocked
     if (pathsChanged)   payload.allowed_paths    = editAllowedPaths
     if (echoChanged)    payload.debug_echo_enabled = editDebugEcho
+    // v5.20.7 — refusal fields on payload. -1 sentinel clears max_attempts.
+    if (refDetectChanged) (payload as any).refusal_detection_enabled = editRefusalDetect
+    if (refHardChanged)   (payload as any).refusal_prompt_hardening  = editRefusalHardening
+    if (refRetryChanged)  (payload as any).refusal_retry_enabled     = editRefusalRetry
+    if (refMaxChanged) {
+      (payload as any).refusal_retry_max_attempts =
+        editRefusalMaxAttempts === null ? -1 : editRefusalMaxAttempts
+    }
+    // v5.20.10 — self_edit_permissions payload. Send explicit []
+    // to revoke ALL permissions (null-from-frontend triggers no-op
+    // on backend, so we can't distinguish "revoke" from "don't touch").
+    if (selfEditPermsChanged) {
+      (payload as any).self_edit_permissions = editSelfEditPerms ?? []
+    }
     if (allowedCompaniesChanged) payload.allowed_companies = nextAllowedCompanies
     if (blockedModelsChanged)    payload.blocked_models    = nextBlockedModels
     if (allowedModelsChanged)    payload.allowed_models    = nextAllowedModels
@@ -442,6 +480,12 @@ export function APIKeysPage() {
     setEditBlockedCompanies(k.blocked_companies ?? [])
     setEditAllowedPaths(k.allowed_paths ?? null)
     setEditDebugEcho(Boolean(k.debug_echo_enabled))
+    // v5.20.7 — seed refusal state from the row
+    setEditRefusalDetect(Boolean(k.refusal_detection_enabled))
+    setEditRefusalHardening(Boolean(k.refusal_prompt_hardening))
+    setEditRefusalRetry(Boolean(k.refusal_retry_enabled))
+    setEditRefusalMaxAttempts(k.refusal_retry_max_attempts ?? null)
+    setEditSelfEditPerms(k.self_edit_permissions ?? null)
     // v5.3.0 — seed fine-grained policy state. Backend returns null for
     // legacy keys with no opinion on these dimensions; that preserves
     // the editor's null-vs-list state machine (allowlist-mode-OFF vs ON).
@@ -808,6 +852,20 @@ export function APIKeysPage() {
                 setBlockedModels={setCreateBlockedModels}
                 allowedModels={createAllowedModels}
                 setAllowedModels={setCreateAllowedModels}
+                /* v5.20.7 — Create modal: default refusal panel to OFF.
+                   Wire the toggles as static-false since we don't have
+                   create state for these (yet). They can be flipped
+                   post-create via the Edit modal. */
+                refusalDetectionEnabled={false}
+                setRefusalDetectionEnabled={() => {}}
+                refusalPromptHardening={false}
+                setRefusalPromptHardening={() => {}}
+                refusalRetryEnabled={false}
+                setRefusalRetryEnabled={() => {}}
+                refusalRetryMaxAttempts={null}
+                setRefusalRetryMaxAttempts={() => {}}
+                selfEditPermissions={null}
+                setSelfEditPermissions={() => {}}
               />
             </div>
           )}
@@ -872,6 +930,16 @@ export function APIKeysPage() {
               setBlockedModels={setEditBlockedModels}
               allowedModels={editAllowedModels}
               setAllowedModels={setEditAllowedModels}
+              refusalDetectionEnabled={editRefusalDetect}
+              setRefusalDetectionEnabled={setEditRefusalDetect}
+              refusalPromptHardening={editRefusalHardening}
+              setRefusalPromptHardening={setEditRefusalHardening}
+              refusalRetryEnabled={editRefusalRetry}
+              setRefusalRetryEnabled={setEditRefusalRetry}
+              refusalRetryMaxAttempts={editRefusalMaxAttempts}
+              setRefusalRetryMaxAttempts={setEditRefusalMaxAttempts}
+              selfEditPermissions={editSelfEditPerms}
+              setSelfEditPermissions={setEditSelfEditPerms}
             />
           </ModalBody>
           <ModalFooter>

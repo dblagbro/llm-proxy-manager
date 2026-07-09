@@ -12,6 +12,7 @@ from fastapi.responses import StreamingResponse, JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.database import get_db
+from app.utils.disconnect_watchdog import watch_for_disconnect
 from app.auth.keys import verify_api_key
 from app.routing.router import select_provider
 from app.routing.litellm_binding import clamp_thinking_budget
@@ -62,6 +63,12 @@ router = APIRouter()
 async def messages(
     request: Request,
     background_tasks: BackgroundTasks,
+    # v5.7.17 — client-disconnect watchdog. Runs in parallel with the
+    # handler; on disconnect cancels the handler task so ``async with
+    # db: ...`` releases the DB connection. Closes the supervisor DB
+    # pool leak (2026-06-16). Listed BEFORE db so the watchdog is set
+    # up before any session is checked out.
+    _watchdog: None = Depends(watch_for_disconnect),
     db: AsyncSession = Depends(get_db),
     x_api_key: Optional[str] = Header(None, alias="x-api-key"),
     llm_hint: Optional[str] = Header(None, alias="llm-hint"),
@@ -80,85 +87,47 @@ async def messages(
     x_conversation_id: Optional[str] = Header(None, alias="x-conversation-id"),
     x_memory_tag: Optional[str] = Header(None, alias="x-memory-tag"),
 ):
-    key_record = await verify_api_key(db, x_api_key)
-    # v3.0.45: set tenant context for select_provider's ownership filter
-    # so cascade/critique/hedge/grader paths inherit it without plumbing.
-    from app.routing.tenant import current_api_key_id
-    current_api_key_id.set(key_record.id)
-
-    # v5.0.0 — compliance UA pre-check (decision 16 + 22). Fires BEFORE
-    # any provider routing so banned client products are refused even
-    # when the requested model is allowed. v5.0.9 — extracted to
-    # ``_compliance_handler.raise_if_banned_client_ua``; same logic,
-    # one mirror.
-    from app.api._compliance_handler import raise_if_banned_client_ua
-    await raise_if_banned_client_ua(request, db, key_record)
-
-    # v5.2.0 / Batch V1 — LLM emergency stop. Fires BEFORE provider
-    # selection so a halted fleet doesn't waste a select_provider call.
-    # Separate from the v5.1.0 ``activity_logging_enabled`` toggle:
-    # that one suppresses log WRITES; this one refuses LLM CALLS.
-    # Body isn't parsed yet, so ``requested_model`` is captured later
-    # via the audit row's ``X-Compliance-Requested-Model`` header path
-    # — the stop is unconditional regardless of model.
-    from app.api._compliance_handler import raise_if_llm_emergency_stopped
-    await raise_if_llm_emergency_stopped(db, key_record, endpoint="messages")
-
-    # v4.4.15 (F-OBS-003) — record whether the caller-memory gating
-    # header is present, so the operator can see when a consumer
-    # starts sending it (caller_memory write-back has had 0 prod
-    # writes despite the flag being ON since 2026-05-15).
-    try:
-        from app.observability.prometheus import CONVERSATION_ID_REQUESTS_TOTAL
-        CONVERSATION_ID_REQUESTS_TOTAL.labels(
-            endpoint="messages",
-            has_conversation_id="true" if x_conversation_id else "false",
-        ).inc()
-    except Exception:
-        pass  # telemetry must never break the request path
-
-    # v4.4.23 — set the per-request contextvars so the activity_log
-    # row for this request can record verifiable header presence.
-    # Surfaced 2026-05-27 by a DevinGPT follow-up asking us to confirm
-    # whether two specific historical events had the header — we
-    # couldn't, because event_meta never captured it. Counter-only
-    # telemetry resets on restart; the contextvar bridges to per-row.
-    try:
-        from app.observability.request_context import set_caller_memory_headers
-        set_caller_memory_headers(
-            has_conversation_id=bool(x_conversation_id),
-            has_memory_tag=bool(x_memory_tag),
-        )
-    except Exception:
-        pass
+    # v5.7.18/v5.7.23 — pre-route setup extracted to
+    # ``_handler_shared`` (was ``_messages_pre_route`` in v5.7.18;
+    # Phase 2 lifted to shared with /v1/chat/completions). Behavior
+    # unchanged; see the helper module for what fires here.
+    from app.api._handler_shared import prepare_request_context
+    key_record = await prepare_request_context(
+        request, db, x_api_key,
+        endpoint="messages",
+        x_conversation_id=x_conversation_id,
+        x_memory_tag=x_memory_tag,
+    )
 
     body = await request.json()
-    # v5.0.6 — capture the caller's ORIGINAL model name before any
-    # rewriting downstream (the v3.0.36 cross-family fallback at
-    # line ~355 rewrites ``body["model"]`` to the served-model-native
-    # so the claude-oauth dispatcher reads the right slug; that
-    # mutation predates v5.0.0 and was correct for its purpose, but
-    # the v5.0.0 audit row at line ~557 then read body.get("model")
-    # AFTER the mutation, mislabeling the audit's ``requested_model``
-    # field with the served model. Same hit the
-    # ``X-Compliance-Requested-Model`` response header. Capturing
-    # here is the single-point fix — every audit + disclosure site
-    # downstream uses ``_orig_request_model`` instead.
-    _orig_request_model = body.get("model") if isinstance(body, dict) else None
-    # v3.5.8 BUG-005 fix — validate request shape at the input boundary.
-    # Pre-fix the proxy treated `{}` and `{"model":"x"}` (no messages)
-    # as valid, auto-routed to a default provider, and returned 200 with
-    # a substituted model. That's a denial-of-wallet vector if any API
-    # key leaks. Now: empty body → 400; missing model → 400; invalid
-    # role → 400; negative max_tokens → 400. All BEFORE upstream dispatch.
-    from app.api._input_validation import (
-        validate_completion_request,
-        validate_webhook_url,
+    # v5.7.19/v5.7.23 — Phase 1 sub-block 2 was ``normalize_request_body``
+    # in ``_messages_pre_route``; Phase 2 lifted it to ``_handler_shared``
+    # so /v1/chat/completions uses the same logic. Behavior unchanged.
+    from app.api._handler_shared import normalize_request_body
+    body, _orig_request_model, parsed_slug, is_auto, alias = await normalize_request_body(
+        body, x_webhook_url, db, endpoint="messages",
     )
-    validate_completion_request(body, endpoint="messages")
-    validate_webhook_url(x_webhook_url)
     messages_list = body.get("messages", [])
     stream = body.get("stream", False)
+    # v5.20.11 — buffered-cascade streaming mode. Prior v5.20.8 emitted
+    # ``X-Refusal-Cascade-Unavailable: streaming`` and passed through as
+    # a real stream because the v5.20.1 cascade module needs the full
+    # ``anthropic_result`` to detect + retry. v5.20.11 opts into a
+    # buffered mode instead: force the initial dispatch to
+    # ``stream=False``, run the standard non-streaming path (which
+    # includes cascade), and at the very end convert the final
+    # ``anthropic_result`` to Anthropic-shape SSE frames. Caller still
+    # gets a valid ``text/event-stream`` response — they just wait for
+    # the full response to complete before the first byte arrives.
+    # That trade-off is what ``refusal_retry_enabled`` means for
+    # streaming: correctness over TTFT. Marked with
+    # ``X-Refusal-Cascade-Mode: buffered`` so callers can distinguish.
+    _buffered_cascade_stream = stream and getattr(
+        key_record, "refusal_retry_enabled", False,
+    )
+    if _buffered_cascade_stream:
+        stream = False  # rest of the handler runs non-streaming
+        resp_headers["X-Refusal-Cascade-Mode"] = "buffered"
     max_tokens = body.get("max_tokens", 1024)
     system = body.get("system")
     thinking = body.get("thinking")
@@ -250,6 +219,29 @@ async def messages(
             system = body.get("system")
         except Exception as exc:
             logger.warning("proxy_tools.system_nudge_failed err=%s", exc)
+
+    # v5.20.0 — refusal_prompt_hardening. Per-key opt-in that appends
+    # "if you can't fulfill this, reply with REFUSED: <reason>"
+    # instructions to body["system"]. Makes silent task substitution
+    # ("I can't write X but here's Y") machine-detectable so the
+    # response-tail can log/retry deterministically. Independent of
+    # the v5.7.1 MCP nudge; a key can enable both.
+    if getattr(key_record, "refusal_prompt_hardening", False):
+        try:
+            from app.refusal_detection import REFUSAL_HARDENING_INSTRUCTION
+            existing_system = body.get("system")
+            if isinstance(existing_system, str):
+                body["system"] = REFUSAL_HARDENING_INSTRUCTION + "\n\n" + existing_system
+            elif isinstance(existing_system, list):
+                body["system"] = (
+                    [{"type": "text", "text": REFUSAL_HARDENING_INSTRUCTION}]
+                    + existing_system
+                )
+            else:
+                body["system"] = REFUSAL_HARDENING_INSTRUCTION
+            system = body.get("system")
+        except Exception as exc:
+            logger.warning("refusal_detection.hardening_failed err=%s", exc)
     tools = body.get("tools")
 
     from app.api._request_pipeline import (
@@ -269,29 +261,9 @@ async def messages(
     # consumes Anthropic-shape body['system']).
     _mem_injected = False
 
-    # v2.8.0: parse :floor / :nitro / :exacto suffix off the requested model.
-    # The suffix never reaches upstream — Anthropic / OpenAI etc. would 4xx.
-    from app.routing.model_slug import parse_model_slug, is_auto_model
-    parsed_slug = parse_model_slug(body.get("model"))
-    if parsed_slug.sort_mode is not None:
-        body = {**body, "model": parsed_slug.bare_model}
-
-    # v3.0.27: same embedding-on-chat guard as completions.py — embedding
-    # models can't dispatch through /v1/messages either.
-    from app.routing.router import _is_embedding_model
-    if _is_embedding_model(parsed_slug.bare_model):
-        raise HTTPException(
-            400,
-            f"Model {parsed_slug.bare_model!r} is an embeddings model. "
-            f"Use POST /v1/embeddings instead of /v1/messages.",
-        )
-
-    # v2.8.0: ``model: "auto"`` (and ``"llmp-auto"``) — let LMRH ranking pick
-    # the provider AND the model. The auto-task classifier in
-    # build_hint_with_auto_task already inferred a task dimension above, so
-    # capability scoring has signal even without an explicit hint header.
-    is_auto = is_auto_model(parsed_slug.bare_model)
-    alias = await resolve_alias(db, body.get("model")) if not is_auto else None
+    # v5.7.19 — suffix-strip + embedding guard + auto-resolution moved
+    # into ``normalize_request_body`` above. parsed_slug, is_auto, alias
+    # are unpacked at the call site.
     # v3.0.x refactor: provider selection + 503 conversion + auto-model
     # resolution moved into _request_pipeline shared helpers. Both
     # /v1/messages and /v1/chat/completions now go through the same code
@@ -399,61 +371,21 @@ async def messages(
             system = body.get("system")
             messages_list = body.get("messages", messages_list)
 
-    # v3.10.0 (#269 Fix B, widened) — Anthropic→OpenAI body translation.
-    # The /v1/messages endpoint always receives an Anthropic-wire body,
-    # but litellm's request API is OpenAI-shaped for EVERY provider it
-    # dispatches (Gemini, OpenAI, OpenRouter, and even litellm-Anthropic
-    # all included). So a request carrying Anthropic content blocks
-    # (tool_use / tool_result / image) 400s with "Invalid user message
-    # at index N" whenever it reaches a litellm provider untranslated.
-    #
-    # v3.9.1's original Fix B only translated on ``cross_family_fallback``,
-    # which left direct ``/v1/messages`` → Gemini / → OpenRouter tool-using
-    # requests broken — the dominant fleet failure class in the
-    # 2026-05-15 audit (~69% of all warnings). Translation must run for
-    # ANY litellm-dispatched route whose body has content blocks, not
-    # just fallbacks.
-    #
-    # Skipped for: claude-oauth (its own native-Anthropic dispatcher) and
-    # tool-emulation (its own Anthropic-shape prompt path — translating
-    # here would feed OpenAI-shape messages to normalize_anthropic_messages).
-    # BUG-047 (v4.3.8): also fire translation when the request carries
-    # Anthropic-shape tool DEFINITIONS at the top level (``body.tools``)
-    # but no tool-use/tool-result message blocks yet (first turn). Pre-
-    # fix, those defs reached litellm untranslated and 400'd on
-    # OpenAI/Cohere/etc. with "missing required field: 'type'" —
-    # observed multiple times/day on Devin-Cohere + Devin Personal
-    # OpenAI ChatGPT in the 2026-05-20 monitoring sweep.
-    _has_anthropic_tool_defs = has_anthropic_tool_defs(body.get("tools"))
-    _cross_family_translated = False
-    _needs_openai_translation = (
-        route.profile.provider_type != "claude-oauth"
-        and not route.tool_emulation_engaged
-        and (
-            route.cross_family_fallback
-            or _has_tool_blocks
-            or has_images
-            or _has_anthropic_tool_defs
-        )
+    # v5.7.20 — Phase 1 sub-block 3 of the messages.py extract: the
+    # Anthropic→OpenAI body translation block moved into
+    # ``_messages_pre_route.translate_to_openai_if_needed``. Behavior
+    # unchanged; the helper returns the (possibly translated) body
+    # + system + messages_list + tools + ``translated`` flag.
+    from app.api._messages_pre_route import translate_to_openai_if_needed
+    body, system, messages_list, tools, _cross_family_translated = translate_to_openai_if_needed(
+        body=body,
+        route=route,
+        system=system,
+        messages_list=messages_list,
+        tools=tools,
+        has_tool_blocks=_has_tool_blocks,
+        has_images=has_images,
     )
-    if _needs_openai_translation:
-        from app.api._oauth_chat_translate import anthropic_to_openai_body
-        translated = anthropic_to_openai_body({
-            **body,
-            "messages": messages_list,
-            "system": system,
-            "tools": tools,
-        })
-        messages_list = translated.get("messages") or []
-        system = None  # Folded into messages_list as the leading role:system
-        tools = translated.get("tools")
-        body = {**body, "messages": messages_list}
-        body.pop("system", None)
-        if tools is not None:
-            body["tools"] = tools
-        else:
-            body.pop("tools", None)
-        _cross_family_translated = True
 
     # OTEL GenAI span: routing-decision metadata (no-op if OTLP endpoint unset)
     with llm_span(
@@ -959,6 +891,17 @@ async def messages(
                     local_extra["thinking"] = thinking
                 if anthropic_beta and r.profile.provider_type == "anthropic":
                     local_extra["extra_headers"] = {"anthropic-beta": anthropic_beta}
+                # v5.15.1 (#508 Phase 2) — per-account OAuth fan-out. Swap
+                # ``local_extra['api_key']`` to the picked account's token
+                # when the provider is OAuth-flavored (cursor-oauth today,
+                # codex-oauth + claude-oauth same code path once operator
+                # seeds accounts). No-op for non-OAuth providers.
+                from app.providers.oauth_account_selector import apply_fanout_to_kwargs
+                _oauth_account_id = await apply_fanout_to_kwargs(
+                    local_extra, r.provider, db,
+                )
+                if _oauth_account_id:
+                    resp_headers["X-OAuth-Account"] = _oauth_account_id
                 return await acompletion_with_retry(
                     model=r.litellm_model, messages=messages_list,
                     stream=False, **local_extra,
@@ -1110,6 +1053,58 @@ async def messages(
             )
             if mem_writes:
                 resp_headers["X-Caller-Memory-Writes"] = str(mem_writes)
+            # v5.20.1 — refusal cascade. When ``refusal_retry_enabled``
+            # is on for this key AND detection fires on the initial
+            # response, walk alternate providers (excluding those
+            # already tried) until one produces a clean response or
+            # max_attempts is exhausted. Non-streaming path only in
+            # v5.20.1; streaming cascade is v5.20.2+. Emits
+            # X-Refusal-Retry-* response headers + activity_log rows
+            # for every attempt so the operator has full attribution.
+            try:
+                from app.api._refusal_cascade import maybe_cascade_on_refusal
+
+                async def _cascade_dispatch(alt_route):
+                    # Rebuild the litellm dispatch for a different route.
+                    # Uses ``acompletion_with_retry`` — same primitive
+                    # the initial call used. Doesn't re-run privacy /
+                    # budget filters (those already ran on the initial
+                    # dispatch). Uses the same messages_list so the model
+                    # sees the same request.
+                    _extra = dict(extra)
+                    if system:
+                        _extra["system"] = system
+                    return await acompletion_with_retry(
+                        model=alt_route.litellm_model,
+                        messages=messages_list,
+                        stream=False,
+                        **_extra,
+                    )
+
+                _cascade = await maybe_cascade_on_refusal(
+                    db=db,
+                    key_record=key_record,
+                    initial_route=route,
+                    initial_result=result,
+                    initial_anthropic=anthropic_result,
+                    hint=hint,
+                    has_images=has_images,
+                    messages_list=messages_list,
+                    max_tokens=max_tokens,
+                    system=system,
+                    extra=extra,
+                    dispatch=_cascade_dispatch,
+                    to_anthropic_response=to_anthropic_response,
+                    resp_headers=resp_headers,
+                    body=body,
+                )
+                if _cascade.swapped:
+                    route = _cascade.final_route
+                    result = _cascade.final_result
+                    anthropic_result = _cascade.final_anthropic
+            except Exception as exc:
+                logger.warning("refusal_cascade.wrapper_failed err=%s", exc)
+
             # v5.7.6 — capability scout. Off by default; flips on via
             # the capability_scout.enabled system_setting. Fire-and-
             # forget; never blocks the response.
@@ -1125,6 +1120,71 @@ async def messages(
                     resp_headers["X-Capability-Scout-Suggestions"] = str(_n)
             except Exception:
                 pass
+            # v5.10.0 Ship 1 — emit X-Proxy-MCP-Suggestion when this
+            # caller's accumulated score crosses the threshold. Score
+            # was just bumped above by scan_and_emit_for_response when
+            # a refusal pattern hit; this read sees the fresh value.
+            # v5.19.0 — response-tail extracted to _messages_response_tail.
+            # Runs the four post-dispatch header/hook blocks:
+            # (1) capability-scout suggestion header
+            # (2) accept-MCP handler (X-Proxy-Accept-MCP + x-llmproxy-config blob)
+            # (3) x-llmproxy-config echo
+            # (4) response hooks runner (substitution header + outbound callback)
+            # Preserves per-block Exception-swallow posture so downstream
+            # ships that add more tail blocks don't need to re-derive the
+            # wiring in-place.
+            from app.api._messages_response_tail import apply_response_tail
+            await apply_response_tail(
+                request=request,
+                route=route,
+                key_record=key_record,
+                resp_headers=resp_headers,
+                body=body,
+                db=db,
+                anthropic_result=anthropic_result,
+            )
+            # v5.20.11 — buffered-cascade streaming: convert the final
+            # ``anthropic_result`` to SSE frames and return a
+            # StreamingResponse. Text-only path uses ``anthropic_text_sse``
+            # (extracts concatenated text blocks); if the result contains
+            # tool_use blocks, fall back to a synthesized SSE stream that
+            # emits each block. Everything else — image blocks etc — is
+            # dropped to text-summary since streaming those in Anthropic's
+            # SSE format is out of scope for the cascade shim.
+            if _buffered_cascade_stream:
+                try:
+                    # v5.21.1 bugfix — the redundant local `from app.cot.sse
+                    # import anthropic_text_sse, ...` here made those names
+                    # LOCAL to the whole `messages()` function. Line 592 then
+                    # accessed them BEFORE this line ran → UnboundLocalError
+                    # on every non-buffered-cascade request. Names are
+                    # already imported at module level (lines 27-29).
+                    content_blocks = anthropic_result.get("content") or []
+                    tool_uses = [b for b in content_blocks if b.get("type") == "tool_use"]
+                    if len(tool_uses) >= 2:
+                        gen = anthropic_tools_sse([
+                            {"name": t["name"], "input": t.get("input", {})}
+                            for t in tool_uses
+                        ])
+                    elif len(tool_uses) == 1:
+                        gen = anthropic_tool_sse(
+                            tool_uses[0]["name"], tool_uses[0].get("input", {}),
+                        )
+                    else:
+                        text = "".join(
+                            b.get("text", "") for b in content_blocks
+                            if b.get("type") == "text"
+                        )
+                        gen = anthropic_text_sse(text)
+                    return StreamingResponse(
+                        gen, media_type="text/event-stream",
+                        headers=resp_headers,
+                    )
+                except Exception:
+                    # Fall through to JSON response if SSE conversion breaks.
+                    # Caller's SSE parser will fail; header
+                    # X-Refusal-Cascade-Mode still marks this as buffered.
+                    pass
             return JSONResponse(
                 content=anthropic_result,
                 headers=resp_headers,

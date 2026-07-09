@@ -211,6 +211,12 @@ PROVIDER_TYPE_TO_LITELLM = {
     # "Incorrect API key provided" — the v4.4.31..v4.4.34 Test-failure
     # mystery resolved by v4.4.35).
     "cursor-oauth": "openai",
+    # v5.11.0: NVIDIA NIM — OpenAI-compatible at integrate.api.nvidia.com.
+    # litellm has native ``nvidia_nim/`` prefix support; base_url is fixed
+    # so we don't need an api_base allowlist entry. Catalog includes
+    # nemotron / kimi / glm / minimax / etc. Inspired by upstream-review
+    # of Alishahryar1/free-claude-code (2026-06-29 audit).
+    "nvidia_nim": "nvidia_nim",
 }
 
 
@@ -248,6 +254,12 @@ PROVIDER_DEFAULT_MODELS = {
     # in v4.4.37. Used as the build_litellm_model fallback if a provider
     # row has no default_model set.
     "cursor-oauth": "claude-4-sonnet",
+    # v5.11.0: NVIDIA NIM default. The catalog uses vendor-namespaced
+    # model IDs (``nvidia/nemotron-3-super-120b-a12b``) — the
+    # ``nvidia_nim/`` prefix is added by build_litellm_model. Nemotron
+    # is NVIDIA's strongest general-purpose chat model on the free tier;
+    # operator can override default_model on the provider row.
+    "nvidia_nim": "nvidia/nemotron-3-super-120b-a12b",
 }
 
 

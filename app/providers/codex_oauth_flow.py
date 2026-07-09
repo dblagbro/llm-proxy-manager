@@ -306,6 +306,28 @@ async def refresh_access_token(refresh_token: str) -> ExchangeResult:
     return _result_from_token_response(resp.json(), fallback_refresh=refresh_token)
 
 
+# v5.8.5 — per-provider single-flight lock around refresh_and_persist.
+# Same race condition as v5.8.3 fixed for claude_oauth_flow: the proactive
+# expiry sweep (cursor_oauth_expiry_monitor) and the lazy-on-401 path
+# (scanner._fetch_codex_oauth_models, dispatch) can both call this for the
+# same provider concurrently. OpenAI rotates refresh_token on every use,
+# so whichever caller loses the race gets ``refresh_token_reused``. The
+# 2026-06-20 smoke incident (b9db96fad980bae1 + bd42da809fd26ffd both
+# tripping ``refresh_token_reused`` within the same sweep) is this.
+# Lock is process-local; cluster-level races still fall back to v3.0.18
+# peer-pull.
+_refresh_locks: dict[str, "asyncio.Lock"] = {}
+
+
+def _get_refresh_lock(provider_id: str) -> "asyncio.Lock":
+    import asyncio
+    lock = _refresh_locks.get(provider_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _refresh_locks[provider_id] = lock
+    return lock
+
+
 async def refresh_and_persist(provider, db) -> ExchangeResult:
     """Refresh a codex-oauth Provider's access_token and write the rotated
     refresh_token + new expiry back to the DB in the same transaction.
@@ -313,47 +335,121 @@ async def refresh_and_persist(provider, db) -> ExchangeResult:
     Production paths must call THIS helper, never ``refresh_access_token``
     directly, because OpenAI rotates the refresh_token and dropping the
     rotated value bricks the next refresh.
+
+    v5.8.5 (mirrors v5.8.3 for claude-oauth):
+      - single-flight per-provider lock (intra-process race fix that
+        prevented ``refresh_token_reused`` storms from the proactive
+        sweep colliding with lazy-on-401 refresh).
+      - on adopted peer state, verify the adopted token actually
+        authenticates against chatgpt.com before keeping it; if it 401s,
+        clear oauth_refresh_token and raise so the operator sees
+        ``Needs re-auth`` instead of a silent cluster-wide dead-token.
     """
     if not provider.oauth_refresh_token:
         raise OAuthFlowError(
             f"Provider {provider.id} ({provider.name!r}) has no refresh_token — "
             "admin must re-run the Generate Auth URL flow."
         )
-    try:
-        result = await refresh_access_token(provider.oauth_refresh_token)
-    except OAuthFlowError as e:
-        # v3.0.18: same recovery as claude-oauth — on invalid_grant, ask
-        # peers if any of them refreshed first and adopt their fresh state.
-        msg = str(e).lower()
-        if "invalid_grant" in msg or "refresh_token_expired" in msg or "refresh_token_reused" in msg or "refresh_token_invalidated" in msg:
-            from app.cluster.oauth_recovery import (
-                pull_oauth_state_from_peers, adopt_peer_state,
+    lock = _get_refresh_lock(provider.id)
+    async with lock:
+        # v5.8.5 — re-read inside the lock so a waiter doesn't burn the
+        # already-rotated token.
+        await db.refresh(provider, attribute_names=["oauth_refresh_token", "api_key", "oauth_expires_at"])
+        if not provider.oauth_refresh_token:
+            raise OAuthFlowError(
+                f"Provider {provider.id} ({provider.name!r}) lost its "
+                "refresh_token mid-refresh (likely v5.8.5 verify-after-adopt "
+                "cleared it). Re-run the Generate Auth URL flow."
             )
-            peer_state = await pull_oauth_state_from_peers(provider.id)
-            if peer_state is not None:
-                await adopt_peer_state(provider, db, peer_state)
-                return ExchangeResult(
-                    access_token=peer_state.api_key,
-                    refresh_token=peer_state.oauth_refresh_token,
-                    expires_at=peer_state.oauth_expires_at,
-                    id_token=None,
-                    chatgpt_account_id=(peer_state.extra_config or {}).get("chatgpt_account_id"),
-                    chatgpt_plan_type=(peer_state.extra_config or {}).get("chatgpt_plan_type"),
-                    raw={"recovered_from_peer": peer_state.source_peer_id},
+        try:
+            result = await refresh_access_token(provider.oauth_refresh_token)
+        except OAuthFlowError as e:
+            # v3.0.18: same recovery as claude-oauth — on invalid_grant, ask
+            # peers if any of them refreshed first and adopt their fresh state.
+            msg = str(e).lower()
+            if "invalid_grant" in msg or "refresh_token_expired" in msg or "refresh_token_reused" in msg or "refresh_token_invalidated" in msg:
+                from app.cluster.oauth_recovery import (
+                    pull_oauth_state_from_peers, adopt_peer_state,
                 )
-        raise
-    provider.api_key = result.access_token
-    if result.refresh_token:
-        provider.oauth_refresh_token = result.refresh_token
-    provider.oauth_expires_at = result.expires_at
-    # Account id is also stored on the row (in extra_config) so dispatch
-    # can stamp the ChatGPT-Account-ID header without re-decoding the JWT
-    # on every call.
-    if result.chatgpt_account_id and provider.extra_config is not None:
-        cfg = dict(provider.extra_config)
-        cfg["chatgpt_account_id"] = result.chatgpt_account_id
-        if result.chatgpt_plan_type:
-            cfg["chatgpt_plan_type"] = result.chatgpt_plan_type
-        provider.extra_config = cfg
-    await db.commit()
-    return result
+                peer_state = await pull_oauth_state_from_peers(provider.id)
+                if peer_state is not None:
+                    await adopt_peer_state(provider, db, peer_state)
+                    # v5.8.5 — verify the adopted token authenticates before
+                    # we declare success. A peer that lost the same race has
+                    # the same dead state we just tried.
+                    cfg = peer_state.extra_config or {}
+                    verified = await _verify_oauth_access_token(
+                        peer_state.api_key,
+                        chatgpt_account_id=cfg.get("chatgpt_account_id"),
+                    )
+                    if verified:
+                        return ExchangeResult(
+                            access_token=peer_state.api_key,
+                            refresh_token=peer_state.oauth_refresh_token,
+                            expires_at=peer_state.oauth_expires_at,
+                            id_token=None,
+                            chatgpt_account_id=cfg.get("chatgpt_account_id"),
+                            chatgpt_plan_type=cfg.get("chatgpt_plan_type"),
+                            raw={"recovered_from_peer": peer_state.source_peer_id},
+                        )
+                    # Adopted state is also dead — clear refresh_token so
+                    # the operator gets a hard "Needs re-auth" signal.
+                    provider.oauth_refresh_token = None
+                    provider.api_key = peer_state.api_key  # keep for audit visibility
+                    await db.commit()
+                    raise OAuthFlowError(
+                        f"Provider {provider.id} ({provider.name!r}) refresh "
+                        "failed AND the peer-adopted state also failed to "
+                        "authenticate against chatgpt.com. Refresh token "
+                        "appears permanently revoked. Operator must re-auth "
+                        "via Providers page → Re-authorize."
+                    ) from e
+            raise
+        provider.api_key = result.access_token
+        if result.refresh_token:
+            provider.oauth_refresh_token = result.refresh_token
+        provider.oauth_expires_at = result.expires_at
+        # Account id is also stored on the row (in extra_config) so dispatch
+        # can stamp the ChatGPT-Account-ID header without re-decoding the JWT
+        # on every call.
+        if result.chatgpt_account_id and provider.extra_config is not None:
+            cfg = dict(provider.extra_config)
+            cfg["chatgpt_account_id"] = result.chatgpt_account_id
+            if result.chatgpt_plan_type:
+                cfg["chatgpt_plan_type"] = result.chatgpt_plan_type
+            provider.extra_config = cfg
+        await db.commit()
+        return result
+
+
+async def _verify_oauth_access_token(token: str, chatgpt_account_id: Optional[str] = None) -> bool:
+    """v5.8.5 — cheap probe that confirms ``token`` actually authenticates
+    against chatgpt.com. Used after peer-adopt to make sure we're not
+    committing a token the rest of the cluster has already lost. Any
+    non-401 response (including 429 rate-limit) counts as authenticated.
+    Returns ``False`` only when chatgpt.com explicitly rejects the token.
+
+    Mirrors ``_fetch_codex_oauth_models``'s request shape but never
+    raises: this is a verdict-only helper.
+    """
+    try:
+        from app.providers.codex_oauth import (
+            CODEX_MODELS_URL, CODEX_CLIENT_VERSION, build_headers,
+        )
+    except Exception:
+        return True  # can't construct the request; don't punish the token
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as cli:
+            resp = await cli.get(
+                f"{CODEX_MODELS_URL}?client_version={CODEX_CLIENT_VERSION}",
+                headers=build_headers(
+                    token,
+                    chatgpt_account_id=chatgpt_account_id,
+                    extra={"Accept": "application/json"},
+                ),
+            )
+        return resp.status_code != 401
+    except Exception:
+        # Network errors don't count as a failed-auth verdict; only an
+        # explicit 401 from chatgpt.com does.
+        return True

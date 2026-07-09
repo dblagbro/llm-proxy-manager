@@ -1,0 +1,17 @@
+[Unit]
+Description=Watch certbot deploy-hook marker and restart nginx container
+Documentation=file:///home/dblagbro/llm-proxy-v2/CHANGELOG.md
+After=docker.service network.target
+Wants=docker.service
+
+[Service]
+Type=simple
+User=dblagbro
+ExecStart=/home/dblagbro/docker/host-tools/nginx-cert-restart-watcher.sh
+Restart=always
+RestartSec=10s
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

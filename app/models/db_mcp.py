@@ -43,3 +43,38 @@ class McpToolCall(Base):
     latency_ms = Column(Integer, nullable=False, default=0)
     ok = Column(Boolean, nullable=False, default=False, index=True)
     error_msg = Column(Text, nullable=True)
+
+
+class CallerCapabilityScore(Base):
+    """v5.10.0 — Per-(api_key, suggested_tool) accumulated capability-suggestion score.
+
+    Each time the capability scout detects a refusal pattern that maps
+    to a known MCP tool, we bump the corresponding row's ``score`` by
+    20 (capped at 100). A 6h-cadence decay worker multiplies all scores
+    by ~0.96 per tick (~0.85/day half-life) so rows that stop
+    accumulating signal trend back to zero.
+
+    Stored ×100 as integer for clean cluster-sync diffs (avoids float
+    epsilon drift across nodes).
+
+    Ship 1 of the v5.10 back-pressure design reads this table at
+    response time: when the max score for a caller exceeds the
+    threshold (default 50 ≈ ~3 consecutive refusals), the proxy emits
+    ``X-Proxy-MCP-Suggestion`` on the response. Without this table the
+    scout would have to emit on every refusal — header pollution. With
+    it, emission is gated on persistent signal.
+
+    Ship 3 (future) flips the per-key allow-list when an accept
+    header is observed; the score acts as the eligibility floor.
+
+    Identity: (api_key_id, suggested_tool). Cluster-synced via the
+    settings-sync loop.
+    """
+    __tablename__ = "caller_capability_score"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    api_key_id = Column(String, nullable=False, index=True)
+    suggested_tool = Column(String, nullable=False, index=True)
+    score = Column(Integer, nullable=False, default=0)
+    last_bumped_at = Column(DateTime, server_default=func.now(), nullable=False, index=True)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)

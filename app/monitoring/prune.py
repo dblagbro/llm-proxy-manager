@@ -29,7 +29,8 @@ from sqlalchemy import delete, func, select
 from app.config import settings
 from app.models.database import AsyncSessionLocal
 from app.models.db import (
-    ActivityLog, ApiKey, ApiKeyAiReview, Provider, ProviderAiReview, RunEvent,
+    ActivityLog, ApiKey, ApiKeyAiReview, ExternalUsageSnapshot,
+    Provider, ProviderAiReview, RunEvent,
 )
 
 logger = logging.getLogger(__name__)
@@ -53,6 +54,15 @@ _INITIAL_DELAY_SEC = 60 * 60            # 1h after startup — lets boot settle
 # any tombstone older than a few minutes has already converged across the
 # fleet — 7 days is a comfortable safety margin before we hard-delete.
 _DEFAULT_TOMBSTONE_RETENTION_DAYS = 7
+
+# v5.9.8 (#472) — external_usage_snapshot retention. Each provider with the
+# Anthropic Console scraper enabled writes one row per 4-hour window
+# (~6/day per provider). With 11 providers on the clone cluster that's
+# ~66 rows/day; 90 days = ~6k rows, modest but worth pruning so the table
+# doesn't grow without bound across years of operation. The rotation
+# evaluator only consults the latest snapshot per provider, so older
+# rows have no live consumer — they're observational. Default 90d.
+_DEFAULT_EXTERNAL_USAGE_RETENTION_DAYS = 90
 
 
 def _retention_days() -> int:
@@ -378,6 +388,25 @@ async def _prune_activity_log_orphans() -> int:
     return deleted
 
 
+def _external_usage_retention_days() -> int:
+    """v5.9.8 (#472) — external_usage_snapshot retention. Settings
+    override → env → default cascade, same shape as the other helpers."""
+    try:
+        v = int(getattr(settings, "external_usage_snapshot_retention_days",
+                        _DEFAULT_EXTERNAL_USAGE_RETENTION_DAYS))
+        return max(1, v)
+    except (TypeError, ValueError):
+        return _DEFAULT_EXTERNAL_USAGE_RETENTION_DAYS
+
+
+async def _prune_external_usage_snapshots(keep_days: int) -> int:
+    """v5.9.8 (#472) — delete external_usage_snapshot rows with
+    captured_at < cutoff. Batched same as the other prunes."""
+    return await _prune_table(
+        ExternalUsageSnapshot, ExternalUsageSnapshot.captured_at, keep_days
+    )
+
+
 async def _sweep_once() -> dict:
     """One full prune pass across activity_log + provider_metrics +
     run_events. Returns counts so the log line is interpretable."""
@@ -398,6 +427,7 @@ async def _sweep_once() -> dict:
     warning_keep_days = _warning_retention_days()
     error_keep_days = _error_retention_days()
     tombstone_days = _tombstone_retention_days()
+    external_usage_keep_days = _external_usage_retention_days()
     out = {"keep_days": keep_days, "probe_keep_days": probe_keep_days,
            "warning_keep_days": warning_keep_days,
            "error_keep_days": error_keep_days,
@@ -410,6 +440,8 @@ async def _sweep_once() -> dict:
            "tombstone_keep_days": tombstone_days,
            "provider_ai_reviews": 0, "api_key_ai_reviews": 0,
            "ai_review_keep_days": _ai_review_retention_days(),
+           "external_usage_snapshots": 0,
+           "external_usage_keep_days": external_usage_keep_days,
            "wal_truncated": {"busy": 0, "log_pages": 0, "ckpt_pages": 0,
                              "size_before": 0, "size_after": 0}}
 
@@ -514,6 +546,17 @@ async def _sweep_once() -> dict:
     except Exception as e:
         logger.warning("prune.api_key_ai_reviews_failed err=%s", e)
 
+    # v5.9.8 (#472) — external_usage_snapshot. 4-hourly billing-scrape
+    # rows per provider; only the latest is consumed by rotation logic.
+    # Older rows are observational, so retention can be relatively short
+    # (90d default) without losing live functionality.
+    try:
+        out["external_usage_snapshots"] = await _prune_external_usage_snapshots(
+            external_usage_keep_days
+        )
+    except Exception as e:
+        logger.warning("prune.external_usage_snapshots_failed err=%s", e)
+
     # v4.4.4 BUG-052 — WAL high-water reclaim. SQLite reuses WAL pages
     # in place across PASSIVE checkpoints, so a past burst (e.g. the
     # 2026-05-13 RMAI 1.04B-token amplifier loop that drove 27× normal
@@ -601,10 +644,11 @@ async def _prune_loop() -> None:
                 "activity_log_orphans=%d "
                 "provider_metrics=%d run_events=%d provider_tombstones=%d "
                 "provider_ai_reviews=%d api_key_ai_reviews=%d "
+                "external_usage_snapshots=%d "
                 "wal_reclaimed_bytes=%d wal_busy=%d "
                 "keep_days=%d probe_keep_days=%d warning_keep_days=%d "
                 "error_keep_days=%d tombstone_keep_days=%d "
-                "ai_review_keep_days=%d",
+                "ai_review_keep_days=%d external_usage_keep_days=%d",
                 counts["activity_log"], counts.get("activity_log_probes", 0),
                 counts.get("activity_log_warnings", 0),
                 counts.get("activity_log_errors", 0),
@@ -613,6 +657,7 @@ async def _prune_loop() -> None:
                 counts["provider_tombstones"],
                 counts.get("provider_ai_reviews", 0),
                 counts.get("api_key_ai_reviews", 0),
+                counts.get("external_usage_snapshots", 0),
                 wal_reclaimed, wal.get("busy", 0),
                 counts["keep_days"],
                 counts.get("probe_keep_days", _DEFAULT_PROBE_RETENTION_DAYS),
@@ -620,6 +665,8 @@ async def _prune_loop() -> None:
                 counts.get("error_keep_days", _DEFAULT_ERROR_RETENTION_DAYS),
                 counts["tombstone_keep_days"],
                 counts.get("ai_review_keep_days", 30),
+                counts.get("external_usage_keep_days",
+                           _DEFAULT_EXTERNAL_USAGE_RETENTION_DAYS),
             )
             await hb.tick(
                 status="ok",

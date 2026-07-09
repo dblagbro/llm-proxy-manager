@@ -58,6 +58,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request as StarletteRequest
 
 from app.models.database import get_db
+from app.utils.disconnect_watchdog import watch_for_disconnect
 
 
 logger = logging.getLogger(__name__)
@@ -263,6 +264,10 @@ class _BodyOverrideRequest:
 async def responses(
     request: Request,
     background_tasks: BackgroundTasks,
+    # v5.9.9 — same disconnect watchdog wired into /v1/messages in
+    # v5.7.17. Must precede ``db`` so the watcher is armed before the
+    # session is checked out.
+    _watchdog: None = Depends(watch_for_disconnect),
     db: AsyncSession = Depends(get_db),
     authorization: Optional[str] = Header(None),
     x_api_key: Optional[str] = Header(None, alias="x-api-key"),
@@ -340,7 +345,26 @@ async def responses(
     if isinstance(cc_response, JSONResponse):
         cc_json = _json.loads(cc_response.body)
         translated = _translate_response(cc_json)
-        return JSONResponse(content=translated, headers=dict(cc_response.headers))
+        out_headers = dict(cc_response.headers)
+        # v5.14.1 — also fire hooks under handler_id="responses". The
+        # inner completions.py call already fired with id "completions";
+        # rerunning here lets hub-side hooks that key on the caller-
+        # facing handler see the right id. Built-in substitution hook
+        # is idempotent so it's a no-op when the inner pass already set
+        # the header.
+        try:
+            from app.api._response_hook_runner import apply_response_hooks, HookContext
+            await apply_response_hooks(
+                handler_id="responses",
+                resp_headers=out_headers,
+                context=HookContext(
+                    api_key_id=getattr(key_record, "id", None) if 'key_record' in locals() else None,
+                    request=request,
+                ),
+            )
+        except Exception:
+            pass
+        return JSONResponse(content=translated, headers=out_headers)
     if isinstance(cc_response, dict):
         return JSONResponse(content=_translate_response(cc_response))
     # Defensive: if chat_completions returned something unexpected, surface

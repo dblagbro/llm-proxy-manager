@@ -103,11 +103,37 @@ async def _scrape_all_once() -> int:
         result = await db.execute(
             select(Provider)
             .where(Provider.provider_type == "ChatGPT-oauth-plan")
+            .where(Provider.enabled == True)  # noqa: E712 — v5.8.8
             .where(Provider.deleted_at.is_(None))
             .where(Provider.api_key.is_not(None))
         )
         providers = result.scalars().all()
         for p in providers:
+            # v5.8.8 — skip providers in auto_skip_until. Same logical
+            # bug as v5.8.6/v5.8.7: a provider with a permanently
+            # revoked refresh_token gets scraped every cycle, fails
+            # with 401, and logs ``codex_billing.scrape_failed``. On
+            # smoke (codex-test, Codex-Smoke auto-skipped for 41+ days)
+            # this fired ~once per worker interval until v5.8.8.
+            auto_skip_until = getattr(p, "auto_skip_until", None)
+            if auto_skip_until is not None:
+                try:
+                    from datetime import datetime as _dt, timezone as _tz
+                    if hasattr(auto_skip_until, "tzinfo"):
+                        askdt = auto_skip_until
+                    else:
+                        askdt = _dt.fromisoformat(str(auto_skip_until).replace("Z", "+00:00"))
+                    if askdt.tzinfo is None:
+                        askdt = askdt.replace(tzinfo=_tz.utc)
+                    if askdt > _dt.now(_tz.utc):
+                        skipped += 1
+                        logger.debug(
+                            "codex_billing.skip_auto_skip",
+                            extra={"provider_id": p.id, "auto_skip_until": askdt.isoformat()},
+                        )
+                        continue
+                except Exception:
+                    pass
             age = await _latest_snapshot_age_sec(db, p.id)
             if age is not None and age < fresh_floor:
                 skipped += 1

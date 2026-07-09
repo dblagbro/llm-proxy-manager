@@ -185,6 +185,80 @@ class Provider(Base):
 
     capabilities = relationship("ModelCapability", back_populates="provider", cascade="all, delete-orphan")
 
+    # v5.15.0 (#508) — per-account OAuth fan-out. Providers that hold multiple
+    # OAuth sessions (cursor-oauth today; codex-oauth + claude-oauth in scope
+    # for the same rollout) fan out across N accounts via the
+    # ``provider_oauth_accounts`` child table. The strategy column drives
+    # the picker at dispatch time. Legacy single-token ``api_key`` on this
+    # row remains the fallback when no enabled accounts exist.
+    oauth_account_strategy = Column(String, nullable=True)
+    # values: 'least_utilized' (default) | 'round_robin' | 'least_recently_used'
+    #
+    # None = inherit the app-wide default (currently 'least_utilized');
+    # this column exists so a specific provider can override for A/B tests
+    # or if one provider genuinely wants predictable rotation.
+
+    oauth_accounts = relationship(
+        "ProviderOAuthAccount",
+        back_populates="provider",
+        cascade="all, delete-orphan",
+    )
+
+
+class ProviderOAuthAccount(Base):
+    """v5.15.0 (#508 Phase 1) — one row per OAuth account held by a
+    provider. Fans out cursor-oauth (and future codex-oauth / claude-oauth)
+    from "one Provider = one token pair" to "one Provider = N token pairs
+    with dispatch-time selection."
+
+    Phase 1 scope: table exists, admin endpoints CRUD, cluster-sync replicates.
+    Dispatch does NOT yet read from this table — it stays on
+    ``Provider.api_key`` — so Phase 1 derisks the rollout: operator can add
+    accounts, verify cluster sync, verify audit rows land, all without
+    behavior changes. Phase 2 (v5.15.1) flips dispatch.
+
+    Backward compat: when a Provider has zero rows in this table, the
+    dispatcher falls back to the legacy ``Provider.api_key`` /
+    ``Provider.oauth_refresh_token`` columns. Existing OAuth providers keep
+    working through the migration window with no operator action; the
+    migration in ``services/oauth_account_migration.py`` copies each into
+    a ``captured_via='migration_from_provider'`` row so v5.15.1 dispatch
+    picks up seamlessly.
+    """
+    __tablename__ = "provider_oauth_accounts"
+
+    id = Column(
+        String,
+        primary_key=True,
+        default=lambda: secrets.token_hex(8),
+    )
+    provider_id = Column(
+        String,
+        ForeignKey("providers.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    label = Column(String, nullable=False)
+    access_token = Column(String, nullable=False)
+    # nullable — codex-oauth doesn't issue refresh tokens today
+    refresh_token = Column(String, nullable=True)
+    oauth_expires_at = Column(Float, nullable=True)
+    enabled = Column(Boolean, nullable=False, default=True)
+    # v5.15.1 dispatch reads these two:
+    last_used_at = Column(Float, nullable=True, index=True)
+    # written by cursor_billing_worker + codex_billing_worker after v5.15.2
+    utilization_pct = Column(Float, default=0.0)
+    # audit — how did this account get into the table?
+    captured_via = Column(String, nullable=True)
+    # values: 'manual_paste' | 'oauth_flow' | 'migration_from_provider'
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+    # cluster-sync LWW + soft-delete (mirrors the v5.0.18 cluster_peers pattern)
+    deleted_at = Column(DateTime, nullable=True)
+    last_user_edit_at = Column(Float, nullable=True)
+
+    provider = relationship("Provider", back_populates="oauth_accounts")
+
 
 class ProviderUsageWindow(Base):
     """v3.0.62: cached per-provider rolling usage totals. Recomputed every

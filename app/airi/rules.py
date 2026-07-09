@@ -65,7 +65,14 @@ async def ensure_seeded(db) -> None:
         logger.info("airi.rules: seeded Default rule-set")
     except IntegrityError:
         # Lost a race — another worker seeded it concurrently. Fine.
-        await db.rollback()
+        # v5.9.8 (#494) — wrap the rollback in try/except so a
+        # post-cancellation "no active connection" aiosqlite error
+        # doesn't escape and pollute the log. Same posture as
+        # cluster/sync.py:69 and the get_db() handler in database.py.
+        try:
+            await db.rollback()
+        except Exception:
+            pass
 
 
 def _ruleset_summary(rs: AiriRuleset) -> dict:

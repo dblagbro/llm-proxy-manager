@@ -12,6 +12,18 @@ logging, daily integrity hash chain, and cluster-quorum policy push.
 
 **Current version: 5.0.7 (2026-06-04)**
 
+## What we lead on (vs LiteLLM Proxy + Portkey Gateway, as of 2026-06-30)
+
+Surfaced from hub-team's 2026-06-30 peer-comparison-roadmap research (19 verified claims, 3-0/2-1 adversarial check). These are llm-proxy-v2 primitives with **no OSS equivalent** in the peers:
+
+1. **`X-Compliance-Substitution` response header convention.** Always emitted on 2xx relay responses (v5.9.3, v5.14.0 hook). Three values: `true` (substituted), `false` (policy evaluated, no substitution needed), `pass-through` (no per-key policy). Hub-side defense-in-depth scanners treat absence as a hard error. Neither LiteLLM nor Portkey ship a substitution-rationale header — Portkey's documented response headers (`x-portkey-{trace-id, retry-attempt-count, cache-status, last-used-option-index}`) encode routing outcome only; LiteLLM's `x-litellm-model-{id, group}` is a partial Resolved-Model signal with no rationale companion (worse: GitHub #22709 reports LiteLLM overwrites `response.model` with the client-requested alias, working *against* substitution transparency).
+
+2. **`compliance_events` row-per-request audit table.** Never-purged, integrity-chain-hashed (`compliance_audit_chain`), cluster-replicated. LiteLLM ships audit logging as Enterprise-license-only ($250-$30k/yr per TrueFoundry pricing reviews) AND only captures admin/management CRUD on four entity types (Keys/Teams/Users/Models × Create/Update/Delete/Regenerate) — **not** per-request substitution or compliance events. Portkey: no documented per-request audit at this depth. The OSS-tier per-request audit row is a genuine llm-proxy-v2 differentiator.
+
+3. **Path A / Path B MCP distinction.** Path A = explicit `/mcp/` aggregation endpoint (Apache-2.0 FastMCP); Path B = auto-inject MCP tools into `/v1/messages` requests when the caller's `mcp_tools_allow` policy permits. The per-request header-layer split is unique in the 2026-06-30 research pass. Portkey's MCP Gateway (Apache-2.0 OSS since March 2026) controls access via API-key → server/tool config mappings but has no equivalent dual-path semantics.
+
+What we *aspire* to that peers have today: hierarchical RBAC (Portkey 4-tier — backlog v5.15+), consolidated policy header (`x-llmproxy-config` style — backlog v5.16+).
+
 ## Module Map
 
 ```
@@ -24,7 +36,23 @@ app/
 │   ├── messages.py              POST /v1/messages — Anthropic wire format handler:
 │   │                              preflight, routing, cache, litellm/CoT dispatch.
 │   │                              v5.0.9: compliance orchestration extracted to
-│   │                              _compliance_handler (-166 LOC; 1095 → 929)
+│   │                              _compliance_handler (-166 LOC; 1095 → 929).
+│   │                              v5.7.18: pre-route setup extracted to
+│   │                              _messages_pre_route (-42 LOC; 1180 → 1138).
+│   ├── _messages_pre_route.py   v5.7.18/v5.7.19: pre-route helpers extracted
+│   │                              from messages.py. ``prepare_request_context``
+│   │                              (sub-block 1) bundles verify_api_key + tenant
+│   │                              ctx + raise_if_banned_client_ua +
+│   │                              raise_if_llm_emergency_stopped + caller-memory
+│   │                              telemetry. ``normalize_request_body``
+│   │                              (sub-block 2) bundles input validation +
+│   │                              suffix parsing + embedding-on-chat guard +
+│   │                              model:"auto" + alias resolution.
+│   │                              ``translate_to_openai_if_needed`` (sub-block 3)
+│   │                              is the v3.10.0 widened Fix B Anthropic→OpenAI
+│   │                              translation block. Phase 1 of the refactor
+│   │                              proposal complete; messages.py 1180 → 1063.
+│   │                              Proposal: docs/refactor-proposal-2026-06-17.md.
 │   ├── _messages_streaming.py   SSE generators: _stream_cot_anthropic / _stream_anthropic /
 │   │                              _stream_claude_oauth / _complete_claude_oauth /
 │   │                              _webhook_completion_anthropic (extracted 2026-04-23)

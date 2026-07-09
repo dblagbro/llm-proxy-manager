@@ -246,6 +246,16 @@ async def emit_suggestions(
                 written += 1
             except Exception as exc:
                 logger.debug("capability_scout.emit row failed: %s", exc)
+            # v5.10.0 — bump caller score so the response middleware
+            # can decide whether to emit X-Proxy-MCP-Suggestion. Done
+            # AFTER the activity_log write so the existing audit-row
+            # behavior is unchanged if score bumping fails.
+            if api_key_id:
+                try:
+                    from app.capability_scout.score import bump_score
+                    await bump_score(db, api_key_id, tool)
+                except Exception as exc:
+                    logger.debug("capability_scout.score_bump failed: %s", exc)
         try:
             await db.commit()
         except Exception as exc:
