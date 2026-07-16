@@ -114,7 +114,17 @@ def _last_user_text(messages: list[dict]) -> str:
     return ""
 
 
-async def run_airi_turn(messages: list[dict], actor: str | None = None):
+async def run_airi_turn(messages: list[dict], actor: str | None = None):  # noqa: C901
+    # v5.21.4 — classify the caller's last user message for
+    # creative-writing vs automation cues; the result becomes an
+    # ``LMRH-Hint: refuse-tolerance=<strict|lenient>`` header on the
+    # underlying /v1/messages call. Emits an ``lmrh-hint`` SSE event
+    # so the operator sees what was classified. See app/airi/prompt_cues.py.
+    #
+    # Deliberately runs BEFORE the tool-loop so every LLM call in this
+    # turn (including tool-continuations) gets the same hint — the cue
+    # is a property of the turn's INTENT, not any individual call.
+    from app.airi.prompt_cues import classify_refuse_tolerance, build_lmrh_hint
     """Run one AIRI turn. ``messages`` is the Anthropic-shaped conversation
     (``[{role, content}, ...]``, ending with the new user message). ``actor``
     is the operator's username — recorded on any proposal AIRI creates.
@@ -135,9 +145,22 @@ async def run_airi_turn(messages: list[dict], actor: str | None = None):
     user_prompt = _last_user_text(convo)
     auto_applied = 0  # changes auto-applied this turn (blast-radius cap)
 
+    # v5.21.4 — classify + build hint. ``None`` when no cue OR ambiguous.
+    _refuse_tolerance = classify_refuse_tolerance(user_prompt)
+    _airi_llm_hint = build_lmrh_hint(_refuse_tolerance)
+    if _refuse_tolerance:
+        # Surface the classification to the operator via an SSE event.
+        # Rendered by the AIRI panel as a small badge so the operator
+        # can see what heuristic fired.
+        yield ("lmrh-hint", {
+            "dim": "refuse-tolerance",
+            "value": _refuse_tolerance,
+            "source": "airi.prompt_cues",
+        })
+
     for _round in range(_MAX_TOOL_ROUNDS):
         try:
-            resp = await _call_llm(api_key, model, convo)
+            resp = await _call_llm(api_key, model, convo, llm_hint=_airi_llm_hint)
         except Exception as e:
             logger.warning("airi.llm_call_failed err=%r", e)
             yield ("error", {"message": f"AIRI could not reach a model: {e}"})
@@ -202,10 +225,18 @@ async def run_airi_turn(messages: list[dict], actor: str | None = None):
     })
 
 
-async def _call_llm(api_key: str, model: str, messages: list[dict]) -> dict:
+async def _call_llm(
+    api_key: str, model: str, messages: list[dict],
+    *, llm_hint: str | None = None,
+) -> dict:
     """One non-streaming call to the proxy's own /v1/messages with tools.
     Tagged ``X-Internal-Source: airi`` so (per BUG-026) AIRI's own traffic
-    never pollutes provider stats or the error-rate alert."""
+    never pollutes provider stats or the error-rate alert.
+
+    v5.21.4 — ``llm_hint`` (when set) is forwarded as the ``LMRH-Hint``
+    header so the router honors the classified ``refuse-tolerance`` dim.
+    Falsy hint = header omitted; the router runs without the bias.
+    """
     body = {
         "model": model,
         "max_tokens": 1024,
@@ -213,16 +244,21 @@ async def _call_llm(api_key: str, model: str, messages: list[dict]) -> dict:
         "messages": messages,
         "tools": TOOL_SCHEMAS + PROPOSE_TOOL_SCHEMAS,
     }
+    headers = {
+        "x-api-key": api_key,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+        "X-Internal-Source": "airi",
+    }
+    if llm_hint:
+        # ``llm-hint`` is the same header the /v1/messages handler
+        # consumes (aliased as ``llm-hint`` in the FastAPI decl).
+        headers["llm-hint"] = llm_hint
     async with httpx.AsyncClient(timeout=_LLM_TIMEOUT) as client:
         r = await client.post(
             _PROXY_MESSAGES_URL,
             json=body,
-            headers={
-                "x-api-key": api_key,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
-                "X-Internal-Source": "airi",
-            },
+            headers=headers,
         )
     r.raise_for_status()
     return r.json()

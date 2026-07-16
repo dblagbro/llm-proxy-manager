@@ -162,6 +162,15 @@ except Exception:
 async def lifespan(app: FastAPI):
     # DB init + default admin + runtime settings
     await init_db()
+    # v5.21.6 — SIGUSR2 handler dumps the DB-pool trace to stdout logs.
+    # Ships forensics access without needing admin login (which the
+    # chronic pool-leak outage tends to break precisely when we most
+    # need the trace). Send with: docker kill --signal=SIGUSR2 llm-proxy2
+    try:
+        from app.monitoring.pool_trace_signal import install_pool_trace_signal_handler
+        install_pool_trace_signal_handler()
+    except Exception as _sig_exc:
+        logger.warning("pool_trace_signal install failed: %r", _sig_exc)
     async with AsyncSessionLocal() as db:
         await ensure_default_admin(db)
         from app import config_runtime
@@ -255,6 +264,19 @@ async def lifespan(app: FastAPI):
         start_prune()
     except Exception as e:
         logger.warning(f"prune loop failed to start: {e}")
+
+    # v5.21.7 — DB pool leak watcher. Auto-dumps async-session trace
+    # when pool utilization crosses 50/75/90% thresholds. Catches the
+    # leak signature BEFORE exhaustion (which is when the chronic
+    # outage since 2026-07-09 has been surfacing). Companion to the
+    # v5.21.6 SIGUSR2 handler — that one needs operator invocation,
+    # this one fires autonomously.
+    try:
+        import asyncio as _leak_asyncio
+        from app.monitoring.pool_leak_watcher import pool_leak_watcher_loop
+        _leak_asyncio.create_task(pool_leak_watcher_loop())
+    except Exception as e:
+        logger.warning(f"pool_leak_watcher failed to start: {e}")
 
     # v5.0.1: daily compliance audit worker — computes the prior-day
     # integrity hash chain (decision 10) + purges compliance_events
@@ -915,6 +937,18 @@ if os.path.isdir(_static_dir):
             return JSONResponse({"detail": "Not Found"}, status_code=404)
         if head in ("cluster", "lmrh", "metrics", "health", "version") and "/" in full_path:
             return JSONResponse({"detail": "Not Found"}, status_code=404)
+        # v5.21.10 — Redirect legacy /admin/login → /login before serving
+        # the SPA. Reason: getBasePath() derives the URL prefix from
+        # window.location.pathname by stripping known route segments;
+        # /login inside /admin/login has valid segment boundaries at
+        # both ends so the fallback picks /...admin as the base. Every
+        # subsequent POST /api/auth/login then targets /...admin/api/...
+        # which nginx routes back to the SPA catch-all → 405 Method Not
+        # Allowed on the login form. Relative redirect (`../login`)
+        # preserves whatever URL prefix the browser was on.
+        if full_path == "admin/login" or full_path == "admin/login/":
+            from fastapi.responses import RedirectResponse
+            return RedirectResponse("../login", status_code=302)
         # v5.8.2 — deep-route asset rescue. The bundle (Vite ``base: './'``)
         # emits ``./assets/X`` so a single build serves multiple URL
         # prefixes (/llm-proxy/, /llm-proxy2/, /llm-proxy2-smoke/). The

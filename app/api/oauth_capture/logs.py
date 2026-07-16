@@ -91,6 +91,9 @@ async def stream_captures(
     return StreamingResponse(_tail(), media_type="text/event-stream")
 
 
+# pool-leak-audit: rows-materialized
+# Rows loaded via ``result.scalars().all()`` before StreamingResponse;
+# generator only iterates the in-memory list. Session releases on return.
 @router.get("/_log/export/{profile_name}")
 async def export_captures(
     profile_name: str,

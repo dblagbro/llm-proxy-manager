@@ -59,6 +59,10 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+# pool-leak-audit: watchdog+bounded
+# The watch_for_disconnect dep cancels the handler on client abort;
+# LLM streams are bounded by upstream provider timeouts (~60s max).
+# See v5.7.17 and CHANGELOG v5.21.8.
 @router.post("/v1/messages")
 async def messages(
     request: Request,
@@ -109,25 +113,19 @@ async def messages(
     )
     messages_list = body.get("messages", [])
     stream = body.get("stream", False)
-    # v5.20.11 — buffered-cascade streaming mode. Prior v5.20.8 emitted
-    # ``X-Refusal-Cascade-Unavailable: streaming`` and passed through as
-    # a real stream because the v5.20.1 cascade module needs the full
-    # ``anthropic_result`` to detect + retry. v5.20.11 opts into a
-    # buffered mode instead: force the initial dispatch to
-    # ``stream=False``, run the standard non-streaming path (which
-    # includes cascade), and at the very end convert the final
-    # ``anthropic_result`` to Anthropic-shape SSE frames. Caller still
-    # gets a valid ``text/event-stream`` response — they just wait for
-    # the full response to complete before the first byte arrives.
-    # That trade-off is what ``refusal_retry_enabled`` means for
-    # streaming: correctness over TTFT. Marked with
-    # ``X-Refusal-Cascade-Mode: buffered`` so callers can distinguish.
-    _buffered_cascade_stream = stream and getattr(
-        key_record, "refusal_retry_enabled", False,
+    # v5.21.6 — buffered-cascade mode detection extracted to
+    # ``_buffered_cascade_mode.detect_buffered_cascade_mode``. See that
+    # module for the trade-off table (buffered vs buffered-heartbeat vs
+    # pass-through).
+    # v5.21.9 — this function no longer touches resp_headers directly
+    # (it's not yet built at this point). Returns the header VALUE; we
+    # stash it and apply after resp_headers exists (~line 476).
+    from app.api._buffered_cascade_mode import detect_buffered_cascade_mode
+    _buffered_cascade_stream, _buffered_cascade_heartbeat, _buffered_cascade_mode_hdr = detect_buffered_cascade_mode(
+        stream, key_record,
     )
     if _buffered_cascade_stream:
         stream = False  # rest of the handler runs non-streaming
-        resp_headers["X-Refusal-Cascade-Mode"] = "buffered"
     max_tokens = body.get("max_tokens", 1024)
     system = body.get("system")
     thinking = body.get("thinking")
@@ -250,6 +248,22 @@ async def messages(
     )
 
     messages_list, _pii_masked_count = apply_privacy_filters(messages_list, body)
+    # v5.21.2 — inject the per-key default refuse-tolerance dim into the
+    # LMRH-Hint header when the caller didn't already specify one.
+    # Caller-passed value ALWAYS wins over the per-key default. Header
+    # injection happens BEFORE build_hint_with_auto_task so the parser
+    # sees a single unified string.
+    # v5.21.9 — stash whether we injected, apply header after
+    # resp_headers is built (~line 479). Prior code touched
+    # resp_headers here → UnboundLocalError for any key with a
+    # ``default_refuse_tolerance`` set (latent bug, no key had it in
+    # prod yet — caught by v5.21.9's regression pin).
+    _key_rt_default = getattr(key_record, "default_refuse_tolerance", None)
+    _lmrh_dim_injected: str | None = None
+    if _key_rt_default and (llm_hint or "").find("refuse-tolerance=") < 0:
+        _rt_dim = f"refuse-tolerance={_key_rt_default}"
+        llm_hint = f"{llm_hint};{_rt_dim}" if llm_hint else _rt_dim
+        _lmrh_dim_injected = "refuse-tolerance"
     hint, auto_task = await build_hint_with_auto_task(llm_hint, messages_list)
     has_tools = bool(tools)
     has_images = has_images_anthropic(messages_list)
@@ -421,6 +435,21 @@ async def messages(
     if anthropic_beta and route.profile.provider_type == "anthropic":
         extra["extra_headers"] = {"anthropic-beta": anthropic_beta}
 
+    # v5.21.3 — heartbeat mode early-return. When both
+    # ``refusal_retry_enabled`` AND
+    # ``refusal_retry_streaming_heartbeat`` are on for this key AND the
+    # caller asked for stream=true, delegate to the buffered-cascade
+    # streaming helper which returns a StreamingResponse whose
+    # generator emits SSE keepalive frames DURING the dispatch. Skips
+    # the rest of the handler (tool hops, memory injection, MCP
+    # injection, response tail) — that's the documented trade-off.
+    # v5.21.0 no-heartbeat mode falls through unchanged.
+    # v5.21.9 — early-return moved BELOW resp_headers construction (was
+    # here in v5.21.3, referenced resp_headers before it existed →
+    # UnboundLocalError for any key with refusal_retry_streaming_heartbeat=True).
+    # Real early-return is at "buffered-heartbeat early-return v5.21.9"
+    # marker below.
+
     vision_routed_count = 0
     if route.vision_stripped:
         if settings.vision_route_enabled:
@@ -448,6 +477,38 @@ async def messages(
         hint=hint,
         max_tokens=max_tokens,
     )
+    # v5.21.9 — apply the buffered-cascade mode header stashed at
+    # request entry (see line 120 area). Was previously mutated
+    # directly into resp_headers by detect_buffered_cascade_mode,
+    # which required resp_headers to already exist. Bug: it didn't.
+    if _buffered_cascade_mode_hdr:
+        resp_headers["X-Refusal-Cascade-Mode"] = _buffered_cascade_mode_hdr
+    # v5.21.9 — same class as above: v5.21.2 injected the LMRH dim
+    # header directly into resp_headers before it existed.
+    if _lmrh_dim_injected:
+        resp_headers["X-LMRH-Injected-Dim"] = _lmrh_dim_injected
+
+    # buffered-heartbeat early-return v5.21.9 — moved here (from ~line 447)
+    # so resp_headers is populated when the StreamingResponse is built.
+    if _buffered_cascade_heartbeat:
+        from app.api._buffered_cascade_stream import (
+            run_buffered_cascade_stream_with_heartbeat,
+        )
+        return StreamingResponse(
+            run_buffered_cascade_stream_with_heartbeat(
+                route=route,
+                key_record=key_record,
+                messages_list=messages_list,
+                extra=extra,
+                system=system,
+                max_tokens=max_tokens,
+                has_images=has_images,
+                hint=hint,
+                db=db,
+            ),
+            media_type="text/event-stream",
+            headers=resp_headers,
+        )
     # v2.8.0 — surface the slug-shortcut + auto-routing decision so clients
     # can introspect what happened (parity with OpenRouter's response.model).
     if parsed_slug.sort_mode:

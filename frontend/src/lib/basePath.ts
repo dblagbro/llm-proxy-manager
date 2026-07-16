@@ -70,8 +70,23 @@ function pathFromLocation(): string {
   const path = window.location.pathname;
   // Heuristic: anything before the first known route segment is the prefix.
   // The known SPA routes from App.tsx — keep in sync if you add new ones.
+  //
+  // v5.22.1 — order matters + segment-boundary matching. The old code
+  // used `path.indexOf(route)` which found `/login` inside
+  // `/llm-proxy2/admin/login` at position 18, mis-deriving the base as
+  // `/llm-proxy2/admin`. Then every API call posted to
+  // `/llm-proxy2/admin/api/auth/login` → 405 Method Not Allowed. The
+  // operator hit this when navigating to any /admin/* URL that also
+  // contained a segment matching KNOWN_ROUTES.
+  //
+  // Fix: require the match to be a whole PATH SEGMENT — the char
+  // before the match must be `/` AND the char after must be `/` or
+  // end-of-string. Longest routes listed first so `/admin/compliance`
+  // is checked before `/compliance`.
   const KNOWN_ROUTES = [
-    "/login",
+    "/admin/compliance",
+    "/admin/mcp",
+    "/admin/integration",
     "/providers",
     "/routing",
     "/keys",
@@ -81,13 +96,21 @@ function pathFromLocation(): string {
     "/activity",
     "/settings",
     "/compliance",
-    "/admin/compliance",
+    "/login",
   ];
   for (const route of KNOWN_ROUTES) {
-    const idx = path.indexOf(route);
-    if (idx >= 0) {
-      const prefix = path.substring(0, idx);
-      return prefix === "/" ? "" : prefix.replace(/\/$/, "");
+    let start = 0;
+    while (start <= path.length) {
+      const idx = path.indexOf(route, start);
+      if (idx < 0) break;
+      const after = idx + route.length;
+      // Require segment boundary: end-of-string or '/'
+      const boundaryOk = after === path.length || path[after] === "/";
+      if (boundaryOk) {
+        const prefix = path.substring(0, idx);
+        return prefix === "/" ? "" : prefix.replace(/\/$/, "");
+      }
+      start = idx + 1;
     }
   }
   // No known route segment — assume the whole path is the prefix

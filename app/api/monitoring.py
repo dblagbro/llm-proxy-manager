@@ -548,6 +548,10 @@ async def cache_stats(
 # by api_key (most common reporting pivot). CSV shape is intentionally
 # wide (one row per group, all metrics) so it imports cleanly into
 # spreadsheets / BI tools without further reshaping.
+# pool-leak-audit: rows-materialized
+# All DB queries complete before StreamingResponse is constructed
+# (iter([csv_bytes]) wraps a fully-buffered CSV string). Session
+# releases when the handler returns; generator never touches DB.
 @router.get("/usage-report.csv")
 async def usage_report_csv(
     window_minutes: int = Query(

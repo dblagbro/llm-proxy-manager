@@ -66,6 +66,11 @@ interface Props {
   // disabled; ["field_name","field_name"] = grant those fields.
   selfEditPermissions: string[] | null
   setSelfEditPermissions: (v: string[] | null) => void
+  // v5.21.2 — per-key default LMRH refuse-tolerance dim. Null/empty = no
+  // default; caller's own LMRH-Hint header wins. Otherwise the proxy
+  // injects `refuse-tolerance=<value>` when the caller didn't specify.
+  defaultRefuseTolerance: string | null
+  setDefaultRefuseTolerance: (v: string | null) => void
 }
 
 // v5.20.10 — mirror of app/integration/self_update.py::ELIGIBLE_FIELDS.
@@ -99,6 +104,7 @@ export function ComplianceFieldsEditor({
   refusalRetryEnabled, setRefusalRetryEnabled,
   refusalRetryMaxAttempts, setRefusalRetryMaxAttempts,
   selfEditPermissions, setSelfEditPermissions,
+  defaultRefuseTolerance, setDefaultRefuseTolerance,
 }: Props) {
   const [customCompany, setCustomCompany] = useState('')
   // v5.3.2 — live taxonomy with KNOWN_COMPANIES fallback.
@@ -420,6 +426,30 @@ export function ComplianceFieldsEditor({
             />
           </div>
         )}
+      </div>
+
+      {/* v5.21.2 — Default LMRH refuse-tolerance dim. Injected into
+          the caller's LMRH-Hint header when they didn't specify.
+          Caller-passed value always wins. */}
+      <div className="mt-6 pt-4 border-t border-gray-200 dark:border-gray-700">
+        <div className="flex items-center justify-between mb-2">
+          <div className="flex items-center gap-1">
+            <label className="text-sm font-semibold text-gray-700 dark:text-gray-300">
+              Default refuse-tolerance (LMRH)
+            </label>
+            <HelpHint text="Auto-inject this LMRH dim value into the caller's LMRH-Hint header when they didn't specify their own refuse-tolerance= dim. `strict` prefers models that WILL refuse edgy content; `lenient` prefers models LESS likely to refuse legitimate operational calls. Caller-passed value always wins over this default." />
+          </div>
+          <select
+            value={defaultRefuseTolerance ?? ''}
+            onChange={e => setDefaultRefuseTolerance(e.target.value || null)}
+            className="text-sm px-2 py-1 border border-gray-200 dark:border-gray-700 rounded bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-200"
+          >
+            <option value="">(none — no default)</option>
+            <option value="strict">strict — prefer models that refuse edgy content</option>
+            <option value="default">default — no opinion</option>
+            <option value="lenient">lenient — prefer models less likely to refuse</option>
+          </select>
+        </div>
       </div>
 
       {/* v5.20.10 — Self-edit permissions grid. The AI Integration

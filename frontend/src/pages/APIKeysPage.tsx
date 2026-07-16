@@ -74,6 +74,8 @@ export function APIKeysPage() {
   const [editRefusalMaxAttempts, setEditRefusalMaxAttempts] = useState<number | null>(null)
   // v5.20.10 — self_edit_permissions list state
   const [editSelfEditPerms, setEditSelfEditPerms] = useState<string[] | null>(null)
+  // v5.21.2 — per-key default LMRH refuse-tolerance dim
+  const [editDefaultRT, setEditDefaultRT] = useState<string | null>(null)
   // v5.3.0 — fine-grained policy state on edit
   const [editAllowedCompanies, setEditAllowedCompanies] = useState<string[] | null>(null)
   const [editBlockedModels, setEditBlockedModels] = useState<string[] | null>(null)
@@ -306,6 +308,10 @@ export function APIKeysPage() {
       && (editPerms === null || editPerms.length === 0)
     ) || _arrayEqual(origPerms, editPerms)
     const selfEditPermsChanged = !permsEqual
+    // v5.21.2 — default refuse-tolerance diff. null and '' treated equivalently.
+    const origRT = original.default_refuse_tolerance ?? null
+    const editRT = editDefaultRT === '' ? null : editDefaultRT
+    const defaultRTChanged = origRT !== editRT
     // v5.3.0 — fine-grained policy diff. Each dimension uses the same
     // null-vs-list state machine as allowed_paths.
     const nextAllowedCompanies = editAllowedCompanies && editAllowedCompanies.length > 0 ? editAllowedCompanies : null
@@ -319,7 +325,7 @@ export function APIKeysPage() {
       !capChanged && !rpmChanged && !blockedChanged && !pathsChanged && !echoChanged
       && !allowedCompaniesChanged && !blockedModelsChanged && !allowedModelsChanged
       && !refDetectChanged && !refHardChanged && !refRetryChanged && !refMaxChanged
-      && !selfEditPermsChanged
+      && !selfEditPermsChanged && !defaultRTChanged
     ) {
       setEditKey(null)
       return
@@ -345,6 +351,10 @@ export function APIKeysPage() {
     // on backend, so we can't distinguish "revoke" from "don't touch").
     if (selfEditPermsChanged) {
       (payload as any).self_edit_permissions = editSelfEditPerms ?? []
+    }
+    // v5.21.2 — refuse-tolerance default. Empty string clears the field.
+    if (defaultRTChanged) {
+      (payload as any).default_refuse_tolerance = editDefaultRT ?? ''
     }
     if (allowedCompaniesChanged) payload.allowed_companies = nextAllowedCompanies
     if (blockedModelsChanged)    payload.blocked_models    = nextBlockedModels
@@ -486,6 +496,7 @@ export function APIKeysPage() {
     setEditRefusalRetry(Boolean(k.refusal_retry_enabled))
     setEditRefusalMaxAttempts(k.refusal_retry_max_attempts ?? null)
     setEditSelfEditPerms(k.self_edit_permissions ?? null)
+    setEditDefaultRT(k.default_refuse_tolerance ?? null)
     // v5.3.0 — seed fine-grained policy state. Backend returns null for
     // legacy keys with no opinion on these dimensions; that preserves
     // the editor's null-vs-list state machine (allowlist-mode-OFF vs ON).
@@ -864,6 +875,8 @@ export function APIKeysPage() {
                 setRefusalRetryEnabled={() => {}}
                 refusalRetryMaxAttempts={null}
                 setRefusalRetryMaxAttempts={() => {}}
+                defaultRefuseTolerance={null}
+                setDefaultRefuseTolerance={() => {}}
                 selfEditPermissions={null}
                 setSelfEditPermissions={() => {}}
               />
@@ -938,6 +951,8 @@ export function APIKeysPage() {
               setRefusalRetryEnabled={setEditRefusalRetry}
               refusalRetryMaxAttempts={editRefusalMaxAttempts}
               setRefusalRetryMaxAttempts={setEditRefusalMaxAttempts}
+              defaultRefuseTolerance={editDefaultRT}
+              setDefaultRefuseTolerance={setEditDefaultRT}
               selfEditPermissions={editSelfEditPerms}
               setSelfEditPermissions={setEditSelfEditPerms}
             />

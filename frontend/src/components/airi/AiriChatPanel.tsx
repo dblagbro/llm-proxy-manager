@@ -22,11 +22,20 @@ type ProposalData = {
   dry_run: { summary?: string; warnings?: string[] }
   status: string
 }
+// v5.21.4 — auto-classified LMRH dim hint. Backend emits an
+// ``lmrh-hint`` SSE event with the classified dim + value +
+// source when the AIRI prompt-cue classifier fires.
+type LmrhHintData = {
+  dim: string       // e.g. "refuse-tolerance"
+  value: string     // e.g. "strict" | "lenient"
+  source: string    // e.g. "airi.prompt_cues"
+}
 type Msg = {
-  role: 'user' | 'assistant' | 'proposal'
+  role: 'user' | 'assistant' | 'proposal' | 'lmrh-hint'
   content?: string
   error?: boolean
   proposal?: ProposalData
+  hint?: LmrhHintData
 }
 
 const SUGGESTIONS = [
@@ -148,6 +157,12 @@ export function AiriChatPanel() {
             setStatus('')
             // v4.3 — read the completed answer aloud (no-op if TTS is off)
             speakerRef.current?.speak(data.text || '')
+          } else if (event === 'lmrh-hint') {
+            // v5.21.4 — surface the classifier's LMRH hint as a small
+            // badge in-line. Placed right after the user turn that
+            // triggered it so the operator can see the classification
+            // for THIS message.
+            setMessages((m) => [...m, { role: 'lmrh-hint', hint: data as LmrhHintData }])
           } else if (event === 'error') {
             setMessages((m) => [
               ...m,
@@ -346,6 +361,33 @@ export function AiriChatPanel() {
                     busy={busy}
                     decide={decide}
                   />
+                )
+              }
+              if (m.role === 'lmrh-hint' && m.hint) {
+                // v5.21.4 — LMRH dim classification badge. Small
+                // enough to not disrupt the read flow; distinctive
+                // enough to be spotted. Includes a title tooltip
+                // showing the classifier source so operators can
+                // audit false positives.
+                const val = m.hint.value
+                const color =
+                  val === 'strict'
+                    ? 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200'
+                    : val === 'lenient'
+                      ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200'
+                      : 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300'
+                return (
+                  <div key={i} className="flex justify-center">
+                    <span
+                      title={`Router hint: ${m.hint.dim}=${m.hint.value} (source: ${m.hint.source})`}
+                      className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[11px] font-medium ${color}`}
+                    >
+                      <span className="opacity-60">↳ hint:</span>
+                      <span className="font-mono">
+                        {m.hint.dim}={m.hint.value}
+                      </span>
+                    </span>
+                  </div>
                 )
               }
               return (

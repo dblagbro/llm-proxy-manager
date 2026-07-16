@@ -219,6 +219,8 @@ export interface ApiKey {
   refusal_retry_max_attempts?: number | null
   // v5.20.10 — self-edit permissions list. null = self-edit disabled.
   self_edit_permissions?: string[] | null
+  // v5.21.2 — per-key default LMRH refuse-tolerance dim.
+  default_refuse_tolerance?: string | null
   // v5.1.1 / Batch B1 UI — present when ?include_deleted=true is used
   // (Trash tab). null/undefined for live keys.
   deleted_at?: string | null
