@@ -2,55 +2,121 @@
 
 All notable changes since v2.7.6. Older history available in `git log`.
 
-## v5.21.1 — hotfix: UnboundLocalError on every `/v1/messages` call (2026-07-08)
+## v5.21.10 — /admin/login → /login server-side redirect (2026-07-16)
 
-**Impact.** Every call to `/v1/messages` failed with `UnboundLocalError:
-cannot access local variable 'anthropic_text_sse'` (HTTP 500) — every
-downstream consumer (coordinator-hub llm-relay, direct Anthropic-shape
-clients) got 500s. Detected via GCP coordinator-hub's `chain exhausted:
-Internal Server Error` state — hub circuit-breaker engaged, LLM-relay
-100% failure rate. Duration: ~4 hours (v5.21.0 ship at 2026-07-08 to
-hotfix at 2026-07-08 ~02:15 UTC).
+**Fixes**: operator reports of `Method Not Allowed` on the login form when navigating to `/llm-proxy2/admin/login` (or `/llm-proxy/admin/login`).
 
-**Root cause.** v5.21.0 added a redundant local
-`from app.cot.sse import anthropic_text_sse, ...` inside the buffered-
-cascade streaming branch of `messages()` (app/api/messages.py:1156-1159).
-The three names are already imported at module level (lines 27-29),
-so the local import serves no purpose. But Python assigns function-
-local scope to any name written to anywhere in a function body, so
-the module-level `anthropic_text_sse` was shadowed by the (unbound)
-local for the entire function — accessed as `text_sse_fn=anthropic_text_sse`
-at line 592 BEFORE the buffered-cascade branch ever ran. Result:
-UnboundLocalError on every code path through `messages()`.
+Root cause: `getBasePath()` fallback (`pathFromLocation()`) strips known-route segments from `window.location.pathname` to derive the URL prefix. `/login` is a known route. Inside `/llm-proxy2/admin/login` the substring `/login` starts at position 18 with valid segment boundaries on both sides, so the fallback mis-derives the base as `/llm-proxy2/admin`. Every subsequent `POST /api/auth/login` then hits `/llm-proxy2/admin/api/auth/login` → nginx routes to the SPA catch-all → 405.
 
-**Fix.** Deleted the redundant local `from ... import ...` block. The
-module-level import at line 29 already provides the names.
+**Fix**: two lines of defense.
+1. Server-side 302 redirect in the SPA catch-all: `full_path == "admin/login"` → `RedirectResponse("../login")`. Relative target preserves whatever URL prefix the browser was on (`/llm-proxy2/`, `/llm-proxy/`, `/llm-proxy2-smoke/`). Runs before any JS loads, so `getBasePath()` never sees the offending path.
+2. Frontend `pathFromLocation()` rewritten with (a) segment-boundary matching (char before match = `/`, char after = `/` or EOS) and (b) longest-route-first ordering (`/admin/compliance` before `/compliance`). Fixes deep admin routes that hit the same class of bug (`/admin/compliance`, `/admin/mcp`, `/admin/integration`).
 
-**Regression test.** `tests/unit/test_v5211_no_local_shadowing.py`
-uses `ast.parse` to walk every function in `app/api/messages.py` and
-`app/api/completions.py`, asserting that no local `import` statement
-re-imports a name that's already at module level (would produce the
-same class of bug for any refactor).
+## v5.21.8 — Second leak site fixed + CI pin against future regressions (2026-07-16)
+
+**Follow-up to v5.21.7.** Audited every handler that combines `Depends(get_db)` with `StreamingResponse(` — 7 candidates.
+
+**Found + fixed a second real leak**: `lmrh_v2.py::stream_snapshot` (LMRH SSE push endpoint) held the request-scoped session across an infinite polling loop. Same class as v5.21.7's runs.py fix. Now uses a short-lived session for the single connect-time rate-limit check and releases it before entering the loop.
+
+**Six other handlers audited + annotated**:
+- `messages.messages`, `completions.chat_completions` — safe: watchdog+bounded (disconnect watchdog wired v5.7.17, LLM streams bounded ~60s max)
+- `compliance.admin_compliance_events`, `monitoring.usage_report_csv`, `oauth_capture.logs.export_captures` — safe: rows materialized before StreamingResponse returned; generator only iterates in-memory list
+- `runs.get_events` — fixed in v5.21.7; annotated for the pin
+
+**CI static-grep pin** (`test_v5218_streaming_pool_leak_pin.py`): any router handler with BOTH `= Depends(get_db)` AND `StreamingResponse(` must have a `pool-leak-audit: <reason>` comment (either inside the handler or in the ~6-line preamble above the decorator). Recognized reasons:
+- `rows-materialized` — DB queries complete before StreamingResponse returns
+- `watchdog+bounded` — disconnect watchdog + bounded stream duration
+- `exempt-<reason>` — case-by-case, with reason documented in surrounding code
+
+Handler-block detection tolerates nested parens in signatures + pulls the safety comment from a preamble window (avoids attributing comments to wrong siblings).
+
+**architecture.md refresh**: 60 versions stale ("Current version: 5.0.7" → v5.21.8). Bumped header, added ship-history-since-v5.0.7 summary, added a full "DB pool leak diagnostic path" architecture section documenting the symptom class, root-cause pattern, confirmed leak sites, diagnostic infrastructure, and belt-and-suspenders (v5.21.6–8 arc).
+
+## v5.21.7 — DB pool leak root-cause fix + auto-watcher (2026-07-15)
+
+**Closes the chronic outage since 2026-07-09.** tmrwww01/02 llm-proxy2 pool exhausted every 24-48h → login stopped working. Cause was the `runs.py::get_events` endpoint: `Depends(get_db)` held a request-scoped session for the ENTIRE StreamingResponse lifetime — potentially HOURS for a long-running job's SSE consumer.
+
+**The leak fix**: `get_events` no longer accepts `Depends(get_db)`. Both branches (SSE + polling) open short-lived `AsyncSessionLocal()` sessions on demand. The initial run lookup uses one, phase-1 catch-up replay in the generator uses another, and phase-2 (long broker loop) holds NONE. Pool slot released before the multi-hour wait.
+
+**The auto-watcher**: `app/monitoring/pool_leak_watcher.py` — background task samples pool utilization every 30s. When 50%/75%/90% thresholds are crossed (armed → fired → re-armed on drop), dumps the async-session trace to logs automatically. Companion to v5.21.6's manual SIGUSR2 dumper. Registered via WorkerHeartbeat so /health shows if it dies.
+
+**Infra**: auto-recycle cron on all three hosts (`0 4 * * *`) as belt-and-suspenders. Includes `docker exec nginx nginx -s reload` — see v5.21.6-adjacent memory: nginx caches upstream IPs across container recreate, and needs an explicit reload or external HTTPS returns 502.
+
+**Tests** (`test_v5217_pool_leak_watcher_and_runs_fix.py`, 10/10): pins that `get_events` doesn't reintroduce `Depends(get_db)`, the generator doesn't reference request-scoped `db`, watcher registers, threshold arming works, fires at highest crossed threshold (not lowest), shares dump shape with SIGUSR2.
+
+## v5.21.6 — SIGUSR2 DB pool trace dumper (2026-07-15)
+
+Chicken/egg diagnostic access: when the pool exhausts, admin login breaks — so the admin-only `/cluster/db-pool-trace` endpoint is unreachable precisely when you need it. SIGUSR2 breaks the loop.
+
+Send `docker kill --signal=SIGUSR2 llm-proxy2` from any shell with docker access. The handler logs the current `_async_session_traces` dict — sorted oldest-first, top 20 sessions with the app-frame stack that opened them. No auth needed.
+
+Wired at boot via `lifespan`. Never raises (a raising handler kills the process). Windows-safe (`hasattr(signal, 'SIGUSR2')` gate).
+
+**Tests** (`test_v5216_sigusr2_pool_trace_dumper.py`, 9/9) including live signal registration.
+
+## v5.21 arc — refuse-tolerance rollout (2026-07-08 → 2026-07-09)
+
+Six ships (`v5.21.0` → `v5.21.4`, plus hotfix `v5.21.1`) land a full user-facing routing dim from LMRH to admin UI to AIRI prompt-cue classifier. Unlocks DevinGPT's named use cases (creative-writing strict, automation-fire lenient) that their 2026-07-05 memo laid out.
+
+**Wire diagram**:
+
+```
+AIRI turn → prompt_cues.py classifier → llm-hint: refuse-tolerance=<strict|lenient>
+                                       ↘
+Direct caller → LMRH-Hint header → messages.py handler → LMRH scorer:
+                                       ↗   → refuse-tolerance dim (weight 8)
+Per-key default → default_refuse_tolerance column → injects into hint if absent
+```
+
+**Also in the arc**: buffered streaming cascade — v5.21.0 shipped the working buffered mode replacing v5.20.8's transparency header; v5.21.3 added optional heartbeat mode (SSE keepalives during buffered wait, opt-in via `refusal_retry_streaming_heartbeat` column, minimal-feature trade-off).
+
+**Regression test infrastructure**: v5.21.1 landed `test_v5211_no_local_shadowing.py` (ast-walking guard against the UnboundLocalError class of bug). v5.21.2 + v5.21.4 landed E2E Playwright pins.
+
+---
+
+## v5.21.4 — AIRI prompt-cue classifier (2026-07-09)
+
+Regex classifier at `app/airi/prompt_cues.py` maps the user's last message in an AIRI turn to a `refuse-tolerance` value: 17 strict cues (fiction/story/poem/screenplay/character/roleplay/…), 27 lenient cues (deploy/ssh/curl/docker/kubectl/systemd/git/refactor/…), ambiguous → `None`.
+
+Emits an `("lmrh-hint", {"dim","value","source"})` SSE event so the operator sees what fired. Threads `llm_hint=...` into `_call_llm(...)` in `app/airi/agent.py`; forwarded as the `llm-hint` HTTP header. Classification runs BEFORE the tool loop so every LLM call in the turn (including continuations) gets the same hint.
+
+**Tests** (`test_v5214_airi_prompt_cue_classifier.py`, 40/40): 7 strict / 14 lenient / 6 no-cue parametrizes, ambiguous → `None`, case-insensitive, header alias exact-match, wire in agent.py.
+
+## v5.21.3 — Buffered-cascade streaming heartbeat mode (2026-07-08)
+
+Opt-in via `refusal_retry_streaming_heartbeat` column (default off). When on: buffered-cascade path routes through `app/api/_buffered_cascade_stream.py::run_buffered_cascade_stream_with_heartbeat` — returns `StreamingResponse` at the top of the handler and yields `: cascade-buffering` marker + `: keepalive` every 5s during dispatch. Marked `X-Refusal-Cascade-Mode: buffered-heartbeat`.
+
+**Trade-off**: heartbeat mode runs a MINIMAL dispatch — LLM call + cascade only. No tool hops, memory extraction, MCP injection, response tail. v5.21.0 no-heartbeat mode keeps full features.
+
+**Load-bearing detail**: `asyncio.shield(task)` inside `wait_for` — without it every 5s timeout would kill the LLM call and force a restart. Errors surface as Anthropic-shape SSE error frames (never leak stack traces).
+
+**Tests** (`test_v5213_buffered_cascade_heartbeat.py`, 14/14) including end-to-end async run.
+
+## v5.21.2 — Per-key default `refuse-tolerance` injection (2026-07-08)
+
+New `default_refuse_tolerance` column. When set and the caller's `LMRH-Hint` header doesn't already include `refuse-tolerance=`, `messages.py` injects `refuse-tolerance=<key-default>` before the LMRH parser runs. Caller-passed value ALWAYS wins. Injection is marked with `X-LMRH-Injected-Dim: refuse-tolerance` response header.
+
+Backend `KeyUpdate` PATCH accepts + vocab-validates (unknown values drop to `NULL`). Frontend `ComplianceFieldsEditor` adds a labeled select with 4 options.
+
+**Tests**: unit `test_v5212_default_refuse_tolerance_injection.py` (9/9 static-grep pins); integration `test_v5212_default_refuse_tolerance_ui_pin.py` (2/2 GREEN — renders + full E2E round-trip: change value → save → reopen → verify persisted).
+
+## v5.21.1 — Hotfix: UnboundLocalError on every `/v1/messages` call (2026-07-08)
+
+**Impact**: every `/v1/messages` call → HTTP 500. Duration ~4 hours (v5.21.0 → hotfix). Caught via GCP coordinator-hub circuit-breaker engaging.
+
+**Root cause**: v5.21.0 added a redundant local `from app.cot.sse import anthropic_text_sse, ...` inside the buffered-cascade branch. The names are already at module level. But Python assigns function-local scope to any name written anywhere in a function body — so the module-level import was shadowed by the (unbound) local for the ENTIRE function, and line 592's earlier access to `anthropic_text_sse` raised `UnboundLocalError` on every code path.
+
+**Fix**: delete the redundant local import.
+
+**Regression pin**: `test_v5211_no_local_shadowing.py` uses `ast.parse` to walk every function in `app/api/messages.py` and `app/api/completions.py`, asserting no local `import` re-imports a module-level name.
 
 ## v5.21.0 — LMRH `refuse-tolerance` dim + buffered streaming cascade (2026-07-08)
 
-**Two coupled ships** — both unlock DevinGPT's named use cases (creative-writing strict, automation-fire lenient) that the 2026-07-05 memo laid out.
+Two coupled ships.
 
-### `refuse-tolerance` LMRH dim
+**`refuse-tolerance` LMRH dim**: per-request routing hint, 3-way (`strict`/`default`/`lenient`) mapping to safety range gates. Weight 8 (same axis as `safety-max`). `;require` hard-drops out-of-range providers. Complements the existing per-provider `refusal-rate` dim. Taxonomy is v1 — may add `ambivalent`/`domain-specific` after Sunday rollup data.
 
-Per-request routing hint complementing the existing per-provider `refusal-rate` dim. Coarser 3-way vocabulary:
-
-- `strict` — creative-writing / policy-sensitive; caller WANTS the model to refuse edgy content (safety range [4, 5])
-- `default` — no opinion (safety range [2, 4])
-- `lenient` — automation / tool-firing; caller wants a model LESS likely to refuse legit calls (safety range [1, 2])
-
-Weight is 8 (same axis as `safety-max`). `;require` hard-drops out-of-range providers. Taxonomy is v1 — after the 2026-07-12 rollup, may add `ambivalent` / `domain-specific` if data warrants.
-
-### Buffered streaming cascade
-
-Replaces v5.20.8's honest-but-partial `X-Refusal-Cascade-Unavailable: streaming` header with a working buffered-mode cascade.
-
-When BOTH `stream=true` AND `refusal_retry_enabled=true`: `stream` forced `False` internally → non-streaming path (including cascade) → final `anthropic_result` converted to SSE frames via `anthropic_text_sse` / `anthropic_tool_sse` / `anthropic_tools_sse` → returned as `StreamingResponse`. Caller still gets `text/event-stream`; just waits for the full response before first byte. Marked `X-Refusal-Cascade-Mode: buffered`. Falls back to JSON if SSE conversion breaks — header stays set.
+**Buffered streaming cascade**: replaces v5.20.8's honest-but-partial `X-Refusal-Cascade-Unavailable: streaming` header. When `stream=true` AND `refusal_retry_enabled=true`: force `stream=False` internally, run the full non-streaming flow (including cascade), convert final `anthropic_result` to Anthropic SSE frames, return as `StreamingResponse`. Client still gets `text/event-stream`. Marked `X-Refusal-Cascade-Mode: buffered`. Falls back to JSON if SSE conversion breaks.
 
 **Tests**: `test_v5210_refuse_tolerance_dim_and_streaming_cascade.py` 11/11; `test_v5208_streaming_cascade_transparency.py` 5/5 as history-pin.
 

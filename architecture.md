@@ -10,7 +10,37 @@ that can block configured companies (10 built-in + operator-defined customs) at 
 provider-routing, model-family, and client-product layers — with audit-grade event
 logging, daily integrity hash chain, and cluster-quorum policy push.
 
-**Current version: 5.0.7 (2026-06-04)**
+**Current version: 5.21.8 (2026-07-16)**
+
+### Ship history since v5.0.7 (arc-end summary, doc-drift refresh)
+
+- **v5.6.x–v5.7.x** — MCP surface: aggregation endpoint, per-key allow/deny + token budget, capability scout, streaming tool injection, MCP dashboard panel
+- **v5.8.x** — AI Integration Protocol (`/announce`, `/api/integration/chat`); OAuth flows (Cursor + Codex) hardened
+- **v5.9.x** — Audio (TTS/STT) + Images endpoints; disconnect-watchdog rolled to responses/audio/images/cluster-sync
+- **v5.10–v5.11** — MCP capability back-pressure closed loop; NVIDIA NIM provider; `/api/requests/stream` SSE + `/api/admin/requests/detail/{id}` companion (v5.20.5)
+- **v5.13–v5.14** — Cursor OAuth in-band refresh; callback registry (built-in hook: X-Compliance-Substitution)
+- **v5.15.x** — Per-account OAuth fan-out (schema + admin endpoints)
+- **v5.16** — Consolidated `x-llmproxy-config` policy header
+- **v5.20.x — refusal detection arc**: detection module + prompt hardening + cascade retry + self-update endpoint + hooks-override header + LiteLLM model-cost catalog + `self_edit_permissions` admin UI
+- **v5.21.x — refuse-tolerance arc**: LMRH `refuse-tolerance` dim + buffered streaming cascade + hotfix (v5.21.1) + per-key default injection + heartbeat streaming mode + AIRI prompt-cue classifier + hint SSE + frontend badge
+- **v5.21.6–v5.21.8 — DB pool leak permanent fix**: root-caused chronic 24-48h exhaustion outage. See "DB pool leak diagnostic path" section below.
+
+## DB pool leak diagnostic path (v5.21.6–v5.21.8)
+
+**Symptom class**: pool utilization creeps up over ~24-48h until 50 base + 100 overflow = 150 sessions all leaked → `/api/auth/login` blocks at DB checkout → admin UI dies → operator has to notice + trigger a container recreate.
+
+**Root cause pattern (chronic since 2026-07-09)**: any endpoint declaring `db: AsyncSession = Depends(get_db)` AND returning a `StreamingResponse` holds the request-scoped session for the **entire stream lifetime**. Long-lived SSE consumers (LMRH stream, run event stream, admin activity tail) held sessions for hours per browser tab. Multi-tab load compounded to exhaustion.
+
+**Confirmed leak sites, now fixed**:
+- `runs.py::get_events` (v5.21.7) — SSE stream that can run for **hours** while a long job executes
+- `lmrh_v2.py::stream_snapshot` (v5.21.8) — infinite-loop SSE for LMRH snapshot pushes
+
+**Diagnostic infrastructure**:
+- **SIGUSR2 handler** (`app/monitoring/pool_trace_signal.py`, v5.21.6): `docker kill --signal=SIGUSR2 llm-proxy2` dumps the current `_async_session_traces` dict to logs. No login required — breaks the chicken/egg where the admin trace endpoint needs login and login needs the pool.
+- **Auto-watcher** (`app/monitoring/pool_leak_watcher.py`, v5.21.7): background task polls pool utilization every 30s; auto-dumps trace when 50/75/90% thresholds are first crossed (armed → fired → re-armed on drop below).
+- **CI static-grep pin** (`tests/unit/test_v5218_streaming_pool_leak_pin.py`, v5.21.8): fails if any handler combines `= Depends(get_db)` with `StreamingResponse(` without a `pool-leak-audit: <reason>` comment documenting why it's safe. Recognized reasons: `rows-materialized` (rows loaded before stream returned), `watchdog+bounded` (disconnect watchdog + bounded stream duration), `exempt-<reason>` (case-by-case).
+
+**Belt-and-suspenders**: daily 04:00 auto-recycle cron on all 3 hosts, chained with `docker exec nginx nginx -s reload`. Nginx caches upstream IPs across container recreate; without the reload, external HTTPS returns 502 even though the container is healthy.
 
 ## What we lead on (vs LiteLLM Proxy + Portkey Gateway, as of 2026-06-30)
 

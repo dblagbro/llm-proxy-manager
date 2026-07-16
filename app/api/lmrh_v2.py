@@ -585,6 +585,11 @@ async def get_quotes(
 # ── /lmrh/stream — Server-Sent Events push (v3.4.0) ───────────────────
 
 
+# pool-leak-audit: exempt-fixed-in-v5.21.8
+# v5.21.8 — was holding the request-scoped session across an infinite
+# SSE loop (same class as v5.21.7's runs.py fix). Now opens a
+# short-lived session for the single ``_check_rate_limit`` call and
+# releases it before entering the long-lived generator.
 @router.get("/lmrh/stream")
 async def stream_snapshot(
     request: Request,
@@ -594,7 +599,6 @@ async def stream_snapshot(
                     "Keeps proxies / load-balancers from idle-timing the "
                     "long-lived connection. Default 25s.",
     ),
-    db: AsyncSession = Depends(get_db),
     key: ApiKeyRecord = Depends(resolve_api_key_dep()),
 ):
     """Server-Sent Events stream of LMRHv2 snapshot updates (v3.4.0+).
@@ -617,7 +621,11 @@ async def stream_snapshot(
     is not rate-limited; one connection per key is the design).
     """
     _ensure_enabled()
-    await _check_rate_limit(db, key, "providers")
+    # v5.21.8 — own short-lived session for the rate-limit check so we
+    # don't hold a pool slot across the infinite SSE loop below.
+    from app.models.database import AsyncSessionLocal
+    async with AsyncSessionLocal() as _rl_db:
+        await _check_rate_limit(_rl_db, key, "providers")
     key_id = key.id
 
     async def event_gen():

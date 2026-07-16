@@ -31,3 +31,4 @@ Thumbs.db
 
 # Docker
 docker-compose.override.yml
+.scratch-watchdog-v522-deferred/

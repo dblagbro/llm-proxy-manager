@@ -55,6 +55,11 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+# pool-leak-audit: watchdog+bounded
+# Same rationale as app/api/messages.py::messages — the disconnect
+# watchdog releases the session on abort; LLM streams are bounded
+# (~60s max) so the session isn't held for the multi-hour class of
+# leak that v5.21.7 fixed in runs.py.
 @router.post("/v1/chat/completions")
 async def chat_completions(
     request: Request,

@@ -453,11 +453,13 @@ async def post_tool_result(
 # ── GET /v1/runs/{run_id}/events ─────────────────────────────────────────────
 
 
+# pool-leak-audit: exempt-fixed-in-v5.21.7
+# See docstring below — Depends(get_db) intentionally removed; both
+# SSE and polling branches open their own short-lived sessions.
 @router.get("/v1/runs/{run_id}/events")
 async def get_events(
     run_id: str,
     request: Request,
-    db: AsyncSession = Depends(get_db),
     since_ms: int = 0,
     limit: int = 100,
     last_event_id: Optional[str] = Header(None, alias="last-event-id"),
@@ -474,13 +476,22 @@ async def get_events(
     ``: keepalive`` heartbeat every 15s. R2 wires the live event bus so
     new events arrive within ~50ms; for now polling is the canonical
     path until R4 lands the in-memory ring-buffer broker.
+
+    v5.21.7 — DOES NOT USE ``Depends(get_db)``. The SSE mode returns a
+    ``StreamingResponse`` that can run for hours while a long run
+    executes; a request-scoped DB session held across that lifetime is
+    the chronic pool-leak pattern behind the 2026-07 outages. Instead
+    we open short-lived sessions on demand (the initial run lookup, the
+    catch-up replay in the generator, the polling query).
     """
-    res = await db.execute(select(Run).where(Run.id == run_id))
-    run = res.scalar_one_or_none()
-    if run is None:
-        raise HTTPException(404, "run not found")
-    if run.api_key_id != key_record.id:
-        raise HTTPException(403, "run is owned by a different api key")
+    from app.models.database import AsyncSessionLocal
+    async with AsyncSessionLocal() as _lookup_db:
+        res = await _lookup_db.execute(select(Run).where(Run.id == run_id))
+        run = res.scalar_one_or_none()
+        if run is None:
+            raise HTTPException(404, "run not found")
+        if run.api_key_id != key_record.id:
+            raise HTTPException(403, "run is owned by a different api key")
     # R5: SSE specifically benefits from redirecting to owner — that's
     # where the live broker channel lives. Polling can answer locally
     # (DB is replicated) but redirecting is cheap and consistent.
@@ -497,48 +508,58 @@ async def get_events(
             resume_seq = 0
 
     if is_sse:
+        # v5.21.7 — the Depends(get_db) session bound to THIS request is
+        # about to be handed to a StreamingResponse that can run for
+        # HOURS while a long run executes. Holding an aiosqlite pool
+        # slot across a multi-hour SSE stream is the chronic pool-leak
+        # pattern behind the 2026-07-09/14/15 outages. Snapshot the
+        # data we need out of the request-scoped session RIGHT NOW,
+        # then let the generator open its OWN short-lived session for
+        # the DB replay, then release it BEFORE entering the long-lived
+        # broker loop.
+        _run_id_captured = run.id
+        _run_status_captured = run.status
+
         async def gen():
             """R4: SSE consumer goes through the in-memory broker.
 
-            Phase 1 — Catch-up replay: walk run_events for any rows with
-            seq > resume_seq. The broker's ring may not have these if
-            the proxy restarted between event-emit and consumer-connect.
-            We always read the DB first.
-
-            Phase 2 — Live: subscribe to the broker and stream events
-            until the run hits a terminal kind. Keepalive every 15s
-            while idle (broker emits a sentinel; we translate to the
-            spec's `: keepalive\\n\\n` line).
+            Phase 1 - catch-up replay from DB (own short-lived session).
+            Phase 2 - live subscribe to broker (NO DB session held).
             """
             from app.runs import event_bus
+            from app.models.database import AsyncSessionLocal
 
-            # Phase 1: catch-up from DB
-            ev_res = await db.execute(
-                select(RunEvent).where(
-                    RunEvent.run_id == run.id, RunEvent.seq > resume_seq,
-                ).order_by(RunEvent.seq.asc())
-            )
+            # Phase 1: catch-up from DB - own short-lived session so we
+            # don't hold the request-scoped one across the broker loop.
             last_seen = resume_seq
-            for ev in ev_res.scalars().all():
-                yield (
-                    f"event: {ev.kind}\n"
-                    f"id: {ev.seq}\n"
-                    f"data: {json.dumps(ev.payload, ensure_ascii=True)}\n\n"
-                ).encode()
-                last_seen = ev.seq
+            async with AsyncSessionLocal() as local_db:
+                ev_res = await local_db.execute(
+                    select(RunEvent).where(
+                        RunEvent.run_id == _run_id_captured,
+                        RunEvent.seq > resume_seq,
+                    ).order_by(RunEvent.seq.asc())
+                )
+                for ev in ev_res.scalars().all():
+                    yield (
+                        f"event: {ev.kind}\n"
+                        f"id: {ev.seq}\n"
+                        f"data: {json.dumps(ev.payload, ensure_ascii=True)}\n\n"
+                    ).encode()
+                    last_seen = ev.seq
+            # Session released here, before we enter the long loop.
 
-            # If the run is already terminal, we're done — no live stream.
-            if run.status in (
+            # If the run is already terminal, we're done - no live stream.
+            if _run_status_captured in (
                 RunStatus.COMPLETED.value, RunStatus.FAILED.value,
                 RunStatus.EXPIRED.value, RunStatus.CANCELLED.value,
             ):
                 return
 
-            # Phase 2: subscribe to broker. Pass last_seen so the broker's
-            # own ring-replay path skips events we already sent from DB.
+            # Phase 2: subscribe to broker. NO DB session held here.
             try:
                 async for ev in event_bus.stream_events(
-                    run.id, last_event_id=last_seen, keepalive_sec=15.0,
+                    _run_id_captured, last_event_id=last_seen,
+                    keepalive_sec=15.0,
                 ):
                     if await request.is_disconnected():
                         return
@@ -554,17 +575,20 @@ async def get_events(
                 return
         return StreamingResponse(gen(), media_type="text/event-stream")
 
-    # Polling JSON path
+    # Polling JSON path — own short-lived session (v5.21.7).
     since_ts = (since_ms / 1000.0) if since_ms else 0.0
-    ev_res = await db.execute(
-        select(RunEvent).where(
-            RunEvent.run_id == run.id, RunEvent.ts > since_ts,
-        ).order_by(RunEvent.seq.asc()).limit(max(1, min(limit, _RING_BUFFER_SIZE)))
-    )
-    events = [
-        {"seq": ev.seq, "kind": ev.kind, "payload": ev.payload, "ts_ms": int(ev.ts * 1000)}
-        for ev in ev_res.scalars().all()
-    ]
+    async with AsyncSessionLocal() as _poll_db:
+        ev_res = await _poll_db.execute(
+            select(RunEvent).where(
+                RunEvent.run_id == run.id, RunEvent.ts > since_ts,
+            ).order_by(RunEvent.seq.asc()).limit(
+                max(1, min(limit, _RING_BUFFER_SIZE))
+            )
+        )
+        events = [
+            {"seq": ev.seq, "kind": ev.kind, "payload": ev.payload, "ts_ms": int(ev.ts * 1000)}
+            for ev in ev_res.scalars().all()
+        ]
     return JSONResponse({"events": events})
 
 

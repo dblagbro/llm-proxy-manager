@@ -67,7 +67,7 @@ export function IntegrationPage() {
     <div className="p-6 space-y-6 max-w-5xl">
       <div>
         <h1 className="text-2xl font-semibold mb-2">AI Integration</h1>
-        <p className="text-sm text-gray-600 dark:text-gray-400 max-w-3xl">
+        <p className="text-sm text-gray-700 dark:text-gray-200 max-w-3xl">
           Lets other AI-driven projects discover this proxy via{' '}
           <code>/announce</code> and negotiate API keys via{' '}
           <code>/api/integration/chat</code>. The chat is passphrase-gated —
@@ -187,7 +187,7 @@ export function IntegrationPage() {
             <li>Max daily budget (hard cap on minted keys): <b>${data.limits.max_daily_budget_usd.toFixed(2)}</b></li>
             <li>Max messages per chat session: <b>{data.limits.max_messages_per_session}</b></li>
           </ul>
-          <p className="text-xs text-gray-700 dark:text-gray-300 mt-2">
+          <p className="text-xs text-gray-800 dark:text-gray-100 mt-2">
             Edit these in Settings → AI Integration. Changes sync cluster-wide
             via the existing system_settings replication.
           </p>
@@ -200,7 +200,7 @@ export function IntegrationPage() {
           <CardTitle className="text-lg">Copy dev handoff</CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">
-          <p className="text-sm text-gray-600 dark:text-gray-400">
+          <p className="text-sm text-gray-700 dark:text-gray-200">
             One markdown package containing all three URLs, the current
             passphrase, a Python sample, a curl sample, and the limits.
             Paste into Slack / email for the integrating team. Throw it
@@ -219,7 +219,7 @@ export function IntegrationPage() {
               Refresh
             </Button>
           </div>
-          <details className="text-xs text-gray-700 dark:text-gray-300">
+          <details className="text-xs text-gray-800 dark:text-gray-100">
             <summary className="cursor-pointer">Preview ({data.markdown.length} chars)</summary>
             <pre className="mt-2 p-3 rounded bg-gray-50 dark:bg-gray-900 overflow-x-auto whitespace-pre-wrap max-h-64">
               {data.markdown.slice(0, 800)}
@@ -245,7 +245,7 @@ function UrlRow({
 }) {
   return (
     <div>
-      <div className="text-xs text-gray-700 dark:text-gray-300 mb-1">{label}</div>
+      <div className="text-xs text-gray-800 dark:text-gray-100 mb-1">{label}</div>
       <div className="flex items-center gap-2">
         <code className="flex-1 px-3 py-2 rounded bg-gray-100 dark:bg-gray-800 font-mono text-xs break-all">
           {url}

@@ -192,6 +192,10 @@ def _event_row_to_dict(row: ComplianceEvent) -> dict:
     }
 
 
+# pool-leak-audit: rows-materialized
+# The result rows are loaded (rs.scalars().all()) BEFORE StreamingResponse
+# is returned; the generator only iterates the already-materialized list
+# and doesn't touch the DB. Session releases when the handler returns.
 @router.get("/api/admin/compliance-events")
 async def admin_compliance_events(
     api_key_id: Optional[str] = None,
