@@ -214,15 +214,23 @@ async def cluster_db_pool_trace(_: AdminUser = Depends(require_admin)):
 @router.post("/cluster/sync")
 async def cluster_sync(
     request: Request,
-    # v5.9.10 — disconnect watchdog. Peer disconnects during apply_sync
-    # (peer-side httpx timeout, network blip, peer process restart) were
-    # leaking DB sessions: handler kept running, ``async with db: ...``
-    # never released. Caught 2026-06-27 on www2 (oldest_checkout_age_sec
-    # plateaued at ~8 sessions per 24h on a node that receives ~1088
-    # syncs/day). MUST be listed before ``db`` so the watcher is armed
-    # before the session is checked out — same contract as v5.7.17.
-    _watchdog: None = Depends(watch_for_disconnect),
+    # v5.21.12 — swapped dep order (db first, watchdog second). The
+    # v5.9.10 comment claimed watchdog MUST be first "so the watcher is
+    # armed before the session is checked out"; in practice the
+    # setup-phase risk that guarded is negligible (checkout is <10ms)
+    # while the LIFO cleanup race that ordering CREATED was catastrophic:
+    # FastAPI runs dep cleanup LIFO, so watchdog-first meant get_db
+    # cleaned up FIRST while the watcher was still polling. On peer POST
+    # completion (200 return → peer's httpx closes), is_disconnected()
+    # flipped True, watcher called main_task.cancel(), and the cancel
+    # interrupted session.close() mid-await — leaking 1 DB session per
+    # inbound POST. Chronic outage since v5.9.10 shipped 2026-06-27.
+    # Fix: db first → LIFO puts db cleanup LAST (after watchdog stops).
+    # The v5.21.11 handler_done flag in disconnect_watchdog stays as
+    # defense-in-depth for any lingering post-yield tick, but the
+    # dep-order swap is what actually closes the race.
     db: AsyncSession = Depends(get_db),
+    _watchdog: None = Depends(watch_for_disconnect),
 ):
     if not settings.cluster_enabled:
         raise HTTPException(403, "Cluster mode not enabled")
