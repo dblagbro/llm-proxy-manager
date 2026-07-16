@@ -2,6 +2,20 @@
 
 All notable changes since v2.7.6. Older history available in `git log`.
 
+## v5.21.12 — /cluster/sync dep-order swap + get_db shield (2026-07-16)
+
+**v5.21.11 was necessary but not sufficient.** The handler_done flag sat inside the watchdog's finally, which FastAPI runs LIFO — AFTER get_db's finally — so the race window was already gone by the time the flag was set. Pool climb resumed within 30min of fleet roll: co=27 on www1 llm-proxy2, co=25 on 3 other TMR containers.
+
+**Two-part fix:**
+
+1. **Swap dep order on `/cluster/sync`**: `db` first, `_watchdog` second. FastAPI LIFO cleanup now puts `get_db.__aexit__` LAST — after the watchdog's finally has already stopped the watcher and set the flag. No watcher tick can fire during session.close().
+
+2. **`asyncio.shield` around `get_db` cleanup** (defense in depth): rewritten from `async with AsyncSessionLocal() as session:` to manual `__aenter__` / `finally: await asyncio.shield(session.__aexit__(...))`. Any Depends(get_db) user with a broken dep order (or a cancel from another source — timeout, upstream error) now still gets safe cleanup: shield defers the cancel until close() finishes, so the pool slot returns cleanly and the CancelledError re-raises only after.
+
+Preserves the v3.7.21 documented swallow of `OperationalError('no active connection')` on post-cancellation.
+
+Regression pin: `tests/unit/test_v52112_get_db_shield_and_cluster_sync_dep_order.py` — asserts (a) cluster_sync signature has db BEFORE watchdog, (b) get_db uses `asyncio.shield` around `__aexit__`, (c) the `no active connection` swallow is preserved.
+
 ## v5.21.11 — disconnect_watchdog LIFO cleanup race (2026-07-16)
 
 **Fixes**: chronic DB-pool leak on tmrwww01/02 that returned after every container recreate. Each inbound `POST /cluster/sync` leaked 1 DB session. Symptom: pool util climbs ~1 slot per 3-4 min on both `llm-proxy2` (compliance) and `llm-proxy` (clone) TMR containers; www01 clone observed at 47/50 within 90min of recycle. GCP node unaffected (no cluster peer inbound).

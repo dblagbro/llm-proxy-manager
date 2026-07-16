@@ -660,22 +660,53 @@ async def get_db() -> AsyncSession:
     each leaked connection. Net worse: log lines per cancellation
     increased from 3-5 to 7-10.
 
-    Correct fix: keep the ``async with`` so the pool gets the
-    connection back cleanly. Wrap the ``async with`` in a try/except
-    that ONLY swallows the documented post-cancellation
-    ``no active connection`` error — every other exception still
-    bubbles up. The ``async with __aexit__`` has already run
-    rollback/close by the time the exception reaches our handler,
-    so the pool state is intact.
+    v5.21.12: wrap ``session.__aexit__`` in ``asyncio.shield`` so
+    cleanup completes even when the request task is cancelled
+    mid-close. Root cause of the returning ``/cluster/sync`` DB-pool
+    leak: FastAPI dep-cleanup is LIFO, so when a route declared
+    ``Depends(watch_for_disconnect)`` BEFORE ``Depends(get_db)``, the
+    watcher was still polling during get_db's ``__aexit__``. On peer
+    POST completion (200 → peer's httpx closes), ``is_disconnected()``
+    flipped True and the watcher called ``main_task.cancel()``. The
+    resulting CancelledError raised inside SQLAlchemy's
+    ``AsyncSession.close()`` mid-await → the aiosqlite connection was
+    never returned to the pool. Shield converts that cancel into a
+    delayed cancel (raised AFTER cleanup finishes), so the pool slot
+    is safe regardless of where the cancel came from.
+
+    Manual __aenter__/__aexit__ instead of ``async with`` because
+    ``async with`` doesn't compose with ``asyncio.shield`` at the
+    cleanup call. The pattern preserves the same rollback + close
+    semantics as ``__aexit__(None, None, None)``.
+
+    Correct fix (still): keep the pool-return path. Wrap the
+    ``async with`` in a try/except that ONLY swallows the documented
+    post-cancellation ``no active connection`` error — every other
+    exception still bubbles up. The shielded ``__aexit__`` has
+    already run rollback/close by the time the exception reaches our
+    handler, so the pool state is intact.
     """
+    import asyncio as _asyncio
     from sqlalchemy.exc import OperationalError
+
+    session = AsyncSessionLocal()
     try:
-        async with AsyncSessionLocal() as session:
+        await session.__aenter__()
+        try:
             yield session
+        finally:
+            # asyncio.shield defers any pending cancel until cleanup
+            # completes. If the caller was already cancelled before we
+            # get here, the shield's Task-wrapping still finishes the
+            # close call — pool slot returns cleanly — and THEN
+            # re-raises the CancelledError.
+            await _asyncio.shield(
+                session.__aexit__(None, None, None)
+            )
     except OperationalError as exc:
         # Post-cancellation: aiosqlite connection got closed before
-        # SQLA finished its cleanup. The async with has already done
-        # what it can; the error is log-noise only.
+        # SQLA finished its cleanup. The shielded __aexit__ has already
+        # done what it can; the error is log-noise only.
         if "no active connection" in str(exc).lower():
             return
         raise
