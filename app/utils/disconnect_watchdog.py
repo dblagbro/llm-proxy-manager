@@ -72,6 +72,22 @@ async def watch_for_disconnect(request: Request) -> AsyncIterator[None]:
 
     stop = asyncio.Event()
     interval = _poll_interval_sec()
+    # v5.21.11 — handler_done flag closes the LIFO cleanup race that
+    # caused the /cluster/sync inbound DB-session leak. When a peer
+    # POST completes, ASGI queues an http.disconnect and
+    # ``request.is_disconnected()`` returns True. The pre-v5.21.11
+    # watcher would then cancel main_task — but main_task was already
+    # in FastAPI's dependency-cleanup phase, running ``get_db``'s
+    # ``async with __aexit__``. The cancel interrupted
+    # ``session.close()`` mid-way, so the pool slot never returned. In
+    # LIFO order the watchdog dep is popped AFTER the db dep, so
+    # ``stop.set()`` in the finally-below runs too late to save that
+    # cleanup. The flag is the earliest signal we can send: the
+    # handler yield has returned, so any "disconnected" observation
+    # from here on is post-handler and MUST NOT cancel. Set inside
+    # the yield-adjacent try/finally so it lands before get_db's
+    # __aexit__ starts.
+    handler_done = [False]
 
     async def _watcher() -> None:
         # First check is short — catch fast disconnects (sub-second
@@ -81,12 +97,20 @@ async def watch_for_disconnect(request: Request) -> AsyncIterator[None]:
         except asyncio.CancelledError:
             return
         while not stop.is_set():
+            if handler_done[0]:
+                return
             try:
                 disconnected = await request.is_disconnected()
             except Exception:
                 # A failed disconnect check shouldn't cancel a working
                 # request. Pause and retry.
                 disconnected = False
+            # Recheck after the await — handler_done may have flipped
+            # while we were awaiting is_disconnected(). If it has, the
+            # disconnected observation is post-handler noise and must
+            # not cancel cleanup.
+            if handler_done[0] or stop.is_set():
+                return
             if disconnected:
                 logger.info(
                     "disconnect_watchdog.client_gone cancelling handler "
@@ -105,6 +129,14 @@ async def watch_for_disconnect(request: Request) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        # Order matters. Set handler_done FIRST so any concurrent
+        # watcher tick that's about to cancel sees the flag and
+        # bails. Then stop.set() for the sleep-loop exit path. Only
+        # then cancel/await the watcher task. If watcher already
+        # cancelled main_task before we got here, that cancel is
+        # legitimate (handler was still running) and the exception
+        # will propagate through this finally.
+        handler_done[0] = True
         stop.set()
         if not watcher_task.done():
             watcher_task.cancel()

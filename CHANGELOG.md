@@ -2,6 +2,18 @@
 
 All notable changes since v2.7.6. Older history available in `git log`.
 
+## v5.21.11 — disconnect_watchdog LIFO cleanup race (2026-07-16)
+
+**Fixes**: chronic DB-pool leak on tmrwww01/02 that returned after every container recreate. Each inbound `POST /cluster/sync` leaked 1 DB session. Symptom: pool util climbs ~1 slot per 3-4 min on both `llm-proxy2` (compliance) and `llm-proxy` (clone) TMR containers; www01 clone observed at 47/50 within 90min of recycle. GCP node unaffected (no cluster peer inbound).
+
+Root cause: the v5.9.10 fix put `Depends(watch_for_disconnect)` BEFORE `Depends(get_db)` so the watcher was armed before session checkout. But FastAPI dependency-cleanup is LIFO — `get_db` cleans up FIRST, then `watch_for_disconnect`. When the handler returned 200 and the peer's httpx closed the connection, `request.is_disconnected()` flipped True. The watcher, still polling during `get_db.__aexit__`, called `main_task.cancel()`. `CancelledError` propagated into `session.close()` mid-await → the aiosqlite connection never returned to the pool.
+
+**Fix**: `handler_done` flag inside the dependency's closure. The yield-finally sets it BEFORE `stop.set()` + `watcher_task.cancel()`. The watcher checks the flag both at loop-head AND after every `await`, so any post-handler `is_disconnected()==True` observation is treated as normal termination (client got the response and closed) instead of an abort. No dep-order changes needed.
+
+Applies to all endpoints using `watch_for_disconnect`: `/v1/messages`, `/v1/chat/completions`, `/v1/responses`, `/v1/audio/*`, `/v1/images/*`, `/api/integration/chat`, `/cluster/sync`, `/api/admin/requests/stream`. The /cluster/sync path was the observably-leaking one because peer POSTs close their side promptly on 200 receipt; streaming endpoints hold the connection open longer, giving the pre-fix watcher no post-handler window to race in.
+
+Regression pin: `tests/unit/test_v52111_disconnect_watchdog_lifo_race.py` — static-grep asserts flag presence + `handler_done < stop.set < watcher_task.cancel` statement order + post-await recheck + loop-head early-return. If any future edit reorders or drops the flag write, tests break.
+
 ## v5.21.10 — /admin/login → /login server-side redirect (2026-07-16)
 
 **Fixes**: operator reports of `Method Not Allowed` on the login form when navigating to `/llm-proxy2/admin/login` (or `/llm-proxy/admin/login`).
