@@ -2,6 +2,20 @@
 
 All notable changes since v2.7.6. Older history available in `git log`.
 
+## v5.21.13 — pool_leak_watcher self-heal (no more manual restarts) (2026-07-23)
+
+**The 2026-07-23 login outage.** A residual connection-pool leak filled the pool (size 50 + overflow 100 = 150) on both TMR `llm-proxy2` and `llm-proxy` containers ~6h after recycle. Every DB-backed request — including `POST /api/auth/login` — then 500'd with `QueuePool ... connection timed out, timeout 10.00`, so operators could not log in until the container was manually restarted. `pool_recycle=1800` did not help: a leaked (never-returned) connection is never eligible for recycle, which only ages out connections at checkout.
+
+**Why the existing safety net failed.** Pre-v5.21.13, `pool_leak_watcher` only *dumped a trace* and never *acted*. Worse, its own `worker_heartbeat.tick()` needs a DB connection to write, so under full saturation the watcher's heartbeat failed too (`worker_heartbeat.write_failed worker=pool_leak_watcher`).
+
+**Fix — self-heal.** Two facts make it both possible and safe: (1) detection is DB-free — `engine.pool.checkedout()`/`.size()` are in-memory counters readable even when every slot is leaked; (2) remediation is DB-free — `await engine.dispose()` replaces the pool wholesale (checked-in conns close, leaked conns orphan with the old pool and GC, new pool starts at full 150). On **sustained** saturation (`_HEAL_SUSTAINED_POLLS=4` consecutive polls ≥ `_HEAL_THRESHOLD=0.90` — sustained, so a legitimate burst of concurrent streams that drains on its own never triggers it), the watcher dumps the forensic trace (root-cause evidence) then recycles the pool. `_HEAL_COOLDOWN_SEC=300` prevents thrashing. The heal runs BEFORE the DB-backed `heartbeat.tick()` so remediation never depends on the exhausted resource. Master switch `POOL_SELF_HEAL_ENABLED` (default on) reverts to dump-only behaviour.
+
+Net effect: a residual leak now degrades to a periodic, loudly-logged self-recycle instead of a user-visible outage — no manual restart required.
+
+Regression pin: `tests/unit/test_v52113_pool_self_heal.py` — asserts remediation is `engine.dispose()`, heal is gated on a sustained streak + cooldown, heal runs before the DB heartbeat, and a failed dispose is swallowed (never kills the loop).
+
+**Known residual (follow-up):** the underlying leak source is the same class v5.21.7 fixed for `runs.py` but not the hot path — `messages.py`/`completions.py` take `Depends(get_db)` and hold that request-scoped session across the streaming-response generator (`record_outcome(db, …)`), pinning a pool slot for the full LLM stream. Self-heal makes this non-fatal; the targeted fix (short-lived sessions in the stream generators, mirroring `runs.py::get_events`) is the next step, ideally confirmed first via `DB_POOL_TRACE=1` so the watcher's pre-heal dump names the exact route.
+
 ## v5.21.12 — /cluster/sync dep-order swap + get_db shield (2026-07-16)
 
 **v5.21.11 was necessary but not sufficient.** The handler_done flag sat inside the watchdog's finally, which FastAPI runs LIFO — AFTER get_db's finally — so the race window was already gone by the time the flag was set. Pool climb resumed within 30min of fleet roll: co=27 on www1 llm-proxy2, co=25 on 3 other TMR containers.

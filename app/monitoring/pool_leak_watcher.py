@@ -1,4 +1,5 @@
 """v5.21.7 — Auto-dump the DB pool trace when utilization crosses a threshold.
+v5.21.13 — ...and SELF-HEAL by recycling the pool when saturation is sustained.
 
 Companion to the SIGUSR2 dumper (v5.21.6). SIGUSR2 needs an operator
 to manually invoke it after noticing symptoms; this watcher catches
@@ -16,11 +17,42 @@ what identifies the leaking code path.
 
 Wired at app startup as one of the ``worker_heartbeat``-registered
 background workers. Runs every 30 seconds (cheap — just a size check).
+
+## v5.21.13 — self-heal (why this exists)
+
+The 2026-07-23 login outage exposed a fatal gap: pre-v5.21.13 this
+watcher only *dumped diagnostics*, it never *acted*. When a residual
+leak filled the pool (size 50 + overflow 100 = 150) it logged a trace
+and did nothing — every DB-backed request, including ``/api/auth/login``,
+then 500'd with ``QueuePool ... connection timed out`` until an operator
+manually restarted the container. Worse, the safety net defeated
+itself: ``worker_heartbeat.tick()`` needs a DB connection to write, so
+under full saturation the watcher's OWN heartbeat failed too.
+
+Two design facts make self-heal both possible and safe:
+
+1. **Detection needs no DB.** ``engine.pool.checkedout()`` / ``.size()``
+   are in-memory counters — readable even when every connection is
+   leaked. So the watcher can always *see* saturation.
+2. **Remediation needs no DB.** ``await engine.dispose()`` replaces the
+   pool object wholesale: checked-in connections close immediately,
+   leaked (never-returned) connections are orphaned with the old pool
+   and closed on GC, and the NEW pool starts at full 150 capacity. It
+   is the in-process equivalent of a container restart for the DB
+   layer — no external connection, no process bounce, no downtime.
+
+So on *sustained* high saturation (``_HEAL_SUSTAINED_POLLS`` consecutive
+polls ≥ ``_HEAL_THRESHOLD`` — sustained, so a legitimate load spike that
+drains on its own never triggers it), the watcher dumps the forensic
+trace (root-cause evidence) and then recycles the pool. A cooldown
+prevents thrashing. Result: a residual leak degrades to a periodic
+self-recycle logged loudly, never a user-visible outage.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from typing import Optional
 
@@ -40,6 +72,26 @@ _POLL_INTERVAL_SEC = 30
 # fire on next crossing). Starts True (armed). Fires → False. Drops
 # back below → True.
 _armed: dict[float, bool] = {t: True for t in _THRESHOLDS}
+
+# ── v5.21.13 self-heal knobs ─────────────────────────────────────────
+# Recycle the pool when utilization stays at/above _HEAL_THRESHOLD for
+# _HEAL_SUSTAINED_POLLS consecutive samples. "Sustained" is the whole
+# point: a real leak only grows, so it holds high across many polls,
+# whereas a legitimate burst of concurrent long streams drains on its
+# own and resets the counter well before we'd recycle.
+_HEAL_THRESHOLD: float = 0.90
+_HEAL_SUSTAINED_POLLS: int = 4          # 4 × 30s = ~2 min of sustained saturation
+_HEAL_COOLDOWN_SEC: float = 300.0       # don't recycle more than once per 5 min
+
+# Master switch — default ON. Set POOL_SELF_HEAL_ENABLED=0 to fall back
+# to dump-only (pre-v5.21.13) behaviour.
+_SELF_HEAL_ENABLED: bool = os.getenv("POOL_SELF_HEAL_ENABLED", "1").lower() not in (
+    "0", "false", "no", "off",
+)
+
+# Self-heal state.
+_consecutive_high: int = 0
+_last_heal_monotonic: Optional[float] = None
 
 
 def _get_pool_utilization() -> Optional[float]:
@@ -104,6 +156,48 @@ def _dump_current_trace(reason: str) -> None:
         logger.warning("pool_leak_watcher.dump_failed err=%r", exc)
 
 
+async def _self_heal_recycle(util: float) -> bool:
+    """Recycle the connection pool in-process to reclaim leaked slots.
+
+    Dumps the forensic trace FIRST (so the leaking code path is captured
+    right before we throw the evidence away), then ``engine.dispose()``
+    replaces the pool. Returns True on success.
+
+    Neither step needs a working DB connection — that's what lets this
+    run when the pool is fully starved. Exceptions are swallowed and
+    logged: a failed heal must never kill the watcher loop.
+    """
+    try:
+        from app.models.database import engine
+
+        # Snapshot the pool state for the log record (in-memory counters).
+        try:
+            pool = engine.pool
+            before = (
+                f"size={pool.size()} checked_out={pool.checkedout()} "
+                f"overflow={pool.overflow()}"
+            )
+        except Exception:
+            before = "unavailable"
+
+        # Capture the leaking stacks before disposing (no-op if
+        # db_pool_trace is off, but harmless).
+        _dump_current_trace(f"self_heal_recycle_util={util:.2f}")
+
+        logger.error(
+            "pool_leak_watcher.SELF_HEAL recycling DB pool — sustained "
+            "saturation util=%.2f (%s). engine.dispose() reclaims leaked "
+            "slots without a container restart.",
+            util, before,
+        )
+        await engine.dispose()
+        logger.error("pool_leak_watcher.SELF_HEAL complete — pool recreated fresh")
+        return True
+    except Exception as exc:
+        logger.error("pool_leak_watcher.SELF_HEAL_FAILED err=%r", exc)
+        return False
+
+
 async def pool_leak_watcher_loop() -> None:
     """Background loop. Runs forever. Registered via WorkerHeartbeat
     so the /health monitoring shows whether it's alive."""
@@ -139,14 +233,41 @@ async def pool_leak_watcher_loop() -> None:
                             f"utilization_crossed_{int(threshold*100)}pct"
                         )
                         break
-            await heartbeat.tick(
-                status="ok",
-                note=f"util={util:.2f}" if util is not None else "util=?",
-            )
-        except Exception as exc:
+
+                # ── v5.21.13 self-heal ───────────────────────────────
+                # Track sustained saturation and recycle the pool when a
+                # leak holds it high across several polls. This runs
+                # BEFORE heartbeat.tick() (which needs a DB connection and
+                # would itself fail under saturation) so remediation never
+                # depends on the very resource that's exhausted.
+                global _consecutive_high, _last_heal_monotonic
+                if _SELF_HEAL_ENABLED and util >= _HEAL_THRESHOLD:
+                    _consecutive_high += 1
+                    now = time.monotonic()
+                    cooled = (
+                        _last_heal_monotonic is None
+                        or (now - _last_heal_monotonic) >= _HEAL_COOLDOWN_SEC
+                    )
+                    if _consecutive_high >= _HEAL_SUSTAINED_POLLS and cooled:
+                        await _self_heal_recycle(util)
+                        _last_heal_monotonic = time.monotonic()
+                        _consecutive_high = 0
+                else:
+                    # Draining (or below threshold) — reset the streak so
+                    # a later spike starts counting from zero.
+                    _consecutive_high = 0
+
+            # Heartbeat is best-effort and DB-backed: under saturation
+            # the write itself fails. Guard it separately so a failed
+            # tick never masks the detection/heal work above (which is
+            # DB-free and must always run).
             try:
-                await heartbeat.tick(status="error", note=str(exc)[:120])
-            except Exception:
-                pass
+                await heartbeat.tick(
+                    status="ok",
+                    note=f"util={util:.2f}" if util is not None else "util=?",
+                )
+            except Exception as hb_exc:
+                logger.debug("pool_leak_watcher.heartbeat_write_failed err=%r", hb_exc)
+        except Exception as exc:
             logger.warning("pool_leak_watcher.tick_failed err=%r", exc)
         await asyncio.sleep(_POLL_INTERVAL_SEC)
