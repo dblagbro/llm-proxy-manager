@@ -40,8 +40,9 @@ _EXCLUDED_TYPES = {"claude-oauth", "ChatGPT-oauth-plan", "grok-web", "cursor-oau
 @router.post("/v1/images/generations")
 async def images_generations(
     request: Request,
-    _watchdog: None = Depends(watch_for_disconnect),  # v5.9.9 — see messages.py
+    # v5.21.14 — db BEFORE _watchdog (LIFO cleanup closes get_db last). See cluster.py v5.21.12.
     db: AsyncSession = Depends(get_db),
+    _watchdog: None = Depends(watch_for_disconnect),  # v5.9.9 — see messages.py
     key_record=Depends(_AUTH),
 ):
     body = await request.json()

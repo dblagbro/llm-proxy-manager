@@ -10,9 +10,13 @@ caller disconnects mid-handler. www2 caught one in the wild:
 container otherwise idle.
 
 These are pure structural pins — identical contract to
-``test_v5717_disconnect_watchdog.py``: the watchdog dep MUST appear
-before ``db = Depends(get_db)`` so the watcher is armed before a
-session is checked out.
+``test_v5717_disconnect_watchdog.py``. v5.21.14 REVERSED the ordering:
+``db = Depends(get_db)`` MUST appear BEFORE the watchdog dep. FastAPI
+tears down yield-deps LIFO, so db-first makes get_db close LAST (after
+the watcher has stopped), which is what stops the client-disconnect
+cancel from interrupting session.close() and leaking a pool slot. The
+original v5.7.17 "arm before checkout" order was itself the leak — see
+cluster.py v5.21.12 and the v5.21.14 changelog.
 """
 from __future__ import annotations
 
@@ -45,13 +49,14 @@ def test_module_imports_watchdog(path: str):
     ],
 )
 def test_each_handler_wires_watchdog_before_db(path: str, n_handlers: int):
-    """Every handler that takes ``db = Depends(get_db)`` MUST also
-    take ``_watchdog = Depends(watch_for_disconnect)`` listed BEFORE it.
+    """v5.21.14 — every handler that takes ``db = Depends(get_db)`` MUST
+    also take ``_watchdog = Depends(watch_for_disconnect)`` listed AFTER
+    it (db-first), so FastAPI's LIFO cleanup closes get_db last.
 
     We assert per-handler ordering by walking the file and pairing each
-    ``Depends(get_db)`` with the nearest preceding
-    ``Depends(watch_for_disconnect)`` — that pairing must exist and be
-    closer than the previous handler's pairing.
+    ``Depends(get_db)`` with the nearest FOLLOWING
+    ``Depends(watch_for_disconnect)`` — that pairing must exist within
+    the same signature.
     """
     src = Path(path).read_text()
     db_positions = _all_positions(src, "Depends(get_db)")
@@ -66,17 +71,18 @@ def test_each_handler_wires_watchdog_before_db(path: str, n_handlers: int):
         f"found {len(wd_positions)}"
     )
 
-    # Pair each db usage with the nearest watchdog dep that precedes it
-    # AND comes after the previous db usage (so a single watchdog can't
+    # Pair each db usage with the nearest watchdog dep that FOLLOWS it
+    # AND comes before the next db usage (so a single watchdog can't
     # accidentally satisfy two handlers).
-    prev_db = -1
-    for db_idx in db_positions:
-        candidate_wds = [w for w in wd_positions if prev_db < w < db_idx]
+    db_sorted = sorted(db_positions)
+    for i, db_idx in enumerate(db_sorted):
+        next_db = db_sorted[i + 1] if i + 1 < len(db_sorted) else len(src)
+        candidate_wds = [w for w in wd_positions if db_idx < w < next_db]
         assert candidate_wds, (
-            f"{path}: handler at offset {db_idx} has no preceding "
-            f"watchdog dep in its signature."
+            f"{path}: handler at offset {db_idx} has no following "
+            f"watchdog dep in its signature (db must precede watchdog "
+            f"per v5.21.14)."
         )
-        prev_db = db_idx
 
 
 def _all_positions(haystack: str, needle: str) -> list[int]:

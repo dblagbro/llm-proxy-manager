@@ -267,8 +267,11 @@ async def responses(
     # v5.9.9 — same disconnect watchdog wired into /v1/messages in
     # v5.7.17. Must precede ``db`` so the watcher is armed before the
     # session is checked out.
-    _watchdog: None = Depends(watch_for_disconnect),
+    # v5.21.14 — db BEFORE _watchdog (LIFO cleanup closes get_db last, after
+    # the watchdog stops). Prevents disconnect-cancel from leaking a pool slot
+    # during session.close(). Same fix as cluster.py v5.21.12. Do NOT reorder.
     db: AsyncSession = Depends(get_db),
+    _watchdog: None = Depends(watch_for_disconnect),
     authorization: Optional[str] = Header(None),
     x_api_key: Optional[str] = Header(None, alias="x-api-key"),
     llm_hint: Optional[str] = Header(None, alias="llm-hint"),

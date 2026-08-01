@@ -23,30 +23,40 @@ def test_watchdog_module_exists():
 
 
 def test_messages_handler_wires_watchdog():
-    """The handler MUST depend on watch_for_disconnect, and it MUST be
-    listed BEFORE the ``db`` param so the watchdog is set up before any
-    DB session is checked out — otherwise on a fast disconnect the
-    connection could leak in the gap."""
+    """The handler MUST depend on watch_for_disconnect, listed AFTER the
+    ``db`` param.
+
+    v5.21.14 REVERSES the original v5.7.17 order. v5.7.17 put the
+    watchdog first to "arm before checkout", but v5.21.12 found THAT is
+    the leak: FastAPI tears down yield-deps LIFO, so watchdog-before-db
+    means get_db closes FIRST — while the watcher is still live — and a
+    disconnect landing mid-session.close() leaks the pool slot. db-first
+    makes LIFO close get_db LAST, after the watcher has stopped. The
+    watcher is still armed microseconds later and covers the whole
+    handler body, so the "arm before checkout" concern is moot. cluster.py
+    has run leak-free with this order since v5.21.12."""
     src = Path("app/api/messages.py").read_text()
     assert "from app.utils.disconnect_watchdog import watch_for_disconnect" in src
     assert "Depends(watch_for_disconnect)" in src
-    # Order check
+    # Order check — db BEFORE watchdog (v5.21.14).
     watchdog_idx = src.find("Depends(watch_for_disconnect)")
     db_idx = src.find("Depends(get_db)")
-    assert 0 < watchdog_idx < db_idx, (
-        "v5.7.17: watchdog must be listed before db in messages() signature."
+    assert 0 < db_idx < watchdog_idx, (
+        "v5.21.14: db must be listed before watchdog in messages() signature "
+        "(LIFO cleanup closes get_db last — see cluster.py v5.21.12)."
     )
 
 
 def test_completions_handler_wires_watchdog():
-    """Same contract for /v1/chat/completions."""
+    """Same contract for /v1/chat/completions — db BEFORE watchdog (v5.21.14)."""
     src = Path("app/api/completions.py").read_text()
     assert "from app.utils.disconnect_watchdog import watch_for_disconnect" in src
     assert "Depends(watch_for_disconnect)" in src
     watchdog_idx = src.find("Depends(watch_for_disconnect)")
     db_idx = src.find("Depends(get_db)")
-    assert 0 < watchdog_idx < db_idx, (
-        "v5.7.17: watchdog must be listed before db in chat_completions() signature."
+    assert 0 < db_idx < watchdog_idx, (
+        "v5.21.14: db must be listed before watchdog in chat_completions() signature "
+        "(LIFO cleanup closes get_db last — see cluster.py v5.21.12)."
     )
 
 
