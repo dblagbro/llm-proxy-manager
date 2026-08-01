@@ -16,8 +16,16 @@ async function req<T>(
     body: body ? JSON.stringify(body) : undefined,
   })
 
-  if (res.status === 401) {
-    // Any 401 means the server no longer accepts our session. Fire
+  // v5.21.14 — the login endpoint itself returns 401 for a bad
+  // username/password ({"detail":"Invalid credentials"}). That is NOT a
+  // session-expiry, so it must fall through to the detail-extracting
+  // branch below — otherwise a wrong-password attempt shows the
+  // nonsensical "Session expired — please sign in again" (and fires a
+  // spurious auth:expired). Only treat 401 as session-expiry for
+  // non-login requests.
+  const isLoginRequest = path.endsWith('/api/auth/login')
+  if (res.status === 401 && !isLoginRequest) {
+    // Any other 401 means the server no longer accepts our session. Fire
     // auth:expired so the UI shows the login screen instead of a generic
     // "Unauthorized" toast on an otherwise broken page.
     //

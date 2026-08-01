@@ -72,8 +72,12 @@ async def messages(
     # db: ...`` releases the DB connection. Closes the supervisor DB
     # pool leak (2026-06-16). Listed BEFORE db so the watchdog is set
     # up before any session is checked out.
-    _watchdog: None = Depends(watch_for_disconnect),
+    # v5.21.14 — db BEFORE _watchdog so FastAPI's LIFO dep-cleanup closes
+    # get_db LAST, after the watchdog has already stopped its watcher. Stops
+    # a client-disconnect cancel from interrupting session.close() and leaking
+    # a pool slot (same fix proven stable in cluster.py v5.21.12). Do NOT reorder.
     db: AsyncSession = Depends(get_db),
+    _watchdog: None = Depends(watch_for_disconnect),
     x_api_key: Optional[str] = Header(None, alias="x-api-key"),
     llm_hint: Optional[str] = Header(None, alias="llm-hint"),
     x_session_id: Optional[str] = Header(None, alias="x-session-id"),

@@ -57,8 +57,11 @@ class IntegrationChatRequest(BaseModel):
 async def integration_chat(
     body: IntegrationChatRequest,
     request: Request,
-    _watchdog: None = Depends(watch_for_disconnect),
+    # v5.21.14 — db BEFORE _watchdog (LIFO cleanup closes get_db last, after
+    # the watchdog stops). Prevents disconnect-cancel from leaking a pool slot
+    # during session.close(). Same fix as cluster.py v5.21.12. Do NOT reorder.
     db: AsyncSession = Depends(get_db),
+    _watchdog: None = Depends(watch_for_disconnect),
 ):
     """Passphrase-gated AI-to-AI chat. The management LLM may mint
     an API key via the ``create_api_key`` tool; the minted key is

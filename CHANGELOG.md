@@ -2,6 +2,20 @@
 
 All notable changes since v2.7.6. Older history available in `git log`.
 
+## v5.21.14 — disconnect-watchdog dep-order fix across ALL 6 remaining routes (ROOT CAUSE) (2026-08-01)
+
+**This is the actual leak fix v5.21.13 self-heal was masking.** After v5.21.13 shipped, the pool kept climbing (`pool_leak_watcher` self-heal fired repeatedly, `SELF_HEAL recycling DB pool ... util=0.90 checked_out=135`) and login still intermittently 500'd between heals. The auto-dump showed 100+ leaked async sessions, all originating at `get_db` (database.py:694), accumulating at a steady ~1-per-100s cadence — request-scoped `Depends(get_db)` sessions never returned.
+
+**Root cause — the v5.21.12 fix was only applied to ONE route.** The client-disconnect watchdog (`watch_for_disconnect`) cancels the handler task on disconnect. FastAPI tears down `yield` dependencies LIFO, so whichever is declared LAST is cleaned up FIRST. When `_watchdog` is declared BEFORE `db=Depends(get_db)`, get_db is torn down first — *while the watcher is still live* — so a disconnect landing mid-`session.close()` interrupts it and leaks the pool slot. v5.21.12 fixed this for `cluster.py` (declared `db` first → LIFO closes get_db LAST, after the watchdog stops) and has been leak-free since. But the identical anti-pattern remained in **six hot-path routes**: `messages.py`, `completions.py`, `audio.py` (×2), `images.py`, `integration.py`, `responses.py`. The v5.21.12 `get_db` `asyncio.shield` (intended as order-independent defense-in-depth) did not fully catch it in practice.
+
+**Fix.** Swap the dep order in all six routes so `db=Depends(get_db)` is declared BEFORE `_watchdog=Depends(watch_for_disconnect)` — the exact, proven cluster.py fix. FastAPI's LIFO cleanup now stops the watcher first, then closes get_db safely. Marker comments added to each so the order isn't accidentally reverted.
+
+Regression pin: `tests/unit/test_v52114_watchdog_dep_order.py` — parametrized over every watchdog route, asserts a `Depends(get_db)` is declared before each `Depends(watch_for_disconnect)` in the same signature, plus a global guard against the buggy watchdog-immediately-above-db adjacency.
+
+v5.21.13 self-heal stays as the belt-and-suspenders safety net (any future leak degrades to a logged auto-recycle, never an outage).
+
+**Also in v5.21.14 — login error message fix (frontend).** A wrong username/password returned the correct backend `401 {"detail":"Invalid credentials"}`, but `frontend/src/api/client.ts` treated *every* 401 as a session-expiry — it fired `auth:expired` and threw `"Session expired — please sign in again"` before the detail-extracting branch ran. So a bad-password attempt on the login screen showed the nonsensical "Session expired" message (which read as "login is broken") instead of "Invalid credentials". Fix: the login request (`/api/auth/login`) is excluded from the session-expiry 401 handling, so its 401 falls through and surfaces the real `Invalid credentials` detail.
+
 ## v5.21.13 — pool_leak_watcher self-heal (no more manual restarts) (2026-07-23)
 
 **The 2026-07-23 login outage.** A residual connection-pool leak filled the pool (size 50 + overflow 100 = 150) on both TMR `llm-proxy2` and `llm-proxy` containers ~6h after recycle. Every DB-backed request — including `POST /api/auth/login` — then 500'd with `QueuePool ... connection timed out, timeout 10.00`, so operators could not log in until the container was manually restarted. `pool_recycle=1800` did not help: a leaked (never-returned) connection is never eligible for recycle, which only ages out connections at checkout.

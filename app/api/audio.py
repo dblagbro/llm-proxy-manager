@@ -104,8 +104,9 @@ async def _bridge_stt(file_bytes: bytes, filename: str, language: Optional[str])
 @router.post("/v1/audio/speech")
 async def audio_speech(
     request: Request,
-    _watchdog: None = Depends(watch_for_disconnect),  # v5.9.9 — see messages.py
+    # v5.21.14 — db BEFORE _watchdog (LIFO cleanup closes get_db last). See cluster.py v5.21.12.
     db: AsyncSession = Depends(get_db),
+    _watchdog: None = Depends(watch_for_disconnect),  # v5.9.9 — see messages.py
     key_record=Depends(_AUTH),
 ):
     """OpenAI-compatible TTS.
@@ -203,8 +204,9 @@ async def audio_speech(
 @router.post("/v1/audio/transcriptions")
 async def audio_transcriptions(
     request: Request,
-    _watchdog: None = Depends(watch_for_disconnect),  # v5.9.9 — see messages.py
+    # v5.21.14 — db BEFORE _watchdog (LIFO cleanup closes get_db last). See cluster.py v5.21.12.
     db: AsyncSession = Depends(get_db),
+    _watchdog: None = Depends(watch_for_disconnect),  # v5.9.9 — see messages.py
     key_record=Depends(_AUTH),
     file: UploadFile = File(...),
     model: str = Form(...),
