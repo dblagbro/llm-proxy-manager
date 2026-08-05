@@ -1,0 +1,69 @@
+name: CI
+
+# Regression guard for the bug classes that have actually recurred here.
+#
+# Scope note (2026-08-05): this runs an app-build smoke + the hermetic
+# structural/invariant tests, NOT the full unit suite. The full suite is
+# not yet CI-ready — a chunk of tests/unit is non-hermetic (session
+# fixtures in tests/conftest.py POST to the LIVE deployment at
+# voipguru.org with admin creds), so it can't pass on a clean runner.
+# Making the whole suite hermetic + green is tracked in
+# tests/known_failures.txt; once that's done, promote the "full-unit"
+# step below from informational to blocking.
+
+on:
+  push:
+    branches: [ v2 ]
+  pull_request:
+    branches: [ v2 ]
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest
+
+      - name: App build smoke (catches import/signature breakage)
+        # This alone would have caught the class of bug behind the
+        # v5.21.14 leak — a broken dependency signature fails the import.
+        run: python -c "import app.main; print('import app.main OK')"
+
+      - name: Invariant guard tests (hermetic — no network)
+        run: |
+          pytest -q -p no:cacheprovider \
+            tests/unit/test_v52114_watchdog_dep_order.py \
+            tests/unit/test_v5717_disconnect_watchdog.py \
+            tests/unit/test_v599_watchdog_coverage_responses_audio_images.py \
+            tests/unit/test_v52113_pool_self_heal.py
+
+  full-unit-informational:
+    # Runs the whole unit suite for visibility. Currently expected to have
+    # pre-existing failures (see tests/known_failures.txt) AND network-
+    # fixture errors on a clean runner, so it is NON-BLOCKING for now.
+    # Promote to a required check once the suite is hermetic + green.
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest
+      - name: Full unit suite (informational)
+        run: pytest tests/unit -q --tb=no -p no:cacheprovider || true
