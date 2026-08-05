@@ -113,5 +113,7 @@ def test_sse_endpoint_under_admin_prefix():
 
 
 def test_version_bumped():
+    import re
     src = Path("app/__version__.py").read_text()
-    assert '"5.11.0"' in src, "__version__ should be 5.11.0"
+    m = re.search(r'"(\d+)\.(\d+)\.(\d+)"', src)
+    assert m and (int(m[1]), int(m[2]), int(m[3])) >= (5, 11, 0), "expected >= 5.11.0"

@@ -76,7 +76,8 @@ def test_counter_increments_and_reads_back():
 
 
 def test_messages_endpoint_records_counter():
-    src = Path("app/api/messages.py").read_text()
+    from tests._entry_surface import entry_surface
+    src = entry_surface("app/api/messages.py")  # counter lives in _handler_shared, called at entry
     assert "CONVERSATION_ID_REQUESTS_TOTAL" in src
     # The label call uses the conditional on x_conversation_id
     assert 'endpoint="messages"' in src
@@ -89,7 +90,8 @@ def test_messages_endpoint_records_counter():
 
 
 def test_completions_endpoint_records_counter():
-    src = Path("app/api/completions.py").read_text()
+    from tests._entry_surface import entry_surface
+    src = entry_surface("app/api/completions.py")
     assert "CONVERSATION_ID_REQUESTS_TOTAL" in src
     assert 'endpoint="completions"' in src
     assert '"true" if x_conversation_id else "false"' in src

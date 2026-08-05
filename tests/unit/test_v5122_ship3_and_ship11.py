@@ -125,5 +125,7 @@ def test_suggestion_emit_pushes_to_buffer():
 
 
 def test_version_bumped():
+    import re
     src = Path("app/__version__.py").read_text()
-    assert '"5.12.2"' in src
+    m = re.search(r'"(\d+)\.(\d+)\.(\d+)"', src)
+    assert m and (int(m[1]), int(m[2]), int(m[3])) >= (5, 12, 2), "expected >= 5.12.2"

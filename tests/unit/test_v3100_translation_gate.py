@@ -218,21 +218,24 @@ def test_gate_no_longer_limited_to_cross_family_fallback():
     Anthropic-shape tool defs even on a first turn with no blocks.
     The gate's OR set is now {fallback, tool blocks, images, tool defs}.
     """
-    src = Path("app/api/messages.py").read_text()
-    assert "_needs_openai_translation" in src
-    # Each of the four trigger clauses must be a substring of the gate
-    # condition; the literal one-line form was rewritten multi-line in
-    # v4.3.8 to accommodate the fourth clause.
+    # v5.7.18+: the gate moved into _messages_pre_route.translate_to_openai_if_needed
+    # (renamed _needs_openai_translation -> needs_translation,
+    # _has_anthropic_tool_defs -> has_anthropic_tool_defs); _has_tool_blocks is
+    # still computed in messages.py and passed in. entry_surface covers both.
+    from tests._entry_surface import entry_surface
+    src = entry_surface("app/api/messages.py")
+    assert "needs_translation" in src
+    # Each of the four trigger clauses must be present in the gate surface.
     assert "route.cross_family_fallback" in src
     assert "_has_tool_blocks" in src
     assert "has_images" in src
-    # v4.3.8: the new clause
-    assert "_has_anthropic_tool_defs" in src
+    assert "has_anthropic_tool_defs" in src
 
 
 def test_gate_excludes_claude_oauth_and_tool_emulation():
-    src = Path("app/api/messages.py").read_text()
-    idx = src.index("_needs_openai_translation")
+    from tests._entry_surface import entry_surface
+    src = entry_surface("app/api/messages.py")
+    idx = src.index("needs_translation")
     block = src[idx:idx + 400]
     assert 'route.profile.provider_type != "claude-oauth"' in block
     assert "not route.tool_emulation_engaged" in block

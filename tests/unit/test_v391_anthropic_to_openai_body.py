@@ -407,8 +407,11 @@ def test_messages_endpoint_wires_safety_net():
 
 
 def test_messages_endpoint_wires_translator():
-    from pathlib import Path
-    src = Path("app/api/messages.py").read_text()
+    # v5.7.18+: the translator call lives in _messages_pre_route
+    # (translate_to_openai_if_needed), which messages.py calls at entry;
+    # the X-Cross-Family-Translated header is still set in the handler.
+    from tests._entry_surface import entry_surface
+    src = entry_surface("app/api/messages.py")
     assert "anthropic_to_openai_body" in src
     assert "X-Cross-Family-Translated" in src
 
