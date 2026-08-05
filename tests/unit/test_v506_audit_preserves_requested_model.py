@@ -26,11 +26,17 @@ def test_messages_captures_orig_request_model_before_body_mutation():
     body["model"] rewrite at line 355. A future refactor that moves the
     capture below the mutation reintroduces the bug.
     """
+    # v5.7.18+: the capture moved into _handler_shared.normalize_request_body,
+    # which the handler awaits at entry — BEFORE the body['model'] rewrite.
+    # Assert the handler binds _orig_request_model from that call and that the
+    # call precedes the mutation (the real "capture before mutation" invariant).
     from app.api import messages as msg_mod
     src = inspect.getsource(msg_mod.messages)
-    capture_idx = src.find("_orig_request_model = body.get")
+    capture_idx = src.find("normalize_request_body(")
     mutation_idx = src.find('body = {**body, "model": route.served_model_native}')
-    assert capture_idx > 0, "missing _orig_request_model capture in messages.py"
+    assert capture_idx > 0 and "_orig_request_model" in src, (
+        "messages() must bind _orig_request_model from normalize_request_body"
+    )
     assert mutation_idx > 0, "body['model'] mutation moved or removed — re-verify capture ordering"
     assert capture_idx < mutation_idx, (
         "_orig_request_model captured AFTER body['model'] rewrite — bug reintroduced"
@@ -41,9 +47,11 @@ def test_completions_captures_orig_request_model_before_body_mutation():
     """Mirror of messages.py check for completions.py."""
     from app.api import completions as cmp_mod
     src = inspect.getsource(cmp_mod.chat_completions)
-    capture_idx = src.find("_orig_request_model = body.get")
+    capture_idx = src.find("normalize_request_body(")
     mutation_idx = src.find('body = {**body, "model": route.served_model_native}')
-    assert capture_idx > 0, "missing _orig_request_model capture in completions.py"
+    assert capture_idx > 0 and "_orig_request_model" in src, (
+        "chat_completions() must bind _orig_request_model from normalize_request_body"
+    )
     assert mutation_idx > 0, "body['model'] mutation moved or removed — re-verify capture ordering"
     assert capture_idx < mutation_idx
 
@@ -172,11 +180,11 @@ def test_orig_request_model_capture_is_isinstance_dict_guarded():
     dict (e.g. a malformed JSON body that parses to a list). The fallback
     is None, which propagates through emit_event as a nullable column.
     """
-    from app.api import messages as msg_mod, completions as cmp_mod
-    msg_src = inspect.getsource(msg_mod.messages)
-    cmp_src = inspect.getsource(cmp_mod.chat_completions)
-    for label, src in (("messages", msg_src), ("completions", cmp_src)):
-        assert "_orig_request_model = body.get(\"model\") if isinstance(body, dict) else None" in src, (
-            f"{label}.py _orig_request_model capture is missing the "
-            f"isinstance(body, dict) guard — malformed JSON could crash here"
-        )
+    # v5.7.18+: the guarded capture lives in the shared
+    # _handler_shared.normalize_request_body that BOTH handlers call at entry.
+    from app.api._handler_shared import normalize_request_body
+    src = inspect.getsource(normalize_request_body)
+    assert "_orig_request_model = body.get(\"model\") if isinstance(body, dict) else None" in src, (
+        "normalize_request_body _orig_request_model capture is missing the "
+        "isinstance(body, dict) guard — malformed JSON could crash here"
+    )

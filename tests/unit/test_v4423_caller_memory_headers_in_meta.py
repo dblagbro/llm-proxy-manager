@@ -37,7 +37,8 @@ def test_request_context_has_caller_memory_setter():
 
 
 def test_messages_entry_point_sets_contextvar():
-    src = Path("app/api/messages.py").read_text()
+    from tests._entry_surface import entry_surface
+    src = entry_surface("app/api/messages.py")  # setter lives in _handler_shared, called at entry
     assert "set_caller_memory_headers" in src, (
         "messages.py must call the contextvar setter at entry"
     )
@@ -51,7 +52,8 @@ def test_messages_entry_point_sets_contextvar():
 
 
 def test_completions_entry_point_sets_contextvar():
-    src = Path("app/api/completions.py").read_text()
+    from tests._entry_surface import entry_surface
+    src = entry_surface("app/api/completions.py")
     assert "set_caller_memory_headers" in src
     cnt_idx = src.index("CONVERSATION_ID_REQUESTS_TOTAL")
     block = src[cnt_idx:cnt_idx + 1500]
@@ -94,8 +96,9 @@ def test_telemetry_failure_does_not_break_request():
     """The contextvar setter is wrapped in try/except at both entry
     points so a bug in the instrumentation can never 500 a real
     request."""
+    from tests._entry_surface import entry_surface
     for path in ("app/api/messages.py", "app/api/completions.py"):
-        src = Path(path).read_text()
+        src = entry_surface(path)  # setter + its try/except live in _handler_shared
         idx = src.index("set_caller_memory_headers")
         # Look BEFORE the call for a try:
         prefix = src[max(0, idx - 500):idx]

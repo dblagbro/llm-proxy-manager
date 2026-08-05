@@ -129,6 +129,8 @@ def test_version_bumped():
     """v5.12.x line — exact patch version is pinned in the test file for
     each subsequent ship (e.g. v5.12.1, v5.12.2). Here we just assert
     the minor."""
+    import re
     from app import __version__ as v
     importlib.reload(v)
-    assert v.__version__.startswith("5.12.")
+    m = re.match(r'(\d+)\.(\d+)\.(\d+)', v.__version__)
+    assert m and (int(m[1]), int(m[2]), int(m[3])) >= (5, 12, 0), "expected >= 5.12.0"

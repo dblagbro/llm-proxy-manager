@@ -72,8 +72,12 @@ def test_app_py_exposes_required_endpoints():
 
 
 def test_app_py_version_matches_v550():
+    # The cursor-bridge scaffold carries its OWN version series (5.5.x),
+    # independent of the main app. Assert it declares a 5.5.x version
+    # rather than pinning the exact patch (which advances per ship:
+    # 5.5.0 scaffold -> 5.5.1 Playwright -> ...).
     src = (SCAFFOLD_ROOT / "app.py").read_text()
-    assert 'version="5.5.0"' in src
+    assert 'version="5.5.' in src
 
 
 def test_design_doc_exists():
