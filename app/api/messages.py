@@ -1250,6 +1250,30 @@ async def messages(
                     # Caller's SSE parser will fail; header
                     # X-Refusal-Cascade-Mode still marks this as buffered.
                     pass
+            # v5.21.15 — empty-completion guard (cross-family / litellm path).
+            # A provider (e.g. an expired cursor-oauth bridge) can return a
+            # 200 with no usable content — that must NOT reach the caller as
+            # a valid empty completion (CamReview 2026-08-05). Surface a real
+            # 502 they can retry instead. The expired-token exclusion in
+            # select_provider prevents the known dead-cursor case up front;
+            # this is the belt-and-suspenders catch for ANY empty provider.
+            # ``return`` (not ``raise``) so the ``except`` below doesn't
+            # reclassify it.
+            from app.api._messages_dispatch import _is_empty_completion
+            if _is_empty_completion(anthropic_result):
+                logger.warning(
+                    "provider %s returned an EMPTY completion on the litellm "
+                    "path — 502 instead of a silent empty 200",
+                    getattr(route.provider, "id", "?"),
+                )
+                return JSONResponse(
+                    status_code=502,
+                    content={"type": "error", "error": {
+                        "type": "api_error",
+                        "message": "Upstream provider returned an empty completion",
+                    }},
+                    headers=resp_headers,
+                )
             return JSONResponse(
                 content=anthropic_result,
                 headers=resp_headers,

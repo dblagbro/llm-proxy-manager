@@ -75,6 +75,37 @@ async def _select_excluding(db, hint, has_tools, has_images, key_type, excluded:
     raise RuntimeError("All providers tried")
 
 
+def _is_empty_completion(result: dict) -> bool:
+    """v5.21.15 — detect an upstream 200 that carries no usable content.
+
+    Observed on degraded OAuth providers (CamReview 2026-08-05): a
+    ``/v1/messages`` reply comes back 200 with ``content`` empty or only
+    empty-text blocks and ``output_tokens == 0``. That's not a valid
+    answer — it should fail over, not be returned as a completion.
+
+    Guarded to NOT false-positive on legitimate responses: any non-empty
+    text, or any tool_use / thinking / server_tool_use block, means the
+    response IS usable (a tool-only turn has empty text but real content).
+    """
+    if not isinstance(result, dict):
+        return False
+    content = result.get("content") or []
+    for b in content:
+        if not isinstance(b, dict):
+            continue
+        btype = b.get("type")
+        if btype == "text" and (b.get("text") or "").strip():
+            return False
+        if btype in ("tool_use", "server_tool_use", "thinking", "redacted_thinking"):
+            return False
+    usage = result.get("usage") or {}
+    try:
+        out = int(usage.get("output_tokens", 0) or 0)
+    except (TypeError, ValueError):
+        out = 0
+    return out == 0
+
+
 async def dispatch_claude_oauth_chain(
     route,
     *,
@@ -234,6 +265,30 @@ async def dispatch_claude_oauth_chain(
                 continue
             raise HTTPException(502, f"Claude OAuth upstream: {e}")
         else:
+            # v5.21.15 — empty-completion guard. A degraded OAuth provider
+            # can return a 200 with no usable content (empty text, 0 output
+            # tokens). Fail over to the next provider instead of returning a
+            # valid-looking empty completion to the caller. Exhaustion → 502
+            # (a real error) rather than a silent empty 200.
+            if _is_empty_completion(result) and settings.fallback_enabled:
+                logger.warning(
+                    "claude-oauth provider %s returned an EMPTY completion "
+                    "(0 output tokens, no content) — failing over. tried=%s",
+                    oauth_provider_id, tried_oauth_ids,
+                )
+                try:
+                    route = await _select_excluding(
+                        db, hint, has_tools, has_images, key_record.key_type,
+                        tried_oauth_ids, api_key_id=key_record.id,
+                        blocked_companies=blocked_companies,
+                    )
+                except Exception:
+                    raise HTTPException(
+                        502,
+                        "All candidate providers returned empty completions",
+                    )
+                resp_headers["X-Fallback-From"] = "claude-oauth-empty"
+                continue
             resp_headers["X-Cache-Status"] = "bypass"
             # v3.0.83/.85 disclosure refactored to a shared helper in
             # v3.0.87 — handles cache=, cache-injected=?1, cache-tokens-

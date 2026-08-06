@@ -74,7 +74,11 @@ async def pull_oauth_state_from_peers(provider_id: str) -> Optional[PeerOAuthSta
 
     candidates: list[PeerOAuthState] = []
     now = time.time()
-    async with httpx.AsyncClient(timeout=10.0, verify=False) as client:
+    # v5.21.15 — tightened 10s → 4s per peer. A healthy peer answers in
+    # <1s; a down/slow peer used to stall each dispatch attempt ~10s, which
+    # (× candidates × retries) produced the CamReview 180s+ hangs. 4s still
+    # tolerates a slow-but-alive peer while failing fast on a dead one.
+    async with httpx.AsyncClient(timeout=4.0, verify=False) as client:
         for peer in peers:
             url = f"{peer.url.rstrip('/')}/cluster/oauth-pull/{provider_id}"
             try:

@@ -2,6 +2,17 @@
 
 All notable changes since v2.7.6. Older history available in `git log`.
 
+## v5.21.16 — vision hard-fail + capability-flag fixes; empty-completion guards; expired-provider exclusion (2026-08-06)
+
+**CamReview incident (2026-08-05/06).** Vision `/v1/messages` returned empty completions, then (after re-auth) `model:"auto"` silently dropped images and fabricated descriptions. Root causes + fixes:
+
+1. **Empty-completion guard.** A provider returning a 200 with no usable content (empty text, 0 output tokens) — seen from an expired `cursor-oauth` bridge cross-family-substituted onto claude requests — no longer reaches the caller. claude-oauth path fails over; litellm/cross-family path returns a real 502. Detector guards against false-positives on tool-only / thinking responses.
+2. **Expired-token exclusion.** A provider whose OAuth token is dead well past its refresh window (15-min grace) is no longer selectable — an expired `cursor-oauth` provider that returned 200-empty (so its breaker never tripped) was poisoning claude requests.
+3. **Vision hard-fail + capability flags.** `_capability_fit` skips non-vision providers for image requests, but an empty capability set was silently ignored → `vision_stripped` dropped the image and answered blind. Now an image request with zero vision-capable candidates returns **422** ("refusing to answer blind"). Also corrected `native_vision` flags that were wrong (codex/gpt-5.5 and cohere-embed were marked vision-capable and dropped images) — a data fix applied per-node.
+4. **OAuth peer-pull timeout 10s → 4s** — a dead/slow peer no longer stalls each dispatch attempt (the 180s+ hang multiplier).
+
+Deep root of the whole incident: both Anthropic Max OAuth refresh tokens were **revoked** (operator re-auth required) and the expired cursor bridge filled the gap with empty 200s. Disconnect-watchdog remains disabled (separate v5.21.14 hang) pending a proper fix.
+
 ## v5.21.14 — disconnect-watchdog dep-order fix across ALL 6 remaining routes (ROOT CAUSE) (2026-08-01)
 
 **This is the actual leak fix v5.21.13 self-heal was masking.** After v5.21.13 shipped, the pool kept climbing (`pool_leak_watcher` self-heal fired repeatedly, `SELF_HEAL recycling DB pool ... util=0.90 checked_out=135`) and login still intermittently 500'd between heals. The auto-dump showed 100+ leaked async sessions, all originating at `get_db` (database.py:694), accumulating at a steady ~1-per-100s cadence — request-scoped `Depends(get_db)` sessions never returned.

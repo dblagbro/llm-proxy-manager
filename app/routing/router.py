@@ -434,6 +434,31 @@ async def select_provider(
     if not available:
         raise RuntimeError("All providers are currently unavailable (circuit breakers open)")
 
+    # v5.21.15 — exclude providers whose OAuth token expired long ago.
+    # CamReview 2026-08-05: a cursor-oauth provider with a token dead ~4d
+    # was still selectable (its bridge returned a 200-EMPTY instead of a
+    # 401, so the breaker never tripped) and got cross-family-picked for
+    # claude requests, poisoning them with empty completions. A 15-min
+    # grace keeps a recently-expired-but-auto-refreshing provider (e.g.
+    # claude-oauth, which refreshes in the dispatch path) selectable; only
+    # tokens dead well past any refresh window are dropped.
+    import time as _time
+    _stale_before = _time.time() - 900
+    def _token_dead(p) -> bool:
+        exp = getattr(p, "oauth_expires_at", None)
+        if not exp:
+            return False
+        try:
+            return float(exp) < _stale_before
+        except (TypeError, ValueError):
+            return False
+    _live = [p for p in available if not _token_dead(p)]
+    if _live:
+        available = _live
+    # If EVERY available provider has a dead token, keep the original list
+    # rather than 503 — the dispatch/refresh path may still recover one,
+    # and a real error beats silently dropping to zero here.
+
     # Hard-block providers explicitly excluded from tool requests
     # (exclude_from_tool_requests=True means "never, even with emulation")
     if has_tools:
@@ -641,6 +666,25 @@ async def select_provider(
         else:
             capability_skipped.append(
                 (_t[0].provider_name or _t[0].provider_id, _reason))
+    # v5.21.16 — HARD-FAIL vision requests when no candidate can actually
+    # serve the image (operator directive 2026-08-06, CamReview). Before,
+    # an empty capability set was silently ignored (kept the full list) and
+    # ``vision_stripped`` dropped the image → the caller got a confident,
+    # entirely fabricated text answer with no error. Refuse instead. This
+    # only fires for image requests with ZERO vision-capable candidates;
+    # when a vision-capable provider exists the gate below routes to it.
+    if has_images and not _fit_kept:
+        from fastapi import HTTPException
+        logger.warning(
+            "router.vision_hard_fail — image request but no vision-capable "
+            "provider available. skipped=%s", capability_skipped,
+        )
+        raise HTTPException(
+            422,
+            "No vision-capable provider is available to process the image(s) "
+            "in this request. Refusing to answer blind (the image would be "
+            f"dropped). Candidates skipped: {capability_skipped[:6]}",
+        )
     if _fit_kept and len(_fit_kept) < len(ranked_scored):
         logger.info("router.capability_gate kept=%d skipped=%s",
                     len(_fit_kept), capability_skipped)
