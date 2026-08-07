@@ -212,11 +212,28 @@ async def metrics_summary(
     # v4.4.21 — label which node served this response so the UI can
     # distinguish the local view from a peer-fanned one.
     from app.config import settings as _settings
+    # v5.22.0 — expose runtime health of the aiosqlite thread-per-connection
+    # model. ``threads`` is the true leak metric (see pool_leak_watcher);
+    # ``db_pool`` gives at-a-glance pool state. Both O(1), no DB access.
+    import threading as _threading
+    runtime = {"threads": _threading.active_count()}
+    try:
+        from app.models.database import engine as _engine
+        _pool = _engine.pool
+        runtime["db_pool"] = {
+            "size": _pool.size(),
+            "checked_out": _pool.checkedout(),
+            "overflow": _pool.overflow(),
+            "max_overflow": getattr(_pool, "_max_overflow", None),
+        }
+    except Exception:
+        pass
     return {
         "hours": hours,
         "providers": summary,
         "circuit_breakers": circuit_states,
         "node_id": _settings.cluster_node_id or "",
+        "runtime": runtime,
     }
 
 

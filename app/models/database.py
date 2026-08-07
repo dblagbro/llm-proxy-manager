@@ -16,23 +16,48 @@ engine = create_async_engine(
     settings.database_url,
     echo=False,
     pool_pre_ping=True,
-    # v3.0.61: bump pool capacity + tighten checkout timeout. Default
-    # was 5+10=15 connections with 30s wait. During the 2026-05-05
-    # outage that drained in seconds while every connection was held
-    # by stuck upstream calls, leaving /health and DB-backed endpoints
-    # blocked for 30s+ waiting their turn.
-    # v3.0.92: bump again. The 2026-05-06 incident showed 20+30=50
-    # was still drainable under sustained background-task load when
-    # activity_log hit 1 GB and json_extract scans got slow. Bumping
-    # to 50 base + 100 overflow = 150 connections max. SQLite handles
-    # this fine (in-process, file-backed, no network overhead per
-    # connection). Plus pool_recycle=1800 to age out long-held conns
-    # in case there's a slow leak we haven't found yet — a 30-min
-    # ceiling keeps the pool fresh.
-    pool_size=50,
-    max_overflow=100,
+    # ── v5.22.0 (2026-08-07): aiosqlite CONNECTION-THREAD LEAK fix ────
+    # ROOT CAUSE (verified via py-spy on a 7-day node): aiosqlite runs
+    # ONE dedicated OS thread per DB connection. Any pool CHURN
+    # (recycle, or overflow create/destroy) that fails to cleanly
+    # terminate the connection — e.g. a connection GC'd instead of
+    # closed, common under contention — ORPHANS that thread permanently.
+    # A 7-day node had **232 threads (~190 leaked)** vs 38 fresh; the
+    # GIL/scheduler thrash from those threads starved the single asyncio
+    # event loop so badly that even the no-op ``/health`` took 4-10s and
+    # the container went ``unhealthy``. A restart dropped it to 38
+    # threads / 0.02s — proving accumulation, not baseline cost.
+    #
+    # The prior config here (50+100=150, pool_recycle=1800) was itself
+    # the amplifier: escalated 15→50→150 chasing "a slow leak we haven't
+    # found yet", under the wrong mental model that "SQLite connections
+    # are free" — they are NOT free; each is an OS thread. And
+    # pool_recycle=1800 recreated up to 50 pooled connections every 30
+    # min → the dominant churn → the dominant leak source.
+    #
+    # THE FIX — a small, NON-churning pool:
+    #   • pool_recycle=-1  → DISABLE recycle. In-process SQLite
+    #     connections never go stale; recycling only churned threads.
+    #     (pool_pre_ping still catches the rare genuinely-dead conn.)
+    #   • pool_size=40 base (stable, created lazily then reused forever
+    #     with no recycle → a flat thread count, no churn) covers the
+    #     real steady concurrency (handlers hold a conn across the
+    #     upstream call; ~40 is ample now that activity_log is pruned
+    #     and queries are fast — the 1 GB scans that motivated the 150
+    #     are gone).
+    #   • max_overflow=10 → tiny burst headroom; overflow is the only
+    #     churn path left, kept small to bound the residual leak rate to
+    #     ~zero. Total cap 50 = the historically-proven-workable size.
+    #
+    # DO NOT bump these to "fix" a pool-exhaustion symptom — that
+    # re-amplifies the thread leak. If exhaustion recurs, the correct
+    # fix is to stop holding a DB session across the upstream call, not
+    # to add connections. Regression-guarded by
+    # tests/unit/test_v5220_sqlite_pool_no_churn.py.
+    pool_size=40,
+    max_overflow=10,
     pool_timeout=10.0,
-    pool_recycle=1800,
+    pool_recycle=-1,
 )
 
 

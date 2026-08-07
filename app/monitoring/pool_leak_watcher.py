@@ -93,6 +93,30 @@ _SELF_HEAL_ENABLED: bool = os.getenv("POOL_SELF_HEAL_ENABLED", "1").lower() not 
 _consecutive_high: int = 0
 _last_heal_monotonic: Optional[float] = None
 
+# ── v5.22.0 — aiosqlite THREAD-count monitoring ──────────────────────
+# The real leak metric is OS-thread count, NOT pool-slot utilization:
+# aiosqlite runs one thread per connection, and threads orphaned on a
+# failed connection teardown are invisible to pool.checkedout() (they
+# are detached from the pool). engine.dispose() does NOT reclaim them —
+# only a process restart does. So we watch the absolute thread count and
+# alert LOUDLY when it climbs, which is the detection control that was
+# missing when a 7-day node silently reached 232 threads. Alert-only by
+# design: orphaned threads can't be reaped in-process, so auto-recycle
+# would be theatre. A sustained high count is a "schedule a restart"
+# signal, and — with the v5.22.0 non-churning pool — should now never
+# fire outside a genuine new regression.
+_THREAD_WARN = int(os.getenv("THREAD_LEAK_WARN", "120"))
+_THREAD_CRIT = int(os.getenv("THREAD_LEAK_CRIT", "200"))
+_thread_armed = {"warn": True, "crit": True}
+
+
+def _thread_count() -> int:
+    try:
+        import threading
+        return threading.active_count()
+    except Exception:
+        return -1
+
 
 def _get_pool_utilization() -> Optional[float]:
     """Return current utilization (0.0-1.0) or None if unavailable.
@@ -257,6 +281,32 @@ async def pool_leak_watcher_loop() -> None:
                     # a later spike starts counting from zero.
                     _consecutive_high = 0
 
+            # ── v5.22.0 thread-leak detection (DB-free) ──────────────
+            # Watch the absolute OS-thread count — the true aiosqlite
+            # leak signal. Arm/re-arm like the utilization thresholds so
+            # the log isn't spammed while a leak accumulates.
+            n_threads = _thread_count()
+            if n_threads >= 0:
+                if n_threads < _THREAD_WARN:
+                    _thread_armed["warn"] = True
+                    _thread_armed["crit"] = True
+                if n_threads >= _THREAD_CRIT and _thread_armed["crit"]:
+                    _thread_armed["crit"] = False
+                    logger.error(
+                        "pool_leak_watcher.THREAD_LEAK_CRITICAL threads=%d "
+                        "(>=%d). aiosqlite connection-thread leak — these are "
+                        "orphaned and NOT reclaimable in-process; schedule a "
+                        "container restart. Check pool churn / recent config.",
+                        n_threads, _THREAD_CRIT,
+                    )
+                elif n_threads >= _THREAD_WARN and _thread_armed["warn"]:
+                    _thread_armed["warn"] = False
+                    logger.warning(
+                        "pool_leak_watcher.thread_count_high threads=%d (>=%d) "
+                        "— watching for aiosqlite connection-thread leak.",
+                        n_threads, _THREAD_WARN,
+                    )
+
             # Heartbeat is best-effort and DB-backed: under saturation
             # the write itself fails. Guard it separately so a failed
             # tick never masks the detection/heal work above (which is
@@ -264,7 +314,8 @@ async def pool_leak_watcher_loop() -> None:
             try:
                 await heartbeat.tick(
                     status="ok",
-                    note=f"util={util:.2f}" if util is not None else "util=?",
+                    note=(f"util={util:.2f} threads={n_threads}"
+                          if util is not None else f"util=? threads={n_threads}"),
                 )
             except Exception as hb_exc:
                 logger.debug("pool_leak_watcher.heartbeat_write_failed err=%r", hb_exc)
