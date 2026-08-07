@@ -193,7 +193,7 @@ async def lifespan(app: FastAPI):
             await _playwright.stop()
 
 
-app = FastAPI(title="grok-bridge", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="grok-bridge", version="1.1.0", lifespan=lifespan)
 
 
 # ── Auth dependency ─────────────────────────────────────────────────────
@@ -466,7 +466,7 @@ async def _force_refresh() -> bool:
 # ── Health + status ──────────────────────────────────────────────────────
 @app.get("/healthz")
 async def healthz():
-    return {"status": "ok", "version": "1.0.0", "ts": int(time.time())}
+    return {"status": "ok", "version": "1.1.0", "ts": int(time.time())}
 
 
 def _conv_id_from_url(url: Optional[str]) -> Optional[str]:
@@ -622,6 +622,181 @@ async def capture_next_send(req: Request, _: None = Depends(require_bridge_token
                     captured["headers"][k] = "<redacted>"
 
     return captured
+
+
+@app.post("/api/diagnostic/probe_input")
+async def probe_input(req: Request, _: None = Depends(require_bridge_token)):
+    """v1.1.0 diagnostic (2026-08-06) — type a message into grok's editor
+    WITHOUT submitting, then report: which selector matched, what text the
+    editor actually holds afterward, the submit button's disabled state and
+    inventory, and a base64 screenshot. Lets us see (headless) whether the
+    typed text registers in grok's controlled input — the root question
+    behind "send POST never fires". Body: {conversation_id, message?}.
+    """
+    global _page
+    if _page is None:
+        raise HTTPException(503, "playwright not ready")
+    try:
+        body = await req.json()
+    except Exception:
+        body = {}
+    conv_id = body.get("conversation_id") or _conv_id_from_url(_page.url)
+    message = body.get("message") or "probe test 123"
+    out: dict = {"conversation_id": conv_id, "message": message, "steps": []}
+
+    try:
+        if conv_id and conv_id not in (_page.url or ""):
+            await _page.goto(f"{GROK_BASE}/c/{conv_id}",
+                             wait_until="domcontentloaded", timeout=20_000)
+        try:
+            await _page.wait_for_load_state("networkidle", timeout=8_000)
+        except PlaywrightTimeout:
+            pass
+        await asyncio.sleep(0.6)
+
+        input_selectors = [
+            'div[contenteditable="true"]',
+            'textarea[placeholder*="What"]',
+            'textarea[placeholder*="Ask"]',
+            'textarea',
+        ]
+        matched = None
+        for sel in input_selectors:
+            try:
+                loc = _page.locator(sel).first
+                if await loc.count() == 0:
+                    continue
+                await loc.wait_for(state="visible", timeout=4_000)
+                await loc.click()
+                # REAL per-key events (keydown/keypress/beforeinput/input)
+                # — what Lexical/ProseMirror editors require. insert_text
+                # (CDP Input.insertText) does NOT generate these.
+                await loc.press_sequentially(message, delay=25)
+                matched = sel
+                out["steps"].append(f"typed via press_sequentially into {sel!r}")
+                break
+            except Exception as e:
+                out["steps"].append(f"selector {sel!r} failed: {str(e)[:100]}")
+                continue
+        out["matched_selector"] = matched
+
+        await asyncio.sleep(0.4)
+        # Read back editor content + dump the COMPOSER's buttons (those
+        # inside the form/region that holds the contenteditable) with
+        # their outerHTML so we can craft a selector for grok's now
+        # testid-less send button (the black up-arrow circle).
+        introspect = await _page.evaluate(
+            """(sel) => {
+                const el = sel ? document.querySelector(sel) : null;
+                const editorText = el ? (el.value !== undefined ? el.value : el.innerText) : null;
+                // Find the composer container: nearest form OR the closest
+                // ancestor of the editor that also contains a button.
+                let composer = null;
+                if (el) {
+                    composer = el.closest('form');
+                    if (!composer) {
+                        let p = el;
+                        for (let i = 0; i < 8 && p; i++) {
+                            if (p.querySelector && p.querySelector('button')) { composer = p; break; }
+                            p = p.parentElement;
+                        }
+                    }
+                }
+                const scope = composer || document;
+                const cbtns = Array.from(scope.querySelectorAll('button')).map(b => ({
+                    testid: b.getAttribute('data-testid'),
+                    aria: b.getAttribute('aria-label'),
+                    type: b.getAttribute('type'),
+                    disabled: b.disabled,
+                    visible: !!(b.offsetWidth || b.offsetHeight),
+                    has_svg: !!b.querySelector('svg'),
+                    html: (b.outerHTML || '').slice(0, 220),
+                })).filter(b => b.visible);
+                return {editor_text: editorText, composer_is_form: !!composer && composer.tagName === 'FORM',
+                        composer_tag: composer ? composer.tagName : null, composer_buttons: cbtns};
+            }""",
+            matched,
+        )
+        out["editor_text_after_typing"] = introspect.get("editor_text")
+        out["composer_tag"] = introspect.get("composer_tag")
+        out["composer_is_form"] = introspect.get("composer_is_form")
+        out["composer_buttons"] = introspect.get("composer_buttons")
+
+        # Optionally submit and record EVERY grok POST URL that fires, so
+        # we can discover grok's current send/response endpoint.
+        if body.get("click_submit"):
+            posts: list[str] = []
+            _NOISE = ("log_metric", "monitoring", "/_data/", "GetGrokCredits",
+                      "statsig", "/i/js", "sentry", "/api/rpc?")
+            def _rec(r):
+                try:
+                    if "grok.com" not in r.url:
+                        return
+                    if any(n in r.url for n in _NOISE):
+                        return
+                    posts.append(f"{r.method} {r.url}")
+                except Exception:
+                    pass
+            _page.on("request", _rec)
+            # Also catch WebSocket opens (grok may stream over WS).
+            ws_urls: list[str] = []
+            _page.on("websocket", lambda ws: ws_urls.append(ws.url))
+            try:
+                await _page.locator(
+                    'button[data-testid="chat-submit"]:not([disabled]), '
+                    'button[type="submit"]:not([disabled])'
+                ).first.click(timeout=5_000)
+                out["steps"].append("clicked submit (native)")
+            except Exception as e:
+                out["steps"].append(f"submit click failed: {str(e)[:100]}")
+            await asyncio.sleep(12.0)
+            try:
+                _page.remove_listener("request", _rec)
+            except Exception:
+                pass
+            # strip conv id for readability
+            out["post_urls_after_submit"] = [
+                u.replace(conv_id, "<CID>") if conv_id else u for u in posts
+            ]
+            out["websocket_urls"] = ws_urls
+
+        # Dump message-bubble DOM structure so we can scrape the reply
+        # from the DOM (grok routes the send POST through a service worker
+        # that _page.on('response') cannot see; the RENDERED response is
+        # the reliable source).
+        try:
+            out["message_dom"] = await _page.evaluate(
+                """() => {
+                    const probe = (sel) => Array.from(document.querySelectorAll(sel))
+                        .slice(-6).map(e => ({
+                            sel, testid: e.getAttribute('data-testid'),
+                            cls: (e.className || '').toString().slice(0, 80),
+                            text: (e.innerText || '').trim().slice(0, 120),
+                        }));
+                    const out = {};
+                    for (const sel of [
+                        '[data-testid*="message" i]',
+                        '[data-testid*="response" i]',
+                        '[class*="message-bubble" i]',
+                        '[class*="response" i]',
+                        'div.prose', '.markdown', '[class*="markdown" i]',
+                    ]) {
+                        const hits = probe(sel);
+                        if (hits.length) out[sel] = hits;
+                    }
+                    return out;
+                }"""
+            )
+        except Exception as e:
+            out["message_dom_err"] = str(e)[:120]
+
+        shot = await _page.screenshot(type="png")
+        import base64 as _b64
+        out["screenshot_b64_len"] = len(shot)
+        out["screenshot_b64"] = _b64.b64encode(shot).decode()
+    except Exception as e:
+        out["error"] = f"{type(e).__name__}: {e}"
+    return out
 
 
 @app.post("/api/conversation/new")
@@ -1358,10 +1533,13 @@ async def _send_via_spa_ui(conv_id: str, message: str) -> tuple[int, str]:
     # while a response is generating. Wait for network to settle so
     # the textarea returns to its visible/editable state.
     try:
-        await _page.wait_for_load_state("networkidle", timeout=10_000)
+        # grok streams telemetry constantly so networkidle rarely fires;
+        # a short ceiling keeps steady-state latency low (we scrape the
+        # rendered reply, so we don't depend on a fully-idle network).
+        await _page.wait_for_load_state("networkidle", timeout=4_000)
     except PlaywrightTimeout:
         pass
-    await asyncio.sleep(0.8)
+    await asyncio.sleep(0.5)
 
     # ── Step 2: arm a response listener for the next /responses POST ─
     target_path = f"/conversations/{conv_id}/responses"
@@ -1407,28 +1585,14 @@ async def _send_via_spa_ui(conv_id: str, message: str) -> tuple[int, str]:
                 loc = _page.locator(sel).first
                 await loc.wait_for(state="visible", timeout=15_000)
                 await loc.click()
-                try:
-                    await _page.keyboard.insert_text(message)
-                except Exception:
-                    await loc.type(message, delay=20)
-                # React-aware dispatch in case insert_text didn't fire
-                # the controlled-input listeners.
-                try:
-                    await _page.evaluate(
-                        """(args) => {
-                            const el = document.querySelector(args.sel);
-                            if (!el) return;
-                            el.dispatchEvent(new InputEvent('input', {
-                                inputType: 'insertText',
-                                data: args.text,
-                                bubbles: true,
-                                cancelable: false,
-                            }));
-                        }""",
-                        {"sel": sel, "text": message},
-                    )
-                except Exception:
-                    pass
+                # v5.21.17 (2026-08-06) — type with REAL per-key events via
+                # press_sequentially (keydown/keypress/beforeinput/input),
+                # which grok's Lexical-style contenteditable editor requires
+                # to register content. The prior keyboard.insert_text (CDP
+                # Input.insertText) inserted text the editor's model never
+                # saw, so submit stayed a no-op and the /responses POST never
+                # fired (confirmed 2026-08-06 via capture diagnostic).
+                await loc.press_sequentially(message, delay=25)
                 typed_ok = True
                 break
             except Exception:
@@ -1436,78 +1600,34 @@ async def _send_via_spa_ui(conv_id: str, message: str) -> tuple[int, str]:
         if not typed_ok:
             return 599, "SPA-UI: no usable textarea found"
 
-        # ── Step 4: click chat-submit via React-fiber ────────────────
-        # v5.0.20 (2026-06-18) — broaden selector chain to match the
-        # /api/conversation/new flow at app.py:914. grok.com periodically
-        # renames data-testid attributes; pre-v5.0.20 the chat path had
-        # only two selectors and silently failed when neither matched.
-        # The wider chain probes by testid, aria-label, button type,
-        # form context, and the SVG-icon-near-textarea pattern. Also
-        # emits a button_inventory dump on 'no-button' so the next
-        # selector update is surfaced from logs instead of needing
-        # noVNC inspection.
-        clicked = await _page.evaluate(
-            """() => {
-                const selectors = [
-                    'button[data-testid="chat-submit"]:not([disabled])',
-                    'button[data-testid*="submit" i]:not([disabled])',
-                    'button[data-testid*="send" i]:not([disabled])',
-                    'button[aria-label*="Send" i]:not([disabled])',
-                    'button[aria-label*="submit" i]:not([disabled])',
-                    'button[type="submit"]:not([disabled])',
-                    'form button[type="submit"]:not([disabled])',
-                    'div:has(textarea) button:has(svg):not([disabled])',
-                    'div:has([contenteditable="true"]) button:has(svg):not([disabled])',
-                ];
-                let btn = null;
-                let used_sel = null;
-                for (const sel of selectors) {
-                    try {
-                        const found = document.querySelector(sel);
-                        if (found) { btn = found; used_sel = sel; break; }
-                    } catch (e) { /* :has() can throw in older engines */ }
-                }
-                if (!btn) return {result: 'no-button'};
-                const propsKey = Object.keys(btn).find(k =>
-                    k.startsWith('__reactProps')
-                );
-                if (propsKey) {
-                    const props = btn[propsKey];
-                    if (props && typeof props.onClick === 'function') {
-                        try {
-                            props.onClick({
-                                preventDefault: () => {},
-                                stopPropagation: () => {},
-                                currentTarget: btn,
-                                target: btn,
-                                type: 'click',
-                                isTrusted: true,
-                                nativeEvent: new MouseEvent('click', {bubbles: true}),
-                            });
-                            return {result: 'react_fiber', selector: used_sel};
-                        } catch (e) { /* fall through */ }
-                    }
-                }
-                try {
-                    btn.click();
-                    return {result: 'native_click', selector: used_sel};
-                } catch (e) {
-                    return {result: 'click_failed', error: String(e), selector: used_sel};
-                }
-            }"""
+        # ── Step 4: submit via TRUSTED events ────────────────────────
+        # v5.21.17 (2026-08-06) — grok's anti-bot IGNORES the synthetic
+        # React-fiber onClick used through v5.21.16 (spoofing isTrusted
+        # does NOT fire the real send). Diagnostic proof: on a send, the
+        # only POST grok fired was
+        # /app-chat/conversations/<id>/load-responses — the actual
+        # /responses send POST never fired, so every chat 599'd after the
+        # 45s wait. Chromium marks Playwright's OWN keyboard/mouse input
+        # isTrusted=true, so we now drive the submit with REAL events:
+        #   4a. keyboard Enter (grok's chat input sends on Enter)
+        #   4b. native locator.click() on the submit button (fallback,
+        #       covers contenteditable inputs where Enter inserts a
+        #       newline instead of submitting)
+        # The synthetic react-fiber path is retired.
+        submit_sel = (
+            'button[data-testid="chat-submit"]:not([disabled]), '
+            'button[data-testid*="submit" i]:not([disabled]), '
+            'button[data-testid*="send" i]:not([disabled]), '
+            'button[aria-label*="Send" i]:not([disabled]), '
+            'button[aria-label*="submit" i]:not([disabled]), '
+            'button[type="submit"]:not([disabled]), '
+            'form button[type="submit"]:not([disabled])'
         )
-        # v5.0.20 — clicked is now an object {result, selector?, error?}.
-        # Preserve back-compat with the old string shape by extracting.
-        click_result = clicked.get("result") if isinstance(clicked, dict) else str(clicked)
-        click_selector = clicked.get("selector") if isinstance(clicked, dict) else None
-        if click_selector:
-            logger.info("SPA-UI: send click result=%s sel=%r", click_result, click_selector)
-        else:
-            logger.info("SPA-UI: send click result=%s", click_result)
-        if click_result == "no-button":
-            # v5.0.20 — dump a button inventory so the next selector update
-            # is informed by data instead of noVNC inspection.
-            try:
+        # Surface a grok testid rename as data (not a generic timeout):
+        # dump the button inventory when no enabled submit control is
+        # present at send time.
+        try:
+            if await _page.locator(submit_sel).first.count() == 0:
                 inv = await _page.evaluate("""() => {
                     return Array.from(document.querySelectorAll('button')).slice(0, 20).map(b => ({
                         testid: b.getAttribute('data-testid'),
@@ -1519,25 +1639,107 @@ async def _send_via_spa_ui(conv_id: str, message: str) -> tuple[int, str]:
                         has_svg: !!b.querySelector('svg'),
                     }));
                 }""")
-                visible_inv = [b for b in inv if b.get("visible")]
                 logger.warning(
-                    "SPA-UI: chat-submit not found; button_inventory=%s",
-                    visible_inv[:10],
+                    "SPA-UI: no enabled submit control; button_inventory=%s",
+                    [b for b in inv if b.get("visible")][:10],
                 )
-            except Exception as exc:
-                logger.warning("SPA-UI: button_inventory dump failed: %r", exc)
-            return 599, "SPA-UI: chat-submit button not found"
+        except Exception as exc:
+            logger.debug("SPA-UI: submit-control probe failed: %r", exc)
 
-        # ── Step 5: wait for the SPA-fired response ──────────────────
+        # Snapshot existing assistant replies BEFORE submitting so we can
+        # detect the NEW one. grok's bubbles carry stable testids:
+        # data-testid="assistant-message" / "user-message".
+        async def _assistant_texts() -> list:
+            try:
+                return await _page.evaluate(
+                    "() => Array.from(document.querySelectorAll("
+                    "'[data-testid=\"assistant-message\"]')).map("
+                    "e => (e.innerText || '').trim())"
+                )
+            except Exception:
+                return []
+        pre_n = len(await _assistant_texts())
+
+        submit_methods: list[str] = []
+        # 4: native trusted click on the submit button. grok's send
+        # control is <button type="submit" data-testid="chat-submit"
+        # aria-label="Submit"> inside the composer <form>; enabled once
+        # the editor holds text. A native Playwright click issues a real
+        # Chromium MouseEvent (isTrusted=true) that grok honors — unlike
+        # the retired synthetic dispatch and unlike Enter (which inserts a
+        # newline in grok's contenteditable rather than submitting).
         try:
-            status, text = await asyncio.wait_for(fut, timeout=45.0)
-        except asyncio.TimeoutError:
-            return 599, "SPA-UI: timed out waiting for /responses POST (45s)"
+            await _page.locator(submit_sel).first.click(timeout=5_000)
+            submit_methods.append("native_click")
+            logger.info("SPA-UI: native click on submit (trusted)")
+        except Exception as e:
+            logger.warning("SPA-UI: native submit click failed: %s", e)
+            try:
+                await _page.keyboard.press("Control+Enter")
+                submit_methods.append("ctrl_enter")
+            except Exception:
+                try:
+                    await _page.keyboard.press("Enter")
+                    submit_methods.append("enter")
+                except Exception:
+                    pass
 
-        if status == 429:
-            _last_429_at = time.time()
-            _last_429_body = text[:500]
-        return status, text
+        # ── Step 5: SCRAPE the reply from the DOM ────────────────────
+        # v5.21.17 (2026-08-06) — grok routes the send POST through a
+        # service worker that _page.on('response') CANNOT observe
+        # (confirmed: send succeeds + reply renders, but no page-level
+        # /responses event ever fires — every prior chat 599'd here). So
+        # we read the RENDERED assistant reply instead: wait for a new
+        # assistant-message bubble, then for its text to stop growing
+        # (stream settled). Robust to grok's send-transport changes.
+        # Two-phase, tightly bounded so a failed/blocked send never holds
+        # the bridge _lock for long (probes + real traffic serialize on it):
+        #   A) wait up to APPEAR_TIMEOUT for a NEW assistant bubble to
+        #      appear+become non-empty. If none, the send didn't take —
+        #      return 599 fast so the proxy fails over to OpenRouter.
+        #   B) once it appears, wait for its text to stop growing (stream
+        #      settled), capped by SETTLE_MAX.
+        APPEAR_TIMEOUT = 25.0
+        SETTLE_MAX = 50.0
+        appear_deadline = time.time() + APPEAR_TIMEOUT
+        last_text = ""
+        stable_since = None
+        appeared = False
+        settle_deadline = None
+        while True:
+            now = time.time()
+            if not appeared and now >= appear_deadline:
+                break
+            if appeared and settle_deadline and now >= settle_deadline:
+                break
+            cur = await _assistant_texts()
+            if len(cur) > pre_n and cur[-1]:
+                if not appeared:
+                    appeared = True
+                    settle_deadline = time.time() + SETTLE_MAX
+                txt = cur[-1]
+                if txt == last_text:
+                    if stable_since and (time.time() - stable_since) >= 2.0:
+                        break  # stream settled
+                else:
+                    last_text = txt
+                    stable_since = time.time()
+            await asyncio.sleep(0.5)
+        if not appeared or not last_text:
+            logger.warning(
+                "SPA-UI: no new assistant reply within %.0fs (methods=%s)",
+                APPEAR_TIMEOUT, "+".join(submit_methods) or "none",
+            )
+            return 599, "SPA-UI: no reply rendered after submit"
+        logger.info(
+            "SPA-UI: scraped reply (%d chars) via %s",
+            len(last_text), "+".join(submit_methods) or "none",
+        )
+        # Emit synthetic NDJSON the chat() parser already understands
+        # ({"result": {"token": ..., "messageTag": "final"}}).
+        return 200, json.dumps(
+            {"result": {"token": last_text, "messageTag": "final"}}
+        )
     finally:
         try:
             _page.remove_listener("response", _on_response)
