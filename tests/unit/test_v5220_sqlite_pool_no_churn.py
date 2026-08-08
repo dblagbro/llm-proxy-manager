@@ -40,21 +40,33 @@ def test_pool_recycle_disabled():
     )
 
 
-def test_pool_size_bounded():
-    """Total connection cap (pool_size + max_overflow) must stay small.
-    Each connection is an OS thread; 150 was the leak amplifier. 50 is the
-    historically-proven-workable ceiling now that tables are pruned."""
-    pool_size = _int_kwarg("pool_size")
-    max_overflow = _int_kwarg("max_overflow")
-    assert pool_size <= 40, f"pool_size={pool_size} too large (each conn = 1 thread)"
-    assert max_overflow <= 10, (
-        f"max_overflow={max_overflow} too large — overflow is the only churn "
-        f"path left; keep it tiny to bound the residual leak rate."
+def test_self_heal_disabled_by_default():
+    """The pool_leak_watcher self-heal ``engine.dispose()`` MUST default off.
+    It disposed the pool while connections were checked out, orphaning them
+    and leaking their aiosqlite threads (36 disposes in <1h → 362 threads).
+    v5.22.0's mistake was leaving it on with a small pool that saturated
+    constantly. Re-enabling it needs aiosqlite-thread-safe teardown first."""
+    src = (
+        Path(__file__).resolve().parents[2]
+        / "app" / "monitoring" / "pool_leak_watcher.py"
+    ).read_text()
+    m = re.search(r'POOL_SELF_HEAL_ENABLED",\s*"([^"]*)"', src)
+    assert m, "POOL_SELF_HEAL_ENABLED default not found"
+    assert m.group(1) in ("0", "false", "no", "off"), (
+        f"self-heal default is '{m.group(1)}' — must be OFF. engine.dispose() "
+        f"orphans checked-out aiosqlite connections and leaks their threads."
     )
-    assert pool_size + max_overflow <= 60, (
-        f"total pool cap {pool_size + max_overflow} > 60. Do NOT bump the pool "
-        f"to fix exhaustion — that re-amplifies the aiosqlite thread leak. Fix "
-        f"the real cause (holding a DB session across the upstream call)."
+
+
+def test_pool_cap_sane_upper_bound():
+    """Guard against an absurd pool cap. SIZE is not the leak (CHURN is), so
+    the pool may be generous — but a runaway value still wastes threads. The
+    real fix for exhaustion is to not hold a DB session across the upstream
+    call, not to keep raising this."""
+    cap = _int_kwarg("pool_size") + _int_kwarg("max_overflow")
+    assert cap <= 200, (
+        f"pool cap {cap} > 200 — implausibly large. If exhaustion is forcing "
+        f"this up, fix the hold-across-upstream pattern (see recovery docs)."
     )
 
 

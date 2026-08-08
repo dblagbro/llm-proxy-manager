@@ -16,46 +16,39 @@ engine = create_async_engine(
     settings.database_url,
     echo=False,
     pool_pre_ping=True,
-    # ── v5.22.0 (2026-08-07): aiosqlite CONNECTION-THREAD LEAK fix ────
-    # ROOT CAUSE (verified via py-spy on a 7-day node): aiosqlite runs
-    # ONE dedicated OS thread per DB connection. Any pool CHURN
-    # (recycle, or overflow create/destroy) that fails to cleanly
-    # terminate the connection — e.g. a connection GC'd instead of
-    # closed, common under contention — ORPHANS that thread permanently.
-    # A 7-day node had **232 threads (~190 leaked)** vs 38 fresh; the
-    # GIL/scheduler thrash from those threads starved the single asyncio
-    # event loop so badly that even the no-op ``/health`` took 4-10s and
-    # the container went ``unhealthy``. A restart dropped it to 38
-    # threads / 0.02s — proving accumulation, not baseline cost.
+    # ── v5.22.1 (2026-08-07): aiosqlite CONNECTION-THREAD LEAK fix ────
+    # ROOT CAUSE (verified via py-spy + live repro): aiosqlite runs ONE
+    # OS thread per DB connection. A STABLE pooled connection (reused,
+    # never torn down) is FINE — its thread is stable. The leak is pool
+    # CHURN that ORPHANS a connection (checked out / mid-teardown when it
+    # is disposed) — the orphaned aiosqlite thread never terminates. A
+    # 7-day node reached 232 threads; the GIL/scheduler thrash starved
+    # the single event loop until the no-op /health took 4-10s and the
+    # container went unhealthy. Restart → 38 threads / 0.02s.
     #
-    # The prior config here (50+100=150, pool_recycle=1800) was itself
-    # the amplifier: escalated 15→50→150 chasing "a slow leak we haven't
-    # found yet", under the wrong mental model that "SQLite connections
-    # are free" — they are NOT free; each is an OS thread. And
-    # pool_recycle=1800 recreated up to 50 pooled connections every 30
-    # min → the dominant churn → the dominant leak source.
+    # The TWO churn/orphan sources (both now removed):
+    #   1. pool_recycle=1800 — recreated pooled connections every 30 min.
+    #      The slow leak (232 threads / 7 days). → set to -1 (disabled).
+    #   2. pool_leak_watcher SELF-HEAL engine.dispose() — fired on
+    #      sustained 90% saturation and disposed the pool WHILE
+    #      connections were checked out, orphaning them. → disabled
+    #      (POOL_SELF_HEAL_ENABLED default off in pool_leak_watcher).
     #
-    # THE FIX — a small, NON-churning pool:
-    #   • pool_recycle=-1  → DISABLE recycle. In-process SQLite
-    #     connections never go stale; recycling only churned threads.
-    #     (pool_pre_ping still catches the rare genuinely-dead conn.)
-    #   • pool_size=40 base (stable, created lazily then reused forever
-    #     with no recycle → a flat thread count, no churn) covers the
-    #     real steady concurrency (handlers hold a conn across the
-    #     upstream call; ~40 is ample now that activity_log is pruned
-    #     and queries are fast — the 1 GB scans that motivated the 150
-    #     are gone).
-    #   • max_overflow=10 → tiny burst headroom; overflow is the only
-    #     churn path left, kept small to bound the residual leak rate to
-    #     ~zero. Total cap 50 = the historically-proven-workable size.
+    # NOTE (v5.22.0 mistake, corrected here): shrinking the pool to 50
+    # did NOT help — it made the pool saturate the 90% self-heal
+    # threshold constantly (36 disposes in <1h → 362 threads in <1h,
+    # FASTER than the original). Pool SIZE was never the leak; CHURN was.
     #
-    # DO NOT bump these to "fix" a pool-exhaustion symptom — that
-    # re-amplifies the thread leak. If exhaustion recurs, the correct
-    # fix is to stop holding a DB session across the upstream call, not
-    # to add connections. Regression-guarded by
+    # THE FIX: no churn + a pool large enough that it does not saturate
+    # under real concurrency (handlers hold a conn across the upstream
+    # call, so steady demand ~= concurrent in-flight requests). Threads
+    # then plateau at peak concurrency and STAY flat — no churn, no
+    # dispose, no leak. If threads still creep, the real cure is to stop
+    # holding a DB session across the upstream call (see recovery docs),
+    # NOT to touch these numbers. Regression-guarded by
     # tests/unit/test_v5220_sqlite_pool_no_churn.py.
-    pool_size=40,
-    max_overflow=10,
+    pool_size=80,
+    max_overflow=40,
     pool_timeout=10.0,
     pool_recycle=-1,
 )
