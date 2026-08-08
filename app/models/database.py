@@ -39,21 +39,35 @@ engine = create_async_engine(
     # threshold constantly (36 disposes in <1h → 362 threads in <1h,
     # FASTER than the original). Pool SIZE was never the leak; CHURN was.
     #
-    # THE FIX: no churn (recycle=-1 + self-heal off) so threads plateau at
-    # the pool cap instead of leaking. AND cap the pool LOW — a live
-    # monitor (2026-08-07) showed threads plateau at pool_cap+~6 and that
-    # even a STABLE ~126-thread pool congests the single event loop enough
-    # to fail /health (unhealthy), while ~87 threads stayed healthy. So the
-    # cap must keep total threads comfortably in the healthy band. With
-    # self-heal OFF a small pool is finally safe (it can't thrash-dispose);
-    # under genuine burst load beyond the cap, requests WAIT (pool_timeout
-    # backpressure) — bounded and recoverable, unlike the leak.
-    #   cap = 40+20 = 60  → ~65-70 threads → healthy with margin.
-    # The real cure for backpressure (NOT a bigger pool) is to stop holding
-    # a DB session across the upstream LLM call, which would let this drop
-    # to ~10. Tracked in docs/recovery/01-current-state-assessment.md.
-    pool_size=40,
-    max_overflow=20,
+    # THE FIX (v5.22.3, root cause finally proven via DB_POOL_TRACE): a
+    # SMALL pool. The pool cap is the max number of CONCURRENT SQLite
+    # accessors, and SQLite is single-writer. A large pool (150, or even
+    # 60) let dozens of connections contend for the write lock; each
+    # spun up to busy_timeout=10s HOLDING its connection (and its
+    # GIL-holding aiosqlite thread), which slowed every query, which held
+    # connections longer, which added contention — a self-reinforcing
+    # cascade. Trace proof: ordinary queries (cluster /health Provider
+    # SELECT, messages.py api-key verify) held their session for 18+
+    # MINUTES while the pool saturated at the cap and /health hung.
+    #
+    # A small pool CAPS concurrent SQLite access → low write contention →
+    # queries finish in ms → connections return immediately → no cascade,
+    # few threads, responsive event loop. It effectively serializes DB
+    # access, which is what SQLite wants. Real request load here is ~5/min
+    # with sub-ms queries, so cap 20 is huge headroom; the pool only ever
+    # saturated because of the CASCADE, not real concurrency.
+    #
+    # History of wrong turns on this bug (see recovery docs): (1) blamed
+    # pool_recycle churn, shrank to 50 — but left self-heal on, which
+    # thrash-disposed and leaked threads FASTER; (2) disabled self-heal
+    # but sized UP to 120, which fed the contention cascade. Both treated
+    # symptoms. The lever is CONCURRENCY (pool cap), kept LOW.
+    #
+    # If genuine concurrency ever exceeds this, the cure is to stop
+    # holding a DB session across the upstream LLM call (scoped refactor),
+    # NOT to raise the cap — raising it re-opens the cascade.
+    pool_size=12,
+    max_overflow=8,
     pool_timeout=10.0,
     pool_recycle=-1,
 )

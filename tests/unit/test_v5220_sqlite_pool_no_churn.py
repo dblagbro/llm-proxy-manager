@@ -58,15 +58,20 @@ def test_self_heal_disabled_by_default():
     )
 
 
-def test_pool_cap_sane_upper_bound():
-    """Guard against an absurd pool cap. SIZE is not the leak (CHURN is), so
-    the pool may be generous — but a runaway value still wastes threads. The
-    real fix for exhaustion is to not hold a DB session across the upstream
-    call, not to keep raising this."""
+def test_pool_cap_small_to_limit_sqlite_contention():
+    """The pool cap = max CONCURRENT SQLite accessors. SQLite is single-
+    writer; a large cap lets connections contend on the write lock, each
+    spinning up to busy_timeout HOLDING its connection — a self-reinforcing
+    cascade that held ordinary queries for 18+ min and exhausted the pool
+    (v5.22.3, proven via DB_POOL_TRACE). Keep the cap SMALL so DB access is
+    effectively serialized. Raising it to 'fix exhaustion' RE-OPENS the
+    cascade — the real cure is to not hold a session across the upstream
+    call."""
     cap = _int_kwarg("pool_size") + _int_kwarg("max_overflow")
-    assert cap <= 200, (
-        f"pool cap {cap} > 200 — implausibly large. If exhaustion is forcing "
-        f"this up, fix the hold-across-upstream pattern (see recovery docs)."
+    assert cap <= 30, (
+        f"pool cap {cap} > 30 — too many concurrent SQLite accessors. This "
+        f"re-opens the write-lock contention cascade. Do NOT raise it; fix "
+        f"the hold-across-upstream pattern instead (see recovery docs)."
     )
 
 
