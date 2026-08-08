@@ -39,16 +39,21 @@ engine = create_async_engine(
     # threshold constantly (36 disposes in <1h → 362 threads in <1h,
     # FASTER than the original). Pool SIZE was never the leak; CHURN was.
     #
-    # THE FIX: no churn + a pool large enough that it does not saturate
-    # under real concurrency (handlers hold a conn across the upstream
-    # call, so steady demand ~= concurrent in-flight requests). Threads
-    # then plateau at peak concurrency and STAY flat — no churn, no
-    # dispose, no leak. If threads still creep, the real cure is to stop
-    # holding a DB session across the upstream call (see recovery docs),
-    # NOT to touch these numbers. Regression-guarded by
-    # tests/unit/test_v5220_sqlite_pool_no_churn.py.
-    pool_size=80,
-    max_overflow=40,
+    # THE FIX: no churn (recycle=-1 + self-heal off) so threads plateau at
+    # the pool cap instead of leaking. AND cap the pool LOW — a live
+    # monitor (2026-08-07) showed threads plateau at pool_cap+~6 and that
+    # even a STABLE ~126-thread pool congests the single event loop enough
+    # to fail /health (unhealthy), while ~87 threads stayed healthy. So the
+    # cap must keep total threads comfortably in the healthy band. With
+    # self-heal OFF a small pool is finally safe (it can't thrash-dispose);
+    # under genuine burst load beyond the cap, requests WAIT (pool_timeout
+    # backpressure) — bounded and recoverable, unlike the leak.
+    #   cap = 40+20 = 60  → ~65-70 threads → healthy with margin.
+    # The real cure for backpressure (NOT a bigger pool) is to stop holding
+    # a DB session across the upstream LLM call, which would let this drop
+    # to ~10. Tracked in docs/recovery/01-current-state-assessment.md.
+    pool_size=40,
+    max_overflow=20,
     pool_timeout=10.0,
     pool_recycle=-1,
 )
