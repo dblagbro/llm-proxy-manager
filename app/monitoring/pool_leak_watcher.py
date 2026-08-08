@@ -83,9 +83,19 @@ _HEAL_THRESHOLD: float = 0.90
 _HEAL_SUSTAINED_POLLS: int = 4          # 4 × 30s = ~2 min of sustained saturation
 _HEAL_COOLDOWN_SEC: float = 300.0       # don't recycle more than once per 5 min
 
-# Master switch — default ON. Set POOL_SELF_HEAL_ENABLED=0 to fall back
-# to dump-only (pre-v5.21.13) behaviour.
-_SELF_HEAL_ENABLED: bool = os.getenv("POOL_SELF_HEAL_ENABLED", "1").lower() not in (
+# Master switch — v5.22.1: DEFAULT OFF. The self-heal ``engine.dispose()``
+# was itself a primary cause of the aiosqlite OS-thread leak: it fired on
+# sustained 90% saturation and disposed the pool WHILE up to `cap`
+# connections were checked out by in-flight requests, orphaning those
+# connections — and an orphaned aiosqlite connection's worker thread never
+# terminates. Under a too-small pool it thrashed (36 disposes in <1h →
+# 362 leaked threads). "Reclaims leaked slots without a restart" was the
+# intent, but for aiosqlite it LEAKED threads instead. With churn removed
+# (pool_recycle=-1) and an adequately-sized pool, saturation should not
+# occur; if it does, pool_timeout backpressure (requests wait) is far
+# safer than dispose-orphaning. Re-enable only with POOL_SELF_HEAL_ENABLED=1
+# and only after the connection teardown is proven aiosqlite-thread-safe.
+_SELF_HEAL_ENABLED: bool = os.getenv("POOL_SELF_HEAL_ENABLED", "0").lower() not in (
     "0", "false", "no", "off",
 )
 
