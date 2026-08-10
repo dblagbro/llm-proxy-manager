@@ -91,7 +91,7 @@ engine = create_async_engine(
     # HOLDS now short (v5.22.4 release-boundary commits), 30 is ample; a burst
     # beyond 30 concurrent DB ops waits briefly (pool_timeout) instead of
     # spawning leak-prone overflow connections.
-    pool_size=30,
+    pool_size=50,
     max_overflow=0,
     pool_timeout=10.0,
     pool_recycle=-1,
