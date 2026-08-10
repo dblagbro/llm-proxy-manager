@@ -1,5 +1,13 @@
 # llm-proxy v2 — Claude Code Guide
 
+> **Canonical project contract: `AGENTS.md`** (imported below). It owns the approved commands,
+> architecture boundaries, definition of done, and the prohibited/approval-required list — for
+> all agents. This file adds only Claude-specific notes and hard-won gotchas; on any conflict,
+> `AGENTS.md` wins. Live status is in `docs/current-state.md`; the agent roster + model-routing
+> policy in `docs/agent-system.md`.
+
+@AGENTS.md
+
 ## Cross-project knowledge base (Devin's personal KB)
 
 **Attach this MCP server at session start** for cross-project institutional rules Devin has set:
@@ -16,16 +24,17 @@
 Python/FastAPI rewrite of llm-proxy v1. Served at `/llm-proxy2/` on 3 nodes via the main
 nginx + docker-compose stack at `/home/dblagbro/docker/`.
 
-## Current state (2026-06-04)
-- Live version: **v5.0.15** on all 3 dev-cluster nodes + smoke
-- **v5.0.x compliance enforcement shipped** (v5.0.0 → v5.0.15 over 2026-06-03/04). New `app/compliance/` subpackage; 3 new tables (`compliance_events`, `compliance_policy_changes`, `compliance_audit_chain`); 6 new columns; `/v1/responses` translation shim; `/api/admin/policy-snapshot` for the hub team's hub-side enforcement layer. v5.0.9 + v5.0.10: incremental refactor sweep (messages.py + completions.py shrunk via `_compliance_handler.py` extraction; sync.py 1024 → 573 LOC via `_apply_api_keys` + `_apply_providers` extraction). v5.0.11: limits + compliance edit modal merged. v5.0.12: dropped mid-stream `event: budget` SSE frame (hub-team-filed, Vercel-AI-SDK consumers). v5.0.13: `ComplianceEvent.matched_pattern` now carries rejected path for `path_not_allowed` rows. v5.0.14: `/metrics` Accept-header-disambiguates between Prometheus and React SPA. v5.0.15: rotation also clamps on `five_hour_utilization` (caught the VG session-max incident).
-- **READ FIRST when resuming this project:**
-  - `architecture.md` (has a full `## Compliance enforcement (v5.0.0+)` section now)
-  - Spec set: `docs/5.0-compliance-design.md`, `docs/5.0-impact-map.md`, `docs/compliance-taxonomy-v5.0.0.md`
-  - Hub-team memo trail: `docs/2026-06-04-reply-{1..5}-to-hub-team-*.md` (chronological — read in order to understand the back-and-forth that led to v5.0.7)
-- **Open items watched by monitor:**
-  - Hub team's bot canary delayed by their daemon-cache bug (COORDINATOR_AGENT_CLI cached at boot vs read-at-runtime). Zero hub-key traffic yet.
-  - Hub v2.1.0 hub-side enforcement build pending (polls `/api/admin/policy-snapshot` we shipped in v5.0.7).
+## Current state
+**Live status is now maintained in `docs/current-state.md`** (version, branch/last-good-commit,
+what works/doesn't, active risks incl. the open DB-connection-hold leak, next actions). The old
+inline "v5.0.15" snapshot here had drifted badly (actual is v5.22.x) — do not trust a hardcoded
+version in this file; read `docs/current-state.md`.
+
+- **READ FIRST when resuming this project:** `architecture.md` (canonical) + `design.md`
+  (module-boundary contract), then `docs/current-state.md`.
+- Compliance spec set (still current): `docs/5.0-compliance-design.md`, `docs/5.0-impact-map.md`,
+  `docs/compliance-taxonomy-v5.0.0.md`.
+- Hub-team memo trail (historical context for v5.0.7): `docs/2026-06-04-reply-{1..5}-to-hub-team-*.md`.
 
 ## Deployment topology
 - **dev cluster (3 nodes):** `tmrwww01`, `tmrwww02`, `c1conversations-avaya-01-s23`. Operator uses these for development; if proxy work breaks them, only dev users affected.
