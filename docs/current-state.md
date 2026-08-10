@@ -33,13 +33,29 @@ streams → checkedout=0/40, 0 QueuePool errors; ~12 min realistic soak both nod
 checkedout=0 throughout, 0 QueuePool errors; independent adversarial review drove completeness; 0
 new unit-test failures. `DB_POOL_TRACE` turned back OFF. Both nodes on v5.22.4.
 
-## Active risk (P2, separate & pre-existing — NOT the leak)
-- **Single-event-loop CPU ceiling under extreme concurrency.** py-spy (2026-08-10) showed the loop
-  becomes CPU-bound constructing SQLAlchemy queries (`select_provider`'s `.where(...)`) under an
-  abusive burst (6 concurrent `model:auto` streams repeated) → `/health` starves → unhealthy. NOT
-  triggered by real ~2/min traffic (the control node stayed healthy all session) and NOT the
-  connection leak (`checkedout=0`). Future work: multiple uvicorn workers, or cache/curtail
-  per-request provider-selection query building. Tracked in `docs/roadmap.md`.
+## ✅ RESOLVED — aiosqlite OS-thread leak (v5.22.5, the deeper fix)
+After v5.22.4, a node still reached **80 aiosqlite threads (2× pool cap) in 36 min under LIGHT
+traffic** with recycle=-1 AND self-heal already off — proving those were only amplifiers. Root
+cause: aiosqlite runs one OS thread per connection; any connection **created-then-destroyed
+(overflow churn) or GC'd-not-closed (cancellation / pre_ping invalidation)** orphans its thread
+forever.
+**Fix (v5.22.5, commit `330f8bc`):** a **fixed, non-churning pool** — `max_overflow=0` (pool is
+exactly `pool_size` connections, created once, reused forever, never destroyed → nothing to
+orphan), `pool_pre_ping=False` (no invalidate/discard churn), `pool_size=50`, `recycle=-1`.
+Structural guarantee: the pool can't create >50 connections and never destroys them.
+**Verified:** under sustained load the thread count **plateaued at 36 (pool_size 30 test) and did
+NOT climb toward 80**; `checkedout=0` throughout. Both nodes on v5.22.5.
+
+## Active risk (P2, separate & pre-existing — NOT a leak)
+- **Single-event-loop CPU ceiling under extreme concurrency.** py-spy (2026-08-10): the loop goes
+  CPU-bound constructing SQLAlchemy queries (`select_provider`'s `.where(...)`) under an *abusive*
+  synthetic burst (4-6 concurrent `model:auto` streams fired repeatedly) → queries slow → the fixed
+  pool exhausts → `/health` starves → unhealthy, and it drains slowly. **NOT triggered by real
+  ~2/min traffic** — the control node (real organic traffic) stayed healthy across every soak all
+  session — and NOT a connection/thread leak (`checkedout=0`, threads capped). This is an
+  architectural throughput limit, not the leak. Future work (separate): multiple uvicorn workers,
+  a `/health` that doesn't need a pooled connection, and caching/curtailing per-request
+  provider-selection query building. Tracked in `docs/roadmap.md` M1(P2).
 
 ## Other known gaps
 - CI is weak: only 4 gating tests; full suite non-gating; **64 known-fail tests**
