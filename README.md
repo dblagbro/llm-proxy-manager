@@ -1,4 +1,20 @@
-# LLM Proxy Manager
+> # ⛔ RETIRED — llm-proxy v1 (End of Life: 2026-07-15)
+>
+> **This branch is llm-proxy _v1_ (Node.js). It is retired — no longer maintained,
+> deployed, or supported as of 2026-07-15.**
+>
+> **The current, actively-maintained version is `llm-proxy2`** — a Python/FastAPI rewrite —
+> on the **[`v2`](../../tree/v2) branch** of this repository. It is what runs in production
+> (served at `/llm-proxy2/`) and is shipped as the Docker image `dblagbro/llm-proxy-manager`
+> (5.x tags).
+>
+> - ➡️ **Go to the current version:** the **`v2` branch** — see its `README.md` and `AGENTS.md`.
+> - 🚫 Do **not** build, deploy, or open new work against this branch. No further updates land here.
+> - 📦 This branch and `master` are kept for historical reference only. See `DEPRECATED.md`.
+>
+> ---
+
+# LLM Proxy Manager (v1 — retired)
 
 A production-ready LLM API proxy with **multi-provider failover**, **intelligent monitoring**, **cluster mode**, **LMRH semantic routing**, and **web-based management**. Route your AI requests through multiple LLM providers (Anthropic Claude, Google Gemini, OpenAI, Grok, and more) with automatic failover, semantic task-based routing, CoT auto-engagement, and capability advertisement.
 
