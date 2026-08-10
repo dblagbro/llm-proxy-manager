@@ -288,6 +288,17 @@ async def chat_completions(
     if _headers_to_merge:
         resp_headers.update(_headers_to_merge)
 
+    # ── v5.22.4 RELEASE BOUNDARY (connection-hold leak fix, option A) ───────
+    # Symmetric to messages.py: all pre-dispatch DB work is done; commit to
+    # return the pooled connection BEFORE the upstream dispatch/stream so the
+    # open read-transaction doesn't pin it for the whole request. Session
+    # stays usable (re-acquires lazily); record_outcome / memory-extract
+    # self-manage their own short sessions.
+    try:
+        await db.commit()
+    except Exception:
+        pass
+
     # v3.0.36: cross-family fallback — rewrite body['model'] to the resolved
     # served model so dispatchers that read body['model'] (codex-oauth,
     # claude-oauth) send the right slug upstream. The original requested
@@ -617,6 +628,12 @@ async def chat_completions(
                     )
                 except Exception:
                     backup_route = None
+                # v5.22.4 — release the connection this backup re-select opened
+                # before the hedged streams run (K1, symmetric to messages.py).
+                try:
+                    await db.commit()
+                except Exception:
+                    pass
 
                 if backup_route is not None:
                     observe_hedge_attempt(route.provider.id, backup_route.provider.id)

@@ -495,6 +495,11 @@ async def messages(
     # buffered-heartbeat early-return v5.21.9 — moved here (from ~line 447)
     # so resp_headers is populated when the StreamingResponse is built.
     if _buffered_cascade_heartbeat:
+        # v5.22.4 release boundary — free the connection before this stream.
+        try:
+            await db.commit()
+        except Exception:
+            pass
         from app.api._buffered_cascade_stream import (
             run_buffered_cascade_stream_with_heartbeat,
         )
@@ -544,6 +549,23 @@ async def messages(
     )
     if _headers_to_merge:
         resp_headers.update(_headers_to_merge)
+
+    # ── v5.22.4 RELEASE BOUNDARY (connection-hold leak fix, option A) ───────
+    # All pre-dispatch DB work (auth, routing, memory inject, compliance
+    # disclosure) is done above. COMMIT now to return the pooled aiosqlite
+    # connection to the pool BEFORE the upstream dispatch/stream. Without
+    # this, the open read-transaction from provider selection pins the
+    # connection for the ENTIRE request — minutes on a stream (proven via
+    # DB_POOL_TRACE: get_db sessions held 15-18 min) — exhausting the pool.
+    # Verified mechanic: commit() checks the connection back in (checkedout
+    # 1→0); the session stays usable and re-acquires lazily on the next db
+    # op. The write-side helpers (record_outcome, maybe_extract_memory_writes)
+    # now self-manage their own short sessions, so nothing pins THIS session
+    # across the upstream wait.
+    try:
+        await db.commit()
+    except Exception:
+        pass
 
     # ── claude-oauth dispatch ──────────────────────────────────────────────
     # The claude-oauth provider-chain walk lives in _messages_dispatch.py
@@ -795,6 +817,14 @@ async def messages(
                     )
                 except Exception:
                     backup_route = None
+                # v5.22.4 — release the connection this backup re-select
+                # opened before the hedged streams run for the whole request
+                # (K1: was pinned across the stream). commit keeps route
+                # attached (expire_on_commit=False).
+                try:
+                    await db.commit()
+                except Exception:
+                    pass
 
                 if backup_route is not None:
                     observe_hedge_attempt(route.provider.id, backup_route.provider.id)
@@ -967,6 +997,12 @@ async def messages(
                 )
                 if _oauth_account_id:
                     resp_headers["X-OAuth-Account"] = _oauth_account_id
+                # v5.22.4 — release the connection before the non-streaming
+                # upstream call (K4: apply_fanout's read was pinned across it).
+                try:
+                    await db.commit()
+                except Exception:
+                    pass
                 return await acompletion_with_retry(
                     model=r.litellm_model, messages=messages_list,
                     stream=False, **local_extra,

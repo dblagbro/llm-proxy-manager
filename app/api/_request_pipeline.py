@@ -622,6 +622,12 @@ async def maybe_engage_cot(
             critique_model = critique_route.litellm_model
             critique_kwargs = critique_route.litellm_kwargs
             resp_headers["X-Critique-Provider"] = critique_route.provider.name
+            # v5.22.4 — release the connection this critique re-select opened
+            # before the CoT stream runs (K2: was pinned across the stream).
+            try:
+                await db.commit()
+            except Exception:
+                pass
         except Exception:
             pass  # no alternate available; critique stays on primary
 
