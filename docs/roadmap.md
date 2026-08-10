@@ -3,16 +3,19 @@
 Milestones with measurable acceptance criteria. Reconciles with `docs/remediation-plan.md`,
 `docs/recovery/01-current-state-assessment.md`, and the backlogs. Current focus: rescue → foundation.
 
-## M1 — Recovery & stabilization (in progress)
+## M1 — Recovery & stabilization (mostly done)
 **Goal:** stop the recurring node degradation; establish trustworthy live status.
-- [ ] Land the **DB-connection-hold leak** fix (A: release session before upstream call; or B: fixed
-      disconnect-watchdog; C: stopgap reaper). See `docs/current-state.md`.
-      **Accept:** on a live node under real traffic, `get_db` sessions do not exceed a few seconds of
-      age and `checked_out` returns to ~0 between requests; `/health` stays < 100 ms and `healthy`
-      for ≥ 72 h with no restart.
+- [x] **DB-connection-hold leak fixed (v5.22.4, option A)** — release-boundary commit + dispatch
+      re-select commits; pool 20→40. Verified: `checkedout=0` under load, 0 QueuePool errors,
+      ~12 min realistic soak both nodes healthy. See `docs/current-state.md`.
+      **Remaining acceptance:** a ≥72 h unattended soak under real traffic (monitor, not yet elapsed).
 - [x] Unbounded aiosqlite **thread** leak fixed (self-heal dispose disabled).
 - [x] fd ulimit hardening; grok-web bridge restored.
-- [ ] Turn `DB_POOL_TRACE` back off on www1 once the leak fix lands.
+- [x] `DB_POOL_TRACE` turned back off on www1.
+- [ ] **(P2, new) Single-event-loop CPU ceiling under extreme concurrency** — pre-existing, separate
+      from the leak (SQLAlchemy query construction saturates the loop under abusive bursts). Not
+      triggered by real traffic. Options: multiple uvicorn workers, or cache/curtail provider-select
+      query building. Investigate before any high-concurrency use.
 **Checkpoint:** both nodes healthy for 72 h unattended → proceed to M2.
 
 ## M2 — Verified foundation

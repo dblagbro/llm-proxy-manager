@@ -18,21 +18,28 @@ staged recovery plan (`docs/recovery/01-current-state-assessment.md`, `docs/road
 - The unbounded aiosqlite **thread** leak (self-heal `engine.dispose()` thrash) is fixed —
   thread count no longer grows without bound.
 
-## What does NOT work / active risk (P1)
-- **DB-connection-hold leak (unresolved).** `/v1/messages` (and other) requests acquire a
-  `get_db` session and hold it for the *entire request*; some requests hang 15-18 min and never
-  release (proven via `DB_POOL_TRACE` — `messages.py:103` / `cluster.py:65` sessions pinned).
-  The pool fills, then requests 500 and `/health` hangs. **Nodes re-degrade ~every 20 min.**
-  Pool-size tuning cannot fix this — it only changes the exhaustion ceiling.
-  - **This is the same class as the documented v5.21.6-8 fix** ("DB pool leak diagnostic path" in
-    `architecture.md`: `Depends(get_db)` + `StreamingResponse` holds the session for the whole
-    stream). Those fixed specific SSE sites (`runs.py`, `lmrh_v2.py`); the `messages.py`/request
-    path is the same pattern, unfixed.
-  - **Pending decision (A/B/C):** A = release the DB session *before* the upstream call (scoped
-    handler refactor — the durable fix); B = re-enable a *fixed* disconnect-watchdog (cancel on
-    client disconnect); C = stopgap session-reaper (force-close `get_db` sessions held > ~3 min).
-    Recommended: **A**, with **C** as an immediate stabilizer. Awaiting operator direction.
-- `DB_POOL_TRACE=1` is currently ON on www1 (diagnostic) — turn back off with the chosen fix.
+## ✅ RESOLVED — DB-connection-hold leak (v5.22.4, option A)
+Was: `/v1/messages` + `/v1/chat/completions` held the `get_db` session (an open read-txn from
+provider selection) across the upstream call + entire stream, pinning an aiosqlite connection for
+15-18 min → pool exhaustion → `/health` hangs → unhealthy every ~20 min. Same class as the
+v5.21.6-8 SSE fixes (`runs.py`/`lmrh_v2.py`), now applied to the chat handlers.
+**Fix (v5.22.4, commit `3fc664a`):** `await db.commit()` release-boundary after pre-dispatch reads
+and before dispatch (both handlers); + commits after the dispatch-time re-selects that reopened a
+txn across the stream (hedge, CoT-critique, empty-success failover, non-streaming apply_fanout);
+pool raised 20→40 (holds are short now). `record_outcome`/`maybe_extract` commit internally so they
+release on their own.
+**Verified:** commit() releases the connection (checkedout 1→0, mechanic tested); 12 concurrent
+streams → checkedout=0/40, 0 QueuePool errors; ~12 min realistic soak both nodes healthy,
+checkedout=0 throughout, 0 QueuePool errors; independent adversarial review drove completeness; 0
+new unit-test failures. `DB_POOL_TRACE` turned back OFF. Both nodes on v5.22.4.
+
+## Active risk (P2, separate & pre-existing — NOT the leak)
+- **Single-event-loop CPU ceiling under extreme concurrency.** py-spy (2026-08-10) showed the loop
+  becomes CPU-bound constructing SQLAlchemy queries (`select_provider`'s `.where(...)`) under an
+  abusive burst (6 concurrent `model:auto` streams repeated) → `/health` starves → unhealthy. NOT
+  triggered by real ~2/min traffic (the control node stayed healthy all session) and NOT the
+  connection leak (`checkedout=0`). Future work: multiple uvicorn workers, or cache/curtail
+  per-request provider-selection query building. Tracked in `docs/roadmap.md`.
 
 ## Other known gaps
 - CI is weak: only 4 gating tests; full suite non-gating; **64 known-fail tests**
