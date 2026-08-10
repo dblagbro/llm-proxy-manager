@@ -1,6 +1,20 @@
-# LLM Proxy Manager
+> # ⛔ RETIRED — llm-proxy v1 (End of Life: 2026-07-15)
+>
+> **This `master` branch is an older snapshot of llm-proxy _v1_ (Node.js) and is retired —
+> no longer maintained, deployed, or supported as of 2026-07-15.**
+>
+> **The current, actively-maintained version is `llm-proxy2`** (Python/FastAPI) on the
+> **[`v2`](../../tree/v2) branch** — served in production at `/llm-proxy2/` and shipped as
+> Docker image `dblagbro/llm-proxy-manager` (5.x tags).
+>
+> - ➡️ **Go to the current version:** the **`v2` branch** (`README.md` / `AGENTS.md`).
+> - 🚫 Do **not** build, deploy, or open new work against this branch. See `DEPRECATED.md`.
+>
+> ---
 
-**Version**: 1.4.13
+# LLM Proxy Manager (v1 — retired)
+
+**Version**: 1.4.13 (retired)
 **Last Updated**: April 2026
 
 Production-ready multi-provider LLM API proxy with automatic failover, streaming support, cost tracking, intelligent routing, and comprehensive web-based management.
