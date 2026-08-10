@@ -15,7 +15,14 @@ logger = logging.getLogger(__name__)
 engine = create_async_engine(
     settings.database_url,
     echo=False,
-    pool_pre_ping=True,
+    # v5.22.5 — pre_ping DISABLED. For in-process SQLite a pooled connection
+    # never "goes away"; pre_ping's only effect here is that a transient error
+    # on its liveness check (e.g. "database is locked" under contention)
+    # INVALIDATES + discards the connection — and a discarded aiosqlite
+    # connection GC'd rather than cleanly closed leaks its OS thread. Off, plus
+    # a fixed (no-overflow) pool below, means the connection set is never
+    # churned or invalidated → no aiosqlite thread leak.
+    pool_pre_ping=False,
     # ── v5.22.1 (2026-08-07): aiosqlite CONNECTION-THREAD LEAK fix ────
     # ROOT CAUSE (verified via py-spy + live repro): aiosqlite runs ONE
     # OS thread per DB connection. A STABLE pooled connection (reused,
@@ -74,8 +81,18 @@ engine = create_async_engine(
     # without QueuePool-timeout. pool_recycle stays -1 (no churn → no aiosqlite
     # thread leak). Resting thread count after a burst (~40 DB + ~15 other)
     # stays in the healthy band.
-    pool_size=25,
-    max_overflow=15,
+    # v5.22.5 — FIXED, non-churning pool: max_overflow=0 means the pool is
+    # EXACTLY pool_size connections, created lazily then reused forever
+    # (recycle=-1, pre_ping off). No connection is ever created-then-destroyed,
+    # so aiosqlite worker threads are never orphaned — the real fix for the
+    # thread leak (80 threads in 36 min on a node came from OVERFLOW churn +
+    # cancellation orphaning, NOT from recycle/self-heal, which were already
+    # off). Thread count plateaus at ~pool_size and STAYS. With connection
+    # HOLDS now short (v5.22.4 release-boundary commits), 30 is ample; a burst
+    # beyond 30 concurrent DB ops waits briefly (pool_timeout) instead of
+    # spawning leak-prone overflow connections.
+    pool_size=30,
+    max_overflow=0,
     pool_timeout=10.0,
     pool_recycle=-1,
 )
