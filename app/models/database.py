@@ -66,8 +66,16 @@ engine = create_async_engine(
     # If genuine concurrency ever exceeds this, the cure is to stop
     # holding a DB session across the upstream LLM call (scoped refactor),
     # NOT to raise the cap — raising it re-opens the cascade.
-    pool_size=12,
-    max_overflow=8,
+    # v5.22.4: with the connection-hold leak fixed (v5.22.4 — sessions no
+    # longer pin a connection across the upstream call/stream; the request
+    # session is committed at a release boundary and dispatch re-selects
+    # commit right after), holds are short, so the pool no longer needs to be
+    # tiny to limit contention. Raised 20→40 cap to absorb concurrent bursts
+    # without QueuePool-timeout. pool_recycle stays -1 (no churn → no aiosqlite
+    # thread leak). Resting thread count after a burst (~40 DB + ~15 other)
+    # stays in the healthy band.
+    pool_size=25,
+    max_overflow=15,
     pool_timeout=10.0,
     pool_recycle=-1,
 )

@@ -58,20 +58,21 @@ def test_self_heal_disabled_by_default():
     )
 
 
-def test_pool_cap_small_to_limit_sqlite_contention():
-    """The pool cap = max CONCURRENT SQLite accessors. SQLite is single-
-    writer; a large cap lets connections contend on the write lock, each
-    spinning up to busy_timeout HOLDING its connection — a self-reinforcing
-    cascade that held ordinary queries for 18+ min and exhausted the pool
-    (v5.22.3, proven via DB_POOL_TRACE). Keep the cap SMALL so DB access is
-    effectively serialized. Raising it to 'fix exhaustion' RE-OPENS the
-    cascade — the real cure is to not hold a session across the upstream
-    call."""
+def test_pool_cap_bounded():
+    """The pool cap = max concurrent SQLite accessors AND (with recycle=-1)
+    the resting thread ceiling after a burst. v5.22.4 fixed the real cause of
+    the pool pressure — the connection-hold leak (sessions pinned a connection
+    across the upstream call/stream). With holds now short, the cap does NOT
+    need to be tiny; it is sized to absorb bursts while keeping the resting
+    thread count in the healthy band. It must still stay bounded — a runaway
+    value re-introduces event-loop thread congestion (each aiosqlite conn is an
+    OS thread). The cure for genuine exhaustion is the release-boundary /
+    dispatch-re-select commits (v5.22.4), not an ever-larger pool."""
     cap = _int_kwarg("pool_size") + _int_kwarg("max_overflow")
-    assert cap <= 30, (
-        f"pool cap {cap} > 30 — too many concurrent SQLite accessors. This "
-        f"re-opens the write-lock contention cascade. Do NOT raise it; fix "
-        f"the hold-across-upstream pattern instead (see recovery docs)."
+    assert cap <= 60, (
+        f"pool cap {cap} > 60 — too many resting aiosqlite threads risks "
+        f"event-loop congestion. If exhaustion recurs, verify the v5.22.4 "
+        f"connection-release commits, don't just raise the cap."
     )
 
 

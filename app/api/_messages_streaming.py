@@ -314,6 +314,13 @@ async def stream_with_empty_guard(
             )
         except Exception:
             cand = None
+        # v5.22.4 — release the connection this empty-success failover
+        # re-select opened, before the retried stream runs (K3: was pinned
+        # across the retried stream for the whole request).
+        try:
+            await db.commit()
+        except Exception:
+            pass
         if cand is not None and cand.provider.id not in empty_failed:
             next_route = cand
         if next_route is None:
