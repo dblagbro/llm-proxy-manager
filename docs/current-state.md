@@ -88,8 +88,12 @@ peg the event loop and drain the pool to 50/50 on an idle node.
 v5.7.13; defensive guard raises instead of looping. Pin:
 `tests/unit/test_v5226_next_route_terminates.py` (verified failing pre-fix, 5 tests).
 **Verified:** import OK, 219 routing tests pass, 0 new lint findings, 0 new unit-test failures.
-**Deploy: NOT done — awaiting operator approval.** Both nodes still run v5.22.5 and will
-keep wedging until this ships. Rolling order: tmrwww02 first, watch, then tmrwww01.
+**DEPLOYED 2026-08-10 ~21:2x EDT (operator-approved, both nodes at once).** tmrwww01 +
+tmrwww02 both on **v5.22.6 healthy**, 0 QueuePool errors since deploy. Playwright-verified
+end-to-end on both: login OK, 7/7 authenticated APIs return real payloads (providers 7,
+keys 8, users 2, metrics, activity 100 rows, cluster, status-pages), and all 10 UI routes
+render their data with no error state. GCP node deliberately NOT touched.
+Watch for recurrence: a wedge would show as climbing `QueuePool limit` counts + `/health` 500.
 **Retires the P2 "event-loop CPU ceiling" entry below** — the node was spinning, not saturated.
 
 ## 🔴 (SUPERSEDED by the above) pool wedge symptoms on v5.22.5 (observed 2026-08-10)
