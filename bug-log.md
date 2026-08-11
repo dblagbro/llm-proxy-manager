@@ -10,6 +10,38 @@ Status flow: **open** → **in-progress** → **fixed** → **verified-fixed** �
 
 ---
 
+## 2026-08-10 — `_next_route` infinite loop wedges nodes (v5.22.6)
+
+**Severity: critical · Status: fixed (deploy pending operator approval)**
+
+`app/routing/fallback.py::_next_route` spun forever whenever `select_provider`
+returned an already-tried provider: it excluded only ONE seed
+(`next(iter(extended_excluded))`) and "progressed" by re-adding an id already in
+the set — a no-op — so the seed never changed. Every pass ran `select_provider`
+→ `_load_profile` × providers → ~2 queries each.
+
+**Impact.** A single `/v1/messages` request that hit a provider error pegged the
+event loop and drained the DB pool to 50/50 on an idle node; `/health` 500'd,
+the node never recovered, and SQLite writes stopped dead (WAL mtime frozen 9h on
+tmrwww01). Recurred across v5.22.3/.4/.5 because those fixed connection holding
+and aiosqlite thread leaks — different bugs.
+
+**Evidence.** Independent py-spy captures on tmrwww01 and tmrwww02, same stack:
+`_load_profile ← select_provider ← _next_route ← try_ranked_non_streaming ←
+messages.py:1030`. MainThread ~44% of a core, ~50 aiosqlite threads ~2.9% each,
+traffic ~1 req/2min. Asymmetry (tmrwww01 64 pool errors/healthy vs tmrwww02
+24,243/wedged on identical code) = whether a fallback-triggering request arrived.
+
+**Fix.** Pass the cumulative `exclude_provider_ids` set that `select_provider`
+has supported since v5.7.13; defensive guard raises instead of looping if an
+excluded provider ever comes back. Pin:
+`tests/unit/test_v5226_next_route_terminates.py` (verified failing pre-fix).
+
+**Retires:** the "P2 single-event-loop CPU ceiling under abusive concurrency"
+entry — the node was spinning, not saturated.
+
+---
+
 ## 2026-06-12 — security-team mandated pre-compliance data purge (v5.4.3)
 
 Not a regression finding — operator-filed backlog item from 2026-06-06 ("when clear up old metrics in the clusters — ask me more about this when done with all the ongoing work"). Scoping interview 2026-06-12 revealed the actual ask: delete data accumulated before the v5.2.0 vendor-neutrality stack shipped, per security team mandate.

@@ -8,7 +8,8 @@
 staged recovery plan (`docs/recovery/01-current-state-assessment.md`, `docs/roadmap.md`).
 
 ## Branch / version
-- Branch `v2`; last commit `3460d26` (**v5.22.3**). `origin/v2` in sync.
+- Branch `v2`; last commit `2acc675` (**v5.22.5**). `origin/v2` in sync (no upstream tracking ref set;
+  `git rev-parse origin/v2` == HEAD). Working tree clean.
 - Live on tmrwww01 + tmrwww02. Canonical deploy stack: `/home/dblagbro/docker/` (not the repo).
 
 ## What works (verified)
@@ -63,7 +64,57 @@ NOT climb toward 80**; `checkedout=0` throughout. Both nodes on v5.22.5.
 - Doc drift: `architecture.md` header says v5.21.8; `bug-log.md`/`refactor-log.md` exist at BOTH
   repo root and `docs/` (divergent). See `docs/agent-system.md` self-healing backlog.
 
-## Latest verification
+## 🔴 INCIDENT 2026-08-10 — wrong-host purge on tmrwww01 (agent error, service restored)
+An agent session ran a purge against `c1conversations-avaya-01-s23` believing it a separate
+dropped node. That hostname resolves to `24.168.14.36` (public WAN) and **NAT-hairpins back to
+tmrwww01**, so every "remote" command executed on the live production node.
+**Damage:** `llm-proxy2` container removed (www.voipguru.org 502 outage); devingpt stack removed;
+5 docker volumes deleted, incl. `docker_devingpt_data` (774M — chatgpt.db, workspaces, skills,
+exports, generated_audio, images). **Restored:** compose + nginx rolled back from backups,
+`llm-proxy2` recreated (v5.22.5 healthy, its own DB volume was never touched), nginx valid and
+reloaded, all endpoints 200/401. **Not restored:** devingpt containers are down; its volume was
+recreated and seeded from the newest backup (`devingpt-post-v274132-verified-20260703T012717Z.db`,
+2026-07-02) — everything in that volume other than `devingpt.db` is unrecoverable.
+**Prevention:** compare `hostname` AND `/etc/machine-id` against local values before any
+destructive action on a "remote" host. `CLAUDE.md` topology corrected (2 dev nodes, not 3).
+
+## ✅ ROOT CAUSE FOUND — `_next_route` infinite loop (v5.22.6, fix written, NOT deployed)
+`app/routing/fallback.py::_next_route` excluded only ONE provider per
+`select_provider` call and "progressed" by re-adding an id already in the exclusion set —
+a no-op — so the seed never changed and the loop spun forever, each pass issuing ~2 DB
+queries per provider. **One** `/v1/messages` request that hit a provider error was enough to
+peg the event loop and drain the pool to 50/50 on an idle node.
+**Fix:** pass the cumulative `exclude_provider_ids` set `select_provider` has accepted since
+v5.7.13; defensive guard raises instead of looping. Pin:
+`tests/unit/test_v5226_next_route_terminates.py` (verified failing pre-fix, 5 tests).
+**Verified:** import OK, 219 routing tests pass, 0 new lint findings, 0 new unit-test failures.
+**Deploy: NOT done — awaiting operator approval.** Both nodes still run v5.22.5 and will
+keep wedging until this ships. Rolling order: tmrwww02 first, watch, then tmrwww01.
+**Retires the P2 "event-loop CPU ceiling" entry below** — the node was spinning, not saturated.
+
+## 🔴 (SUPERSEDED by the above) pool wedge symptoms on v5.22.5 (observed 2026-08-10)
+Both live nodes wedged; `/health` returns 500 with
+`QueuePool limit of size 50 overflow 0 reached` (13.7k occurrences on tmrwww01 alone).
+Evidence gathered this session:
+- **Wedge is not load-driven.** ~1 inbound request per 2 min. tmrwww01 DB file mtime `08:00`,
+  `-wal`/`-shm` mtime `08:24` — container started ~08:20, so it wrote for ~4 min after boot and has
+  written **nothing for 9 h**. Not a slow degradation; a hard stop.
+- **Not the thread leak.** Threads capped at 56 (= pool_size 50 + workers) — v5.22.5's fixed
+  non-churning pool is holding. Nothing is growing.
+- **All 50 connections busy, none progressing.** `docker stats` ~180-208 % CPU with the asyncio
+  MainThread **idle** in `run_forever`; per-thread sampling shows ~490 ticks/10 s on MainThread and
+  ~27 ticks/10 s on each of the 50 aiosqlite `_connection_worker_thread`s, all parked at
+  `aiosqlite/core.py:63` (`result = function()`) — i.e. inside SQLite, spinning, not returning.
+  Signature of a **SQLite lock deadlock**, not a CPU ceiling and not a connection leak.
+- One MainThread sample caught `messages.py:1030 → try_ranked_non_streaming → _next_route →
+  select_provider → _load_profile (router.py:188)` CPU-bound in SQLAlchemy query *construction*.
+- **Onset not in logs**: docker's json log file has rotated — earliest retained entry is 12:11 UTC,
+  well after the 08:24 wedge. 13.7k QueuePool tracebacks flushed the evidence window.
+**Revises the P2 note below**: the "only under abusive synthetic burst" framing does not fit this
+event — real traffic was ~0. Treat the P2 entry as an unproven hypothesis until re-tested.
+**Do not restart before deciding** — a restart clears the only live evidence.
+
+## Latest verification (superseded)
 Both nodes restarted → healthy, inference 200 in ~1.5s (fresh). Will re-degrade without the leak fix.
 
 ## Next 3 actions

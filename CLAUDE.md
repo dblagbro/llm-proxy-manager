@@ -37,7 +37,16 @@ version in this file; read `docs/current-state.md`.
 - Hub-team memo trail (historical context for v5.0.7): `docs/2026-06-04-reply-{1..5}-to-hub-team-*.md`.
 
 ## Deployment topology
-- **dev cluster (3 nodes):** `tmrwww01`, `tmrwww02`, `c1conversations-avaya-01-s23`. Operator uses these for development; if proxy work breaks them, only dev users affected.
+- **dev cluster (2 nodes):** `tmrwww01`, `tmrwww02`. Operator uses these for development; if proxy work breaks them, only dev users affected.
+- **`c1conversations-avaya-01-s23` — DROPPED / OFF LIMITS until the operator explicitly says otherwise.**
+  Not part of the cluster. Do not deploy, restart, or diagnose against it.
+  ⚠️ **Its hostname does not reach it from tmrwww01.** It resolves to `24.168.14.36`
+  (public WAN), which NAT-hairpins straight back to tmrwww01 — so
+  `ssh c1conversations-avaya-01-s23` silently hands you a *local* shell on production.
+  (`/etc/hosts` carries LAN overrides for tmrwww03/04 for exactly this reason; this host
+  has none.) On 2026-08-10 that cost a production outage and irreversible data loss.
+  **Before any destructive action on a "remote" host, compare `hostname` AND
+  `/etc/machine-id` against the local values.**
 - **smoke instance:** `llm-proxy2-smoke` container on tmrwww01, served at `/llm-proxy2-smoke/`. `CLUSTER_ENABLED=false`, separate DB, separate volume. Used as the sandbox for downstream teams (e.g., Coordinator Hub) to validate before promotion.
 - **production (downstream):** separate deployments operated by consumer teams (gov-compliance use case lives here). Pull QA'd Docker Hub image (`dblagbro/llm-proxy-manager:<version>`).
 
