@@ -245,6 +245,10 @@ async def messages(
         except Exception as exc:
             logger.warning("refusal_detection.hardening_failed err=%s", exc)
     tools = body.get("tools")
+    # v5.22.7 — litellm adapters need OpenAI-shaped tools; `tools` stays in the
+    # caller's Anthropic shape because the claude-oauth path converts it itself.
+    from app.api._oauth_chat_translate import normalize_tools_for_litellm
+    litellm_tools = normalize_tools_for_litellm(tools)
 
     from app.api._request_pipeline import (
         apply_privacy_filters, build_hint_with_auto_task,
@@ -422,8 +426,8 @@ async def messages(
     extra = {**route.litellm_kwargs, "max_tokens": max_tokens}
     if system:
         extra["system"] = system
-    if tools:
-        extra["tools"] = tools
+    if litellm_tools:
+        extra["tools"] = litellm_tools
     # Native reasoning injection:
     # - Gemini 2.5 / o-series: inject from router-computed params
     # - Anthropic extended-thinking: forward the client's `thinking` block as-is
@@ -845,7 +849,7 @@ async def messages(
                     def _backup():
                         b_extra = {**backup_route.litellm_kwargs, "max_tokens": max_tokens}
                         if system: b_extra["system"] = system
-                        if tools: b_extra["tools"] = tools
+                        if litellm_tools: b_extra["tools"] = litellm_tools
                         if backup_route.native_thinking_params:
                             b_extra.update(backup_route.native_thinking_params)
                             # v5.3.7 — keep Gemini thinking budget below max_tokens (empty-success fix)
@@ -922,7 +926,7 @@ async def messages(
                 else:
                     _e = {**_r.litellm_kwargs, "max_tokens": max_tokens}
                     if system: _e["system"] = system
-                    if tools: _e["tools"] = tools
+                    if litellm_tools: _e["tools"] = litellm_tools
                     if _r.native_thinking_params:
                         _e.update(_r.native_thinking_params)
                         clamp_thinking_budget(_e)
@@ -976,8 +980,8 @@ async def messages(
                 local_extra = {**r.litellm_kwargs, "max_tokens": max_tokens}
                 if system:
                     local_extra["system"] = system
-                if tools:
-                    local_extra["tools"] = tools
+                if litellm_tools:
+                    local_extra["tools"] = litellm_tools
                 if r.native_thinking_params:
                     local_extra.update(r.native_thinking_params)
                     # v5.3.7 — keep Gemini thinking budget below max_tokens (empty-success fix)

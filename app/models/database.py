@@ -278,6 +278,8 @@ async def init_db():
         # Add new columns to existing tables (SQLite doesn't support IF NOT EXISTS for columns)
         for stmt in [
             "ALTER TABLE providers ADD COLUMN hold_down_sec INTEGER",
+            # v5.22.7 — self-service password reset needs a delivery address
+            "ALTER TABLE users ADD COLUMN email TEXT",
             "ALTER TABLE providers ADD COLUMN failure_threshold INTEGER",
             "ALTER TABLE system_settings ADD COLUMN updated_at REAL DEFAULT 0",
             "ALTER TABLE api_keys ADD COLUMN spending_cap_usd REAL",

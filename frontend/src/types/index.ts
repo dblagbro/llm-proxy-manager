@@ -354,6 +354,9 @@ export interface User {
   id: string
   username: string
   role: 'admin' | 'user'
+  // v5.22.7 — delivery address for self-service password reset. Null for
+  // accounts created before the feature; those must be reset by an admin.
+  email?: string | null
   created_at: string
 }
 
