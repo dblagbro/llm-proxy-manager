@@ -2,6 +2,20 @@
 
 All notable changes since v2.7.6. Older history available in `git log`.
 
+## v5.22.8 — grok-bridge: noVNC sub-path fix, honest healthz, non-JSON error handling (2026-08-11)
+
+**Operator report:** creating a grok provider failed with `Unexpected token 'I', "Internal S"... is not valid JSON`; the noVNC bridge screen was blank with `fbsetbg` noise; the refresh and "open grok.com" buttons did nothing. Three distinct faults, none of them in llm-proxy2 itself.
+
+1. **Dead browser reported as healthy.** The bridge's Playwright context had been closed for ~5 days (`TargetClosedError: BrowserContext.cookies: Target page, context or browser has been closed`). `/api/status` therefore 500'd, the noVNC view had no browser to show, and every button acted on a dead context. `/healthz` was a static `{"status":"ok"}` that never touched Chromium, so Docker showed `healthy` throughout. It now probes the context and returns **503** when the browser is gone (bridge v1.1.1). Docker does not auto-restart on unhealthy — recovery is still `docker restart llm-proxy2-grok-bridge` — but the fault is now visible instead of silent.
+
+2. **noVNC could never connect behind the sub-path.** `/api/status` hardcoded `vnc_url` as `/vnc/vnc.html?path=vnc/websockify`, ignoring `BRIDGE_PUBLIC_PATH` (`/grok-bridge`) — which the `/login` page builder right below it already honoured. noVNC resolves `?path=` against the HOST ROOT, so it opened `wss://<host>/vnc/websockify` → **404** → "Failed to connect to server" → blank screen. Now built from `BRIDGE_PUBLIC_PATH`, correct for both sub-path and root-mounted deployments. Verified: canvas 1920x1080 rendering the live signed-in grok.com session, zero console errors.
+
+3. **A bridge 500 surfaced as a JSON parse error.** The "create conversation" button called `r.json()` unconditionally, so a plain-text `Internal Server Error` body produced the operator's cryptic message. It now reads the body as text, reports the real HTTP status, and names the likely cause.
+
+The `fbsetbg` wallpaper message is cosmetic (no wallpaper setter installed in the image) and unrelated.
+
+Also confirms the v5.22.7 Cohere fix landed: that provider's error changed from `missing required field: 'type'` to `model 'embed-english-v3.0' is not supported` — a provider **configuration** problem (an embedding model set for chat), not a payload-shape one.
+
 ## v5.22.7 — password reset (admin + self-service email); Cohere tool-shape fix (2026-08-11)
 
 **Password reset — both paths.** The service had none: a locked-out user could only be fixed by an admin hand-editing the DB.

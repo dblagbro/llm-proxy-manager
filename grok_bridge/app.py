@@ -39,7 +39,7 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Optional
 
 import httpx
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from playwright.async_api import (
     BrowserContext,
@@ -465,8 +465,40 @@ async def _force_refresh() -> bool:
 
 # ── Health + status ──────────────────────────────────────────────────────
 @app.get("/healthz")
-async def healthz():
-    return {"status": "ok", "version": "1.1.0", "ts": int(time.time())}
+async def healthz(response: Response):
+    """Liveness INCLUDING the Playwright browser.
+
+    v1.1.1 — this used to return a static ``{"status": "ok"}`` that never
+    touched Chromium. On 2026-08-11 the browser context had been dead for
+    five days (``TargetClosedError: ... browser has been closed``) while
+    Docker still reported the container ``healthy``: /api/status 500'd, the
+    noVNC view was blank and every button was inert, with nothing anywhere
+    saying the sidecar was broken.
+
+    Now a dead context yields 503, so ``docker ps`` shows ``unhealthy`` and
+    the fault is visible. Note Docker does NOT auto-restart on unhealthy —
+    recovery is still ``docker restart llm-proxy2-grok-bridge``.
+    """
+    browser_ok = False
+    detail = "no context"
+    if _context is not None:
+        try:
+            # Cheap call that fails fast if the target is gone.
+            await _context.cookies(["https://grok.com"])
+            browser_ok = True
+            detail = "ok"
+        except Exception as exc:
+            detail = f"{type(exc).__name__}: {str(exc)[:120]}"
+            logger.warning("healthz.browser_dead %s", detail)
+
+    if not browser_ok:
+        response.status_code = 503
+    return {
+        "status": "ok" if browser_ok else "degraded",
+        "browser": detail,
+        "version": "1.1.1",
+        "ts": int(time.time()),
+    }
 
 
 def _conv_id_from_url(url: Optional[str]) -> Optional[str]:
@@ -510,7 +542,17 @@ async def status():
         "last_refresh_status": _last_refresh_status,
         "url": cur_url,
         "current_conversation_id": _conv_id_from_url(cur_url),
-        "vnc_url": "/vnc/vnc.html?path=vnc/websockify&autoconnect=true&resize=remote",
+        # v1.1.1 — must honour BRIDGE_PUBLIC_PATH, exactly like the /login page
+        # builder below. This was hardcoded root-relative, so behind the
+        # /grok-bridge/ nginx prefix noVNC resolved ``path=vnc/websockify``
+        # against the HOST ROOT and opened wss://<host>/vnc/websockify → 404,
+        # "Failed to connect to server", blank screen. The page path was wrong
+        # for the same reason.
+        "vnc_url": (
+            f"{BRIDGE_PUBLIC_PATH}/vnc/vnc.html"
+            f"?path={(BRIDGE_PUBLIC_PATH[1:] + '/') if BRIDGE_PUBLIC_PATH else ''}vnc/websockify"
+            "&autoconnect=true&resize=remote"
+        ),
         "rate_limit_429": {
             "last_429_at": _last_429_at if _last_429_at > 0 else None,
             "cooldown_remaining_sec": cooldown_remaining,
