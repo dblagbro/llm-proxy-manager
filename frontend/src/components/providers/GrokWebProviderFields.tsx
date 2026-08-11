@@ -197,7 +197,25 @@ export function GrokWebProviderFields({ form, set, editing }: Props) {
                   const r = await fetch(`${DEFAULT_BRIDGE_PUBLIC}/api/conversation/new`, {
                     method: 'POST',
                   })
-                  const j = await r.json()
+                  // v5.22.8 — do NOT r.json() blindly. When the bridge's
+                  // Playwright browser dies it returns a plain-text 500
+                  // ("Internal Server Error"), and JSON.parse surfaced that to
+                  // the operator as `Unexpected token 'I', "Internal S"... is
+                  // not valid JSON` — which says nothing about the real fault.
+                  const raw = await r.text()
+                  let j: { conversation_id?: string; hint?: string; error?: string } = {}
+                  try {
+                    j = raw ? JSON.parse(raw) : {}
+                  } catch {
+                    throw new Error(
+                      `Bridge returned HTTP ${r.status}: ${raw.slice(0, 120) || 'empty response'}. ` +
+                      `Check the grok-bridge sidecar (its browser may have died — ` +
+                      `"docker restart llm-proxy2-grok-bridge").`,
+                    )
+                  }
+                  if (!r.ok) {
+                    throw new Error(j.hint || j.error || `Bridge returned HTTP ${r.status}`)
+                  }
                   if (j.conversation_id) {
                     set({
                       extra_config: {
