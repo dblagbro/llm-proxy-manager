@@ -2,6 +2,20 @@
 
 All notable changes since v2.7.6. Older history available in `git log`.
 
+## v5.22.6 — ROOT CAUSE: infinite loop in `_next_route` wedged nodes (2026-08-10)
+
+**This is the actual cause of the recurring "pool exhausts, node goes unhealthy, never recovers" outage** that v5.22.3/.4/.5 chased through connection *holding* and aiosqlite *thread* leaks. Those were real fixes for real problems; none of them was this one, which is why the wedge kept coming back.
+
+**Root cause — `app/routing/fallback.py::_next_route` could spin forever.** It passed a SINGLE `exclude_provider_id` seed chosen as `next(iter(extended_excluded))`. When `select_provider` returned a provider that had already been tried, the "make progress" step was `extended_excluded.add(candidate.provider.id)` — a **no-op**, because that id was already in the set. The seed was then recomputed identically, producing the same call and the same result, forever. Each pass runs `select_provider` → `_load_profile` per provider → ~2 DB queries each, so the loop is an unbounded query storm on the single asyncio thread.
+
+**Consequences observed in production:** one `/v1/messages` request that hit a provider error was enough to peg the event loop and drain the DB pool to 50/50 on an *otherwise idle* node. Node reported unhealthy within minutes of boot and never recovered; SQLite writes stopped entirely (DB/WAL mtimes frozen for 9h). Reproduced independently on tmrwww01 and tmrwww02 with identical py-spy stacks: `_load_profile ← select_provider ← _next_route ← try_ranked_non_streaming ← messages.py:1030`, MainThread ~44% of a core with ~50 aiosqlite worker threads at ~2.9% each.
+
+This **retires the "P2 single-event-loop CPU ceiling under abusive concurrency"** hypothesis recorded in `docs/current-state.md`. It was never a throughput limit — the node was not busy, it was spinning. Traffic at onset was ~1 request per 2 minutes.
+
+**Fix.** Use the cumulative `exclude_provider_ids` set that `select_provider` has accepted since **v5.7.13** — added for empty-success failover, whose own comment already notes that single-exclude "cannot escape a ping-pong between same-family candidates". `_next_route` simply never adopted it. One call, the full exclusion set, no seed chaining. Termination is now structural: each iteration returns, raises, or adds an id `select_provider` could not previously have returned, and the set is bounded by the provider count. A defensive guard now **raises** if `select_provider` ever hands back an excluded provider, rather than looping.
+
+Regression pin: `tests/unit/test_v5226_next_route_terminates.py` — 5 tests asserting termination, that the full exclusion set (not a single seed) is passed, that OAuth skips still converge, and that a contract-violating selector fails instead of spinning. Verified to **fail against pre-fix code** (`select_provider called 201x — _next_route is spinning`) and pass after. No new lint findings (12 pre-existing before and after) and no new unit-test failures.
+
 ## v5.21.16 — vision hard-fail + capability-flag fixes; empty-completion guards; expired-provider exclusion (2026-08-06)
 
 **CamReview incident (2026-08-05/06).** Vision `/v1/messages` returned empty completions, then (after re-auth) `model:"auto"` silently dropped images and fabricated descriptions. Root causes + fixes:

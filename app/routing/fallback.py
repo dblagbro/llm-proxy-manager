@@ -144,36 +144,61 @@ async def _next_route(
     model_override: Optional[str],
     tried_ids: set[str],
 ) -> RouteResult:
-    """select_provider supports one exclude at a time; chain it by calling
-    once per already-tried provider until a new one is returned.
+    """Ask select_provider for the best candidate that is not already tried.
 
     v2.8.8: skips claude-oauth providers — those use a different auth
     method (Bearer + CC beta flags) and aren't reachable through the
     litellm-based call_fn the fallback chain uses. They're handled by the
     OAuth dispatch in messages.py / completions.py BEFORE the chain runs.
+
+    v5.22.6 (BUG: production wedge): this used to pass a SINGLE
+    ``exclude_provider_id`` seed taken as ``next(iter(extended_excluded))``
+    and, when select_provider handed back an already-tried provider, "made
+    progress" via ``extended_excluded.add(candidate.provider.id)`` — a no-op,
+    because that id was already in the set. The seed was then recomputed
+    identically and the loop spun forever, each pass calling select_provider
+    (which runs ``_load_profile`` — 2 queries per provider). One request that
+    hit a provider error was enough to peg the event loop and drain the DB
+    pool to 50/50 on an otherwise idle node; it never recovered.
+
+    select_provider has accepted a cumulative ``exclude_provider_ids`` set
+    since v5.7.13 (added for empty-success failover, whose comment already
+    notes single-exclude "cannot escape a ping-pong"). Use it: one call, the
+    full exclusion set, no chaining. Termination is now structural — every
+    iteration either returns, raises, or adds an id select_provider could not
+    have returned before, and the set is bounded by the provider count.
     """
     # Pinned routes have no fallback — one provider only
     if pinned_provider_id:
         raise RuntimeError("pinned provider has no fallback candidates")
 
-    # Keep excluding most-recent tried until select_provider returns a fresh
-    # NON-claude-oauth candidate.
     extended_excluded = set(tried_ids)
+    # Preserved from the original: an empty exclusion set means the caller
+    # has not actually tried anything, which is not a state the fallback
+    # chain reaches (it adds to `tried` before the first call_fn).
+    if not extended_excluded:
+        raise RuntimeError("no untried candidate remains")
+
     while True:
-        seed = next(iter(extended_excluded), None)
-        if seed is None:
-            raise RuntimeError("no untried candidate remains")
         try:
             candidate = await select_provider(
                 db, hint, has_tools=has_tools, has_images=has_images,
                 key_type=key_type, pinned_provider_id=None,
-                model_override=model_override, exclude_provider_id=seed,
+                model_override=model_override,
+                exclude_provider_ids=extended_excluded,
             )
         except RuntimeError:
             raise RuntimeError("no untried candidate remains")
+
+        # Defensive: select_provider filters the exclusion set itself, so this
+        # cannot normally fire. If its contract ever changes, FAIL rather than
+        # spin — an infinite loop here is what took production down.
         if candidate.provider.id in extended_excluded:
-            extended_excluded.add(candidate.provider.id)
-            continue
+            raise RuntimeError(
+                "select_provider returned an excluded provider "
+                f"({candidate.provider.id}); refusing to loop"
+            )
+
         if candidate.provider.provider_type in ("claude-oauth", "ChatGPT-oauth-plan"):
             # OAuth-based providers can't go through litellm; skip them in
             # the fallback chain. Add to excluded so the next pick is fresh.
