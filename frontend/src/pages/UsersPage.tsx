@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/Button'
 import { Badge } from '@/components/ui/Badge'
 import { Input } from '@/components/ui/Input'
 import { Modal, ModalHeader, ModalBody, ModalFooter } from '@/components/ui/Modal'
+import { KeyRound } from 'lucide-react'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { Spinner } from '@/components/ui/Spinner'
 import { useToast } from '@/components/ui/Toast'
@@ -21,8 +22,12 @@ export function UsersPage() {
   const { user: me } = useAuth()
   const [showModal, setShowModal] = useState(false)
   const [editing, setEditing] = useState<User | null>(null)
-  const [form, setForm] = useState({ username: '', password: '', role: 'user' as Role })
+  const [form, setForm] = useState({ username: '', password: '', role: 'user' as Role, email: '' })
   const [deleteId, setDeleteId] = useState<string | null>(null)
+  // v5.22.7 option A — admin-initiated reset. The generated password is shown
+  // exactly once; it is never stored in plaintext or returned again.
+  const [resetUser, setResetUser] = useState<User | null>(null)
+  const [tempPassword, setTempPassword] = useState<string | null>(null)
   // v5.0.22 — bulk-delete selection. Self is never selectable.
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [bulkConfirmOpen, setBulkConfirmOpen] = useState(false)
@@ -31,14 +36,22 @@ export function UsersPage() {
 
   const saveMutation = useMutation({
     mutationFn: () => editing
-      ? usersApi.update(editing.id, { password: form.password || undefined, role: form.role })
-      : usersApi.create({ username: form.username, password: form.password, role: form.role }),
+      ? usersApi.update(editing.id, { password: form.password || undefined, role: form.role, email: form.email })
+      : usersApi.create({ username: form.username, password: form.password, role: form.role, email: form.email || undefined }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['users'] })
       toast.success(editing ? 'User updated' : 'User created')
       closeModal()
     },
     onError: (e: Error) => toast.error(e.message),
+  })
+
+  const resetMutation = useMutation({
+    mutationFn: (id: string) => usersApi.resetPassword(id),
+    onSuccess: (res: { temporary_password?: string }) => {
+      setTempPassword(res.temporary_password || null)
+      qc.invalidateQueries({ queryKey: ['users'] })
+    },
   })
 
   const deleteMutation = useMutation({
@@ -68,13 +81,13 @@ export function UsersPage() {
 
   function openCreate() {
     setEditing(null)
-    setForm({ username: '', password: '', role: 'user' })
+    setForm({ username: '', password: '', role: 'user', email: '' })
     setShowModal(true)
   }
 
   function openEdit(u: User) {
     setEditing(u)
-    setForm({ username: u.username, password: '', role: u.role as Role })
+    setForm({ username: u.username, password: '', role: u.role as Role, email: u.email || '' })
     setShowModal(true)
   }
 
@@ -176,6 +189,14 @@ export function UsersPage() {
                         <Edit2 className="h-3.5 w-3.5" />
                       </Button>
                       <Button
+                        size="sm" variant="outline"
+                        aria-label={`Reset password for ${u.username}`}
+                        title="Reset password"
+                        onClick={() => { setResetUser(u); setTempPassword(null) }}
+                      >
+                        <KeyRound className="h-3.5 w-3.5" />
+                      </Button>
+                      <Button
                         size="sm" variant="danger"
                         aria-label={`Delete ${u.username}`}
                         onClick={() => setDeleteId(u.id)}
@@ -211,6 +232,12 @@ export function UsersPage() {
               onChange={e => setForm(f => ({ ...f, password: e.target.value }))}
               required={!editing}
             />
+            <Input
+              label="Email (for self-service password reset)"
+              type="email"
+              value={form.email}
+              onChange={e => setForm(f => ({ ...f, email: e.target.value }))}
+            />
             <div className="flex flex-col gap-1.5">
               <label className="text-sm font-medium text-gray-700 dark:text-gray-300">Role</label>
               <select
@@ -229,6 +256,50 @@ export function UsersPage() {
           <Button onClick={() => saveMutation.mutate()} loading={saveMutation.isPending}>
             {editing ? 'Save Changes' : 'Create User'}
           </Button>
+        </ModalFooter>
+      </Modal>
+
+      {/* v5.22.7 option A — admin reset. Two states: confirm, then show-once. */}
+      <Modal open={!!resetUser} onClose={() => { setResetUser(null); setTempPassword(null) }}>
+        <ModalHeader onClose={() => { setResetUser(null); setTempPassword(null) }}>
+          Reset password{resetUser ? ` — ${resetUser.username}` : ''}
+        </ModalHeader>
+        <ModalBody>
+          {tempPassword ? (
+            <div className="space-y-3">
+              <p className="text-sm text-gray-700 dark:text-gray-300">
+                New temporary password. <strong>Copy it now</strong> — it is not stored
+                in plaintext and cannot be shown again.
+              </p>
+              <code className="block select-all break-all rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800 px-3 py-2 text-sm font-mono text-gray-900 dark:text-gray-100">
+                {tempPassword}
+              </code>
+              <p className="text-xs text-gray-500 dark:text-gray-400">
+                Any password-reset link previously emailed to this user has been voided.
+              </p>
+            </div>
+          ) : (
+            <p className="text-sm text-gray-700 dark:text-gray-300">
+              Generate a new temporary password for{' '}
+              <strong>{resetUser?.username}</strong>? Their current password stops
+              working immediately.
+            </p>
+          )}
+        </ModalBody>
+        <ModalFooter>
+          {tempPassword ? (
+            <Button onClick={() => { setResetUser(null); setTempPassword(null) }}>Done</Button>
+          ) : (
+            <>
+              <Button variant="ghost" onClick={() => setResetUser(null)}>Cancel</Button>
+              <Button
+                onClick={() => resetUser && resetMutation.mutate(resetUser.id)}
+                loading={resetMutation.isPending}
+              >
+                Reset password
+              </Button>
+            </>
+          )}
         </ModalFooter>
       </Modal>
 

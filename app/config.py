@@ -469,6 +469,8 @@ class Settings(BaseSettings):
     smtp_port: int = Field(587, alias="SMTP_PORT")
     smtp_user: Optional[str] = Field(None, alias="SMTP_USER")
     smtp_pass: Optional[str] = Field(None, alias="SMTP_PASS")
+    # v5.22.7 — some relays (earthlink) require an explicit HELO/EHLO name
+    smtp_helo: Optional[str] = Field(None, alias="SMTP_HELO")
     smtp_from: Optional[str] = Field(None, alias="SMTP_FROM")
     smtp_to: Optional[str] = Field(None, alias="SMTP_TO")
 

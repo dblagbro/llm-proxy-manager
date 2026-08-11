@@ -6,6 +6,7 @@ import { ThemeProvider } from '@/context/ThemeContext'
 import { Toaster } from '@/components/ui/Toast'
 import { Layout } from '@/components/layout/Layout'
 import { LoginPage } from '@/pages/LoginPage'
+import { ResetPasswordPage } from '@/pages/ResetPasswordPage'
 import { DashboardPage } from '@/pages/DashboardPage'
 import { ProvidersPage } from '@/pages/ProvidersPage'
 import { RoutingPage } from '@/pages/RoutingPage'
@@ -45,6 +46,8 @@ function AppRoutes() {
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
+      {/* v5.22.7 — unauthenticated: reached from the emailed reset link */}
+      <Route path="/reset-password" element={<ResetPasswordPage />} />
       <Route
         element={
           <RequireAuth>

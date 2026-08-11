@@ -205,6 +205,9 @@ SCHEMA: dict[str, dict] = {
     "smtp_port":    {"type": "int",   "default": settings.smtp_port,         "label": "SMTP port"},
     "smtp_from":    {"type": "str",   "default": settings.smtp_from or "",   "label": "From address"},
     "smtp_to":      {"type": "str",   "default": settings.smtp_to or "",     "label": "Alert recipient"},
+    "smtp_user":    {"type": "str",   "default": settings.smtp_user or "",   "label": "SMTP username"},
+    "smtp_pass":    {"type": "str",   "default": settings.smtp_pass or "",   "label": "SMTP password"},
+    "smtp_helo":    {"type": "str",   "default": settings.smtp_helo or "",   "label": "SMTP HELO/EHLO name"},
     # ── Wave 6 — Audit log export ────────────────────────────────────────────
     "audit_export_s3_bucket": {
         "type": "str", "default": settings.audit_export_s3_bucket or "",

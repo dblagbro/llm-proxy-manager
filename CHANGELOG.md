@@ -2,6 +2,20 @@
 
 All notable changes since v2.7.6. Older history available in `git log`.
 
+## v5.22.7 — password reset (admin + self-service email); Cohere tool-shape fix (2026-08-11)
+
+**Password reset — both paths.** The service had none: a locked-out user could only be fixed by an admin hand-editing the DB.
+
+*Option A — admin-initiated.* `POST /api/users/{id}/reset-password` (admin-only). Omit a password and the server generates a strong one and returns it **once**; supply one to set it explicitly. A "Reset password" action is on the Users page, showing the generated value in a copy-once dialog.
+
+*Option B — self-service by email.* `POST /api/auth/password-reset/request` + `/confirm`, a "Forgot password?" panel on the login page, and a new unauthenticated `/reset-password` route for the emailed link. New `app/utils/mailer.py` (smtplib + STARTTLS, off-thread) mirrors the sender already working in the operator's DevinGPT project; new `smtp_user`/`smtp_pass`/`smtp_helo` runtime settings. `users.email` column + `password_reset_tokens` table added.
+
+Because `/password-reset/*` is the only **unauthenticated write surface** on the service, it is built defensively: responses are byte-identical whether the account is unknown, has no email, or exists (anti-enumeration); mail-send failures are never surfaced for the same reason; tokens are 256-bit randoms stored only as SHA-256; they are single-use, expire in 30 minutes, and are voided by any other password change; and requests are rate-limited per IP (10/h) and per account (3/h). `allowed_paths` already bypasses `/api/auth/`; `ip_block` still gates these paths deliberately, so a blocked IP cannot use it as a mail cannon while `/api/auth/login` stays exempt for recovery.
+
+**Cohere tool-shape fix.** Devin-Cohere's breaker sat open with every tool-carrying request failing `invalid tool at tools[0]: missing required field: 'type'`. `/v1/messages` takes Anthropic-format tools (`{name, description, input_schema}`) and handed them to litellm verbatim at four dispatch sites; litellm's adapters expect the OpenAI shape. New idempotent `normalize_tools_for_litellm()` converts per-tool and passes already-OpenAI tools through untouched — the claude-oauth path does its own conversion and must not be double-converted into empty-named tools.
+
+Pins: `tests/unit/test_v5227_password_reset.py` (27), `tests/unit/test_v5227_litellm_tool_shape.py` (12). No new lint findings; no new unit-test failures.
+
 ## v5.22.6 — ROOT CAUSE: infinite loop in `_next_route` wedged nodes (2026-08-10)
 
 **This is the actual cause of the recurring "pool exhausts, node goes unhealthy, never recovers" outage** that v5.22.3/.4/.5 chased through connection *holding* and aiosqlite *thread* leaks. Those were real fixes for real problems; none of them was this one, which is why the wedge kept coming back.

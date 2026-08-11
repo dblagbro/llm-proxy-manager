@@ -15,6 +15,14 @@ export const authApi = {
   login:  (username: string, password: string) =>
     api.post<AuthUser>('/api/auth/login', { username, password }),
   logout: () => api.post<void>('/api/auth/logout'),
+  // v5.22.7 — self-service password reset (option B). Both are
+  // unauthenticated; `requestReset` always resolves 200 regardless of
+  // whether the account exists (anti-enumeration), so the UI must never
+  // branch on its result.
+  requestReset: (identifier: string) =>
+    api.post<{ ok: boolean; message: string }>('/api/auth/password-reset/request', { identifier }),
+  confirmReset: (token: string, new_password: string) =>
+    api.post<{ ok: boolean; username: string }>('/api/auth/password-reset/confirm', { token, new_password }),
   me:     () => api.get<AuthUser>('/api/auth/me'),
   // Unauthenticated-safe boot probe — always 200, so a logged-out page load
   // does not log a 401 console error (BUG-020). Used by the auth bootstrap.
@@ -442,10 +450,15 @@ export interface BulkDeleteResult {
 
 export const usersApi = {
   list:   ()                             => api.get<User[]>('/api/users'),
-  create: (data: { username: string; password: string; role: string }) =>
+  create: (data: { username: string; password: string; role: string; email?: string }) =>
     api.post<User>('/api/users', data),
-  update: (id: string, data: { password?: string; role?: string }) =>
+  update: (id: string, data: { password?: string; role?: string; email?: string }) =>
     api.patch<User>(`/api/users/${id}`, data),
+  // v5.22.7 option A — admin-initiated reset. Omit `password` and the
+  // server returns a generated one ONCE in `temporary_password`.
+  resetPassword: (id: string, password?: string) =>
+    api.post<{ ok: boolean; username: string; temporary_password?: string }>(
+      `/api/users/${id}/reset-password`, password ? { password } : {}),
   delete: (id: string)                   => api.delete<void>(`/api/users/${id}`),
   // v5.0.22 — bulk-delete endpoint (BUG-070 + bulk-UX feature)
   bulkDelete: (ids: string[])            => api.post<BulkDeleteResult>('/api/users/bulk_delete', { ids }),

@@ -667,6 +667,37 @@ def anthropic_tools_to_openai(tools: list[dict] | None) -> list[dict] | None:
     return out or None
 
 
+def normalize_tools_for_litellm(tools: list[dict] | None) -> list[dict] | None:
+    """Return tools in OpenAI shape for the litellm dispatch path. Idempotent.
+
+    v5.22.7 (BUG): ``/v1/messages`` receives Anthropic-format tools
+    (``{name, description, input_schema}``) and used to hand them to litellm
+    verbatim. litellm's provider adapters expect the OpenAI shape, so the
+    ``type`` discriminator was missing and Cohere rejected every tool-carrying
+    request with::
+
+        CohereException - invalid tool at tools[0]: missing required field: 'type'
+
+    Converting per-tool (rather than for the whole list) keeps mixed input
+    working, and tools that are ALREADY OpenAI-shaped are passed through
+    untouched — important because the claude-oauth path does its own
+    Anthropic->OpenAI conversion and must not be double-converted.
+    """
+    if not tools:
+        return tools
+    out: list[dict] = []
+    for t in tools:
+        if not isinstance(t, dict):
+            continue
+        if t.get("type") == "function" and isinstance(t.get("function"), dict):
+            out.append(t)          # already OpenAI shape — leave alone
+            continue
+        converted = anthropic_tools_to_openai([t])
+        if converted:
+            out.extend(converted)
+    return out or None
+
+
 def anthropic_to_openai_body(body: dict) -> dict:
     """Translate a full Anthropic ``/v1/messages`` request body into the
     shape an OpenAI Chat Completions upstream expects.

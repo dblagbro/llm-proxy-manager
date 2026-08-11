@@ -1,4 +1,5 @@
 """User management endpoints."""
+import logging
 import secrets
 import time
 from datetime import datetime
@@ -13,8 +14,27 @@ from app.models.database import get_db
 from app.models.db import User
 from app.auth.admin import require_admin, AdminUser, hash_password
 from app.utils.timefmt import utc_iso
+from app.models.db_user import PasswordResetToken
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/users", tags=["users"])
+
+
+async def _invalidate_reset_tokens(db: AsyncSession, user_id: str) -> None:
+    """Spend every live self-service reset token for a user.
+
+    Called whenever the password changes by another route, so a link that
+    was emailed earlier cannot be redeemed afterwards.
+    """
+    now = time.time()
+    rows = await db.execute(
+        select(PasswordResetToken).where(
+            PasswordResetToken.user_id == user_id,
+            PasswordResetToken.used_at.is_(None),
+        )
+    )
+    for tok in rows.scalars().all():
+        tok.used_at = now
 
 
 class UserCreate(BaseModel):
@@ -25,11 +45,13 @@ class UserCreate(BaseModel):
     username: str = Field(..., min_length=1)
     password: str = Field(..., min_length=8)
     role: str = "user"
+    email: Optional[str] = None
 
 
 class UserUpdate(BaseModel):
     password: Optional[str] = None
     role: Optional[str] = None
+    email: Optional[str] = None
 
 
 class BulkDeleteBody(BaseModel):
@@ -70,6 +92,8 @@ async def create_user(
         existing.deleted_at = None
         existing.password_hash = hash_password(body.password)
         existing.role = body.role
+        if body.email is not None:
+            existing.email = body.email
         existing.last_user_edit_at = time.time()
         await db.commit()
         await db.refresh(existing)
@@ -80,6 +104,7 @@ async def create_user(
         username=body.username,
         password_hash=hash_password(body.password),
         role=body.role,
+        email=body.email,
         last_user_edit_at=time.time(),
     )
     db.add(user)
@@ -98,11 +123,63 @@ async def update_user(
     user = await _get_or_404(db, user_id)
     if body.password:
         user.password_hash = hash_password(body.password)
+        # A password change voids any reset link already in someone's inbox.
+        await _invalidate_reset_tokens(db, user.id)
     if body.role:
         user.role = body.role
+    if body.email is not None:
+        user.email = body.email or None
     user.last_user_edit_at = time.time()
     await db.commit()
     return _serialize(user)
+
+
+class AdminResetBody(BaseModel):
+    """v5.22.7 option A — admin-initiated reset.
+
+    ``password`` optional: omit it and the server generates a strong temporary
+    one and returns it ONCE in the response, for the admin to hand over.
+    """
+    password: Optional[str] = Field(None, min_length=8)
+
+
+@router.post("/{user_id}/reset-password")
+async def admin_reset_password(
+    user_id: str,
+    body: AdminResetBody | None = None,
+    db: AsyncSession = Depends(get_db),
+    admin: AdminUser = Depends(require_admin),
+):
+    """v5.22.7 — reset another user's password without needing their old one.
+
+    This is the path that works when email is unconfigured or the account has
+    no address. The generated password is returned exactly once and is never
+    logged; only the fact of the reset is audited.
+    """
+    user = await _get_or_404(db, user_id)
+    generated = None
+    if body is not None and body.password:
+        new_password = body.password
+    else:
+        # url-safe, ~128 bits; avoids look-alike characters being a problem
+        generated = secrets.token_urlsafe(15)
+        new_password = generated
+
+    user.password_hash = hash_password(new_password)
+    user.last_user_edit_at = time.time()
+
+    # Any outstanding self-service reset links for this user are now void.
+    await _invalidate_reset_tokens(db, user.id)
+    await db.commit()
+
+    logger.info(
+        "users.admin_password_reset target=%s by=%s generated=%s",
+        user.id, getattr(admin, "username", "?"), generated is not None,
+    )
+    out = {"ok": True, "user_id": user.id, "username": user.username}
+    if generated:
+        out["temporary_password"] = generated
+    return out
 
 
 @router.delete("/{user_id}")
@@ -201,5 +278,6 @@ def _serialize(u: User) -> dict:
         "id": u.id,
         "username": u.username,
         "role": u.role,
+        "email": u.email,
         "created_at": utc_iso(u.created_at),
     }
