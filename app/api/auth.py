@@ -1,19 +1,27 @@
 """Admin login/logout endpoints."""
-from typing import Optional
+import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Response, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
 
+from app.auth.admin import (
+    SESSION_COOKIE_NAME,
+    SESSION_COOKIE_PATH,
+    AdminUser,
+    _extract_token,
+    _get_session,
+    create_session,
+    destroy_session,
+    require_any_user,
+    touch_session,
+    verify_password,
+)
 from app.models.database import get_db
 from app.models.db import User
-from app.auth.admin import (
-    verify_password, create_session, destroy_session, touch_session,
-    require_any_user, AdminUser, _extract_token, _get_session,
-    SESSION_COOKIE_NAME, SESSION_COOKIE_PATH,
-)
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 SESSION_COOKIE_MAX_AGE = 86400 * 7  # 7 days, matches SESSION_TTL_SEC
@@ -34,13 +42,46 @@ async def login(body: LoginRequest, response: Response, db: AsyncSession = Depen
     # v5.0.22 — login must refuse tombstoned users (BUG-070). Pre-fix
     # a deleted user could still authenticate as long as some peer
     # had resurrected them via insert-if-missing cluster sync.
+    #
+    # v5.22.10 — accept the email address as well as the username. Operators
+    # type their email out of habit and used to get a bare 401 with no hint
+    # that the field wanted a username.
+    #
+    # Resolution order matters for safety:
+    #   1. Exact username match WINS. `email` has no unique constraint and is
+    #      user-editable, so without this precedence someone could set their
+    #      email to another account's username and capture that login.
+    #   2. Otherwise, a case-insensitive email match, but ONLY if it identifies
+    #      exactly one live account. Two accounts sharing an address is
+    #      ambiguous, and silently picking one could authenticate the wrong
+    #      user — so that case is refused like any other bad credential.
+    identifier = (body.username or "").strip()
     result = await db.execute(
         select(User).where(
-            User.username == body.username,
+            User.username == identifier,
             User.deleted_at.is_(None),
         )
     )
     user = result.scalar_one_or_none()
+
+    if user is None and "@" in identifier:
+        by_email = await db.execute(
+            select(User).where(
+                func.lower(User.email) == identifier.lower(),
+                User.deleted_at.is_(None),
+            )
+        )
+        candidates = by_email.scalars().all()
+        if len(candidates) == 1:
+            user = candidates[0]
+        elif len(candidates) > 1:
+            logger.warning(
+                "auth.login ambiguous_email matches=%d — refusing; "
+                "two live accounts share this address", len(candidates),
+            )
+
+    # Same generic 401 for unknown identifier, wrong password and ambiguous
+    # email: the response must not reveal which.
     if not user or not verify_password(body.password, user.password_hash):
         raise HTTPException(401, "Invalid credentials")
 
@@ -111,8 +152,8 @@ async def session_probe(request: Request, db: AsyncSession = Depends(get_db)):
 
 
 class PreferencesUpdate(BaseModel):
-    timezone: Optional[str] = None     # IANA name, or empty string to clear
-    time_format: Optional[str] = None  # '12h' | '24h' | empty string to clear
+    timezone: str | None = None     # IANA name, or empty string to clear
+    time_format: str | None = None  # '12h' | '24h' | empty string to clear
 
 
 _VALID_TIME_FORMATS = {"12h", "24h", ""}
