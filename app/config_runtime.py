@@ -208,6 +208,15 @@ SCHEMA: dict[str, dict] = {
     "smtp_user":    {"type": "str",   "default": settings.smtp_user or "",   "label": "SMTP username"},
     "smtp_pass":    {"type": "str",   "default": settings.smtp_pass or "",   "label": "SMTP password"},
     "smtp_helo":    {"type": "str",   "default": settings.smtp_helo or "",   "label": "SMTP HELO/EHLO name"},
+    # ── v5.22.9 — OIDC SSO (Google) ──────────────────────────────────────────
+    "sso_enabled":     {"type": "bool", "default": settings.sso_enabled, "label": "Enable Google / OIDC sign-in", "group": "SSO"},
+    "sso_issuer":      {"type": "str",  "default": settings.sso_issuer, "label": "OIDC issuer", "group": "SSO"},
+    "sso_client_id":   {"type": "str",  "default": settings.sso_client_id or "", "label": "OIDC client ID", "group": "SSO"},
+    "sso_client_secret": {"type": "str", "default": settings.sso_client_secret or "", "label": "OIDC client secret", "group": "SSO"},
+    "sso_redirect_uri": {"type": "str", "default": settings.sso_redirect_uri or "", "label": "OIDC redirect URI (must match the IdP exactly)", "group": "SSO"},
+    "sso_default_role": {"type": "str", "default": settings.sso_default_role, "label": "Role for auto-provisioned SSO users", "group": "SSO"},
+    "sso_allowed_domains": {"type": "str", "default": settings.sso_allowed_domains or "", "label": "Allowed email domains (comma-separated; blank = any)", "group": "SSO"},
+    "sso_auto_provision": {"type": "bool", "default": settings.sso_auto_provision, "label": "Create an account on first SSO login (off = known users only)", "group": "SSO"},
     # ── Wave 6 — Audit log export ────────────────────────────────────────────
     "audit_export_s3_bucket": {
         "type": "str", "default": settings.audit_export_s3_bucket or "",

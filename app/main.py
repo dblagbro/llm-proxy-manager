@@ -31,6 +31,7 @@ from app.api.embeddings import router as embeddings_router
 from app.api.models import router as models_router
 from app.api.aliases import router as aliases_router
 from app.api.auth import router as auth_router
+from app.api.auth_sso import router as auth_sso_router  # v5.22.9 — OIDC SSO
 from app.api.providers import router as providers_router
 from app.api.providers_oauth import router as providers_oauth_router
 from app.api.apikeys import router as apikeys_router
@@ -672,6 +673,7 @@ app.include_router(images_router)
 
 # ── Admin API ────────────────────────────────────────────────────────────────
 app.include_router(auth_router)
+app.include_router(auth_sso_router)  # v5.22.9 — /api/auth/sso/*
 # v5.8.4 — providers_stats_router MUST come BEFORE providers_router. Both
 # share the /api/providers prefix; providers_router has /{provider_id}
 # (single-segment parameterized route) which would otherwise shadow the

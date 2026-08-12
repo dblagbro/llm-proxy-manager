@@ -471,6 +471,19 @@ class Settings(BaseSettings):
     smtp_pass: Optional[str] = Field(None, alias="SMTP_PASS")
     # v5.22.7 — some relays (earthlink) require an explicit HELO/EHLO name
     smtp_helo: Optional[str] = Field(None, alias="SMTP_HELO")
+
+    # v5.22.9 — OIDC single sign-on (Google by default). Disabled unless
+    # sso_enabled AND client id/secret are set. sso_auto_provision is off by
+    # default: a valid Google login for an unknown address is REFUSED rather
+    # than silently creating an account on a compliance-scoped service.
+    sso_enabled: bool = Field(False, alias="SSO_ENABLED")
+    sso_issuer: str = Field("https://accounts.google.com", alias="SSO_ISSUER")
+    sso_client_id: Optional[str] = Field(None, alias="SSO_CLIENT_ID")
+    sso_client_secret: Optional[str] = Field(None, alias="SSO_CLIENT_SECRET")
+    sso_redirect_uri: Optional[str] = Field(None, alias="SSO_REDIRECT_URI")
+    sso_default_role: str = Field("user", alias="SSO_DEFAULT_ROLE")
+    sso_allowed_domains: Optional[str] = Field(None, alias="SSO_ALLOWED_DOMAINS")
+    sso_auto_provision: bool = Field(False, alias="SSO_AUTO_PROVISION")
     smtp_from: Optional[str] = Field(None, alias="SMTP_FROM")
     smtp_to: Optional[str] = Field(None, alias="SMTP_TO")
 
