@@ -107,6 +107,7 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
                     username=u_data["username"],
                     password_hash=u_data["password_hash"],
                     role=u_data.get("role", "user"),
+                    email=u_data.get("email"),          # v5.22.11
                     last_user_edit_at=incoming_edit or None,
                 ))
         else:
@@ -118,6 +119,12 @@ async def apply_sync(db: AsyncSession, payload: dict) -> None:
                     existing.deleted_at = None  # peer restored
                     existing.password_hash = u_data["password_hash"]
                     existing.role = u_data.get("role", existing.role)
+                    # v5.22.11 — carry email across. Older peers omit the key
+                    # entirely; treat that as "no opinion" and keep ours rather
+                    # than blanking a locally-set address during a rolling
+                    # upgrade.
+                    if "email" in u_data:
+                        existing.email = u_data.get("email")
                 existing.last_user_edit_at = incoming_edit
     await _section_commit("users")
 

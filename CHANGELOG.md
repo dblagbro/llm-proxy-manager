@@ -2,6 +2,16 @@
 
 All notable changes since v2.7.6. Older history available in `git log`.
 
+## v5.22.11 — users.email now replicates across the cluster (2026-08-12)
+
+Found immediately after deploying v5.22.10: login by email worked on tmrwww01 and returned **401 on tmrwww02**, with both nodes holding the same user row at an *identical* `last_user_edit_at`. Cluster sync had replicated the row but not the column — `email`, added in v5.22.7, was never added to the sync payload (`cluster/manager.py`) or the merge handler (`cluster/sync.py`), so it replicated as NULL.
+
+While broken, **self-service password reset, SSO account matching and email login all worked only on whichever node the address happened to be set on**, and nothing surfaced an error explaining why.
+
+Both sides fixed. The merge deliberately only overwrites `email` when the peer actually sent the key — a peer still running < v5.22.11 omits it, and treating that as "no opinion" stops a rolling upgrade from blanking a locally-set address.
+
+Pin: `tests/unit/test_v52211_cluster_sync_email.py` (6), including a guard asserting every user column that matters appears in the payload so the next added column cannot be forgotten the same way. Verified failing against the pre-fix code.
+
 ## v5.22.10 — sign in with email address as well as username (2026-08-12)
 
 The operator was locked out on 2026-08-11 largely because typing `dblagbro@voipguru.org` into the sign-in form returned a bare `401 Invalid credentials` with nothing indicating the field wanted a *username*. It read as a wrong password. `/api/auth/login` now accepts either identifier.
