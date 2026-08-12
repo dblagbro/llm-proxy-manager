@@ -2,6 +2,19 @@
 
 All notable changes since v2.7.6. Older history available in `git log`.
 
+## v5.22.10 — sign in with email address as well as username (2026-08-12)
+
+The operator was locked out on 2026-08-11 largely because typing `dblagbro@voipguru.org` into the sign-in form returned a bare `401 Invalid credentials` with nothing indicating the field wanted a *username*. It read as a wrong password. `/api/auth/login` now accepts either identifier.
+
+Resolution order is deliberate, because `users.email` has **no unique constraint** and is user-editable:
+
+1. **An exact username match wins.** Without that precedence, a user could set their own email to another account's username and capture that login.
+2. Otherwise a **case-insensitive** email match, but only if it identifies **exactly one** live account. Two accounts sharing an address is ambiguous, and silently choosing one could authenticate the wrong person — so it is refused like any other bad credential (and logged server-side).
+
+Every failure path — unknown username, unknown email, wrong password, ambiguous email — returns the identical generic 401, so the endpoint stays non-enumerable. Whitespace is trimmed; an identifier with no `@` skips the email lookup entirely (no extra query on the hot path, and none when the username already matched).
+
+Pin: `tests/unit/test_v52210_login_by_email.py` (12), including the username-precedence hijack guard, the duplicate-email refusal (even when the password is valid for one of them), and a parity test asserting all four failure modes emit one indistinguishable message. Verified failing against the pre-fix handler.
+
 ## v5.22.9 — Google / OIDC single sign-on (2026-08-11)
 
 `app/auth/sso.py` had shipped OIDC building blocks since Wave 6 (PKCE pair, state/nonce, claim parsing, group→role mapping) but nothing was wired: no routes, no settings. This connects them into a working authorization-code flow and puts a "Sign in with Google" button on the login page.
