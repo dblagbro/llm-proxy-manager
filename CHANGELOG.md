@@ -2,6 +2,27 @@
 
 All notable changes since v2.7.6. Older history available in `git log`.
 
+## v5.22.9 — Google / OIDC single sign-on (2026-08-11)
+
+`app/auth/sso.py` had shipped OIDC building blocks since Wave 6 (PKCE pair, state/nonce, claim parsing, group→role mapping) but nothing was wired: no routes, no settings. This connects them into a working authorization-code flow and puts a "Sign in with Google" button on the login page.
+
+- `GET /api/auth/sso/config` — public; returns **only** `{enabled, label}` so the login page knows whether to render the button. No client id, no issuer internals.
+- `GET /api/auth/sso/start` — PKCE + state + nonce, redirect to the IdP's `authorization_endpoint` (from OIDC discovery, cached 1h).
+- `GET /api/auth/sso/callback` — code→token exchange, claim validation, session cookie, redirect into the app.
+
+New settings (`sso_enabled`, `sso_issuer`, `sso_client_id`, `sso_client_secret`, `sso_redirect_uri`, `sso_default_role`, `sso_allowed_domains`, `sso_auto_provision`), all editable in the admin UI under the "SSO" group.
+
+**Security posture.** `/callback` mints sessions from an unauthenticated request, so:
+
+- Authorization-code flow **with PKCE**; no implicit flow.
+- `parse_id_token_claims` does not verify signatures and documents that. That is sound *only* because the token is fetched over TLS directly from the issuer's token endpoint using our client secret — the back-channel case OIDC Core §3.1.3.7 allows. `iss`, `aud`, `exp` and `nonce` are each validated explicitly regardless.
+- State is **server-side, single-use and TTL'd** (10 min), so a replayed callback cannot mint a second session.
+- `email_verified=false` is refused; an optional domain allow-list gates which addresses may sign in at all.
+- **`sso_auto_provision` defaults to off** — a valid Google login for an unknown address is refused rather than silently creating an account on a compliance-scoped service. When enabled, provisioned users get a random unusable local password so the row cannot be logged into with a guessable credential.
+- Existing accounts are matched by `email`, falling back to the local part as a username (so pre-`email` accounts like `dblagbro` bind on first SSO login).
+
+Pin: `tests/unit/test_v5229_sso_google.py` (20) covering issuer/audience/expiry/nonce rejection, state replay and expiry, unverified email, the domain allow-list, refusal without auto-provision, and that `/config` leaks nothing. SSO is **disabled by default** — no behaviour change until an operator configures it.
+
 ## v5.22.8 — grok-bridge: noVNC sub-path fix, honest healthz, non-JSON error handling (2026-08-11)
 
 **Operator report:** creating a grok provider failed with `Unexpected token 'I', "Internal S"... is not valid JSON`; the noVNC bridge screen was blank with `fbsetbg` noise; the refresh and "open grok.com" buttons did nothing. Three distinct faults, none of them in llm-proxy2 itself.

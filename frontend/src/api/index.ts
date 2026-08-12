@@ -23,6 +23,9 @@ export const authApi = {
     api.post<{ ok: boolean; message: string }>('/api/auth/password-reset/request', { identifier }),
   confirmReset: (token: string, new_password: string) =>
     api.post<{ ok: boolean; username: string }>('/api/auth/password-reset/confirm', { token, new_password }),
+  // v5.22.9 — public probe so the login page knows whether to offer SSO.
+  // Returns only a boolean + label; never the client id or issuer.
+  ssoConfig: () => api.get<{ enabled: boolean; label: string }>('/api/auth/sso/config'),
   me:     () => api.get<AuthUser>('/api/auth/me'),
   // Unauthenticated-safe boot probe — always 200, so a logged-out page load
   // does not log a 401 console error (BUG-020). Used by the auth bootstrap.
