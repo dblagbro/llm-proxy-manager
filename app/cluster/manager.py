@@ -336,6 +336,10 @@ async def _build_sync_payload(db) -> dict:
     users = [
         {"id": u.id, "username": u.username, "password_hash": u.password_hash,
          "role": u.role, "created_at": str(u.created_at),
+         # v5.22.11 — email was added in v5.22.7 but never added HERE, so the
+         # column replicated as NULL: self-service reset, SSO matching and
+         # email login only worked on whichever node the address was set on.
+         "email": u.email,
          "deleted_at": (u.deleted_at.isoformat() if u.deleted_at else None),
          "last_user_edit_at": u.last_user_edit_at}
         for u in users_result.scalars().all()
