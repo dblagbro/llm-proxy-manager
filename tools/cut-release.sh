@@ -218,7 +218,7 @@ if [ "$SKIP_LIVE_VERIFY" != "1" ]; then
     echo "  if the new release ITSELF is the fix for the broken state." >&2
     exit 1
   fi
-  echo "All 3 canonical URLs healthy — proceeding with cut."
+  echo "All canonical URLs healthy — proceeding with cut."
   echo ""
 fi
 

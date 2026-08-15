@@ -47,7 +47,42 @@ Dockerfile requirements.txt`), all pinned v5.22.11. Nothing has drifted *yet*.
   `users.email` cluster replication, grok-bridge noVNC sub-path + honest `healthz`, Cohere
   tool-shape fix.
 
-## 🟡 Degraded — grok-web path on tmrwww01 (not a proxy defect)
+## ✅ 2026-08-15 — release hygiene restored; v5.22.11 shipped
+The 12-version release gap is closed. `v5.22.11` is tagged, released on GitHub, and published
+to Docker Hub as `dblagbro/llm-proxy2:5.22.11` + `:latest` (manifest verified pullable from
+tmrwww02); release tarball at
+`/mnt/s/tmrwww01-home-backups/backups/llm-proxy-v2-v5.22.11-20260815T183644Z.tar.gz`.
+
+**Canonical Hub repo is `dblagbro/llm-proxy2`** (operator decision, 2026-08-15).
+`dblagbro/llm-proxy-manager` is the **v1** image repo — see the naming cleanup below.
+
+Only v5.22.11 was tagged; v5.22.0–v5.22.10 remain untagged by decision (their changes are all
+contained in .11, which is what runs in production).
+
+Fresh host-side DB snapshots taken before the cut, integrity-checked `ok`, stored off-volume:
+`/home/dblagbro/backups/llmproxy.www{1,2}.pre-v52211.20260815T1834*.bak` (22 MB / 21 MB).
+
+## 🔤 Naming cleanup — pending operator decision
+The name is overloaded three ways and the "v2" suffix now describes a product that has no v1:
+- **GitHub repo `dblagbro/llm-proxy-manager`** holds both: `main`/`master` = retired v1 (Node.js),
+  `v2` = the current Python rewrite. Default branch is `v2`.
+- **Docker Hub `dblagbro/llm-proxy-manager`** = v1 images (`5.8.3` is the running zombie), but v2
+  releases were also pushed here (`5.21.16`, 2026-08-06). **Docker Hub `dblagbro/llm-proxy2`** is
+  v2's real channel.
+- **v1 zombies still running with no nginx route:** `llm-proxy-manager` (tmrwww01) and `llm-proxy`
+  (tmrwww02). Every `/llmProxy/` location is commented `# v1 retired 2026-04-30`, and
+  `$llm_proxy_upstream` was repointed to `llm-proxy2:3000` in the 2026-08-05 breach response.
+  They serve nothing — safe to retire.
+
+## 🟡 Structural gap — grok-web cannot work on tmrwww02
+The `grok-web` provider is cluster-synced to both nodes, but the `llm-proxy2-grok-bridge` sidecar
+exists **only on tmrwww01**. `Grok-Web-Devin` has an empty `base_url` and resolves the bridge by
+docker service name, which does not exist on tmrwww02 — so the provider fails there permanently
+and its breaker sits open (observed 2026-08-15: open, 8 failures, 7 opens). This is why the two
+nodes report different `healthyProviders` counts. Fix is either a bridge sidecar on tmrwww02 or a
+per-node exclusion for the provider. Not yet decided.
+
+## 🟡 Degraded — grok-web path on tmrwww01 (RESOLVED 2026-08-15, kept for context)
 - `llm-proxy2-grok-bridge` container is **unhealthy, failing streak 4203 (~35 h)**. Chromium is
   crashing: `cookie-refresh failed: Page.goto: Page crashed` navigating to `https://grok.com/`,
   repeating every 25 min. The container's supervisord is up — v5.22.8's *honest* `healthz` is
@@ -55,17 +90,16 @@ Dockerfile requirements.txt`), all pinned v5.22.11. Nothing has drifted *yet*.
   to catch, working as intended).
 - Consequence: provider **`Grok-Web-Devin`** (`8beb17c4bd11de26`) breaker is **half-open**,
   7 failures / 6 consecutive opens.
-- Likely remedy: recreate the single container (`sudo docker compose up -d --force-recreate
-  --no-deps llm-proxy2-grok-bridge`); the logged-in session persists in
-  `llm-proxy2-grok-bridge-data`. If Cloudflare invalidated the session, the operator must re-sign-in
-  via the noVNC tab at `/grok-bridge/login`. **Operator approval needed — not done.**
-- tmrwww02 runs no grok-bridge, which is why it reports 7/7.
+- **Resolved 2026-08-15** by recreating the single container (`up -d --force-recreate --no-deps
+  llm-proxy2-grok-bridge`). Playwright restored its session from `llm-proxy2-grok-bridge-data`
+  (`playwright ready; bridge listening`) — no operator re-login was needed. Container healthy;
+  tmrwww01 back to 7/7.
 
-## 🟡 Degraded — Codex provider breaker OPEN on tmrwww01
-Provider **`Devin-Codex-Gmail`** (`c549ed05a1cd86d3`, type `ChatGPT-oauth-plan`) breaker is
-**open**: 15 failures, 14 consecutive opens, ~64 min hold-down remaining. Consistent with an
-expired/invalid OAuth session rather than a routing bug. Needs credential re-auth; diagnose before
-re-enabling.
+## 🟡 Watch — Codex provider on tmrwww01 (self-recovered, probationary)
+Provider **`Devin-Codex-Gmail`** (`c549ed05a1cd86d3`, type `ChatGPT-oauth-plan`) was **open** with
+15 failures / 14 consecutive opens / ~64 min hold-down. By 2026-08-15 it had recovered on its own
+to **half-open, 2 failures, no hold-down** — so this was transient upstream trouble, not a dead
+OAuth session. Left alone deliberately; if it re-opens and stays open, re-auth the credential.
 
 ## Squaring up — release-hygiene gaps (open)
 1. **Nothing since v5.21.16 was released — the operator-locked "every version bump = tag +
@@ -144,13 +178,13 @@ any destructive action on a "remote" host. Verified 2026-08-13 — tmrwww01 `297
 tmrwww02 `9cca36eb…`: genuinely distinct hosts.
 
 ## Next 3 actions
-1. **Repair `tools/cut-release.sh`** (drop the GCP URL + gcloud hints, retarget the tarball at the
-   SAN path, settle `DOCKER_REPO`) and commit the pending doc updates — the script refuses to run
-   with an unstaged tree, so both are prerequisites for any release.
-2. **Take a fresh host-side DB snapshot on both nodes** before anything mutating, then
-   **cut v5.22.11** — tag + GitHub release + Hub push. Requires operator approval.
-3. **Clear the two degraded providers on www1** (grok-bridge Chromium recreate; Codex OAuth
-   re-auth), then align tmrwww02 onto the `stage-build.sh` pattern.
+1. **Settle the naming cleanup** (see above) — retire the two v1 zombie containers, archive the v1
+   branches, and decide whether the product keeps the `2`/`v2` suffix. Phase anything that changes
+   the `/llm-proxy2/` nginx path or the Hub repo name; those break callers.
+2. **Close the grok-web/tmrwww02 structural gap** — bridge sidecar on www2, or exclude the provider
+   per-node so its breaker stops flapping.
+3. **Align tmrwww02 onto `stage-build.sh`** (it still builds from the orphaned non-git copy), then
+   prune the two 1.1 GB June snapshots out of the live volume now that host-side backups exist.
 
 ## Resume commands
 - Orient: read `AGENTS.md` + this file; `git -C /mnt/s/code/llm-proxy-v2 status -sb`.
