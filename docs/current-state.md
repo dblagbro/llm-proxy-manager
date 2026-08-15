@@ -1,132 +1,161 @@
 # Current state — llm-proxy-v2
 
 > Brief live status. Keep it short and current. Detail lives in `architecture.md`,
-> `docs/recovery/`, `CHANGELOG.md`. Last updated: 2026-08-09.
+> `docs/recovery/`, `CHANGELOG.md`. Last updated: 2026-08-13 (verified against live nodes).
 
 ## Stage & objective
-**Production, in active rescue.** Objective: stop the recurring node degradation, then resume the
-staged recovery plan (`docs/recovery/01-current-state-assessment.md`, `docs/roadmap.md`).
+**Production, stable.** The recurring node degradation is root-caused and fixed (v5.22.6); both
+nodes have run clean since. Objective now: resume the recovery roadmap (test-suite green-up, doc
+drift consolidation) and close the release-hygiene gaps listed under "Squaring up" below.
 
 ## Branch / version
-- Branch `v2`; last commit `2acc675` (**v5.22.5**). `origin/v2` in sync (no upstream tracking ref set;
-  `git rev-parse origin/v2` == HEAD). Working tree clean.
-- Live on tmrwww01 + tmrwww02. Canonical deploy stack: `/home/dblagbro/docker/` (not the repo).
+- Branch `v2`; HEAD `0205f6d` (**v5.22.11**). `origin/v2` == HEAD (0 ahead / 0 behind).
+  Working tree clean.
+- **Both live nodes serve v5.22.11** and match HEAD's version pin.
+- Canonical deploy stack: `/home/dblagbro/docker/` (not the repo).
+- **GCP is out of scope** — the operator's strict-separation rule stands (reaffirmed 2026-08-13).
+  No GCP node is part of this cluster, is deployed to, or is diagnosed from here.
 
-## What works (verified)
+## Working directories (MOVED 2026-08-13 — read this before building)
+Source of truth moved off the home directory onto the `/mnt/s` NFS share (`192.168.18.5:/disk0`),
+which both nodes mount, so there is now one shared tree.
+
+| Path | Role |
+|---|---|
+| `/mnt/s/code/llm-proxy-v2` | **Source of truth.** Git worktree of `/mnt/s/code/llm-proxy`, branch `v2`. Edit here only. |
+| `/home/dblagbro/docker/build/llm-proxy-v2` | tmrwww01 build staging. Disposable rsync; overwritten by `stage-build.sh`. Never edit. |
+| `/home/dblagbro/llm-proxy-v2` | **Pre-move copy — do not use.** tmrwww01: `.git` points at a worktree registered elsewhere. tmrwww02: pointer is dangling → orphaned non-git copy. |
+
+Build on tmrwww01: `/home/dblagbro/docker/scripts/stage-build.sh llm-proxy-v2 --build`
+(rsync SAN → local disk, then compose build). Building without staging first builds stale source.
+Docker reads the entire ~305 MB context per build; over NFS that is slow and puts a hard-mounted
+NFS path in the build's critical path — hence the staging tree.
+
+**Verified 2026-08-13:** SAN source, tmrwww01 staging, tmrwww01 pre-move copy, and tmrwww02's
+build tree are all content-identical (sha `f4ea143f1ca464e7` over `app/ frontend/src/ grok_bridge/
+Dockerfile requirements.txt`), all pinned v5.22.11. Nothing has drifted *yet*.
+
+## What works (verified live 2026-08-13)
+- `tmrwww01` — `/health` 200, `healthy`, v5.22.11, node `llm-proxy2-www1`, **6/7 providers healthy**.
+- `tmrwww02` — `/health` 200, `healthy`, v5.22.11, node `llm-proxy2-www2`, **7/7 providers healthy**.
+- No pool wedge: DB file actively written (mtime current), no `QueuePool limit` errors — the
+  v5.22.6 fix is holding. This is the signature to watch; a wedge shows as climbing
+  `QueuePool limit` counts + `/health` 500.
 - Multi-provider routing + LMRH; vision hard-fail 422; empty-completion guards.
-- **grok-web bridge** end-to-end (bridge v1.1.0, DOM-scrape) — verified.
 - fd `nofile` ulimit hardening (65536) on both nodes.
-- The unbounded aiosqlite **thread** leak (self-heal `engine.dispose()` thrash) is fixed —
-  thread count no longer grows without bound.
+- v5.22.7–v5.22.11 shipped and are live: password reset, Google/OIDC SSO, sign-in by email,
+  `users.email` cluster replication, grok-bridge noVNC sub-path + honest `healthz`, Cohere
+  tool-shape fix.
 
-## ✅ RESOLVED — DB-connection-hold leak (v5.22.4, option A)
-Was: `/v1/messages` + `/v1/chat/completions` held the `get_db` session (an open read-txn from
-provider selection) across the upstream call + entire stream, pinning an aiosqlite connection for
-15-18 min → pool exhaustion → `/health` hangs → unhealthy every ~20 min. Same class as the
-v5.21.6-8 SSE fixes (`runs.py`/`lmrh_v2.py`), now applied to the chat handlers.
-**Fix (v5.22.4, commit `3fc664a`):** `await db.commit()` release-boundary after pre-dispatch reads
-and before dispatch (both handlers); + commits after the dispatch-time re-selects that reopened a
-txn across the stream (hedge, CoT-critique, empty-success failover, non-streaming apply_fanout);
-pool raised 20→40 (holds are short now). `record_outcome`/`maybe_extract` commit internally so they
-release on their own.
-**Verified:** commit() releases the connection (checkedout 1→0, mechanic tested); 12 concurrent
-streams → checkedout=0/40, 0 QueuePool errors; ~12 min realistic soak both nodes healthy,
-checkedout=0 throughout, 0 QueuePool errors; independent adversarial review drove completeness; 0
-new unit-test failures. `DB_POOL_TRACE` turned back OFF. Both nodes on v5.22.4.
+## 🟡 Degraded — grok-web path on tmrwww01 (not a proxy defect)
+- `llm-proxy2-grok-bridge` container is **unhealthy, failing streak 4203 (~35 h)**. Chromium is
+  crashing: `cookie-refresh failed: Page.goto: Page crashed` navigating to `https://grok.com/`,
+  repeating every 25 min. The container's supervisord is up — v5.22.8's *honest* `healthz` is
+  correctly reporting the dead browser inside (this is exactly the BUG-025 class it was written
+  to catch, working as intended).
+- Consequence: provider **`Grok-Web-Devin`** (`8beb17c4bd11de26`) breaker is **half-open**,
+  7 failures / 6 consecutive opens.
+- Likely remedy: recreate the single container (`sudo docker compose up -d --force-recreate
+  --no-deps llm-proxy2-grok-bridge`); the logged-in session persists in
+  `llm-proxy2-grok-bridge-data`. If Cloudflare invalidated the session, the operator must re-sign-in
+  via the noVNC tab at `/grok-bridge/login`. **Operator approval needed — not done.**
+- tmrwww02 runs no grok-bridge, which is why it reports 7/7.
 
-## ✅ RESOLVED — aiosqlite OS-thread leak (v5.22.5, the deeper fix)
-After v5.22.4, a node still reached **80 aiosqlite threads (2× pool cap) in 36 min under LIGHT
-traffic** with recycle=-1 AND self-heal already off — proving those were only amplifiers. Root
-cause: aiosqlite runs one OS thread per connection; any connection **created-then-destroyed
-(overflow churn) or GC'd-not-closed (cancellation / pre_ping invalidation)** orphans its thread
-forever.
-**Fix (v5.22.5, commit `330f8bc`):** a **fixed, non-churning pool** — `max_overflow=0` (pool is
-exactly `pool_size` connections, created once, reused forever, never destroyed → nothing to
-orphan), `pool_pre_ping=False` (no invalidate/discard churn), `pool_size=50`, `recycle=-1`.
-Structural guarantee: the pool can't create >50 connections and never destroys them.
-**Verified:** under sustained load the thread count **plateaued at 36 (pool_size 30 test) and did
-NOT climb toward 80**; `checkedout=0` throughout. Both nodes on v5.22.5.
+## 🟡 Degraded — Codex provider breaker OPEN on tmrwww01
+Provider **`Devin-Codex-Gmail`** (`c549ed05a1cd86d3`, type `ChatGPT-oauth-plan`) breaker is
+**open**: 15 failures, 14 consecutive opens, ~64 min hold-down remaining. Consistent with an
+expired/invalid OAuth session rather than a routing bug. Needs credential re-auth; diagnose before
+re-enabling.
 
-## Active risk (P2, separate & pre-existing — NOT a leak)
-- **Single-event-loop CPU ceiling under extreme concurrency.** py-spy (2026-08-10): the loop goes
-  CPU-bound constructing SQLAlchemy queries (`select_provider`'s `.where(...)`) under an *abusive*
-  synthetic burst (4-6 concurrent `model:auto` streams fired repeatedly) → queries slow → the fixed
-  pool exhausts → `/health` starves → unhealthy, and it drains slowly. **NOT triggered by real
-  ~2/min traffic** — the control node (real organic traffic) stayed healthy across every soak all
-  session — and NOT a connection/thread leak (`checkedout=0`, threads capped). This is an
-  architectural throughput limit, not the leak. Future work (separate): multiple uvicorn workers,
-  a `/health` that doesn't need a pooled connection, and caching/curtailing per-request
-  provider-selection query building. Tracked in `docs/roadmap.md` M1(P2).
+## Squaring up — release-hygiene gaps (open)
+1. **Nothing since v5.21.16 was released — the operator-locked "every version bump = tag +
+   GitHub release + Docker Hub push, same session" rule has been broken for 12 versions.**
+   - GitHub: latest release **v5.21.16** (2026-08-06); newest local tag is also `v5.21.16`.
+     **v5.22.0 … v5.22.11 have no tag and no release** — no pinned rollback point for the code
+     currently in production.
+   - Docker Hub is split across **two** repos and it is not clear which is canonical:
+     `dblagbro/llm-proxy2` (what `tools/cut-release.sh` pushes) is at `:latest` = **5.21.9**
+     (2026-07-16); `dblagbro/llm-proxy-manager` (what `AGENTS.md`/`CLAUDE.md` name as the
+     distribution image) is at **5.21.16** (2026-08-06). **Operator decision needed.**
+   - Either way, downstream consumers pulling `:latest` do not have the `_next_route`
+     infinite-loop fix (v5.22.6) — the bug that wedged the nodes. Highest-value open item.
+2. **`tools/cut-release.sh` cannot be run as-is** — it will fail or produce a wrong artifact:
+   - Its pre-cut live-verify curls **three** canonical URLs, including the GCP node
+     `c1conversations-avaya-01.avaya.c1cx.com`. That node is dropped/off-limits, so the check
+     fails and **aborts every cut**. Needs the URL removed (not papered over with
+     `--skip-live-verify`, which would also disable the two checks we *do* want).
+   - Its backup-tarball step runs `tar -C /home/dblagbro llm-proxy-v2` — the **pre-move stale
+     copy**. Must point at `/mnt/s/code/llm-proxy-v2`.
+   - `DOCKER_REPO` is hardcoded to `dblagbro/llm-proxy2`; see the channel ambiguity above.
+   - Its closing hints print `gcloud compute ssh …` redeploy commands for the GCP node.
+   Fix the script **before** the next cut.
+3. **Source-tarball backups are stale.** The `-backups` dirs at `/mnt/s/code/llm-proxy-v2-backups`
+   and `/home/dblagbro/llm-proxy-v2-backups` are identical and stop at `v3.0.10` (2026-04-30);
+   they are superseded by `cut-release.sh` step 10, which writes to
+   `/mnt/s/tmrwww01-home-backups/backups/` — and hasn't run since v5.21.16. Code is covered by
+   GitHub, so this is low risk; retire the two duplicate dirs.
+4. **No host-side DB snapshots.** `/home/dblagbro/backups/` is **empty** — the
+   `llmproxy.*.pre-*.bak` files that `docs/backup-plan.md` records as the standing safety net are
+   gone. In-container snapshots exist but are stale and large: `llmproxy.db.v5.0.0.snapshot` and
+   `llmproxy.db.v5.0.7.snapshot` (1.1 GB **each**, June) plus `llmproxy.db.bak-restore-20260721`,
+   sitting inside the live `llm-proxy2-data` volume against a 22 MB live DB. That is ~2.2 GB of
+   stale snapshot inside the volume it is supposed to protect — no off-volume copy. Take a fresh
+   host-side snapshot and prune the two June ones.
+5. **tmrwww02 was not migrated to the staging pattern.** Its compose still has
+   `build: /home/dblagbro/llm-proxy-v2` — the orphaned, non-git pre-move copy. It is byte-identical
+   to the SAN source today, but nothing keeps it in sync and, with no `.git`, drift is undetectable.
+   Align it with tmrwww01 (`stage-build.sh` + `build: /home/dblagbro/docker/build/llm-proxy-v2`).
+6. **Node images are built independently per node** (different image IDs: `a3114979f017` on www1,
+   `e66fb6160b38` on www2), so deploys are not bit-identical. Acceptable under the current rolling
+   model; publishing to Docker Hub and pulling would remove the class.
 
 ## Other known gaps
 - CI is weak: only 4 gating tests; full suite non-gating; **64 known-fail tests**
-  (`tests/known_failures.txt`); **9 test files uncommitted** (`git status`).
+  (`tests/known_failures.txt`). (The "9 test files uncommitted" note is resolved — tree is clean.)
 - Doc drift: `architecture.md` header says v5.21.8; `bug-log.md`/`refactor-log.md` exist at BOTH
   repo root and `docs/` (divergent). See `docs/agent-system.md` self-healing backlog.
+- Smoke instance (`llm-proxy2-smoke`) is on **v5.21.12**, 1/3 providers healthy — well behind the
+  live nodes. Fine as an isolated sandbox, but stale for pre-promotion validation.
+
+## Resolved — keep for context
+- **`_next_route` infinite loop (v5.22.6).** `app/routing/fallback.py::_next_route` excluded only
+  one provider per `select_provider` call and "progressed" by re-adding an id already excluded — a
+  no-op — so the loop spun forever, ~2 DB queries per provider per pass. One `/v1/messages` request
+  hitting a provider error pegged the event loop and drained the pool to 50/50 on an idle node.
+  Fix: pass the cumulative `exclude_provider_ids` set; defensive guard raises instead of looping.
+  Pin: `tests/unit/test_v5226_next_route_terminates.py`. **This retired the P2 "event-loop CPU
+  ceiling" hypothesis — the node was spinning, not saturated.**
+- **DB connection-hold leak (v5.22.4)** — chat handlers held `get_db`'s open read-txn across the
+  upstream call and entire stream. Fix: `await db.commit()` release-boundary before dispatch.
+- **aiosqlite OS-thread leak (v5.22.5)** — aiosqlite runs one OS thread per connection; churned or
+  GC'd-not-closed connections orphan threads forever. Fix: fixed non-churning pool
+  (`max_overflow=0`, `pool_pre_ping=False`, `pool_size=50`, `recycle=-1`).
 
 ## 🔴 INCIDENT 2026-08-10 — wrong-host purge on tmrwww01 (agent error, service restored)
-An agent session ran a purge against `c1conversations-avaya-01-s23` believing it a separate
-dropped node. That hostname resolves to `24.168.14.36` (public WAN) and **NAT-hairpins back to
-tmrwww01**, so every "remote" command executed on the live production node.
-**Damage:** `llm-proxy2` container removed (www.voipguru.org 502 outage); devingpt stack removed;
-5 docker volumes deleted, incl. `docker_devingpt_data` (774M — chatgpt.db, workspaces, skills,
-exports, generated_audio, images). **Restored:** compose + nginx rolled back from backups,
-`llm-proxy2` recreated (v5.22.5 healthy, its own DB volume was never touched), nginx valid and
-reloaded, all endpoints 200/401. **Not restored:** devingpt containers are down; its volume was
-recreated and seeded from the newest backup (`devingpt-post-v274132-verified-20260703T012717Z.db`,
-2026-07-02) — everything in that volume other than `devingpt.db` is unrecoverable.
-**Prevention:** compare `hostname` AND `/etc/machine-id` against local values before any
-destructive action on a "remote" host. `CLAUDE.md` topology corrected (2 dev nodes, not 3).
-
-## ✅ ROOT CAUSE FOUND — `_next_route` infinite loop (v5.22.6, fix written, NOT deployed)
-`app/routing/fallback.py::_next_route` excluded only ONE provider per
-`select_provider` call and "progressed" by re-adding an id already in the exclusion set —
-a no-op — so the seed never changed and the loop spun forever, each pass issuing ~2 DB
-queries per provider. **One** `/v1/messages` request that hit a provider error was enough to
-peg the event loop and drain the pool to 50/50 on an idle node.
-**Fix:** pass the cumulative `exclude_provider_ids` set `select_provider` has accepted since
-v5.7.13; defensive guard raises instead of looping. Pin:
-`tests/unit/test_v5226_next_route_terminates.py` (verified failing pre-fix, 5 tests).
-**Verified:** import OK, 219 routing tests pass, 0 new lint findings, 0 new unit-test failures.
-**DEPLOYED 2026-08-10 ~21:2x EDT (operator-approved, both nodes at once).** tmrwww01 +
-tmrwww02 both on **v5.22.6 healthy**, 0 QueuePool errors since deploy. Playwright-verified
-end-to-end on both: login OK, 7/7 authenticated APIs return real payloads (providers 7,
-keys 8, users 2, metrics, activity 100 rows, cluster, status-pages), and all 10 UI routes
-render their data with no error state. GCP node deliberately NOT touched.
-Watch for recurrence: a wedge would show as climbing `QueuePool limit` counts + `/health` 500.
-**Retires the P2 "event-loop CPU ceiling" entry below** — the node was spinning, not saturated.
-
-## 🔴 (SUPERSEDED by the above) pool wedge symptoms on v5.22.5 (observed 2026-08-10)
-Both live nodes wedged; `/health` returns 500 with
-`QueuePool limit of size 50 overflow 0 reached` (13.7k occurrences on tmrwww01 alone).
-Evidence gathered this session:
-- **Wedge is not load-driven.** ~1 inbound request per 2 min. tmrwww01 DB file mtime `08:00`,
-  `-wal`/`-shm` mtime `08:24` — container started ~08:20, so it wrote for ~4 min after boot and has
-  written **nothing for 9 h**. Not a slow degradation; a hard stop.
-- **Not the thread leak.** Threads capped at 56 (= pool_size 50 + workers) — v5.22.5's fixed
-  non-churning pool is holding. Nothing is growing.
-- **All 50 connections busy, none progressing.** `docker stats` ~180-208 % CPU with the asyncio
-  MainThread **idle** in `run_forever`; per-thread sampling shows ~490 ticks/10 s on MainThread and
-  ~27 ticks/10 s on each of the 50 aiosqlite `_connection_worker_thread`s, all parked at
-  `aiosqlite/core.py:63` (`result = function()`) — i.e. inside SQLite, spinning, not returning.
-  Signature of a **SQLite lock deadlock**, not a CPU ceiling and not a connection leak.
-- One MainThread sample caught `messages.py:1030 → try_ranked_non_streaming → _next_route →
-  select_provider → _load_profile (router.py:188)` CPU-bound in SQLAlchemy query *construction*.
-- **Onset not in logs**: docker's json log file has rotated — earliest retained entry is 12:11 UTC,
-  well after the 08:24 wedge. 13.7k QueuePool tracebacks flushed the evidence window.
-**Revises the P2 note below**: the "only under abusive synthetic burst" framing does not fit this
-event — real traffic was ~0. Treat the P2 entry as an unproven hypothesis until re-tested.
-**Do not restart before deciding** — a restart clears the only live evidence.
-
-## Latest verification (superseded)
-Both nodes restarted → healthy, inference 200 in ~1.5s (fresh). Will re-degrade without the leak fix.
+An agent session ran a purge against `c1conversations-avaya-01-s23` believing it a separate dropped
+node. That hostname resolves to `24.168.14.36` (public WAN) and **NAT-hairpins back to tmrwww01**,
+so every "remote" command executed on the live production node.
+**Damage:** `llm-proxy2` container removed (502 outage); devingpt stack removed; 5 docker volumes
+deleted incl. `docker_devingpt_data` (774M). **Restored:** compose + nginx rolled back, `llm-proxy2`
+recreated (its DB volume was never touched), all endpoints 200/401. **Not restored:** everything in
+the devingpt volume other than `devingpt.db` is unrecoverable.
+**Prevention (enforced):** compare `hostname` **and** `/etc/machine-id` against local values before
+any destructive action on a "remote" host. Verified 2026-08-13 — tmrwww01 `297da5f1…`,
+tmrwww02 `9cca36eb…`: genuinely distinct hosts.
 
 ## Next 3 actions
-1. Get operator direction on the leak fix (A/B/C); if C, land the session-reaper to stop the 20-min cycle.
-2. Implement the chosen fix with **live** before/after verification (not a subprocess test).
-3. Resume the recovery roadmap (test-suite green-up, doc drift consolidation).
+1. **Repair `tools/cut-release.sh`** (drop the GCP URL + gcloud hints, retarget the tarball at the
+   SAN path, settle `DOCKER_REPO`) and commit the pending doc updates — the script refuses to run
+   with an unstaged tree, so both are prerequisites for any release.
+2. **Take a fresh host-side DB snapshot on both nodes** before anything mutating, then
+   **cut v5.22.11** — tag + GitHub release + Hub push. Requires operator approval.
+3. **Clear the two degraded providers on www1** (grok-bridge Chromium recreate; Codex OAuth
+   re-auth), then align tmrwww02 onto the `stage-build.sh` pattern.
 
 ## Resume commands
-- Orient: read `AGENTS.md` + this file; `git -C /home/dblagbro/llm-proxy-v2 status -sb`.
-- Health: `sudo docker exec llm-proxy2 python3 -c "import urllib.request,json;print(json.load(urllib.request.urlopen('http://localhost:3000/health')).get('version'))"`
+- Orient: read `AGENTS.md` + this file; `git -C /mnt/s/code/llm-proxy-v2 status -sb`.
+- Health (per node): `curl -s https://www.voipguru.org/llm-proxy2/health` and
+  `https://www2.voipguru.org/llm-proxy2/health` — check `status`, `version`, `healthyProviders`.
+- Stage + build (tmrwww01): `/home/dblagbro/docker/scripts/stage-build.sh llm-proxy-v2 --build`
+- Deploy: `cd /home/dblagbro/docker && sudo docker compose up -d --force-recreate --no-deps llm-proxy2 && sudo docker exec nginx nginx -s reload`
 - Pool trace: `sudo docker kill --signal=SIGUSR2 llm-proxy2` then `docker logs --since 8s llm-proxy2`.
