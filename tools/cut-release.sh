@@ -36,9 +36,24 @@
 #
 # Fleet compose-image-reference inconsistency (read once and remember):
 #   - tmrwww01 + tmrwww02 compose : `image: llm-proxy2:latest`        (local tag)
-#   - c1conv compose              : `image: dblagbro/llm-proxy2:latest` (Hub tag)
-#   The redeploy hints printed at the end of this script use the right
-#   per-node form (pull+retag on tmrwww02; pull on c1conv).
+#   The redeploy hints printed at the end use the pull+retag form on tmrwww02.
+#
+# 2026-08-15 repairs (this script had not cut a release since v5.21.16, and
+# 12 versions shipped untagged/unpublished behind it — these were why):
+#   1. Pre-cut live-verify curled a THIRD canonical URL, the GCP node
+#      c1conversations-avaya-01.avaya.c1cx.com. That node is dropped and
+#      off-limits, so the check failed and `exit 1`-ed EVERY cut. Removed —
+#      the two TMR nodes are the whole cluster now. (Not worked around with
+#      --skip-live-verify, which would also disable the checks we want.)
+#   2. Backup tarball tar'd `-C /home/dblagbro llm-proxy-v2` — the pre-move
+#      copy. Source of truth moved to /mnt/s/code/llm-proxy-v2 on 2026-08-13.
+#   3. Docker build read its context from the NFS source dir (~305M over
+#      NFS). Now stages to local disk via stage-build.sh first, matching the
+#      documented build path.
+#   4. Closing hints printed `gcloud compute ssh` redeploy commands for the
+#      GCP node. Removed — GCP is out of scope until the operator says so.
+#   5. Added a README version-drift guard (the operator-locked rule's step 1;
+#      README had rotted to v4.4.18 while v5.22.11 shipped).
 
 set -euo pipefail
 
@@ -131,6 +146,23 @@ if git rev-parse "$TAG" >/dev/null 2>&1; then
   exit 1
 fi
 
+# README version-drift guard. Step 1 of the operator-locked release rule is
+# "README bump" — and it is the step that rots silently, because nothing here
+# checked it: on 2026-08-15 the README still read v4.4.18 while v5.22.11 was
+# live. Fatal on purpose; the fix is one line.
+README_VER=$(grep -oE 'Current version: \*\*v[0-9]+\.[0-9]+\.[0-9]+\*\*' "$REPO_DIR/README.md" 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "")
+if [[ -z "$README_VER" ]]; then
+  echo "ERROR: could not find the 'Current version: **vX.Y.Z**' line in README.md." >&2
+  echo "  The release rule requires the README to advertise the shipping version." >&2
+  exit 1
+fi
+if [[ "$README_VER" != "$VERSION" ]]; then
+  echo "ERROR: README.md says v$README_VER but this release is v$VERSION." >&2
+  echo "  Fix: update the 'Current version:' line in README.md, commit, re-run." >&2
+  exit 1
+fi
+echo "✓ README version matches ($README_VER)"
+
 if gh release view "$TAG" >/dev/null 2>&1; then
   echo "ERROR: GitHub release $TAG already exists." >&2
   exit 1
@@ -154,10 +186,11 @@ done
 
 if [ "$SKIP_LIVE_VERIFY" != "1" ]; then
   echo "=== Pre-cut live-verify ==="
+  # The cluster is exactly these two nodes. Do NOT re-add a GCP URL here:
+  # doing so aborted every release cut from v5.21.16 (2026-08-06) onward.
   CANONICAL_URLS=(
     "https://www.voipguru.org/llm-proxy2/health"
     "https://www2.voipguru.org/llm-proxy2/health"
-    "https://c1conversations-avaya-01.avaya.c1cx.com/llm-proxy2/health"
   )
   VERIFY_FAILED=0
   for url in "${CANONICAL_URLS[@]}"; do
@@ -202,8 +235,21 @@ run git push origin "$TAG"
 NOTES="${BODY:-See [CHANGELOG.md](CHANGELOG.md) entry for $TAG.}"
 run gh release create "$TAG" --title "$TAG — ${SUBJECT#*: }" --notes "$NOTES" --target "$BRANCH"
 
-# 4. Docker build + push (versioned tag)
-run sudo docker build -t "${DOCKER_REPO}:${VERSION}" "$REPO_DIR"
+# 4. Docker build + push (versioned tag).
+#    Build from the LOCAL staging tree, not $REPO_DIR: the source of truth is
+#    on the /mnt/s NFS share and docker reads the entire ~305M context on
+#    every build. stage-build.sh rsyncs SAN -> local disk; building the SAN
+#    path directly is slow and puts a hard NFS mount in the build's critical
+#    path. Staging is a no-op refresh when nothing changed.
+STAGE_SCRIPT=/home/dblagbro/docker/scripts/stage-build.sh
+BUILD_CTX=/home/dblagbro/docker/build/llm-proxy-v2
+if [[ -x "$STAGE_SCRIPT" ]]; then
+  run "$STAGE_SCRIPT" llm-proxy-v2
+else
+  echo "WARNING: $STAGE_SCRIPT not found — building from $REPO_DIR (slow, NFS)." >&2
+  BUILD_CTX="$REPO_DIR"
+fi
+run sudo docker build -t "${DOCKER_REPO}:${VERSION}" "$BUILD_CTX"
 run sudo docker push "${DOCKER_REPO}:${VERSION}"
 
 # 5. Retag + push :latest (Hub-qualified)
@@ -224,14 +270,17 @@ TS=$(date -u +%Y%m%dT%H%M%SZ)
 BACKUP_DIR="/mnt/s/tmrwww01-home-backups/backups"
 mkdir -p "$BACKUP_DIR"
 TARBALL="$BACKUP_DIR/llm-proxy-v2-${TAG}-${TS}.tar.gz"
+# Tar the SOURCE OF TRUTH (/mnt/s/code), not /home/dblagbro — the latter is
+# the pre-move copy as of 2026-08-13 and would archive stale source.
 run tar \
   --exclude='llm-proxy-v2/.git' \
   --exclude='llm-proxy-v2/__pycache__' \
   --exclude='llm-proxy-v2/.pytest_cache' \
+  --exclude='llm-proxy-v2/.ruff_cache' \
   --exclude='llm-proxy-v2/frontend/node_modules' \
   --exclude='llm-proxy-v2/frontend/dist' \
   --exclude='*.pyc' \
-  -czf "$TARBALL" -C /home/dblagbro llm-proxy-v2
+  -czf "$TARBALL" -C /mnt/s/code llm-proxy-v2
 
 echo ""
 echo "=== Done. Verification commands: ==="
@@ -259,13 +308,4 @@ echo ""
 echo "  # Verify:"
 echo "  curl -s https://www2.voipguru.org/llm-proxy2/health | python3 -m json.tool | head -6"
 echo ""
-echo "  # Node 3 — c1conv (GCP): compose uses the Hub-qualified name"
-echo "  # ${DOCKER_REPO}:latest, so pull is enough — no local retag needed."
-echo "  gcloud compute ssh c1conversations-avaya-01-s23 \\"
-echo "    --project=feature-preview-c1convs --zone=us-central1-a \\"
-echo "    --command='sudo docker pull ${DOCKER_REPO}:latest && \\"
-echo "      cd /opt/C1/instance && \\"
-echo "      sudo docker compose up -d --force-recreate --no-deps llm-proxy2'"
-echo ""
-echo "  # Verify:"
-echo "  curl -s https://c1conversations-avaya-01.avaya.c1cx.com/llm-proxy2/health | python3 -m json.tool | head -6"
+echo "  # That is the whole fleet — two nodes. GCP is out of scope."

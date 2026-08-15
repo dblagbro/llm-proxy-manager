@@ -4,7 +4,7 @@ Self-hosted LLM routing gateway — Python/FastAPI rewrite of llm-proxy v1.
 
 **LMRH semantic routing · circuit breaker failover · CoT-E augmentation · cluster sync · Run runtime · per-provider keep-alive probes · proxy-side caller memory (#267) · AIRI conversational config (v4.0+) · voice IO (v4.2+v4.3) · React dashboard**
 
-Current version: **v4.4.18** (see [CHANGELOG.md](CHANGELOG.md))
+Current version: **v5.22.11** (see [CHANGELOG.md](CHANGELOG.md))
 
 ## v4 highlights
 
@@ -244,7 +244,7 @@ curl -b cookies.txt https://www.voipguru.org/llm-proxy2/cluster/status
 ## Development
 
 ```bash
-cd /home/dblagbro/llm-proxy-v2
+cd /mnt/s/code/llm-proxy-v2
 
 # Backend (hot reload)
 pip install -r requirements-dev.txt

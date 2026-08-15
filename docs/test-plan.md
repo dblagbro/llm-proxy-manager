@@ -142,7 +142,7 @@ In priority order (impact × ease-to-test):
 
 ```bash
 # Unit + SDK (fast, safe)
-cd /home/dblagbro/llm-proxy-v2
+cd /mnt/s/code/llm-proxy-v2
 rm -f /tmp/llmproxy-unit-test.db
 python3 -m pytest tests/unit/ sdk/python/ --ignore=tests/unit/test_runs_cluster.py
 # Expect: 1040 passed
