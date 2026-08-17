@@ -62,17 +62,51 @@ contained in .11, which is what runs in production).
 Fresh host-side DB snapshots taken before the cut, integrity-checked `ok`, stored off-volume:
 `/home/dblagbro/backups/llmproxy.www{1,2}.pre-v52211.20260815T1834*.bak` (22 MB / 21 MB).
 
-## 🔤 Naming cleanup — pending operator decision
-The name is overloaded three ways and the "v2" suffix now describes a product that has no v1:
-- **GitHub repo `dblagbro/llm-proxy-manager`** holds both: `main`/`master` = retired v1 (Node.js),
-  `v2` = the current Python rewrite. Default branch is `v2`.
-- **Docker Hub `dblagbro/llm-proxy-manager`** = v1 images (`5.8.3` is the running zombie), but v2
-  releases were also pushed here (`5.21.16`, 2026-08-06). **Docker Hub `dblagbro/llm-proxy2`** is
-  v2's real channel.
-- **v1 zombies still running with no nginx route:** `llm-proxy-manager` (tmrwww01) and `llm-proxy`
-  (tmrwww02). Every `/llmProxy/` location is commented `# v1 retired 2026-04-30`, and
-  `$llm_proxy_upstream` was repointed to `llm-proxy2:3000` in the 2026-08-05 breach response.
-  They serve nothing — safe to retire.
+## 🔤 Naming cleanup — Tier 1 in progress (2026-08-17)
+Operator decisions: future product name is **`llm-proxy-new`**; scope is **Tier 1 only** (hygiene
+that no caller can see). The name does not take effect anywhere yet — Tier 1 touches no image
+repo, container name, or URL path. See the caveat at the end of this section.
+
+**Done:**
+- **v1 container `llm-proxy-manager` retired on tmrwww01** (stopped + removed, 2026-08-17). Verified
+  first that no nginx route reached it and no *running* container referenced it. Its compose block
+  is commented out with the rationale. **Volumes deliberately preserved:** `docker_llm-proxy-data`,
+  `docker_llm-proxy-logs`, and host dirs `/opt/llm-proxy-data/*`. Rollback material:
+  `/home/dblagbro/backups/v1-retirement/`.
+- Branch references repointed to `main` (CI, `cut-release.sh`, skills, docs).
+
+**Corrected mid-flight — tmrwww02's `llm-proxy` is NOT a v1 zombie.** It runs `llm-proxy2:latest`
+and is the operator-requested **clone** from 2026-06-05 (own DB, own cluster identity), live at
+`/llm-proxy/` on www2 and answering `healthy v5.21.14 node=llm-proxy-www2`. It was left running.
+Note it predates the v5.22.6 `_next_route` fix, and its cluster peer on tmrwww01 was removed in the
+2026-08-05 consolidation (www1's `/llm-proxy/` now resolves to `llm-proxy2`), so it is a
+single-node fork on old code. Decide separately whether to update or retire it.
+
+**Blocked:** the `v2` → `main` rename (and archiving v1's `main`/`master` to `archive/v1-*`) could
+not be applied — GitHub's branch-rename API returned **503 during a partial system outage**
+(2026-08-17). Nothing partially applied; `main`, `master`, `v2` are all still at their original
+commits and the default branch is still `v2`. CI is set to trigger on **both** `main` and `v2` so
+it keeps running either side of the rename; no further commit is needed once it lands.
+
+**To finish when GitHub recovers** (order matters — `v2` cannot become `main` while `main` exists):
+```
+gh api -X POST repos/dblagbro/llm-proxy-manager/branches/main/rename   -f new_name=archive/v1-main
+gh api -X POST repos/dblagbro/llm-proxy-manager/branches/master/rename -f new_name=archive/v1-master
+gh api -X POST repos/dblagbro/llm-proxy-manager/branches/v2/rename     -f new_name=main
+gh repo view dblagbro/llm-proxy-manager --json defaultBranchRef --jq .defaultBranchRef.name  # expect: main
+git -C /mnt/s/code/llm-proxy-v2 branch -m v2 main && git -C /mnt/s/code/llm-proxy-v2 branch -u origin/main
+```
+Then drop `v2` from `.github/workflows/ci.yml`.
+
+**Still open — the `llm-proxy-manager` Hub repo.** `dblagbro/llm-proxy-manager` on Docker Hub holds
+a mix of v1 images (`5.8.3`) and v2 releases pushed there by mistake (`5.21.16`, 2026-08-06). The
+canonical channel is `dblagbro/llm-proxy2`. Mark the other deprecated in its Hub description; no
+API call is scripted for this yet (Docker Hub needs a PAT-issued JWT, not the docker CLI creds).
+
+**Caveat on the chosen name.** `llm-proxy-new` carries the same defect as `llm-proxy2`: a relative
+qualifier frozen into a permanent identifier. "new" dates the moment it is created, and the next
+rewrite has nowhere to go. It costs nothing today because Tier 1 renames nothing — but it should be
+settled before Tier 2/3, when it would be baked into a Hub repo, container names, and a URL path.
 
 ## 🟡 Structural gap — grok-web cannot work on tmrwww02
 The `grok-web` provider is cluster-synced to both nodes, but the `llm-proxy2-grok-bridge` sidecar
