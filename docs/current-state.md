@@ -1,7 +1,7 @@
 # Current state — llm-proxy-v2
 
 > Brief live status. Keep it short and current. Detail lives in `architecture.md`,
-> `docs/recovery/`, `CHANGELOG.md`. Last updated: 2026-08-13 (verified against live nodes).
+> `docs/recovery/`, `CHANGELOG.md`. Last updated: 2026-08-17 (verified against live nodes).
 
 ## Stage & objective
 **Production, stable.** The recurring node degradation is root-caused and fixed (v5.22.6); both
@@ -9,8 +9,10 @@ nodes have run clean since. Objective now: resume the recovery roadmap (test-sui
 drift consolidation) and close the release-hygiene gaps listed under "Squaring up" below.
 
 ## Branch / version
-- Branch `v2`; HEAD `0205f6d` (**v5.22.11**). `origin/v2` == HEAD (0 ahead / 0 behind).
-  Working tree clean.
+- **Repo: https://github.com/dblagbro/llm-proxy-manager** — branch **`main`** (renamed from `v2`
+  on 2026-08-17 and now the default). `origin/main` == HEAD, 0 ahead / 0 behind, tree clean.
+  Retired v1 lives on `archive/v1-main` / `archive/v1-master`.
+- Version **v5.22.11**, tagged and released; the version commit is `0205f6d`.
 - **Both live nodes serve v5.22.11** and match HEAD's version pin.
 - Canonical deploy stack: `/home/dblagbro/docker/` (not the repo).
 - **GCP is out of scope** — the operator's strict-separation rule stands (reaffirmed 2026-08-13).
