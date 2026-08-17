@@ -77,12 +77,27 @@ repo, container name, or URL path. See the caveat at the end of this section.
   `/home/dblagbro/backups/v1-retirement/`.
 - Branch references repointed to `main` (CI, `cut-release.sh`, skills, docs).
 
-**Corrected mid-flight — tmrwww02's `llm-proxy` is NOT a v1 zombie.** It runs `llm-proxy2:latest`
-and is the operator-requested **clone** from 2026-06-05 (own DB, own cluster identity), live at
-`/llm-proxy/` on www2 and answering `healthy v5.21.14 node=llm-proxy-www2`. It was left running.
-Note it predates the v5.22.6 `_next_route` fix, and its cluster peer on tmrwww01 was removed in the
-2026-08-05 consolidation (www1's `/llm-proxy/` now resolves to `llm-proxy2`), so it is a
-single-node fork on old code. Decide separately whether to update or retire it.
+- **tmrwww02's `/llm-proxy/` clone RETIRED (2026-08-17, operator-approved).** It was *not* a v1
+  zombie — it ran `llm-proxy2:latest` and was the operator-requested 2026-06-05 snapshot-and-fork
+  (own DB, own cluster identity, `node=llm-proxy-www2`, v5.21.14). It was retired because it had
+  **no external consumers**. Evidence gathered before removal, after an initial read of "3,234
+  requests in 7 days" that looked like live demand:
+  - every one of those `POST /v1/messages` ended **499** (client hung up), each firing ~10 s after
+    the container's own `keepalive.swept` line on a ~10 m 20 s cadence — self-generated, not inbound;
+  - `/proc/net/tcp` in its netns showed only the LISTEN socket, **zero established inbound
+    connections**; its only outbound sockets were cluster-sync attempts to a peer deleted on
+    2026-08-05, which 403'd forever;
+  - the nginx access log had **zero** `/llm-proxy/` hits.
+
+  nginx `$llm_proxy_upstream` on www2 was repointed to `llm-proxy2:3000` first, so legacy
+  `/llm-proxy/` URLs still resolve — **verified 200 on both nodes after the change**. Volumes
+  `docker_llm-proxy-data` / `docker_llm-proxy-logs` preserved; final DB snapshot (integrity `ok`)
+  and config inspect in `/home/dblagbro/backups/v1-retirement/`.
+
+  ⚠️ **Gotcha worth remembering:** `sed -i` on `nginx.conf` **replaces the file's inode**, and the
+  nginx container bind-mounts that single file — so the running container kept serving the *old*
+  content and `nginx -s reload` changed nothing (502s, `llm-proxy could not be resolved`). A
+  `docker restart nginx` re-establishes the mount. Prefer in-place edits, or expect the restart.
 
 - **Branch rename COMPLETE (2026-08-17).** Initially blocked by a GitHub partial outage (branch-rename
   API 503); reapplied once GitHub returned to All Systems Operational. Final state:
@@ -107,13 +122,26 @@ qualifier frozen into a permanent identifier. "new" dates the moment it is creat
 rewrite has nowhere to go. It costs nothing today because Tier 1 renames nothing — but it should be
 settled before Tier 2/3, when it would be baked into a Hub repo, container names, and a URL path.
 
-## 🟡 Structural gap — grok-web cannot work on tmrwww02
-The `grok-web` provider is cluster-synced to both nodes, but the `llm-proxy2-grok-bridge` sidecar
-exists **only on tmrwww01**. `Grok-Web-Devin` has an empty `base_url` and resolves the bridge by
-docker service name, which does not exist on tmrwww02 — so the provider fails there permanently
-and its breaker sits open (observed 2026-08-15: open, 8 failures, 7 opens). This is why the two
-nodes report different `healthyProviders` counts. Fix is either a bridge sidecar on tmrwww02 or a
-per-node exclusion for the provider. Not yet decided.
+## ✅ CORRECTION — there is no grok-web/tmrwww02 structural gap
+An earlier entry here claimed `grok-web` could never work on tmrwww02 because the
+`llm-proxy2-grok-bridge` sidecar runs only on tmrwww01. **That was wrong**, and the reasoning
+behind it (empty `base_url` ⇒ resolves the bridge by docker service name) was the wrong field:
+`grok-web` takes its bridge address from `extra_config.bridge_url`, not `base_url`. The live value
+on `Grok-Web-Devin` is **`https://www.voipguru.org/grok-bridge`** — the *public* URL, reachable
+from both nodes, which is why the cluster-synced config is correct as-is.
+
+What actually happened: the breaker on tmrwww02 was still in hold-down from the 35-hour Chromium
+crash (see below). Once the bridge was recreated it recovered on its own. **Verified 2026-08-17:
+tmrwww02 reports 7/7 providers, grok breaker half-open with zero hold-down.** No sidecar and no
+per-node exclusion is needed. (Only the disabled `__grok_probe3__` row still carries the
+internal-only `http://llm-proxy2-grok-bridge:8443`, which is fine — it is disabled.)
+
+## 🔴 Needs operator action — Codex provider re-opened on tmrwww01
+`Devin-Codex-Gmail` (`c549ed05a1cd86d3`, `ChatGPT-oauth-plan`) did **not** stay recovered. As of
+2026-08-17 it is **open again: 19 failures, ~56 min hold-down** on tmrwww01 (half-open with 21
+failures on tmrwww02). The 2026-08-15 "self-recovered, probationary" note is superseded — this is
+a persistent failure, not a transient blip. It is the sole reason tmrwww01 reports 6/7.
+**Re-auth the OAuth credential**; nothing in the routing layer will fix it.
 
 ## 🟡 Degraded — grok-web path on tmrwww01 (RESOLVED 2026-08-15, kept for context)
 - `llm-proxy2-grok-bridge` container is **unhealthy, failing streak 4203 (~35 h)**. Chromium is
@@ -176,13 +204,38 @@ OAuth session. Left alone deliberately; if it re-opens and stays open, re-auth t
    `e66fb6160b38` on www2), so deploys are not bit-identical. Acceptable under the current rolling
    model; publishing to Docker Hub and pulling would remove the class.
 
+## ✅ Backlog cleared 2026-08-17
+- **Stale snapshots pruned.** `llm-proxy2-data` held two 1.1 GB June snapshots plus a July restore
+  copy *inside* the live volume. Moved off-volume to `/home/dblagbro/backups/archive-snapshots/`
+  (preserved, not deleted). **Volume: 2.2 GB → 26 MB.**
+- **Duplicate logs merged.** `bug-log.md` and `refactor-log.md` each existed at the repo root *and*
+  under `docs/` with **fully disjoint** contents — 10 vs 14 bug sections, 28 vs 4 refactor entries,
+  zero overlap either way. Reading one showed half the history. Merged into the root files (nothing
+  dropped); the `docs/` paths are now pointers. Root is canonical — `AGENTS.md` names it and
+  `cut-release.sh` greps commits for `^bug-log\.md$`.
+- **`architecture.md` caught up.** It stopped at the v5.21.x arc; added v5.22.x and marked the older
+  v5.21.6–8 pool-leak section as superseded *as an explanation* (it described a symptom; v5.22.6's
+  `_next_route` loop was the cause) while keeping its diagnostic method.
+- **Smoke instance updated** from v5.21.12 → **v5.22.11**, now `healthy` with **3/3** providers
+  (was 1/3) — usable again for downstream pre-promotion validation.
+- **CI gating widened 4 → 8 test files.** Added the hermetic v5.22.x pins, most importantly
+  `test_v5226_next_route_terminates.py` — the regression pin for the wedge root cause, which
+  existed but **CI never ran it**. The v5.22.7/9/10 pins were deliberately left out: they pass
+  locally but reach the live deployment via `conftest.py`, so they'd fail on a clean runner.
+
 ## Other known gaps
-- CI is weak: only 4 gating tests; full suite non-gating; **64 known-fail tests**
-  (`tests/known_failures.txt`). (The "9 test files uncommitted" note is resolved — tree is clean.)
-- Doc drift: `architecture.md` header says v5.21.8; `bug-log.md`/`refactor-log.md` exist at BOTH
-  repo root and `docs/` (divergent). See `docs/agent-system.md` self-healing backlog.
-- Smoke instance (`llm-proxy2-smoke`) is on **v5.21.12**, 1/3 providers healthy — well behind the
-  live nodes. Fine as an isolated sandbox, but stale for pre-promotion validation.
+- **The real CI blocker is not the 75 `known_failures.txt` entries** — it is that
+  `tests/conftest.py` session fixtures authenticate against the **live production deployment**.
+  That makes much of the suite unrunnable on a clean runner *and* means running it locally mutates
+  production (see the CAUTION in `docs/test-plan.md`). Making those fixtures hermetic is the single
+  highest-leverage test-infra change available.
+- **nginx logs on the NFS share are unrotated and large:** `/mnt/s/documents/access.log` **14 GB**
+  and `error.log` **41 GB**, both still growing. Not llm-proxy2's doing (shared nginx), but they
+  live on the share and no logrotate is trimming them.
+- **tmrwww02's compose is broken for whole-stack operations** — `docker compose config` fails on a
+  missing `/opt/secure-env/dumpthedump.env`. Pre-existing (the untouched pre-edit backup fails
+  identically), and harmless for `--no-deps` single-container work, but `docker compose up` on that
+  node would not work today.
 
 ## Resolved — keep for context
 - **`_next_route` infinite loop (v5.22.6).** `app/routing/fallback.py::_next_route` excluded only

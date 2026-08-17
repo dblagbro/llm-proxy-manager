@@ -10,6 +10,19 @@ name: CI
 # Making the whole suite hermetic + green is tracked in
 # tests/known_failures.txt; once that's done, promote the "full-unit"
 # step below from informational to blocking.
+#
+# 2026-08-17: added the hermetic v5.22.x pins to the gating step, most
+# importantly test_v5226_next_route_terminates.py. That guards the
+# _next_route infinite loop — the actual root cause of the repeated node
+# wedges — which until now had a regression pin that CI never ran. Gating
+# went from 4 test files to 8.
+#
+# The blocker on gating more is NOT the 75 entries in known_failures.txt;
+# it is that tests/conftest.py's session fixtures authenticate against the
+# LIVE production deployment. That makes a chunk of the suite unrunnable on
+# a clean runner AND means running it locally mutates production state
+# (see the CAUTION in docs/test-plan.md). Making those fixtures hermetic is
+# the single highest-leverage test-infra change available here.
 
 on:
   push:
@@ -39,12 +52,22 @@ jobs:
         run: python -c "import app.main; print('import app.main OK')"
 
       - name: Invariant guard tests (hermetic — no network)
+        # Only hermetic tests belong here. Verified 2026-08-17 by grepping each
+        # file for live-deployment references (voipguru / requests. / httpx.);
+        # the v5.22.7 password-reset, v5.22.9 SSO and v5.22.10 login-by-email
+        # pins DO hit the live deployment via tests/conftest.py session
+        # fixtures, so they are deliberately NOT listed — they pass locally and
+        # would fail on a clean runner.
         run: |
           pytest -q -p no:cacheprovider \
             tests/unit/test_v52114_watchdog_dep_order.py \
             tests/unit/test_v5717_disconnect_watchdog.py \
             tests/unit/test_v599_watchdog_coverage_responses_audio_images.py \
-            tests/unit/test_v52113_pool_self_heal.py
+            tests/unit/test_v52113_pool_self_heal.py \
+            tests/unit/test_v5226_next_route_terminates.py \
+            tests/unit/test_v5220_sqlite_pool_no_churn.py \
+            tests/unit/test_v5227_litellm_tool_shape.py \
+            tests/unit/test_v52211_cluster_sync_email.py
 
   full-unit-informational:
     # Runs the whole unit suite for visibility. Currently expected to have
