@@ -14,12 +14,12 @@
 #   - Working tree clean OR the only uncommitted change is the version bump
 #   - gh CLI authenticated (gh auth status)
 #   - Docker logged in to docker.io as dblagbro (docker login)
-#   - Branch is v2 (or pass --target <branch>)
+#   - Branch is main (or pass --target <branch>)
 #
 # Steps:
 #   1. Parse version, validate not already released
 #   2. git tag vX.Y.Z (annotated, with subject from latest commit)
-#   3. git push origin v2 (if commits ahead) + git push origin vX.Y.Z
+#   3. git push origin main (if commits ahead) + git push origin vX.Y.Z
 #   4. gh release create vX.Y.Z --notes-from-tag --target <branch>
 #   5. sudo docker build -t dblagbro/llm-proxy2:X.Y.Z .
 #   6. sudo docker push dblagbro/llm-proxy2:X.Y.Z
@@ -59,7 +59,7 @@ set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 VERSION=""
-BRANCH="v2"
+BRANCH="main"
 DRY_RUN=0
 DOCKER_REPO="dblagbro/llm-proxy2"
 

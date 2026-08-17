@@ -22,7 +22,7 @@ which both nodes mount, so there is now one shared tree.
 
 | Path | Role |
 |---|---|
-| `/mnt/s/code/llm-proxy-v2` | **Source of truth.** Git worktree of `/mnt/s/code/llm-proxy`, branch `v2`. Edit here only. |
+| `/mnt/s/code/llm-proxy-v2` | **Source of truth.** Git worktree of `/mnt/s/code/llm-proxy`, branch `main`. Edit here only. |
 | `/home/dblagbro/docker/build/llm-proxy-v2` | tmrwww01 build staging. Disposable rsync; overwritten by `stage-build.sh`. Never edit. |
 | `/home/dblagbro/llm-proxy-v2` | **Pre-move copy — do not use.** tmrwww01: `.git` points at a worktree registered elsewhere. tmrwww02: pointer is dangling → orphaned non-git copy. |
 

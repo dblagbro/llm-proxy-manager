@@ -10,7 +10,7 @@ acting on stale assumptions.
 1. **Read the contract & live state (in order):** `AGENTS.md`, `docs/current-state.md`,
    then `architecture.md` / `design.md` as needed for the task. Note the open risks/blockers.
 2. **Confirm the code state:** `git status -sb`, `git log --oneline -5`, current branch (should be
-   `v2`), and whether HEAD matches `origin/v2`. Note any uncommitted/untracked work.
+   `main`), and whether HEAD matches `origin/main`. Note any uncommitted/untracked work.
 3. **Confirm it builds/imports:** `python -c "import app.main"`; skim `tests/known_failures.txt`
    so you distinguish known-red from new failures.
 4. **Confirm deploy reality if infra-adjacent:** which version is live (`/health`), on which nodes;

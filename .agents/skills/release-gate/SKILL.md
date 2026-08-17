@@ -8,7 +8,7 @@ preparation. Nothing here pushes, tags, publishes, or deploys without explicit h
 
 ## Gate checklist (all must pass, with evidence)
 1. **Green:** `make lint` clean; touched-area `make test` green; `python -c "import app.main"` ok;
-   CI on `origin/v2` green. No new entries vs `tests/known_failures.txt`.
+   CI on `origin/main` green. No new entries vs `tests/known_failures.txt`.
 2. **Versioned:** `app/__version__.py` bumped; `CHANGELOG.md` entry written; release note drafted.
 3. **Docs current:** `architecture.md`, `docs/current-state.md` reflect the change (no version drift).
 4. **Safety:** no secrets added; sub-path deploy invariants intact; migrations idempotent.
