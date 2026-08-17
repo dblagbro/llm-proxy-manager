@@ -88,6 +88,11 @@ class TestProviderMaps:
         for provider_type in PROVIDER_TYPE_TO_LITELLM:
             assert provider_type in PROVIDER_DEFAULT_MODELS, f"{provider_type} missing default"
 
+    def test_ollama_default_is_not_llama3(self):
+        """v5.23.0 — llama3 is no longer an honest Ollama catalog default."""
+        assert PROVIDER_DEFAULT_MODELS["ollama"] == "qwen2.5-coder:7b"
+        assert PROVIDER_DEFAULT_MODELS["ollama"] != "llama3"
+
     def test_compatible_points_at_openai(self):
         assert PROVIDER_TYPE_TO_LITELLM["compatible"] == "openai"
 
@@ -118,6 +123,25 @@ class TestBuildLitellmKwargs:
         p = _FakeProvider(timeout_sec=45)
         k = build_litellm_kwargs(p)
         assert k["timeout"] == 45
+
+    def test_ollama_legacy_timeout_is_lifted_to_240(self):
+        """v5.23.0 — a 30s (column default) or 60s (form default) Ollama
+        row must not be handed to litellm as-is; a 30–90s GGUF cold load
+        would open the circuit breaker."""
+        for legacy in (30, 60, None):
+            p = _FakeProvider(provider_type="ollama", timeout_sec=legacy)
+            k = build_litellm_kwargs(p)
+            assert k["timeout"] == 240, f"legacy timeout {legacy!r} should lift to 240"
+
+    def test_ollama_explicit_timeout_is_kept(self):
+        p = _FakeProvider(provider_type="ollama", timeout_sec=300)
+        k = build_litellm_kwargs(p)
+        assert k["timeout"] == 300
+
+    def test_hosted_timeout_is_not_lifted(self):
+        p = _FakeProvider(provider_type="openai", timeout_sec=30)
+        k = build_litellm_kwargs(p)
+        assert k["timeout"] == 30
 
     def test_base_url_included_for_ollama(self):
         p = _FakeProvider(provider_type="ollama", base_url="http://localhost:11434")

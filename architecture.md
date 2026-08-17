@@ -10,7 +10,7 @@ that can block configured companies (10 built-in + operator-defined customs) at 
 provider-routing, model-family, and client-product layers — with audit-grade event
 logging, daily integrity hash chain, and cluster-quorum policy push.
 
-**Current version: 5.21.8 (2026-07-16)**
+**Current version: 5.23.0 (2026-08-17)** — local-provider cold-load defaults; LAM design in `docs/5.23-local-accelerator-orchestration-backpressure-design.md`. Live cluster still serves v5.22.11 until this ships.
 
 ### Ship history since v5.0.7 (arc-end summary, doc-drift refresh)
 
@@ -225,6 +225,12 @@ app/
 │   │   ├── score.py               score_candidate / rank_candidates / rank_candidates_with_scores
 │   │   └── headers.py             build_hint_set_header / build_capability_header
 │   ├── capability_inference.py    Heuristic fallback: infer_capability_profile from model name
+│   │                                v5.23.0: ollama native_tools defaults True (Qwen3-Coder);
+│   │                                compatible stays False.
+│   ├── aliases.py                 Logical aliases + is_self_hosted_provider;
+│   │                                v5.23.0: effective_timeout_sec / coerce_self_hosted_timeout
+│   │                                (240s for unset ollama/self-hosted rows so a 30–90s
+│   │                                GGUF load does not open the circuit breaker).
 │   └── circuit_breaker.py         Per-provider open/half-open/closed state + hold-down
 │
 ├── cot/

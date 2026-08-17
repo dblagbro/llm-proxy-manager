@@ -2,6 +2,33 @@
 
 All notable changes since v2.7.6. Older history available in `git log`.
 
+## v5.23.0 — local-provider defaults that survive a cold load (2026-08-17)
+
+First slice of the Local Accelerator Manager workstream
+(`docs/5.23-local-accelerator-orchestration-backpressure-design.md`). Does **not**
+add resource admission — that is a later slice. This release only defuses the
+three out-of-the-box traps that brick a local Ollama route:
+
+- **Timeout.** `Provider.timeout_sec` still defaults to 30s for hosted types, but
+  self-hosted types (`ollama`, `vllm`, `llamacpp`, `lmstudio`, `localai`) now
+  persist and bind at **240s** when the stored value is the historical unset
+  default (30 from the column/API, 60 from ProviderForm). A 30–90s GGUF load of
+  `qwen3-coder:30b` no longer opens the circuit breaker on the only local
+  provider. Explicit values (15, 90, 300, …) are kept. Runtime lift lives in
+  `effective_timeout_sec()` so existing DB rows are fixed without a migration.
+- **Native tools.** `capability_inference` no longer forces `native_tools=False`
+  for every Ollama provider. Qwen3-Coder and other modern local models use
+  native `/api/chat` tools instead of prompt emulation. `compatible` stays False.
+- **Default model.** `PROVIDER_DEFAULT_MODELS["ollama"]` is `qwen2.5-coder:7b`
+  (a real, tool-capable tag) instead of the retired `llama3`.
+- **Context cap.** Inferred Ollama profiles use a 32k `context_length` so
+  `_capability_fit` rejects 128k-shaped requests before they OOM a 6 GB laptop.
+
+This is **resource admission**, not the existing MCP capability-signalling
+"back-pressure" design (`docs/5.10-mcp-backpressure-design.md`).
+
+Pin: `tests/unit/test_local_provider_defaults.py`.
+
 ## v5.22.11 — users.email now replicates across the cluster (2026-08-12)
 
 Found immediately after deploying v5.22.10: login by email worked on tmrwww01 and returned **401 on tmrwww02**, with both nodes holding the same user row at an *identical* `last_user_edit_at`. Cluster sync had replicated the row but not the column — `email`, added in v5.22.7, was never added to the sync payload (`cluster/manager.py`) or the merge handler (`cluster/sync.py`), so it replicated as NULL.
