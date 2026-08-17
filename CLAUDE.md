@@ -56,7 +56,7 @@ version in this file; read `docs/current-state.md`.
 
 ## Critical paths
 - **App source (source of truth, moved 2026-08-13): `/mnt/s/code/llm-proxy-v2/`** — a git
-  worktree of `/mnt/s/code/llm-proxy` (branch `v2`), on the `/mnt/s` NFS share
+  worktree of `/mnt/s/code/llm-proxy` (branch `main`), on the `/mnt/s` NFS share
   (`192.168.18.5:/disk0`), so both nodes see the same tree. Edit here and nowhere else.
 - **Local build staging (tmrwww01): `/home/dblagbro/docker/build/llm-proxy-v2`** — disposable
   rsync of the SAN tree; docker builds read the context from local disk, not NFS. Refresh with
