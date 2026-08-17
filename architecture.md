@@ -272,6 +272,12 @@ app/
 │   └── recover.py           Phase 7 — registry-based back-pressure recovery;
 │                              reconstructs missing content from upstream when marker survives
 │
+├── resources/               v5.23 — local accelerator telemetry (read-only).
+│   │                          Resource admission, not MCP capability back-pressure.
+│   │                          LOCAL_ACCEL_ENABLED=false is a complete no-op.
+│   ├── probe.py             NVML / nvidia-smi / RAM / Ollama GET /api/ps snapshot
+│   └── (later)              residency, admission, queue, lifecycle
+│
 ├── monitoring/
 │   ├── helpers.py                  record_outcome() — shared success/failure metrics recorder
 │   ├── metrics.py                  request/token/cost DB writes
