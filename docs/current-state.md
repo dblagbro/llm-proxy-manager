@@ -62,7 +62,7 @@ contained in .11, which is what runs in production).
 Fresh host-side DB snapshots taken before the cut, integrity-checked `ok`, stored off-volume:
 `/home/dblagbro/backups/llmproxy.www{1,2}.pre-v52211.20260815T1834*.bak` (22 MB / 21 MB).
 
-## 🔤 Naming cleanup — Tier 1 in progress (2026-08-17)
+## ✅ Naming cleanup — Tier 1 COMPLETE (2026-08-17)
 Operator decisions: future product name is **`llm-proxy-new`**; scope is **Tier 1 only** (hygiene
 that no caller can see). The name does not take effect anywhere yet — Tier 1 touches no image
 repo, container name, or URL path. See the caveat at the end of this section.
@@ -82,21 +82,18 @@ Note it predates the v5.22.6 `_next_route` fix, and its cluster peer on tmrwww01
 2026-08-05 consolidation (www1's `/llm-proxy/` now resolves to `llm-proxy2`), so it is a
 single-node fork on old code. Decide separately whether to update or retire it.
 
-**Blocked:** the `v2` → `main` rename (and archiving v1's `main`/`master` to `archive/v1-*`) could
-not be applied — GitHub's branch-rename API returned **503 during a partial system outage**
-(2026-08-17). Nothing partially applied; `main`, `master`, `v2` are all still at their original
-commits and the default branch is still `v2`. CI is set to trigger on **both** `main` and `v2` so
-it keeps running either side of the rename; no further commit is needed once it lands.
-
-**To finish when GitHub recovers** (order matters — `v2` cannot become `main` while `main` exists):
-```
-gh api -X POST repos/dblagbro/llm-proxy-manager/branches/main/rename   -f new_name=archive/v1-main
-gh api -X POST repos/dblagbro/llm-proxy-manager/branches/master/rename -f new_name=archive/v1-master
-gh api -X POST repos/dblagbro/llm-proxy-manager/branches/v2/rename     -f new_name=main
-gh repo view dblagbro/llm-proxy-manager --json defaultBranchRef --jq .defaultBranchRef.name  # expect: main
-git -C /mnt/s/code/llm-proxy-v2 branch -m v2 main && git -C /mnt/s/code/llm-proxy-v2 branch -u origin/main
-```
-Then drop `v2` from `.github/workflows/ci.yml`.
+- **Branch rename COMPLETE (2026-08-17).** Initially blocked by a GitHub partial outage (branch-rename
+  API 503); reapplied once GitHub returned to All Systems Operational. Final state:
+  | Before | After |
+  |---|---|
+  | `main` (retired v1, `47deb5f`) | `archive/v1-main` |
+  | `master` (retired v1, `81968a9`) | `archive/v1-master` |
+  | `v2` (current code, default) | **`main`** (default) |
+  Local branches renamed to match; the `/mnt/s/code/llm-proxy` worktree now sits on
+  `archive/v1-main` (still v1 code, unchanged) and `/mnt/s/code/llm-proxy-v2` on `main`, tracking
+  `origin/main`, 0 ahead / 0 behind. CI's transitional `[ main, v2 ]` trigger is back to `[ main ]`.
+  **Repo URL: https://github.com/dblagbro/llm-proxy-manager** (the repo itself is deliberately NOT
+  renamed — that is Tier 2/3 work).
 
 **Still open — the `llm-proxy-manager` Hub repo.** `dblagbro/llm-proxy-manager` on Docker Hub holds
 a mix of v1 images (`5.8.3`) and v2 releases pushed there by mistake (`5.21.16`, 2026-08-06). The
