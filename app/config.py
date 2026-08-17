@@ -630,5 +630,16 @@ class Settings(BaseSettings):
     sso_idp_metadata_url: Optional[str] = Field(None, alias="SSO_IDP_METADATA_URL")
     sso_acs_url: Optional[str] = Field(None, alias="SSO_ACS_URL")
 
+    # v5.23 — Local Accelerator Manager (resource admission). Master switch
+    # is OFF: probe + later admission are a complete no-op (spec G6).
+    # This is host-resource telemetry/admission, not MCP capability
+    # signalling (docs/5.10-mcp-backpressure-design.md).
+    local_accel_enabled: bool = Field(False, alias="LOCAL_ACCEL_ENABLED")
+    local_accel_backend: str = Field("ollama", alias="LOCAL_ACCEL_BACKEND")
+    local_accel_ollama_url: str = Field("http://127.0.0.1:11434", alias="LOCAL_ACCEL_OLLAMA_URL")
+    local_accel_vram_total_mb: int = Field(0, alias="LOCAL_ACCEL_VRAM_TOTAL_MB")
+    local_accel_probe_cache_sec: float = Field(2.0, alias="LOCAL_ACCEL_PROBE_CACHE_SEC")
+    local_accel_probe_interval_sec: int = Field(5, alias="LOCAL_ACCEL_PROBE_INTERVAL_SEC")
+
 
 settings = Settings()

@@ -80,6 +80,7 @@ from app.api.provider_capabilities import router as provider_capabilities_router
 from app.api.providers_stats import router as providers_stats_router
 # v5.0.0 — compliance admin + user surfaces
 from app.api.compliance import router as compliance_router
+from app.api.local_accelerators import router as local_accelerators_router
 from app.observability.otel import init_tracer
 from app.observability.prometheus import metrics_response, set_service_info, observe_circuit_breaker_state
 
@@ -737,6 +738,7 @@ app.include_router(provider_lifecycle_router)
 app.include_router(provider_capabilities_router)
 # providers_stats_router moved up to ensure it registers before providers_router (v5.8.4)
 app.include_router(compliance_router)  # v5.0.0 — compliance admin + user endpoints
+app.include_router(local_accelerators_router)  # v5.23 — read-only accelerator probe
 # v3.3.0: LMRHv2 endpoints (feature-flagged via lmrh_v2_enabled).
 # Same /lmrh/* prefix as v1; new paths don't collide with existing ones.
 from app.api.lmrh_v2 import router as lmrh_v2_router  # noqa: E402
