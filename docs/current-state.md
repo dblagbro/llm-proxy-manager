@@ -12,7 +12,9 @@ drift consolidation) and close the release-hygiene gaps listed under "Squaring u
 - **Repo: https://github.com/dblagbro/llm-proxy-manager** — branch **`main`** (renamed from `v2`
   on 2026-08-17 and now the default). `origin/main` == HEAD, 0 ahead / 0 behind, tree clean.
   Retired v1 lives on `archive/v1-main` / `archive/v1-master`.
-- Version **v5.22.11**, tagged and released; the version commit is `0205f6d`.
+- Version **v5.22.11** live (`0205f6d`). **v5.23.1** in flight on
+  `feat/local-accel-telemetry-probe` (read-only VRAM/RAM/`ollama ps` probe).
+  Sibling slice 2 (cold-load defaults) lives on `feat/ollama-cold-load-defaults`.
 - **Both live nodes serve v5.22.11** and match HEAD's version pin.
 - Canonical deploy stack: `/home/dblagbro/docker/` (not the repo).
 - **GCP is out of scope** — the operator's strict-separation rule stands (reaffirmed 2026-08-13).
@@ -264,9 +266,10 @@ any destructive action on a "remote" host. Verified 2026-08-13 — tmrwww01 `297
 tmrwww02 `9cca36eb…`: genuinely distinct hosts.
 
 ## Next 3 actions
-1. **Settle the naming cleanup** (see above) — retire the two v1 zombie containers, archive the v1
-   branches, and decide whether the product keeps the `2`/`v2` suffix. Phase anything that changes
-   the `/llm-proxy2/` nginx path or the Hub repo name; those break callers.
+1. **Land v5.23 local-accelerator slices** — cold-load defaults (slice 2) first so a 30B Ollama
+   load does not open the breaker; then this read-only probe; then admission 429/503. Spec:
+   `docs/5.23-local-accelerator-orchestration-backpressure-design.md`. Do not confuse with MCP
+   capability-signalling back-pressure (`docs/5.10-mcp-backpressure-design.md`).
 2. **Close the grok-web/tmrwww02 structural gap** — bridge sidecar on www2, or exclude the provider
    per-node so its breaker stops flapping.
 3. **Align tmrwww02 onto `stage-build.sh`** (it still builds from the orphaned non-git copy), then
