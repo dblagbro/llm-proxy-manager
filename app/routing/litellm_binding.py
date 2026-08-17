@@ -226,7 +226,12 @@ PROVIDER_DEFAULT_MODELS = {
     "vertex":    "gemini-2.0-flash-002",
     "openai":    "gpt-4o",
     "grok":      "grok-2",
-    "ollama":    "llama3",
+    # v5.23.0: llama3 is a 2024-era tag current Ollama catalogs no longer
+    # ship as a first-class pull. qwen2.5-coder:7b is a real, tool-capable
+    # local default matching the inner-loop class in
+    # docs/5.23-local-accelerator-orchestration-backpressure-design.md.
+    # Operators override per-row (e.g. a local `coder` alias).
+    "ollama":    "qwen2.5-coder:7b",
     "compatible": "gpt-4o",
     # v3.0.66: Azure deployments are caller-named — admin sets the
     # deployment name as default_model on the provider row.
@@ -297,7 +302,8 @@ def build_litellm_kwargs(provider: Provider) -> dict:
     # key provided" — the exact symptom that confused v4.4.31..v4.4.34.
     if provider.base_url and provider.provider_type in ("ollama", "compatible", "cursor-oauth"):
         kwargs["api_base"] = provider.base_url
-    kwargs["timeout"] = provider.timeout_sec
+    from app.routing.aliases import effective_timeout_sec
+    kwargs["timeout"] = effective_timeout_sec(provider)
     return kwargs
 
 

@@ -357,6 +357,17 @@ async def create_provider(
             f"or 'ChatGPT-oauth-plan' (got {body.provider_type!r})",
         )
 
+    # v5.23.0 — self-hosted rows that still carry the historical 30/60s
+    # default would trip the circuit breaker on a 30–90s GGUF cold load.
+    from app.routing.aliases import coerce_self_hosted_timeout
+    from app.routing.litellm_binding import PROVIDER_DEFAULT_MODELS
+    data["timeout_sec"] = coerce_self_hosted_timeout(
+        data.get("provider_type") or body.provider_type,
+        data.get("timeout_sec"),
+    )
+    if (data.get("provider_type") or body.provider_type) == "ollama" and not data.get("default_model"):
+        data["default_model"] = PROVIDER_DEFAULT_MODELS.get("ollama", "qwen2.5-coder:7b")
+
     # v2.8.2: bump any existing provider already at this priority +1 (chained)
     # BEFORE inserting so the new row gets the requested slot cleanly.
     await _bump_priority_conflicts(db, data["priority"])
@@ -568,6 +579,12 @@ async def update_provider(
                 409,
                 f"Another provider already uses the name {new_name!r}.",
             )
+
+    # v5.23.0 — same cold-load timeout lift as create_provider.
+    from app.routing.aliases import coerce_self_hosted_timeout
+    ptype = data.get("provider_type") or p.provider_type
+    if "timeout_sec" in data or ptype in ("ollama", "vllm", "llamacpp", "lmstudio", "localai"):
+        data["timeout_sec"] = coerce_self_hosted_timeout(ptype, data.get("timeout_sec", p.timeout_sec))
 
     for field, value in data.items():
         setattr(p, field, value)
