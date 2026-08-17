@@ -24,8 +24,27 @@ logging, daily integrity hash chain, and cluster-quorum policy push.
 - **v5.20.x — refusal detection arc**: detection module + prompt hardening + cascade retry + self-update endpoint + hooks-override header + LiteLLM model-cost catalog + `self_edit_permissions` admin UI
 - **v5.21.x — refuse-tolerance arc**: LMRH `refuse-tolerance` dim + buffered streaming cascade + hotfix (v5.21.1) + per-key default injection + heartbeat streaming mode + AIRI prompt-cue classifier + hint SSE + frontend badge
 - **v5.21.6–v5.21.8 — DB pool leak permanent fix**: root-caused chronic 24-48h exhaustion outage. See "DB pool leak diagnostic path" section below.
+- **v5.22.x — node-wedge arc (the real root cause)**: the v5.21.x pool work treated symptoms; this
+  arc found the cause. `v5.22.4` closed a DB **connection-hold** leak (chat handlers held `get_db`'s
+  open read-txn across the upstream call and the whole stream → `await db.commit()` release-boundary
+  before dispatch). `v5.22.5` fixed an aiosqlite **OS-thread** leak with a fixed non-churning pool
+  (`max_overflow=0`, `pool_pre_ping=False`, `pool_size=50`, `recycle=-1`) — aiosqlite runs one thread
+  per connection, and any connection created-then-destroyed or GC'd-not-closed orphans its thread
+  forever. **`v5.22.6` found the actual root cause**: `app/routing/fallback.py::_next_route` excluded
+  only one provider per `select_provider` call and "progressed" by re-adding an id already in the
+  exclusion set — a no-op — so the loop spun forever at ~2 DB queries per provider per pass. A single
+  `/v1/messages` request hitting a provider error pegged the event loop and drained the pool to 50/50
+  on an idle node. Fix: pass the cumulative `exclude_provider_ids` set; defensive guard raises rather
+  than looping. Pin: `tests/unit/test_v5226_next_route_terminates.py`. **This retired the standing
+  "single-event-loop CPU ceiling" hypothesis — the node was spinning, not saturated.**
+- **v5.22.7–v5.22.11 — account/auth surface**: password reset (admin + self-service email), Cohere
+  tool-shape fix, grok-bridge noVNC sub-path + honest `healthz`, Google/OIDC SSO, sign-in by email
+  address, and `users.email` replication across the cluster.
 
 ## DB pool leak diagnostic path (v5.21.6–v5.21.8)
+> Superseded as a root-cause account by the v5.22.x arc above — the pool exhaustion described
+> here was a downstream symptom of the `_next_route` infinite loop fixed in v5.22.6. Kept because
+> the diagnostic method (pool tracing, thread counting, py-spy sampling) is still the right playbook.
 
 **Symptom class**: pool utilization creeps up over ~24-48h until 50 base + 100 overflow = 150 sessions all leaked → `/api/auth/login` blocks at DB checkout → admin UI dies → operator has to notice + trigger a container recreate.
 
