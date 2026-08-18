@@ -231,7 +231,15 @@ export function ProviderForm({ form, onChange, editing, provider, onProviderUpda
         <label className="text-sm font-medium text-gray-700 dark:text-gray-300">Provider Type</label>
         <select
           value={form.provider_type}
-          onChange={e => set({ provider_type: e.target.value as ProviderType })}
+          onChange={e => {
+            const provider_type = e.target.value as ProviderType
+            const selfHosted = ['ollama', 'vllm', 'llamacpp', 'lmstudio', 'localai'].includes(provider_type)
+            const unsetTimeout = form.timeout_sec === 60 || form.timeout_sec === 30
+            set({
+              provider_type,
+              ...(selfHosted && unsetTimeout ? { timeout_sec: 240 } : {}),
+            })
+          }}
           className="px-3 py-2 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 border border-gray-200 dark:border-gray-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
         >
           {PROVIDER_TYPES.map(t => <option key={t} value={t}>{providerTypeLabel(t)}</option>)}
@@ -405,6 +413,7 @@ export function ProviderForm({ form, onChange, editing, provider, onProviderUpda
           isOAuth ? 'claude-sonnet-4-6' :
           form.provider_type === 'grok-web' ? 'grok-3' :
           form.provider_type === 'openrouter' ? 'openai/gpt-4o' :
+          form.provider_type === 'ollama' ? 'qwen2.5-coder:7b' :
           'e.g. gpt-4o'
         }
       />
@@ -417,7 +426,7 @@ export function ProviderForm({ form, onChange, editing, provider, onProviderUpda
       />
       <Input
         label="Timeout (seconds)"
-        tooltip="Hard upper bound on a single request to this provider. Beyond this, the request fails over to the next priority. 60s is a sensible default; raise for slow reasoning models, lower for known-fast providers. Doesn't apply to keep-alive probes (those use a separate 15s budget)."
+        tooltip="Hard upper bound on a single request to this provider. Beyond this, the request fails over to the next priority. 60s is a sensible hosted default; self-hosted / Ollama rows default to 240s so a 30–90s GGUF cold load does not open the circuit breaker. Doesn't apply to keep-alive probes (those use a separate 15s budget)."
         type="number"
         value={String(form.timeout_sec)}
         onChange={e => set({ timeout_sec: Number(e.target.value) })}

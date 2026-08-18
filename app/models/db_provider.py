@@ -36,6 +36,10 @@ class Provider(Base):
     default_model = Column(String)
     priority = Column(Integer, default=10)
     enabled = Column(Boolean, default=True)
+    # Hosted-provider default. Self-hosted types (ollama, …) are lifted
+    # to 240s at create time and at litellm bind via effective_timeout_sec
+    # — a 30s cold-load of a local 30B opens the circuit breaker. See
+    # docs/5.23-local-accelerator-orchestration-backpressure-design.md §1.2.
     timeout_sec = Column(Integer, default=30)
     exclude_from_tool_requests = Column(Boolean, default=False)
     # v3.9.5 (#267 Phase 8) — opt-out from the proxy's caller-memory

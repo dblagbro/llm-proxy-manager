@@ -90,9 +90,15 @@ class TestVision:
 
 
 class TestNativeTools:
-    def test_ollama_has_no_native_tools(self):
-        p = infer_capability_profile("id", "ollama", "llama3")
-        assert p.native_tools is False
+    def test_ollama_has_native_tools(self):
+        # v5.23.0 — Ollama/Qwen3-Coder expose native tool calling; forcing
+        # False engaged prompt-based emulation for every local provider.
+        p = infer_capability_profile("id", "ollama", "qwen2.5-coder:7b")
+        assert p.native_tools is True
+
+    def test_ollama_qwen3_coder_has_native_tools(self):
+        p = infer_capability_profile("id", "ollama", "qwen3-coder:30b")
+        assert p.native_tools is True
 
     def test_compatible_has_no_native_tools(self):
         p = infer_capability_profile("id", "compatible", "some-model")
@@ -117,9 +123,10 @@ class TestRegions:
         assert p.regions == ["us"]
 
     def test_ollama_local(self):
-        p = infer_capability_profile("id", "ollama", "llama3")
+        p = infer_capability_profile("id", "ollama", "qwen2.5-coder:7b")
         assert p.regions == ["local"]
         assert p.cost_tier == "economy"
+        assert p.context_length == 32768
 
 
 class TestPriority:
