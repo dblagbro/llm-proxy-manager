@@ -26,7 +26,8 @@ which both nodes mount, so there is now one shared tree.
 |---|---|
 | `/mnt/s/code/llm-proxy-v2` | **Source of truth.** Git worktree of `/mnt/s/code/llm-proxy`, branch `main`. Edit here only. |
 | `/home/dblagbro/docker/build/llm-proxy-v2` | tmrwww01 build staging. Disposable rsync; overwritten by `stage-build.sh`. Never edit. |
-| `/home/dblagbro/llm-proxy-v2` | **Pre-move copy — do not use.** tmrwww01: `.git` points at a worktree registered elsewhere. tmrwww02: pointer is dangling → orphaned non-git copy. |
+| `/home/dblagbro/docker/build/llm-proxy-v2` (www2) | tmrwww02 build staging — **aligned with tmrwww01 on 2026-08-18**. Same disposable-rsync rule. |
+| `/home/dblagbro/llm-proxy-v2` | **Pre-move copy — do not use, no longer referenced by anything.** tmrwww01: `.git` points at a worktree registered elsewhere. tmrwww02: pointer is dangling → orphaned non-git copy. |
 
 Build on tmrwww01: `/home/dblagbro/docker/scripts/stage-build.sh llm-proxy-v2 --build`
 (rsync SAN → local disk, then compose build). Building without staging first builds stale source.
@@ -196,10 +197,11 @@ OAuth session. Left alone deliberately; if it re-opens and stays open, re-auth t
    sitting inside the live `llm-proxy2-data` volume against a 22 MB live DB. That is ~2.2 GB of
    stale snapshot inside the volume it is supposed to protect — no off-volume copy. Take a fresh
    host-side snapshot and prune the two June ones.
-5. **tmrwww02 was not migrated to the staging pattern.** Its compose still has
-   `build: /home/dblagbro/llm-proxy-v2` — the orphaned, non-git pre-move copy. It is byte-identical
-   to the SAN source today, but nothing keeps it in sync and, with no `.git`, drift is undetectable.
-   Align it with tmrwww01 (`stage-build.sh` + `build: /home/dblagbro/docker/build/llm-proxy-v2`).
+5. ✅ **tmrwww02 migrated to the staging pattern (2026-08-18).** `stage-build.sh` installed there,
+   the SAN source staged to `/home/dblagbro/docker/build/llm-proxy-v2` (18,336 files, hash
+   `f4ea143f1ca464e7` — identical to the SAN tree), and compose flipped off the orphaned
+   `build: /home/dblagbro/llm-proxy-v2`. Both nodes now build the same way. Note the sync took
+   hours over NFS: ~305 MB of many small files is metadata-bound, not throughput-bound.
 6. **Node images are built independently per node** (different image IDs: `a3114979f017` on www1,
    `e66fb6160b38` on www2), so deploys are not bit-identical. Acceptable under the current rolling
    model; publishing to Docker Hub and pulling would remove the class.
