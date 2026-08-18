@@ -48,3 +48,7 @@ mcp>=1.27,<2
 
 # v5.7.1 — markitdown: DOCX/PDF/PPTX/HTML/EPUB → markdown for MCP tool
 markitdown>=0.1.0
+
+# v5.23 — local accelerator RAM/swap probe (Windows + Linux). Optional at
+# import time: probe.py fail-softs to ctypes /proc fallbacks if missing.
+psutil>=5.9.0

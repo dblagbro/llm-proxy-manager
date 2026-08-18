@@ -2,6 +2,27 @@
 
 All notable changes since v2.7.6. Older history available in `git log`.
 
+## v5.23.1 — local accelerator telemetry probe, read-only (2026-08-17)
+
+Slice 1 of the Local Accelerator Manager
+(`docs/5.23-local-accelerator-orchestration-backpressure-design.md`). **No
+admission** — this does not refuse or delay requests.
+
+- New package `app/resources/probe.py`: NVML first, `nvidia-smi` fallback,
+  `psutil` / Windows `GlobalMemoryStatusEx` / `/proc/meminfo` for RAM, and
+  Ollama `GET /api/ps` for residency. Every source is fail-soft.
+- `GET /api/local/accelerators` (admin) returns the snapshot.
+- Prometheus gauges `llmp_local_vram_used_bytes` and
+  `llmp_local_ram_available_bytes`.
+- Master switch `LOCAL_ACCEL_ENABLED` defaults **false** (spec G6): disabled
+  is a complete no-op — no subprocess, no HTTP, no metric writes.
+
+Name discipline: this is **accelerator telemetry / resource admission**, not
+the MCP capability-signalling back-pressure in
+`docs/5.10-mcp-backpressure-design.md`.
+
+Pin: `tests/unit/test_local_accelerator_probe.py`.
+
 ## v5.22.11 — users.email now replicates across the cluster (2026-08-12)
 
 Found immediately after deploying v5.22.10: login by email worked on tmrwww01 and returned **401 on tmrwww02**, with both nodes holding the same user row at an *identical* `last_user_edit_at`. Cluster sync had replicated the row but not the column — `email`, added in v5.22.7, was never added to the sync payload (`cluster/manager.py`) or the merge handler (`cluster/sync.py`), so it replicated as NULL.
