@@ -2,6 +2,45 @@
 
 All notable changes since v2.7.6. Older history available in `git log`.
 
+### v5.22.12 — grok-web stability: root-cause the periodic bridge failures; stop mislabeling timeouts
+
+**Root cause of the ~7-hourly grok-bridge failures: two proxies driving one browser.**
+The `no enabled submit control` failures fired on an implausibly precise cadence — 7h06m
+±11s, seven consecutive times (08-15 18:50 → 08-17 20:33). Adversarial bot-detection is
+stochastic; a metronome that tight is a scheduler artifact. The button inventory captured at
+each failure showed a normal logged-in page — Toggle Sidebar / Search / Projects / History,
+**no Cloudflare challenge, no CAPTCHA, no login wall, no rate-limit modal** — just no chat
+composer mounted.
+
+Cause: the retired `/llm-proxy/` clone on tmrwww02 had `Grok-Web-Devin` **enabled** with the
+**same** `bridge_url`, and ran its own keepalive worker on an independent ~10-minute schedule.
+Two uncoordinated schedulers driving a single serialized Chromium collide on a beat frequency —
+which is exactly the shape of the 7h06m period. Retiring that clone (2026-08-17 23:02) removed
+one scheduler, and the pattern stopped: the metronome predicted 08-18 03:39, 10:45 and 17:51,
+and none occurred.
+
+**Second, independent failure mode — slow replies thrown away as failures.** `APPEAR_TIMEOUT`
+was hardcoded at 25s, the wait for grok.com's *first token*. Observed healthy replies routinely
+took 28-51s end to end. A slow-but-fine answer was discarded and counted as a provider failure,
+tripping the circuit breaker.
+
+- `grok_bridge/app.py`: `APPEAR_TIMEOUT` 25s → **45s**, and both it and `SETTLE_MAX` are now
+  env-tunable (`BRIDGE_APPEAR_TIMEOUT_SEC`, `BRIDGE_SETTLE_MAX_SEC`).
+- `grok_bridge/app.py`: log level is env-tunable via `BRIDGE_LOG_LEVEL` (was hardcoded INFO, so
+  "turn up logging to debug this" previously required a full image rebuild + deploy).
+- `app/providers/grok_web_bridge.py`: split `httpx.TimeoutException` out of the generic
+  `httpx.HTTPError` handler. `TimeoutException` subclasses `TransportError` → `HTTPError`, so a
+  **slow** bridge was reported with the identical wording as a **dead** one —
+  `grok-web bridge unreachable`. That cost a full debugging session chasing DNS, nginx and
+  hairpin routing while the bridge was healthy and merely answering slower than the timeout. The
+  new message says so explicitly and names the knobs to turn.
+
+Circuit-breaker classification is unchanged: both the old and new strings classify as `timeout`
+(verified against `classify_error`) — the `"bridge unreachable"` entry in `_NETWORK_PATTERNS`
+never won, because `_TIMEOUT_PATTERNS` matches first.
+
+Verified: `import app.main` OK; ruff on the touched files **31 findings before, 31 after** (zero new).
+
 ## v5.22.11 — users.email now replicates across the cluster (2026-08-12)
 
 Found immediately after deploying v5.22.10: login by email worked on tmrwww01 and returned **401 on tmrwww02**, with both nodes holding the same user row at an *identical* `last_user_edit_at`. Cluster sync had replicated the row but not the column — `email`, added in v5.22.7, was never added to the sync payload (`cluster/manager.py`) or the merge handler (`cluster/sync.py`), so it replicated as NULL.

@@ -60,6 +60,19 @@ async def _bridge_chat(
     async with httpx.AsyncClient(timeout=timeout) as client:
         try:
             r = await client.post(f"{bridge_url}/api/chat", json=body, headers=headers)
+        except httpx.TimeoutException as e:
+            # 2026-08-18: split from the generic handler below. httpx.TimeoutException
+            # subclasses TransportError -> HTTPError, so a SLOW bridge used to be
+            # reported as "unreachable" — identical wording to a dead host. That cost
+            # a full debugging session chasing DNS/nginx/hairpin routing while the
+            # bridge was healthy and merely answering slower than the timeout.
+            # grok-web scrapes a real browser: 30-50s replies are normal, not an outage.
+            raise GrokWebError(
+                f"grok-web bridge timed out after {timeout}s (the bridge was reachable; "
+                f"grok.com had not finished replying). This is a latency problem, not a "
+                f"connectivity one — raise the provider timeout or BRIDGE_APPEAR_TIMEOUT_SEC "
+                f"before investigating the network. Underlying: {e!r}"
+            )
         except httpx.HTTPError as e:
             raise GrokWebError(f"grok-web bridge unreachable: {e}")
     if r.status_code == 401:

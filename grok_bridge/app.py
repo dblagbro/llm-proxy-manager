@@ -51,7 +51,14 @@ from playwright.async_api import (
 
 
 logger = logging.getLogger("grok-bridge")
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+# Log level is env-tunable so the operator can raise verbosity on a running
+# node without a rebuild (2026-08-18). Previously hardcoded INFO, which meant
+# every "turn up logging to debug this" required a full image build + deploy.
+_LOG_LEVEL = os.environ.get("BRIDGE_LOG_LEVEL", "INFO").strip().upper()
+logging.basicConfig(
+    level=getattr(logging, _LOG_LEVEL, logging.INFO),
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
 
 STATE_DIR = Path(os.environ.get("BRIDGE_STATE_DIR", "/data/playwright-state"))
 BRIDGE_TOKEN = os.environ.get("BRIDGE_TOKEN", "").strip()
@@ -1741,8 +1748,17 @@ async def _send_via_spa_ui(conv_id: str, message: str) -> tuple[int, str]:
         #      return 599 fast so the proxy fails over to OpenRouter.
         #   B) once it appears, wait for its text to stop growing (stream
         #      settled), capped by SETTLE_MAX.
-        APPEAR_TIMEOUT = 25.0
-        SETTLE_MAX = 50.0
+        # 2026-08-18: both were hardcoded (25s / 50s). Observed grok.com
+        # first-token latency reached >25s repeatedly (see the 16:47 and
+        # 16:49 scrape failures on 2026-08-18), so a slow-but-healthy reply
+        # was being thrown away as a failure and tripping the provider's
+        # circuit breaker. Raised the appear window to 45s and made both
+        # env-tunable so this can be adjusted without an image rebuild.
+        # Keep APPEAR_TIMEOUT + SETTLE_MAX comfortably under the caller's
+        # GROK_WEB_USER_TIMEOUT_SEC or the outer timeout fires first and the
+        # work is wasted anyway.
+        APPEAR_TIMEOUT = float(os.environ.get("BRIDGE_APPEAR_TIMEOUT_SEC", "45"))
+        SETTLE_MAX = float(os.environ.get("BRIDGE_SETTLE_MAX_SEC", "50"))
         appear_deadline = time.time() + APPEAR_TIMEOUT
         last_text = ""
         stable_since = None
