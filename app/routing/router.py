@@ -77,8 +77,18 @@ def _apply_tool_success_weighting(ranked: list[tuple]) -> list[tuple]:
     return out
 
 
+def _max_output_for(model_id: str) -> int | None:
+    """v5.22.13 — model output cap from the pricing catalog, or None."""
+    try:
+        from app.monitoring.pricing import max_output_tokens_for
+        return max_output_tokens_for(model_id)
+    except Exception:
+        return None
+
+
 def _capability_fit(profile, *, has_tools: bool, needs_reasoning: bool,
-                    has_images: bool, est_input_tokens: Optional[int]) -> Optional[str]:
+                    has_images: bool, est_input_tokens: Optional[int],
+                    requested_max_tokens: int | None = None) -> Optional[str]:
     """Capability-fit gate (v4.1). Returns None when the provider can serve
     the request — natively or via emulation — or a short reason when it
     CANNOT and should be skipped (operator directive 2026-05-17, "simulate
@@ -100,6 +110,16 @@ def _capability_fit(profile, *, has_tools: bool, needs_reasoning: bool,
     if (est_input_tokens and profile.context_length
             and est_input_tokens > profile.context_length):
         return f"context window {profile.context_length} < ~{est_input_tokens} tokens"
+    # v5.22.13 — OUTPUT-side twin of the context check above. Without it the
+    # router happily picked a provider that physically cannot emit the
+    # requested max_tokens; the upstream then rejected it as a client error.
+    # On 2026-08-18 callers asked Cohere for max_tokens=32000 against an 8192
+    # cap, and the rejection (mis-filed as upstream_5xx) tripped a healthy
+    # provider's breaker. None = unknown cap = do not filter.
+    if (requested_max_tokens and profile.max_output_tokens
+            and requested_max_tokens > profile.max_output_tokens):
+        return (f"max output {profile.max_output_tokens} < requested "
+                f"{requested_max_tokens} tokens")
     return None
 
 
@@ -164,6 +184,7 @@ async def _load_profile(db: AsyncSession, provider: Provider) -> CapabilityProfi
             cost_tier=cap.cost_tier or "standard",
             safety=cap.safety or 3,
             context_length=cap.context_length or 128000,
+            max_output_tokens=_max_output_for(model_id),
             regions=cap.regions or [],
             modalities=cap.modalities or ["text"],
             native_reasoning=cap.native_reasoning or False,
@@ -228,6 +249,10 @@ async def select_provider(
     api_key_id: Optional[str] = None,
     dry_run: bool = False,
     est_input_tokens: Optional[int] = None,
+    # v5.22.13 — requested output length, for the output-cap gate in
+    # _capability_fit. Defaults to None so the 18 existing call sites keep
+    # their current behaviour; opt in per caller.
+    requested_max_tokens: int | None = None,
     blocked_companies: Optional[Set[str]] = None,
 ) -> RouteResult:
     """
@@ -660,6 +685,7 @@ async def select_provider(
         _reason = _capability_fit(
             _t[0], has_tools=has_tools, needs_reasoning=needs_reasoning,
             has_images=has_images, est_input_tokens=est_input_tokens,
+            requested_max_tokens=requested_max_tokens,
         )
         if _reason is None:
             _fit_kept.append(_t)

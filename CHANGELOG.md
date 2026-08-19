@@ -2,6 +2,57 @@
 
 All notable changes since v2.7.6. Older history available in `git log`.
 
+### v5.22.13 — a caller's oversized request must not break a healthy provider
+
+Root-cause of the 2026-08-18 Cohere lockout, plus a silently-dead cache found on
+the way. Three independent defects, each amplifying the next.
+
+**1. Wrapped client errors were counted as provider failures.**
+`classify_error` checks `_UPSTREAM_5XX_PATTERNS` before `_BAD_REQUEST_PATTERNS`.
+When a handler wraps a client error as HTTP 502 — the real production string was
+`502: Upstream error before streaming began: litellm.ContextWindowExceededError:
+litellm.BadRequestError: CohereException - {"error_type":"TOO_MANY_TOKENS", ...}` —
+the "502" in **our own wrapper** matched first, so the error classified as
+`upstream_5xx`. The markers that should have caught it (`badrequesterror`,
+`contextwindowexceeded`) had been in `_BAD_REQUEST_PATTERNS` since v3.0.89; they
+were simply unreachable.
+
+This is not cosmetic. `bad_request` exists precisely so the router does **not**
+trip the breaker or fail over — a malformed caller request is not the provider's
+fault. Misfiled as `upstream_5xx`, a caller asking Cohere for `max_tokens=32000`
+(cap 8192) counted as a *provider* failure; repeated, exponential backoff locked a
+perfectly healthy Devin-Cohere out for ~17 hours.
+
+Fix: `_CLIENT_ERROR_OVERRIDE_PATTERNS` — unambiguous SDK exception names and typed
+error codes (never bare HTTP numbers, so they cannot collide with a real 5xx body)
+— checked **above** the 5xx bucket. Genuine 5xx, auth, timeout, rate-limit and
+network classification are unchanged, pinned by test.
+
+**2. The router had no OUTPUT-side capability gate.**
+`_capability_fit` refused providers whose `context_length` was too small for the
+INPUT, but nothing checked whether the model could physically emit the requested
+`max_tokens`. So Cohere was selected for a 32000-token-output request against a
+4096-8192 cap, and the wasted round-trip came back as the client error above.
+
+Fix: `CapabilityProfile.max_output_tokens`, sourced from `model_pricing_catalog`,
+with the symmetric gate in `_capability_fit`. `None` (unknown) never filters — the
+catalog covers ~90% of models and excluding on missing data would be worse than the
+rejection it prevents. `select_provider` and `select_provider_with_503` take
+`requested_max_tokens` defaulting to `None`, so all 18 existing call sites keep
+their prior behaviour; `/v1/messages` and `/v1/chat/completions` opt in.
+
+**3. BUGFIX: the DB pricing catalog was never read — by anything.**
+`app/monitoring/pricing.py` did `from app.models.database import DATABASE_URL`, but
+that module does not export the name. The `ImportError` was swallowed by a broad
+`except Exception: pass`, so `_CATALOG_CACHE` stayed permanently **empty** and every
+pricing lookup silently fell through to the litellm built-in. `model_cost_map_worker`
+has been ingesting 2,568 rows daily into a table nothing consumed. Now reads
+`settings.database_url`; verified both cost and output-cap lookups resolve.
+
+Pins: `tests/unit/test_v52213_client_error_and_output_cap.py` (16 tests, hermetic,
+verified to fail against the pre-fix behaviour) — added to the CI gating job, 8 → 9
+files. `import app.main` OK; ruff **161 findings before and after** (zero new).
+
 ### v5.22.12 — grok-web stability: root-cause the periodic bridge failures; stop mislabeling timeouts
 
 **Root cause of the ~7-hourly grok-bridge failures: two proxies driving one browser.**

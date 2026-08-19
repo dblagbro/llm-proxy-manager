@@ -306,6 +306,9 @@ async def select_provider_with_503(
     alias,
     detailed_503: bool = True,
     messages: Optional[list] = None,
+    # v5.22.13 — requested output length, for the output-cap capability gate.
+    # Optional so callers that do not know it keep prior behaviour.
+    requested_max_tokens: int | None = None,
 ):
     """Centralized ``select_provider`` call with RuntimeError → HTTPException(503)
     conversion and the v3.0.22 / v3.0.99 ``model_override`` plumbing both
@@ -391,6 +394,7 @@ async def select_provider_with_503(
             sort_mode=parsed_slug.sort_mode,
             api_key_id=key_record.id,  # v3.0.45 tenant scoping
             est_input_tokens=_estimate_input_tokens(messages),  # v4.1 context gate
+            requested_max_tokens=requested_max_tokens,  # v5.22.13 output gate
         )
     except Exception as e:
         # v5.0.0 compliance — ComplianceNoSubstituteError carries the

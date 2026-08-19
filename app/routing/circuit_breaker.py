@@ -457,6 +457,38 @@ _UPSTREAM_5XX_PATTERNS = [
     "gateway timeout",
 ]
 
+# v5.22.13 — unambiguous CLIENT-error signatures that must outrank the
+# ``upstream_5xx`` bucket. These are SDK exception NAMES and typed error
+# codes, never bare HTTP numbers, so they cannot appear coincidentally in
+# an unrelated 5xx body.
+#
+# Why this exists: ``classify_error`` checks ``_UPSTREAM_5XX_PATTERNS``
+# BEFORE ``_BAD_REQUEST_PATTERNS``. When a handler wraps a client error as
+# an HTTP 502 — e.g. ``502: Upstream error before streaming began:
+# litellm.ContextWindowExceededError: litellm.BadRequestError:
+# CohereException - {"error_type":"TOO_MANY_TOKENS", ...}`` — the "502" in
+# OUR OWN wrapper matched first and the error classified as
+# ``upstream_5xx``. The markers to catch it (``badrequesterror``,
+# ``contextwindowexceeded``) were already in _BAD_REQUEST_PATTERNS since
+# v3.0.89; they were simply unreachable.
+#
+# The consequence was not cosmetic. ``bad_request`` exists specifically so
+# the router does NOT trip the circuit breaker or fail over (see the
+# v3.8.2 note below) — a caller's malformed request is not the provider's
+# fault. Misfiled as upstream_5xx, a caller asking Cohere for
+# max_tokens=32000 (cap: 8192) counted as a PROVIDER failure. Repeated, it
+# drove Devin-Cohere's breaker open and exponential backoff locked a
+# perfectly healthy provider out for ~17 hours on 2026-08-18.
+_CLIENT_ERROR_OVERRIDE_PATTERNS = [
+    "badrequesterror",
+    "contextwindowexceeded",
+    "contentpolicyviolation",
+    "unsupportedparams",
+    "invalid_request_error",
+    "too_many_tokens",
+    "invalid user message",
+]
+
 _BAD_REQUEST_PATTERNS = [
     "400",
     # BUG-048 (v4.3.9 / 2026-05-20): 4xx codes that aren't already
@@ -534,6 +566,10 @@ def classify_error(error_text: str) -> str:
         return "timeout"
     if any(p in low for p in _NETWORK_PATTERNS):
         return "network"
+    # v5.22.13: definitive client-error signatures beat a wrapper's HTTP
+    # status. Must stay ABOVE the 5xx check — see _CLIENT_ERROR_OVERRIDE_PATTERNS.
+    if any(p in low for p in _CLIENT_ERROR_OVERRIDE_PATTERNS):
+        return "bad_request"
     if any(p in low for p in _UPSTREAM_5XX_PATTERNS):
         return "upstream_5xx"
     if any(p in low for p in _BAD_REQUEST_PATTERNS):

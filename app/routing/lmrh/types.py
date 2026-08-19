@@ -133,6 +133,12 @@ class CapabilityProfile:
     cost_tier: str = "standard"
     safety: int = 3
     context_length: int = 128000
+    # v5.22.13 — the model's maximum OUTPUT tokens, from model_pricing_catalog.
+    # ``None`` = unknown (catalog covers ~90% of models) and MUST be treated as
+    # "do not filter"; excluding providers on missing data would be worse than
+    # the occasional upstream rejection this guards against. Distinct from
+    # ``context_length``, which bounds INPUT.
+    max_output_tokens: int | None = None
     regions: list[str] = field(default_factory=list)
     modalities: list[str] = field(default_factory=lambda: ["text"])
     native_reasoning: bool = False

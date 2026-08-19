@@ -67,7 +67,8 @@ jobs:
             tests/unit/test_v5226_next_route_terminates.py \
             tests/unit/test_v5220_sqlite_pool_no_churn.py \
             tests/unit/test_v5227_litellm_tool_shape.py \
-            tests/unit/test_v52211_cluster_sync_email.py
+            tests/unit/test_v52211_cluster_sync_email.py \
+            tests/unit/test_v52213_client_error_and_output_cap.py
 
   full-unit-informational:
     # Runs the whole unit suite for visibility. Currently expected to have

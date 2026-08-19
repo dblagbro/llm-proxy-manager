@@ -172,6 +172,10 @@ async def chat_completions(
             key_record=key_record, parsed_slug=parsed_slug, alias=alias,
             detailed_503=False,
             messages=body.get("messages"),
+            # v5.22.13 — see messages.py; OpenAI shape carries max_tokens
+            # (and max_completion_tokens on newer clients).
+            requested_max_tokens=(body.get("max_tokens")
+                                  or body.get("max_completion_tokens")),
         )
     except ComplianceNoSubstituteError as _exc:
         await raise_for_no_substitute_exception(

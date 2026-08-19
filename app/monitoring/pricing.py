@@ -32,6 +32,8 @@ logger = logging.getLogger(__name__)
 # ``invalidate_catalog_cache`` on successful upsert). Keyed on
 # model name; value is (input_per_token, output_per_token).
 _CATALOG_CACHE: dict[str, tuple[float, float]] = {}
+# v5.22.13 — model_key -> max_output_tokens, same lifecycle as _CATALOG_CACHE.
+_MAX_OUTPUT_CACHE: dict[str, int] = {}
 _CATALOG_LOADED = False
 
 
@@ -40,6 +42,7 @@ def invalidate_catalog_cache() -> None:
     reloads from DB."""
     global _CATALOG_LOADED
     _CATALOG_CACHE.clear()
+    _MAX_OUTPUT_CACHE.clear()
     _CATALOG_LOADED = False
 
 
@@ -54,18 +57,36 @@ def _load_catalog_cache_sync() -> None:
     _CATALOG_LOADED = True  # set FIRST so a load failure doesn't loop
     try:
         from sqlalchemy import create_engine, text
-        from app.models.database import DATABASE_URL
+        # v5.22.13 BUGFIX: this used to be
+        #     from app.models.database import DATABASE_URL
+        # but app.models.database does NOT export that name. The ImportError
+        # was swallowed by the broad ``except Exception: pass`` below, so
+        # _CATALOG_CACHE stayed permanently EMPTY and every pricing lookup
+        # silently fell through to the litellm built-in. The daily
+        # model_cost_map_worker ingest (2,568 rows) was never read by anything.
+        # Read the configured URL from settings, which is the real source.
+        from app.config import settings
         # AsyncSessionLocal uses aiosqlite; swap to sync driver for
         # this cheap read.
-        sync_url = DATABASE_URL.replace("sqlite+aiosqlite", "sqlite")
+        sync_url = settings.database_url.replace("sqlite+aiosqlite", "sqlite")
         engine = create_engine(sync_url)
         with engine.connect() as conn:
             rows = conn.execute(text(
-                "SELECT model_key, input_cost_per_token, output_cost_per_token "
-                "FROM model_pricing_catalog"
+                "SELECT model_key, input_cost_per_token, output_cost_per_token, "
+                "max_output_tokens FROM model_pricing_catalog"
             )).fetchall()
         for row in rows:
             _CATALOG_CACHE[row[0]] = (float(row[1]), float(row[2]))
+            # v5.22.13 — the catalog also carries each model's OUTPUT cap
+            # (90% coverage as of 2026-08-18). Cache it alongside pricing so
+            # the router can refuse to send a request to a provider that
+            # physically cannot emit the requested max_tokens. NULL stays
+            # absent from the map, and absent means "unknown, do not filter".
+            if row[3] is not None:
+                try:
+                    _MAX_OUTPUT_CACHE[row[0]] = int(row[3])
+                except (TypeError, ValueError):
+                    pass
     except Exception:
         # Table may not exist yet on a fresh boot before init_db() —
         # that's fine, the cache stays empty and lookups fall through
@@ -89,6 +110,32 @@ def _catalog_lookup(model: str) -> Optional[tuple[float, float]]:
     for k, v in _CATALOG_CACHE.items():
         if k.endswith("/" + model):
             return v
+    return None
+
+
+def max_output_tokens_for(model: str) -> int | None:
+    """Return the model's maximum OUTPUT tokens from the DB catalog, or
+    ``None`` when unknown.
+
+    v5.22.13. Mirrors ``_catalog_lookup``'s prefix-variant matching so
+    ``cohere/command-r``, ``command-r`` and a bare alias all resolve.
+
+    ``None`` means "not in the catalog" and callers MUST treat it as
+    "do not filter" — the catalog covers ~90% of models, and silently
+    excluding providers for the other 10% would be worse than the
+    occasional upstream rejection this exists to prevent.
+    """
+    _load_catalog_cache_sync()
+    v = _MAX_OUTPUT_CACHE.get(model)
+    if v is not None:
+        return v
+    if "/" in model:
+        v = _MAX_OUTPUT_CACHE.get(model.split("/", 1)[1])
+        if v is not None:
+            return v
+    for k, val in _MAX_OUTPUT_CACHE.items():
+        if k.endswith("/" + model):
+            return val
     return None
 
 

@@ -306,6 +306,10 @@ async def messages(
             key_record=key_record, parsed_slug=parsed_slug, alias=alias,
             detailed_503=True,
             messages=body.get("messages"),
+            # v5.22.13 — let the router skip providers whose model cannot
+            # emit this many output tokens, instead of discovering it as an
+            # upstream client-error rejection that trips their breaker.
+            requested_max_tokens=max_tokens,
         )
     except ComplianceNoSubstituteError as _exc:
         await raise_for_no_substitute_exception(
