@@ -196,7 +196,7 @@ bug-log.md now has the reconciled statuses. Lessons learned:
 ## Environment assumptions (2026-04-24)
 
 - Production cluster: tmrwww01 (primary, this host) + tmrwww02 + GCP node `c1conversations-avaya-01-s23`. All on v2.7.5 as of this sweep.
-- Admin password used by the integration suite is hardcoded as `REMOVED-CREDENTIAL-ROTATED-20260828` in `tests/conftest.py`. README still says `admin/admin` (BUG-009).
+- Admin password used by the integration suite is hardcoded as `<redacted — see LLMPROXY_TEST_ADMIN_PASS>` in `tests/conftest.py`. README still says `admin/admin` (BUG-009).
 - Default DB path inside the container: `/app/data/llmproxy.db`. Volume: `docker_llm-proxy2-data`.
 - Frontend assets at `/llm-proxy2/assets/index-<hash>.js`. Hash changes with each rebuild; index.html has no `Cache-Control` header (BUG-015 — minor).
 

@@ -54,7 +54,7 @@ Operator should add this block to `/home/dblagbro/docker/docker-compose.yml` aft
     container_name: llm-proxy2-cursor-bridge-session
     restart: unless-stopped
     environment:
-    - BRIDGE_TOKEN=${BRIDGE_TOKEN:-REMOVED-CREDENTIAL-ROTATED-20260828}
+    - BRIDGE_TOKEN=${BRIDGE_TOKEN:?set a strong unique token}
     - BRIDGE_PUBLIC_PATH=/llm-proxy2/cursor-bridge-session
     - LLM_PROXY_HMAC_KEY=${CURSOR_BRIDGE_HMAC_KEY:-rotate-me-in-prod}
     - LLM_PROXY_CALLBACK_URL=http://llm-proxy2:3000/api/admin/cursor-oauth-rotate-callback

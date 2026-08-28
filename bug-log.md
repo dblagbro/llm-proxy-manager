@@ -810,9 +810,9 @@ passing; 7 integration tests failing on first run (analyzed below).
 ### BUG-009 [MEDIUM] Docs claim default credentials `admin/admin` but real production password differs
 
 - **Area**: `README.md`
-- **Repro**: README says "Default login: admin / admin — change immediately after first boot." Production cluster uses `REMOVED-CREDENTIAL-ROTATED-20260828` (per `tests/conftest.py`).
+- **Repro**: README says "Default login: admin / admin — change immediately after first boot." Production cluster uses `<redacted — see LLMPROXY_TEST_ADMIN_PASS>` (per `tests/conftest.py`).
 - **Risk**: A new admin reading the README will fail to log in and assume the system is broken; or worse, if they SQL-poke the admin row to "fix" it, they may overwrite a working password in production.
-- **Suggested fix**: README should clarify "On first boot only. Change in production via the Users page; the test fixtures use `REMOVED-CREDENTIAL-ROTATED-20260828` for the existing admin."
+- **Suggested fix**: README should clarify "On first boot only. Change in production via the Users page; the test fixtures use `<redacted — see LLMPROXY_TEST_ADMIN_PASS>` for the existing admin."
 - **Status**: open
 
 ### BUG-010 [MEDIUM] Two anthropic providers with identical priority=1 — non-deterministic routing
@@ -1005,10 +1005,10 @@ Same severity ladder and status flow as above.
 ### F-INFRA-003 — Plaintext admin password committed in `tests/conftest.py` — ✅ **CLOSED v4.4.29**
 
 - **Severity:** medium · **Category:** credential exposure (latent)
-- **Repro:** `tests/conftest.py:15` previously read `ADMIN_PASS = "REMOVED-CREDENTIAL-ROTATED-20260828"` — a hardcoded production-admin password committed in git history on a public repository. Visible to anyone who clones or browses the repo.
+- **Repro:** `tests/conftest.py:15` previously read `ADMIN_PASS = "<redacted>"` — a hardcoded production-admin password committed in git history on a public repository. Visible to anyone who clones or browses the repo.
 - **Fix:** v4.4.29 reads `ADMIN_PASS` from `LLMPROXY_TEST_ADMIN_PASS` env var with a dev-default fallback of `"admin"`. Same env-var pattern applied to `BASE_URL` (`LLMPROXY_TEST_BASE_URL`) and `ADMIN_USER` (`LLMPROXY_TEST_ADMIN_USER`) for consistency. Operator sets these in their shell/.env when running integration tests against live; default-credentials dev boxes still work from a clean checkout.
 - **Caveat (not in scope here):** the password remains in `git log -p tests/conftest.py` for the lifetime of the existing history. A full `git filter-repo`-style history rewrite is out of scope for this fix — the practical remediation is to rotate the password on the live deployment if it hasn't been already. Flagging for operator action.
-- **Tests:** the test file's source-guard asserts `REMOVED-CREDENTIAL-ROTATED-20260828` is no longer present and that the env var name is wired in.
+- **Tests:** the test file's source-guard asserts `<redacted — see LLMPROXY_TEST_ADMIN_PASS>` is no longer present and that the env var name is wired in.
 - **Status:** CLOSED v4.4.29 (forward-looking). Operator should rotate the password if it's still in active use anywhere.
 
 ## 2026-05-28 — QA-pass remediation arc COMPLETE (v4.4.24 → v4.4.28)

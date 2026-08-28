@@ -1,67 +1,18 @@
 # Known pre-existing unit-test failures — the #3 "get the suite green" backlog.
 #
-# Snapshot: 2026-08-05 (after v5.21.14). 64 committed-test failures.
+# Snapshot: 2026-08-12 (after v5.22.12). 57 committed-test failures.
+# REFRESHED 2026-08-12: the previous header claimed 64 and the body listed 48,
+# while the suite actually failed 57 — so the list could neither be trusted as
+# a baseline nor used to detect a regression. Regenerated from an actual run.
+#
 # These are NOT caused by recent work — they are accumulated drift from a
 # repo that has never had CI. Until this list reaches zero, the full unit
-# suite cannot be a required CI check (see .github/workflows/ci.yml — the
-# "full-unit-informational" job is non-blocking for exactly this reason).
+# suite cannot be a required CI check.
 #
-# Goal: drive this list to zero, then promote full-unit to a blocking check.
-# When you fix or delete a test, remove its line here.
-#
-# Categories (by why they fail):
-#   [SIZE]    refactor-size assertions — file grew past a target LOC.
-#             The extract they assume never happened. Fix = do the extract,
-#             OR update the threshold to reality if the target was abandoned.
-#   [VER]     stale version pins (exact or feature-min). Convert to `>=`.
-#   [WIRE]    static "X is wired into handler Y" pins that drifted as code moved.
-#             Verify the wiring still exists (possibly under a new name/helper)
-#             and update the grep, or delete if the feature was removed.
-#   [BEHAV]   behavioral tests (airi/oauth/pricing) — need a real look;
-#             could be genuine drift or a stale expectation.
-#   [NET]     may also error on a clean CI runner (uses live-fixture path).
-#
-# --- SIZE / refactor debt ---
-tests/unit/test_v4411_db_split.py::test_no_domain_module_exceeds_500_loc
-tests/unit/test_v4411_db_split.py::test_re_export_shim_includes_every_model_class
-tests/unit/test_v4411_db_split.py::test_registry_has_all_tables
-tests/unit/test_v4412_streaming_split.py::test_neither_streaming_file_exceeds_700_loc
-tests/unit/test_v5190_messages_response_tail_extract.py::test_messages_line_count_dropped
-tests/unit/test_v5718_messages_extract.py::test_messages_py_size_dropped
-tests/unit/test_v5719_messages_extract.py::test_messages_py_size_dropped_further
-tests/unit/test_v5723_phase2_shared_helpers.py::test_completions_py_dropped_to_894_or_less
-# --- VER / stale version pins ---
-# --- WIRE / static-grep pins that drifted ---
-tests/unit/test_v3719_log_noise_cleanup.py::test_get_db_reraises_other_operational_errors
-tests/unit/test_v3719_log_noise_cleanup.py::test_get_db_uses_async_with_pattern
-tests/unit/test_v380_codex_oauth_rename.py::test_no_codex_oauth_string_literal_in_backend
-tests/unit/test_v380_codex_oauth_rename.py::test_no_codex_oauth_string_literal_in_frontend
-tests/unit/test_v398_pool_diagnostics_in_health.py::test_health_cache_excludes_dbPool
-tests/unit/test_v4420_apikey_lww.py::test_patch_endpoint_bumps_last_user_edit_at
-tests/unit/test_v4420_apikey_lww.py::test_patch_uses_walltime_for_stamp
-tests/unit/test_v4424_cluster_sync_robustness.py::test_push_sync_inspects_response_status
-tests/unit/test_v5120_mcp_backpressure_ship1and2.py::test_emit_wired_into_messages_handler
-tests/unit/test_v5121_hotfix_bundle.py::test_compliance_audit_worker_honors_zero_row_warning_enabled_flag
-tests/unit/test_v5122_ship3_and_ship11.py::test_accept_handler_wired_into_messages
-tests/unit/test_v5204_model_cost_map_sync.py::test_pricing_falls_through_to_litellm_when_catalog_miss
-tests/unit/test_v5208_streaming_cascade_transparency.py::test_docstring_mentions_streaming_gap
-tests/unit/test_v520_llm_emergency_stop.py::test_handler_helper_wired_into_completions
-tests/unit/test_v520_llm_emergency_stop.py::test_handler_helper_wired_into_messages
-tests/unit/test_v5210_refuse_tolerance_dim_and_streaming_cascade.py::test_buffered_stream_mode_marker_wired
-tests/unit/test_v531_skip_noop_substitution.py::test_noop_substitution_does_not_emit
-tests/unit/test_v531_skip_noop_substitution.py::test_noop_substitution_with_provider_prefix_strips_correctly
-tests/unit/test_v531_skip_noop_substitution.py::test_unsubstituted_route_still_short_circuits
-tests/unit/test_v540_audit_chain_zero_row_warning.py::test_zero_row_check_fires_on_unbroken_streak
-tests/unit/test_v540_worker_heartbeat.py::test_health_envelope_includes_workers_block_in_source
-tests/unit/test_v550_cursor_bridge_session_scaffold.py::test_healthz_returns_scaffold_sentinel_in_source
-tests/unit/test_v550_cursor_bridge_session_scaffold.py::test_rotate_endpoint_returns_not_implemented_stub_in_source
-tests/unit/test_v5711_zero_row_warning_opt_out.py::test_zero_row_warning_fires_when_setting_absent
-tests/unit/test_v572_spa_catchall_mcp_guard.py::test_spa_catchall_skips_mcp_namespace
-tests/unit/test_v576_capability_scout.py::test_emit_suggestions_writes_one_row_per_tool
-tests/unit/test_v5_messages_ua_block.py::test_banned_ua_with_anthropic_blocklist_returns_451
-tests/unit/test_v5_messages_ua_block.py::test_completions_py_runs_ua_check_after_verify_api_key
-tests/unit/test_v5_messages_ua_block.py::test_messages_py_runs_ua_check_after_verify_api_key
-# --- BEHAV / needs a real look ---
+# Regenerate with:
+#   python -m pytest tests/unit -q 2>&1 | grep '^FAILED' \
+#     | sed 's/^FAILED //;s/ - .*//' | sort
+
 tests/unit/test_airi_m1.py::test_agent_rejects_non_readonly_tool
 tests/unit/test_airi_m1.py::test_agent_returns_final_answer
 tests/unit/test_airi_m1.py::test_agent_runs_a_tool_then_answers
@@ -73,3 +24,49 @@ tests/unit/test_pricing_and_keepalive.py::test_estimate_cost_returns_nonzero_for
 tests/unit/test_pricing_and_keepalive.py::test_estimate_cost_with_provider_prefix_match
 tests/unit/test_pricing.py::test_known_model_override
 tests/unit/test_v340_phase3_and_split.py::test_estimate_cost_split_returns_tuple
+tests/unit/test_v3719_log_noise_cleanup.py::test_get_db_reraises_other_operational_errors
+tests/unit/test_v3719_log_noise_cleanup.py::test_get_db_uses_async_with_pattern
+tests/unit/test_v380_codex_oauth_rename.py::test_no_codex_oauth_string_literal_in_backend
+tests/unit/test_v380_codex_oauth_rename.py::test_no_codex_oauth_string_literal_in_frontend
+tests/unit/test_v398_pool_diagnostics_in_health.py::test_health_cache_excludes_dbPool
+tests/unit/test_v4411_db_split.py::test_no_domain_module_exceeds_500_loc
+tests/unit/test_v4411_db_split.py::test_re_export_shim_includes_every_model_class
+tests/unit/test_v4411_db_split.py::test_registry_has_all_tables
+tests/unit/test_v4412_streaming_split.py::test_neither_streaming_file_exceeds_700_loc
+tests/unit/test_v4420_apikey_lww.py::test_patch_endpoint_bumps_last_user_edit_at
+tests/unit/test_v4420_apikey_lww.py::test_patch_uses_walltime_for_stamp
+tests/unit/test_v4424_cluster_sync_robustness.py::test_push_sync_inspects_response_status
+tests/unit/test_v5120_mcp_backpressure_ship1and2.py::test_emit_wired_into_messages_handler
+tests/unit/test_v5121_hotfix_bundle.py::test_compliance_audit_worker_honors_zero_row_warning_enabled_flag
+tests/unit/test_v5122_ship3_and_ship11.py::test_accept_handler_wired_into_messages
+tests/unit/test_v5190_messages_response_tail_extract.py::test_messages_line_count_dropped
+tests/unit/test_v5204_model_cost_map_sync.py::test_pricing_falls_through_to_litellm_when_catalog_miss
+tests/unit/test_v5208_streaming_cascade_transparency.py::test_docstring_mentions_streaming_gap
+tests/unit/test_v520_llm_emergency_stop.py::test_handler_helper_wired_into_completions
+tests/unit/test_v520_llm_emergency_stop.py::test_handler_helper_wired_into_messages
+tests/unit/test_v5210_refuse_tolerance_dim_and_streaming_cascade.py::test_buffered_stream_mode_marker_wired
+tests/unit/test_v5212_default_refuse_tolerance_injection.py::test_admin_patch_accepts_field
+tests/unit/test_v5212_default_refuse_tolerance_injection.py::test_admin_patch_vocab_validated
+tests/unit/test_v5212_default_refuse_tolerance_injection.py::test_list_response_exposes_field
+tests/unit/test_v5212_default_refuse_tolerance_injection.py::test_orm_column_declared
+tests/unit/test_v5212_default_refuse_tolerance_injection.py::test_schema_migration_column_present
+tests/unit/test_v5213_buffered_cascade_heartbeat.py::test_heartbeat_flag_gates_on_retry_enabled
+tests/unit/test_v5213_buffered_cascade_heartbeat.py::test_messages_handler_delegates_when_heartbeat_flag_set
+tests/unit/test_v5213_buffered_cascade_heartbeat.py::test_orm_column_declared
+tests/unit/test_v5213_buffered_cascade_heartbeat.py::test_schema_migration_column_present
+tests/unit/test_v531_skip_noop_substitution.py::test_noop_substitution_does_not_emit
+tests/unit/test_v531_skip_noop_substitution.py::test_noop_substitution_with_provider_prefix_strips_correctly
+tests/unit/test_v531_skip_noop_substitution.py::test_unsubstituted_route_still_short_circuits
+tests/unit/test_v540_audit_chain_zero_row_warning.py::test_zero_row_check_fires_on_unbroken_streak
+tests/unit/test_v540_worker_heartbeat.py::test_health_envelope_includes_workers_block_in_source
+tests/unit/test_v550_cursor_bridge_session_scaffold.py::test_healthz_returns_scaffold_sentinel_in_source
+tests/unit/test_v550_cursor_bridge_session_scaffold.py::test_rotate_endpoint_returns_not_implemented_stub_in_source
+tests/unit/test_v5711_zero_row_warning_opt_out.py::test_zero_row_warning_fires_when_setting_absent
+tests/unit/test_v5718_messages_extract.py::test_messages_py_size_dropped
+tests/unit/test_v5719_messages_extract.py::test_messages_py_size_dropped_further
+tests/unit/test_v5723_phase2_shared_helpers.py::test_completions_py_dropped_to_894_or_less
+tests/unit/test_v572_spa_catchall_mcp_guard.py::test_spa_catchall_skips_mcp_namespace
+tests/unit/test_v576_capability_scout.py::test_emit_suggestions_writes_one_row_per_tool
+tests/unit/test_v5_messages_ua_block.py::test_banned_ua_with_anthropic_blocklist_returns_451
+tests/unit/test_v5_messages_ua_block.py::test_completions_py_runs_ua_check_after_verify_api_key
+tests/unit/test_v5_messages_ua_block.py::test_messages_py_runs_ua_check_after_verify_api_key

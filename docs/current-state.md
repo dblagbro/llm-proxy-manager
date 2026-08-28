@@ -1,3 +1,49 @@
+# Resumed 2026-08-28 — audit re-verified
+
+Re-scan done on resume (the pause block said not to trust the 2026-08-12
+findings because a rename was reported). Result: **no rename is visible.**
+`git remote` still reads `dblagbro/llm-proxy-manager`; the GitHub API returns
+`full_name: dblagbro/llm-proxy-manager`, `private: false`; and that is the only
+llm/proxy repo under the account. GitHub follows renames to the canonical name,
+so if a rename happened it was to a different repo. **The repo is still public.**
+
+## Credential status, re-verified 2026-08-28
+
+| Credential | Still published? | Still works? |
+|---|---|---|
+| admin password (2 integration test files) | YES on `origin/main` | **NO — rotated** (401 for `admin` and `dblagbro` on both nodes) |
+| `DEFAULT_BRIDGE_TOKEN` (grok provider form) | removed from source | **NO — ROTATED 2026-08-28** |
+
+**ROTATED 2026-08-28.** Root cause: `docker-compose.yml` read
+`BRIDGE_TOKEN=${BRIDGE_TOKEN:-<literal>}` and `.env` never set it, so the
+value published in the repo *was* the live token. Now: a 52-char random token
+lives in `/home/dblagbro/docker/.env`, and the compose default is
+`${BRIDGE_TOKEN:?...}` so it can never silently fall back to a literal again.
+Verified: the old published token returns **401**, the new one is accepted, and
+the grok provider's `bridge_token` was updated on **both** nodes.
+
+The fix commit was never pushed, which is why both values are still on
+`origin/main`. Its changelog entry named the token value verbatim, so it was
+redacted before shipping — pushing must not re-publish a credential that is
+still valid.
+
+## State
+- `origin/main` = `c414153` (v5.22.12). Local `main` is 2 commits ahead:
+  v5.22.13 and the v5.22.14 audit fixes. Nothing of mine is on the remote.
+- Live: tmrwww01 + tmrwww02 both **v5.22.12 healthy**; pool `checked_out=0`,
+  so the `_next_route` wedge fix is still holding 16 days on.
+- grok-bridge up 7 days, healthy.
+
+## Next
+1. ~~Rotate `BRIDGE_TOKEN`~~ — DONE 2026-08-28.
+2. ~~Push the audit fix~~ — removes both values from HEAD; history still holds them.
+3. Then the history audit. Purging history rewrites hashes for every clone and
+   needs explicit approval; it is pointless before rotation.
+4. Tree divergence still unresolved: compose builds from
+   `/home/dblagbro/llm-proxy-v2`, not this canonical tree.
+
+---
+
 # Current state — llm-proxy-v2
 
 > Brief live status. Keep it short and current. Detail lives in `architecture.md`,

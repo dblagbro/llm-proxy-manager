@@ -14,15 +14,24 @@ Run with:
 """
 from __future__ import annotations
 
+import os
 import time
 
 import pytest
-from playwright.sync_api import sync_playwright, Page, expect
+from playwright.sync_api import Page, expect, sync_playwright
 
-
-BASE_URL = "https://www.voipguru.org/llm-proxy2"
+BASE_URL = os.environ.get(
+    "LLMPROXY_TEST_BASE_URL", "https://www.voipguru.org/llm-proxy2"
+)
 ADMIN_USER = "admin"
-ADMIN_PASS = "REMOVED-CREDENTIAL-ROTATED-20260828"
+# v5.22.12 — credential moved out of source, matching tests/conftest.py
+# (v4.4.29). This file kept the plaintext production admin password long
+# after conftest.py was fixed, so it stayed readable by anyone on the
+# public repo — confirmed 2026-08-12 by fetching it anonymously from
+# raw.githubusercontent.com. Read from LLMPROXY_TEST_ADMIN_PASS; fall
+# back to the documented default "admin" so a from-scratch checkout
+# against a default-credentials dev box still works.
+ADMIN_PASS = os.environ.get("LLMPROXY_TEST_ADMIN_PASS", "admin")
 TARGET_PROVIDER_NAME = "Devin-Anthropic-Max-VG"
 
 
@@ -112,8 +121,8 @@ def test_release_now_also_enables_v386(page: Page):
     # New button label
     release_button = page.get_by_role("button", name="Release & re-enable all")
     assert release_button.count() == 1, (
-        f"expected new banner button 'Release & re-enable all' — "
-        f"the v3.8.6 fix replaces the v3.7.29 'Release all to AI control' label"
+        "expected new banner button 'Release & re-enable all' — "
+        "the v3.8.6 fix replaces the v3.7.29 'Release all to AI control' label"
     )
 
     release_button.first.click()

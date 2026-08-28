@@ -6,14 +6,24 @@ Run with:
     playwright install chromium
     python -m pytest tests/integration/test_playwright_ui.py -v
 """
+import os
 import re
 import time
 import pytest
 from playwright.sync_api import sync_playwright, Page, expect
 
-BASE_URL = "https://www.voipguru.org/llm-proxy2"
+BASE_URL = os.environ.get(
+    "LLMPROXY_TEST_BASE_URL", "https://www.voipguru.org/llm-proxy2"
+)
 ADMIN_USER = "admin"
-ADMIN_PASS = "REMOVED-CREDENTIAL-ROTATED-20260828"
+# v5.22.12 — credential moved out of source, matching tests/conftest.py
+# (v4.4.29). This file kept the plaintext production admin password long
+# after conftest.py was fixed, so it stayed readable by anyone on the
+# public repo — confirmed 2026-08-12 by fetching it anonymously from
+# raw.githubusercontent.com. Read from LLMPROXY_TEST_ADMIN_PASS; fall
+# back to the documented default "admin" so a from-scratch checkout
+# against a default-credentials dev box still works.
+ADMIN_PASS = os.environ.get("LLMPROXY_TEST_ADMIN_PASS", "admin")
 
 
 @pytest.fixture(scope="session")

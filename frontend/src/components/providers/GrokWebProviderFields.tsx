@@ -25,7 +25,12 @@ interface BridgeStatus {
 // network. Operator can override for split-host setups.
 const DEFAULT_BRIDGE_URL = 'http://llm-proxy2-grok-bridge:8443'
 const DEFAULT_BRIDGE_PUBLIC = '/grok-bridge'
-const DEFAULT_BRIDGE_TOKEN = 'REMOVED-CREDENTIAL-ROTATED-20260828'
+// v5.22.12 — must NOT ship a working shared secret. This literal was the
+// token actually enforced by the bridge, published on a public repo, and
+// verified on 2026-08-12 to authenticate against the internet-facing
+// /grok-bridge/api/chat endpoint. The operator pastes the real token into
+// the provider form instead; blank means 'not configured'.
+const DEFAULT_BRIDGE_TOKEN = ''
 
 export function GrokWebProviderFields({ form, set, editing }: Props) {
   // Determine initial mode from existing extra_config: if bridge_url is
@@ -336,7 +341,7 @@ export function GrokWebProviderFields({ form, set, editing }: Props) {
                   extra_config: { ...form.extra_config, bridge_token: e.target.value },
                 })
               }
-              placeholder="REMOVED-CREDENTIAL-ROTATED-20260828"
+              placeholder="paste the bridge token (BRIDGE_TOKEN env on the sidecar)"
             />
           </div>
         </>
