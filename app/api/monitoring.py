@@ -288,6 +288,21 @@ async def metrics_summary_by_node(
     if not peers:
         return {"hours": hours, "nodes": nodes}
 
+    # v5.22.16 — signing fails closed on an unset CLUSTER_SYNC_SECRET.
+    # Degrade to this node's own metrics rather than raising a 500 out of an
+    # admin view. Logger fetched locally: this module has no module-level one,
+    # and adding imports up top would churn an unrelated block.
+    import logging as _logging
+
+    from app.cluster.auth import cluster_auth_configured
+
+    if not cluster_auth_configured():
+        _logging.getLogger(__name__).error(
+            "metrics_by_node.peers_skipped reason=no_secret — returning this "
+            "node's metrics only"
+        )
+        return {"hours": hours, "nodes": nodes}
+
     node_id_bytes = (_settings.cluster_node_id or "").encode()
     headers = {
         "X-Cluster-Node": _settings.cluster_node_id or "",

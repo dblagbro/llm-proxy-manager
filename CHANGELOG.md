@@ -2,6 +2,20 @@
 
 All notable changes since v2.7.6. Older history available in `git log`.
 
+### v5.22.17 — the test suite was writing to production (2026-09-06)
+
+**`pytest tests/unit` was authenticating against the live deployment and creating API keys there.** `tests/conftest.py` defines `BASE_URL` as `https://www.voipguru.org/llm-proxy2` — production — and its session fixtures log in as admin, with several creating and deleting keys. This was invisible precisely because it *worked*: on a machine that can reach production, those tests pass, so nothing ever signalled that a local test run had side effects on the live cluster.
+
+The same fixtures were the documented blocker on CI gating the full suite: on a clean runner they *fail* rather than skip (no route, no admin password), making a genuine regression indistinguishable from "no deployment here".
+
+Both are the same fix. `LLMPROXY_TEST_LIVE=1` is now required, and without it the fixtures **skip**. Default runs are self-contained, CI can gate the suite, and writing to production is a deliberate act. The session-finish purge — which POSTs to production and already had its own `LLMPROXY_TEST_PURGE_LIVE` flag — now honours the same master switch.
+
+**Every remaining cluster-signing call site is guarded.** The v5.22.15 fail-closed change made `sign_payload` raise on an unset secret, and three call sites turned out to propagate that into a caller's path: `pull_oauth_state_from_peers`, `post_webhook` (which signed *outside* its own try block, so a webhook could break the completion that triggered it), and the peer fan-outs in `settings_api`, `monitoring`, `runs/replication` and `admin_activity_purge`. All now check `cluster_auth_configured()` and degrade to local-only with one clear log line.
+
+Worth recording: `post_webhook` signs caller webhooks with the **cluster** secret. Those are different trust domains sharing one key — not changed here, but it should be.
+
+Pin: `test_v52216_live_tests_opt_in.py` (7), which asserts the gate runs *before* the connection is built rather than merely existing.
+
 ### v5.22.16 — the cluster-sync 403 was a body-read race, not a signature problem (2026-09-06)
 
 **1. The disconnect watchdog was eating request-body chunks.** www1 → www2 cluster sync had been failing `403 Invalid cluster signature` 229 times in 16 hours while www2 → www1 worked. Ruled out first: the secret is identical on both nodes, the peer URL resolves to the real www2, the nginx location blocks match, and the 3.72 MB payload signs and verifies locally. Then measured: posting the **identical** body with the **identical** signature six times returned `200,200,200,403,200,200`. Same bytes, same key, same endpoint — so not a key mismatch, not serialisation, and a size limit would have been deterministic.

@@ -39,7 +39,11 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.admin import AdminUser, require_admin
-from app.cluster.auth import auth_headers_for, verify_cluster_request
+from app.cluster.auth import (
+    auth_headers_for,
+    cluster_auth_configured,
+    verify_cluster_request,
+)
 from app.config import settings
 from app.models.database import get_db
 from app.models.db import ActivityLog, CompliancePolicyChange
@@ -154,6 +158,13 @@ async def _fan_out_to_peers(
     from app.cluster.manager import _peers
     results: list[dict] = []
     if not _peers:
+        return results
+    # v5.22.16 — signing fails closed on an unset CLUSTER_SYNC_SECRET;
+    # skip the fan-out with one clear line instead of raising per peer.
+    if not cluster_auth_configured():
+        logger.error(
+            "activity_purge.fanout_skipped reason=no_secret — CLUSTER_SYNC_SECRET is unset"
+        )
         return results
     body = {
         "start_ts": start_ts,

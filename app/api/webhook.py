@@ -9,12 +9,22 @@ import logging
 
 import httpx
 
-from app.cluster.auth import sign_payload
+from app.cluster.auth import cluster_auth_configured, sign_payload
 
 logger = logging.getLogger(__name__)
 
 
 async def post_webhook(url: str, payload: dict) -> None:
+    # v5.22.15/16 — signing fails closed when CLUSTER_SYNC_SECRET is unset.
+    # Check first: everything below is inside a try that swallows delivery
+    # errors precisely so a webhook can never break the completion that
+    # triggered it, and an unsigned webhook is not worth sending anyway.
+    if not cluster_auth_configured():
+        logger.error(
+            "webhook.skipped reason=no_signing_secret url=%s — refusing to "
+            "send an unsigned webhook", url,
+        )
+        return
     body = json.dumps(payload, sort_keys=True).encode()
     sig = sign_payload(body)
     try:

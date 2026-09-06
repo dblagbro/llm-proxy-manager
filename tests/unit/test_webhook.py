@@ -1,7 +1,8 @@
 """Unit tests for async webhook delivery with HMAC signing."""
+import json
 import sys
 import types
-import json
+
 import pytest
 
 _stub = types.ModuleType("litellm")
@@ -10,7 +11,6 @@ sys.modules.setdefault("litellm", _stub)
 if not hasattr(sys.modules["litellm"], "RateLimitError"):
     sys.modules["litellm"].RateLimitError = type("RateLimitError", (Exception,), {})
 
-from app.api import webhook as webhook_mod
 from app.api.webhook import post_webhook
 
 
@@ -46,11 +46,22 @@ def reset_fake_client():
     yield
 
 
+def _require_signing_secret(monkeypatch):
+    """v5.22.16 — webhooks are HMAC-signed with the cluster secret, and since
+    v5.22.15 signing fails closed when that secret is unset rather than
+    silently signing with an empty key. These tests exercise the signed path,
+    so they must configure one."""
+    from app.cluster import auth as _auth
+
+    monkeypatch.setattr(_auth.settings, "cluster_sync_secret", "w" * 32)
+
+
 class TestPostWebhook:
     @pytest.mark.asyncio
     async def test_sends_signed_post(self, monkeypatch):
         import httpx
         monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
+        _require_signing_secret(monkeypatch)
 
         await post_webhook("https://example.com/hook", {"event": "done", "cost": 0.01})
 
@@ -66,6 +77,7 @@ class TestPostWebhook:
         """Body must use sort_keys=True so signatures are deterministic."""
         import httpx
         monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
+        _require_signing_secret(monkeypatch)
 
         await post_webhook("https://example.com/hook", {"b": 2, "a": 1, "c": 3})
 
@@ -80,6 +92,7 @@ class TestPostWebhook:
         """Same payload → same signature (barring key rotation)."""
         import httpx
         monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
+        _require_signing_secret(monkeypatch)
 
         payload = {"event": "done"}
         await post_webhook("https://a/hook", payload)
@@ -93,6 +106,7 @@ class TestPostWebhook:
     async def test_different_payloads_different_sigs(self, monkeypatch):
         import httpx
         monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
+        _require_signing_secret(monkeypatch)
 
         await post_webhook("https://example.com/hook", {"event": "a"})
         await post_webhook("https://example.com/hook", {"event": "b"})
@@ -122,6 +136,7 @@ class TestPostWebhook:
         import httpx
         _FakeClient.next_status = 404
         monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
+        _require_signing_secret(monkeypatch)
 
         # Should complete without raising
         await post_webhook("https://example.com/hook", {"event": "done"})
@@ -132,6 +147,7 @@ class TestPostWebhook:
         import httpx
         _FakeClient.next_status = 503
         monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
+        _require_signing_secret(monkeypatch)
 
         await post_webhook("https://example.com/hook", {"event": "done"})
         assert len(_FakeClient.captured) == 1

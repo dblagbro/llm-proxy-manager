@@ -29,7 +29,7 @@ from typing import Optional
 
 import httpx
 
-from app.cluster.auth import sign_payload
+from app.cluster.auth import cluster_auth_configured, sign_payload
 from app.config import settings
 from app.models.db import Run
 
@@ -157,6 +157,14 @@ async def _push_to_peers(
     if not peers:
         return {}
 
+    # v5.22.16 — signing fails closed on an unset CLUSTER_SYNC_SECRET;
+    # skip the fan-out with one clear line instead of raising per peer.
+    if not cluster_auth_configured():
+        logger.error(
+            "runs_replication.skipped reason=no_secret — CLUSTER_SYNC_SECRET is unset"
+        )
+        return {}
+
     payload = {
         "source_node": settings.cluster_node_id,
         "timestamp": time.time(),
@@ -211,6 +219,12 @@ async def _retry_terminal_push(
         except Exception:
             return
         if not peers:
+            return
+        if not cluster_auth_configured():
+            logger.error(
+                "runs_replication.retry_skipped reason=no_secret — "
+                "CLUSTER_SYNC_SECRET is unset"
+            )
             return
         # Targeted retry: build a one-shot peer list
         body = json.dumps({

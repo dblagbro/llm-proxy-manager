@@ -77,6 +77,10 @@ def pytest_sessionfinish(session, exitstatus):
     import os
     if os.environ.get("LLMPROXY_TEST_PURGE_LIVE") != "1":
         return
+    # v5.22.16 — one master switch for "may touch the live deployment".
+    if not LIVE_TESTS_ENABLED:
+        print("\n[session-finish] purge skipped — LLMPROXY_TEST_LIVE is not 1")
+        return
     try:
         s = _api_session()
         r = s.post(f"{BASE_URL}/api/keys/_purge-test-tombstones", timeout=10)
@@ -100,8 +104,40 @@ def pytest_sessionfinish(session, exitstatus):
         print(f"\n[session-finish] purge failed (best-effort): {e}")
 
 
+# v5.22.16 — live-deployment access is opt-in.
+#
+# BASE_URL defaults to https://www.voipguru.org/llm-proxy2 — PRODUCTION. Every
+# fixture below authenticates as admin against it and several create and
+# delete API keys there, so `pytest tests/unit` on an operator's machine was
+# quietly mutating the live deployment. It was not obvious, because on a box
+# that can reach production these tests simply pass.
+#
+# The same fixtures are why the full suite could not be gated in CI: on a
+# clean runner they fail rather than skip (no network to voipguru, no admin
+# password), so a genuine regression is indistinguishable from "no deployment
+# here".
+#
+# Both problems have one fix: require an explicit opt-in, and SKIP without it.
+# Unit runs become self-contained by default, CI can gate the whole suite, and
+# touching production becomes a deliberate act.
+LIVE_TESTS_ENABLED = _os.environ.get("LLMPROXY_TEST_LIVE") == "1"
+
+_LIVE_SKIP_REASON = (
+    "needs a live deployment. Set LLMPROXY_TEST_LIVE=1 to enable, and set "
+    "LLMPROXY_TEST_BASE_URL to a non-production target unless you really do "
+    f"mean to write to {BASE_URL}."
+)
+
+
+def require_live_deployment() -> None:
+    """Skip the calling test unless live-deployment access was opted into."""
+    if not LIVE_TESTS_ENABLED:
+        pytest.skip(_LIVE_SKIP_REASON)
+
+
 def _api_session() -> requests.Session:
     """New session with admin credentials and API-friendly headers."""
+    require_live_deployment()
     s = requests.Session()
     s.verify = False
     s.headers.update({"X-Requested-With": "XMLHttpRequest", "Accept": "application/json"})

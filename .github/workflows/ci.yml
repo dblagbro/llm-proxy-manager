@@ -17,12 +17,14 @@ name: CI
 # wedges — which until now had a regression pin that CI never ran. Gating
 # went from 4 test files to 8.
 #
-# The blocker on gating more is NOT the 75 entries in known_failures.txt;
-# it is that tests/conftest.py's session fixtures authenticate against the
-# LIVE production deployment. That makes a chunk of the suite unrunnable on
-# a clean runner AND means running it locally mutates production state
-# (see the CAUTION in docs/test-plan.md). Making those fixtures hermetic is
-# the single highest-leverage test-infra change available here.
+# 2026-09-06 (v5.22.17): the live-fixture half of that blocker is CLOSED.
+# tests/conftest.py's session fixtures now SKIP unless LLMPROXY_TEST_LIVE=1,
+# so the suite no longer authenticates against production on a clean runner —
+# and no longer mutates production when run locally, which it had been doing
+# silently. What remains before `full-unit` can become blocking is the
+# pre-existing failure list (57 as of 2026-09-06; tests/known_failures.txt
+# still claims 57 but had drifted to 64 earlier in the day, so re-measure
+# before trusting it).
 
 on:
   push:
@@ -75,7 +77,8 @@ jobs:
             tests/unit/test_v52215_login_throttle.py \
             tests/unit/test_v52215_watchdog_body_race.py \
             tests/unit/test_v52215_auth_skip_streak.py \
-            tests/unit/test_v52215_exposure_hardening.py
+            tests/unit/test_v52215_exposure_hardening.py \
+            tests/unit/test_v52216_live_tests_opt_in.py
 
   secrets:
     # v5.22.15 — the repo is PUBLIC. A credential that reaches a commit cannot

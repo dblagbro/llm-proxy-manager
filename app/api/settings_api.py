@@ -151,7 +151,17 @@ async def cluster_diff(_user: AdminUser = Depends(require_admin)):
     if not settings.cluster_enabled:
         return {"cluster_enabled": False, "peers": []}
 
+    from app.cluster.auth import cluster_auth_configured
     from app.cluster.manager import peers as cluster_peers, sign_payload
+
+    # v5.22.16 — signing fails closed on an unset CLUSTER_SYNC_SECRET.
+    # Degrade to local-only rather than raising a 500 out of an admin view.
+    if not cluster_auth_configured():
+        logger.error(
+            "cluster_settings.peers_skipped reason=no_secret — showing local "
+            "settings only; peers cannot be authenticated"
+        )
+        return {"cluster_enabled": True, "peers": []}
 
     # Local settings
     s = config_runtime.settings
