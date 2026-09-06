@@ -68,7 +68,40 @@ jobs:
             tests/unit/test_v5220_sqlite_pool_no_churn.py \
             tests/unit/test_v5227_litellm_tool_shape.py \
             tests/unit/test_v52211_cluster_sync_email.py \
-            tests/unit/test_v52213_client_error_and_output_cap.py
+            tests/unit/test_v52213_client_error_and_output_cap.py \
+            tests/unit/test_v52212_no_secrets_in_source.py \
+            tests/unit/test_v52215_secret_scan.py \
+            tests/unit/test_v52215_cluster_auth_fail_closed.py \
+            tests/unit/test_v52215_login_throttle.py
+
+  secrets:
+    # v5.22.15 — the repo is PUBLIC. A credential that reaches a commit cannot
+    # be un-published; rotation is the only real remedy. This is the last
+    # automated gate before that becomes true, and it is deliberately its own
+    # job so a failure reads as "secret found", not "tests failed".
+    #
+    # The local .githooks/pre-commit runs the same scanner, but a hook is
+    # opt-in per clone and `--no-verify` skips it, so CI has to re-check.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Scan tracked files for credential shapes
+        run: python3 tools/secret_scan.py
+
+      - name: Forbidden paths must not be tracked
+        # Belt-and-braces for .gitignore: an already-tracked file keeps being
+        # tracked no matter what .gitignore says later, so assert on the index.
+        run: |
+          if git ls-files | grep -Ei '(^|/)\.env($|\.)|\.(pem|p12|pfx|jks|db|sqlite3?|bak|dump)$|(^|/)(data|backups)/|id_rsa|id_ed25519|credentials\.json' | grep -v '\.env\.example$'; then
+            echo "::error::credential-bearing paths are tracked in git"
+            exit 1
+          fi
+          echo "no forbidden paths tracked"
 
   full-unit-informational:
     # Runs the whole unit suite for visibility. Currently expected to have

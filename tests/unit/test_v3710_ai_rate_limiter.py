@@ -27,13 +27,13 @@ def test_redact_anthropic_token():
 
 
 def test_redact_openai_token():
-    out = _redact("key sk-1234567890abcdefghij1234567890")
+    out = _redact("key sk-1234567890abcdefghij1234567890")  # pragma: allowlist secret
     assert "sk-1234567890" not in out
     assert "REDACTED-OPENAI-TOKEN" in out
 
 
 def test_redact_llmp_key():
-    out = _redact("hdr: llmp-abc123def456ghi789jkl012mno345")
+    out = _redact("hdr: llmp-abc123def456ghi789jkl012mno345")  # pragma: allowlist secret
     assert "llmp-abc" not in out
     assert "REDACTED-LLMP-KEY" in out
 

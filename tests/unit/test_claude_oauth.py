@@ -24,7 +24,8 @@ from app.providers.claude_oauth import (
 )
 
 
-SAMPLE_TOKEN = "sk-ant-oat01-abcDEF0123456789_-GhIjklMNopqrsTUVwxyz"
+# Synthetic OAuth token shape for the parser tests — not a live credential.
+SAMPLE_TOKEN = "sk-ant-oat01-abcDEF0123456789_-GhIjklMNopqrsTUVwxyz"  # pragma: allowlist secret
 
 
 class TestParseCredentialsBareToken:

@@ -249,7 +249,7 @@ Before reasoning about provider state from a `/health` snapshot, **filter for `n
 - Smoke: `https://www.voipguru.org/llm-proxy2-smoke/`
 - GCP: `https://34.170.189.19/llm-proxy2/` (self-signed cert; `curl -k` required)
 - Bridge sidecar: `https://www.voipguru.org/grok-bridge/api/status` (token-gated)
-- Test API key (in memory `feedback_paperless_token_burn`): `llmp-BfVsaDkIUjCUJymKMUcoiRcRbYHugPvP0h51hSGGCik` (key=grok-web-smoke)
+- Test API key (in memory `feedback_paperless_token_burn`): `llmp-<redacted — v5.22.15; key was dead, but a public repo is no place for a key value. Fetch from the Keys page if you need it.>` (key=grok-web-smoke)
 
 ### Cluster behavior — what's per-node vs cluster-replicated
 

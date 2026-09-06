@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# v5.22.15 — block a credential before it becomes a public commit.
+#
+# The repo is public. Once a secret is committed and pushed, removing it from
+# HEAD does not unpublish it — history keeps it, forks keep it, and the only
+# real remedy is rotation. So the cheapest place to stop a leak is here,
+# before the object exists.
+#
+# Install (once per clone):   make install-hooks
+# Bypass in a genuine pinch:  git commit --no-verify
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+# Only added/copied/modified files — deletions have nothing to leak.
+mapfile -t staged < <(git diff --cached --name-only --diff-filter=ACM)
+if [ ${#staged[@]} -eq 0 ]; then
+  exit 0
+fi
+
+# Scan the staged CONTENT, not the working tree: they differ whenever
+# something was staged and then edited further, and it is the staged bytes
+# that become the commit.
+tmpdir="$(mktemp -d)"
+trap 'rm -rf "$tmpdir"' EXIT
+to_scan=()
+for f in "${staged[@]}"; do
+  dest="$tmpdir/$f"
+  mkdir -p "$(dirname "$dest")"
+  if git show ":$f" > "$dest" 2>/dev/null; then
+    to_scan+=("$dest")
+  fi
+done
+
+if [ ${#to_scan[@]} -gt 0 ]; then
+  scan_rc=0
+  scan_out="$(python3 tools/secret_scan.py "${to_scan[@]}" 2>&1)" || scan_rc=$?
+  if [ "$scan_rc" -ne 0 ]; then
+    # Rewrite temp paths to repo-relative ones so the report names the file
+    # the author actually has to edit.
+    printf '%s\n' "$scan_out" | sed "s#${tmpdir}/##g" >&2
+    cat >&2 <<'MSG'
+
+pre-commit: BLOCKED — the staged changes look like they contain a credential.
+
+  * If it is real: remove it, and rotate it. It is already on this disk and
+    may be in your shell history.
+  * If it is a fixture: append 'pragma: allowlist secret' to that line.
+  * To override deliberately: git commit --no-verify
+
+MSG
+    exit 1
+  fi
+fi
+
+# Paths that must never be committed regardless of content.
+blocked="$(printf '%s\n' "${staged[@]}" \
+  | grep -Ei '(^|/)\.env($|\.)|\.(pem|p12|pfx|jks|db|sqlite3?|bak|dump)$|(^|/)(data|backups)/|id_rsa|id_ed25519|credentials\.json|service-account.*\.json' \
+  | grep -v '\.env\.example$' || true)"
+if [ -n "$blocked" ]; then
+  echo "pre-commit: BLOCKED — these paths must never be committed:" >&2
+  printf '  %s\n' $blocked >&2
+  echo "  (override deliberately with: git commit --no-verify)" >&2
+  exit 1
+fi
+
+exit 0

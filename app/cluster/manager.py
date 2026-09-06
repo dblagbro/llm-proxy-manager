@@ -21,7 +21,13 @@ from sqlalchemy import select
 
 from app.config import settings
 from app.models.db import User, ApiKey, Provider, SystemSetting
-from app.cluster.auth import sign_payload, verify_payload, verify_cluster_request, auth_headers_for
+from app.cluster.auth import (
+    sign_payload,
+    verify_payload,
+    verify_cluster_request,
+    auth_headers_for,
+    cluster_auth_configured,
+)
 from app.cluster.sync import apply_sync, get_peer_total_cost
 
 logger = logging.getLogger(__name__)
@@ -758,6 +764,17 @@ async def _build_sync_payload(db) -> dict:
 
 
 async def push_sync(peer: PeerNode, db_factory):
+    # v5.22.15 — bail before the payload build, not after. Signing raises
+    # when CLUSTER_SYNC_SECRET is unset, and _build_sync_payload is a
+    # multi-table read costing hundreds of ms; there is no point paying for
+    # it to produce a request that cannot be signed.
+    if not cluster_auth_configured():
+        logger.error(
+            "cluster_sync.skipped peer=%s reason=no_secret — CLUSTER_SYNC_SECRET "
+            "is unset; refusing to sync rather than sign with an empty key",
+            peer.node_id,
+        )
+        return None
     async with db_factory() as db:
         payload = await _build_sync_payload(db)
     body = json.dumps(payload, sort_keys=True).encode()

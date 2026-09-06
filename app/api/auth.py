@@ -1,4 +1,5 @@
 """Admin login/logout endpoints."""
+
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -6,6 +7,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth import login_throttle
 from app.auth.admin import (
     SESSION_COOKIE_NAME,
     SESSION_COOKIE_PATH,
@@ -20,6 +22,7 @@ from app.auth.admin import (
 )
 from app.models.database import get_db
 from app.models.db import User
+from app.observability.request_context import extract_client_ip_from_request
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -38,7 +41,31 @@ class LoginRequest(BaseModel):
 
 
 @router.post("/login")
-async def login(body: LoginRequest, response: Response, db: AsyncSession = Depends(get_db)):
+async def login(
+    body: LoginRequest,
+    response: Response,
+    db: AsyncSession = Depends(get_db),
+    # v5.22.15 — Request comes last, with a default, so the existing
+    # positional call shape `login(body, response, db)` keeps working. FastAPI
+    # injects by type annotation regardless of the default, so production
+    # always gets a real Request; only direct unit calls see None.
+    request: Request = None,
+):
+    # v5.22.15 — throttle failed logins. This endpoint had no attempt limit,
+    # and ip_block.py deliberately exempts it (lockout recovery), so bcrypt's
+    # work factor was the only brake. The admin password was public until
+    # 2026-08-28, which makes an attacker's first guesses unusually good.
+    client_ip = (
+        extract_client_ip_from_request(request) if request is not None else None
+    ) or "unknown"
+    retry_after = login_throttle.seconds_remaining(client_ip)
+    if retry_after:
+        raise HTTPException(
+            429,
+            "Too many failed login attempts. Try again later.",
+            headers={"Retry-After": str(retry_after)},
+        )
+
     # v5.0.22 — login must refuse tombstoned users (BUG-070). Pre-fix
     # a deleted user could still authenticate as long as some peer
     # had resurrected them via insert-if-missing cluster sync.
@@ -77,21 +104,31 @@ async def login(body: LoginRequest, response: Response, db: AsyncSession = Depen
         elif len(candidates) > 1:
             logger.warning(
                 "auth.login ambiguous_email matches=%d — refusing; "
-                "two live accounts share this address", len(candidates),
+                "two live accounts share this address",
+                len(candidates),
             )
 
     # Same generic 401 for unknown identifier, wrong password and ambiguous
     # email: the response must not reveal which.
     if not user or not verify_password(body.password, user.password_hash):
+        login_throttle.record_failure(client_ip)
         raise HTTPException(401, "Invalid credentials")
+
+    # A correct password clears the counter, so an operator who mistypes a
+    # few times then succeeds is never penalised.
+    login_throttle.record_success(client_ip)
 
     token = await create_session(user.id, user.username, user.role)
     # v2.6.1 bugfix: scoped path + unique name — otherwise other apps on
     # voipguru.org that set a cookie named `session` at path=/ overwrite
     # ours, which was the "logged out every minute" bug.
     response.set_cookie(
-        SESSION_COOKIE_NAME, token,
-        httponly=True, samesite="lax", secure=True, max_age=SESSION_COOKIE_MAX_AGE,
+        SESSION_COOKIE_NAME,
+        token,
+        httponly=True,
+        samesite="lax",
+        secure=True,
+        max_age=SESSION_COOKIE_MAX_AGE,
         path=SESSION_COOKIE_PATH,
     )
     # Kill any lingering legacy cookie at path=/ that could still shadow us.
@@ -101,10 +138,7 @@ async def login(body: LoginRequest, response: Response, db: AsyncSession = Depen
 
 @router.post("/logout")
 async def logout(request: Request, response: Response):
-    token = (
-        request.cookies.get(SESSION_COOKIE_NAME)
-        or request.cookies.get(_LEGACY_COOKIE_NAME)
-    )
+    token = request.cookies.get(SESSION_COOKIE_NAME) or request.cookies.get(_LEGACY_COOKIE_NAME)
     if token:
         await destroy_session(token)
     response.delete_cookie(SESSION_COOKIE_NAME, path=SESSION_COOKIE_PATH)
@@ -113,8 +147,11 @@ async def logout(request: Request, response: Response):
 
 
 @router.get("/me")
-async def me(request: Request, admin: AdminUser = Depends(require_any_user),
-             db: AsyncSession = Depends(get_db)):
+async def me(
+    request: Request,
+    admin: AdminUser = Depends(require_any_user),
+    db: AsyncSession = Depends(get_db),
+):
     token = _extract_token(request)
     if token:
         await touch_session(token)
@@ -152,7 +189,7 @@ async def session_probe(request: Request, db: AsyncSession = Depends(get_db)):
 
 
 class PreferencesUpdate(BaseModel):
-    timezone: str | None = None     # IANA name, or empty string to clear
+    timezone: str | None = None  # IANA name, or empty string to clear
     time_format: str | None = None  # '12h' | '24h' | empty string to clear
 
 
@@ -214,6 +251,7 @@ _reset_attempts: dict[str, list[float]] = {}
 def _reset_rate_ok(key: str, limit: int, window_sec: float = 3600.0) -> bool:
     """Sliding-window limiter. Returns False when `key` is over `limit`."""
     import time as _t
+
     now = _t.time()
     hits = [t for t in _reset_attempts.get(key, []) if now - t < window_sec]
     if len(hits) >= limit:
@@ -221,7 +259,7 @@ def _reset_rate_ok(key: str, limit: int, window_sec: float = 3600.0) -> bool:
         return False
     hits.append(now)
     _reset_attempts[key] = hits
-    if len(_reset_attempts) > 5000:          # crude bound; this is best-effort
+    if len(_reset_attempts) > 5000:  # crude bound; this is best-effort
         for k in [k for k, v in _reset_attempts.items() if not v or now - max(v) > window_sec]:
             _reset_attempts.pop(k, None)
     return True
@@ -229,6 +267,7 @@ def _reset_rate_ok(key: str, limit: int, window_sec: float = 3600.0) -> bool:
 
 def _hash_reset_token(raw: str) -> str:
     import hashlib
+
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
@@ -245,8 +284,9 @@ class PasswordResetConfirm(BaseModel):
 # Identical response for every outcome. Do not make this specific.
 _RESET_GENERIC = {
     "ok": True,
-    "message": ("If that account exists and has an email address on file, "
-                "a reset link has been sent."),
+    "message": (
+        "If that account exists and has an email address on file, a reset link has been sent."
+    ),
 }
 
 
@@ -289,13 +329,15 @@ async def password_reset_request(
 
     raw_token = _secrets.token_urlsafe(32)
     now = _t.time()
-    db.add(PasswordResetToken(
-        user_id=user.id,
-        token_hash=_hash_reset_token(raw_token),
-        created_at=now,
-        expires_at=now + RESET_TTL_MINUTES * 60,
-        requested_ip=client_ip,
-    ))
+    db.add(
+        PasswordResetToken(
+            user_id=user.id,
+            token_hash=_hash_reset_token(raw_token),
+            created_at=now,
+            expires_at=now + RESET_TTL_MINUTES * 60,
+            requested_ip=client_ip,
+        )
+    )
     await db.commit()
 
     # Build the link against the public base path (sub-path deploy aware).
@@ -304,6 +346,7 @@ async def password_reset_request(
     reset_url = f"{base}{root}/reset-password?token={raw_token}"
 
     from app.utils.mailer import render_password_reset_email, send_email_async
+
     sent = await send_email_async(
         user.email,
         "llm-proxy — password reset",
@@ -342,14 +385,14 @@ async def password_reset_confirm(
     tok = row.scalars().first()
     now = _t.time()
     if tok is None or tok.used_at is not None or tok.expires_at < now:
-        log.info("password_reset.confirm rejected ip=%s reason=%s", client_ip,
-                 "missing" if tok is None else
-                 ("used" if tok.used_at is not None else "expired"))
+        log.info(
+            "password_reset.confirm rejected ip=%s reason=%s",
+            client_ip,
+            "missing" if tok is None else ("used" if tok.used_at is not None else "expired"),
+        )
         raise HTTPException(400, "This reset link is invalid or has expired")
 
-    urow = await db.execute(
-        select(User).where(User.id == tok.user_id, User.deleted_at.is_(None))
-    )
+    urow = await db.execute(select(User).where(User.id == tok.user_id, User.deleted_at.is_(None)))
     user = urow.scalars().first()
     if user is None:
         raise HTTPException(400, "This reset link is invalid or has expired")

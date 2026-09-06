@@ -2,6 +2,27 @@
 
 All notable changes since v2.7.6. Older history available in `git log`.
 
+### v5.22.15 — fail closed on cluster auth; make a leaked secret hard to commit (2026-09-06)
+
+Security pass. Three defects, one of them serious, plus the machinery to stop the class of mistake that produced v5.22.14 in the first place.
+
+**1. An unset cluster secret disabled authentication rather than enforcing it.** `app/cluster/auth.py` signed and verified with `key = (settings.cluster_sync_secret or "").encode()`, and `cluster_sync_secret` defaults to `None`. So a node with `CLUSTER_SYNC_SECRET` unset did not fail — it moved the cluster onto a key every attacker already knows, `b""`. Anyone who could reach `POST /cluster/sync` could sign their own payload with the empty key and have `apply_sync` write providers, api_keys, users and settings into the node. The nginx private-range allow-list was the only remaining control, and a network ACL is not an authentication scheme. `app/integration/chat.py::verify_passphrase` already had the correct shape ("refuse to authenticate when no passphrase configured"); cluster auth now matches it. Verification returns `False` with no secret, signing raises `ClusterAuthNotConfigured`, and `push_sync` / `pull_oauth_state_from_peers` check `cluster_auth_configured()` and skip with one clear log line rather than raising per attempt. `audit_cluster_auth_config()` reports an unset secret — and a short one — once at boot. **Live nodes were not exposed: both have a secret set.** They will now log a length warning (19 chars against a recommended 32).
+
+**2. Failed admin logins were unlimited.** `POST /api/auth/login` had no attempt limiting, and `app/middleware/ip_block.py` names that path in its always-allow list on purpose (lockout recovery), so the one IP control the app had explicitly did not cover the one endpoint guarding a password. bcrypt's work factor was the only brake. That mattered more than usual because the admin password was public until 2026-08-28, so an attacker's candidate list starts with a known-real password. `app/auth/login_throttle.py` adds a time-boxed per-IP penalty: 10 failures in 5 minutes → 429 with `Retry-After` for 15 minutes. Keyed on IP, not username, because keying on username hands an attacker a free denial of service against the operator's own account. A correct password clears the counter, so typo-then-retry is never penalised, and every lockout expires on its own — a permanent lock here is unrecoverable without shell access.
+
+**3. A live-shaped API key was still published in `docs/qa-notes.md`.** The v5.22.14 audit cleared the two credentials it went looking for and left this one, which is precisely the limitation of an exact-match guard. Verified dead against the live DB, the retired v1 DB and the retired clone DB before redacting — but it should never have depended on that.
+
+**Secret containment.** The v5.22.14 guard pins two known literals; it would not have caught a third, and did not. Added:
+
+- `tools/secret_scan.py` — pattern scanner over vendor-prefixed tokens, private-key blocks, JWTs, and high-entropy credential assignments. Tuned against this tree, which is full of legitimate fixtures like `api_key="mock-key"`: 933 files, zero false positives. Escape hatch is `pragma: allowlist secret`.
+- `.githooks/pre-commit` — blocks the commit locally, scanning **staged content** rather than the working tree, and refuses forbidden paths (`.env*`, `*.db`, `*.pem`, `data/`, `backups/`) regardless of content. `make install-hooks` to enable.
+- CI gains a dedicated `secrets` job, separate from `guard` so a failure reads as "secret found" rather than "tests failed", plus an index check that forbidden paths are not tracked (`.gitignore` does nothing about an already-tracked file).
+- `.gitignore` / `.dockerignore` — `.env` alone covered neither `.env.local` nor the SQLite DB, which holds key hashes, `encrypted_key` blobs and OAuth refresh tokens. Both now cover env variants, key material, databases and dumps.
+
+The gating test list grows from 9 files to 13; both credential guards now actually run in CI, which the v5.22.14 guard never did.
+
+Pins: `test_v52215_cluster_auth_fail_closed.py` (15) — including `test_empty_key_forgery_is_rejected`, which performs the attack (HMAC over the body with the empty key) and was confirmed to **fail against the pre-fix code**; `test_v52215_secret_scan.py` (23) — half of them planted positives, because a scanner that silently degrades to "always clean" is worse than none since it is trusted; `test_v52215_login_throttle.py` (9).
+
 ### v5.22.14 — public-repo credential audit: remove working secrets from source (2026-08-12)
 
 `github.com/dblagbro/llm-proxy-manager` is **public** (`"visibility": "public"`). Audit on 2026-08-12 fetched `tests/integration/test_playwright_ui.py` anonymously from `raw.githubusercontent.com` and got the live admin password in plaintext, alongside the deployment URL hardcoded in the same file.

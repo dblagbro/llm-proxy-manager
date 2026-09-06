@@ -34,7 +34,7 @@ from typing import Optional
 
 import httpx
 
-from app.cluster.auth import sign_payload
+from app.cluster.auth import cluster_auth_configured, sign_payload
 from app.cluster.manager import _parse_peers
 from app.config import settings
 
@@ -63,6 +63,16 @@ async def pull_oauth_state_from_peers(provider_id: str) -> Optional[PeerOAuthSta
         return None
     peers = _parse_peers()
     if not peers:
+        return None
+
+    # v5.22.15 — same fail-closed guard as push_sync: signing raises when
+    # CLUSTER_SYNC_SECRET is unset, and a background recovery path must not
+    # turn a config problem into an exception on every dispatch.
+    if not cluster_auth_configured():
+        logger.error(
+            "oauth_recovery.skipped reason=no_secret — CLUSTER_SYNC_SECRET is "
+            "unset; cannot authenticate a peer pull"
+        )
         return None
 
     node_id = (settings.cluster_node_id or "").encode()

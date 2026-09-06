@@ -161,6 +161,17 @@ except Exception:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # v5.22.15 — report cluster auth misconfiguration once, at boot, rather
+    # than one failed sync at a time. An unset secret now disables cluster
+    # auth entirely (fail closed), which is a state the operator must see.
+    try:
+        from app.cluster.auth import audit_cluster_auth_config
+
+        for _problem in audit_cluster_auth_config():
+            logger.error("cluster_auth.config %s", _problem)
+    except Exception as _cluster_audit_exc:  # never block boot on the audit
+        logger.warning("cluster_auth.config audit failed: %r", _cluster_audit_exc)
+
     # DB init + default admin + runtime settings
     await init_db()
     # v5.21.6 — SIGUSR2 handler dumps the DB-pool trace to stdout logs.

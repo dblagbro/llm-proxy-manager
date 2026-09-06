@@ -85,6 +85,9 @@ class TestPullFromPeers:
 
         monkeypatch.setattr(_s, "cluster_enabled", True)
         monkeypatch.setattr(_s, "cluster_node_id", "test-node")
+        # v5.22.15 — this path is HMAC-signed; an unset secret now fails
+        # closed rather than signing with an empty key.
+        monkeypatch.setattr(_s, "cluster_sync_secret", "t" * 32)
         monkeypatch.setattr(_r, "_parse_peers", lambda: [
             _MockPeer("peer-a", "https://a.example"),
             _MockPeer("peer-b", "https://b.example"),
@@ -130,6 +133,9 @@ class TestPullFromPeers:
 
         monkeypatch.setattr(_s, "cluster_enabled", True)
         monkeypatch.setattr(_s, "cluster_node_id", "test-node")
+        # v5.22.15 — this path is HMAC-signed; an unset secret now fails
+        # closed rather than signing with an empty key.
+        monkeypatch.setattr(_s, "cluster_sync_secret", "t" * 32)
         monkeypatch.setattr(_r, "_parse_peers", lambda: [_MockPeer("peer-a", "https://a.example")])
 
         class _MockClient:
@@ -161,6 +167,9 @@ class TestPullFromPeers:
 
         monkeypatch.setattr(_s, "cluster_enabled", True)
         monkeypatch.setattr(_s, "cluster_node_id", "test-node")
+        # v5.22.15 — this path is HMAC-signed; an unset secret now fails
+        # closed rather than signing with an empty key.
+        monkeypatch.setattr(_s, "cluster_sync_secret", "t" * 32)
         monkeypatch.setattr(_r, "_parse_peers", lambda: [
             _MockPeer("peer-404", "https://x.example"),
             _MockPeer("peer-down", "https://y.example"),

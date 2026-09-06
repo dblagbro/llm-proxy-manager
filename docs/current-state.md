@@ -27,20 +27,50 @@ The fix commit was never pushed, which is why both values are still on
 redacted before shipping — pushing must not re-publish a credential that is
 still valid.
 
-## State
-- `origin/main` = `c414153` (v5.22.12). Local `main` is 2 commits ahead:
-  v5.22.13 and the v5.22.14 audit fixes. Nothing of mine is on the remote.
-- Live: tmrwww01 + tmrwww02 both **v5.22.12 healthy**; pool `checked_out=0`,
-  so the `_next_route` wedge fix is still holding 16 days on.
-- grok-bridge up 7 days, healthy.
+## State — re-verified live 2026-09-06
 
-## Next
-1. ~~Rotate `BRIDGE_TOKEN`~~ — DONE 2026-08-28.
-2. ~~Push the audit fix~~ — removes both values from HEAD; history still holds them.
-3. Then the history audit. Purging history rewrites hashes for every clone and
-   needs explicit approval; it is pointless before rotation.
-4. Tree divergence still unresolved: compose builds from
-   `/home/dblagbro/llm-proxy-v2`, not this canonical tree.
+- `origin/main` == local `main` == **v5.22.15**. The v5.22.14 audit fix **was pushed**
+  (an earlier note here claimed it had not been — that was stale).
+- Live: tmrwww01 + tmrwww02 both **v5.22.14 healthy**, 7/7 providers, `checked_out=0` —
+  the `_next_route` wedge fix is holding ~4 weeks on. v5.22.15 is not deployed yet.
+- grok-bridge healthy, scraping replies; its `bridge_token` matches `/home/dblagbro/docker/.env`
+  exactly. The "grok-web is down" reading in the UI is a **stale circuit breaker**, not a
+  dead bridge — its last recorded failure bucket is 2026-09-01.
+
+## Open, verified 2026-09-06
+
+1. **`Devin-Codex-Gmail` is failing 100% of what it receives** (55/55 over 6h; still failing
+   at 23:35 UTC). `auto_skip_until` expired **2026-08-20**, so the skip never re-arms and the
+   breaker flaps open→hold-down→closed forever. Because `/health` samples an instant, a
+   flapping provider reads as healthy and the node reports 7/7 — the UI structurally cannot
+   see this. Errors come back as `XaiException` on a `ChatGPT-oauth-plan` provider with an
+   empty `base_url`, so the upstream is misrouted, not just mis-keyed. Reauth had not landed
+   as of 2026-09-06 (`updated_at` still 2026-08-28 21:29:25 UTC).
+2. **Cluster sync www1 → www2 is rejected** — `403 Invalid cluster signature`, 229 times in
+   16h. Inbound www2 → www1 is fine. Ruled out: the secret matches on both nodes (identical
+   md5), the peer URL resolves to the real www2, and the nginx location blocks are identical.
+   A **small** signed body is accepted (verified: `POST /cluster/sync` with a 44-byte payload
+   returns 200), so the failure is size- or content-dependent on the full payload. Not yet
+   root-caused.
+3. **Secrets remain in git history** on a public repo. Both are rotated and dead, and HEAD is
+   clean, but history still holds them. Purging rewrites every hash and needs explicit
+   operator approval — not done.
+4. **Tree divergence unresolved:** compose builds from `/home/dblagbro/llm-proxy-v2`, not this
+   canonical tree.
+5. **`tests/conftest.py` session fixtures authenticate against LIVE production.** This is the
+   stated blocker on CI gating the full suite, and it means running the suite locally mutates
+   production. Highest-leverage test-infra fix available.
+
+## v5.22.15 — security pass (2026-09-06)
+
+Fixed: cluster HMAC failed **open** on an unset secret (empty key = publicly known key →
+forgeable `apply_sync`); admin login had no attempt limiting; a live-shaped API key was still
+published in `docs/qa-notes.md`. Added `tools/secret_scan.py`, `.githooks/pre-commit`, a CI
+`secrets` job, and hardened `.gitignore`/`.dockerignore`. CI gating grew 9 → 13 files; both
+credential guards now actually run there. See `CHANGELOG.md`.
+
+Note for deploy: both live nodes carry a 19-character `CLUSTER_SYNC_SECRET`. v5.22.15 does not
+reject it, but will log a length warning at boot recommending 32+.
 
 ---
 

@@ -32,3 +32,37 @@ Thumbs.db
 # Docker
 docker-compose.override.yml
 .scratch-watchdog-v522-deferred/
+
+# ---------------------------------------------------------------------------
+# v5.22.15 — secret containment. The repo is PUBLIC (github.com/dblagbro/
+# llm-proxy-manager); the 2026-08-28 audit found two WORKING credentials had
+# been published. `.env` alone was not enough: it does not cover `.env.local`
+# or `.env.prod`, and nothing covered the SQLite DB, which holds API key
+# hashes, encrypted raw keys, provider API keys and OAuth refresh tokens.
+# ---------------------------------------------------------------------------
+
+# Env files — every variant, keeping the checked-in template
+.env.*
+!.env.example
+
+# Key material
+*.pem
+*.p12
+*.pfx
+*.jks
+id_rsa*
+id_ed25519*
+credentials.json
+service-account*.json
+
+# Databases and dumps — llmproxy.db carries key hashes, encrypted_key
+# blobs and OAuth refresh tokens. Never commit one.
+data/
+backups/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.bak
+*.dump

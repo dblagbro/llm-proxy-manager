@@ -1,4 +1,4 @@
-.PHONY: install dev test lint build up down logs shell
+.PHONY: install dev test lint build up down logs shell secret-scan install-hooks
 
 install:
 	pip install -e ".[dev]"
@@ -39,3 +39,15 @@ migrate:
 
 migrate-new:
 	alembic revision --autogenerate -m "$(MSG)"
+
+# --- v5.22.15 secret containment -------------------------------------------
+# The repo is public. A committed credential cannot be un-published, so both
+# of these exist to stop one being written in the first place.
+
+secret-scan:  ## Scan every tracked file for credential shapes
+	python3 tools/secret_scan.py
+
+install-hooks:  ## Point git at .githooks/ (run once per clone)
+	git config core.hooksPath .githooks
+	@echo "hooks installed: $$(git config core.hooksPath)"
+	@echo "pre-commit now blocks credentials and forbidden paths."
