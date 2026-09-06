@@ -529,9 +529,30 @@ app = FastAPI(
     redoc_url="/redoc",
 )
 
+# v5.22.15 — CORS is configurable, and the one genuinely dangerous
+# combination is refused rather than trusted to review.
+#
+# Wildcard origins are safe ONLY while credentials are off: with
+# allow_credentials=False the browser sends no cookies, so an attacker's page
+# gets a 401 from every authenticated endpoint. Turn credentials on while
+# origins are "*" and that protection disappears — any site could then drive
+# the admin API as the logged-in operator. Browsers reject that pairing too,
+# but silently, which is a bad way to discover a security regression.
+_cors_origins = [
+    o.strip() for o in settings.cors_allow_origins.split(",") if o.strip()
+] or ["*"]
+_cors_credentials = bool(settings.cors_allow_credentials)
+if _cors_credentials and "*" in _cors_origins:
+    logger.error(
+        "cors.config refusing allow_credentials=True with wildcard origins — "
+        "credentials disabled. Set CORS_ALLOW_ORIGINS to an explicit list."
+    )
+    _cors_credentials = False
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins,
+    allow_credentials=_cors_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=[

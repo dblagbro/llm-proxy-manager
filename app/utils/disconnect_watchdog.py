@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import AsyncIterator
+from collections.abc import AsyncIterator
 
 from fastapi import Request
 
@@ -47,6 +47,44 @@ def _poll_interval_sec() -> float:
         return float(getattr(settings, "disconnect_watchdog_interval_sec", 2.0))
     except Exception:
         return 2.0
+
+
+def _request_body_pending(request: Request) -> bool:
+    """True while a request body is still arriving and has not been buffered.
+
+    v5.22.15 — this is what makes the watchdog safe to run on body-bearing
+    endpoints. Starlette's ``Request.is_disconnected()`` is::
+
+        with anyio.CancelScope() as cs:
+            cs.cancel()
+            message = await self._receive()
+        if message.get("type") == "http.disconnect":
+            ...
+
+    The cancel scope only takes effect at a checkpoint. When a body chunk is
+    already buffered, ``_receive()`` returns without one — so the chunk is
+    consumed, and because the code only inspects ``http.disconnect``, an
+    ``http.request`` chunk is **silently discarded**. The handler's
+    ``await request.body()`` then returns short.
+
+    That is a race, not a size limit, and it was measured as one: posting the
+    identical 3 MB body with the identical signature to /cluster/sync ten
+    times returned 200 five times and 403 once. Bigger bodies simply lose more
+    often, because they span more polls.
+
+    Once ``request.body()`` has completed, Starlette caches the result in
+    ``_body`` and no further receives are needed, so polling is safe again.
+    """
+    if getattr(request, "_body", None) is not None:
+        return False
+    try:
+        headers = request.headers
+    except Exception:
+        return False
+    content_length = headers.get("content-length")
+    if content_length and content_length.isdigit() and int(content_length) > 0:
+        return True
+    return "chunked" in (headers.get("transfer-encoding") or "").lower()
 
 
 async def watch_for_disconnect(request: Request) -> AsyncIterator[None]:
@@ -99,6 +137,14 @@ async def watch_for_disconnect(request: Request) -> AsyncIterator[None]:
         while not stop.is_set():
             if handler_done[0]:
                 return
+            # v5.22.15 — never touch the receive channel while the body is
+            # still streaming in; is_disconnected() would eat a chunk.
+            if _request_body_pending(request):
+                try:
+                    await asyncio.sleep(interval)
+                except asyncio.CancelledError:
+                    return
+                continue
             try:
                 disconnected = await request.is_disconnected()
             except Exception:

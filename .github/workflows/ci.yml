@@ -72,7 +72,10 @@ jobs:
             tests/unit/test_v52212_no_secrets_in_source.py \
             tests/unit/test_v52215_secret_scan.py \
             tests/unit/test_v52215_cluster_auth_fail_closed.py \
-            tests/unit/test_v52215_login_throttle.py
+            tests/unit/test_v52215_login_throttle.py \
+            tests/unit/test_v52215_watchdog_body_race.py \
+            tests/unit/test_v52215_auth_skip_streak.py \
+            tests/unit/test_v52215_exposure_hardening.py
 
   secrets:
     # v5.22.15 — the repo is PUBLIC. A credential that reaches a commit cannot

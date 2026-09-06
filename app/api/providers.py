@@ -540,8 +540,10 @@ async def update_provider(
         if incoming is None or incoming == "" or (
             isinstance(incoming, str) and (
                 "…" in incoming or "***" in incoming or
-                # First 8 chars of existing + "..." pattern (UI redact)
-                (p.api_key and incoming.startswith(p.api_key[:8]) and ("..." in incoming or "…" in incoming))
+                # v5.22.15 — 4, matching _mask_key. A 4-char prefix also
+                # matches the older 8-char masks, so this keeps accepting
+                # anything the UI previously round-tripped.
+                (p.api_key and incoming.startswith(p.api_key[:4]) and ("..." in incoming or "…" in incoming))
             )
         ):
             data.pop("api_key", None)
@@ -693,6 +695,18 @@ async def _get_or_404(db: AsyncSession, provider_id: str) -> Provider:
     return p
 
 
+
+def _mask_key(raw: str | None) -> str | None:
+    """Render a stored key for display without leaking usable material."""
+    if not raw:
+        return None
+    # A short key would be entirely revealed by a 4-char prefix, so show
+    # only its length. Real vendor keys are far longer than this bound.
+    if len(raw) < 12:
+        return f"…({len(raw)} chars)"
+    return f"{raw[:4]}…({len(raw)} chars)"
+
+
 def _serialize(p: Provider) -> dict:
     # v2.7.8 BUG-002: surface a "needs re-auth" flag the UI can render as a
     # red badge. Reads from the in-process auth-failure map maintained by
@@ -703,7 +717,11 @@ def _serialize(p: Provider) -> dict:
         "id": p.id,
         "name": p.name,
         "provider_type": p.provider_type,
-        "api_key": f"{p.api_key[:8]}..." if p.api_key else None,
+        # v5.22.15 — 4 chars, not 8. The UI only needs enough to tell two
+        # configured keys apart; 8 characters of a vendor key is a real head
+        # start for anyone who gets a look at an admin response. The length
+        # hint does that job without giving up key material.
+        "api_key": _mask_key(p.api_key),
         "base_url": p.base_url,
         "default_model": p.default_model,
         "priority": p.priority,

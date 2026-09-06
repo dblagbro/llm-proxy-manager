@@ -2,6 +2,30 @@
 
 All notable changes since v2.7.6. Older history available in `git log`.
 
+### v5.22.16 — the cluster-sync 403 was a body-read race, not a signature problem (2026-09-06)
+
+**1. The disconnect watchdog was eating request-body chunks.** www1 → www2 cluster sync had been failing `403 Invalid cluster signature` 229 times in 16 hours while www2 → www1 worked. Ruled out first: the secret is identical on both nodes, the peer URL resolves to the real www2, the nginx location blocks match, and the 3.72 MB payload signs and verifies locally. Then measured: posting the **identical** body with the **identical** signature six times returned `200,200,200,403,200,200`. Same bytes, same key, same endpoint — so not a key mismatch, not serialisation, and a size limit would have been deterministic.
+
+The mechanism is Starlette's `Request.is_disconnected()`:
+
+```python
+with anyio.CancelScope() as cs:
+    cs.cancel()
+    message = await self._receive()
+if message.get("type") == "http.disconnect":
+    ...
+```
+
+The cancel scope only bites at a checkpoint. A body chunk that is **already buffered** comes back without one, so it is consumed — and because only `http.disconnect` is inspected, an `http.request` chunk is silently discarded. The handler's `await request.body()` then returns short and the signature cannot match. The watcher's first poll is at 0.5 s, so a small body is always safely read first and a large one is not: exactly the size correlation observed, and exactly why it looked like a size limit until repeated.
+
+This was never cluster-only. `watch_for_disconnect` is a dependency on `/v1/messages`, `/v1/chat/completions`, `/v1/responses`, audio, images and integration chat — so the same race could truncate a **caller's** request. `_request_body_pending()` now defers polling until the body is buffered, after which `request._body` is cached and polling is safe again.
+
+**2. A 100%-failing provider was never skipped because it was quiet.** Escalation to a DB-persisted `auto_skip_until` required 3 auth failures inside a 30-minute window. That is a rate test, with a blind spot shaped precisely like a dead provider: repeated failure deprioritises it, which lowers its traffic, which keeps it under a rate threshold forever. Live proof — `Devin-Codex-Gmail`: 0 successes in 55 requests over six hours, ~3 requests per 30 minutes straddling the window boundary, `auto_skip_until` frozen at 2026-08-20 (16 days expired). Its breaker cycled open → hold-down → closed indefinitely, and because `/health` samples an instant, whichever sample landed in the closed phase reported the node 7/7 healthy — the UI structurally could not show this. Escalation now also triggers on a consecutive-failure streak, which has no rate dependency; a success or admin re-key clears it.
+
+**3. Exposure reduction.** `_serialize` emitted `api_key[:8]` on every provider list render — admin-only, so not a breach, but 8 characters of a vendor key is a real head start. Now 4 characters plus a length hint, and nothing at all for a key short enough that a prefix would reveal most of it. CORS origins move from a hardcoded `["*"]` to `CORS_ALLOW_ORIGINS`; the default is unchanged so consumer front ends keep working, but the one genuinely dangerous combination — wildcard origins **with** credentials — is now refused in code and logged rather than left to review. Browsers reject that pairing too, silently, which is a poor way to find out.
+
+Pins: `test_v52215_watchdog_body_race.py` (9), `test_v52215_auth_skip_streak.py` (5), `test_v52215_exposure_hardening.py` (12). The behavioural tests in the first two were each confirmed to **fail against the pre-fix code**.
+
 ### v5.22.15 — fail closed on cluster auth; make a leaked secret hard to commit (2026-09-06)
 
 Security pass. Three defects, one of them serious, plus the machinery to stop the class of mistake that produced v5.22.14 in the first place.

@@ -39,14 +39,22 @@ still valid.
 
 ## Open, verified 2026-09-06
 
-1. **`Devin-Codex-Gmail` is failing 100% of what it receives** (55/55 over 6h; still failing
+1. **`Devin-Codex-Gmail` is failing 100% of what it receives** — the never-re-arming
+   `auto_skip` is **FIXED in v5.22.16** (rate-based escalation had a blind spot for
+   low-traffic dead providers); the provider itself still needs a reauth.
+   Original note: (55/55 over 6h; still failing
    at 23:35 UTC). `auto_skip_until` expired **2026-08-20**, so the skip never re-arms and the
    breaker flaps open→hold-down→closed forever. Because `/health` samples an instant, a
    flapping provider reads as healthy and the node reports 7/7 — the UI structurally cannot
    see this. Errors come back as `XaiException` on a `ChatGPT-oauth-plan` provider with an
    empty `base_url`, so the upstream is misrouted, not just mis-keyed. Reauth had not landed
    as of 2026-09-06 (`updated_at` still 2026-08-28 21:29:25 UTC).
-2. **Cluster sync www1 → www2 is rejected** — `403 Invalid cluster signature`, 229 times in
+2. ~~**Cluster sync www1 → www2 is rejected**~~ — **ROOT-CAUSED AND FIXED in v5.22.16.**
+   It was a body-read race, not a signature problem: the disconnect watchdog's
+   `is_disconnected()` consumes and discards buffered `http.request` chunks, so a large
+   body arrives short. Proved by posting identical bytes + signature six times for
+   `200,200,200,403,200,200`. Affected every body-bearing endpoint, not just sync.
+   Original note: **Cluster sync www1 → www2 is rejected** — `403 Invalid cluster signature`, 229 times in
    16h. Inbound www2 → www1 is fine. Ruled out: the secret matches on both nodes (identical
    md5), the peer URL resolves to the real www2, and the nginx location blocks are identical.
    A **small** signed body is accepted (verified: `POST /cluster/sync` with a 44-byte payload

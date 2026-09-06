@@ -461,6 +461,13 @@ class Settings(BaseSettings):
     cluster_node_url: Optional[str] = Field(None, alias="CLUSTER_NODE_URL")
     cluster_peers: Optional[str] = Field(None, alias="CLUSTER_PEERS")  # "id:url,id:url"
     cluster_sync_secret: Optional[str] = Field(None, alias="CLUSTER_SYNC_SECRET")
+
+    # v5.22.15 — CORS origins. Default stays "*" because consumer projects
+    # call /v1/* from their own front ends and narrowing it silently would
+    # break them. It is a setting so an operator CAN lock it down, and so the
+    # wildcard is a visible choice rather than a hardcoded one.
+    cors_allow_origins: str = Field("*", alias="CORS_ALLOW_ORIGINS")
+    cors_allow_credentials: bool = Field(False, alias="CORS_ALLOW_CREDENTIALS")
     cluster_heartbeat_sec: int = Field(30, alias="CLUSTER_HEARTBEAT_SEC")
 
     # Notifications

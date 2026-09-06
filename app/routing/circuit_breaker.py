@@ -592,6 +592,26 @@ _auth_failed: dict[str, dict] = {}  # provider_id → {since: float, last_error:
 # closing the gap where each fresh container deployed today re-hit
 # auth-failed-once and rebuilt the CB state from scratch.
 _auth_failure_history: dict[str, list[float]] = {}
+
+# v5.22.15 — consecutive auth failures since the last success, per provider.
+#
+# The windowed counter above is RATE-dependent: it needs
+# PERSISTENT_AUTH_THRESHOLD failures inside PERSISTENT_AUTH_WINDOW_SEC. A
+# provider that fails 100% of the time but receives traffic slowly never
+# accumulates enough inside one window, so it is never escalated to a
+# DB-persisted auto_skip — and once an earlier auto_skip_until expires it is
+# routed to again, fails, and flaps forever.
+#
+# That is not hypothetical. Devin-Codex-Gmail sat at 0/55 successes over six
+# hours with auto_skip_until stuck at 2026-08-20 (expired 16 days earlier),
+# because its ~3 requests per 30 minutes straddled the window boundary. Its
+# breaker cycled open -> hold-down -> closed indefinitely, and because
+# /health samples an instant, the node reported it healthy the whole time.
+#
+# The irony is that the providers most deserving of a skip are the quietest:
+# repeated failure deprioritises them, which lowers their traffic, which
+# keeps them under a rate-based threshold. A streak has no such blind spot.
+_auth_failure_streak: dict[str, int] = {}
 PERSISTENT_AUTH_THRESHOLD = 3
 PERSISTENT_AUTH_WINDOW_SEC = 1800.0  # 30 min
 
@@ -603,6 +623,9 @@ def get_auth_failure(provider_id: str) -> Optional[dict]:
 def clear_auth_failure(provider_id: str) -> None:
     _auth_failed.pop(provider_id, None)
     _auth_failure_history.pop(provider_id, None)
+    # A success (or an admin re-key) ends the streak — that is what makes it
+    # "consecutive" rather than a lifetime tally.
+    _auth_failure_streak.pop(provider_id, None)
 
 
 def get_all_auth_failures() -> dict[str, dict]:
@@ -635,13 +658,21 @@ async def record_auth_failure(provider_id: str, error_text: str) -> None:
         # only sees recent failures.
         cutoff = now - PERSISTENT_AUTH_WINDOW_SEC
         history[:] = [t for t in history if t > cutoff]
-        should_auto_skip = len(history) >= PERSISTENT_AUTH_THRESHOLD
+        streak = _auth_failure_streak.get(provider_id, 0) + 1
+        _auth_failure_streak[provider_id] = streak
+        # Either signal escalates: a burst inside the window, OR an unbroken
+        # run of failures however slowly they arrive.
+        should_auto_skip = (
+            len(history) >= PERSISTENT_AUTH_THRESHOLD
+            or streak >= PERSISTENT_AUTH_THRESHOLD
+        )
         logger.warning(
             "circuit_breaker.auth_failure_marked",
             extra={
                 "provider": provider_id,
                 "error": error_text[:200],
                 "consecutive_in_window": len(history),
+                "consecutive_streak": streak,
             },
         )
         _export_gauge(provider_id, s.state)
