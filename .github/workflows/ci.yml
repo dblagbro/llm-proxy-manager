@@ -22,9 +22,12 @@ name: CI
 # so the suite no longer authenticates against production on a clean runner —
 # and no longer mutates production when run locally, which it had been doing
 # silently. What remains before `full-unit` can become blocking is the
-# pre-existing failure list (57 as of 2026-09-06; tests/known_failures.txt
-# still claims 57 but had drifted to 64 earlier in the day, so re-measure
-# before trusting it).
+# pre-existing failure list. Verified 2026-09-11: tests/known_failures.txt
+# is exactly accurate — 57 listed, 57 actual, and the two sets match item
+# for item, so it can be trusted as a baseline. (An earlier note here said
+# it had "drifted to 64"; that was wrong. The 64 was a transient regression
+# introduced by the v5.22.15 fail-closed change and fixed before commit —
+# the file itself never drifted.)
 
 on:
   push:
@@ -78,7 +81,10 @@ jobs:
             tests/unit/test_v52215_watchdog_body_race.py \
             tests/unit/test_v52215_auth_skip_streak.py \
             tests/unit/test_v52215_exposure_hardening.py \
-            tests/unit/test_v52216_live_tests_opt_in.py
+            tests/unit/test_v52216_live_tests_opt_in.py \
+            tests/unit/test_v52218_claude_oauth_expiry.py \
+            tests/unit/test_v52218_webhook_signing_key.py \
+            tests/unit/test_v52218_sweep_hardening.py
 
   secrets:
     # v5.22.15 — the repo is PUBLIC. A credential that reaches a commit cannot

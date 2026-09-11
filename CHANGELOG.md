@@ -2,6 +2,31 @@
 
 All notable changes since v2.7.6. Older history available in `git log`.
 
+### v5.22.18 — claude-oauth could not self-heal; webhooks signed with the cluster key (2026-09-11)
+
+**1. The claude-oauth refresh was deadlocked by its own circuit breaker.** Live on 2026-09-11 the cluster reported 5/7 and 4/7 providers, with both Anthropic providers in 24-hour auth hold-down while holding perfectly valid 108-character refresh tokens. `Devin-Anthropic-Max-VG` had not refreshed since 2026-09-08 18:05 — two full cycles.
+
+Root cause: claude-oauth access tokens live ~8 h, and the only thing that refreshed them was the lazy-on-401 path inside request dispatch (`_messages_streaming_oauth.py`, two call sites, both gated on `r.status_code == 401 and not refreshed`). `record_auth_failure` sets `hold_down_until = now + 86400` and `is_available()` returns False for the whole hold-down, so:
+
+```
+auth failure -> breaker open 24h -> no requests -> no 401 -> no refresh
+    -> staler token -> hold-down lifts -> 401 -> breaker open 24h -> ...
+```
+
+A provider cannot escape that however valid its refresh token is. The codebase already documents the lesson against itself: `cursor_oauth_expiry_monitor`'s docstring says it *"proactively refreshes tokens within 24h of expiry (**was lazy-on-401**)"*. claude-oauth never got the counterpart.
+
+`app/monitoring/claude_oauth_expiry_monitor.py` is that counterpart — a 30-minute sweep refreshing anything inside 2 h of expiry (four attempts before expiry, so one network blip is not fatal). Two things make it break the deadlock rather than paper over it: it runs wholly outside request dispatch so an open breaker cannot gate it, and **on success it clears the auth-failure state and force-closes the breaker**. A fresh token behind a 24-hour open breaker is still a dead provider.
+
+**2. Webhooks were signed with `CLUSTER_SYNC_SECRET`.** `post_webhook` used `app.cluster.auth.sign_payload`, so the key that authenticates `POST /cluster/sync` — where `apply_sync` writes providers, api_keys, users and settings — was being exercised in signature form against every external webhook receiver. Two trust domains, one secret, weaker side facing outward. `WEBHOOK_SIGNING_SECRET` now takes precedence, falling back to the cluster secret so an upgrade does not silently stop signing, with the fallback warned about once.
+
+**3. Second security sweep.** `/api/integration/chat` had no attempt limiting, while `/announce` advertises it publicly by path and names its auth mechanism; every accepted call drives an LLM. Now throttled, keyed under `integ:` so an integration lockout can never lock the operator out of the admin UI. And `base_url` was unvalidated — admin-set, then fetched server-side. The guard is deliberately narrow: private, LAN and loopback addresses are legitimate here (the cursor sidecar default, ollama, the grok bridge), so only cloud instance-metadata endpoints are refused. Those serve IAM credentials to any unauthenticated local GET, which is the actual prize in an SSRF.
+
+The guard lives in `app/api/_provider_url_guard.py`, not inline: adding it to `providers.py` pushed that file to 836 lines and tripped the 800-LOC ceiling in `test_v4414_providers_stats_split.py`, which is precisely what that guard is for.
+
+**Corrections to earlier entries.** `tests/known_failures.txt` is *exactly* accurate — 57 listed, 57 actual, sets matching item for item. A note added in v5.22.17 claimed it "had drifted to 64"; that was wrong. The 64 was a transient regression introduced by the v5.22.15 fail-closed change and fixed before commit. The ci.yml comment is corrected.
+
+Pins: `test_v52218_claude_oauth_expiry.py` (13), `test_v52218_webhook_signing_key.py` (9), `test_v52218_sweep_hardening.py` (22). The deadlock test was confirmed to **fail when the breaker release is removed**. CI gating grows 17 → 20 files.
+
 ### v5.22.17 — the test suite was writing to production (2026-09-06)
 
 **`pytest tests/unit` was authenticating against the live deployment and creating API keys there.** `tests/conftest.py` defines `BASE_URL` as `https://www.voipguru.org/llm-proxy2` — production — and its session fixtures log in as admin, with several creating and deleting keys. This was invisible precisely because it *worked*: on a machine that can reach production, those tests pass, so nothing ever signalled that a local test run had side effects on the live cluster.

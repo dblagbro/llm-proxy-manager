@@ -468,6 +468,19 @@ class Settings(BaseSettings):
     # wildcard is a visible choice rather than a hardcoded one.
     cors_allow_origins: str = Field("*", alias="CORS_ALLOW_ORIGINS")
     cors_allow_credentials: bool = Field(False, alias="CORS_ALLOW_CREDENTIALS")
+
+    # v5.22.18 — webhooks get their OWN signing key.
+    #
+    # post_webhook signed caller-facing webhooks with CLUSTER_SYNC_SECRET, so
+    # the key that authenticates peer /cluster/sync (which can write
+    # providers, api_keys, users and settings) was also handed, in signature
+    # form, to every caller who receives a webhook. Two trust domains, one
+    # key: anyone able to verify a webhook signature is a step closer to
+    # forging cluster traffic.
+    #
+    # Falls back to the cluster secret when unset so an upgrade does not
+    # silently stop signing; the fallback is logged as a warning.
+    webhook_signing_secret: str | None = Field(None, alias="WEBHOOK_SIGNING_SECRET")
     cluster_heartbeat_sec: int = Field(30, alias="CLUSTER_HEARTBEAT_SEC")
 
     # Notifications

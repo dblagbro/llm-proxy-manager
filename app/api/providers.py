@@ -4,10 +4,11 @@ import time
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Body
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete
 
+from app.api._provider_url_guard import validate_base_url
 from app.models.database import get_db
 from app.models.db import Provider, ModelCapability
 from app.auth.admin import require_admin, AdminUser
@@ -32,6 +33,14 @@ class ProviderCreate(BaseModel):
     provider_type: str
     api_key: Optional[str] = None
     base_url: Optional[str] = None
+
+    # ProviderUpdate subclasses this model, so one validator covers both the
+    # create and the update path.
+    @field_validator("base_url")
+    @classmethod
+    def _check_base_url(cls, v):
+        return validate_base_url(v)
+
     default_model: Optional[str] = None
     priority: int = 10
     enabled: bool = True

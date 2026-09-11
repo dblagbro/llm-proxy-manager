@@ -343,6 +343,18 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"cursor-oauth expiry monitor failed to start: {e}")
 
+    # v5.22.18 — the claude-oauth counterpart. Until now claude-oauth tokens
+    # were refreshed ONLY by the lazy-on-401 path inside request dispatch,
+    # which a 24h auth-failure breaker hold-down makes unreachable: no
+    # requests -> no 401 -> no refresh -> the provider can never self-heal.
+    # Observed 2026-09-10 with both Anthropic providers stuck on valid
+    # refresh tokens. See the module docstring.
+    try:
+        from app.monitoring.claude_oauth_expiry_monitor import start as start_claude_expiry
+        start_claude_expiry()
+    except Exception as e:
+        logger.warning(f"claude-oauth expiry monitor failed to start: {e}")
+
     # v3.0.62: per-provider usage-window tracking (rolling 5h session +
     # weekly reset). Operator opts in per provider via
     # ``providers.usage_tracking_enabled``. Updates ``provider_usage_windows``

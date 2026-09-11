@@ -21,8 +21,10 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth import login_throttle
 from app.auth.admin import AdminUser, require_admin
 from app.models.database import get_db
+from app.observability.request_context import extract_client_ip_from_request
 from app.utils.disconnect_watchdog import watch_for_disconnect
 
 logger = logging.getLogger(__name__)
@@ -71,6 +73,24 @@ async def integration_chat(
     wrong OR the passphrase isn't configured server-side (fail-closed
     so a misconfigured deploy isn't silently open)."""
     from app.integration.chat import handle_chat
+
+    # v5.22.18 — throttle this endpoint. /announce advertises it publicly,
+    # naming the path and "shared passphrase in request body", and every
+    # accepted call drives an LLM. The passphrase itself is 192 bits
+    # (token_urlsafe(24)) so guessing is not the concern — unbounded attempts
+    # are: a cost and availability vector against an endpoint we advertise.
+    #
+    # Keyed under "integ:" so a failed integration attempt can never
+    # contribute to an admin-login lockout, and vice versa.
+    throttle_key = f"integ:{extract_client_ip_from_request(request) or 'unknown'}"
+    retry_after = login_throttle.seconds_remaining(throttle_key)
+    if retry_after:
+        raise HTTPException(
+            429,
+            "Too many failed integration attempts. Try again later.",
+            headers={"Retry-After": str(retry_after)},
+        )
+
     try:
         result = await handle_chat(
             db,
@@ -79,11 +99,16 @@ async def integration_chat(
             project_name=body.project_name,
             message=body.message,
         )
-    except HTTPException:
+    except HTTPException as exc:
+        # A 401 here is a rejected passphrase — that is the thing worth
+        # counting. Other statuses are not authentication failures.
+        if exc.status_code == 401:
+            login_throttle.record_failure(throttle_key)
         raise
     except Exception as exc:
         logger.error("integration_chat.unhandled err=%r", exc)
         raise HTTPException(500, f"Integration chat error: {exc}")
+    login_throttle.record_success(throttle_key)
     return result
 
 
