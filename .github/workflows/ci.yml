@@ -84,7 +84,8 @@ jobs:
             tests/unit/test_v52216_live_tests_opt_in.py \
             tests/unit/test_v52218_claude_oauth_expiry.py \
             tests/unit/test_v52218_webhook_signing_key.py \
-            tests/unit/test_v52218_sweep_hardening.py
+            tests/unit/test_v52218_sweep_hardening.py \
+            tests/unit/test_v52219_auth_error_wording.py
 
   secrets:
     # v5.22.15 — the repo is PUBLIC. A credential that reaches a commit cannot

@@ -363,6 +363,21 @@ AUTH_ERROR_PATTERNS = [
     "missing openai api key",
     "missing anthropic api key",
     "the api_key client option must be set",
+    # v5.22.19 — "incorrect API key provided" is the wording OpenAI and xAI
+    # actually use; the list only had "invalid api key". That one-word gap
+    # meant a genuinely dead credential classified as ``bad_request``, so
+    # record_auth_failure was never called, _persist_auto_skip never ran, and
+    # the provider flapped on the generic 120s hold-down forever instead of
+    # being skipped for 24h and flagged "Needs re-auth".
+    #
+    # Observed on Devin-Codex-Gmail: 4,457 requests / 1 success over 24 days,
+    # auto_skip_until frozen at 2026-08-20, and 104 of 320 /v1/messages
+    # requests hard-failing 400 in a single day. Not xAI-specific — OpenAI
+    # uses the same phrasing, so any OpenAI-family provider with a bad key
+    # had the same blind spot.
+    "incorrect api key",
+    "invalid_api_key",
+    "api key not valid",
 ]
 
 

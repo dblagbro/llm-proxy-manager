@@ -2,6 +2,32 @@
 
 All notable changes since v2.7.6. Older history available in `git log`.
 
+### v5.22.19 — one missing word kept a dead provider in the routing pool for a month (2026-09-17)
+
+`AUTH_ERROR_PATTERNS` contained `"invalid api key"` but not `"incorrect api key"` — which is the wording **OpenAI and xAI actually use**. The classification gates the entire escalation chain:
+
+```
+is_auth_error() False
+  -> classify_error() -> "bad_request"
+  -> record_auth_failure() never called
+  -> _persist_auto_skip() never runs
+  -> auto_skip_until never set
+  -> generic 120s hold-down instead of 24h + "Needs re-auth"
+  -> provider flaps forever
+```
+
+Measured on `Devin-Codex-Gmail`: **4,457 requests, 1 success, across 24 days**, `auto_skip_until` frozen at 2026-08-20, and **104 of 320 `/v1/messages` requests hard-failing 400 in a single day** — a 32% failure rate on the primary endpoint, from one provider sitting at priority 5.
+
+This also explains why the v5.22.16 consecutive-streak fix did not help: the streak is consulted inside `record_auth_failure`, and that function was never reached. Verified post-deploy — 7 requests, 0 successes, and still no `auto_skip_persisted` line.
+
+Not xAI-specific. OpenAI uses the same phrasing, so **any OpenAI-family provider with a dead key had the same blind spot**: no auto-skip, no "Needs re-auth" badge, and a permanent flap.
+
+Added `"incorrect api key"`, `"invalid_api_key"` and `"api key not valid"` (Gemini's wording). Tested in both directions — context-window errors, genuine bad requests, rate limits and timeouts must not be swept into `auth`, or a healthy provider would get 24h-skipped.
+
+**Behavioural consequence, deliberate:** once deployed, `Devin-Codex-Gmail` will finally be classified as auth-failed and auto-skipped for 24h, and those 104 daily requests will fall back to a working provider instead of returning 400.
+
+Pin: `test_v52219_auth_error_wording.py` (18), including the exact production error string and the over-matching guards.
+
 ### v5.22.18 — claude-oauth could not self-heal; webhooks signed with the cluster key (2026-09-11)
 
 **1. The claude-oauth refresh was deadlocked by its own circuit breaker.** Live on 2026-09-11 the cluster reported 5/7 and 4/7 providers, with both Anthropic providers in 24-hour auth hold-down while holding perfectly valid 108-character refresh tokens. `Devin-Anthropic-Max-VG` had not refreshed since 2026-09-08 18:05 — two full cycles.
