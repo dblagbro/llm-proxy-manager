@@ -37,6 +37,60 @@ still valid.
   exactly. The "grok-web is down" reading in the UI is a **stale circuit breaker**, not a
   dead bridge — its last recorded failure bucket is 2026-09-01.
 
+## State — 2026-09-16
+
+- Local `main` = **v5.22.18**, **4 commits ahead of origin** (v5.22.15–18). `origin/main`
+  is still `9766d8b` (v5.22.14). Nothing pushed, no history rewrite.
+- **Live: both nodes v5.22.14, healthy, 7/7 providers.** So four versions of fixes —
+  including the cluster body-read race and the claude-oauth self-heal — are committed
+  but NOT deployed.
+- Backups taken 2026-09-16 before any deploy: `llmproxy.www{1,2}.pre-v52218.*.bak`
+  (`integrity_check: ok`) plus a repo mirror `llm-proxy-repo.*.git`, all in
+  `/home/dblagbro/backups/`.
+- `app/api/messages.py` and `bug-log.md` have carried another session's uncommitted
+  work since 2026-09-11 (the Codex `xai/` diagnostic + its bug-log entry). Left
+  untouched. **If that session is gone, this work is orphaned in the working tree and
+  a checkout would discard it** — worth resolving.
+
+## Cost audit — 2026-09-16 (OpenAI key `sk-…jogA`)
+
+Triggered by a $20/month notification. Conclusion: **the bill is legitimate and
+correctly priced; only the proxy's own reporting is low.**
+
+| | |
+|---|---|
+| Dashboard, Sept MTD | $20.05 |
+| Proxy-attributed, Sept MTD | $12.58 → **37% low** |
+| Dashboard input tokens, Sep 09–16 | 4,354,580 |
+| Proxy input tokens, same window | 2,629,493 → **40% low** |
+
+The two gaps agreeing is what makes it a counting problem rather than a pricing one.
+Rate check: ~all traffic on that key is `openai/gpt-4o`; proxy's implied rate is
+$2.54/1M input, actual $2.45/1M, against a $2.50 list price. Independently,
+8.19M input tokens at list = $21.09 vs $20.05 billed (5% variance).
+
+Not leaked: 0 of 703 commits contain the key, and it is absent from the working tree.
+
+### BUG (open) — CoT upstream calls are never recorded in `provider_metrics`
+
+`cot_enabled=True`, `cot_max_iterations=4`. `app/cot/pipeline.py:295` loops
+`for iteration in range(1, iterations + 1)` and issues an upstream `_call(...)` per
+pass, but that module imports **nothing** from `app.monitoring` and records **zero**
+metrics. Those critique passes bill real tokens upstream and are invisible to the
+proxy — a 1.66× multiplier on recorded traffic.
+
+Consequence worth acting on: **per-key spending caps are unreliable.** A cap enforced
+on a token count that is ~40% low would let real spend run well past it. Do not rely
+on `spending_cap_usd` / `daily_hard_cap_usd` until this is fixed and the numbers
+reconcile against the vendor dashboard. No key or provider currently sets a cap.
+
+Needs a `bug-log.md` entry once the other session's changes to that file land.
+
+Side observation, not yet chased: 6.4 output tokens per recorded request (134:1
+input:output). Plausibly just an artefact of the same bug — the substantial calls
+being the unrecorded ones — but this repo has an `empty_success_burst_trigger` worker
+and v5.22.13 dealt with empty-completion guards, so it deserves a look.
+
 ## Open, verified 2026-09-06
 
 1. **`Devin-Codex-Gmail` is failing 100% of what it receives** — the never-re-arming

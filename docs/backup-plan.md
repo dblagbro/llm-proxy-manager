@@ -1,5 +1,28 @@
 # Backup / snapshot / rollback plan
 
+> **2026-09-16 — the `sqlite3` CLI is NOT in the image.** Every snippet below
+> that shells out to `sqlite3 ... ".backup ..."` fails with
+> `exec: "sqlite3": executable file not found in $PATH`. That includes the
+> rollback procedure, so it would have failed at the worst possible moment.
+>
+> Use Python's online-backup API instead — same WAL-aware, self-consistent
+> semantics, and `python3` *is* in the image:
+>
+> ```python
+> # run inside the container: docker exec -w /app llm-proxy2 python3 -
+> import sqlite3
+> s = sqlite3.connect("file:/app/data/llmproxy.db?mode=ro", uri=True)
+> d = sqlite3.connect("/app/data/llmproxy.db.snap.bak")
+> with d:
+>     s.backup(d)
+> print(list(sqlite3.connect("/app/data/llmproxy.db.snap.bak").execute(
+>     "PRAGMA integrity_check;"))[0][0])
+> ```
+>
+> Then `docker cp` it out to `/home/dblagbro/backups/` as before. Verified
+> this way on both nodes 2026-09-16 (`integrity_check: ok`, 47 MB / 42 MB).
+> The `docker cp` and rollback steps below are still correct.
+
 Pre-remediation backup procedure. Per the QA process, **no fix phase begins
 until this plan is reviewed.** Written for the v4.3.0 QA-pass remediation
 (2026-05-18); the procedure is reusable for any llm-proxy2 fix release.
