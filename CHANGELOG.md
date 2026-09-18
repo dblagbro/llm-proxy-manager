@@ -2,6 +2,24 @@
 
 All notable changes since v2.7.6. Older history available in `git log`.
 
+### v5.22.20 — count what CoT actually spends; stop the auth-skip from fighting itself (2026-09-18)
+
+**1. CoT's internal calls were billed but never counted.** Each pipeline iteration issues its own upstream completion via `_call()`. Those bill real tokens, but they are never streamed to the client, so they produce no `message_delta` — and the metrics wrapper in `_messages_streaming.py` also *assigns* rather than accumulates, so what reached `provider_metrics` was the final answer's usage and nothing else.
+
+Measured against the vendor dashboard for `sk-…jogA` over Sep 09–16: **4,354,580 input tokens billed vs 2,629,493 recorded**, 40% low, with spend 37% low for the month. That is why per-key spending caps could not be trusted — a cap checked against a 40%-low count lets real spend run well past it.
+
+`app/cot/usage.py` holds a request-scoped ContextVar accumulator; `_call()` folds each response's usage in, and the streaming wrapper adds the total before `record_outcome`. The module is deliberately free of any litellm import so it stays testable in sessions that stub litellm.
+
+**2. The auth-skip escalation was fighting the breaker it accompanies.** `record_auth_failure` sets `hold_down_until = now + 86400` unconditionally, but escalation to the DB-persisted `auto_skip_until` needed 3 failures. Once the breaker opens, `is_available()` is False and the provider leaves the routing pool — so failures #2 and #3 cannot happen for another day.
+
+Observed live after v5.22.19 shipped: one failure marked, then nothing for 24 hours, `auto_skip_until` still frozen at 2026-08-20 while the provider was demonstrably dead. At one failure per hold-down cycle it would have taken ~3 days to persist, and any restart in between would have reset the count and re-admitted the provider.
+
+Escalation is now immediate. This adds **no** new aggressiveness — the 24h skip was already applied on failure #1 — it only makes that decision survive a restart. Escape hatches, none needing a restart: any success (`clear_auth_failure`), an admin re-key, `POST /cluster/circuit-breaker/{id}/reset`, and `claude_oauth_expiry_monitor` on a successful refresh.
+
+Three v3.7.16 tests and two v5.22.15 tests encoded the old threshold contract and were rewritten rather than deleted, each carrying the reasoning above. The window-pruning test kept its pruning assertion — that behaviour still feeds the `auth_failure_marked` log line.
+
+Pin: `test_v52220_cot_usage_accounting.py` (11), including a check that the fix recovers the exact measured shortfall (2,629,493 + 1,725,087 = 4,354,580).
+
 ### v5.22.19 — one missing word kept a dead provider in the routing pool for a month (2026-09-17)
 
 `AUTH_ERROR_PATTERNS` contained `"invalid api key"` but not `"incorrect api key"` — which is the wording **OpenAI and xAI actually use**. The classification gates the entire escalation chain:

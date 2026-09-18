@@ -68,32 +68,50 @@ class TestSlowFailuresStillEscalate:
         assert "bursty" in captured
 
     @pytest.mark.asyncio
-    async def test_below_threshold_does_not_escalate(self, captured):
-        """One blip must not 24h-skip a healthy provider."""
-        for _ in range(cb.PERSISTENT_AUTH_THRESHOLD - 1):
-            await cb.record_auth_failure("bursty", "401")
-        assert captured == []
+    async def test_first_failure_escalates(self, captured):
+        """v5.22.20 changed this contract deliberately.
+
+        This test used to assert that a single blip must NOT escalate. That
+        protection was illusory: ``record_auth_failure`` sets
+        ``hold_down_until = now + 86400`` unconditionally, so failure #1
+        already pulls the provider for 24 hours. The threshold only decided
+        whether that decision was written down — and because the open breaker
+        then removes the provider from routing, failures #2 and #3 could not
+        occur for another day. Measured on Devin-Codex-Gmail: one failure
+        marked, then nothing for 24h, with auto_skip_until stale for a month.
+
+        So escalation is now immediate. It is not more aggressive than the
+        breaker it accompanies; it just makes that decision survive a restart.
+        """
+        await cb.record_auth_failure("bursty", "401")
+        assert captured == ["bursty"]
 
 
 class TestSuccessBreaksTheStreak:
     @pytest.mark.asyncio
-    async def test_success_resets_the_streak(self, captured, monkeypatch):
-        """'Consecutive' has to mean consecutive, or this becomes a lifetime
-        tally that eventually condemns every provider."""
+    async def test_success_still_clears_the_streak_counter(self, monkeypatch):
+        """Escalation no longer depends on the streak, but the counter still
+        feeds the auth_failure_marked log line, so it must still be a
+        *consecutive* count rather than a lifetime tally."""
         base = [2_000_000.0]
         monkeypatch.setattr(cb.time, "time", lambda: base[0])
 
-        for i in range(cb.PERSISTENT_AUTH_THRESHOLD - 1):
+        async def _noop(provider_id, error_text):
+            return None
+
+        monkeypatch.setattr(cb, "_persist_auto_skip", _noop)
+
+        for _ in range(3):
             base[0] += cb.PERSISTENT_AUTH_WINDOW_SEC * 2
             await cb.record_auth_failure("recovering", "401")
-        assert captured == []
+        assert cb._auth_failure_streak["recovering"] == 3
 
         cb.clear_auth_failure("recovering")  # what a success does
+        assert "recovering" not in cb._auth_failure_streak
 
-        for i in range(cb.PERSISTENT_AUTH_THRESHOLD - 1):
-            base[0] += cb.PERSISTENT_AUTH_WINDOW_SEC * 2
-            await cb.record_auth_failure("recovering", "401")
-        assert captured == [], "the streak survived a success"
+        base[0] += cb.PERSISTENT_AUTH_WINDOW_SEC * 2
+        await cb.record_auth_failure("recovering", "401")
+        assert cb._auth_failure_streak["recovering"] == 1, "streak survived a success"
 
     def test_clear_removes_all_three_pieces_of_state(self):
         cb._auth_failed["recovering"] = {"since": 0, "last_error": "x"}

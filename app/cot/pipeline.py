@@ -17,6 +17,11 @@ import litellm
 from app.config import settings
 from app.routing.retry import acompletion_with_retry
 from app.cot.session import get_session_analyses, save_session_analysis
+# v5.22.20 — CoT usage accounting. Lives in app/cot/usage.py because it has
+# no litellm dependency, so it stays importable in test sessions that stub
+# litellm in sys.modules.
+from app.cot.usage import accumulate_usage as _accumulate_usage
+
 from app.cot.sse import (
     sse_thinking_start, sse_thinking_delta, sse_thinking_stop,
     sse_text_start, sse_text_delta, sse_text_stop,
@@ -108,6 +113,10 @@ async def _call(model: str, messages: list[dict], system: str, max_tokens: int, 
         stream=False,
         **kwargs,
     )
+    # v5.22.20 — count this call. Internal CoT iterations bill real tokens
+    # upstream but never reach the client's SSE stream, so without this they
+    # are invisible to provider_metrics. See app/cot/usage.py.
+    _accumulate_usage(resp)
     return resp.choices[0].message.content or ""
 
 

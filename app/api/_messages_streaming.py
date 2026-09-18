@@ -395,6 +395,12 @@ async def _stream_cot_anthropic(
     # response can be fed through maybe_extract_memory_writes once the
     # CoT stream completes.
     tool_acc: dict = {}
+    # v5.22.20 — start a fresh CoT usage accumulator for this request. The
+    # pipeline's internal critique calls never reach the SSE stream, so
+    # without this their tokens are billed upstream and recorded nowhere.
+    from app.cot.usage import fold_cot_usage, reset_cot_usage
+
+    reset_cot_usage()
     try:
         async for chunk in run_cot_pipeline(
             model, messages, session_id, extra, max_iterations, force_verify,
@@ -427,6 +433,9 @@ async def _stream_cot_anthropic(
                     delta = evt.get("delta") or {}
                     if delta.get("type") == "input_json_delta" and evt.get("index") in tool_acc:
                         tool_acc[evt["index"]]["json"] += delta.get("partial_json", "")
+        # v5.22.20 — internal CoT calls bill upstream but never reach this
+        # SSE stream, so fold them in before recording.
+        in_tok, out_tok = fold_cot_usage(in_tok, out_tok, provider_id)
         await record_outcome(db, provider_id, model, success=True,
                              in_tok=in_tok, out_tok=out_tok, t0=t0, key_record_id=key_record_id,
                              cache_creation=cache_creation, cache_read=cache_read,

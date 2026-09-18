@@ -58,22 +58,36 @@ async def test_record_auth_failure_appends_history():
 
 
 @pytest.mark.asyncio
-async def test_below_threshold_does_not_persist():
-    """1 or 2 failures must NOT escalate to DB auto_skip."""
+async def test_first_failure_persists():
+    """v5.22.20 inverted this deliberately.
+
+    It used to assert that 1-2 failures must NOT escalate, to avoid a blip
+    24h-skipping a provider. That protection was illusory:
+    ``record_auth_failure`` sets ``hold_down_until = now + 86400``
+    unconditionally, so failure #1 already pulls the provider for 24 hours.
+    The threshold only decided whether that decision was written down — and
+    once the breaker opens, ``is_available()`` is False, so failures #2 and #3
+    cannot occur for another day.
+
+    Observed live on Devin-Codex-Gmail: one failure marked, then nothing for
+    24h, with ``auto_skip_until`` stale for a month while the provider was
+    demonstrably dead. Persisting immediately is not more aggressive than the
+    breaker it accompanies; it makes that decision survive a restart.
+    """
     from app.routing import circuit_breaker as cb
-    cb._auth_failure_history.pop("p3", None)
-    cb._auth_failed.pop("p3", None)
+    cb.clear_auth_failure("p3")
     fake_persist = AsyncMock()
     with patch.object(cb, "_persist_auto_skip", new=fake_persist):
         await cb.record_auth_failure("p3", "auth err 1")
-        await cb.record_auth_failure("p3", "auth err 2")
-    # threshold is 3 — neither call should have escalated
-    assert fake_persist.await_count == 0
+    assert fake_persist.await_count == 1
+    assert fake_persist.await_args[0][0] == "p3"
+    cb.clear_auth_failure("p3")
 
 
 @pytest.mark.asyncio
-async def test_at_threshold_persists_auto_skip():
-    """Third failure within window must trigger _persist_auto_skip."""
+async def test_repeated_failures_each_persist():
+    """Every auth failure escalates (v5.22.20); the provider id must be
+    passed through each time."""
     from app.routing import circuit_breaker as cb
     cb._auth_failure_history.pop("p4", None)
     cb._auth_failed.pop("p4", None)
@@ -82,15 +96,15 @@ async def test_at_threshold_persists_auto_skip():
         await cb.record_auth_failure("p4", "auth err 1")
         await cb.record_auth_failure("p4", "auth err 2")
         await cb.record_auth_failure("p4", "auth err 3")
-    # threshold = 3; the third call must trigger
-    assert fake_persist.await_count == 1
+    # v5.22.20 — every auth failure escalates now, not just the third.
+    assert fake_persist.await_count == 3
     args, kwargs = fake_persist.await_args
     assert args[0] == "p4"
 
 
 @pytest.mark.asyncio
 async def test_window_prunes_old_failures():
-    """A failure older than the window must not count toward the threshold."""
+    """A failure older than the window must be pruned from the history."""
     from app.routing import circuit_breaker as cb
     cb._auth_failure_history.pop("p5", None)
     cb._auth_failed.pop("p5", None)
@@ -100,9 +114,10 @@ async def test_window_prunes_old_failures():
     fake_persist = AsyncMock()
     with patch.object(cb, "_persist_auto_skip", new=fake_persist):
         await cb.record_auth_failure("p5", "fresh failure")
-    # After pruning + appending fresh, only the fresh entry remains.
-    # That's 1 entry < threshold 3 — should NOT escalate.
-    assert fake_persist.await_count == 0
+    # Pruning still matters: the history list feeds the
+    # ``auth_failure_marked`` log line's consecutive_in_window field, so a
+    # stale entry would misreport how bad the failure run actually is.
+    # (Escalation no longer depends on it — see test_first_failure_persists.)
     assert len(cb._auth_failure_history["p5"]) == 1
 
 

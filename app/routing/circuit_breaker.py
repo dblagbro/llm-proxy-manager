@@ -675,12 +675,38 @@ async def record_auth_failure(provider_id: str, error_text: str) -> None:
         history[:] = [t for t in history if t > cutoff]
         streak = _auth_failure_streak.get(provider_id, 0) + 1
         _auth_failure_streak[provider_id] = streak
-        # Either signal escalates: a burst inside the window, OR an unbroken
-        # run of failures however slowly they arrive.
-        should_auto_skip = (
-            len(history) >= PERSISTENT_AUTH_THRESHOLD
-            or streak >= PERSISTENT_AUTH_THRESHOLD
-        )
+        # v5.22.20 — persist on the FIRST auth failure.
+        #
+        # The threshold used to be 3, to stop a transient blip 24h-skipping a
+        # provider. But look at what happens six lines above: this function
+        # has ALREADY set hold_down_until = now + 86400 unconditionally. The
+        # 24h skip is applied on failure #1 regardless. Requiring 3 before
+        # writing it down did not make the system less aggressive — it only
+        # made the decision non-durable.
+        #
+        # Worse, the two mechanisms fought each other. Once the breaker opens,
+        # is_available() returns False, so the provider leaves the routing
+        # pool and failures #2 and #3 cannot happen for another 24 hours.
+        # Measured on Devin-Codex-Gmail after v5.22.19 shipped: one auth
+        # failure marked, then nothing for a full day — auto_skip_until stayed
+        # frozen at 2026-08-20 while the provider was demonstrably dead. At
+        # one failure per hold-down cycle it would have taken ~3 days to
+        # persist, and a container restart in the meantime would have reset
+        # the count to zero and re-admitted the provider.
+        #
+        # So: if we trust one auth failure enough to pull the provider for
+        # 24h, we trust it enough to write it down. This adds no new
+        # aggressiveness; it makes the existing decision survive a restart.
+        #
+        # Escape hatches, none of which require a restart:
+        #   - any success, via clear_auth_failure()
+        #   - an admin re-key (providers.py / providers_oauth.py)
+        #   - POST /cluster/circuit-breaker/{provider_id}/reset
+        #   - claude_oauth_expiry_monitor, on a successful token refresh
+        # The history/streak counters are kept because they are what the
+        # auth_failure_marked log line reports, and they remain the signal
+        # for anything that wants "how bad is this" rather than "is it bad".
+        should_auto_skip = True
         logger.warning(
             "circuit_breaker.auth_failure_marked",
             extra={
