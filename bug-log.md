@@ -10,6 +10,105 @@ Status flow: **open** → **in-progress** → **fixed** → **verified-fixed** �
 
 ---
 
+## 2026-09-10 — Codex provider dispatched with an `xai/` model prefix (v5.22.17)
+
+**Severity: high · Status: mostly fixed by v5.22.19 — one question open**
+
+`/v1/messages` requests are reaching litellm with a provider/model mismatch: the
+route carries **Devin-Codex-Gmail** (`c549ed05a1cd86d3`, `provider_type =
+ChatGPT-oauth-plan`, litellm prefix `openai`) while `route.litellm_model` is
+`xai/`-prefixed. litellm therefore posts the ChatGPT OAuth token to api.x.ai,
+which rejects it:
+
+```
+ERROR:app.api.messages:Provider c549ed05a1cd86d3 failed:
+  litellm.BadRequestError: XaiException - {"code":"invalid-argument",
+  "error":"Incorrect API key provided. You can obtain an API key from
+  https://console.x.ai."}
+POST /v1/messages → 400
+circuit_breaker.opened provider=c549ed05a1cd86d3 failures=2 hold_down_sec=120
+```
+
+Same shape as the v4.4.31–v4.4.35 `cursor-oauth` defect (`user_<id>::<JWT>` sent
+to api.openai.com, identical "Incorrect API key provided"). The model string is
+winning over the provider type when the litellm target is built.
+
+**Impact.** The coordinator daemon on tmrwww01 relays through
+`/claudeCoordinator` → llm-proxy2 and asks for `claude-haiku-4-5-20251001`. It
+receives the 400 and **discards the prompt**: 25 dropped runner prompts in
+`~/.claude/dropped-prompts/` spanning 2026-08-10 → 2026-09-10 (Aug 10 ×3,
+Aug 16 ×4, Aug 17 ×1, Aug 26 ×6, Sep 2 ×3, Sep 3 ×2, Sep 4 ×4, Sep 10 ×2). Work
+is lost silently — the daemon logs to its own stderr and nothing surfaces. Each
+occurrence also opens the circuit breaker on a healthy Codex provider for 120s,
+so the blast radius extends to unrelated callers.
+
+**Evidence.** 45 occurrences in one container lifetime
+(`docker logs llm-proxy2 | grep -c XaiException`). Provider identified from
+`providers` table by the logged id. Routing that should have prevented it is
+intact and was verified against the live DB:
+
+- `_model_family_provider_types("claude-haiku-4-5")` →
+  `{anthropic, anthropic-direct, anthropic-oauth, claude-oauth, cursor-oauth}`.
+  `ChatGPT-oauth-plan` is **not** in that set.
+- Both claude-oauth providers (`Devin-Anthropic-Max-VG` p7,
+  `Devin-Anthropic-Max-Gmail` p8) are `enabled=1` with `auto_skip_until` NULL,
+  and each advertises a haiku `model_capabilities` row.
+- `Devin-Codex-Gmail` has 7 capability rows, **none** matching `%grok%`.
+- **No provider of type `grok` exists at all** — there is no paid-xAI row in the
+  fleet, so no credential is missing and no key rotation can fix this. The only
+  xai-adjacent row is `Grok-Web-Devin` (`grok-web`, prefix `xai` used for the
+  `X-Resolved-Model` header only, dispatched outside litellm).
+
+So a haiku request had two healthy in-family providers available and still
+resolved to Codex carrying a grok-shaped model.
+
+**Suspected mechanism (unconfirmed).** `app/routing/router.py:543-556` abandons
+the family filter rather than enforcing it when the intersection is empty —
+`available` stays unfiltered and `cross_family_fallback` is set. If something
+upstream empties the Claude candidate set before that point (ownership scope,
+the v3.0.45 mechanism the surrounding comments cite for exactly this shape), the
+unfiltered list is ordered by priority and Codex (p5) wins. That accounts for
+provider selection but not yet for the `xai/` model slug — the last link is open.
+
+**Next step.** Landed a diagnostic at `app/api/messages.py:1337`: the failure log
+now carries `type=`, `litellm_model=`, `requested=` and `cross_family=` alongside
+the provider id, with the `Provider <id> failed: <err>` prefix kept
+byte-identical so existing greps still match. The next occurrence names the
+mismatch outright. Not yet deployed — operator approval pending, and the running
+container is serving a 60-container stack.
+
+**Update 2026-09-18 — v5.22.19 resolved the impact.** `AUTH_ERROR_PATTERNS`
+was missing "incorrect api key", so `is_auth_error()` returned False and the
+whole escalation chain never ran — the provider flapped on a 120s hold-down
+instead of being auto-skipped. Verified on the deployed 5.22.19 container:
+
+| | before (5.22.14) | after (5.22.19) |
+|---|---|---|
+| `XaiException` occurrences | 103 in ~2 days | 1 in 12h |
+| `circuit_breaker.auth_failure_marked` | never | fires |
+| HTTP status returned | 400 (caller's fault) | 502 (upstream) |
+| in-memory hold-down | 120s | 86400s |
+| cluster-sync 403s (v5.22.16) | 185 | 0 |
+
+`auto_skip_until` on `c549ed05a1cd86d3` is still the stale `2026-08-20` value,
+which is **expected, not a second bug**: `_persist_auto_skip` only runs at
+`PERSISTENT_AUTH_THRESHOLD = 3` failures (30-min window or unbroken streak), the
+streak/history maps are in-memory, and the container has only seen 1 failure
+since its restart 12h ago. The DB write lands on the third.
+
+**Still open — narrow.** v5.22.19 explains the *flapping*, not the *prefix*. Why
+a `ChatGPT-oauth-plan` provider (litellm prefix `openai`) resolved an
+`xai/`-prefixed `litellm_model` at all is unanswered. The commit message asserts
+this is "not xAI-specific — OpenAI uses the same phrasing", but litellm raises
+`XaiException` only on the xai provider path, so the target really was x.ai. The
+diagnostic at `messages.py:1337` (logging `type=` beside `litellm_model=`) will
+settle it on the next occurrence. Impact is now contained either way, so this is
+low priority.
+
+**Filed by:** operator-side investigation on tmrwww01, 2026-09-10.
+
+---
+
 ## 2026-08-10 — `_next_route` infinite loop wedges nodes (v5.22.6)
 
 **Severity: critical · Status: fixed (deploy pending operator approval)**

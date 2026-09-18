@@ -1334,7 +1334,21 @@ async def messages(
             had_lmrh_hint=bool(llm_hint),
             lmrh_hint_raw=llm_hint or None,
         )
-        logger.error(f"Provider {route.provider.id} failed: {err_str}")
+        # 2026-09-10 diagnostic — a ChatGPT-oauth-plan provider
+        # (Devin-Codex-Gmail) was observed dispatching an ``xai/``-prefixed
+        # model, so litellm posted a ChatGPT OAuth token to api.x.ai and got
+        # back "Incorrect API key provided". The old message named only the
+        # provider id, which hid the mismatch. Logging the provider type and
+        # the resolved litellm target together makes it self-identifying.
+        # Prefix kept byte-identical so existing log greps still match.
+        logger.error(
+            "Provider %s failed: %s [name=%s type=%s litellm_model=%s "
+            "requested=%s cross_family=%s]",
+            route.provider.id, err_str, route.provider.name,
+            route.provider.provider_type, route.litellm_model,
+            (body.get("model") if isinstance(body, dict) else None),
+            getattr(route, "cross_family_fallback", False),
+        )
         # v3.5.8 BUG-007/008 fix — sanitize before sending to client.
         # Pre-fix the raw litellm/Gemini exception text leaked
         # /usr/local/lib/python3.13/site-packages/litellm/... paths.
