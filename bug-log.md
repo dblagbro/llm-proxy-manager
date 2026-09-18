@@ -10,7 +10,77 @@ Status flow: **open** → **in-progress** → **fixed** → **verified-fixed** �
 
 ---
 
-## 2026-09-10 — Codex provider dispatched with an `xai/` model prefix (v5.22.17)
+## 2026-09-18 — CORRECTION: there is no `xai/` model prefix (v5.22.20)
+
+**Severity: high · Status: open · Supersedes the 2026-09-10 entry below**
+
+The entry below hypothesised that `route.litellm_model` was `xai/`-prefixed.
+**It is not.** The diagnostic added in `684d3f1` shipped in v5.22.20 and fired
+in production on 2026-09-18:
+
+```
+Provider c549ed05a1cd86d3 failed: litellm.BadRequestError: XaiException -
+  {"code":"invalid-argument","error":"Incorrect API key provided..."}
+  [name=Devin-Codex-Gmail type=ChatGPT-oauth-plan
+   litellm_model=openai/gpt-5.5 requested=gpt-5.5 cross_family=True]
+```
+
+`litellm_model` is `openai/gpt-5.5` — exactly what
+`PROVIDER_TYPE_TO_LITELLM["ChatGPT-oauth-plan"] = "openai"` should produce.
+The model/prefix pairing was never wrong. Any fix aimed at the prefix would
+have been aimed at nothing.
+
+**What is actually wrong: `cross_family=True`.**
+
+`router.py:600` documents the mechanism — when no provider in the requested
+model's family is available, `cross_family_fallback` is set and the model is
+rewritten to the chosen provider's default (here, Codex's `gpt-5.5`). So the
+caller asked for something Codex-Gmail does not serve, the family intersection
+came back empty, and routing substituted Codex-Gmail. Grok-Web-Devin — the
+xai-family provider — has been flapping throughout (6 consecutive breaker
+opens), which fits it being the unavailable original target.
+
+The fatal part is the dispatcher. `PROVIDER_TYPE_TO_LITELLM`'s own comment says
+`ChatGPT-oauth-plan` **"never routes through litellm"** — `_codex_oauth_dispatch`
+handles it by direct httpx to chatgpt.com, and the `openai` prefix exists only
+to populate the `X-Resolved-Model` header. The cross-family fallback path
+bypasses that and hands the provider to litellm, which then posts a **ChatGPT
+OAuth token to an OpenAI API endpoint**.
+
+Confirmed by calling litellm directly with exactly what the router builds:
+
+```
+build_litellm_model(p, "gpt-5.5") -> 'openai/gpt-5.5'
+litellm.acompletion(...)          -> OpenAIException, status 401,
+    "You have insufficient permissions for this operation.
+     Missing scopes: model.request"
+```
+
+An OAuth plan token is not an API key and has no API scopes. It cannot work on
+this path, which is why reauthing the provider on 2026-09-06 changed nothing.
+
+**Still unexplained:** production reports `XaiException` / `console.x.ai` while
+a direct call with the same model and credentials reports `OpenAIException`.
+Something in the production `extra` (litellm kwargs) is still steering the
+request at x.ai. Note `messages.py:656` — v5.1.0 Batch A4 — already fixes this
+exact class of bug for the *grok-web* failover by swapping `extra` to the new
+provider's `litellm_kwargs`. The generic cross-family path is the place to look
+for the same omission.
+
+**Fix direction:** cross-family fallback must not select a provider whose type
+has its own dispatcher, or must route through that dispatcher when it does.
+`api/embeddings.py` and `api/images.py` already carry
+`excluded_provider_types={"claude-oauth", "ChatGPT-oauth-plan"}` for the same
+reason — the cross-family selector needs the equivalent.
+
+**Mitigation in place:** v5.22.19 fixed the auth-error classifier so this now
+registers as an auth failure, and v5.22.20 made the skip persist on the first
+one. Codex-Gmail is auto-skipped until 2026-09-19 21:10 and the `/v1/messages`
+400 rate went from 104/320 to zero.
+
+---
+
+## 2026-09-10 — Codex provider dispatched with an `xai/` model prefix (v5.22.17) — SUPERSEDED, HYPOTHESIS WAS WRONG
 
 **Severity: high · Status: mostly fixed by v5.22.19 — one question open**
 
