@@ -2,6 +2,35 @@
 
 All notable changes since v2.7.6. Older history available in `git log`.
 
+### v5.22.21 — cross-family fallback could pick a provider it cannot dispatch (2026-09-20)
+
+Four of seven enabled providers have their **own dispatcher** and never go through litellm — their entry in `PROVIDER_TYPE_TO_LITELLM` exists only to populate the `X-Resolved-Model` header:
+
+| type | dispatcher | providers at |
+|---|---|---|
+| `ChatGPT-oauth-plan` | `_codex_oauth_dispatch` → chatgpt.com | priority 5 |
+| `claude-oauth` | `messages.py` → platform.claude.com | priorities 7, 8 |
+| `grok-web` | `app.providers.grok_web` (browser session) | priority 9 |
+
+Their credentials are **OAuth session tokens, not API keys**. The cross-family fallback path rewrites the model to the chosen provider's default and dispatches through litellm — and left `available` unfiltered, so it could hand a session token to a vendor API endpoint. Measured against `Devin-Codex-Gmail`:
+
+```
+litellm.acompletion('openai/gpt-5.5', <chatgpt oauth token>)
+  -> OpenAIException 401 "insufficient permissions ... Missing scopes: model.request"
+```
+
+Which is why reauthing that provider on 2026-09-06 changed nothing — **the credential was never the problem.**
+
+This was never Codex-specific. Both Anthropic providers are the same shape, so the fix and its tests cover every affected type rather than the one that happened to get picked. `OWN_DISPATCHER_PROVIDER_TYPES` is now the shared definition; `api/embeddings.py` and `api/images.py` had been excluding these by hand while the routing layer did not.
+
+Applied at **both** cross-family branches (empty family intersection, and capability-filter-would-empty). Same-family routing is untouched — an Anthropic model matches `claude-oauth` in `family_types` and never reaches these branches. `cursor-oauth` is deliberately *not* in the set: it dispatches through the Cursor-To-OpenAI sidecar, which genuinely speaks the OpenAI wire format.
+
+If filtering would empty the candidate list, the list is returned unchanged and a warning logged. An empty list becomes a 503, and that is a worse answer than letting the circuit breaker handle a provider that may still work — the caller is already on a degraded, substituting path.
+
+**Still open:** production reported `XaiException`/`console.x.ai` while a direct call with the same model and credentials returned `OpenAIException`. The failure log now also carries `api_base`, which is the one field that can explain a vendor mismatch. The container restarted before that could be captured, so the next occurrence will answer it.
+
+Pin: `test_v52221_cross_family_dispatcher.py` (20), parameterised over all four affected providers by name, plus a guard that the filter is never applied outside a cross-family branch.
+
 ### v5.22.20 — count what CoT actually spends; stop the auth-skip from fighting itself (2026-09-18)
 
 **1. CoT's internal calls were billed but never counted.** Each pipeline iteration issues its own upstream completion via `_call()`. Those bill real tokens, but they are never streamed to the client, so they produce no `message_delta` — and the metrics wrapper in `_messages_streaming.py` also *assigns* rather than accumulates, so what reached `provider_metrics` was the final answer's usage and nothing else.

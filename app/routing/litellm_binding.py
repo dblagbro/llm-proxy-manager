@@ -164,6 +164,35 @@ def _model_family_provider_types(model: str) -> Optional[set[str]]:
 # ── provider_type → litellm prefix + default model tables ───────────────────
 
 
+# v5.22.21 — provider types that NEVER dispatch through litellm.
+#
+# Each has its own dispatcher and the entry in PROVIDER_TYPE_TO_LITELLM below
+# exists only to populate the ``X-Resolved-Model`` response header:
+#
+#   claude-oauth        -> messages.py, direct httpx to platform.claude.com
+#   ChatGPT-oauth-plan  -> _codex_oauth_dispatch, direct httpx to chatgpt.com
+#   grok-web            -> app.providers.grok_web, replays a browser session
+#
+# Their credentials are OAuth session tokens, not API keys. Handing one to
+# litellm posts a session token at a vendor API endpoint, which rejects it —
+# measured 2026-09-18 against Devin-Codex-Gmail:
+#
+#   litellm.acompletion('openai/gpt-5.5', <chatgpt oauth token>)
+#     -> OpenAIException 401 "insufficient permissions ...
+#        Missing scopes: model.request"
+#
+# cursor-oauth is deliberately NOT in this set: it dispatches through the
+# Cursor-To-OpenAI sidecar, which really does speak the OpenAI wire format,
+# so litellm with the sidecar base_url is correct for it.
+#
+# api/embeddings.py and api/images.py already exclude these types by hand;
+# this is the shared definition so the routing layer stops being the odd one
+# out. See bug-log 2026-09-18.
+OWN_DISPATCHER_PROVIDER_TYPES = frozenset(
+    {"claude-oauth", "ChatGPT-oauth-plan", "grok-web"}
+)
+
+
 PROVIDER_TYPE_TO_LITELLM = {
     "anthropic": "anthropic",
     "openai": "openai",

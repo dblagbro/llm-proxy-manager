@@ -12,7 +12,12 @@ Status flow: **open** → **in-progress** → **fixed** → **verified-fixed** �
 
 ## 2026-09-18 — CORRECTION: there is no `xai/` model prefix (v5.22.20)
 
-**Severity: high · Status: open · Supersedes the 2026-09-10 entry below**
+**Severity: high · Status: fixed in v5.22.21 (one detail still open) · Supersedes the 2026-09-10 entry below**
+
+**FIX (v5.22.21):** cross-family fallback now drops provider types that own
+their dispatcher, via `OWN_DISPATCHER_PROVIDER_TYPES`, at both fallback
+branches. Still open: the `XaiException` vs `OpenAIException` discrepancy — the
+failure log now carries `api_base` so the next occurrence explains it.
 
 The entry below hypothesised that `route.litellm_model` was `xai/`-prefixed.
 **It is not.** The diagnostic added in `684d3f1` shipped in v5.22.20 and fired

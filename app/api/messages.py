@@ -1343,11 +1343,17 @@ async def messages(
         # Prefix kept byte-identical so existing log greps still match.
         logger.error(
             "Provider %s failed: %s [name=%s type=%s litellm_model=%s "
-            "requested=%s cross_family=%s]",
+            "requested=%s cross_family=%s api_base=%s]",
             route.provider.id, err_str, route.provider.name,
             route.provider.provider_type, route.litellm_model,
             (body.get("model") if isinstance(body, dict) else None),
             getattr(route, "cross_family_fallback", False),
+            # v5.22.21 — api_base is the one field that can explain a vendor
+            # mismatch. Production reported XaiException/console.x.ai while a
+            # direct call with the same model and credentials returned
+            # OpenAIException, so something is steering the request at x.ai.
+            # Never log the key itself; the base URL carries no secret.
+            (extra.get("api_base") if isinstance(extra, dict) else None),
         )
         # v3.5.8 BUG-007/008 fix — sanitize before sending to client.
         # Pre-fix the raw litellm/Gemini exception text leaked

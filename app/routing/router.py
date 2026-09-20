@@ -233,6 +233,33 @@ async def _load_profile(db: AsyncSession, provider: Provider) -> CapabilityProfi
     return profile
 
 
+
+def _drop_own_dispatcher_types(providers: list) -> list:
+    """Remove providers whose type never dispatches through litellm.
+
+    Returns the input unchanged when the filter would empty it: an empty
+    candidate list here produces a 503 further down, and a 503 is a worse
+    answer than letting the existing circuit-breaker path handle a provider
+    that may still work. The caller is already in a degraded, substituting
+    code path — this narrows it rather than closing it off entirely.
+    """
+    from app.routing.litellm_binding import OWN_DISPATCHER_PROVIDER_TYPES
+
+    filtered = [
+        p for p in providers
+        if p.provider_type not in OWN_DISPATCHER_PROVIDER_TYPES
+    ]
+    if not filtered:
+        logger.warning(
+            "routing.cross_family_all_candidates_own_dispatcher count=%d — "
+            "keeping them rather than forcing a 503; expect an upstream auth "
+            "error if one is chosen",
+            len(providers),
+        )
+        return providers
+    return filtered
+
+
 async def select_provider(
     db: AsyncSession,
     hint: Optional[LMRHHint],
@@ -551,7 +578,23 @@ async def select_provider(
             else:
                 # Empty family intersection → flag for downstream so the
                 # litellm model gets substituted to the chosen provider's
-                # default chat slug. ``available`` stays unfiltered.
+                # default chat slug.
+                #
+                # v5.22.21 — ``available`` used to stay unfiltered here, which
+                # is what made this path dangerous. A cross-family route
+                # rewrites the model and dispatches through litellm, so a
+                # provider whose type has its OWN dispatcher must not be a
+                # candidate: litellm would post its OAuth session token to a
+                # vendor API endpoint. Measured on Devin-Codex-Gmail —
+                # openai/gpt-5.5 with a ChatGPT OAuth token returns
+                # "Missing scopes: model.request".
+                #
+                # This narrows only the cross-family branch. Same-family
+                # routing to these providers is untouched: an Anthropic model
+                # matches claude-oauth in family_types above and never reaches
+                # here. 4 of 7 enabled providers are affected types, so the
+                # exposure was most of the fleet, not one provider.
+                available = _drop_own_dispatcher_types(available)
                 cross_family_fallback = True
                 cross_family_requested = model_override
 
@@ -601,6 +644,10 @@ async def select_provider(
             # to codex's default (gpt-5.5) at dispatch, response carries
             # chosen-because=cross-family-fallback for disclosure.
             if not cross_family_fallback:
+                # v5.22.21 — same reasoning as the family-intersection branch
+                # above: this is also a cross-family substitution dispatched
+                # through litellm.
+                available = _drop_own_dispatcher_types(available)
                 cross_family_fallback = True
                 cross_family_requested = model_override
 
