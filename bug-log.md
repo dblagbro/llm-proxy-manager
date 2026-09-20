@@ -19,6 +19,29 @@ their dispatcher, via `OWN_DISPATCHER_PROVIDER_TYPES`, at both fallback
 branches. Still open: the `XaiException` vs `OpenAIException` discrepancy — the
 failure log now carries `api_base` so the next occurrence explains it.
 
+**Ruled out for the `XaiException` discrepancy (2026-09-20, static analysis —
+no live recurrence since v5.22.21 deployed; `api_base` has logged 0 times):**
+
+1. *The model name drove the prefix.* It cannot. `build_litellm_model`
+   (`litellm_binding.py:299`) takes `prefix` from
+   `PROVIDER_TYPE_TO_LITELLM[provider.provider_type]` alone and returns
+   `f"{prefix}/{model}"`. For `ChatGPT-oauth-plan` that is always `openai/`,
+   whatever the model is called.
+2. *A custom `base_url` on the provider row pointed at x.ai.* No. `base_url` is
+   empty for all four candidate rows (`Devin-Codex-Gmail`, `Grok-Web-Devin`,
+   `OpenRouter-Devin-Personal`, `Devin Personal OpenAI ChatGPT`).
+3. *A stale litellm target survived the grok-web failover* — route swapped to
+   Codex while `litellm_model` stayed `xai/…`, which would produce exactly
+   "XaiException logged against a Codex provider id". Both failover branches
+   rebuild it (`messages.py` and `completions.py`, `new_route.litellm_model =
+   _bld(...)`), and `git log -S` dates that rebuild to v5.0.23 — months before
+   the 2026-08-10 → 2026-09-10 failure window. `fallback.py` never touches
+   `litellm_model`; each ranked candidate carries its own from
+   `select_provider`.
+
+Every static path to litellm derives its prefix from `provider_type`, so the
+discrepancy needs the `api_base` value from a live recurrence to settle.
+
 The entry below hypothesised that `route.litellm_model` was `xai/`-prefixed.
 **It is not.** The diagnostic added in `684d3f1` shipped in v5.22.20 and fired
 in production on 2026-09-18:
