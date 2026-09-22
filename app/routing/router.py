@@ -234,6 +234,39 @@ async def _load_profile(db: AsyncSession, provider: Provider) -> CapabilityProfi
 
 
 
+
+def failover_preserves_model(provider, requested_model: str | None) -> bool:
+    """True when a failover target can actually serve the caller's model.
+
+    v5.22.22. The grok-web failover in messages.py / completions.py clears
+    ``cross_family_fallback`` and rebuilds ``litellm_model`` from the caller's
+    original model, to "preserve the caller's model intent". That is right for
+    the case the code was written for — OpenRouter, where
+    ``build_litellm_model`` maps ``grok-3`` to ``openrouter/x-ai/grok-3``.
+
+    It is wrong for every other target. Measured over 24h on 2026-09-22:
+    41 ``grok_web.failover_to`` events produced 41 failures, all shaped
+
+        [name=Devin-Anthropic-Max-VG type=claude-oauth
+         litellm_model=anthropic/grok-3 requested=grok-3 cross_family=False]
+
+    ``grok-3``'s family is {openrouter, grok-web, grok} — claude-oauth is not
+    in it and cannot serve the model. The failover forced the pairing anyway
+    and stamped ``cross_family=False``, which is also why the v5.22.21
+    cross-family guard did not catch this: the flag it keys on had been
+    deliberately cleared.
+
+    Unknown families return True, preserving the existing "don't constrain"
+    semantics of ``_model_family_provider_types``.
+    """
+    if not requested_model:
+        return False
+    family = _model_family_provider_types(requested_model)
+    if family is None:
+        return True
+    return provider.provider_type in family
+
+
 def _drop_own_dispatcher_types(providers: list) -> list:
     """Remove providers whose type never dispatches through litellm.
 

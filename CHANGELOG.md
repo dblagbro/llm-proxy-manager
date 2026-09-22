@@ -2,6 +2,32 @@
 
 All notable changes since v2.7.6. Older history available in `git log`.
 
+### v5.22.22 — the grok-web failover forced models onto providers that can't serve them (2026-09-22)
+
+The `api_base` field added in v5.22.21 did its job — but it pointed somewhere I wasn't looking. Over 24 hours, **41 `grok_web.failover_to` events produced 41 failures**, every one shaped:
+
+```
+[name=Devin-Anthropic-Max-VG type=claude-oauth
+ litellm_model=anthropic/grok-3 requested=grok-3 cross_family=False api_base=None]
+```
+
+`grok-3`'s family is `{openrouter, grok-web, grok}` — `claude-oauth` is not in it and cannot serve the model. The failover built the pairing anyway.
+
+**Why v5.22.21 didn't catch it:** that guard keys on `cross_family_fallback`, and this path *explicitly sets it to False* (`messages.py`, `completions.py` — v5.0.23, "preserve the caller's model intent"). The flag the guard depends on was being deliberately cleared by the very code producing the bad route.
+
+**Why the original code was reasonable:** it was written for OpenRouter, where `build_litellm_model` maps `grok-3` → `openrouter/x-ai/grok-3`. That works. The assumption that the failover target would *be* OpenRouter is what didn't hold.
+
+Two fixes, both narrow:
+
+1. `failover_preserves_model()` gates the "preserve the caller's model" branch on whether the new provider's type is actually in the model's family. If not, the provider's own default is substituted and `cross_family_fallback` stays **True**, so disclosure headers stay honest and the v5.22.21 guard applies. Substitutions log `grok_web.failover_model_substituted` — an operator can see it happen.
+2. The failover's `select_provider` call now passes `excluded_provider_types=OWN_DISPATCHER_PROVIDER_TYPES`. This path falls through to litellm dispatch, so a provider with its own dispatcher should never have been selectable there — the same reasoning as v5.22.21, applied to the path that was clearing the flag.
+
+Unknown model families still return True, preserving `_model_family_provider_types`' existing "don't constrain" semantic — tightening it would break new models on the day they ship.
+
+This also resolves the open `XaiException` question from the 2026-09-18 bug-log entry: litellm receiving `anthropic/grok-3` infers the vendor from the model name, which is why the error named x.ai while the provider was Anthropic and the prefix was `anthropic/`.
+
+Pin: `test_v52222_failover_model_compat.py` (15), including a regression guard that OpenRouter + `grok-3` still preserves the model.
+
 ### v5.22.21 — cross-family fallback could pick a provider it cannot dispatch (2026-09-20)
 
 Four of seven enabled providers have their **own dispatcher** and never go through litellm — their entry in `PROVIDER_TYPE_TO_LITELLM` exists only to populate the `X-Resolved-Model` header:

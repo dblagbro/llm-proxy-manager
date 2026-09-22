@@ -87,7 +87,8 @@ jobs:
             tests/unit/test_v52218_sweep_hardening.py \
             tests/unit/test_v52219_auth_error_wording.py \
             tests/unit/test_v52220_cot_usage_accounting.py \
-            tests/unit/test_v52221_cross_family_dispatcher.py
+            tests/unit/test_v52221_cross_family_dispatcher.py \
+            tests/unit/test_v52222_failover_model_compat.py
 
   secrets:
     # v5.22.15 — the repo is PUBLIC. A credential that reaches a commit cannot

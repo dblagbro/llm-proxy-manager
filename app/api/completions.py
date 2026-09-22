@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.database import get_db
 from app.utils.disconnect_watchdog import watch_for_disconnect
 from app.auth.keys import verify_api_key
+from app.routing.litellm_binding import OWN_DISPATCHER_PROVIDER_TYPES
 from app.routing.router import select_provider
 from app.routing.litellm_binding import clamp_thinking_budget
 from app.monitoring.helpers import record_outcome
@@ -448,6 +449,10 @@ async def chat_completions(
             key_type=key_record.key_type or "standard",
             model_override=body.get("model"),
             exclude_provider_id=failed_id,
+            # v5.22.22 — this failover falls through to the litellm
+            # dispatch path, so a provider with its own dispatcher
+            # must not be a candidate. Same reasoning as v5.22.21.
+            excluded_provider_types=OWN_DISPATCHER_PROVIDER_TYPES,
         )
         if new_route is None or new_route.provider.provider_type == "grok-web":
             raise HTTPException(
@@ -467,10 +472,28 @@ async def chat_completions(
         # want the original model (build_litellm_model maps
         # `grok-3` to `openrouter/x-ai/grok-3`). Clear the flag AND
         # rebuild litellm_model from the original model.
-        new_route.cross_family_fallback = False
-        new_route.served_model_native = None
-        from app.routing.litellm_binding import build_litellm_model as _bld
-        new_route.litellm_model = _bld(new_route.provider, body.get("model"))
+        # v5.22.22 — that reasoning holds for OpenRouter and ONLY OpenRouter.
+        # For any other failover target, preserving the caller's model forces
+        # a pairing the provider cannot serve (measured: `anthropic/grok-3` on
+        # a claude-oauth provider, 41 times in 24h). Gate on whether the new
+        # provider's type is actually in the model's family.
+        from app.routing.router import failover_preserves_model
+
+        if failover_preserves_model(new_route.provider, body.get("model")):
+            new_route.cross_family_fallback = False
+            new_route.served_model_native = None
+            from app.routing.litellm_binding import build_litellm_model as _bld
+            new_route.litellm_model = _bld(new_route.provider, body.get("model"))
+        else:
+            from app.routing.litellm_binding import build_litellm_model as _bld
+            new_route.cross_family_fallback = True
+            new_route.litellm_model = _bld(new_route.provider, None)
+            logger.info(
+                "grok_web.failover_model_substituted provider=%s type=%s "
+                "requested=%s served=%s",
+                new_route.provider.name, new_route.provider.provider_type,
+                body.get("model"), new_route.litellm_model,
+            )
         # v5.1.0 / Batch A4 — swap ``extra`` (litellm_kwargs) to the
         # new provider's. Pre-fix, the existing ``extra`` was built
         # from the grok-web provider's kwargs (no api_key for the

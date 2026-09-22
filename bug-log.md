@@ -87,7 +87,12 @@ litellm.acompletion(...)          -> OpenAIException, status 401,
 An OAuth plan token is not an API key and has no API scopes. It cannot work on
 this path, which is why reauthing the provider on 2026-09-06 changed nothing.
 
-**Still unexplained:** production reports `XaiException` / `console.x.ai` while
+**RESOLVED in v5.22.22:** the `XaiException` came from the grok-web failover
+building `anthropic/grok-3` on a claude-oauth provider — litellm infers the
+vendor from the model name, so it named x.ai while the prefix said anthropic.
+41 occurrences in 24h. See the v5.22.22 CHANGELOG entry.
+
+Original note — **Still unexplained:** production reports `XaiException` / `console.x.ai` while
 a direct call with the same model and credentials reports `OpenAIException`.
 Something in the production `extra` (litellm kwargs) is still steering the
 request at x.ai. Note `messages.py:656` — v5.1.0 Batch A4 — already fixes this
