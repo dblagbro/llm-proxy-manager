@@ -74,6 +74,7 @@ Full contract: `design.md`. Current state of the code: `architecture.md`.
 - Charter/onboarding: `docs/project.md`, `docs/project-map.md` · Live status: `docs/current-state.md`
 - Architecture (canonical): `architecture.md` · Design contract: `design.md` · Roadmap: `docs/roadmap.md`
 - Testing: `docs/testing.md` → root `test-plan.md`, `qa-notes.md` · History: `CHANGELOG.md`, `bug-log.md`, `refactor-log.md`
+- Market/viability: `docs/market-review.md` (reviewed 2026-09-26; next 2027-01-15)
 - Ops/recovery: `docs/backup-plan.md`, `docs/remediation-plan.md`, `docs/recovery/`, runbooks in `docs/*runbook*.md`
 - Agent system + model routing: `docs/agent-system.md` · ADR/RFC: `docs/rfc/`
 
