@@ -31,7 +31,15 @@ from app.api.providers import ProviderCreate, ProviderUpdate
 
 class TestTheSets:
     def test_dead_types_are_retired(self):
-        assert RETIRED_PROVIDER_TYPES == {"ChatGPT-oauth-plan", "grok-web"}
+        assert RETIRED_PROVIDER_TYPES == {"ChatGPT-oauth-plan"}
+
+    def test_grok_web_is_deprecated_not_retired(self):
+        """Moved out of RETIRED on 2026-09-26: the operator confirmed the
+        bridge is still needed. Claiming a type is retired while a live
+        provider depends on it is the doc/behaviour drift this repo keeps
+        getting bitten by."""
+        assert "grok-web" in DEPRECATED_PROVIDER_TYPES
+        assert "grok-web" not in RETIRED_PROVIDER_TYPES
 
     def test_claude_oauth_is_deprecated_not_retired(self):
         """Staging matters: a serving provider must not be pulled by a code

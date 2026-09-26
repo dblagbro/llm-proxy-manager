@@ -37,11 +37,18 @@ would trade a compliance risk for an outage. See the Phase 2 gate in
 from pydantic import field_validator
 
 # No live provider uses these, and none should be created again.
-RETIRED_PROVIDER_TYPES = frozenset({"ChatGPT-oauth-plan", "grok-web"})
+RETIRED_PROVIDER_TYPES = frozenset({"ChatGPT-oauth-plan"})
 
 # Still load-bearing. No NEW ones, but existing rows keep serving until a
-# metered replacement is verified healthy.
-DEPRECATED_PROVIDER_TYPES = frozenset({"claude-oauth"})
+# sanctioned replacement is verified healthy.
+#
+# grok-web moved here from RETIRED on 2026-09-26: the operator confirmed the
+# bridge is still needed. The review's concern stands and is recorded in
+# docs/market-review.md, but the code must describe reality — claiming a type
+# is retired while a live provider depends on it is exactly the doc/behaviour
+# drift this project has been bitten by. Closed to NEW providers; the existing
+# row keeps working.
+DEPRECATED_PROVIDER_TYPES = frozenset({"claude-oauth", "grok-web"})
 
 _REASON = (
     "Consumer-subscription OAuth is not a permitted integration path: the "

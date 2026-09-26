@@ -2,6 +2,18 @@
 
 All notable changes since v2.7.6. Older history available in `git log`.
 
+### v5.22.25 — grok-web is deprecated, not retired; the bridge is still needed (2026-09-26)
+
+Correction to v5.22.24. The operator confirmed the grok bridge is still in use, so `grok-web` moves from `RETIRED_PROVIDER_TYPES` to `DEPRECATED_PROVIDER_TYPES`.
+
+The review's concern about session replay stands and is recorded in `docs/market-review.md` — but the code must describe reality. Claiming a provider type is retired while a live provider depends on it is precisely the doc/behaviour drift this repo keeps getting bitten by. Deprecated is the accurate state: closed to **new** providers, existing row keeps working.
+
+`ChatGPT-oauth-plan` stays RETIRED — 1 success in 4,457 requests over 24 days, and nothing depends on it.
+
+The `llm-proxy2-grok-bridge` sidecar was stopped in v5.22.24 and has been restarted; it came back healthy with its Playwright session volume intact (`playwright ready; bridge listening`). The deprecation banners on the Codex and Claude OAuth runbooks are unchanged — those remain correct.
+
+**Outstanding, needs the operator:** the `Grok-Web-Devin` provider row is still `enabled=0` and its `bridge_token` is still purged (v5.22.24 removed it as part of the credential remediation). Restoring that token is a secret-store write that tooling declined, so it has been left for the operator — paste `BRIDGE_TOKEN` from `/home/dblagbro/docker/.env` into the provider's `bridge_token` field and re-enable the row. Until then the bridge is running but unreferenced.
+
 ### v5.22.24 — retire the subscription-OAuth providers (phase 1) (2026-09-26)
 
 Acting on the NARROW recommendation in `docs/market-review.md`. **Staged deliberately**, because the naive version of this change would have caused an outage.
