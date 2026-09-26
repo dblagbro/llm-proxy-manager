@@ -2,6 +2,31 @@
 
 All notable changes since v2.7.6. Older history available in `git log`.
 
+### v5.22.24 — retire the subscription-OAuth providers (phase 1) (2026-09-26)
+
+Acting on the NARROW recommendation in `docs/market-review.md`. **Staged deliberately**, because the naive version of this change would have caused an outage.
+
+**Phase 1 — done here. Zero capacity cost.** Retired the two provider rows that were demonstrably dead:
+
+| provider | type | 12h record |
+|---|---|---|
+| `Devin-Codex-Gmail` | `ChatGPT-oauth-plan` | 0 ok / 1 fail (1 success in 4,457 over 24 days) |
+| `Grok-Web-Devin` | `grok-web` | 0 ok / 27 fail |
+
+Both disabled, and their stored credentials purged — `oauth_refresh_token` on the former, `bridge_token` from the latter's `extra_config`. Anthropic's terms prohibit third parties collecting or storing subscription session tokens, so removing them is part of the remediation, not housekeeping.
+
+**Phase 2 — deliberately NOT done.** `claude-oauth` is marked DEPRECATED, not RETIRED. At the time of the change `Devin-Anthropic-Max-VG` was **the healthiest provider in the fleet** (16 successes, 0 failures over 12h) while two of the three metered-key providers were unverified. Pulling it would have traded a compliance risk for an availability incident. Gate for promoting it to RETIRED: at least one metered provider verified healthy and carrying its traffic.
+
+**A gate, not a demolition.** `app/api/_provider_type_policy.py` closes the *write* path — `ProviderCreate`/`ProviderUpdate` refuse retired and deprecated types with a message citing the review — while existing rows keep serving. Dispatch code is untouched, and a test asserts the policy module imports nothing from litellm, routing or cluster, so it cannot start acting on live traffic by accident.
+
+`cursor-oauth` is **not** in either set. It dispatches through a sidecar under Cursor's own terms, which this review did not assess; sweeping it in would have been unevidenced. (I initially deprecated its two runbooks by a careless glob and reverted that.)
+
+Five capture runbooks carry a deprecation banner and are kept for historical reference.
+
+Structural note: the two field validators moved into a `ProviderFieldGuards` mixin because adding them inline pushed `app/api/providers.py` to 803 against its 800-LOC guard — which is what that guard is for. `providers.py` is now 789.
+
+Pin: `test_v52224_subscription_retirement.py` (23), including the staging property and that the SSRF guard survived the mixin refactor.
+
 ### v5.22.23 — revert v5.22.20's "persist on first auth failure"; it benched healthy providers (2026-09-26)
 
 **This reverts a change I argued for incorrectly two releases ago.**

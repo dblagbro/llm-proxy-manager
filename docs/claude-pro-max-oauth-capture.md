@@ -1,3 +1,10 @@
+> **DEPRECATED 2026-09-26 (v5.22.24).** This runbook documents a consumer-
+> subscription OAuth capture flow. Per `docs/market-review.md`, that
+> integration path is retired: the vendor terms reserve subscription
+> credentials for their own first-party clients and prohibit third parties
+> from storing or intermediating them. Kept for historical reference only —
+> do not follow it. Use an API key from the provider's console.
+
 # Multi-vendor OAuth capture guide
 
 Research tool for reverse-engineering the OAuth flows used by vendor CLIs

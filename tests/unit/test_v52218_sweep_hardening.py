@@ -22,7 +22,10 @@ from pathlib import Path
 
 import pytest
 
-from app.api.providers import ProviderCreate, ProviderUpdate, validate_base_url
+# v5.22.24 — validate_base_url now lives in its own module; providers.py
+# inherits it via the ProviderFieldGuards mixin (800-LOC ceiling).
+from app.api._provider_url_guard import validate_base_url
+from app.api.providers import ProviderCreate, ProviderUpdate
 
 
 class TestSsrfMetadataGuard:
