@@ -123,10 +123,11 @@ class TestWiring:
 
 class TestAuthSkipPersistsImmediately:
     @pytest.mark.asyncio
-    async def test_first_auth_failure_persists(self, monkeypatch):
-        """The breaker already applies 24h on failure #1; writing it down at
-        the same moment adds no aggressiveness, and makes it survive a
-        restart."""
+    async def test_threshold_failures_persist(self, monkeypatch):
+        """v5.22.23 — reverted from "first failure persists". The in-memory
+        hold-down is node-local; auto_skip_until is cluster-synced and
+        durable, so persisting on one blip benched healthy providers
+        fleet-wide."""
         from app.routing import circuit_breaker as cb
 
         calls = []
@@ -136,6 +137,7 @@ class TestAuthSkipPersistsImmediately:
 
         monkeypatch.setattr(cb, "_persist_auto_skip", _fake_persist)
         cb.clear_auth_failure("p-new")
-        await cb.record_auth_failure("p-new", "401 invalid api key")
-        assert calls == ["p-new"]
+        for _ in range(cb.PERSISTENT_AUTH_THRESHOLD):
+            await cb.record_auth_failure("p-new", "401 invalid api key")
+        assert calls and calls[-1] == "p-new"
         cb.clear_auth_failure("p-new")

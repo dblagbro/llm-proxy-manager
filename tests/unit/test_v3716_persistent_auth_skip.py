@@ -58,36 +58,30 @@ async def test_record_auth_failure_appends_history():
 
 
 @pytest.mark.asyncio
-async def test_first_failure_persists():
-    """v5.22.20 inverted this deliberately.
+async def test_below_threshold_does_not_persist():
+    """A transient blip must NOT escalate to a DB-persisted auto_skip.
 
-    It used to assert that 1-2 failures must NOT escalate, to avoid a blip
-    24h-skipping a provider. That protection was illusory:
-    ``record_auth_failure`` sets ``hold_down_until = now + 86400``
-    unconditionally, so failure #1 already pulls the provider for 24 hours.
-    The threshold only decided whether that decision was written down — and
-    once the breaker opens, ``is_available()`` is False, so failures #2 and #3
-    cannot occur for another day.
-
-    Observed live on Devin-Codex-Gmail: one failure marked, then nothing for
-    24h, with ``auto_skip_until`` stale for a month while the provider was
-    demonstrably dead. Persisting immediately is not more aggressive than the
-    breaker it accompanies; it makes that decision survive a restart.
+    v5.22.20 removed this protection on the argument that the in-memory
+    breaker already applies 24h on failure #1, so persisting added nothing.
+    That was wrong, and it caused a production degradation on 2026-09-26:
+    the in-memory hold-down is node-local and cleared by a restart, while
+    ``auto_skip_until`` is durable and CLUSTER-SYNCED. One transient error
+    became a fleet-wide 24h sidelining -- Devin-Cohere was benched on a
+    record of 8 successes and 1 failure. Restored in v5.22.23.
     """
     from app.routing import circuit_breaker as cb
     cb.clear_auth_failure("p3")
     fake_persist = AsyncMock()
     with patch.object(cb, "_persist_auto_skip", new=fake_persist):
         await cb.record_auth_failure("p3", "auth err 1")
-    assert fake_persist.await_count == 1
-    assert fake_persist.await_args[0][0] == "p3"
+        await cb.record_auth_failure("p3", "auth err 2")
+    assert fake_persist.await_count == 0, "a 2-failure blip persisted a 24h skip"
     cb.clear_auth_failure("p3")
 
 
 @pytest.mark.asyncio
-async def test_repeated_failures_each_persist():
-    """Every auth failure escalates (v5.22.20); the provider id must be
-    passed through each time."""
+async def test_at_threshold_persists_auto_skip():
+    """Three consecutive failures escalate; the provider id passes through."""
     from app.routing import circuit_breaker as cb
     cb._auth_failure_history.pop("p4", None)
     cb._auth_failed.pop("p4", None)
@@ -96,8 +90,8 @@ async def test_repeated_failures_each_persist():
         await cb.record_auth_failure("p4", "auth err 1")
         await cb.record_auth_failure("p4", "auth err 2")
         await cb.record_auth_failure("p4", "auth err 3")
-    # v5.22.20 — every auth failure escalates now, not just the third.
-    assert fake_persist.await_count == 3
+    # v5.22.23 — escalates at the threshold, not on every failure.
+    assert fake_persist.await_count == 1
     args, kwargs = fake_persist.await_args
     assert args[0] == "p4"
 

@@ -2,6 +2,29 @@
 
 All notable changes since v2.7.6. Older history available in `git log`.
 
+### v5.22.23 — revert v5.22.20's "persist on first auth failure"; it benched healthy providers (2026-09-26)
+
+**This reverts a change I argued for incorrectly two releases ago.**
+
+v5.22.20 removed the 3-failure threshold before writing a DB-persisted `auto_skip_until`, on the reasoning that it "adds no new aggressiveness, because the breaker already applies 24h on failure #1". Those two are not equivalent:
+
+| | scope | survives restart | cluster-synced |
+|---|---|---|---|
+| in-memory `hold_down_until` | one node | no | no |
+| DB `auto_skip_until` | fleet | **yes** | **yes** |
+
+So a single transient auth error stopped being a recoverable, node-local blip and became a **fleet-wide 24-hour sidelining**. Measured 2026-09-26, eight days after that deploy:
+
+- **Both nodes down to 3/7 providers.**
+- `persistent_auth_failure` set on five providers, including three **metered-key** ones — `Devin Personal OpenAI ChatGPT` (the main workhorse), `OpenRouter-Devin-Personal`, `Devin-Cohere`.
+- `Devin-Cohere` benched for 24h on a record of **8 successes and 1 failure in six hours**.
+
+That is precisely the case the threshold existed to prevent, and the v5.22.20 entry dismissed the protection as "illusory". It was not.
+
+Restored to the v5.22.15 condition, which already solved the original deadlock correctly: `streak >= PERSISTENT_AUTH_THRESHOLD or len(history) >= PERSISTENT_AUTH_THRESHOLD`. The **streak** is the part that survives a hold-down cycle — it resets only on a success or an admin re-key — so a genuinely dead provider still escalates without any rate dependency, while a mostly-working provider never persists. Verified both directions: one failure does not persist, three consecutive do.
+
+Three test files had been rewritten in v5.22.20 to assert the wrong contract. They are restored with the reasoning recorded, rather than deleted.
+
 ### v5.22.22 — the grok-web failover forced models onto providers that can't serve them (2026-09-22)
 
 The `api_base` field added in v5.22.21 did its job — but it pointed somewhere I wasn't looking. Over 24 hours, **41 `grok_web.failover_to` events produced 41 failures**, every one shaped:

@@ -68,31 +68,19 @@ class TestSlowFailuresStillEscalate:
         assert "bursty" in captured
 
     @pytest.mark.asyncio
-    async def test_first_failure_escalates(self, captured):
-        """v5.22.20 changed this contract deliberately.
-
-        This test used to assert that a single blip must NOT escalate. That
-        protection was illusory: ``record_auth_failure`` sets
-        ``hold_down_until = now + 86400`` unconditionally, so failure #1
-        already pulls the provider for 24 hours. The threshold only decided
-        whether that decision was written down — and because the open breaker
-        then removes the provider from routing, failures #2 and #3 could not
-        occur for another day. Measured on Devin-Codex-Gmail: one failure
-        marked, then nothing for 24h, with auto_skip_until stale for a month.
-
-        So escalation is now immediate. It is not more aggressive than the
-        breaker it accompanies; it just makes that decision survive a restart.
-        """
-        await cb.record_auth_failure("bursty", "401")
-        assert captured == ["bursty"]
-
+    async def test_below_threshold_does_not_escalate(self, captured):
+        """One blip must not 24h-skip a provider fleet-wide. v5.22.20 removed
+        this and regressed production; restored in v5.22.23."""
+        for _ in range(cb.PERSISTENT_AUTH_THRESHOLD - 1):
+            await cb.record_auth_failure("bursty", "401")
+        assert captured == []
 
 class TestSuccessBreaksTheStreak:
     @pytest.mark.asyncio
     async def test_success_still_clears_the_streak_counter(self, monkeypatch):
-        """Escalation no longer depends on the streak, but the counter still
-        feeds the auth_failure_marked log line, so it must still be a
-        *consecutive* count rather than a lifetime tally."""
+        """The streak must be a *consecutive* count, not a lifetime tally —
+        escalation depends on it again as of v5.22.23, so a success has to
+        reset it or a mostly-healthy provider would eventually be benched."""
         base = [2_000_000.0]
         monkeypatch.setattr(cb.time, "time", lambda: base[0])
 
