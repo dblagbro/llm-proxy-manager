@@ -49,9 +49,21 @@ def test_all_apply_handlers_have_limit_guard():
 
 def test_push_sync_inspects_response_status():
     """push_sync must check the peer response status, not fire-and-forget."""
+    # v5.22.34 — was `block = src[idx:idx + 1800]`. push_sync's inline
+    # comments have grown (v5.14.2's record_attempt block alone is ~10 lines
+    # of rationale), so 1800 chars truncated before `if resp.status_code
+    # != 200:` on line 813 and the test reported the BUG-081 guard missing
+    # while it was intact. Parked in known_failures.txt for it. Slice the
+    # real function instead.
+    import ast
+
     src = Path("app/cluster/manager.py").read_text()
-    idx = src.index("async def push_sync")
-    block = src[idx:idx + 1800]
+    fn = next(
+        n for n in ast.walk(ast.parse(src))
+        if isinstance(n, (ast.AsyncFunctionDef, ast.FunctionDef))
+        and n.name == "push_sync"
+    )
+    block = "\n".join(src.splitlines()[fn.lineno - 1 : fn.end_lineno])
     # Must assign the response and check status_code
     assert "resp = await client.post" in block or "= await client.post" in block, (
         "push_sync must capture the POST response (BUG-081)"

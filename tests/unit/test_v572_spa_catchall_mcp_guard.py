@@ -25,19 +25,62 @@ def test_spa_catchall_skips_mcp_namespace():
     short-circuit must list ``mcp`` alongside ``v1`` / ``api`` /
     ``cluster`` / ``lmrh`` / ``metrics`` / ``health`` / ``version``.
     """
+    # v5.22.34 — was `window = src[idx:idx + 1500]` plus substring checks.
+    # The handler's inline comments have since grown past 1500 chars, so the
+    # window truncated mid-tuple and reported `"health"` and `"version"`
+    # missing while both sat on the very next line. Parked in
+    # known_failures.txt as a result.
+    #
+    # Now: read the namespaces out of the `head in (...)` tuples with the AST.
+    # Sharper as well as staleness-proof — a substring check passes if the
+    # namespace merely appears in a comment, this requires it to be a live
+    # member of the tuple the handler actually tests.
+    import ast
+
     src = Path("app/main.py").read_text()
-    # Find the catch-all handler body
-    idx = src.find("async def spa_catch_all")
-    assert idx != -1, "SPA catch-all handler missing"
-    window = src[idx: idx + 1500]
+    fn = next(
+        (n for n in ast.walk(ast.parse(src))
+         if isinstance(n, (ast.AsyncFunctionDef, ast.FunctionDef))
+         and n.name == "spa_catch_all"),
+        None,
+    )
+    assert fn is not None, "SPA catch-all handler missing"
+
+    def _in_tuples(node):
+        """Every string literal on the right of an `x in (...)` inside `node`."""
+        found = []
+        for sub in ast.walk(node):
+            if not isinstance(sub, ast.Compare) or len(sub.ops) != 1:
+                continue
+            if not isinstance(sub.ops[0], ast.In):
+                continue
+            rhs = sub.comparators[0]
+            if isinstance(rhs, (ast.Tuple, ast.List, ast.Set)):
+                found.append({
+                    e.value for e in rhs.elts
+                    if isinstance(e, ast.Constant) and isinstance(e.value, str)
+                })
+        return found
+
+    tuples = _in_tuples(fn)
+    skipped = set().union(*tuples) if tuples else set()
+
     # Must include mcp in the API-namespace check
-    assert '"mcp"' in window, (
+    assert "mcp" in skipped, (
         "SPA catch-all must skip the /mcp namespace; otherwise bare "
         "/mcp (no trailing slash) returns the SPA HTML instead of "
         "JSON 404 — confuses API clients probing the MCP endpoint."
     )
     # Belt-and-braces: every prior namespace must still be there
     for ns in ("v1", "api", "cluster", "lmrh", "metrics", "health", "version"):
-        assert f'"{ns}"' in window, (
-            f"SPA catch-all skip list missing prior namespace {ns!r}"
+        assert ns in skipped, (
+            f"SPA catch-all skip list missing prior namespace {ns!r}; "
+            f"found {sorted(skipped)}"
         )
+    # v1/api/mcp are refused unconditionally, not only when a sub-path is
+    # present — keep them together in one tuple so that stays true.
+    assert any({"v1", "api", "mcp"} <= grp for grp in tuples), (
+        "v1/api/mcp must share the unconditional short-circuit; splitting "
+        'them into the `and "/" in full_path` branch would let a bare '
+        "/mcp serve the SPA shell again (the v5.7.2 bug)"
+    )

@@ -9,8 +9,30 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
+
+
+def _opted_in_setting():
+    """A setting-probe result that opts IN to the zero-row warning.
+
+    v5.22.34 — v5.18.2 (2026-07-03) flipped the default True → False per
+    operator decision #483, so ``_emit_zero_row_warning_if_threshold``
+    returns at the very first ``execute()`` unless the operator has
+    explicitly opted in. Every test below that means to exercise the streak
+    logic must therefore opt in, or it never reaches the code it names.
+
+    That is exactly what had happened: the three "does not fire" tests
+    passed while short-circuiting at the probe, and the one test that
+    asserted a row WAS added went red and was parked in
+    known_failures.txt. Each now also asserts how far the helper actually
+    got, via ``db.execute.await_count``, so a future short-circuit is a
+    failure rather than a silent pass.
+    """
+    rs = MagicMock()
+    rs.scalar_one_or_none.return_value = MagicMock(value="true")
+    return rs
 
 
 # ── Source-grep contracts ──────────────────────────────────────────
@@ -61,15 +83,18 @@ async def test_zero_row_check_does_not_fire_below_threshold(tmp_path, monkeypatc
     from app.monitoring.compliance_audit_worker import _emit_zero_row_warning_if_threshold
 
     db = MagicMock()
-    db.execute = AsyncMock()
-    # 0 rows returned
+    # 0 chain rows returned
     rs = MagicMock()
     rs.scalars.return_value.all.return_value = []
-    db.execute.return_value = rs
+    db.execute = AsyncMock(side_effect=[_opted_in_setting(), rs])
 
     await _emit_zero_row_warning_if_threshold(db, datetime.utcnow().date())
     # No add/commit means no warning emitted
     db.add.assert_not_called()
+    assert db.execute.await_count == 2, (
+        "helper did not reach the chain query — it short-circuited at the "
+        "setting probe, so this test proves nothing about the threshold"
+    )
 
 
 @pytest.mark.asyncio
@@ -80,7 +105,6 @@ async def test_zero_row_check_does_not_fire_when_any_day_has_events(monkeypatch)
     from app.monitoring.compliance_audit_worker import _emit_zero_row_warning_if_threshold
 
     db = MagicMock()
-    db.execute = AsyncMock()
     rows = [
         MagicMock(row_count=0, day="2026-06-12"),
         MagicMock(row_count=5, day="2026-06-11"),   # broke the streak
@@ -88,10 +112,13 @@ async def test_zero_row_check_does_not_fire_when_any_day_has_events(monkeypatch)
     ]
     rs = MagicMock()
     rs.scalars.return_value.all.return_value = rows
-    db.execute.return_value = rs
+    db.execute = AsyncMock(side_effect=[_opted_in_setting(), rs])
 
     await _emit_zero_row_warning_if_threshold(db, datetime.utcnow().date())
     db.add.assert_not_called()
+    assert db.execute.await_count == 2, (
+        "helper did not reach the chain query — short-circuited at the probe"
+    )
 
 
 @pytest.mark.asyncio
@@ -107,10 +134,7 @@ async def test_zero_row_check_fires_on_unbroken_streak(monkeypatch):
         MagicMock(row_count=0, day="2026-06-11"),
         MagicMock(row_count=0, day="2026-06-10"),
     ]
-    # v5.7.11 — first execute() is the opt-out setting probe; None means
-    # "absent" → default-fire behaviour preserved.
-    rs_setting = MagicMock()
-    rs_setting.scalar_one_or_none.return_value = None
+    rs_setting = _opted_in_setting()
     rs_chain = MagicMock()
     rs_chain.scalars.return_value.all.return_value = rows
 
@@ -145,9 +169,6 @@ async def test_zero_row_check_is_idempotent_within_24h(monkeypatch):
         MagicMock(row_count=0, day="2026-06-11"),
         MagicMock(row_count=0, day="2026-06-10"),
     ]
-    # v5.7.11 — first execute() is the opt-out setting probe; None → fire
-    rs_setting = MagicMock()
-    rs_setting.scalar_one_or_none.return_value = None
     rs_chain = MagicMock()
     rs_chain.scalars.return_value.all.return_value = rows
 
@@ -155,7 +176,11 @@ async def test_zero_row_check_is_idempotent_within_24h(monkeypatch):
     rs_dup = MagicMock()
     rs_dup.scalar_one_or_none.return_value = MagicMock()  # an existing row
 
-    db.execute = AsyncMock(side_effect=[rs_setting, rs_chain, rs_dup])
+    db.execute = AsyncMock(side_effect=[_opted_in_setting(), rs_chain, rs_dup])
 
     await _emit_zero_row_warning_if_threshold(db, datetime.utcnow().date())
     db.add.assert_not_called()
+    assert db.execute.await_count == 3, (
+        "the dedup probe was never reached, so suppression here is not "
+        "evidence of idempotency"
+    )

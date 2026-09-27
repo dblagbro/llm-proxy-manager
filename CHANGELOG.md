@@ -2,6 +2,73 @@
 
 All notable changes since v2.7.6. Older history available in `git log`.
 
+### v5.22.34 — the behavioural nine (2026-09-26)
+
+known_failures **24 → 15**, zero regressions. All nine remaining behavioural
+entries. **No product code changed** — every one was a test asserting a
+contract the code had deliberately moved on from, or a source window that had
+gone stale. Two findings matter beyond the counts.
+
+**A race fix that had never been tested** (`test_claude_oauth_flow`, 2).
+v5.8.3 added a re-read of the provider row inside the per-provider single-flight
+lock: a caller that queues behind the winner holds a stale
+`oauth_refresh_token`, and Anthropic revokes the old token the moment it issues a
+replacement, so sending the stale one is a guaranteed `invalid_grant`. The tests'
+`_FakeDB` had no `refresh()`, so **both** rotation tests died on
+`AttributeError` and were parked — meaning the rotated-token write-back, the
+entire point of that test class, went unverified. `_FakeDB` now models the DB row
+(`stored`) and `refresh()` copies the named attributes onto the instance as
+SQLAlchemy does, so a test can simulate a concurrent rotation. Added
+`test_reread_inside_lock_uses_concurrently_rotated_token`, which asserts the
+token actually POSTed to Anthropic is the one the winner persisted — it fails if
+the v5.8.3 re-read is removed.
+
+**Three "does not fire" tests that never reached the code they named**
+(`test_v540_audit_chain_zero_row_warning`). v5.18.2 (2026-07-03) flipped the
+zero-row warning default True → False per operator decision #483 (2026-06-11) —
+the warning had been firing ~1/day/cluster because its suppression setting was
+never persisted per-cluster, so the semantics inverted from opt-**out** to
+opt-**in**. Consequences:
+
+- `test_zero_row_check_fires_on_unbroken_streak` asserted a row was written while
+  the helper short-circuited at the setting probe. It was the one that went red.
+- `..._does_not_fire_below_threshold`, `..._does_not_fire_when_any_day_has_events`
+  and `..._is_idempotent_within_24h` stayed **green while testing nothing** — they
+  also short-circuited at the probe, so "no warning emitted" proved nothing about
+  thresholds, streak-breaking or idempotency.
+
+All four now opt in through a shared `_opted_in_setting()` helper and assert
+`db.execute.await_count`, so a future short-circuit fails instead of passing
+quietly. `test_v5711`'s `..._fires_when_setting_absent` is inverted and renamed
+to `..._suppressed_when_setting_absent` — the product is right, the test was
+pinning the pre-#483 contract.
+
+**The rest**, each a stale mechanism rather than a broken invariant:
+
+- `test_v5121_hotfix_bundle` grepped three hand-written whitespace variants of
+  `in ("false", "0", "no", "off")`. v5.18.2 inverted the list, invalidating all
+  three at once. Now an AST slice of the gate function matched on normalised
+  whitespace — verified to catch a revert to opt-out and to survive reformatting.
+- `test_v4424_cluster_sync_robustness` sliced `push_sync` at 1800 chars and
+  reported the BUG-081 non-200 check missing; it is intact at
+  `manager.py:813`, just past the window that v5.14.2's `record_attempt`
+  rationale pushed it out of.
+- `test_v572_spa_catchall_mcp_guard` sliced `spa_catch_all` at 1500 chars and
+  reported namespaces `health` and `version` missing from the skip list; both are
+  on `main.py:984`. Now reads the `head in (...)` tuples via AST — stricter too,
+  since a substring check would have accepted the namespace appearing in a
+  comment. Also pins that `v1`/`api`/`mcp` stay in the *unconditional* branch,
+  which is the v5.7.2 bug.
+- `test_v398_pool_diagnostics_in_health` asserted the `/health` cache exclusion
+  tuple as an exact string; it has legitimately grown to include `clusterSync`
+  and `oauthAccounts`. Now a required-subset check — growth fine, a drop not.
+- `test_v576_capability_scout` asserted `db.add.call_count == 2`; v5.10.0 made
+  `emit_suggestions` also call `bump_score`, which adds a
+  `CallerCapabilityScore` row per tool, so the raw count is 4 while `written` is
+  still correctly 2. Now counts rows **by type** and checks the suggested tools.
+
+Recorded as **BUG-090**.
+
 ### v5.22.33 — `model_pricing_catalog` was invisible to alembic (2026-09-26)
 
 known_failures **25 → 24**, zero regressions. Small product change in

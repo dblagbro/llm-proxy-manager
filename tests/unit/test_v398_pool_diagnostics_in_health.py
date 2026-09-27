@@ -46,10 +46,40 @@ def test_health_cache_excludes_dbPool():
     """Pool state must be live (re-read on every /health call) — not
     cached for 3s like the static fields. Cluster.py already excludes
     circuitBreakers from the cache; dbPool joins that exclusion.
-    v5.4.0 added ``workers`` to the same exclusion set (BUG-069)."""
+    v5.4.0 added ``workers`` to the same exclusion set (BUG-069).
+
+    v5.22.34 — this asserted the exclusion tuple as an exact string,
+    ``k not in ("circuitBreakers", "dbPool", "workers")``. The set has since
+    legitimately grown to include ``clusterSync`` and ``oauthAccounts``, so
+    every correct addition broke the test and it ended up in
+    known_failures.txt — the same failure mode as the v5.22.30 lock test.
+    A required-subset check instead: growth is fine, a drop is not.
+    """
+    import ast
+
     src = Path("app/api/cluster.py").read_text()
-    # The cache excludes dbPool (and circuitBreakers + workers as of v5.4.0)
-    assert 'k not in ("circuitBreakers", "dbPool", "workers")' in src
+
+    # Collect every `k not in (...)` membership tuple in the module.
+    excluded = set()
+    for node in ast.walk(ast.parse(src)):
+        if not isinstance(node, ast.Compare) or len(node.ops) != 1:
+            continue
+        if not isinstance(node.ops[0], ast.NotIn):
+            continue
+        rhs = node.comparators[0]
+        if isinstance(rhs, (ast.Tuple, ast.List, ast.Set)):
+            excluded |= {
+                e.value for e in rhs.elts
+                if isinstance(e, ast.Constant) and isinstance(e.value, str)
+            }
+
+    required = {"circuitBreakers", "dbPool", "workers"}
+    missing = required - excluded
+    assert not missing, (
+        f"these keys must stay OUT of the 3s /health cache: {sorted(missing)}. "
+        f"Caching them serves stale pool/breaker/worker state, which is the "
+        f"v3.9.8 and BUG-069 regression. Found excluded: {sorted(excluded)}"
+    )
 
 
 def test_snapshot_function_runs_against_live_engine():

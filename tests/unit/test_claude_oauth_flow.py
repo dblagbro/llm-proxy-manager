@@ -354,8 +354,34 @@ class TestRefreshAndPersist:
             self.oauth_expires_at = None
 
     class _FakeDB:
-        def __init__(self):
+        """Stands in for ``AsyncSession``.
+
+        v5.22.34 — grew ``refresh()``. v5.8.3 added a re-read of the row
+        inside the single-flight lock (a waiter that queued behind the winner
+        holds a stale ``oauth_refresh_token``, and Anthropic revokes the old
+        one on every rotation). This fake had no such method, so both
+        rotation tests died on ``AttributeError: '_FakeDB' object has no
+        attribute 'refresh'`` and sat in ``known_failures.txt`` — which meant
+        the rotated-token write-back, the whole point of this class, went
+        unverified.
+
+        ``stored`` is the DB's view of the row. ``refresh()`` copies the named
+        attributes from it onto the instance, as SQLAlchemy does, so a test
+        can simulate a concurrent rotation by seeding ``stored``. Empty
+        ``stored`` means "nothing changed under us" and refresh is a no-op.
+        """
+
+        def __init__(self, stored=None):
             self.committed = False
+            self.refreshed = []
+            self.stored = dict(stored or {})
+
+        async def refresh(self, instance, attribute_names=None):
+            self.refreshed.append(tuple(attribute_names or ()))
+            for name in (attribute_names or list(self.stored)):
+                if name in self.stored:
+                    setattr(instance, name, self.stored[name])
+
         async def commit(self):
             self.committed = True
 
@@ -389,6 +415,36 @@ class TestRefreshAndPersist:
         db = self._FakeDB()
         await refresh_and_persist(p, db)
         assert p.oauth_refresh_token == "keep-me"
+
+    @pytest.mark.asyncio
+    async def test_reread_inside_lock_uses_concurrently_rotated_token(self, fake_http):
+        """v5.8.3 — a caller that queued on the single-flight lock must send
+        the token the winner just persisted, not its own stale pre-lock copy.
+
+        Anthropic revokes a refresh_token the moment it issues a replacement,
+        so sending the stale one is a guaranteed ``invalid_grant`` — the exact
+        failure v5.8.3's re-read exists to prevent. Untested until now,
+        because the missing ``_FakeDB.refresh`` kept both sibling tests red.
+        """
+        from app.providers.claude_oauth_flow import refresh_and_persist
+        fake_http.next_data = {
+            "access_token": "sk-ant-oat01-THIRD",
+            "refresh_token": "third-refresh",
+            "expires_in": 3600,
+        }
+        p = self._FakeProvider("stale-pre-lock-copy")
+        db = self._FakeDB(stored={"oauth_refresh_token": "winner-just-rotated"})
+
+        await refresh_and_persist(p, db)
+
+        assert db.refreshed, "v5.8.3 re-read inside the lock did not happen"
+        sent = fake_http.captured[-1]["json"]["refresh_token"]
+        assert sent == "winner-just-rotated", (
+            "refresh POSTed the stale pre-lock token; Anthropic has already "
+            f"revoked it and will answer invalid_grant. Sent {sent!r}"
+        )
+        assert p.oauth_refresh_token == "third-refresh"
+        assert db.committed
 
     @pytest.mark.asyncio
     async def test_no_refresh_token_raises(self, fake_http):

@@ -19,15 +19,51 @@ from pathlib import Path
 
 
 def test_compliance_audit_worker_honors_zero_row_warning_enabled_flag():
-    """The v5.7.11 per-instance opt-out lookup must still be intact —
-    operator's 2026-06-30 decision on #483 was to use this existing
-    mechanism on the clone cluster rather than add a new flag."""
+    """The #483 gate must still be the existing v5.7.11 setting key —
+    operator's 2026-06-30 decision was to reuse it on the clone cluster
+    rather than add a new flag.
+
+    v5.22.34 — this used to grep for three hand-written whitespace variants
+    of ``in ("false", "0", "no", "off")``. Two problems. It pinned
+    *formatting*, so `ruff format` could break it; and v5.18.2 (2026-07-03)
+    inverted the gate from opt-OUT to opt-IN per operator decision #483,
+    making all three variants wrong at once. It had been parked in
+    known_failures.txt since.
+
+    Now: slice the gate function with the AST and match on normalised
+    whitespace, so only a real change to the accepted values breaks it. The
+    *behaviour* of the gate is covered by
+    ``test_v5711_zero_row_warning_opt_out.py``; this test's job is only to
+    pin that #483 is wired to this key and reads as opt-in.
+    """
+    import ast
+    import re
+
     src = Path("app/monitoring/compliance_audit_worker.py").read_text()
-    assert "compliance_audit.zero_row_warning_enabled" in src
-    # The lookup must return-early (not just log) when the flag is off.
-    assert 'in (\n            "false", "0", "no", "off",\n        )' in src or \
-        'in ("false", "0", "no", "off")' in src or \
-        'in (\n            "false"' in src
+    assert "compliance_audit.zero_row_warning_enabled" in src, (
+        "#483 must stay wired to the existing v5.7.11 setting key"
+    )
+
+    fn = next(
+        n for n in ast.walk(ast.parse(src))
+        if isinstance(n, ast.AsyncFunctionDef)
+        and n.name == "_emit_zero_row_warning_if_threshold"
+    )
+    lines = src.splitlines()
+    gate = "\n".join(lines[fn.lineno - 1 : fn.end_lineno])
+    compact = re.sub(r"\s+", "", gate)
+
+    # v5.18.2 contract: truthy values opt IN; absent or anything else is silent.
+    assert 'in("true","1","yes","on"' in compact, (
+        "the zero-row gate is no longer an opt-IN check on "
+        '("true","1","yes","on"). v5.18.2 made suppression the default per '
+        "operator decision #483 — if this changed back to opt-out, the "
+        "warning will fire ~1/day/cluster again, which is what #483 stopped."
+    )
+    # And it must return early rather than merely logging.
+    assert "ifnotis_enabled:return" in compact, (
+        "the gate must short-circuit the whole helper when not opted in"
+    )
 
 
 # ── #499 — host-side scripts committed to repo ────────────────────────

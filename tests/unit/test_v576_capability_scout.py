@@ -134,7 +134,29 @@ async def test_emit_suggestions_writes_one_row_per_tool():
         ],
     )
     assert n == 2
-    assert db.add.call_count == 2
+
+    # v5.22.34 — was `db.add.call_count == 2`. v5.10.0 made emit_suggestions
+    # also call bump_score(), which adds a CallerCapabilityScore row per tool,
+    # so the raw add count is now 4 while `written` is still correctly 2. The
+    # test was counting every db.add rather than the suggestion rows it names,
+    # and had been parked in known_failures.txt for it.
+    added = [c.args[0] for c in db.add.call_args_list if c.args]
+    by_type = {}
+    for obj in added:
+        by_type.setdefault(type(obj).__name__, []).append(obj)
+
+    suggestion_rows = by_type.get("ActivityLog", [])
+    assert len(suggestion_rows) == 2, (
+        f"expected one ActivityLog suggestion row per unique tool, got "
+        f"{len(suggestion_rows)}; all adds were { {k: len(v) for k, v in by_type.items()} }"
+    )
+    assert {r.event_meta["suggested_tool"] for r in suggestion_rows} == {
+        "read_xlsx_to_markdown", "fetch_url",
+    }
+    # v5.10.0's score bump rides along — one row per tool, same as above.
+    assert len(by_type.get("CallerCapabilityScore", [])) == 2, (
+        "v5.10.0 score bump should add one CallerCapabilityScore per tool"
+    )
 
 
 @pytest.mark.asyncio

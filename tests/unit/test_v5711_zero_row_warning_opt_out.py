@@ -38,9 +38,21 @@ async def test_zero_row_warning_suppressed_when_setting_false():
 
 
 @pytest.mark.asyncio
-async def test_zero_row_warning_fires_when_setting_absent():
-    """Default behavior unchanged: setting absent → warning still
-    fires per the v5.4.1 design."""
+async def test_zero_row_warning_suppressed_when_setting_absent():
+    """v5.22.34 — was ``test_zero_row_warning_fires_when_setting_absent``.
+
+    v5.18.2 (2026-07-03) flipped the default True → False per operator
+    decision #483 (2026-06-11), which was to silence this warning across all
+    clusters: it had been firing ~1/day/cluster because the suppression
+    setting was never persisted per-cluster. The semantics inverted from
+    opt-OUT to opt-IN, so an absent setting now means *silent*, and this test
+    — whose name asserted the opposite — went red and was parked in
+    known_failures.txt.
+
+    The product is correct here; the test was pinning the pre-v5.18.2
+    contract. Opting in is covered by
+    ``test_zero_row_warning_fires_when_setting_explicitly_true``.
+    """
     from app.monitoring.compliance_audit_worker import _emit_zero_row_warning_if_threshold
 
     # 1st execute: setting probe returns None (absent)
@@ -60,7 +72,8 @@ async def test_zero_row_warning_fires_when_setting_absent():
     db.commit = AsyncMock()
 
     await _emit_zero_row_warning_if_threshold(db, "2026-06-15")
-    db.add.assert_called_once()  # the warning row was written
+    db.add.assert_not_called()  # absent setting => opted out => silent
+    db.commit.assert_not_awaited()
 
 
 @pytest.mark.asyncio
