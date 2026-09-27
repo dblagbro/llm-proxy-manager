@@ -10,6 +10,22 @@ Status flow: **open** → **in-progress** → **fixed** → **verified-fixed** �
 
 ---
 
+## 2026-09-26 — three source guards that guarded nothing (v5.22.31)
+
+### BUG-087 — the 451 banned-client-UA path had no effective test coverage since v5.7.18 — ✅ **CLOSED v5.22.31**
+
+- **Severity:** medium-high as a *coverage* defect on a compliance-critical path (the product code is and was correct) · **Category:** test integrity
+- **Surfaced:** 2026-09-26 working the M2 `known_failures.txt` batch. Pattern across three unrelated files: the entry parked in `known_failures.txt` had a **passing sibling that was silently vacuous**, so the suite looked better covered than it was. Finding the real bug required asking why the sibling passed, not just why the entry failed.
+- **Instance 1 — dead patch target (`test_v5_messages_ua_block`).** Three request-level tests patched `app.api.messages.verify_api_key`. v5.7.18 Phase 2 moved the call into `_handler_shared.prepare_request_context`, which imports it **function-locally**, so the module attribute on `app.api.messages` was dead and `monkeypatch.setattr` on it was a no-op that raised nothing. The banned-UA test 401'd on the real verifier before reaching the UA gate. Its two siblings asserted only `status_code != 451` — and **401 satisfies that** — so they passed while exercising nothing. Net effect: the 451 compliance refusal had no working test for ~2 months.
+- **Instance 2 — assertion matching its own docstring (`test_v3719_log_noise_cleanup`).** Fixed-width `src[idx:idx+1500]` windows over `app/models/database.py`. `get_db`'s docstring is now ~1700 chars and quotes the asserted strings verbatim, so `test_get_db_swallows_no_active_connection` matched prose. **Confirmed by deleting the entire error handler: the test still passed.** Separately, `test_get_db_uses_async_with_pattern` pinned the literal `async with AsyncSessionLocal() as session:`, which v5.21.12 deliberately abandoned (it does not compose with `asyncio.shield` at the cleanup call) — a test pinning a pattern the code intentionally dropped.
+- **Instance 3 — asserting a contract violation (`test_v531_skip_noop_substitution`).** Three tests asserted `headers == {}` on the no-op substitution path. v5.9.3 made `X-Compliance-Substitution` **required** there (`pass-through` / `false`), and `_disposition_only_headers` documents that hub-side scanners treat absence as a hard error. So the tests asserted the v5.9.3 contract is broken.
+- **Root cause (common):** source-grep guards pinned *mechanism* (a literal string, at a byte offset, in a named file) rather than *invariant*. Every one of them was correct when written; each was invalidated by a later refactor that did not change behaviour, and the vacuous ones gave no signal when that happened.
+- **Fix (v5.22.31):** patch target → `app.auth.keys.verify_api_key`; dead `verify_api_key` import removed from `messages.py` and `completions.py` so a future stale patch raises `AttributeError` instead of no-op'ing; siblings assert `!= 401`; ordering guards replaced with an **index comparison** (`verify_api_key` before `raise_if_banned_client_ua`) plus a check that neither endpoint hand-rolls the pre-route; fixed-width windows replaced with an **AST helper that strips the docstring**; disposition expectations corrected and the previously-untested `false` case pinned.
+- **Verification:** every rewritten guard was confirmed to still bite by planting the violation it describes — `session.close()` for the pool-return path, a deleted error handler, a reordered pre-route, a hand-rolled UA gate in `messages.py`. All plants reverted and the tree confirmed clean.
+- **Lesson:** a green source-grep test is not evidence. When a guard asserts on source text, the check is only as good as the window it reads and the file it names — and if the window can see a docstring that *discusses* the thing being asserted, it proves nothing. **When triaging a `known_failures` entry, also ask why its neighbours pass.**
+- **Tests:** 8 removed from `known_failures.txt` (38 → 30). Suite: 30 failed / 3941 passed, zero regressions.
+- **Status:** CLOSED — verified-fixed.
+
 ## 2026-09-26 — the v3.8.0 provider-type rename left three sets behind (v5.22.30)
 
 ### BUG-086 — `ChatGPT-oauth-plan` silently excluded from the per-account OAuth path — ✅ **CLOSED v5.22.30**

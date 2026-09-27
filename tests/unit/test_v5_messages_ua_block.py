@@ -110,7 +110,12 @@ async def test_banned_ua_with_anthropic_blocklist_returns_451(fixture_db_ua, mon
     async def fake_verify(db, token):
         return _key_record("ua-key-blocked", ["anthropic"])
 
-    monkeypatch.setattr("app.api.messages.verify_api_key", fake_verify)
+    # v5.22.31: NOT "app.api.messages.verify_api_key". The v5.7.18 Phase 2
+    # refactor moved the call into _handler_shared.prepare_request_context,
+    # which imports it function-locally — so the module attribute on
+    # app.api.messages is dead and patching it silently does nothing (the
+    # request then 401s on the real verifier before reaching the UA gate).
+    monkeypatch.setattr("app.auth.keys.verify_api_key", fake_verify)
 
     client = TestClient(app)
     resp = client.post(
@@ -176,7 +181,12 @@ async def test_banned_ua_with_empty_blocklist_does_not_block(fixture_db_ua, monk
     async def fake_verify(db, token):
         return _key_record("ua-key-allowed", [])
 
-    monkeypatch.setattr("app.api.messages.verify_api_key", fake_verify)
+    # v5.22.31: NOT "app.api.messages.verify_api_key". The v5.7.18 Phase 2
+    # refactor moved the call into _handler_shared.prepare_request_context,
+    # which imports it function-locally — so the module attribute on
+    # app.api.messages is dead and patching it silently does nothing (the
+    # request then 401s on the real verifier before reaching the UA gate).
+    monkeypatch.setattr("app.auth.keys.verify_api_key", fake_verify)
 
     # Patch select_provider_with_503 + the rest of the heavy path so the
     # request short-circuits cleanly after the UA check passes. We only
@@ -208,6 +218,10 @@ async def test_banned_ua_with_empty_blocklist_does_not_block(fixture_db_ua, monk
         return
     # If no Boom: either the route returned (also OK since not 451) or
     # something else short-circuited. Just assert NOT 451.
+    assert resp.status_code != 401, (
+        "the fake verifier was not in effect — this test would pass vacuously, "
+        f"since 401 also satisfies 'not 451'. Got {resp.text}"
+    )
     assert resp.status_code != 451, (
         f"empty blocklist should not 451; got {resp.status_code}: {resp.text}"
     )
@@ -249,7 +263,12 @@ async def test_unbanned_ua_with_anthropic_blocklist_does_not_block(fixture_db_ua
     async def fake_verify(db, token):
         return _key_record("ua-key-blocked", ["anthropic"])
 
-    monkeypatch.setattr("app.api.messages.verify_api_key", fake_verify)
+    # v5.22.31: NOT "app.api.messages.verify_api_key". The v5.7.18 Phase 2
+    # refactor moved the call into _handler_shared.prepare_request_context,
+    # which imports it function-locally — so the module attribute on
+    # app.api.messages is dead and patching it silently does nothing (the
+    # request then 401s on the real verifier before reaching the UA gate).
+    monkeypatch.setattr("app.auth.keys.verify_api_key", fake_verify)
 
     class _Boom(Exception): pass
 
@@ -274,6 +293,10 @@ async def test_unbanned_ua_with_anthropic_blocklist_does_not_block(fixture_db_ua
         )
     except _Boom:
         return
+    assert resp.status_code != 401, (
+        "the fake verifier was not in effect — this test would pass vacuously, "
+        f"since 401 also satisfies 'not 451'. Got {resp.text}"
+    )
     assert resp.status_code != 451, (
         f"unbanned UA should not 451; got {resp.status_code}: {resp.text}"
     )
@@ -288,30 +311,54 @@ async def test_unbanned_ua_with_anthropic_blocklist_does_not_block(fixture_db_ua
 # ── Source-level guards ────────────────────────────────────────────────
 
 
-def test_messages_py_runs_ua_check_after_verify_api_key():
-    """v5.0.9 refactor: the inline UA-check pattern moved into
-    ``app/api/_compliance_handler.py``. messages.py now delegates via
-    ``raise_if_banned_client_ua``. The 451 path is asserted via the
-    helper's source instead (the helper is the single mirror)."""
+def test_both_endpoints_delegate_to_the_shared_pre_route():
+    """v5.22.31 — was two tests grepping messages.py / completions.py for
+    ``raise_if_banned_client_ua(request, db, key_record)``.
+
+    v5.0.9 extracted the UA check into ``_compliance_handler``; v5.7.18
+    Phase 2 then moved the *call* out of both endpoint modules into
+    ``_handler_shared.prepare_request_context``. So both guards were
+    grepping files the call had left, and they sat in known_failures.txt.
+
+    The invariant is that neither endpoint hand-rolls the pre-route
+    sequence — both go through the one shared path, so the UA gate cannot
+    be bypassed on one of them.
+    """
     from pathlib import Path
-    msg_src = Path("app/api/messages.py").read_text()
-    helper_src = Path("app/api/_compliance_handler.py").read_text()
-    # messages.py wires the helper.
-    assert "raise_if_banned_client_ua(request, db, key_record)" in msg_src
-    # The helper holds the original 451 wire contract.
-    assert "detect_client_company(" in helper_src
-    assert "client_product_refusal" in helper_src
-    assert "client-product-banned" in helper_src
-    assert "status_code=451" in helper_src
+    for mod in ("app/api/messages.py", "app/api/completions.py"):
+        src = Path(mod).read_text()
+        assert "prepare_request_context" in src, (
+            f"{mod} must obtain its key_record via the shared pre-route"
+        )
+        assert "raise_if_banned_client_ua" not in src, (
+            f"{mod} calls the UA gate directly — that is the duplication "
+            "v5.7.18 Phase 2 removed; it belongs in _handler_shared only"
+        )
 
 
-def test_completions_py_runs_ua_check_after_verify_api_key():
-    """Mirror of messages.py — same v5.0.9 extraction."""
+def test_shared_pre_route_runs_ua_check_after_verify_api_key():
+    """Ordering, checked as ordering rather than as presence.
+
+    A banned client must be refused only once the key is known to be
+    valid, and before any provider routing or request tally. Previously
+    this was two presence-only assertions that could not have caught a
+    reordering at all.
+    """
     from pathlib import Path
-    cmp_src = Path("app/api/completions.py").read_text()
+    src = Path("app/api/_handler_shared.py").read_text()
+    i_verify = src.index("verify_api_key(db, x_api_key)")
+    i_ua = src.index("raise_if_banned_client_ua(request, db, key_record)")
+    assert i_verify < i_ua, (
+        "the UA gate must run AFTER verify_api_key — refusing an "
+        "unauthenticated caller with 451 leaks policy to strangers"
+    )
+
+    # The helper still holds the 451 wire contract (the single mirror).
     helper_src = Path("app/api/_compliance_handler.py").read_text()
-    assert "raise_if_banned_client_ua(request, db, key_record)" in cmp_src
-    assert "detect_client_company(" in helper_src
-    assert "client_product_refusal" in helper_src
-    assert "client-product-banned" in helper_src
-    assert "status_code=451" in helper_src
+    for frag in (
+        "detect_client_company(",
+        "client_product_refusal",
+        "client-product-banned",
+        "status_code=451",
+    ):
+        assert frag in helper_src, frag

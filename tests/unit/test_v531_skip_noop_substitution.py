@@ -13,6 +13,18 @@ This batch adds a defense-in-depth skip at the emit site. Matching
 strips the litellm ``provider/`` prefix on the served side so
 ``anthropic/claude-haiku`` matches ``claude-haiku``; comparison is
 case-insensitive.
+
+v5.22.31 — the three no-op tests asserted ``headers == {}``. v5.9.3
+later made ``X-Compliance-Substitution`` a *required* disposition
+signal on exactly this path: ``pass-through`` when the key carries no
+compliance policy, ``false`` when it does, and per
+``_disposition_only_headers``' docstring, "hub-side scanners still
+treat header absence as a hard error". So ``== {}`` had become an
+assertion that the v5.9.3 contract is violated, which is why these sat
+in known_failures.txt. The invariant v5.3.1 actually exists to protect
+— no audit row for a no-op — is ``m.assert_not_awaited()``, and that
+never stopped holding. The ``false`` disposition had no coverage at all
+and is now pinned too.
 """
 from __future__ import annotations
 
@@ -39,7 +51,17 @@ def _make_request():
 
 
 def _make_key():
+    """A key with NO compliance policy -> disposition `pass-through`."""
     return SimpleNamespace(id="key-test")
+
+
+def _make_policy_key():
+    """A key WITH a policy applied -> disposition `false` (v5.9.3)."""
+    return SimpleNamespace(id="key-policy", blocked_companies=["anthropic"])
+
+
+# The no-substitution disposition header, for a policy-free key.
+PASS_THROUGH = {"X-Compliance-Substitution": "pass-through"}
 
 
 @pytest.mark.asyncio
@@ -57,7 +79,7 @@ async def test_noop_substitution_does_not_emit():
             key_record=_make_key(),
             orig_request_model="gemini-2.5-flash",
         )
-    assert headers == {}
+    assert headers == PASS_THROUGH
     assert disclosure is None
     assert prelude is False
     m.assert_not_awaited()
@@ -78,7 +100,7 @@ async def test_noop_substitution_with_provider_prefix_strips_correctly():
             key_record=_make_key(),
             orig_request_model="gemini-2.5-flash",
         )
-    assert headers == {}
+    assert headers == PASS_THROUGH
     assert disclosure is None
     assert prelude is False
     m.assert_not_awaited()
@@ -122,7 +144,30 @@ async def test_unsubstituted_route_still_short_circuits():
             key_record=_make_key(),
             orig_request_model="claude-haiku-4-5",
         )
-    assert headers == {}
+    assert headers == PASS_THROUGH
+    assert disclosure is None
+    assert prelude is False
+    m.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_noop_substitution_on_policy_key_reports_false():
+    """v5.9.3 disposition: a key that HAS a compliance policy gets
+    ``false`` rather than ``pass-through`` on the no-op path. Still no
+    audit row — the v5.3.1 skip is orthogonal to the disposition value.
+    """
+    from app.api import _compliance_handler as h
+
+    with patch.object(h, "emit_event", new=AsyncMock()) as m:
+        headers, disclosure, prelude = await h.emit_substitution_disclosure_for_route(
+            _make_request(),
+            db=None,
+            route=_make_route(served_model="gemini/gemini-2.5-flash"),
+            key_record=_make_policy_key(),
+            orig_request_model="gemini-2.5-flash",
+        )
+
+    assert headers == {"X-Compliance-Substitution": "false"}
     assert disclosure is None
     assert prelude is False
     m.assert_not_awaited()

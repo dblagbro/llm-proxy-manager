@@ -2,6 +2,70 @@
 
 All notable changes since v2.7.6. Older history available in `git log`.
 
+### v5.22.31 — three guards that guarded nothing (2026-09-26)
+
+M2 mechanical batch continues: known_failures **38 → 30**, zero regressions.
+Eight tests fixed across three files. No product behaviour changed; two dead
+imports removed. The theme is that a test in `known_failures.txt` had, in each
+case, a *passing* sibling that was silently vacuous — so the file looked better
+covered than it was.
+
+**1. The 451 compliance path had no effective test since v5.7.18**
+(`test_v5_messages_ua_block`). The three request-level tests patched
+`app.api.messages.verify_api_key`. v5.7.18 Phase 2 moved that call into
+`_handler_shared.prepare_request_context`, which imports it *function-locally* —
+so the module attribute on `app.api.messages` was dead and patching it did
+nothing. The banned-UA test then 401'd on the real verifier before ever reaching
+the UA gate, which is the failure that was parked. The two sibling tests asserted
+only `status_code != 451`, and **401 satisfies that** — so they passed while
+testing nothing. Patch target corrected to `app.auth.keys.verify_api_key`, both
+siblings now also assert `!= 401` with an explanatory message, and the now-dead
+`verify_api_key` import is removed from `messages.py` *and* `completions.py` so
+the next stale patch raises `AttributeError` instead of silently no-op'ing.
+
+The two ordering guards (`test_{messages,completions}_py_runs_ua_check_after_verify_api_key`)
+grepped the endpoint modules for a call that had likewise moved to
+`_handler_shared`. Replaced by two tests that check what matters: neither
+endpoint hand-rolls the pre-route (both must go through the shared path, so the
+UA gate cannot be bypassed on one of them), and `verify_api_key` precedes
+`raise_if_banned_client_ua` — asserted as an *index comparison*, so a reordering
+is actually caught. Refusing an unauthenticated caller with 451 would leak policy
+to strangers.
+
+**2. A guard matching its own docstring** (`test_v3719_log_noise_cleanup`).
+These sliced `src[idx:idx+1500]` out of `app/models/database.py`. `get_db`'s
+docstring has grown to ~1700 chars and *quotes the strings being asserted on*
+(`OperationalError('no active connection')`, `async with`), so
+`test_get_db_swallows_no_active_connection` was matching prose, not code, and
+would have passed with the entire error handler deleted — verified by deleting
+it. Replaced the fixed windows with an AST helper that returns `get_db`'s body
+with the docstring stripped.
+
+`test_get_db_uses_async_with_pattern` asserted the literal
+`async with AsyncSessionLocal() as session:`. v5.21.12 deliberately replaced
+`async with` with manual `__aenter__`/`__aexit__` because it does not compose
+with `asyncio.shield` at the cleanup call, so the test was pinning a pattern the
+code had intentionally abandoned. Restated as the invariant it existed to protect
+— cleanup goes through SQLA's `__aexit__` pool-return path, shielded, and *not*
+through the v3.7.19 bare `session.close()` that leaked connections.
+
+**3. An assertion that the v5.9.3 contract is violated**
+(`test_v531_skip_noop_substitution`). Three tests asserted `headers == {}` on the
+no-op substitution path. v5.9.3 later made `X-Compliance-Substitution` a
+*required* disposition signal there — `pass-through` with no per-key policy,
+`false` with one — and `_disposition_only_headers`' docstring records that
+"hub-side scanners still treat header absence as a hard error". So `== {}` was
+asserting a compliance-contract violation. The invariant v5.3.1 actually exists
+for (no audit row on a no-op) is `m.assert_not_awaited()` and never stopped
+holding. Expectations corrected, and the `false` disposition — previously
+untested — is now pinned.
+
+Every rewritten guard was verified to still bite by planting the violation it
+describes: `session.close()` for the pool-return path, a removed error handler,
+a reordered pre-route, and a hand-rolled UA gate in `messages.py`.
+
+Recorded as **BUG-087**.
+
 ### v5.22.30 — the v3.8.0 provider-type rename was never finished (2026-09-26)
 
 Continues the M2 mechanical batch. One of the two remaining

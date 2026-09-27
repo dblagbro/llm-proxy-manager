@@ -12,7 +12,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.database import get_db
 from app.utils.disconnect_watchdog import watch_for_disconnect
-from app.auth.keys import verify_api_key
 from app.routing.litellm_binding import OWN_DISPATCHER_PROVIDER_TYPES
 from app.routing.router import select_provider
 from app.routing.litellm_binding import clamp_thinking_budget

@@ -110,26 +110,79 @@ def test_endpoint_uses_warnings_none_on_model_dump():
 # ── BUG-022: graceful session close on cancellation ───────────────
 
 
-def test_get_db_uses_async_with_pattern():
-    """v3.7.21 — get_db must use async with so SQLA's pool-return
-    runs cleanly. The v3.7.19 manual try/finally bypass caused
-    SAWarning leaks where connections were never checked back in."""
+# ── get_db source guards ─────────────────────────────────────────
+#
+# v5.22.31: these were fixed-width `src[idx:idx+N]` windows, which is the
+# dominant staleness bug in this suite. Worse, get_db's docstring is ~1700
+# chars and *names the strings being asserted on*, so
+# test_get_db_swallows_no_active_connection was matching the prose and
+# guarding nothing at all. Slice the real code instead, docstring excluded.
+
+
+def _get_db_code() -> str:
+    """Source of ``get_db``'s body with its docstring stripped.
+
+    Docstring-free on purpose: get_db's docstring quotes
+    ``OperationalError('no active connection')`` and ``async with``
+    verbatim, so any assertion allowed to see it passes vacuously.
+    """
+    import ast
     from pathlib import Path
     src = Path("app/models/database.py").read_text()
-    idx = src.index("async def get_db")
-    body = src[idx:idx + 1500]
-    assert "async with AsyncSessionLocal() as session:" in body
+    fn = next(
+        n for n in ast.walk(ast.parse(src))
+        if isinstance(n, ast.AsyncFunctionDef) and n.name == "get_db"
+    )
+    stmts = fn.body
+    if (
+        isinstance(stmts[0], ast.Expr)
+        and isinstance(stmts[0].value, ast.Constant)
+        and isinstance(stmts[0].value.value, str)
+    ):
+        stmts = stmts[1:]
+    assert stmts, "get_db has no body beyond its docstring"
+    lines = src.splitlines()
+    return "\n".join(lines[stmts[0].lineno - 1 : stmts[-1].end_lineno])
+
+
+def test_get_db_returns_connection_via_shielded_aexit():
+    """v3.7.21's invariant, restated for v5.21.12's implementation.
+
+    Was ``test_get_db_uses_async_with_pattern``, asserting the literal
+    ``async with AsyncSessionLocal() as session:``. v5.21.12 deliberately
+    replaced ``async with`` with manual ``__aenter__``/``__aexit__``
+    because ``async with`` does not compose with ``asyncio.shield`` at the
+    cleanup call — so the old assertion was testing a pattern the code had
+    intentionally abandoned, and it sat in known_failures.txt as a result.
+
+    The invariant it existed to protect is unchanged and is what is checked
+    here: cleanup must go through SQLAlchemy's own pool-return path
+    (``__aexit__``), not the v3.7.19 manual ``session.close()`` bypass that
+    leaked connections and produced ``SAWarning: non-checked-in connection
+    will be terminated``. v5.21.12 adds that the call be shielded, so a
+    cancel arriving mid-close cannot strand the pool slot.
+    """
+    body = _get_db_code()
+    assert "session.__aexit__(None, None, None)" in body, (
+        "get_db must hand cleanup to SQLA's __aexit__ (the pool-return path)"
+    )
+    assert "shield(" in body, (
+        "the __aexit__ call must be shielded or a mid-close cancel strands "
+        "the pool slot — see v5.21.12 / the /cluster/sync pool leak"
+    )
     assert "yield session" in body
+    # The v3.7.19 regression: close() as the cleanup path instead of __aexit__.
+    assert "session.close()" not in body, (
+        "bare session.close() bypasses SQLA's pool return — this is the "
+        "exact v3.7.19 bug v3.7.21 reverted"
+    )
 
 
 def test_get_db_swallows_no_active_connection():
     """get_db must still catch OperationalError('no active connection')
     that fires post-cancellation. v3.7.21 wraps the async with in a
     try/except instead of doing manual close."""
-    from pathlib import Path
-    src = Path("app/models/database.py").read_text()
-    idx = src.index("async def get_db")
-    body = src[idx:idx + 1500]
+    body = _get_db_code()
     assert "no active connection" in body
     assert "OperationalError" in body
 
@@ -137,11 +190,7 @@ def test_get_db_swallows_no_active_connection():
 def test_get_db_reraises_other_operational_errors():
     """Only the specific 'no active connection' message is swallowed.
     Other OperationalErrors (real DB problems) must still propagate."""
-    from pathlib import Path
-    src = Path("app/models/database.py").read_text()
-    idx = src.index("async def get_db")
-    # Wider window — the function body is long including the docstring
-    body = src[idx:idx + 2500]
+    body = _get_db_code()
     # The check is conditional on the message text
     assert 'in str(exc).lower()' in body
     # Must have an unconditional re-raise for the non-matching case
