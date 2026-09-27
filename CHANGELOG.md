@@ -2,6 +2,20 @@
 
 All notable changes since v2.7.6. Older history available in `git log`.
 
+### v5.22.29 — M2 mechanical batch: known_failures 47 → 40 (2026-09-27)
+
+Seven fixed, zero regressions. All test-side; no behaviour changed.
+
+**`test_airi_m1` (3) + `test_airi_m3` (2) — stale fake signature.** `agent._call_llm` gained a keyword-only `llm_hint` in v5.21.4 (it forwards the `LMRH-Hint` header), and the tests' `fake_llm` never grew it. The resulting `TypeError` was swallowed by `agent.py` into an `error` event, so the tests failed on *"expected a proposal event"* — a symptom three steps from the cause. Five fakes updated.
+
+**`test_v4420_apikey_lww` (2) — a fixed-width source window gone stale, twice.** Both assertions grepped a 4500-character slice from `async def update_key`, and the test's own docstring records the window already being widened once (2500 → 4500 at v5.0.0). `update_key` has since grown past 4500 — partly from the `default_refuse_tolerance` handling I added in v5.22.28 — so the test began reporting *"PATCH endpoint no longer stamps last_user_edit_at — operator edits will never propagate under the LWW gate"* about code that was stamping it correctly at line 408.
+
+Widening to 6000 would defer the next break rather than fix it. Replaced with `_function_body()`, which slices from the signature to the next top-level `def`/decorator — the actual meaning of "inside `update_key`". That cannot go stale as the function grows.
+
+Worth noting what this near-miss looked like: a loud, specific, correct-sounding failure message describing a serious cluster-replication bug that did not exist. The same brittleness that produces false alarms is what gets tests parked in `known_failures`, where they then stop catching the real thing.
+
+Remaining 40 recorded in `tests/known_failures.txt`.
+
 ### v5.22.28 — complete the two half-built features; known_failures 56 → 47 (2026-09-27)
 
 Operator chose **complete** over descope — correctly, because the UI was already there. Both features turned out to be less missing than the failing tests implied.

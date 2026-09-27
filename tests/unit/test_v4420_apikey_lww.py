@@ -22,6 +22,7 @@ subsequent sync cycles converge instead of ping-ponging.
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 import time
 
@@ -54,6 +55,24 @@ async def fresh_db():
 # ── Model + push-payload surface guards ──────────────────────────────
 
 
+
+def _function_body(src: str, signature: str) -> str:
+    """Return a function's actual body, from its signature to the next
+    top-level ``def`` / ``async def`` / decorator.
+
+    v5.22.29 — replaces a fixed-size character window. That window had
+    already been widened once (2500 -> 4500, recorded below) and went stale a
+    second time when ``update_key`` grew again, so the assertions started
+    reporting "no longer stamps last_user_edit_at" about code that was
+    stamping it perfectly well. A slice that tracks the real function
+    boundary cannot go stale as the function grows.
+    """
+    start = src.index(signature)
+    rest = src[start + len(signature):]
+    m = re.search(r"\n(?:@|async def |def )", rest)
+    return src[start:start + len(signature) + (m.start() if m else len(rest))]
+
+
 def test_model_has_last_user_edit_at():
     """Source guard so a future model rewrite doesn't drop the LWW gate."""
     src = Path("app/models/db_apikey.py").read_text()
@@ -76,14 +95,12 @@ def test_patch_endpoint_bumps_last_user_edit_at():
     refactor moves the assignment out of update_key the LWW gate goes
     half-dead (peers gate but operator never writes)."""
     src = Path("app/api/apikeys.py").read_text()
-    idx = src.index("async def update_key")
-    # v5.0.0: window widened from 2500 → 4500 because Agent 5 added
-    # compliance fields (blocked_companies / allowed_paths /
-    # debug_echo_enabled + policy-change audit emission) inline in
-    # ``update_key``, pushing the LWW stamp assignment past the old 2500
+    # v5.22.29 — the real function body, not a fixed window. History of the
+    # window this replaces: widened 2500 → 4500 at v5.0.0 when compliance
+    # fields landed inline in ``update_key``, then stale again at v5.22.28
     # boundary. The intent of the guard — stamp still inside ``update_key`` —
     # is unchanged.
-    block = src[idx:idx + 4500]
+    block = _function_body(src, "async def update_key")
     assert "last_user_edit_at" in block, (
         "PATCH endpoint no longer stamps last_user_edit_at — operator "
         "edits will never propagate under the LWW gate"
@@ -95,14 +112,12 @@ def test_patch_uses_walltime_for_stamp():
     ``time.monotonic()`` would silently break LWW comparisons across
     peers since each node's monotonic clock has a different epoch."""
     src = Path("app/api/apikeys.py").read_text()
-    idx = src.index("async def update_key")
-    # v5.0.0: window widened from 2500 → 4500 because Agent 5 added
-    # compliance fields (blocked_companies / allowed_paths /
-    # debug_echo_enabled + policy-change audit emission) inline in
-    # ``update_key``, pushing the LWW stamp assignment past the old 2500
+    # v5.22.29 — the real function body, not a fixed window. History of the
+    # window this replaces: widened 2500 → 4500 at v5.0.0 when compliance
+    # fields landed inline in ``update_key``, then stale again at v5.22.28
     # boundary. The intent of the guard — stamp still inside ``update_key`` —
     # is unchanged.
-    block = src[idx:idx + 4500]
+    block = _function_body(src, "async def update_key")
     # Heuristic: the bump line uses ``time.time()``; reject monotonic.
     assert "time.time()" in block, "expected wall-clock stamp"
     assert "time.monotonic()" not in block, (

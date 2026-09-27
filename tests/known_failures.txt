@@ -1,6 +1,6 @@
 # Known pre-existing unit-test failures — the #3 "get the suite green" backlog.
 #
-# Snapshot: 2026-09-27 (after v5.22.28). 47 committed-test failures.
+# Snapshot: 2026-09-27 (after v5.22.29). 40 committed-test failures.
 # REFRESHED 2026-08-12: the previous header claimed 64 and the body listed 48,
 # while the suite actually failed 57 — so the list could neither be trusted as
 # a baseline nor used to detect a regression. Regenerated from an actual run.
@@ -15,11 +15,7 @@
 
 
 
-tests/unit/test_airi_m1.py::test_agent_rejects_non_readonly_tool
-tests/unit/test_airi_m1.py::test_agent_returns_final_answer
-tests/unit/test_airi_m1.py::test_agent_runs_a_tool_then_answers
-tests/unit/test_airi_m3.py::test_agent_emits_proposal_event
-tests/unit/test_airi_m3.py::test_agent_per_turn_apply_cap
+
 tests/unit/test_claude_oauth_flow.py::TestRefreshAndPersist::test_keeps_old_refresh_when_server_omits_rotation
 tests/unit/test_claude_oauth_flow.py::TestRefreshAndPersist::test_persists_rotated_tokens
 tests/unit/test_pricing.py::test_known_model_override
@@ -34,8 +30,6 @@ tests/unit/test_v398_pool_diagnostics_in_health.py::test_health_cache_excludes_d
 tests/unit/test_v4411_db_split.py::test_no_domain_module_exceeds_500_loc
 tests/unit/test_v4411_db_split.py::test_registry_has_all_tables
 tests/unit/test_v4412_streaming_split.py::test_neither_streaming_file_exceeds_700_loc
-tests/unit/test_v4420_apikey_lww.py::test_patch_endpoint_bumps_last_user_edit_at
-tests/unit/test_v4420_apikey_lww.py::test_patch_uses_walltime_for_stamp
 tests/unit/test_v4424_cluster_sync_robustness.py::test_push_sync_inspects_response_status
 tests/unit/test_v5120_mcp_backpressure_ship1and2.py::test_emit_wired_into_messages_handler
 tests/unit/test_v5121_hotfix_bundle.py::test_compliance_audit_worker_honors_zero_row_warning_enabled_flag

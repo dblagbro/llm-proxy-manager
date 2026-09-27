@@ -87,7 +87,12 @@ async def test_agent_errors_without_internal_key(monkeypatch):
 async def test_agent_returns_final_answer(monkeypatch):
     monkeypatch.setattr(agent.settings, "ai_provider_supervisor_internal_api_key", "k")
 
-    async def fake_llm(api_key, model, messages):
+    # v5.22.29 — agent._call_llm gained a keyword-only ``llm_hint`` in
+    # v5.21.4 (it forwards the LMRH-Hint header). The fake must accept it
+    # or the agent's call raises TypeError, which agent.py swallows into an
+    # 'error' event -- so the test failed on a missing 'proposal'/'message'
+    # event rather than on the real cause.
+    async def fake_llm(api_key, model, messages, *, llm_hint=None):
         return {"content": [{"type": "text", "text": "Routing looks healthy."}],
                 "stop_reason": "end_turn"}
     monkeypatch.setattr(agent, "_call_llm", fake_llm)
@@ -101,7 +106,7 @@ async def test_agent_runs_a_tool_then_answers(monkeypatch):
     monkeypatch.setattr(agent.settings, "ai_provider_supervisor_internal_api_key", "k")
     calls = []
 
-    async def fake_llm(api_key, model, messages):
+    async def fake_llm(api_key, model, messages, *, llm_hint=None):
         calls.append(messages)
         if len(calls) == 1:
             return {"content": [{"type": "tool_use", "id": "t1",
@@ -131,7 +136,7 @@ async def test_agent_rejects_non_readonly_tool(monkeypatch):
     assert "set_provider_priority" not in READ_ONLY_TOOLS
     calls = []
 
-    async def fake_llm(api_key, model, messages):
+    async def fake_llm(api_key, model, messages, *, llm_hint=None):
         calls.append(messages)
         if len(calls) == 1:
             return {"content": [{"type": "tool_use", "id": "t1",

@@ -201,7 +201,12 @@ async def test_agent_emits_proposal_event(db_ready, monkeypatch):
     monkeypatch.setattr(agent.settings, "ai_provider_supervisor_internal_api_key", "k")
     calls = []
 
-    async def fake_llm(api_key, model, messages):
+    # v5.22.29 — agent._call_llm gained a keyword-only ``llm_hint`` in
+    # v5.21.4 (it forwards the LMRH-Hint header). The fake must accept it
+    # or the agent's call raises TypeError, which agent.py swallows into an
+    # 'error' event -- so the test failed on a missing 'proposal'/'message'
+    # event rather than on the real cause.
+    async def fake_llm(api_key, model, messages, *, llm_hint=None):
         calls.append(messages)
         if len(calls) == 1:
             return {"content": [{
@@ -277,7 +282,7 @@ async def test_agent_per_turn_apply_cap(db_ready, monkeypatch):
     monkeypatch.setattr(agent.settings, "ai_provider_supervisor_internal_api_key", "k")
     calls = []
 
-    async def fake_llm(api_key, model, messages):
+    async def fake_llm(api_key, model, messages, *, llm_hint=None):
         calls.append(messages)
         if len(calls) == 1:
             return {"content": [
