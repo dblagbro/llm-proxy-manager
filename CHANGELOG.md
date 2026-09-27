@@ -2,6 +2,68 @@
 
 All notable changes since v2.7.6. Older history available in `git log`.
 
+### v5.22.35 — the nine wiring greps; two guards that accepted their own violation (2026-09-26)
+
+known_failures **15 → 6**, zero regressions. **No product code changed.** The
+six that remain are the LOC-ceiling guards, which need real refactoring.
+
+All nine named a call in `messages.py` or `completions.py` that a later
+extraction had moved. Each invariant was verified still intact in the code
+before the test was touched:
+
+| Test | Call now lives in |
+|---|---|
+| `test_emit_wired_into_messages_handler` | `_messages_response_tail.py:129` (v5.19.0) |
+| `test_accept_handler_wired_into_messages` | `_messages_response_tail.py:137` (v5.19.0) |
+| `test_handler_helper_wired_into_{messages,completions}` | `_handler_shared.py:77` (v5.7.18 Phase 2) |
+| `test_buffered_stream_mode_marker_wired` | `_buffered_cascade_mode.py:65` (v5.21.6) |
+
+A recurring tell: in two cases the `..._into_completions` sibling kept passing,
+because that endpoint still calls the helper inline while only the messages side
+was extracted. That asymmetry made a pure test-location problem look like a
+one-sided regression.
+
+**The emergency-stop pair got a better guarantee, not just a new path.** They
+compared character offsets of `raise_if_llm_emergency_stopped` and
+`select_provider_with_503` *within one file* — impossible now that the stop sits
+in the shared pre-route. Replaced with a two-part proof: the endpoint reaches
+`prepare_request_context` before any provider selection, and the pre-route fires
+the stop *after* `verify_api_key` (a 503 handed to an unauthenticated caller
+leaks fleet state).
+
+**Two guards were caught accepting their own violation.** Verifying each rewrite
+by planting the violation it describes found two that did not fail:
+
+- `apply_suggestion_header` was asserted as a substring, which a **commented-out
+  call still satisfies** — planting `pass  # await apply_suggestion_header(...)`
+  passed. Now an AST check for a live `await`.
+- `/healthz` was asserted against the whole bridge module, but `/api/status`
+  reports several of the same keys — deleting `playwright_ready` from `/healthz`
+  alone still passed. Now scoped to the `healthz` function via AST.
+
+**Three were obsolete by delivery rather than by extraction:**
+
+- `test_docstring_mentions_streaming_gap` asserted the literal `"v5.20.8"`
+  appeared in `messages.py`. v5.21.6 rewrote that prose into
+  `_buffered_cascade_mode.py` and dropped the version reference — `v5.20.8` now
+  appears nowhere in `app/`. The documentation had actually *improved* (a
+  trade-off table covering pass-through streaming, `buffered` and
+  `buffered-heartbeat`), so the test now asserts that substance.
+- The two `cursor_bridge_session` scaffold guards pinned v5.5.0 stub sentinels —
+  `"phase": "scaffold-v5.5.0"` and `"not-implemented-in-scaffold"`. They existed
+  so the scaffold could not silently claim rotation worked, so **shipping the
+  feature in v5.5.1 was what broke them.** Re-pointed at the obligations that
+  replaced them: `/healthz` reports liveness *and* Playwright readiness without
+  awaiting the browser, and `/api/rotate` really drives the PKCE flow *under
+  `_rotate_lock`* — concurrent operator clicks would otherwise stampede the
+  single browser context.
+- `test_health_envelope_includes_workers_block_in_source` asserted the `/health`
+  cache-exclusion tuple as an exact string; it has legitimately grown to include
+  `clusterSync` and `oauthAccounts`. Now a required-subset check, matching the
+  sibling fixed in v5.22.34 that asserts the same tuple from the other side.
+
+Recorded as **BUG-091**.
+
 ### v5.22.34 — the behavioural nine (2026-09-26)
 
 known_failures **24 → 15**, zero regressions. All nine remaining behavioural

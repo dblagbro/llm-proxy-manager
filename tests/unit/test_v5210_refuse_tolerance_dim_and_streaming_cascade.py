@@ -119,10 +119,28 @@ def test_refuse_tolerance_required_hard_gates():
 # ── buffered-cascade streaming ────────────────────────────────────────
 
 def test_buffered_stream_mode_marker_wired():
-    src = Path("app/api/messages.py").read_text()
-    # v5.20.8 header replaced with the working marker
-    assert '"X-Refusal-Cascade-Mode"' in src
-    assert '"buffered"' in src
+    """v5.22.35 — the marker's producer moved out of messages.py.
+
+    v5.21.6 extracted mode detection to
+    ``app/api/_buffered_cascade_mode.detect_buffered_cascade_mode``, which is
+    now the only place the ``"buffered"`` / ``"buffered-heartbeat"`` values are
+    constructed. messages.py still *applies* the result as
+    ``X-Refusal-Cascade-Mode`` (``messages.py:497``), so the header contract
+    lives in one module and the values in another — and this test, grepping
+    only messages.py for both, went red on an intact invariant.
+
+    Assert each half where it actually lives.
+    """
+    msg_src = Path("app/api/messages.py").read_text()
+    mode_src = Path("app/api/_buffered_cascade_mode.py").read_text()
+    # messages.py owns the wire header.
+    assert '"X-Refusal-Cascade-Mode"' in msg_src
+    assert "detect_buffered_cascade_mode" in msg_src, (
+        "messages.py must obtain the mode from the extracted detector"
+    )
+    # The detector owns the values.
+    assert '"buffered"' in mode_src
+    assert '"buffered-heartbeat"' in mode_src
 
 
 def test_v5208_transparency_header_removed():

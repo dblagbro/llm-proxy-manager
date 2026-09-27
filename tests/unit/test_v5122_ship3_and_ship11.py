@@ -45,9 +45,22 @@ def test_accept_header_parses_comma_separated():
 
 
 def test_accept_handler_wired_into_messages():
-    src = Path("app/api/messages.py").read_text()
-    assert "from app.capability_scout.accept_handler import process_accept_header" in src
-    assert 'request.headers.get("X-Proxy-Accept-MCP")' in src
+    """v5.22.35 — same extraction as the suggestion-emit guard.
+
+    v5.19.0 moved the /v1/messages response tail into
+    ``app/api/_messages_response_tail.py``, and ``process_accept_header``
+    went with it (``_messages_response_tail.py:137``). Grepping
+    ``messages.py`` therefore reported the accept-header handling missing
+    while it was intact; the completions sibling still passes because that
+    endpoint calls it inline.
+    """
+    msg_src = Path("app/api/messages.py").read_text()
+    tail_src = Path("app/api/_messages_response_tail.py").read_text()
+    assert "_messages_response_tail" in msg_src, (
+        "messages.py no longer routes through the response tail"
+    )
+    assert "from app.capability_scout.accept_handler import process_accept_header" in tail_src
+    assert 'X-Proxy-Accept-MCP' in tail_src
 
 
 def test_accept_handler_wired_into_completions():

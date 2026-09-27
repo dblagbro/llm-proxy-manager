@@ -58,27 +58,55 @@ def test_emergency_stop_module_exists():
     assert les.REASON_CODE == "llm-emergency-stop"
 
 
-def test_handler_helper_wired_into_messages():
-    src = Path("app/api/messages.py").read_text()
-    assert "raise_if_llm_emergency_stopped" in src
-    # Must fire BEFORE provider selection: appear before
-    # `select_provider_with_503` (the first router touch).
-    es_idx = src.find("raise_if_llm_emergency_stopped")
+def _emergency_stop_precedes_selection(endpoint_module: str) -> None:
+    """Assert `endpoint_module` cannot select a provider before the stop.
+
+    v5.22.35 — these two tests used to grep the endpoint module for
+    ``raise_if_llm_emergency_stopped`` and compare its character offset
+    against ``select_provider_with_503``. v5.7.18 Phase 2 moved the stop into
+    ``_handler_shared.prepare_request_context``
+    (``_handler_shared.py:77``), so the name vanished from both endpoint
+    modules and both tests went red on an invariant that still held. They sat
+    in known_failures.txt.
+
+    The guarantee is now split across two modules, so prove it in two parts:
+    the endpoint reaches ``prepare_request_context`` before any provider
+    selection, and ``prepare_request_context`` fires the stop. Offsets within
+    one file could never have expressed that.
+    """
+    src = Path(endpoint_module).read_text()
+
+    prep_idx = src.find("prepare_request_context")
     sel_idx = src.find("select_provider_with_503")
-    assert es_idx != -1 and sel_idx != -1
-    assert es_idx < sel_idx, (
-        "Emergency stop must run BEFORE provider selection or it "
-        "wastes a select_provider call on a halted fleet."
+    assert prep_idx != -1, (
+        f"{endpoint_module} does not call prepare_request_context — if the "
+        "pre-route moved again, repoint this test at its new home"
     )
+    assert sel_idx != -1, f"{endpoint_module} no longer selects a provider?"
+    assert prep_idx < sel_idx, (
+        f"{endpoint_module} selects a provider before the shared pre-route; "
+        "the emergency stop lives in that pre-route, so this wastes a "
+        "select_provider call on a halted fleet."
+    )
+
+    shared = Path("app/api/_handler_shared.py").read_text()
+    assert "raise_if_llm_emergency_stopped" in shared, (
+        "the shared pre-route no longer fires the LLM emergency stop — the "
+        "fleet-wide halt is not enforced on any endpoint"
+    )
+    # And the stop must follow authentication, not precede it: a 503 handed
+    # to an unauthenticated caller leaks fleet state.
+    assert shared.find("verify_api_key(db, x_api_key)") < shared.find(
+        "raise_if_llm_emergency_stopped"
+    ), "the emergency stop must run after verify_api_key"
+
+
+def test_handler_helper_wired_into_messages():
+    _emergency_stop_precedes_selection("app/api/messages.py")
 
 
 def test_handler_helper_wired_into_completions():
-    src = Path("app/api/completions.py").read_text()
-    assert "raise_if_llm_emergency_stopped" in src
-    es_idx = src.find("raise_if_llm_emergency_stopped")
-    sel_idx = src.find("select_provider_with_503")
-    assert es_idx != -1 and sel_idx != -1
-    assert es_idx < sel_idx
+    _emergency_stop_precedes_selection("app/api/completions.py")
 
 
 def test_retry_wrapper_gates_background_callers():

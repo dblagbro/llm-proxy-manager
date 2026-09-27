@@ -95,8 +95,34 @@ def test_health_envelope_includes_workers_block_in_source():
         f"workers field must appear in both cache-miss AND cache-hit branches; "
         f"found {workers_count} occurrence(s)"
     )
-    # excluded from the cached body so it stays live
-    assert '"workers"' in src and 'k not in ("circuitBreakers", "dbPool", "workers")' in src
+    # Excluded from the cached body so it stays live.
+    #
+    # v5.22.35 — was an exact match on
+    # ``k not in ("circuitBreakers", "dbPool", "workers")``. That set has since
+    # legitimately grown to include ``clusterSync`` and ``oauthAccounts``, so
+    # every correct addition broke this test and it landed in
+    # known_failures.txt. Required-subset check instead: growth is fine, a drop
+    # is not. Same fix as
+    # ``test_v398_pool_diagnostics_in_health.test_health_cache_excludes_dbPool``,
+    # which asserts the same tuple from the other side.
+    import ast
+
+    excluded = set()
+    for node in ast.walk(ast.parse(src)):
+        if not isinstance(node, ast.Compare) or len(node.ops) != 1:
+            continue
+        if not isinstance(node.ops[0], ast.NotIn):
+            continue
+        rhs = node.comparators[0]
+        if isinstance(rhs, (ast.Tuple, ast.List, ast.Set)):
+            excluded |= {
+                e.value for e in rhs.elts
+                if isinstance(e, ast.Constant) and isinstance(e.value, str)
+            }
+    assert "workers" in excluded, (
+        "the workers block must stay OUT of the 3s /health cache or operators "
+        f"see stale heartbeats. Found excluded: {sorted(excluded)}"
+    )
 
 
 def test_health_envelope_workers_block_uses_snapshot_all():

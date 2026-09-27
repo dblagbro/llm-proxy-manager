@@ -75,9 +75,45 @@ def test_suggestion_emit_records_audit_per_key_scope():
 
 
 def test_emit_wired_into_messages_handler():
-    src = Path("app/api/messages.py").read_text()
-    assert "from app.capability_scout.suggestion_emit import apply_suggestion_header" in src
-    assert "await apply_suggestion_header(db, key_record.id, resp_headers)" in src
+    """v5.22.35 — the call moved, the invariant did not.
+
+    v5.19.0 extracted the /v1/messages response tail into
+    ``app/api/_messages_response_tail.py``, taking ``apply_suggestion_header``
+    with it (``_messages_response_tail.py:129``). This test grepped
+    ``messages.py`` and so reported the wiring gone while it was intact one
+    module over — parked in known_failures.txt for it. The completions
+    sibling kept passing because that endpoint still calls it inline, which
+    is exactly the asymmetry that made this look like a real regression.
+
+    What matters is that the /v1/messages surface still applies the header,
+    wherever the call physically sits — so assert against the module that
+    owns that surface, and that messages.py still routes through it.
+    """
+    msg_src = Path("app/api/messages.py").read_text()
+    tail_src = Path("app/api/_messages_response_tail.py").read_text()
+    assert "_messages_response_tail" in msg_src, (
+        "messages.py no longer routes through the response tail; find where "
+        "apply_suggestion_header lives now and repoint this test"
+    )
+    assert "from app.capability_scout.suggestion_emit import apply_suggestion_header" in tail_src
+    # AST, not substring: a substring check is satisfied by a commented-out
+    # call, which is exactly how a wiring regression would look. Verified by
+    # planting `pass  # await apply_suggestion_header(...)` — the old
+    # assertion accepted it.
+    import ast
+
+    awaited = {
+        n.value.func.id
+        for n in ast.walk(ast.parse(tail_src))
+        if isinstance(n, ast.Await)
+        and isinstance(n.value, ast.Call)
+        and isinstance(n.value.func, ast.Name)
+    }
+    assert "apply_suggestion_header" in awaited, (
+        "apply_suggestion_header is imported but never awaited in the response "
+        "tail — the MCP suggestion header will never reach a /v1/messages "
+        "caller (a commented-out call looks like this)"
+    )
 
 
 def test_emit_wired_into_completions_handler():

@@ -54,12 +54,35 @@ def test_v5201_cascade_is_non_streaming_only():
 
 
 def test_docstring_mentions_streaming_gap():
-    """v5.20.0 detection docstring should be honest about the streaming
-    surface — detection still works via response-tail, but cascade
-    does not."""
-    src = Path("app/api/messages.py").read_text()
-    assert "v5.20.8" in src
-    assert "buffer" in src.lower() or "buffered" in src.lower()
+    """The streaming-vs-cascade trade-off must stay documented in the code.
+
+    v5.22.35 — this asserted the literal string ``"v5.20.8"`` appeared
+    somewhere in ``messages.py``. Pinning a version number in prose is a weak
+    proxy at the best of times, and v5.21.6 extracted mode detection into
+    ``_buffered_cascade_mode.py``, where the explanation was rewritten and the
+    version reference dropped. ``v5.20.8`` now appears nowhere in ``app/``, so
+    the test went red — while the documentation it wanted had in fact
+    *improved*: that module carries a trade-off table spelling out all three
+    paths (pass-through streaming with no cascade, ``buffered``, and
+    ``buffered-heartbeat``).
+
+    Assert the substance instead: the reader can still learn, from the code,
+    that plain streaming gives up cascade and what the buffered modes cost.
+    """
+    src = Path("app/api/_buffered_cascade_mode.py").read_text()
+    doc = src[: src.index("from __future__")] if "from __future__" in src else src
+
+    assert "pass-through streaming" in doc, (
+        "the no-cascade streaming path must stay named in the trade-off docs"
+    )
+    for mode in ("buffered", "buffered-heartbeat"):
+        assert mode in doc, f"trade-off docs no longer describe {mode!r} mode"
+    # The cost of the buffered path — the client sees nothing until the
+    # dispatch finishes — is the whole point of documenting this.
+    assert "no bytes until" in doc.lower() or "sees no bytes" in doc.lower(), (
+        "the buffered path's cost (client sees no bytes until dispatch "
+        "completes) must stay documented; that is the streaming gap"
+    )
 
 
 def test_version_bumped():

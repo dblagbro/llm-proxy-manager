@@ -10,6 +10,24 @@ Status flow: **open** → **in-progress** → **fixed** → **verified-fixed** �
 
 ---
 
+## 2026-09-26 — the nine wiring greps; two guards that accepted their own violation (v5.22.35)
+
+### BUG-091 — extraction refactors orphaned nine wiring guards; two could not detect the regression they described — ✅ **CLOSED v5.22.35**
+
+- **Severity:** low-medium as a *coverage* defect · **Category:** test fidelity · **Product code unchanged**
+- **Surfaced:** 2026-09-26, clearing the last non-LOC `known_failures` entries after BUG-086/087/088/089/090.
+- **Root cause (all nine):** each named a call in `app/api/messages.py` or `app/api/completions.py` that a later extraction moved — v5.7.18 Phase 2 (`_handler_shared`), v5.19.0 (`_messages_response_tail`), v5.21.6 (`_buffered_cascade_mode`). The invariants were intact throughout; only the addresses changed. Verified in the code before touching any test.
+- **The tell:** in two cases the `..._into_completions` sibling still passed, because that endpoint calls the helper inline while only the messages side was extracted. A one-sided pass reads like a one-sided regression, which is precisely what made these look worse than they were.
+- **Two guards were caught accepting their own violation.** Planting the described regression to verify each rewrite found two that did not fail:
+  - `apply_suggestion_header` was asserted as a **substring**, which a commented-out call satisfies — planting `pass  # await apply_suggestion_header(...)` passed cleanly. Replaced with an AST check that the name is genuinely `await`ed.
+  - the `/healthz` assertions grepped the **whole** bridge module, but `/api/status` reports several of the same keys — deleting `playwright_ready` from `/healthz` alone still passed. Now scoped to the `healthz` function via AST.
+  Neither weakness was visible from reading the test; both surfaced only from planting the violation. **Planting is not a formality — it is the only thing that distinguishes a guard from a comment.**
+- **Three were obsolete by delivery, not by extraction.** The two `cursor_bridge_session` tests pinned v5.5.0 stub sentinels (`"phase": "scaffold-v5.5.0"`, `"not-implemented-in-scaffold"`) whose whole purpose was to stop the scaffold claiming rotation worked — so **implementing rotation in v5.5.1 is what turned them red.** A guard written to assert "this is not built yet" has a scheduled expiry and should say so. Re-pointed at the replacement obligations (Playwright readiness in `/healthz`; `/api/rotate` driving PKCE under `_rotate_lock`, since concurrent callers would stampede the single browser context). Likewise `test_docstring_mentions_streaming_gap` pinned the literal `"v5.20.8"`, which v5.21.6 rewrote away — the documentation had improved, so the test now asserts its substance.
+- **Improvement beyond repair:** the emergency-stop pair compared character offsets *within one file*, which cannot express a guarantee now split across two modules. Replaced with a two-part proof — the endpoint reaches `prepare_request_context` before provider selection, and the pre-route fires the stop after `verify_api_key` (a 503 to an unauthenticated caller leaks fleet state). That is strictly stronger than what the offsets checked.
+- **Lesson:** an extraction refactor silently orphans every source-grep guard pointed at the vacated file, and the suite reports this as N unrelated failures rather than one cause. Assert against the module that owns the *surface* plus the route into it, so the guard survives the next move. And never pin a version string in prose as a proxy for documentation existing.
+- **Tests:** 9 removed from `known_failures.txt` (15 → 6); 2 guards hardened beyond their original strength. Suite: 6 failed / 3966 passed, zero regressions. The remaining 6 are LOC ceilings, which need refactoring, not test edits.
+- **Status:** CLOSED — verified-fixed.
+
 ## 2026-09-26 — the behavioural nine: a race fix with no test, and three vacuous guards (v5.22.34)
 
 ### BUG-090 — v5.8.3's single-flight re-read was never exercised; three zero-row guards passed without reaching their subject — ✅ **CLOSED v5.22.34**

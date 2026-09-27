@@ -90,22 +90,73 @@ def test_design_doc_exists():
         assert phase in src, f"design doc missing phase: {phase}"
 
 
-def test_healthz_returns_scaffold_sentinel_in_source():
-    """Source-grep: /healthz returns the scaffold sentinel shape.
-    Import-and-call is fragile because the scaffold's app.py has the
-    same module name as the proxy's app/, so a sys.path-insert dance
-    clashes with the rest of the suite. Source-grep is the same
-    pattern v5.4.0-v5.4.4 uses."""
+def test_healthz_reports_liveness_and_playwright_readiness_in_source():
+    """v5.22.35 — was ``test_healthz_returns_scaffold_sentinel_in_source``.
+
+    It asserted ``"phase": "scaffold-v5.5.0"``. v5.5.1 (2026-07-02) shipped the
+    real Playwright lifecycle and /healthz now reports
+    ``"phase": "v5.5.1 (playwright + pkce drive)"`` plus a live
+    ``playwright_ready`` flag. The old assertion pinned the scaffold sentinel,
+    so it could only pass while the feature was unbuilt — it went red on
+    delivery and sat in known_failures.txt.
+
+    Re-pointed at the current contract: /healthz stays cheap (no awaiting the
+    browser) and reports both liveness and whether the browser context is up,
+    which is what the compose healthcheck and the operator read.
+
+    Source-grep rather than import-and-call: the bridge's ``app.py`` shares a
+    module name with the proxy's ``app/`` package, so a sys.path insert here
+    clashes with the rest of the suite.
+    """
     src = (SCAFFOLD_ROOT / "app.py").read_text()
-    assert '"status": "ok"' in src
-    assert '"phase": "scaffold-v5.5.0"' in src
-    assert '"uptime_sec"' in src
+
+    # Scope to the healthz function. Grepping the whole module cannot tell
+    # /healthz from /api/status, which reports several of the same keys —
+    # verified by deleting playwright_ready from /healthz alone: the
+    # module-wide assertion still passed because /api/status carries it.
+    import ast
+
+    fn = next(
+        n for n in ast.walk(ast.parse(src))
+        if isinstance(n, (ast.AsyncFunctionDef, ast.FunctionDef))
+        and n.name == "healthz"
+    )
+    healthz = "\n".join(src.splitlines()[fn.lineno - 1 : fn.end_lineno])
+
+    assert '"status": "ok"' in healthz
+    assert '"uptime_sec"' in healthz
+    assert '"playwright_ready"' in healthz, (
+        "/healthz must expose whether the Playwright context is up; without it "
+        "a bridge that booted but never got a browser looks healthy"
+    )
+    assert '"phase": "scaffold-v5.5.0"' not in src, (
+        "the v5.5.0 scaffold sentinel is back in /healthz — rotation is "
+        "implemented as of v5.5.1 and must not advertise itself as a stub"
+    )
 
 
-def test_rotate_endpoint_returns_not_implemented_stub_in_source():
-    """v5.5.0 must NOT silently claim rotation works. /api/rotate
-    returns a clear error pointing at v5.5.1."""
+def test_rotate_endpoint_drives_pkce_under_a_lock_in_source():
+    """v5.22.35 — was ``test_rotate_endpoint_returns_not_implemented_stub_in_source``.
+
+    That test existed so v5.5.0 could not *silently claim rotation works*: it
+    pinned ``"ok": False`` and ``"not-implemented-in-scaffold"``. v5.5.1
+    implemented rotation, which made the honesty check obsolete by succeeding —
+    it went red and was parked.
+
+    The obligation it encoded is now the mirror image: /api/rotate must really
+    drive the flow, and must serialize, because concurrent operator clicks (or
+    an operator racing the cron trigger) would otherwise stampede a single
+    browser context.
+    """
     src = (SCAFFOLD_ROOT / "app.py").read_text()
-    assert '"ok": False' in src
-    assert '"not-implemented-in-scaffold"' in src
-    assert "v5.5.1" in src
+    assert '"not-implemented-in-scaffold"' not in src, (
+        "rotation has been implemented since v5.5.1; the not-implemented stub "
+        "must not come back without this test being revisited"
+    )
+    assert "_drive_pkce_once()" in src, (
+        "/api/rotate must drive the real PKCE flow"
+    )
+    assert "async with _rotate_lock:" in src, (
+        "rotation must be serialized — concurrent callers would stampede the "
+        "single Playwright context"
+    )
