@@ -33,6 +33,9 @@ import pytest
 # ── Registry ────────────────────────────────────────────────────────
 
 
+from tests.unit._handler_surface import messages_handler_source
+
+
 def test_registry_contains_excel_tool():
     from app.proxy_tools import get_registry
     reg = get_registry()
@@ -259,7 +262,10 @@ def test_messages_handler_injects_proxy_tools():
 def test_messages_handler_intercepts_tool_use_in_response():
     """After the non-streaming response, if a proxy tool was used,
     run it + re-call. Capped at 3 hops."""
-    src = Path("app/api/messages.py").read_text()
+    # v5.22.37 — reads the whole handler surface: what this asserts on moved
+    # into _messages_response_dispatch.py when messages.py was split to meet
+    # its 1080-LOC pin. See tests/unit/_handler_surface.py.
+    src = messages_handler_source()
     assert "find_proxy_tool_use" in src
     assert "build_tool_result_message" in src
     # Hop cap pinned at 3

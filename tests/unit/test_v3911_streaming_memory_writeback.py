@@ -22,6 +22,9 @@ from pathlib import Path
 # v4.4.12 split: claude-oauth dispatch moved to _messages_streaming_oauth.py.
 # Source-level tests that used to read just _messages_streaming.py now read
 # both files (concatenated) so they continue to check the same surface area.
+from tests.unit._handler_surface import completions_handler_source
+
+
 def _read_streaming_src() -> str:
     return (
         Path("app/api/_messages_streaming.py").read_text()
@@ -90,7 +93,10 @@ def test_messages_endpoint_passes_conv_id_to_stream():
 def test_completions_endpoint_passes_conv_id_to_stream():
     """/v1/chat/completions also threads memory params (the DevinGPT
     path — OpenAI shape → claude-oauth via translation)."""
-    src = Path("app/api/completions.py").read_text()
+    # v5.22.37 — reads the whole handler surface: the own-dispatcher branches
+    # this asserts on moved into _completions_{claude_oauth,grok_web}.py when
+    # completions.py was split to meet its 900-LOC pin.
+    src = completions_handler_source()
     idx = src.index("anthropic_sse = _stream_claude_oauth(")
     call = src[idx:idx + 1000]
     assert "conversation_id=x_conversation_id" in call

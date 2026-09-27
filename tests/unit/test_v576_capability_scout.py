@@ -6,13 +6,15 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from tests.unit._handler_surface import messages_handler_source
+
 
 def test_scout_module_exists():
     from app.capability_scout import (
-        scan_response_text,
+        REFUSAL_PATTERNS,
         emit_suggestions,
         is_enabled,
-        REFUSAL_PATTERNS,
+        scan_response_text,
     )
     assert callable(scan_response_text)
     assert callable(emit_suggestions)
@@ -96,7 +98,10 @@ def test_extract_text_handles_malformed_response():
 def test_messages_handler_wires_capability_scout():
     """Static-grep contract: the non-streaming /v1/messages return path
     invokes the scout. If this fails, someone removed the hook."""
-    src = Path("app/api/messages.py").read_text()
+    # v5.22.37 — reads the whole handler surface: what this asserts on moved
+    # into _messages_response_dispatch.py when messages.py was split to meet
+    # its 1080-LOC pin. See tests/unit/_handler_surface.py.
+    src = messages_handler_source()
     assert "scan_and_emit_for_response" in src
     assert "X-Capability-Scout-Suggestions" in src
 

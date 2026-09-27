@@ -20,6 +20,9 @@ from pathlib import Path
 # ── Ship 3 — accept-header parsing ─────────────────────────────────────
 
 
+from tests.unit._handler_surface import messages_handler_source
+
+
 def test_accept_header_module_exists():
     from app.capability_scout.accept_handler import (
         HEADER_NAME, RESPONSE_STATUS_HEADER, WARNING_HEADER,
@@ -54,7 +57,10 @@ def test_accept_handler_wired_into_messages():
     while it was intact; the completions sibling still passes because that
     endpoint calls it inline.
     """
-    msg_src = Path("app/api/messages.py").read_text()
+    # v5.22.37 — reads the whole handler surface: what this asserts on moved
+    # into _messages_response_dispatch.py when messages.py was split to meet
+    # its 1080-LOC pin. See tests/unit/_handler_surface.py.
+    msg_src = messages_handler_source()
     tail_src = Path("app/api/_messages_response_tail.py").read_text()
     assert "_messages_response_tail" in msg_src, (
         "messages.py no longer routes through the response tail"

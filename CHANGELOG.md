@@ -2,6 +2,85 @@
 
 All notable changes since v2.7.6. Older history available in `git log`.
 
+### v5.22.37 — LOC refactors 2 of 2: the two handlers; known_failures is empty (2026-09-26)
+
+**`known_failures.txt` is now empty and `tests/unit` is fully green — 3985
+passed, 0 failed.** The last four entries were the `messages.py` and
+`completions.py` size pins. No behaviour changed.
+
+| File | Before | After | Pin |
+|---|---|---|---|
+| `app/api/messages.py` | 1409 | **928** | ≤ 1080 |
+| `app/api/completions.py` | 1008 | **853** | ≤ 900 |
+
+**`messages.py`** is a single 1341-line function, so the seam had to come from
+inside it: the `if stream:` / `else:` pair that was the final statement of its
+dispatch `try` block (163 and 351 lines). Preconditions checked before touching
+anything — both arms always return or raise, the pair was the last statement in
+the `try`, and nothing followed it — so no state needs to flow back.
+
+The arms needed 22 and 25 locals from the enclosing scope, **17 shared**. Two
+functions with 22 and 25 keyword parameters would read worse than the inline code
+they replaced, which would defeat the point; the shared-17 overlap says those
+values travel together. So `MessagesDispatchCtx` (a frozen dataclass, 30 fields)
+names the bundle once, following the existing `HookContext` precedent in
+`_response_hook_runner.py`. `design.md` rule 1 puts the split trigger at ~600
+lines, so the refactor is what the contract asks for.
+
+**The arm bodies are byte-identical to what they replaced** — dedented, behind an
+unpacking prologue that restores exactly the local names they ran under. That was
+deliberate: a 500-line move is risky enough without also rewriting the code.
+Verified programmatically against the pre-split commit, and re-verified after
+every subsequent edit.
+
+**`completions.py`** is one 943-line function. Its `ChatGPT-oauth-plan` branch was
+already a 10-line call to `_codex_oauth_dispatch`, so that was the pattern to
+follow for its two inline siblings:
+
+- `claude-oauth` (94 lines) → `_completions_claude_oauth.py`. Always returns, so
+  a plain 9-parameter function; parameters are named exactly as the locals they
+  replaced, so the body needed no edits.
+- `grok-web` + its failover (76 lines) → `_completions_grok_web.py`. This one does
+  *not* always return, so the contract is `(response, route)`: a response to hand
+  back, or `(None, new_route)` to fall through to litellm with the re-resolved
+  route. `extra` and `resp_headers` are dicts mutated in place exactly as inline.
+  The failover now sits next to the dispatch it recovers from.
+
+**The cost, stated plainly: 21 orphaned guards.** The messages split orphaned 13
+source-grep tests and the completions split 8, each reading
+`Path("app/api/<handler>.py").read_text()` and asserting some call was present.
+This is BUG-091's failure mode at scale — an extraction invalidates every guard
+pointed at the vacated file, and the suite reports N unrelated failures rather
+than one cause.
+
+Rather than 21 bespoke edits, `tests/unit/_handler_surface.py` now exposes
+`messages_handler_source()` / `completions_handler_source()` / `handler_source()`.
+It earned its keep immediately: when `_messages_response_dispatch.py` was then
+split again, registering the new module was **one line** instead of repointing 14
+guards by hand. Guards asserting something is *absent* from a specific file still
+read that file directly — `test_messages_inline_blocks_removed` depends on it.
+
+**New ceiling guard.** `test_v52237_handler_split_ceilings` holds all six new
+modules to 700 LOC and asserts the surface helper lists every handler-body
+module — so the next extraction cannot orphan guards silently. It exists because
+`_messages_response_dispatch.py` first landed at 692/700, and eight lines is not
+headroom; the non-streaming arm was split into
+`_messages_nonstream_dispatch.py`, leaving 308 and 423.
+
+**`ruff --fix` bit for the third time this session.** Run over the new
+non-streaming module it reached *inside* the function, reordered two
+function-local imports and deleted `grade_answer` from one — breaking
+byte-identity and 14 tests. Rebuilt without it; the module now carries a header
+comment saying why it must not be run there. Unused imports were instead removed
+via AST, restricted to statements above the first `def`.
+
+Also trimmed 14 imports from `messages.py` that the moved code had been using.
+Two more were dead but are **deliberately retained** with `# noqa: F401` and a
+comment, because source-grep guards assert those names appear in that file: a
+blanket `--fix` would break them silently.
+
+Lint: `messages.py` 38 → 26, `completions.py` 43 → 39, no file worse.
+
 ### v5.22.36 — LOC refactors 1 of 2: two domain splits (2026-09-26)
 
 known_failures **6 → 4**, zero regressions. First of the two LOC-ceiling

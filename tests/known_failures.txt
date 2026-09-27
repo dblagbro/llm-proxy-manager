@@ -13,10 +13,11 @@
 #   python -m pytest tests/unit -q 2>&1 | grep '^FAILED' \
 #     | sed 's/^FAILED //;s/ - .*//' | sort
 
-
-
-
-tests/unit/test_v5190_messages_response_tail_extract.py::test_messages_line_count_dropped
-tests/unit/test_v5718_messages_extract.py::test_messages_py_size_dropped
-tests/unit/test_v5719_messages_extract.py::test_messages_py_size_dropped_further
-tests/unit/test_v5723_phase2_shared_helpers.py::test_completions_py_dropped_to_894_or_less
+# v5.22.37 — EMPTY. The last six entries were the LOC-ceiling pins, cleared by
+# the db_provider / _messages_streaming / messages.py / completions.py splits.
+# tests/unit is fully green: 3972 passed, 0 failed.
+#
+# Keep it empty. An entry here is a test that reports a problem nobody reads;
+# over the v5.22.26-37 arc, clearing 75 of them turned up five real defects
+# (BUG-086 through BUG-091) plus a dozen guards that had silently stopped
+# testing anything. A red test is cheap; a parked one is not.

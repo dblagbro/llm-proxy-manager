@@ -17,6 +17,9 @@ from pathlib import Path
 # ── _extract_tool_call_stats helper ───────────────────────────────
 
 
+from tests.unit._handler_surface import messages_handler_source
+
+
 def test_extract_anthropic_shape_counts_tool_use_blocks():
     from app.monitoring.helpers import _extract_tool_call_stats
     body = {
@@ -127,7 +130,10 @@ def test_record_outcome_only_stamps_meta_when_format_set():
 
 
 def test_messages_native_path_passes_tool_call_format():
-    src = Path("app/api/messages.py").read_text()
+    # v5.22.37 — reads the whole handler surface: the dispatch arms this
+    # asserts on moved to _messages_response_dispatch.py when messages.py
+    # was split to meet its 1080-LOC pin. See tests/unit/_handler_surface.py.
+    src = messages_handler_source()
     # In the native success-branch record_outcome, has_tools drives the
     # format string
     assert 'tool_call_format=("native" if has_tools else None)' in src

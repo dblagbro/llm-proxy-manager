@@ -20,6 +20,9 @@ from pathlib import Path
 # ── (1) ORM model present + re-exported ────────────────────────────────
 
 
+from tests.unit._handler_surface import messages_handler_source
+
+
 def test_caller_capability_score_model_exists():
     from app.models.db import CallerCapabilityScore
     assert CallerCapabilityScore.__tablename__ == "caller_capability_score"
@@ -89,7 +92,10 @@ def test_emit_wired_into_messages_handler():
     wherever the call physically sits — so assert against the module that
     owns that surface, and that messages.py still routes through it.
     """
-    msg_src = Path("app/api/messages.py").read_text()
+    # v5.22.37 — reads the whole handler surface: what this asserts on moved
+    # into _messages_response_dispatch.py when messages.py was split to meet
+    # its 1080-LOC pin. See tests/unit/_handler_surface.py.
+    msg_src = messages_handler_source()
     tail_src = Path("app/api/_messages_response_tail.py").read_text()
     assert "_messages_response_tail" in msg_src, (
         "messages.py no longer routes through the response tail; find where "

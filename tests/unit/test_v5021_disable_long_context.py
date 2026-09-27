@@ -85,7 +85,9 @@ def test_dispatch_sites_use_getattr_not_attribute_access():
     failures, fixed in v5.0.21 hotfix)."""
     targets = [
         "app/api/_messages_dispatch.py",
-        "app/api/completions.py",
+        # v5.22.37 — the claude-oauth dispatch site moved out of
+        # completions.py when it was split for its 900-LOC pin.
+        "app/api/_completions_claude_oauth.py",
         "app/monitoring/keepalive.py",
         "app/providers/scanner.py",
     ]
@@ -105,7 +107,9 @@ def test_dispatch_sites_use_identity_check_not_bool():
     than ``bool(...)``."""
     targets = [
         "app/api/_messages_dispatch.py",
-        "app/api/completions.py",
+        # v5.22.37 — the claude-oauth dispatch site moved out of
+        # completions.py when it was split for its 900-LOC pin.
+        "app/api/_completions_claude_oauth.py",
         "app/monitoring/keepalive.py",
         "app/providers/scanner.py",
     ]

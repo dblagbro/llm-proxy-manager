@@ -14,9 +14,10 @@ Covers ``app.memory.extract.maybe_extract_memory_writes`` in isolation:
 from __future__ import annotations
 
 import pytest
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.models.db import Base
+from tests.unit._handler_surface import messages_handler_source
 
 
 @pytest.fixture
@@ -61,8 +62,8 @@ def _memory_tool_use(command, **input_fields):
 
 @pytest.mark.asyncio
 async def test_no_op_when_disabled(db, monkeypatch):
-    from app.memory.extract import maybe_extract_memory_writes
     from app.config import settings
+    from app.memory.extract import maybe_extract_memory_writes
     monkeypatch.setattr(settings, "caller_memory_enabled", False, raising=False)
     resp = _memory_tool_use("create", path="/memories/x.md", content="hi")
     n = await maybe_extract_memory_writes(
@@ -123,7 +124,7 @@ async def test_create_persists_content(db, enabled):
 @pytest.mark.asyncio
 async def test_str_replace_read_modify_write(db, enabled):
     from app.memory.extract import maybe_extract_memory_writes
-    from app.memory.store import put, get
+    from app.memory.store import get, put
     await put(db, api_key_id="k1", content="user lives in Seattle",
               conversation_id="c1", memory_tag="user_facts.md")
     resp = _memory_tool_use(
@@ -161,7 +162,7 @@ async def test_str_replace_no_op_when_old_str_missing(db, enabled):
 @pytest.mark.asyncio
 async def test_insert_at_line(db, enabled):
     from app.memory.extract import maybe_extract_memory_writes
-    from app.memory.store import put, get
+    from app.memory.store import get, put
     await put(db, api_key_id="k1", content="line1\nline3",
               conversation_id="c1", memory_tag="x.md")
     resp = _memory_tool_use(
@@ -182,7 +183,7 @@ async def test_insert_at_line(db, enabled):
 @pytest.mark.asyncio
 async def test_delete_tombstones(db, enabled):
     from app.memory.extract import maybe_extract_memory_writes
-    from app.memory.store import put, get
+    from app.memory.store import get, put
     await put(db, api_key_id="k1", content="goodbye",
               conversation_id="c1", memory_tag="x.md")
     resp = _memory_tool_use("delete", path="/memories/x.md")
@@ -199,7 +200,7 @@ async def test_delete_tombstones(db, enabled):
 @pytest.mark.asyncio
 async def test_rename_puts_new_and_deletes_old(db, enabled):
     from app.memory.extract import maybe_extract_memory_writes
-    from app.memory.store import put, get
+    from app.memory.store import get, put
     await put(db, api_key_id="k1", content="alice",
               conversation_id="c1", memory_tag="old.md")
     resp = _memory_tool_use(
@@ -279,8 +280,11 @@ async def test_silent_degrade_on_store_error(db, enabled, monkeypatch):
 
 
 def test_messages_endpoint_wires_write_back():
+    # v5.22.37 — reads the whole handler surface: the dispatch arms this
+    # asserts on moved to _messages_response_dispatch.py when messages.py
+    # was split to meet its 1080-LOC pin. See tests/unit/_handler_surface.py.
     from pathlib import Path
-    src = Path("app/api/messages.py").read_text()
+    src = messages_handler_source()
     assert "maybe_extract_memory_writes" in src
     assert "X-Caller-Memory-Writes" in src
 

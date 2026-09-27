@@ -15,6 +15,9 @@ import pytest
 # ── Batch A: backup script ──────────────────────────────────────────
 
 
+from tests.unit._handler_surface import completions_handler_source
+
+
 def test_backup_script_includes_clone_and_smoke():
     """The nightly backup script must dump BOTH the original llm-proxy2
     and the clone llm-proxy DBs (which have different state since the
@@ -55,7 +58,10 @@ def test_cluster_status_surfaces_local_version():
 
 
 def test_completions_failover_swaps_extra_kwargs():
-    src = Path("app/api/completions.py").read_text()
+    # v5.22.37 — reads the whole handler surface: the own-dispatcher branches
+    # this asserts on moved into _completions_{claude_oauth,grok_web}.py when
+    # completions.py was split to meet its 900-LOC pin.
+    src = completions_handler_source()
     # Look in the grok-web failover block for the extra-swap pattern.
     fb = src.find("X-Grok-Web-Failover-Target")
     assert fb != -1

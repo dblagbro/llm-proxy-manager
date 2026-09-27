@@ -62,7 +62,11 @@ def test_x_token_budget_header_still_present():
         "app/api/_request_pipeline.py",
         "app/api/_messages_dispatch.py",
         "app/api/completions.py",
-        "app/api/messages.py",
+        # v5.22.37 — was "app/api/messages.py". The header is emitted from the
+        # non-streaming dispatch arm, which ended up in
+        # _messages_nonstream_dispatch.py after messages.py was split for its
+        # 1080-LOC pin and that module was split again for the 700 ceiling.
+        "app/api/_messages_nonstream_dispatch.py",
     )
     for p in paths:
         src = Path(p).read_text()

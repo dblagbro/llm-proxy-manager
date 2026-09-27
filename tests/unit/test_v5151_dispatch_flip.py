@@ -24,6 +24,9 @@ import pytest
 # ── (1) Selector helper surface ─────────────────────────────────────
 
 
+from tests.unit._handler_surface import messages_handler_source
+
+
 def test_apply_fanout_helper_importable():
     from app.providers.oauth_account_selector import (
         apply_fanout_to_kwargs, resolve_access_token,
@@ -91,7 +94,10 @@ def test_apply_fanout_no_op_when_disabled_globally():
 
 
 def test_messages_dispatch_calls_apply_fanout():
-    src = Path("app/api/messages.py").read_text()
+    # v5.22.37 — reads the whole handler surface: what this asserts on moved
+    # into _messages_response_dispatch.py when messages.py was split to meet
+    # its 1080-LOC pin. See tests/unit/_handler_surface.py.
+    src = messages_handler_source()
     assert "from app.providers.oauth_account_selector import apply_fanout_to_kwargs" in src
     assert "apply_fanout_to_kwargs(" in src
     # And emits the observability header when an account was picked.

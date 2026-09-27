@@ -16,6 +16,9 @@ from pathlib import Path
 
 # ---- detection patterns ----
 
+from tests.unit._handler_surface import messages_handler_source
+
+
 def test_explicit_refused_marker_detected():
     from app.refusal_detection import detect_refusal
     m = detect_refusal("REFUSED: I don't reproduce copyrighted lyrics.")
@@ -139,7 +142,10 @@ def test_response_tail_accepts_anthropic_result():
 
 
 def test_messages_passes_anthropic_result_to_tail():
-    src = Path("app/api/messages.py").read_text()
+    # v5.22.37 — reads the whole handler surface: what this asserts on moved
+    # into _messages_response_dispatch.py when messages.py was split to meet
+    # its 1080-LOC pin. See tests/unit/_handler_surface.py.
+    src = messages_handler_source()
     # The apply_response_tail call must include anthropic_result= kwarg.
     tail_call = src[src.find("apply_response_tail("):]
     tail_call = tail_call[:tail_call.find(")")]

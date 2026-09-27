@@ -1,5 +1,79 @@
 # Refactor Log
 
+## v5.22.36 / v5.22.37 — the LOC-ceiling arc (2026-09-26)
+
+Four files were over their enforced ceilings, each pinned by a test that had been
+parked in `known_failures.txt`. All four now pass and the file is empty.
+
+| File | Before | After | Ceiling | Extracted into |
+|---|---|---|---|---|
+| `app/models/db_provider.py` | 561 | 465 | 500 | `db_model.py` |
+| `app/api/_messages_streaming.py` | 741 | 463 | 700 | `_sse_guard.py` |
+| `app/api/messages.py` | 1409 | 928 | 1080 | `_messages_response_dispatch.py`, `_messages_nonstream_dispatch.py` |
+| `app/api/completions.py` | 1008 | 853 | 900 | `_completions_claude_oauth.py`, `_completions_grok_web.py` |
+
+### How the seams were chosen
+
+- **`db_provider.py`** — the three `(provider_id, model_id)`-keyed tables describe
+  *a provider's models*, not the provider, so they were the seam rather than the
+  auth/usage/metrics tables.
+- **`_messages_streaming.py`** — format-agnostic SSE machinery vs the Anthropic
+  stream generators the existing test pins in place. Clean in both directions, so
+  unlike the v4.4.12 split it needed no duplicated `_exc_str`.
+- **`messages.py`** — one 1341-line function, so the seam had to be internal: the
+  `if stream:`/`else:` pair. 22 and 25 free locals with **17 shared**, hence a
+  context dataclass rather than a 25-parameter signature.
+- **`completions.py`** — one 943-line function whose `ChatGPT-oauth-plan` branch
+  was already a 10-line delegating call; the two inline siblings were made to
+  match it.
+
+### What made it safe
+
+1. **Preconditions verified before editing.** For the `messages.py` arms: both
+   always return or raise, the pair was the last statement in its `try`, nothing
+   followed it. So no state flows back.
+2. **Free variables computed, not guessed** — read-before-write analysis per
+   region, which correctly excluded locals like `gen` and comprehension
+   variables.
+3. **Moved code kept byte-identical.** Each extracted block is the original text,
+   dedented, behind an unpacking prologue restoring the exact local names.
+   Verified programmatically against the pre-split commit and re-verified after
+   every later edit. This is what makes a 500-line move reviewable.
+4. **Back-compat by re-export**, following the v4.4.12 precedent already in
+   `_messages_streaming.py`, so `messages.py` and six unrelated test modules did
+   not change.
+
+### The cost, and the mitigation
+
+**21 source-grep guards were orphaned** — 13 by the messages split, 8 by
+completions. Each read `Path("app/api/<handler>.py").read_text()` and asserted a
+call was present. This is BUG-091's failure mode at scale: an extraction
+invalidates every guard pointed at the vacated file, and the suite reports N
+unrelated failures rather than one cause.
+
+`tests/unit/_handler_surface.py` now answers "the handler surface" instead of "a
+filename". It paid off within the same commit: when
+`_messages_response_dispatch.py` was split again, registering the new module was
+one line instead of 14 hand edits. `test_v52237_handler_split_ceilings` holds the
+six new modules to 700 LOC *and* asserts the helper lists every handler-body
+module, so the next extraction cannot orphan guards silently.
+
+### Lessons
+
+- **A ceiling must cover every sibling.** A split that satisfies a ceiling by
+  moving mass into an unwatched file has reduced nothing. Both existing ceiling
+  guards were widened, and the new modules got one of their own.
+- **`ruff --fix` is not safe on a file whose body is moved code.** Run on the new
+  non-streaming module it reordered function-local imports and deleted
+  `grade_answer` from one, breaking byte-identity and 14 tests. Third time this
+  session. Unused imports were then removed via AST, restricted to statements
+  above the first `def`, and the module carries a comment saying why.
+- **Some unused imports are load-bearing.** Two in `messages.py` are asserted on
+  by source-grep guards; they are retained with `# noqa: F401` and a reason, or a
+  blanket `--fix` would break those tests silently.
+- **Prefer a context object to a 25-parameter signature.** The test is whether the
+  values already travel together — here 17 of 30 were shared by both arms.
+
 ## 2026-06-18 — v5.7.23: completions.py + messages.py share helpers via _handler_shared (Phase 2)
 
 Phase 2 of the operator-asked refactor proposal. Phase 1 (v5.7.18 + v5.7.19) extracted three sub-blocks from messages.py into `_messages_pre_route`. Two of those — the request setup (verify key, tenant ctx, compliance UA, emergency stop, telemetry) and body normalization (validation, suffix-strip, embedding guard, alias resolve) — were ALREADY duplicated almost verbatim in `completions.py`. Phase 2 lifts both to a new shared module, parameterized by `endpoint`.

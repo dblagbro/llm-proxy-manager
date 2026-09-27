@@ -33,6 +33,9 @@ import pytest
 # ──── Deps + ALTER + ORM column ────────────────────────────────────
 
 
+from tests.unit._handler_surface import messages_handler_source
+
+
 def test_markitdown_in_requirements():
     src = Path("requirements.txt").read_text()
     assert "markitdown" in src
@@ -189,7 +192,10 @@ def test_messages_handler_uses_async_find():
     """Response interception must use ``find_proxy_tool_use_async`` so
     a bridge-tool tool_use is detected (the sync variant only sees
     static-registry tools)."""
-    src = Path("app/api/messages.py").read_text()
+    # v5.22.37 — reads the whole handler surface: what this asserts on moved
+    # into _messages_response_dispatch.py when messages.py was split to meet
+    # its 1080-LOC pin. See tests/unit/_handler_surface.py.
+    src = messages_handler_source()
     assert "find_proxy_tool_use_async" in src
     assert "await find_proxy_tool_use_async(" in src
 

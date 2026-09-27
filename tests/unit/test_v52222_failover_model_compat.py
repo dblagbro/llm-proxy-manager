@@ -71,9 +71,11 @@ class TestEdges:
 
 class TestWiring:
     def _src(self, fn):
-        from pathlib import Path
-
-        return Path(fn).read_text()
+        # v5.22.37 — read the endpoint's whole surface. Its failover code moved
+        # into the dispatch modules when both handlers were split for their LOC
+        # pins, so naming a single file here goes stale on the next move.
+        from tests.unit._handler_surface import handler_source
+        return handler_source(fn)
 
     @pytest.mark.parametrize("fn", ["app/api/messages.py", "app/api/completions.py"])
     def test_both_failover_paths_gate_on_it(self, fn):

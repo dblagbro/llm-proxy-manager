@@ -99,8 +99,15 @@ class TestHandlerWiring:
     Anthropic `tools` for the claude-oauth path."""
 
     def _src(self):
-        from pathlib import Path
-        return Path("app/api/messages.py").read_text(encoding="utf-8")
+        """v5.22.37 — the whole /v1/messages handler surface.
+
+        Three of the four ``"tools"] = litellm_tools`` handoffs moved into
+        ``_messages_response_dispatch.py`` when messages.py was split to meet
+        its 1080-LOC pin; one remains here. The count this class pins is the
+        total across the surface, so it reads both files.
+        """
+        from tests.unit._handler_surface import messages_handler_source
+        return messages_handler_source()
 
     def test_normalized_variable_is_built(self):
         assert "litellm_tools = normalize_tools_for_litellm(tools)" in self._src()

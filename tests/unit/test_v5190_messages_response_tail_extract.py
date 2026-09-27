@@ -77,12 +77,27 @@ def test_extract_preserves_per_block_exception_swallow():
 
 
 def test_messages_calls_extract_not_inline():
-    """messages.py MUST NOT still contain the inline versions of the
-    extracted blocks — otherwise the extraction did nothing."""
-    src = Path("app/api/messages.py").read_text()
-    # Positive: the call site is present.
-    assert "from app.api._messages_response_tail import apply_response_tail" in src
-    assert "await apply_response_tail(" in src
+    """The /v1/messages path MUST call the extracted response tail rather
+    than carrying it inline — otherwise the v5.19.0 extraction did nothing.
+
+    v5.22.37 — the call site moved from ``messages.py`` into
+    ``_messages_response_dispatch.py`` when the handler's two dispatch arms
+    were extracted to get messages.py under its 1080-LOC pin. Check both
+    files: the call must live in exactly one of them, and messages.py must
+    still reach the dispatcher that owns it.
+    """
+    from tests.unit._handler_surface import messages_handler_source
+
+    msg_src = Path("app/api/messages.py").read_text()
+    assert "_messages_response_dispatch" in msg_src, (
+        "messages.py no longer routes through the response dispatcher; find "
+        "where apply_response_tail is called now and repoint this test"
+    )
+    # The call itself sits in whichever dispatch module currently owns the
+    # non-streaming arm — it has moved twice already — so read the surface.
+    combined = messages_handler_source()
+    assert "from app.api._messages_response_tail import apply_response_tail" in combined
+    assert "await apply_response_tail(" in combined
 
 
 def test_messages_inline_blocks_removed():

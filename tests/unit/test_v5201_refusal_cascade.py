@@ -13,6 +13,9 @@ from pathlib import Path
 
 # ---- module + wire pins ----
 
+from tests.unit._handler_surface import messages_handler_source
+
+
 def test_cascade_module_present():
     p = Path("app/api/_refusal_cascade.py")
     assert p.exists()
@@ -22,7 +25,10 @@ def test_cascade_module_present():
 
 
 def test_cascade_wired_in_messages():
-    src = Path("app/api/messages.py").read_text()
+    # v5.22.37 — reads the whole handler surface: what this asserts on moved
+    # into _messages_response_dispatch.py when messages.py was split to meet
+    # its 1080-LOC pin. See tests/unit/_handler_surface.py.
+    src = messages_handler_source()
     assert "maybe_cascade_on_refusal" in src
     assert "from app.api._refusal_cascade import" in src
 
@@ -104,7 +110,10 @@ def test_cascade_dispatch_closure_defined_in_messages():
     """messages.py provides the ``dispatch`` closure — the cascade
     module is dispatch-agnostic (takes the closure as a param) so it
     can be unit-tested without a real LLM."""
-    src = Path("app/api/messages.py").read_text()
+    # v5.22.37 — reads the whole handler surface: what this asserts on moved
+    # into _messages_response_dispatch.py when messages.py was split to meet
+    # its 1080-LOC pin. See tests/unit/_handler_surface.py.
+    src = messages_handler_source()
     assert "async def _cascade_dispatch(alt_route):" in src
     assert "acompletion_with_retry" in src
 

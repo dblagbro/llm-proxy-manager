@@ -25,6 +25,9 @@ import pytest
 # ── Source pins ─────────────────────────────────────────────────────
 
 
+from tests.unit._handler_surface import completions_handler_source
+
+
 def test_dispatcher_has_trip_helper():
     """The new _trip_cb_for_failover helper exists and is callable."""
     from app.api._grok_web_dispatch import _trip_cb_for_failover
@@ -65,7 +68,10 @@ def test_messages_handles_grok_web_none_and_failovers():
 
 def test_completions_handles_grok_web_none_and_failovers():
     """completions.py mirrors messages.py for the OpenAI shape."""
-    src = Path("app/api/completions.py").read_text()
+    # v5.22.37 — reads the whole handler surface: the own-dispatcher branches
+    # this asserts on moved into _completions_{claude_oauth,grok_web}.py when
+    # completions.py was split to meet its 900-LOC pin.
+    src = completions_handler_source()
     assert "if gw_resp is not None:" in src
     assert "exclude_provider_id=failed_id" in src
     assert 'X-Grok-Web-Failover' in src
