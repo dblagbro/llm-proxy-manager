@@ -39,6 +39,28 @@ _BACKEND_ALLOWLIST_FRAGMENTS = (
     # One-shot migration that renames existing DB rows. References the
     # OLD value intentionally.
     "WHERE provider_type='codex-oauth'",
+    # v5.22.30 — OAuth provider-type membership sets deliberately carry BOTH
+    # spellings: the current ChatGPT-oauth-plan plus codex-oauth for any row
+    # predating the v3.8.0 rename. Fixing this test is how the incomplete
+    # rename was found: the seeder and selector sets had only the OLD name, so
+    # every ChatGPT-oauth-plan provider fell outside the per-account OAuth
+    # machinery entirely. Both names now appear together, which is correct and
+    # must not be flagged.
+    '"codex-oauth",\n    "ChatGPT-oauth-plan",',
+    # Same both-spellings set, written on one line (query set).
+    '_OAUTH_TYPES = ("cursor-oauth", "codex-oauth", "claude-oauth", "ChatGPT-oauth-plan")',
+    # _oauth_accounts_health.py deliberately uses codex-oauth as the
+    # OPERATOR-FACING bucket name, normalizing the internal
+    # ChatGPT-oauth-plan onto it so operators need not know about the v3.8.0
+    # rename. Both the normalizer and the display-bucket list are correct as
+    # written and must not be flagged.
+    'return "codex-oauth" if t == "ChatGPT-oauth-plan" else t',
+    'for t in ("cursor-oauth", "codex-oauth", "claude-oauth"):',
+)
+
+# Frontend equivalent of the above — same both-spellings rationale.
+_FRONTEND_ALLOWLIST_FRAGMENTS = (
+    "'codex-oauth',          // legacy rows predating the v3.8.0 rename",
 )
 
 
@@ -63,7 +85,10 @@ def test_no_codex_oauth_string_literal_in_frontend():
             continue
         if p.suffix not in (".ts", ".tsx"):
             continue
-        src = _strip_comments_and_strings(p.read_text(), "ts")
+        raw = p.read_text()
+        if any(allow in raw for allow in _FRONTEND_ALLOWLIST_FRAGMENTS):
+            continue
+        src = _strip_comments_and_strings(raw, "ts")
         for needle in ('"codex-oauth"', "'codex-oauth'"):
             if needle in src:
                 bad.append(f"{p}: {needle}")

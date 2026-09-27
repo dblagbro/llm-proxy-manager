@@ -10,6 +10,21 @@ Status flow: **open** → **in-progress** → **fixed** → **verified-fixed** �
 
 ---
 
+## 2026-09-26 — the v3.8.0 provider-type rename left three sets behind (v5.22.30)
+
+### BUG-086 — `ChatGPT-oauth-plan` silently excluded from the per-account OAuth path — ✅ **CLOSED v5.22.30**
+
+- **Severity:** medium (latent ~1 year; no live impact today because the type is retired) · **Category:** incomplete refactor + a lock test that froze the defect
+- **Surfaced:** 2026-09-26, working the M2 `known_failures.txt` batch. `test_v380_codex_oauth_rename` was the last entry I expected to be a stale guard; it was reporting a live defect the whole time.
+- **Root cause:** v3.8.0 renamed the provider type `codex-oauth` → `ChatGPT-oauth-plan`. Three type-membership sets kept only the old spelling: `app/providers/oauth_account_seeder.py` `_OAUTH_PROVIDER_TYPES`, `app/providers/oauth_account_selector.py` `_OAUTH_PROVIDER_TYPES`, and `frontend/src/components/providers/OAuthAccountsPanel.tsx` `OAUTH_TYPES`.
+- **Effect:** those three gate the whole per-account OAuth machinery, so a `ChatGPT-oauth-plan` provider fell outside it with no error — seeder wrote no `ProviderOAuthAccount` rows, selector never rotated accounts, frontend panel never rendered. The provider just behaved as single-account.
+- **Why it survived:** `tests/unit/test_v5151_dispatch_flip.py::test_oauth_provider_types_locked` asserts *exact set equality* on the selector's set and was written at v5.15.1, **after** the rename — so it locked the incomplete set. Meanwhile the test that did catch it sat in `known_failures.txt`. Two tests contradicted each other and the green one was believed. **Lesson: an exact-equality "lock" test written after a rename can pin the rename's own mistakes; a lock is only as good as the state it was taken from.**
+- **The tell:** `app/providers/_oauth_accounts_health.py` carried *both* spellings all along. Its `_bucket()` intentionally normalises `ChatGPT-oauth-plan` → `codex-oauth` as the operator-facing label, so its bare literals are correct and are now allowlisted in the rename guard rather than rewritten.
+- **Fix (v5.22.30):** all three sets carry both spellings (`codex-oauth` retained for pre-rename rows); the lock test expects all four types and records the history in its docstring; the rename guard gained an explicit allowlist for the intentional `_oauth_accounts_health.py` usages. Guard verified still live by planting a bare literal (fails, as intended).
+- **Scope:** `ChatGPT-oauth-plan` is retired as of v5.22.24 and its provider disabled, so no behaviour changes today. Fixed for self-consistency, not as new subscription-OAuth investment (`docs/market-review.md` → NARROW).
+- **Tests:** `test_v380_codex_oauth_rename.py` (2, out of `known_failures.txt`), `test_v5151_dispatch_flip.py::test_oauth_provider_types_locked` (updated). Suite: 38 failed / 3932 passed, zero regressions.
+- **Status:** CLOSED — verified-fixed.
+
 ## 2026-09-18 — CORRECTION: there is no `xai/` model prefix (v5.22.20)
 
 **Severity: high · Status: fixed in v5.22.21 (one detail still open) · Supersedes the 2026-09-10 entry below**

@@ -37,8 +37,24 @@ def test_valid_strategies_locked():
 
 
 def test_oauth_provider_types_locked():
+    """v5.22.30 — ChatGPT-oauth-plan added.
+
+    This lock was written at v5.15.1, AFTER the v3.8.0 rename of codex-oauth ->
+    ChatGPT-oauth-plan, so it froze an incomplete set rather than a decision.
+    The consequence was real: the per-account OAuth seeder and selector both
+    gate on this set, so a ChatGPT-oauth-plan provider was silently excluded
+    from account seeding and rotation entirely.
+
+    ``_oauth_accounts_health.py`` already listed both spellings, which is the
+    inconsistency that gave it away, and ``test_v380_codex_oauth_rename`` had
+    been reporting it the whole time from inside known_failures.txt.
+
+    codex-oauth stays for any row predating the rename.
+    """
     from app.providers.oauth_account_selector import _OAUTH_PROVIDER_TYPES
-    assert _OAUTH_PROVIDER_TYPES == {"cursor-oauth", "codex-oauth", "claude-oauth"}
+    assert _OAUTH_PROVIDER_TYPES == {
+        "cursor-oauth", "codex-oauth", "ChatGPT-oauth-plan", "claude-oauth",
+    }
 
 
 def test_apply_fanout_no_op_for_non_oauth_provider():

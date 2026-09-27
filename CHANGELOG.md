@@ -2,7 +2,49 @@
 
 All notable changes since v2.7.6. Older history available in `git log`.
 
-### v5.22.29 — M2 mechanical batch: known_failures 47 → 40 (2026-09-27)
+### v5.22.30 — the v3.8.0 provider-type rename was never finished (2026-09-26)
+
+Continues the M2 mechanical batch. One of the two remaining
+`test_v380_codex_oauth_rename` failures turned out not to be stale at all — it
+had been correctly reporting a real bug from inside `known_failures.txt` since
+v3.8.0. known_failures 40 → 38, zero regressions.
+
+**The bug.** v3.8.0 renamed the provider type `codex-oauth` →
+`ChatGPT-oauth-plan`. Three type-membership sets never got the new spelling:
+
+- `app/providers/oauth_account_seeder.py` `_OAUTH_PROVIDER_TYPES`
+- `app/providers/oauth_account_selector.py` `_OAUTH_PROVIDER_TYPES`
+- `frontend/src/components/providers/OAuthAccountsPanel.tsx` `OAUTH_TYPES`
+
+Those three gate the entire per-account OAuth path, so a `ChatGPT-oauth-plan`
+provider fell outside it silently: the seeder created no `ProviderOAuthAccount`
+rows for it, the selector never rotated between its accounts, and the frontend
+panel never rendered for it. No error anywhere — the provider simply behaved as
+if it were single-account. All three now carry both spellings; `codex-oauth`
+stays for rows predating the rename.
+
+**What kept it hidden for a year.** `tests/unit/test_v5151_dispatch_flip.py::test_oauth_provider_types_locked`
+asserts exact set equality on the selector's set. It was written at v5.15.1 —
+*after* the rename — so it locked the incomplete set in place, and the test
+that was reporting the problem sat in `known_failures.txt`. Two tests in the
+suite directly contradicted each other and the passing one won. The lock now
+expects all four types and carries the history in its docstring.
+
+The tell was `app/providers/_oauth_accounts_health.py`, which listed both
+spellings all along. Its `_bucket()` deliberately normalises
+`ChatGPT-oauth-plan` → `codex-oauth` as the operator-facing label, so its bare
+`codex-oauth` literals are intentional and are now allowlisted in the rename
+guard rather than "fixed". Guard still bites: planting a bare literal fails it.
+
+**Scope note.** `ChatGPT-oauth-plan` is *retired* as of v5.22.24 and its
+provider is disabled, so this fix changes no live behaviour today. It is
+committed because the code is now self-consistent and the lock test no longer
+freezes a defect — not as new investment in subscription OAuth, which
+`docs/market-review.md` (NARROW) rules out.
+
+Recorded as **BUG-086**.
+
+### v5.22.29 — M2 mechanical batch: known_failures 47 → 40 (2026-09-26)
 
 Seven fixed, zero regressions. All test-side; no behaviour changed.
 
@@ -16,7 +58,7 @@ Worth noting what this near-miss looked like: a loud, specific, correct-sounding
 
 Remaining 40 recorded in `tests/known_failures.txt`.
 
-### v5.22.28 — complete the two half-built features; known_failures 56 → 47 (2026-09-27)
+### v5.22.28 — complete the two half-built features; known_failures 56 → 47 (2026-09-26)
 
 Operator chose **complete** over descope — correctly, because the UI was already there. Both features turned out to be less missing than the failing tests implied.
 
@@ -34,7 +76,7 @@ Also loosened `test_admin_patch_accepts_field`, which pinned the literal `Option
 
 Two live `api_keys` columns that had no ORM mapping now have one, so nothing in the database is orphaned by these two features any more.
 
-### v5.22.27 — CI has been red since 2026-09-26: undeclared greenlet dependency (2026-09-27)
+### v5.22.27 — CI has been red since 2026-09-26: undeclared greenlet dependency (2026-09-26)
 
 Operator reported repeated CI failure emails. The `guard` job's **App build smoke** step — the one whose entire job is catching import breakage — was failing:
 

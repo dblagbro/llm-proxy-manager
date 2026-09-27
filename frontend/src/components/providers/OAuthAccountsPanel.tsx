@@ -29,7 +29,16 @@ import { api } from '@/api/client'
 import { getBasePath } from '@/lib/basePath'
 import type { Provider } from '@/types'
 
-const OAUTH_TYPES = new Set(['cursor-oauth', 'codex-oauth', 'claude-oauth'])
+// v5.22.30 — includes BOTH spellings. v3.8.0 renamed codex-oauth ->
+// ChatGPT-oauth-plan; this set was never updated, so the OAuth Accounts
+// panel never rendered for a ChatGPT-oauth-plan provider. The backend
+// seeder and selector had the same gap.
+const OAUTH_TYPES = new Set([
+  'cursor-oauth',
+  'codex-oauth',          // legacy rows predating the v3.8.0 rename
+  'ChatGPT-oauth-plan',
+  'claude-oauth',
+])
 
 interface OAuthAccount {
   id: string

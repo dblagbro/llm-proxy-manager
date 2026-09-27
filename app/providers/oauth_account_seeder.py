@@ -36,7 +36,18 @@ logger = logging.getLogger(__name__)
 
 _OAUTH_PROVIDER_TYPES = frozenset({
     "cursor-oauth",
+    # v5.22.30 — BOTH spellings. v3.8.0 renamed codex-oauth ->
+    # ChatGPT-oauth-plan but never updated this set, so every
+    # ChatGPT-oauth-plan provider silently fell outside the per-account OAuth
+    # machinery: the seeder created no ProviderOAuthAccount rows for it and the
+    # selector never rotated it. `codex-oauth` is kept for any legacy row that
+    # predates the rename; `_oauth_accounts_health.py` already listed both,
+    # which is what made the inconsistency visible.
+    #
+    # test_v380_codex_oauth_rename had been reporting this the whole time and
+    # was parked in known_failures.txt, so nobody read it.
     "codex-oauth",
+    "ChatGPT-oauth-plan",
     "claude-oauth",
 })
 
