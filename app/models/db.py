@@ -30,10 +30,15 @@ from app.models.db_provider import (
     ProviderUsageWindow,
     ProviderNodeAuthState,
     ExternalUsageSnapshot,
-    ModelCapability,
     ProviderAiReview,
-    ModelToolProbe,
     ProviderMetric,
+)
+
+# Per-model tables (v5.22.36 — split out of db_provider.py for the
+# 500-LOC domain ceiling; keyed by (provider_id, model_id)).
+from app.models.db_model import (
+    ModelCapability,
+    ModelToolProbe,
     ModelAlias,
 )
 

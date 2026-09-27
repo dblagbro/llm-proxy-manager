@@ -13,8 +13,11 @@ This test file guards three invariants:
    was importable from ``_messages_streaming`` pre-split is still
    importable from there post-split (back-compat for the 4+ external
    callers).
-3. **Neither file exceeds 700 LOC** — soft ceiling for the post-split
-   files. If either grows past 700, signal "re-split this domain".
+3. **No file in the domain exceeds 700 LOC** — soft ceiling for the
+   post-split files. If one grows past 700, signal "re-split this domain".
+   v5.22.36 added ``_sse_guard.py`` to that list when the parent was split
+   again (741 -> 463); the ceiling has to cover every sibling or a split can
+   satisfy it by moving mass somewhere unwatched.
 """
 from __future__ import annotations
 
@@ -101,6 +104,12 @@ def test_neither_streaming_file_exceeds_700_loc():
     for fn in (
         "app/api/_messages_streaming.py",
         "app/api/_messages_streaming_oauth.py",
+        # v5.22.36 — the generic SSE plumbing + empty-completion guard split
+        # out of the parent to bring it back under this ceiling. Listed here so
+        # the ceiling keeps applying to the whole domain rather than shrinking
+        # every time a file is split: a split that just moves mass to an
+        # unwatched sibling defeats the purpose of the guard.
+        "app/api/_sse_guard.py",
     ):
         loc = sum(1 for _ in Path(fn).read_text().splitlines())
         if loc > 700:

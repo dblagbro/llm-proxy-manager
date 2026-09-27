@@ -2,6 +2,62 @@
 
 All notable changes since v2.7.6. Older history available in `git log`.
 
+### v5.22.36 — LOC refactors 1 of 2: two domain splits (2026-09-26)
+
+known_failures **6 → 4**, zero regressions. First of the two LOC-ceiling
+batches; `messages.py` and `completions.py` follow. Both splits are pure code
+movement — no behaviour changed, and every existing import keeps working.
+
+**`app/models/db_provider.py` 561 → 465** (ceiling 500). The three per-model
+tables moved to a new `app/models/db_model.py`:
+
+- `ModelCapability` — per-(provider, model) routing capability rows
+- `ModelToolProbe` — tool-call probe results (v3.8.4 / #264)
+- `ModelAlias` — client-facing alias → provider/model mapping
+
+All three are keyed by `(provider_id, model_id)`: they record what we have
+learned about *a provider's models* rather than about the provider itself, which
+is why they were the seam rather than the auth, usage or metrics tables. The new
+module sits alongside `db_model_pricing.py`. `ModelCapability.provider` still
+back-populates `Provider.capabilities` — SQLAlchemy resolves
+`relationship("Provider")` through the shared registry on `Base`, verified in
+both directions, and `Base.metadata` still holds 41 tables. Every call site
+imports from the `app.models.db` aggregator, so nothing outside `db.py` changed.
+
+**`app/api/_messages_streaming.py` 741 → 463** (ceiling 700). The generic SSE
+plumbing and the empty-completion guard moved to a new `app/api/_sse_guard.py`:
+`_sse_frame_error`, `preflight_sse`, `http_status_for_stream_error`,
+`_sse_frame_has_content`, `buffer_sse_until_content`, `stream_with_empty_guard`.
+
+The seam is format-agnostic machinery vs the Anthropic stream generators, which
+`test_v4412_streaming_split` pins in the parent. The cut is clean in both
+directions — none of the six references anything left behind and none of the
+generators references anything moved — so unlike the v4.4.12 claude-oauth split
+this one needed no duplicated `_exc_str` and carries no circular import. Back-
+compat follows that same v4.4.12 precedent: the parent re-exports all six, so
+`messages.py`, `completions.py`, `app/routing/hedging.py` and six test modules
+are untouched. The now-unused `fastapi.HTTPException` import was dropped from the
+parent, keeping its lint count at the pre-split 14.
+
+**Both ceiling guards were widened to cover the new siblings.** A split that
+satisfies a ceiling by moving mass to an unwatched file defeats the guard, so
+`_sse_guard.py` joins the 700-LOC list, and `db_model.py` is picked up
+automatically by the glob introduced in v5.22.33.
+
+**My own extraction orphaned five guards**, the BUG-091 pattern from the
+previous commit — `test_v5713_cumulative_exclusion_failover` (2) and
+`test_v5714_streaming_audit` (3) grep for `stream_with_empty_guard` internals by
+filename. Repointed at `_sse_guard.py` via a single `_GUARD_SRC` constant per
+file so the next move is a one-line change.
+
+And a sixth in the same file was **passing vacuously**:
+`test_audit_writes_are_exception_safe` searched backwards 600 chars from
+`src.find(event)` for an enclosing `try:` — but `find()` returns `-1` when the
+event is absent, making the window `src[0:-1]`, nearly the whole module, which
+always contains a `try:`. It would have passed with the audit writes deleted
+entirely, and it kept passing when the code left the file. Now asserts
+`idx != -1` first.
+
 ### v5.22.35 — the nine wiring greps; two guards that accepted their own violation (2026-09-26)
 
 known_failures **15 → 6**, zero regressions. **No product code changed.** The

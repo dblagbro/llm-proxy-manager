@@ -19,6 +19,12 @@ from pathlib import Path
 
 import pytest
 
+# v5.22.36 — ``stream_with_empty_guard`` and the SSE frame helpers moved from
+# ``app/api/_messages_streaming.py`` into ``app/api/_sse_guard.py`` when the
+# parent was split to get back under its 700-LOC ceiling. These are source-grep
+# guards, so they have to follow the code; the behaviour they pin is unchanged
+# and importers still reach the function through the parent's re-export shim.
+_GUARD_SRC = Path("app/api/_sse_guard.py")
 
 def test_select_provider_signature_includes_exclude_provider_ids():
     """The new parameter is in the public signature."""
@@ -34,7 +40,7 @@ def test_streaming_guard_uses_cumulative_set():
     """Static-grep contract: stream_with_empty_guard passes
     exclude_provider_ids=set(empty_failed) instead of a per-iteration
     single ID. Prevents same-family ping-pong."""
-    src = Path("app/api/_messages_streaming.py").read_text()
+    src = _GUARD_SRC.read_text()
     assert "exclude_provider_ids=set(empty_failed)" in src
     # The old single-id pattern must be gone from the failover loop.
     assert "exclude_provider_id=last_excluded" not in src
@@ -45,7 +51,7 @@ def test_streaming_guard_no_inner_ping_pong_loop():
     is gone. It existed before v5.7.13 specifically to retry past
     ping-pong but never worked because single-id exclude let it bounce
     back. With cumulative set, one shot is enough."""
-    src = Path("app/api/_messages_streaming.py").read_text()
+    src = _GUARD_SRC.read_text()
     # The old inner loop body opened with "for _ in range(max_attempts):"
     # immediately after the empty_failed.add(...) bookkeeping.
     idx = src.find("empty_failed.add(attempt_route.provider.id)")
