@@ -35,6 +35,8 @@ class KeyCreate(BaseModel):
     spending_cap_usd: Optional[float] = Field(default=None, ge=0)
     rate_limit_rpm: Optional[int] = Field(default=None, ge=0)
     rate_limit_tier: Optional[str] = None  # Wave 6: named tier
+# v5.22.28 — per-key default LMRH refuse-tolerance. strict|default|lenient.
+    default_refuse_tolerance: str | None = None
     daily_soft_cap_usd: Optional[float] = Field(default=None, ge=0)
     daily_hard_cap_usd: Optional[float] = Field(default=None, ge=0)
     hourly_cap_usd: Optional[float] = Field(default=None, ge=0)
@@ -70,6 +72,8 @@ class KeyUpdate(BaseModel):
     spending_cap_usd: Optional[float] = None  # -1 to clear the cap
     rate_limit_rpm: Optional[int] = None       # -1 to clear the limit
     rate_limit_tier: Optional[str] = None      # "" to clear
+# v5.22.28 — "" clears; unknown values drop to NULL (see _validate_refuse_tolerance).
+    default_refuse_tolerance: str | None = None
     daily_soft_cap_usd: Optional[float] = None   # -1 to clear
     daily_hard_cap_usd: Optional[float] = None   # -1 to clear
     hourly_cap_usd: Optional[float] = None       # -1 to clear
@@ -249,6 +253,7 @@ async def create_key(
         spending_cap_usd=body.spending_cap_usd,
         rate_limit_rpm=body.rate_limit_rpm,
         rate_limit_tier=_validate_tier(body.rate_limit_tier),
+        default_refuse_tolerance=_validate_refuse_tolerance(body.default_refuse_tolerance),
         daily_soft_cap_usd=body.daily_soft_cap_usd,
         daily_hard_cap_usd=body.daily_hard_cap_usd,
         hourly_cap_usd=body.hourly_cap_usd,
@@ -310,6 +315,8 @@ async def update_key(
         k.rate_limit_rpm = None if body.rate_limit_rpm < 0 else body.rate_limit_rpm
     if body.rate_limit_tier is not None:
         k.rate_limit_tier = _validate_tier(body.rate_limit_tier) if body.rate_limit_tier else None
+    if body.default_refuse_tolerance is not None:
+        k.default_refuse_tolerance = _validate_refuse_tolerance(body.default_refuse_tolerance)
     if body.daily_soft_cap_usd is not None:
         k.daily_soft_cap_usd = None if body.daily_soft_cap_usd < 0 else body.daily_soft_cap_usd
     if body.daily_hard_cap_usd is not None:
@@ -606,6 +613,20 @@ async def _get_or_404(db: AsyncSession, key_id: str) -> ApiKey:
     return k
 
 
+
+def _validate_refuse_tolerance(val: str | None) -> str | None:
+    """Coerce a refuse-tolerance value to the fixed taxonomy or NULL.
+
+    v5.22.28. The vocabulary is strict/default/lenient. Anything else --
+    including garbage from a stale frontend -- becomes NULL, i.e. "no per-key
+    default", rather than being stored and later injected as a nonsense LMRH
+    dim that a provider would reject.
+    """
+    if val in ("strict", "default", "lenient"):
+        return val
+    return None
+
+
 def _serialize(k: ApiKey) -> dict:
     # v5.9.5 — coalesce counter fields to 0. Pre-v5.9.5 these came back
     # as raw column values; a never-used key (e.g. just-created) or a
@@ -627,6 +648,7 @@ def _serialize(k: ApiKey) -> dict:
         "spending_cap_usd": k.spending_cap_usd,
         "rate_limit_rpm": k.rate_limit_rpm,
         "rate_limit_tier": getattr(k, "rate_limit_tier", None),
+        "default_refuse_tolerance": getattr(k, "default_refuse_tolerance", None),
         "daily_soft_cap_usd": k.daily_soft_cap_usd,
         "daily_hard_cap_usd": k.daily_hard_cap_usd,
         "hourly_cap_usd": k.hourly_cap_usd,

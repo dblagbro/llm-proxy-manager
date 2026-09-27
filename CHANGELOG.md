@@ -2,6 +2,24 @@
 
 All notable changes since v2.7.6. Older history available in `git log`.
 
+### v5.22.28 — complete the two half-built features; known_failures 56 → 47 (2026-09-27)
+
+Operator chose **complete** over descope — correctly, because the UI was already there. Both features turned out to be less missing than the failing tests implied.
+
+**`default_refuse_tolerance`** — per-key default LMRH refuse-tolerance dim. The admin UI in `APIKeysPage.tsx` and the TypeScript type already existed; the backend storage never landed. Added the idempotent migration, the ORM column, the `KeyCreate`/`KeyUpdate` field, vocab validation (`strict`/`default`/`lenient`, anything else → NULL), and serializer exposure.
+
+The piece that actually mattered: **`ApiKeyRecord` now carries it into the request path.** `messages.py` reads it via `getattr(key_record, "default_refuse_tolerance", None)`, and with no ORM column that always returned `None` — so the injection branch was unreachable regardless of what the DB held. `refusal_retry_enabled` and `refusal_retry_streaming_heartbeat` are plumbed through the same way, for the same reason.
+
+**`refusal_retry_streaming_heartbeat`** — this one was **already fully implemented**. The logic had been refactored out of `messages.py` into `_buffered_cascade_mode.detect_buffered_cascade_mode()`, and two of its four "failures" were static greps still looking in the old file. Only the migration and ORM column were genuinely missing.
+
+One of those greps is now a **behavioural** test instead, covering all four gate combinations — heartbeat set but retry off, both on, retry on with heartbeat off, and non-streaming. That is what the original meant to assert; grepping for an inline `and` chain was a proxy that broke the moment the code was tidied.
+
+Also loosened `test_admin_patch_accepts_field`, which pinned the literal `Optional[str]`. A cosmetic annotation change broke it, which is precisely the brittleness that parked these tests in `known_failures` for twenty-odd versions. It now accepts either spelling, because the contract is "declares an optional string", not how optionality is written.
+
+`known_failures.txt` regenerated from a clean run: **47 entries**, down from 56. Verified before/after against HEAD — 9 fixed, 0 regressions.
+
+Two live `api_keys` columns that had no ORM mapping now have one, so nothing in the database is orphaned by these two features any more.
+
 ### v5.22.27 — CI has been red since 2026-09-26: undeclared greenlet dependency (2026-09-27)
 
 Operator reported repeated CI failure emails. The `guard` job's **App build smoke** step — the one whose entire job is catching import breakage — was failing:

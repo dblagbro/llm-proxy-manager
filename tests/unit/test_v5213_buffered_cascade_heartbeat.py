@@ -36,23 +36,48 @@ def test_orm_column_declared():
 
 
 def test_messages_handler_delegates_when_heartbeat_flag_set():
+    """v5.22.28 — repointed. The mode decision moved out of messages.py into
+    ``_buffered_cascade_mode.detect_buffered_cascade_mode()``, so the header
+    literals live there now. messages.py still owns the delegation, which is
+    what this asserts on its side."""
     src = Path("app/api/messages.py").read_text()
     assert "_buffered_cascade_heartbeat" in src
     assert "run_buffered_cascade_stream_with_heartbeat" in src
-    # Mode header carries the distinction
-    assert '"buffered-heartbeat"' in src
-    assert '"buffered"' in src
+    mode = Path("app/api/_buffered_cascade_mode.py").read_text()
+    assert '"buffered-heartbeat"' in mode
+    assert '"buffered"' in mode
 
 
 def test_heartbeat_flag_gates_on_retry_enabled():
     """The heartbeat flag ALONE isn't enough — refusal_retry_enabled
     must also be True. Otherwise a caller who set the heartbeat
     column but never enabled retry would get an SSE stream from a
-    non-cascade dispatch, which is nonsense."""
-    src = Path("app/api/messages.py").read_text()
-    # _buffered_cascade_heartbeat is defined AS a chain from
-    # _buffered_cascade_stream (which requires refusal_retry_enabled)
-    assert "_buffered_cascade_heartbeat = _buffered_cascade_stream and" in src
+    non-cascade dispatch, which is nonsense.
+
+    v5.22.28 — repointed from messages.py, where the gate used to be an
+    inline ``and`` chain, to _buffered_cascade_mode.py, which now expresses it
+    as an early return. Asserting the behaviour rather than the old spelling:
+    heartbeat cannot be True unless refusal_retry_enabled is True.
+    """
+    from app.api._buffered_cascade_mode import detect_buffered_cascade_mode
+
+    class _Key:
+        def __init__(self, retry, heartbeat):
+            self.refusal_retry_enabled = retry
+            self.refusal_retry_streaming_heartbeat = heartbeat
+
+    # heartbeat set but retry off -> no cascade at all, no heartbeat
+    assert detect_buffered_cascade_mode(True, _Key(False, True)) == (False, False, None)
+    # both on, streaming -> heartbeat mode
+    assert detect_buffered_cascade_mode(True, _Key(True, True)) == (
+        True, True, "buffered-heartbeat",
+    )
+    # retry on, heartbeat off -> plain buffered
+    assert detect_buffered_cascade_mode(True, _Key(True, False)) == (
+        True, False, "buffered",
+    )
+    # not streaming -> nothing, regardless of flags
+    assert detect_buffered_cascade_mode(False, _Key(True, True)) == (False, False, None)
 
 
 def test_helper_emits_initial_marker_frame():

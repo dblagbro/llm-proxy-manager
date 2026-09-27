@@ -525,6 +525,19 @@ async def init_db():
             # update via POST /api/integration/self-update. NULL =
             # self-edit disabled.
             "ALTER TABLE api_keys ADD COLUMN self_edit_permissions TEXT",
+            # v5.22.28 — two columns that existed in the LIVE databases but
+            # were never declared here or in the ORM, so nothing could read or
+            # write them. Their consumers shipped; the storage wiring did not.
+            # Both ALTERs are idempotent via the surrounding try/except block.
+            #
+            # default_refuse_tolerance: per-key default LMRH refuse-tolerance
+            # dim, injected by messages.py when the caller sent none. Vocab is
+            # strict/default/lenient.
+            "ALTER TABLE api_keys ADD COLUMN default_refuse_tolerance TEXT",
+            # refusal_retry_streaming_heartbeat: opt-in SSE keepalive during a
+            # buffered refusal cascade. Gated on refusal_retry_enabled by
+            # detect_buffered_cascade_mode().
+            "ALTER TABLE api_keys ADD COLUMN refusal_retry_streaming_heartbeat INTEGER DEFAULT 0",
             # owner_company is auto-derived at provider create/update time
             # from provider_type via app.compliance.company_map; operator
             # can override for unusual rows. The router pre-filter drops

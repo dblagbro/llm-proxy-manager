@@ -147,6 +147,16 @@ class ApiKey(Base):
     refusal_detection_enabled = Column(Boolean, default=False)
     refusal_prompt_hardening = Column(Boolean, default=False)
     refusal_retry_enabled = Column(Boolean, default=False)
+    # v5.22.28 — declared at last. Both columns already existed in the live
+    # databases with no ORM mapping, so the features that read them saw
+    # nothing: messages.py used getattr(key_record, ..., None), which always
+    # returned the default.
+    #
+    # Vocabulary is validated at the API boundary (strict/default/lenient);
+    # stored as TEXT so an unknown value degrades to "no default" rather than
+    # failing a request.
+    default_refuse_tolerance = Column(String, nullable=True)
+    refusal_retry_streaming_heartbeat = Column(Boolean, default=False)
     # v5.20.1 — how many alternate-provider attempts the cascade will
     # try before returning the original refusal. Defaults to 3 when
     # NULL; caller can set to 0 to disable retries even when

@@ -49,6 +49,13 @@ class ApiKeyRecord:
     blocked_companies: Optional[List[str]] = None
     allowed_paths: Optional[List[str]] = None
     debug_echo_enabled: bool = False
+    # v5.22.28 — carried into the request path so messages.py's
+    # getattr(key_record, "default_refuse_tolerance", None) finally sees a
+    # value. Until now the ORM had no column, so that lookup always returned
+    # None and the injection branch was unreachable.
+    default_refuse_tolerance: str | None = None
+    refusal_retry_enabled: bool = False
+    refusal_retry_streaming_heartbeat: bool = False
 
 
 def _hash_key(raw_key: str) -> str:
@@ -143,6 +150,11 @@ async def verify_api_key(db: AsyncSession, raw_key: Optional[str]) -> ApiKeyReco
         blocked_companies=_coerce_str_list(getattr(key, "blocked_companies", None)),
         allowed_paths=_coerce_str_list(getattr(key, "allowed_paths", None)),
         debug_echo_enabled=bool(getattr(key, "debug_echo_enabled", False)),
+        default_refuse_tolerance=getattr(key, "default_refuse_tolerance", None),
+        refusal_retry_enabled=bool(getattr(key, "refusal_retry_enabled", False)),
+        refusal_retry_streaming_heartbeat=bool(
+            getattr(key, "refusal_retry_streaming_heartbeat", False),
+        ),
     )
 
 

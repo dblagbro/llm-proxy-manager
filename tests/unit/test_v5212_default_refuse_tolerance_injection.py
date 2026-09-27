@@ -18,8 +18,18 @@ def test_orm_column_declared():
 
 
 def test_admin_patch_accepts_field():
+    """v5.22.28 — accepts either type spelling.
+
+    This pinned the literal ``Optional[str]``, which meant a purely cosmetic
+    annotation change broke it. The intent is that the admin surface declares
+    the field as an optional string; how that optionality is spelled is not
+    the contract.
+    """
     src = Path("app/api/apikeys.py").read_text()
-    assert "default_refuse_tolerance: Optional[str] = None" in src
+    assert (
+        "default_refuse_tolerance: Optional[str] = None" in src
+        or "default_refuse_tolerance: str | None = None" in src
+    )
 
 
 def test_admin_patch_vocab_validated():

@@ -1,6 +1,6 @@
 # Known pre-existing unit-test failures — the #3 "get the suite green" backlog.
 #
-# Snapshot: 2026-09-26 (after v5.22.25). 56 committed-test failures.
+# Snapshot: 2026-09-27 (after v5.22.28). 47 committed-test failures.
 # REFRESHED 2026-08-12: the previous header claimed 64 and the body listed 48,
 # while the suite actually failed 57 — so the list could neither be trusted as
 # a baseline nor used to detect a regression. Regenerated from an actual run.
@@ -12,6 +12,7 @@
 # Regenerate with:
 #   python -m pytest tests/unit -q 2>&1 | grep '^FAILED' \
 #     | sed 's/^FAILED //;s/ - .*//' | sort
+
 
 
 tests/unit/test_airi_m1.py::test_agent_rejects_non_readonly_tool
@@ -45,15 +46,6 @@ tests/unit/test_v5208_streaming_cascade_transparency.py::test_docstring_mentions
 tests/unit/test_v520_llm_emergency_stop.py::test_handler_helper_wired_into_completions
 tests/unit/test_v520_llm_emergency_stop.py::test_handler_helper_wired_into_messages
 tests/unit/test_v5210_refuse_tolerance_dim_and_streaming_cascade.py::test_buffered_stream_mode_marker_wired
-tests/unit/test_v5212_default_refuse_tolerance_injection.py::test_admin_patch_accepts_field
-tests/unit/test_v5212_default_refuse_tolerance_injection.py::test_admin_patch_vocab_validated
-tests/unit/test_v5212_default_refuse_tolerance_injection.py::test_list_response_exposes_field
-tests/unit/test_v5212_default_refuse_tolerance_injection.py::test_orm_column_declared
-tests/unit/test_v5212_default_refuse_tolerance_injection.py::test_schema_migration_column_present
-tests/unit/test_v5213_buffered_cascade_heartbeat.py::test_heartbeat_flag_gates_on_retry_enabled
-tests/unit/test_v5213_buffered_cascade_heartbeat.py::test_messages_handler_delegates_when_heartbeat_flag_set
-tests/unit/test_v5213_buffered_cascade_heartbeat.py::test_orm_column_declared
-tests/unit/test_v5213_buffered_cascade_heartbeat.py::test_schema_migration_column_present
 tests/unit/test_v531_skip_noop_substitution.py::test_noop_substitution_does_not_emit
 tests/unit/test_v531_skip_noop_substitution.py::test_noop_substitution_with_provider_prefix_strips_correctly
 tests/unit/test_v531_skip_noop_substitution.py::test_unsubstituted_route_still_short_circuits
