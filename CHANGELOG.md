@@ -2,6 +2,59 @@
 
 All notable changes since v2.7.6. Older history available in `git log`.
 
+### v5.22.32 — the unit suite was running against a fake litellm (2026-09-26)
+
+known_failures **30 → 25**, zero regressions. Test-environment fidelity fix.
+**No product behaviour changed, and production was never affected** — the stub
+exists only under `tests/`.
+
+**What was happening.** 26 unit-test modules open with a variant of:
+
+```python
+sys.modules.setdefault("litellm", types.ModuleType("litellm"))
+```
+
+meant to keep the app importable when litellm isn't installed. But `setdefault`
+fires whenever litellm merely hasn't been imported *yet*, and pytest imports
+every test module at collection time — so in a full-suite run whichever stubber
+sorted first (`test_aliases.py`) installed a bare stub and **the entire session
+then ran against a fake litellm**. The stub carries only `RateLimitError`, so
+`litellm.cost_per_token` raised `AttributeError` into
+`estimate_cost_split`'s `except Exception: pass` and every cost silently became
+`$0.00`.
+
+That is why five pricing tests passed in isolation and failed in the suite —
+`pytest tests/unit/test_pricing.py` imports real litellm, `pytest tests/unit`
+does not. They had been parked in `known_failures.txt` for it. Demonstrable in
+two commands:
+
+```
+pytest tests/unit/test_aliases.py tests/unit/test_pricing.py   # 1 failed
+pytest tests/unit/test_pricing.py tests/unit/test_aliases.py   # 9 passed
+```
+
+**Fix.** `tests/unit/conftest.py` now imports real litellm, for the same
+collection-order reason it already sets `DATABASE_URL` there — conftest is
+imported before any test module, so the 26 `setdefault` calls become the no-ops
+they were always meant to be. litellm is a hard dependency (`pyproject.toml` +
+`requirements.txt`); the `except ImportError` fallback still leaves the stubs in
+charge if it genuinely isn't installed.
+
+**What that exposed** (`test_retry.py`, 8 tests). Every exception was built as
+`RateLimitError("msg")` — a call the real class rejects, since it requires
+`llm_provider` and `model`. So the retry logic had only ever been exercised with
+an exception shape production cannot raise. Added a `_rate_limit_error()` helper
+that constructs it the way litellm does, and gave the fallback stub the real
+constructor signature so both paths stay faithful. Real litellm also synthesizes
+a 429 `httpx.Response` when none is passed, so `.response` is always present;
+the header-parsing tests still override it to exercise our own case handling.
+
+**Not a fix for the low cost estimates.** The operator-reported
+under-estimation is separate — production imports real litellm and always did.
+This only means the *tests* were not checking the pricing path at all.
+
+Recorded as **BUG-088**.
+
 ### v5.22.31 — three guards that guarded nothing (2026-09-26)
 
 M2 mechanical batch continues: known_failures **38 → 30**, zero regressions.

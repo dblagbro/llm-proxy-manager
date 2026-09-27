@@ -4,12 +4,26 @@ import types
 import asyncio
 import pytest
 
+# v5.22.32 — the fallback stub's RateLimitError now mirrors the real
+# constructor. It used to be a bare `Exception` subclass, so this file built
+# its exceptions as `RateLimitError("msg")` — a call the REAL class rejects
+# (it requires `llm_provider` and `model`). That only ever worked because
+# tests/unit/conftest.py had not yet imported real litellm, i.e. these tests
+# exercised the retry path with an exception shape production never raises.
+def _stub_rate_limit_init(self, message, llm_provider=None, model=None, **kw):
+    Exception.__init__(self, message)
+    self.llm_provider = llm_provider
+    self.model = model
+
+
 _stub = types.ModuleType("litellm")
-_stub.RateLimitError = type("RateLimitError", (Exception,), {})
+_stub.RateLimitError = type(
+    "RateLimitError", (Exception,), {"__init__": _stub_rate_limit_init},
+)
 _stub.acompletion = None  # pre-declare for monkeypatch
 sys.modules.setdefault("litellm", _stub)
 if not hasattr(sys.modules["litellm"], "RateLimitError"):
-    sys.modules["litellm"].RateLimitError = type("RateLimitError", (Exception,), {})
+    sys.modules["litellm"].RateLimitError = _stub.RateLimitError
 if not hasattr(sys.modules["litellm"], "acompletion"):
     sys.modules["litellm"].acompletion = None
 
@@ -17,6 +31,16 @@ from app.routing.retry import acompletion_with_retry, _parse_retry_after, _backo
 # Use the same RateLimitError reference that retry.py imported at module-load
 import app.routing.retry as _retry_mod
 RateLimitError = _retry_mod.RateLimitError
+
+
+def _rate_limit_error(message="rate limited"):
+    """A RateLimitError built the way litellm actually constructs one.
+
+    Real litellm also synthesizes a 429 ``httpx.Response`` when none is
+    passed, so ``.response`` is always present; tests that need specific
+    headers overwrite it below.
+    """
+    return RateLimitError(message, llm_provider="test-provider", model="test-model")
 
 
 def _exc_with_header(retry_after_value, case="cap"):
@@ -30,14 +54,14 @@ def _exc_with_header(retry_after_value, case="cap"):
             else:
                 self.headers = {}
 
-    exc = RateLimitError("rate limited")
+    exc = _rate_limit_error()
     exc.response = _Resp()
     return exc
 
 
 class TestParseRetryAfter:
     def test_default_when_no_response(self):
-        exc = RateLimitError("no headers")
+        exc = _rate_limit_error("no headers")
         assert _parse_retry_after(exc) == 5.0
 
     def test_reads_retry_after_header(self):
@@ -97,7 +121,7 @@ class TestAcompletionWithRetry:
 
         async def _always_fail(model, messages, **kwargs):
             call_count["n"] += 1
-            raise RateLimitError("insufficient_quota: account has no billing enabled")
+            raise _rate_limit_error("insufficient_quota: account has no billing enabled")
 
         monkeypatch.setattr(litellm, "acompletion", _always_fail)
         with pytest.raises(RateLimitError):
@@ -111,7 +135,7 @@ class TestAcompletionWithRetry:
 
         async def _always_rate_limit(model, messages, **kwargs):
             call_count["n"] += 1
-            raise RateLimitError("429 Too Many Requests")
+            raise _rate_limit_error("429 Too Many Requests")
 
         async def _fake_sleep(s):
             pass
@@ -131,7 +155,7 @@ class TestAcompletionWithRetry:
         async def _flaky(model, messages, **kwargs):
             call_count["n"] += 1
             if call_count["n"] < 2:
-                raise RateLimitError("rate_limit_error: please back off")
+                raise _rate_limit_error("rate_limit_error: please back off")
             return {"content": "recovered"}
 
         async def _fake_sleep(s):

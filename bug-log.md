@@ -10,6 +10,21 @@ Status flow: **open** → **in-progress** → **fixed** → **verified-fixed** �
 
 ---
 
+## 2026-09-26 — the unit suite was running against a fake litellm (v5.22.32)
+
+### BUG-088 — collection-order stub made `litellm` a no-op module for the whole test session — ✅ **CLOSED v5.22.32**
+
+- **Severity:** medium as a *test-environment* defect · **Category:** test fidelity / cross-test pollution · **Production impact: none** (the stub exists only under `tests/`)
+- **Surfaced:** 2026-09-26 in the M2 batch. Four pricing entries in `known_failures.txt` **all passed when run in isolation** and failed in the full suite — the signature of order dependence rather than a stale assertion.
+- **Root cause:** 26 unit-test modules do `sys.modules.setdefault("litellm", <bare stub>)` at import time to keep the app importable without litellm. `setdefault` succeeds whenever litellm has not been imported *yet*, and pytest imports every test module at collection time — so in a full run the alphabetically-first stubber (`test_aliases.py`) won and the whole session ran against a module whose only attribute was `RateLimitError`.
+- **Effect:** `litellm.cost_per_token` raised `AttributeError` straight into `estimate_cost_split`'s `except Exception: pass`, so every cost computed as `$0.00` and the pricing path had **no test coverage at all** in a normal suite run. Any other test that believed it was exercising litellm was also not.
+- **Minimal reproduction:** `pytest tests/unit/test_aliases.py tests/unit/test_pricing.py` → 1 failed; reverse the two arguments → 9 passed.
+- **Fix (v5.22.32):** `tests/unit/conftest.py` imports real litellm, on the same collection-order grounds the file already documents for `DATABASE_URL`. That makes all 26 `setdefault` calls no-ops when litellm is installed (it is a hard dependency in `pyproject.toml` and `requirements.txt`), while `except ImportError` preserves the stub fallback.
+- **Exposed by the fix (`test_retry.py`, 8 tests):** every exception was constructed as `RateLimitError("msg")`, which the real class rejects — it requires `llm_provider` and `model`. The retry/backoff logic had only ever been tested against an exception shape production cannot raise. Added a `_rate_limit_error()` helper matching litellm's real constructor and gave the fallback stub that same signature, so neither path drifts again.
+- **Lesson:** `sys.modules.setdefault` for an optional dependency is a race with the collector, not a guard — the condition it tests ("not imported yet") is not the condition it means ("not installed"). Import-availability belongs in a conftest, once. **And a `known_failures` entry that passes in isolation is a pollution report, not a stale assertion — check that before editing the assertion.**
+- **Tests:** 5 removed from `known_failures.txt` (30 → 25); 8 `test_retry.py` tests repaired. Suite: 25 failed / 3946 passed, zero regressions.
+- **Status:** CLOSED — verified-fixed.
+
 ## 2026-09-26 — three source guards that guarded nothing (v5.22.31)
 
 ### BUG-087 — the 451 banned-client-UA path had no effective test coverage since v5.7.18 — ✅ **CLOSED v5.22.31**
