@@ -2,6 +2,50 @@
 
 All notable changes since v2.7.6. Older history available in `git log`.
 
+### v5.22.33 — `model_pricing_catalog` was invisible to alembic (2026-09-26)
+
+known_failures **25 → 24**, zero regressions. Small product change in
+`app/models/db.py`; runtime behaviour unchanged.
+
+Chasing the last order-dependent entry from v5.22.32 turned up a real one.
+`test_registry_has_all_tables` only failed in a full-suite run because in
+isolation nothing imported `db_model_pricing` at all — so the orphan it
+reported never appeared. Its complaint was correct:
+
+```
+these tables are in Base.metadata but no model is exported from
+db.py __all__: ['model_pricing_catalog']
+```
+
+**Why it matters.** `app/models/db.py` is the aggregator that imports every
+`db_<domain>` module, and `alembic/env.py` does `from app.models.db import Base;
+target_metadata = Base.metadata`. `db_model_pricing` was never added to it, so
+through `app.models.db` the metadata held 40 tables, not 41. The table also has
+**no migration** — it is created by `create_all` at startup, which `init_db()`
+made work via a local `from app.models import db_model_pricing` (v5.20.4). So
+the table existed at runtime but was absent from `target_metadata`, and the next
+`alembic revision --autogenerate` would have emitted
+`op.drop_table('model_pricing_catalog')` — dropping the synced LiteLLM cost map.
+`make migrate-new` is an approved command, so this was reachable.
+
+**Fix.** `db.py` imports and exports `ModelPricingEntry` like every other domain
+model. `init_db()`'s local import is now redundant and annotated as such, with a
+note that the aggregation is the load-bearing one if anyone trims a duplicate.
+
+**Also fixed the reason nobody noticed.**
+`test_re_export_shim_includes_every_model_class` verified `db.__all__` against a
+**hardcoded list of 13 module names** while 14 `db_*.py` files were on disk — the
+missing name was `db_model_pricing`, so the test could not have caught its own
+subject. The list is now globbed from `app/models/db_*.py`, with a floor
+assertion, so a new domain module is covered the day it lands. Both guards were
+verified to bite by un-exporting `ModelPricingEntry`.
+
+**Follow-up (not done here):** `model_pricing_catalog` still has no alembic
+revision. It should get one, written to be a no-op where `create_all` has
+already made the table.
+
+Recorded as **BUG-089**.
+
 ### v5.22.32 — the unit suite was running against a fake litellm (2026-09-26)
 
 known_failures **30 → 25**, zero regressions. Test-environment fidelity fix.

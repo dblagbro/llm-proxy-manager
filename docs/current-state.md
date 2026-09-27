@@ -364,8 +364,8 @@ OAuth session. Left alone deliberately; if it re-opens and stays open, re-auth t
   locally but reach the live deployment via `conftest.py`, so they'd fail on a clean runner.
 
 ## Other known gaps
-- **The real CI blocker is not the `known_failures.txt` entries** (75 → **25** over the
-  v5.22.26–32 M2 batch; count here goes stale fast, read the file) — it is that
+- **The real CI blocker is not the `known_failures.txt` entries** (75 → **24** over the
+  v5.22.26–33 M2 batch; count here goes stale fast, read the file) — it is that
   `tests/conftest.py` session fixtures authenticate against the **live production deployment**.
   That makes much of the suite unrunnable on a clean runner *and* means running it locally mutates
   production (see the CAUTION in `docs/test-plan.md`). Making those fixtures hermetic is the single

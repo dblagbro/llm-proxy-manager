@@ -10,6 +10,23 @@ Status flow: **open** → **in-progress** → **fixed** → **verified-fixed** �
 
 ---
 
+## 2026-09-26 — model_pricing_catalog missing from alembic's target_metadata (v5.22.33)
+
+### BUG-089 — `db_model_pricing` never aggregated into `app/models/db.py`; autogenerate would have dropped the table — ✅ **CLOSED v5.22.33**
+
+- **Severity:** medium-high *latent* (data loss, reachable via an approved command) · **Category:** incomplete module registration + a guard that could not see its own subject
+- **Surfaced:** 2026-09-26, chasing the last order-dependent `known_failures` entry after BUG-088. `test_registry_has_all_tables` passed in isolation only because nothing imported `db_model_pricing` there, so no orphan existed to report; in a full run it reported `['model_pricing_catalog']` and was correct.
+- **Root cause:** `app/models/db.py` aggregates every `db_<domain>` module, and `alembic/env.py` takes `target_metadata` from it (`from app.models.db import Base`). `db_model_pricing` (v5.20.6) was never added, so through `app.models.db` the metadata held **40** tables instead of 41.
+- **Why the table still worked at runtime:** `init_db()` carried a local `from app.models import db_model_pricing  # noqa: F401` (v5.20.4) purely so `Base.metadata.create_all` would see it. That made the app correct and hid the registration gap.
+- **The hazard:** the table has **no alembic revision** at all. With it absent from `target_metadata`, `alembic revision --autogenerate` would emit `op.drop_table('model_pricing_catalog')`, discarding the daily-synced LiteLLM cost map. `make migrate-new` is an approved command in AGENTS.md, so this was reachable by ordinary maintenance.
+- **Why no test caught it:** `test_re_export_shim_includes_every_model_class` checked `db.__all__` against a **hardcoded list of 13 module names** while 14 `db_*.py` files existed — and the one missing from the list was `db_model_pricing`. The guard's inventory had drifted to exclude exactly the module it needed to flag.
+- **Fix (v5.22.33):** `db.py` imports and exports `ModelPricingEntry` (metadata 40 → 41 tables); `init_db()`'s now-redundant local import annotated with which of the two is load-bearing; the shim test's module list globbed from `app/models/db_*.py` with a `>= 14` floor. Both guards verified to bite by un-exporting the model.
+- **Runtime impact:** none. The table was already being created; only `Base.metadata` as seen through `app.models.db` changes, which is what alembic reads.
+- **Follow-up:** write an alembic revision for `model_pricing_catalog`, no-op where `create_all` already made it. Not done in this batch.
+- **Lesson (third instance this session):** a guard whose inventory is written by hand cannot detect an omission from that inventory. Derive the list — glob the directory, walk the AST, read `__all__` — so the guard's scope grows with the code. See also [[BUG-086]] (a lock test that froze the defect) and [[BUG-087]] (windows and filenames that had moved).
+- **Tests:** 1 removed from `known_failures.txt` (25 → 24). Suite: 24 failed / 3947 passed, zero regressions.
+- **Status:** CLOSED — verified-fixed.
+
 ## 2026-09-26 — the unit suite was running against a fake litellm (v5.22.32)
 
 ### BUG-088 — collection-order stub made `litellm` a no-op module for the whole test session — ✅ **CLOSED v5.22.32**

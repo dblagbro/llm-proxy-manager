@@ -110,6 +110,16 @@ from app.models.db_cluster_peer import (
     ClusterPeer,
 )
 
+# Model pricing catalog (v5.20.6 — LiteLLM `main` cost map, synced daily).
+# v5.22.33: this module was NOT aggregated here, so `model_pricing_catalog`
+# was missing from `Base.metadata` as seen through `app.models.db` — which is
+# exactly what `alembic/env.py` uses for `target_metadata`. The table has no
+# migration (it is created by `create_all` at runtime), so the next
+# `alembic revision --autogenerate` would have emitted a `drop_table` for it.
+from app.models.db_model_pricing import (
+    ModelPricingEntry,
+)
+
 __all__ = [
     "Base",
     "Session",
@@ -165,4 +175,6 @@ __all__ = [
     "ComplianceAuditChain",
     # Cluster peers (v5.0.18)
     "ClusterPeer",
+    # Model pricing catalog (v5.20.6)
+    "ModelPricingEntry",
 ]

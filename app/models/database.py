@@ -263,6 +263,13 @@ if settings.db_pool_trace:
 async def init_db():
     # v5.20.4 — import the ModelPricingEntry ORM class so
     # Base.metadata.create_all sees the new table.
+    #
+    # v5.22.33: redundant now that `app/models/db.py` aggregates
+    # `db_model_pricing` like every other domain module, but kept as
+    # belt-and-braces. The aggregation is the load-bearing one: `alembic/env.py`
+    # builds `target_metadata` from `app.models.db`, and while this local import
+    # was the only thing registering the table, autogenerate could not see it.
+    # If you remove one of the two, remove THIS one, not the aggregation.
     from app.models import db_model_pricing  # noqa: F401
     async with engine.begin() as conn:
         # v3.0.3: enable WAL + busy_timeout for SQLite. Without these,

@@ -64,24 +64,24 @@ def test_re_export_shim_includes_every_model_class():
     every domain module — otherwise existing callers using
     ``from app.models.db import X`` will silently break when X
     moves to a new domain module."""
+    from pathlib import Path as _Path
+
     from app.models import db
 
+    # v5.22.33 — discovered from disk, not hardcoded. This list named 13
+    # modules explicitly and had fallen one behind: it never mentioned
+    # ``db_model_pricing``, so ModelPricingEntry's absence from ``db.__all__``
+    # was invisible here — and, more seriously, ``model_pricing_catalog`` was
+    # missing from the ``Base.metadata`` that ``alembic/env.py`` uses as
+    # ``target_metadata``. Globbing covers a new domain module the day it lands.
+    mod_names = sorted(
+        f"app.models.{f.stem}" for f in _Path("app/models").glob("db_*.py")
+    )
+    assert len(mod_names) >= 14, (
+        f"expected at least 14 domain modules on disk, found {mod_names}"
+    )
     expected = set()
-    for mod_name in (
-        "app.models.db_base",
-        "app.models.db_provider",
-        "app.models.db_apikey",
-        "app.models.db_user",
-        "app.models.db_activity",
-        "app.models.db_run",
-        "app.models.db_lmrh",
-        "app.models.db_oauth",
-        "app.models.db_caller_memory",
-        "app.models.db_airi",
-        "app.models.db_compliance",
-        "app.models.db_cluster_peer",
-        "app.models.db_mcp",  # v5.7.0
-    ):
+    for mod_name in mod_names:
         expected |= _classes_in(mod_name)
     # Also add Base itself
     expected.add("Base")

@@ -20,7 +20,6 @@ tests/unit/test_claude_oauth_flow.py::TestRefreshAndPersist::test_keeps_old_refr
 tests/unit/test_claude_oauth_flow.py::TestRefreshAndPersist::test_persists_rotated_tokens
 tests/unit/test_v398_pool_diagnostics_in_health.py::test_health_cache_excludes_dbPool
 tests/unit/test_v4411_db_split.py::test_no_domain_module_exceeds_500_loc
-tests/unit/test_v4411_db_split.py::test_registry_has_all_tables
 tests/unit/test_v4412_streaming_split.py::test_neither_streaming_file_exceeds_700_loc
 tests/unit/test_v4424_cluster_sync_robustness.py::test_push_sync_inspects_response_status
 tests/unit/test_v5120_mcp_backpressure_ship1and2.py::test_emit_wired_into_messages_handler
