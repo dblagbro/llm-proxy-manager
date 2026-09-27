@@ -2,6 +2,43 @@
 
 All notable changes since v2.7.6. Older history available in `git log`.
 
+### v5.22.27 — CI has been red since 2026-09-26: undeclared greenlet dependency (2026-09-27)
+
+Operator reported repeated CI failure emails. The `guard` job's **App build smoke** step — the one whose entire job is catching import breakage — was failing:
+
+```
+ModuleNotFoundError: No module named 'greenlet'
+ImportError: The SQLAlchemy asyncio module requires that the Python
+'greenlet' library is installed. ... use 'sqlalchemy[asyncio]'
+```
+
+**Not a code regression.** CI went red starting at the **docs-only** market-review commit (`10c6fdd`) and stayed red through v5.22.23–26. A docs commit cannot break an import, which is what identified this as an environment change rather than something we shipped.
+
+Root cause: `app/models/database.py` imports `sqlalchemy.ext.asyncio` at module scope, which calls `_concurrency_shim._initialize()` and imports `greenlet`. We declared bare `sqlalchemy>=2.0.0`, and SQLAlchemy gates greenlet behind markers:
+
+```
+greenlet>=1; platform_machine == "aarch64" or (... "x86_64" or "amd64" ...)
+greenlet>=1; extra == "asyncio"          <- unconditional
+```
+
+The base dependency is **platform-gated**; only the extra is unconditional. It passed locally and in the Docker image because greenlet arrived transitively there (image: greenlet 3.5.6, `Required-by: SQLAlchemy`), which masked the gap. A clean install on a runner where that marker does not match cannot import the app at all.
+
+Fixed in both `requirements.txt` and `pyproject.toml`: `sqlalchemy[asyncio]>=2.0.0`, the form SQLAlchemy's own error message recommends.
+
+Worth recording: second time a declared-vs-transitive dependency gap has hidden behind the Docker image. The image is not a substitute for a clean-install check.
+
+### v5.22.26 — M2: first pass on known_failures (57 → 56), and a test that guarded nothing (2026-09-26)
+
+First pass at M2, the top priority from `docs/market-review.md`. *(This entry was written late — the v5.22.26 commit shipped without one.)*
+
+Fixed in `app/models/db.py`: `PasswordResetToken` was never imported into the re-export shim, and both it and `ProviderOAuthAccount` were missing from `__all__` (the latter imported but unexported). That is exactly what the failing test reported, in a message naming the fix.
+
+Rewrote `test_registry_has_all_tables`. It asserted `len(tables) == 37` while its own docstring said the signal is *"if this count drops"*. Every legitimate new table therefore broke it, and it had been parked in `known_failures.txt` long enough that the invariant it stood for — a domain module `db.py` forgets to import never reaches `Base.metadata` — stopped being checked at all. **A permanently-red test guards nothing.** Now a floor plus the real invariant: every table in the registry must have a model exported from `db.py`'s `__all__`, which passes only because of the fix above.
+
+`known_failures.txt` regenerated from an actual run: 56 entries, exact match. The previous file listed 57 and had drifted by one.
+
+Triage of the remaining 56 recorded in the commit message so the next pass need not re-derive it: mechanical (stale signatures/counts), real refactors (LOC ceilings), and two features never completed — `default_refuse_tolerance` and `refusal_retry_streaming_heartbeat` exist as live `api_keys` columns with no ORM mapping, migration or API surface.
+
 ### v5.22.25 — grok-web is deprecated, not retired; the bridge is still needed (2026-09-26)
 
 Correction to v5.22.24. The operator confirmed the grok bridge is still in use, so `grok-web` moves from `RETIRED_PROVIDER_TYPES` to `DEPRECATED_PROVIDER_TYPES`.
