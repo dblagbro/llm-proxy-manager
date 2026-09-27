@@ -106,16 +106,38 @@ def test_registry_has_all_tables():
     compliance_policy_changes, compliance_audit_chain) → 35.
     v5.0.18 added 1 (cluster_peers — UI-configurable peer list) → 36.
     v5.7.0 added 1 (mcp_tool_calls — MCP aggregation audit) → 37.
-    If this count drops, a new table was likely added to a domain
-    module but ``db.py`` doesn't import that domain module (so
-    ``Base.metadata`` never sees it)."""
+
+    v5.22.26 — this asserted EQUALITY while its own docstring said the
+    signal is "if this count drops". Every legitimate new table therefore
+    broke it, and it had been red long enough to be parked in
+    ``known_failures.txt`` — which is worse than useless, because the
+    invariant it actually guards (a domain module that ``db.py`` forgets to
+    import never reaches ``Base.metadata``) stopped being checked at all.
+
+    Now a floor plus the real invariant: every table in the registry must be
+    reachable from ``db.py``. Growth is fine; a drop, or a table with no
+    exported model, is not."""
     # Importing db.py triggers imports of every domain module
-    from app.models import db  # noqa: F401
+    from app.models import db
     from app.models.db_base import Base
     tables = set(Base.metadata.tables.keys())
-    assert len(tables) == 37, (
-        f"Expected 37 tables in Base.metadata, got {len(tables)}: "
-        f"{sorted(tables)}"
+    FLOOR = 37  # v5.7.0 baseline; raise only when a table is intentionally removed
+    assert len(tables) >= FLOOR, (
+        f"table count dropped to {len(tables)} (floor {FLOOR}). A domain "
+        f"module is probably no longer imported by db.py, so Base.metadata "
+        f"never sees its tables: {sorted(tables)}"
+    )
+    # The invariant the count was a proxy for: every registered table must
+    # have a model class exported from db.py.
+    exported_tables = {
+        getattr(getattr(db, name), "__tablename__", None)
+        for name in db.__all__
+        if hasattr(getattr(db, name, None), "__tablename__")
+    }
+    orphans = tables - exported_tables
+    assert not orphans, (
+        f"these tables are in Base.metadata but no model is exported from "
+        f"db.py __all__: {sorted(orphans)}"
     )
 
 

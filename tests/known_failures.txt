@@ -1,6 +1,6 @@
 # Known pre-existing unit-test failures — the #3 "get the suite green" backlog.
 #
-# Snapshot: 2026-08-12 (after v5.22.12). 57 committed-test failures.
+# Snapshot: 2026-09-26 (after v5.22.25). 56 committed-test failures.
 # REFRESHED 2026-08-12: the previous header claimed 64 and the body listed 48,
 # while the suite actually failed 57 — so the list could neither be trusted as
 # a baseline nor used to detect a regression. Regenerated from an actual run.
@@ -13,6 +13,7 @@
 #   python -m pytest tests/unit -q 2>&1 | grep '^FAILED' \
 #     | sed 's/^FAILED //;s/ - .*//' | sort
 
+
 tests/unit/test_airi_m1.py::test_agent_rejects_non_readonly_tool
 tests/unit/test_airi_m1.py::test_agent_returns_final_answer
 tests/unit/test_airi_m1.py::test_agent_runs_a_tool_then_answers
@@ -20,9 +21,9 @@ tests/unit/test_airi_m3.py::test_agent_emits_proposal_event
 tests/unit/test_airi_m3.py::test_agent_per_turn_apply_cap
 tests/unit/test_claude_oauth_flow.py::TestRefreshAndPersist::test_keeps_old_refresh_when_server_omits_rotation
 tests/unit/test_claude_oauth_flow.py::TestRefreshAndPersist::test_persists_rotated_tokens
+tests/unit/test_pricing.py::test_known_model_override
 tests/unit/test_pricing_and_keepalive.py::test_estimate_cost_returns_nonzero_for_bare_model_name
 tests/unit/test_pricing_and_keepalive.py::test_estimate_cost_with_provider_prefix_match
-tests/unit/test_pricing.py::test_known_model_override
 tests/unit/test_v340_phase3_and_split.py::test_estimate_cost_split_returns_tuple
 tests/unit/test_v3719_log_noise_cleanup.py::test_get_db_reraises_other_operational_errors
 tests/unit/test_v3719_log_noise_cleanup.py::test_get_db_uses_async_with_pattern
@@ -30,7 +31,6 @@ tests/unit/test_v380_codex_oauth_rename.py::test_no_codex_oauth_string_literal_i
 tests/unit/test_v380_codex_oauth_rename.py::test_no_codex_oauth_string_literal_in_frontend
 tests/unit/test_v398_pool_diagnostics_in_health.py::test_health_cache_excludes_dbPool
 tests/unit/test_v4411_db_split.py::test_no_domain_module_exceeds_500_loc
-tests/unit/test_v4411_db_split.py::test_re_export_shim_includes_every_model_class
 tests/unit/test_v4411_db_split.py::test_registry_has_all_tables
 tests/unit/test_v4412_streaming_split.py::test_neither_streaming_file_exceeds_700_loc
 tests/unit/test_v4420_apikey_lww.py::test_patch_endpoint_bumps_last_user_edit_at

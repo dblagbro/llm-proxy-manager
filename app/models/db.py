@@ -47,6 +47,7 @@ from app.models.db_apikey import (
 from app.models.db_user import (
     User,
     SystemSetting,
+    PasswordResetToken,
 )
 
 # Activity log + blocked IPs
@@ -116,6 +117,7 @@ __all__ = [
     "Provider",
     "ProviderUsageWindow",
     "ProviderNodeAuthState",
+    "ProviderOAuthAccount",
     "ExternalUsageSnapshot",
     "ModelCapability",
     "ProviderAiReview",
@@ -127,6 +129,7 @@ __all__ = [
     "ApiKeyAiReview",
     # User + settings
     "User",
+    "PasswordResetToken",
     "SystemSetting",
     # Activity / IP block
     "BlockedIp",
