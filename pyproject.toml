@@ -18,7 +18,7 @@ dependencies = [
     # LLM routing — provider abstraction layer
     "litellm>=1.40.0",
     # Database
-    "sqlalchemy>=2.0.0",
+    "sqlalchemy[asyncio]>=2.0.0",  # [asyncio] pulls greenlet; see requirements.txt
     "alembic>=1.13.0",
     "aiosqlite>=0.20.0",       # SQLite async (single-node default)
     "asyncpg>=0.29.0",         # PostgreSQL async (cluster mode)

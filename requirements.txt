@@ -19,7 +19,25 @@ litellm>=1.85.2,<1.87.0
 # but coverage is cleaner with the fixed version). Pin floor at 1.85.2
 # (the latest 1.85.x at the time of the bump) and ceiling at <1.87.0
 # for safety.
-sqlalchemy>=2.0.0
+# v5.22.27 — MUST be the [asyncio] extra, not bare sqlalchemy.
+#
+# app/models/database.py imports sqlalchemy.ext.asyncio at module scope, and
+# that module calls concurrency._concurrency_shim._initialize(), which imports
+# greenlet. SQLAlchemy declares greenlet behind environment markers, so a bare
+# `sqlalchemy>=2.0.0` does NOT guarantee it: on the GitHub runner's Python
+# 3.13.15 it was not installed, and `import app.main` died with
+#
+#   ImportError: The SQLAlchemy asyncio module requires that the Python
+#   'greenlet' library is installed.
+#
+# It passed locally and in the image only because greenlet arrived
+# transitively there (image: greenlet 3.5.6, Required-by: SQLAlchemy). CI went
+# red from the 2026-09-26 docs-only commit onward, which is what proved it was
+# an environment change rather than a code change -- and it broke the "App
+# build smoke" step, the one step whose whole job is catching import breakage.
+#
+# sqlalchemy[asyncio] is the fix SQLAlchemy's own error message recommends.
+sqlalchemy[asyncio]>=2.0.0
 alembic>=1.13.0
 aiosqlite>=0.20.0
 asyncpg>=0.29.0
