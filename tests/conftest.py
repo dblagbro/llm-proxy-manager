@@ -1,6 +1,7 @@
 """
 Root conftest — session-scoped fixtures shared by all test layers.
 """
+import os
 import time
 import uuid
 
@@ -12,7 +13,43 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 import os as _os
 
-BASE_URL = _os.environ.get("LLMPROXY_TEST_BASE_URL", "https://www.voipguru.org/llm-proxy2")
+# ── Where the integration suite points ───────────────────────────────────────
+#
+# v5.22.38 — three modes, and NONE of them is "production by default".
+#
+#   1. LLMPROXY_TEST_EPHEMERAL=1 — boot a private throwaway instance for this
+#      run (see tests/_ephemeral.py). Self-contained: no network, no shared
+#      deployment, admin/admin, deleted at exit. This is what CI uses and what
+#      you want locally almost always.
+#   2. LLMPROXY_TEST_BASE_URL=<url> with LLMPROXY_TEST_LIVE=1 — point at a real
+#      deployment on purpose (the smoke instance, a dev node).
+#   3. Neither — every live test SKIPS, and BASE_URL is a deliberately
+#      unroutable sentinel.
+#
+# Mode 3's sentinel matters. Before this, BASE_URL defaulted to
+# https://www.voipguru.org/llm-proxy2 — PRODUCTION — and the guard against
+# using it was ``require_live_deployment()``, reached only via the
+# ``admin_session`` fixture. Any test that built its own ``requests.Session``
+# or Playwright ``page`` from BASE_URL walked straight past it: measured
+# 2026-09-28 as 3 failures + 71 errors against the live deployment from a bare
+# ``pytest tests/integration``. The skip is now structural (see
+# ``pytest_collection_modifyitems``), and the sentinel means that even if a
+# future test finds a way around it, it connects to nothing instead of to
+# production.
+_EPHEMERAL_REQUESTED = _os.environ.get("LLMPROXY_TEST_EPHEMERAL") == "1"
+_EXPLICIT_BASE_URL = _os.environ.get("LLMPROXY_TEST_BASE_URL")
+
+# ``.invalid`` is reserved by RFC 2606 and can never resolve.
+_UNROUTABLE = "http://llmproxy-tests-not-configured.invalid/llm-proxy2"
+
+if _EPHEMERAL_REQUESTED:
+    from tests._ephemeral import start_ephemeral
+    BASE_URL = start_ephemeral()
+elif _EXPLICIT_BASE_URL:
+    BASE_URL = _EXPLICIT_BASE_URL
+else:
+    BASE_URL = _UNROUTABLE
+
 ADMIN_USER = _os.environ.get("LLMPROXY_TEST_ADMIN_USER", "admin")
 # v4.4.29 — credential moved out of source. Pre-fix the admin password
 # lived in plaintext in this committed file, making it indefinitely
@@ -26,7 +63,11 @@ ADMIN_USER = _os.environ.get("LLMPROXY_TEST_ADMIN_USER", "admin")
 ADMIN_PASS = _os.environ.get("LLMPROXY_TEST_ADMIN_PASS", "admin")
 MOCK_PORT = 9876
 DOCKER_BRIDGE_IP = "172.18.0.1"
-MOCK_BASE_URL = f"http://{DOCKER_BRIDGE_IP}:{MOCK_PORT}"
+# v5.22.38 — the proxy has to be able to reach the mock. A containerised
+# deployment reaches the host over the docker bridge; an ephemeral instance is a
+# plain host process, so for it the bridge IP is wrong and loopback is right.
+MOCK_HOST = "127.0.0.1" if _os.environ.get("LLMPROXY_TEST_EPHEMERAL") == "1" else DOCKER_BRIDGE_IP
+MOCK_BASE_URL = f"http://{MOCK_HOST}:{MOCK_PORT}"
 
 
 def pytest_addoption(parser):
@@ -40,6 +81,12 @@ def pytest_addoption(parser):
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "real_providers: needs real LLM calls — use --run-real to enable")
+    config.addinivalue_line("markers", "live_deployment: needs a deployment to run against")
+    config.addinivalue_line(
+        "markers",
+        "shared_deployment: needs the shared nginx estate specifically (other "
+        "services, cluster peers) — cannot run against an ephemeral instance",
+    )
 
 
 def pytest_collection_modifyitems(config, items):
@@ -48,6 +95,44 @@ def pytest_collection_modifyitems(config, items):
         for item in items:
             if "real_providers" in item.keywords:
                 item.add_marker(skip)
+
+    # ── v5.22.38: the live gate, moved from the fixtures to collection ───────
+    #
+    # ``require_live_deployment()`` is only reached through ``_api_session()``,
+    # i.e. only by tests that use the ``admin_session`` fixture. Tests that
+    # build their own ``requests.Session()`` or Playwright ``page`` from
+    # BASE_URL never call it. Measured 2026-09-28 on a bare
+    # ``pytest tests/integration``: 78 correctly skipped, but 71 errors and 3
+    # failures went to the live deployment anyway — test_playwright_ui.py (its
+    # own browser fixture), test_auth.py (its own Session) and
+    # test_manual_override_flow.py (its own page).
+    #
+    # A gate a test can skip by not using a fixture is not a gate. Everything
+    # under tests/integration/ is now marked ``live_deployment`` by location,
+    # so opting out requires editing this hook rather than forgetting a
+    # fixture. Individual tests elsewhere can carry the marker explicitly.
+    # Tests that need the shared estate itself — the v1 proxy, the coordinator
+    # hub, paperless, real cluster peers — cannot be served by a private
+    # instance, so they skip whenever the target is ephemeral. They are not
+    # "live tests that happen to be picky": an ephemeral run would have to
+    # stand up four unrelated applications to satisfy them.
+    if not LIVE_TARGET_IS_SHARED:
+        skip_shared = pytest.mark.skip(
+            reason="needs the shared nginx estate — set LLMPROXY_TEST_LIVE=1 with "
+                   "LLMPROXY_TEST_BASE_URL pointed at a real deployment"
+        )
+        for item in items:
+            if "shared_deployment" in item.keywords:
+                item.add_marker(skip_shared)
+
+    if LIVE_TESTS_ENABLED:
+        return
+    skip_live = pytest.mark.skip(reason=_LIVE_SKIP_REASON)
+    for item in items:
+        path = str(getattr(item, "fspath", "") or "")
+        in_integration = f"{os.sep}tests{os.sep}integration{os.sep}" in path
+        if in_integration or "live_deployment" in item.keywords:
+            item.add_marker(skip_live)
 
 
 def pytest_sessionfinish(session, exitstatus):
@@ -78,8 +163,10 @@ def pytest_sessionfinish(session, exitstatus):
     if os.environ.get("LLMPROXY_TEST_PURGE_LIVE") != "1":
         return
     # v5.22.16 — one master switch for "may touch the live deployment".
-    if not LIVE_TESTS_ENABLED:
-        print("\n[session-finish] purge skipped — LLMPROXY_TEST_LIVE is not 1")
+    # v5.22.38 — and never against an ephemeral instance: its DB is deleted
+    # seconds from now, so purging tombstones in it is pure waste.
+    if not LIVE_TARGET_IS_SHARED:
+        print("\n[session-finish] purge skipped — target is not a shared deployment")
         return
     try:
         s = _api_session()
@@ -120,12 +207,21 @@ def pytest_sessionfinish(session, exitstatus):
 # Both problems have one fix: require an explicit opt-in, and SKIP without it.
 # Unit runs become self-contained by default, CI can gate the whole suite, and
 # touching production becomes a deliberate act.
-LIVE_TESTS_ENABLED = _os.environ.get("LLMPROXY_TEST_LIVE") == "1"
+# v5.22.38 — an ephemeral instance IS a deployment, just a private one, so it
+# satisfies the gate without anyone opting into touching a shared environment.
+LIVE_TESTS_ENABLED = _EPHEMERAL_REQUESTED or _os.environ.get("LLMPROXY_TEST_LIVE") == "1"
+
+# True only when the target is someone else's deployment. Guards the
+# session-finish tombstone purge, which is pointless against a DB that is about
+# to be deleted and rude against one that is not.
+LIVE_TARGET_IS_SHARED = LIVE_TESTS_ENABLED and not _EPHEMERAL_REQUESTED
 
 _LIVE_SKIP_REASON = (
-    "needs a live deployment. Set LLMPROXY_TEST_LIVE=1 to enable, and set "
-    "LLMPROXY_TEST_BASE_URL to a non-production target unless you really do "
-    f"mean to write to {BASE_URL}."
+    "needs a deployment to run against. Easiest: LLMPROXY_TEST_EPHEMERAL=1, "
+    "which boots a private throwaway instance for this run and needs no "
+    "network. To target a real deployment instead, set LLMPROXY_TEST_LIVE=1 "
+    "and LLMPROXY_TEST_BASE_URL — and note that production is a shared "
+    "environment these tests write to."
 )
 
 
@@ -255,3 +351,28 @@ def mock_server(admin_session):
     # Teardown
     admin_session.delete(f"{BASE_URL}/api/providers/{provider_id}")
     srv.stop()
+
+
+# ── Ephemeral runs need at least one provider ─────────────────────────────────
+#
+# v5.22.38 — a freshly booted instance has an empty providers table, so anything
+# that actually calls an LLM endpoint gets
+# ``503 No providers configured. Operator action: enable at least one provider``.
+# Measured: 14 of 66 runnable integration tests failed on exactly that.
+#
+# The suite already has the machinery — ``mock_server`` starts the local mock LLM
+# and registers it as a provider — but only tests that *request* that fixture got
+# it. Against a shared deployment that was fine, because real providers were
+# already configured there. An ephemeral instance has to provide its own.
+#
+# Autouse only in ephemeral mode: against a real deployment this must not
+# silently add a provider row.
+@pytest.fixture(scope="session", autouse=True)
+def _ephemeral_default_provider(request):
+    if not _EPHEMERAL_REQUESTED:
+        yield
+        return
+    # Reuse the existing fixture rather than duplicating registration, so the
+    # mock's lifecycle and teardown stay in one place.
+    request.getfixturevalue("mock_server")
+    yield

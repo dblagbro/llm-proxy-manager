@@ -14,16 +14,19 @@ Run with:
 """
 from __future__ import annotations
 
-import os
 import time
 
 import pytest
 from playwright.sync_api import Page, expect, sync_playwright
 
-BASE_URL = os.environ.get(
-    "LLMPROXY_TEST_BASE_URL", "https://www.voipguru.org/llm-proxy2"
-)
-ADMIN_USER = "admin"
+# v5.22.38 — target and credentials come from tests/conftest.py, the single
+# source of truth. This file used to carry its own BASE_URL default of production, which meant:
+#   - it could not be pointed at the ephemeral instance (LLMPROXY_TEST_EPHEMERAL=1),
+#     so it could only run where that URL resolves;
+#   - it sat outside the live gate, so a bare `pytest tests/integration` sent it
+#     at a shared deployment;
+from tests.conftest import ADMIN_PASS, ADMIN_USER, BASE_URL  # noqa: F401
+
 # v5.22.12 — credential moved out of source, matching tests/conftest.py
 # (v4.4.29). This file kept the plaintext production admin password long
 # after conftest.py was fixed, so it stayed readable by anyone on the
@@ -31,7 +34,6 @@ ADMIN_USER = "admin"
 # raw.githubusercontent.com. Read from LLMPROXY_TEST_ADMIN_PASS; fall
 # back to the documented default "admin" so a from-scratch checkout
 # against a default-credentials dev box still works.
-ADMIN_PASS = os.environ.get("LLMPROXY_TEST_ADMIN_PASS", "admin")
 TARGET_PROVIDER_NAME = "Devin-Anthropic-Max-VG"
 
 

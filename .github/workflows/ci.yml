@@ -2,32 +2,31 @@ name: CI
 
 # Regression guard for the bug classes that have actually recurred here.
 #
-# Scope note (2026-08-05): this runs an app-build smoke + the hermetic
-# structural/invariant tests, NOT the full unit suite. The full suite is
-# not yet CI-ready — a chunk of tests/unit is non-hermetic (session
-# fixtures in tests/conftest.py POST to the LIVE deployment at
-# voipguru.org with admin creds), so it can't pass on a clean runner.
-# Making the whole suite hermetic + green is tracked in
-# tests/known_failures.txt; once that's done, promote the "full-unit"
-# step below from informational to blocking.
+# History of this file is a two-year argument with one blocker, now closed:
 #
-# 2026-08-17: added the hermetic v5.22.x pins to the gating step, most
-# importantly test_v5226_next_route_terminates.py. That guards the
-# _next_route infinite loop — the actual root cause of the repeated node
-# wedges — which until now had a regression pin that CI never ran. Gating
-# went from 4 test files to 8.
+#   2026-08-05  Full suite not CI-ready — a chunk of tests/unit was non-hermetic
+#               (session fixtures POSTed to the LIVE deployment with admin
+#               creds), so only an app-build smoke + 4 hermetic files gated.
+#   2026-08-17  Gating widened 4 -> 8 files, adding the v5.22.x pins — most
+#               importantly test_v5226_next_route_terminates.py, the regression
+#               pin for the _next_route loop that caused the node wedges and
+#               which CI had never run.
+#   2026-09-06  Live-fixture half closed: fixtures SKIP unless opted in.
+#               What remained was the pre-existing failure list.
+#   2026-09-28  (v5.22.38) BOTH halves closed. tests/known_failures.txt is
+#               EMPTY, tests/unit is green at 3985 passed, and the suite is
+#               provably network-free — verified by running it under a socket
+#               guard that raises on any non-loopback connect: zero attempts.
 #
-# 2026-09-06 (v5.22.17): the live-fixture half of that blocker is CLOSED.
-# tests/conftest.py's session fixtures now SKIP unless LLMPROXY_TEST_LIVE=1,
-# so the suite no longer authenticates against production on a clean runner —
-# and no longer mutates production when run locally, which it had been doing
-# silently. What remains before `full-unit` can become blocking is the
-# pre-existing failure list. Verified 2026-09-11: tests/known_failures.txt
-# is exactly accurate — 57 listed, 57 actual, and the two sets match item
-# for item, so it can be trusted as a baseline. (An earlier note here said
-# it had "drifted to 64"; that was wrong. The 64 was a transient regression
-# introduced by the v5.22.15 fail-closed change and fixed before commit —
-# the file itself never drifted.)
+# So the full unit suite is now BLOCKING, and the hand-maintained 8-file list is
+# gone: it was a strict subset of what now runs anyway, and keeping it would
+# just be a second place to forget to update.
+#
+# The integration suite is blocking too, which it has never been. It no longer
+# needs a deployment at all: LLMPROXY_TEST_EPHEMERAL=1 boots a private
+# throwaway instance per run (tests/_ephemeral.py). See
+# tests/known_integration_failures.txt for the tests that making it runnable
+# surfaced — those are a triage list, not a parking space.
 
 on:
   push:
@@ -56,40 +55,20 @@ jobs:
         # v5.21.14 leak — a broken dependency signature fails the import.
         run: python -c "import app.main; print('import app.main OK')"
 
-      - name: Invariant guard tests (hermetic — no network)
-        # Only hermetic tests belong here. Verified 2026-08-17 by grepping each
-        # file for live-deployment references (voipguru / requests. / httpx.);
-        # the v5.22.7 password-reset, v5.22.9 SSO and v5.22.10 login-by-email
-        # pins DO hit the live deployment via tests/conftest.py session
-        # fixtures, so they are deliberately NOT listed — they pass locally and
-        # would fail on a clean runner.
-        run: |
-          pytest -q -p no:cacheprovider \
-            tests/unit/test_v52114_watchdog_dep_order.py \
-            tests/unit/test_v5717_disconnect_watchdog.py \
-            tests/unit/test_v599_watchdog_coverage_responses_audio_images.py \
-            tests/unit/test_v52113_pool_self_heal.py \
-            tests/unit/test_v5226_next_route_terminates.py \
-            tests/unit/test_v5220_sqlite_pool_no_churn.py \
-            tests/unit/test_v5227_litellm_tool_shape.py \
-            tests/unit/test_v52211_cluster_sync_email.py \
-            tests/unit/test_v52213_client_error_and_output_cap.py \
-            tests/unit/test_v52212_no_secrets_in_source.py \
-            tests/unit/test_v52215_secret_scan.py \
-            tests/unit/test_v52215_cluster_auth_fail_closed.py \
-            tests/unit/test_v52215_login_throttle.py \
-            tests/unit/test_v52215_watchdog_body_race.py \
-            tests/unit/test_v52215_auth_skip_streak.py \
-            tests/unit/test_v52215_exposure_hardening.py \
-            tests/unit/test_v52216_live_tests_opt_in.py \
-            tests/unit/test_v52218_claude_oauth_expiry.py \
-            tests/unit/test_v52218_webhook_signing_key.py \
-            tests/unit/test_v52218_sweep_hardening.py \
-            tests/unit/test_v52219_auth_error_wording.py \
-            tests/unit/test_v52220_cot_usage_accounting.py \
-            tests/unit/test_v52221_cross_family_dispatcher.py \
-            tests/unit/test_v52222_failover_model_compat.py \
-            tests/unit/test_v52224_subscription_retirement.py
+      - name: Full unit suite (blocking)
+        # v5.22.38 — was a hand-maintained list of 8 hermetic files, because the
+        # rest of tests/unit could not pass on a clean runner. Both reasons are
+        # gone: known_failures.txt is empty, the suite is green, and it makes no
+        # outbound connections (verified under a socket guard). The old list was
+        # a subset of this, so nothing stopped being checked.
+        run: pytest tests/unit -q -p no:cacheprovider
+
+      - name: Unit suite must stay hermetic
+        # The suite being network-free is load-bearing for the step above, so
+        # assert it. Any connect() to a non-loopback address fails the build,
+        # which is how the next accidental live fixture gets caught on the PR
+        # that adds it instead of months later.
+        run: python3 tools/run_unit_suite_hermetic.py
 
   secrets:
     # v5.22.15 — the repo is PUBLIC. A credential that reaches a commit cannot
@@ -120,13 +99,12 @@ jobs:
           fi
           echo "no forbidden paths tracked"
 
-  full-unit-informational:
-    # Runs the whole unit suite for visibility. Currently expected to have
-    # pre-existing failures (see tests/known_failures.txt) AND network-
-    # fixture errors on a clean runner, so it is NON-BLOCKING for now.
-    # Promote to a required check once the suite is hermetic + green.
+  integration-ephemeral:
+    # v5.22.38 — the integration suite has never run in CI. It required a live
+    # deployment, so on a clean runner it could only fail. It now boots its own
+    # private instance (sqlite in a tempdir, no network, admin/admin, deleted at
+    # exit), so it runs anywhere.
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -137,5 +115,23 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements-dev.txt
-      - name: Full unit suite (informational)
-        run: pytest tests/unit -q --tb=no -p no:cacheprovider || true
+      - name: Integration suite against an ephemeral instance
+        env:
+          LLMPROXY_TEST_EPHEMERAL: "1"
+        # Playwright UI tests need a browser and a built frontend; they are a
+        # separate concern and stay out until that is wired. The deselect list
+        # is tests/known_integration_failures.txt — read its header before
+        # adding to it.
+        run: |
+          DESELECT=$(grep -vE '^\s*(#|$)' tests/known_integration_failures.txt \
+            | sed 's/^/--deselect=/' | tr '\n' ' ')
+          pytest -q -p no:cacheprovider tests/integration \
+            --ignore=tests/integration/test_playwright_ui.py \
+            --ignore=tests/integration/test_v5205_load_detail_button.py \
+            --ignore=tests/integration/test_v5210_self_edit_ui_pin.py \
+            --ignore=tests/integration/test_v5212_default_refuse_tolerance_ui_pin.py \
+            --ignore=tests/integration/test_manual_override_flow.py \
+            $DESELECT
+
+      - name: Integration suite must not need the network
+        run: python3 tools/check_integration_hermetic.py

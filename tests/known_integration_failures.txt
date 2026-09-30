@@ -1,0 +1,54 @@
+# Integration tests that fail against an ephemeral instance, as of v5.22.38.
+#
+# READ THIS BEFORE ADDING A LINE.
+#
+# These 13 are NOT pre-existing known failures. They are tests that could never
+# run before: the integration suite required a live HTTPS deployment, so on a
+# clean runner it could only error. v5.22.38 gave it a private throwaway
+# instance, and 53 of the 66 runnable tests pass. These 13 are what that
+# surfaced. Nobody has triaged them yet — nobody could.
+#
+# This is a TRIAGE LIST, not a parking space. The unit suite's
+# known_failures.txt reached 75 entries by being treated as the latter; driving
+# it back to 0 over v5.22.26-37 turned up six real defects (BUG-086..BUG-091)
+# and about a dozen guards that had silently stopped testing anything. Do not
+# repeat that here. Adding a line needs a reason recorded next to it.
+#
+# Grouped by apparent cause, from a first pass only — none confirmed:
+#
+# (a) usage counts arrive as zero on the OpenAI->Anthropic path (4)
+#     The mock provider is `compatible` (OpenAI-shaped) and returns
+#     usage.completion_tokens correctly (tests/mock_llm_server.py:146), but the
+#     Anthropic-shaped response reaching the caller has output_tokens == 0.
+#     Either the translation drops it or the test's expectation is wrong. This
+#     one is worth looking at first: if the translation is dropping usage, every
+#     cost figure on that path is 0 and that is a live billing-visibility bug,
+#     not a test bug.
+tests/integration/test_routing_mock.py::TestAnthropicNonStream::test_basic_text_response_shape
+tests/integration/test_routing_mock.py::TestAnthropicStream::test_sse_event_sequence
+tests/integration/test_routing_mock.py::TestAnthropicStream::test_usage_in_message_delta
+tests/integration/test_routing_mock.py::TestCoTEmulation::test_cot_produces_thinking_blocks
+#
+# (b) cross-family routing refuses the mock for tool-using Anthropic requests (3)
+#     503 "Cross-family fallback to a non-translatable upstream for a tool-using
+#     Anthropic request. Providers skipped: pytest-mock". Plausibly correct
+#     behaviour meeting a test written when a real Anthropic provider was always
+#     present. Either the ephemeral instance needs an Anthropic-shaped mock, or
+#     these tests need the real_providers marker.
+tests/integration/test_cross_family_translation.py::test_tool_conversation_to_gemini_not_400
+tests/integration/test_cross_family_translation.py::test_tool_conversation_streaming_completes_cleanly
+tests/integration/test_cross_family_translation.py::test_orphan_tool_result_conversation_not_400
+#
+# (c) vision stripping returns 422 (4)
+#     All four send image blocks and expect 200. Unclear whether the 422 comes
+#     from the proxy's validation or the mock's. Not yet read.
+tests/integration/test_new_features.py::TestVisionStripping::test_image_blocks_replaced_with_text_placeholder
+tests/integration/test_new_features.py::TestVisionStripping::test_image_placeholder_text_in_forwarded_request
+tests/integration/test_new_features.py::TestVisionStripping::test_vision_stripped_header_present
+tests/integration/test_new_features.py::TestVisionStripping::test_mixed_text_and_image_preserves_text
+#
+# (d) CoT needs a model that emits thinking blocks (2)
+#     The mock returns plain text, so no thinking blocks appear and iteration
+#     counts stay 0. These likely belong behind real_providers / --run-real.
+tests/integration/test_settings_permutation.py::TestCoTToggle::test_cot_enabled_produces_thinking_blocks
+tests/integration/test_settings_permutation.py::TestCoTIterations::test_max_iterations_zero_skips_critique

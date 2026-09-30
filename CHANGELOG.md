@@ -2,6 +2,78 @@
 
 All notable changes since v2.7.6. Older history available in `git log`.
 
+### v5.22.38 — the test suite stops needing a shared deployment (2026-09-28)
+
+The last CI blocker, closed. **The full unit suite and the integration suite are
+both gating now**, and neither needs a deployment, a network, or credentials.
+
+**First, a correction.** `docs/current-state.md` said running the suite locally
+mutates production. That was true before v5.22.16 and I repeated it after. The
+unit suite is hermetic — verified by running it under a socket guard that raises
+on any non-loopback `connect()`: 3985 passed, zero attempts. What was actually
+still broken was narrower and worse.
+
+**The live gate only covered tests that used a fixture.**
+`require_live_deployment()` is reached through `_api_session()`, so it gated
+`admin_session` and its dependents — and nothing else. Any test building its own
+`requests.Session()` or Playwright `page` from `BASE_URL` walked straight past
+it. A bare `pytest tests/integration` measured **78 correctly skipped, 71 errors
+and 3 failures against the live deployment**: `test_playwright_ui.py` (own
+browser fixture, production default), `test_auth.py` (own Session),
+`test_manual_override_flow.py` (own page). A gate a test can skip by not using a
+fixture is not a gate — it is now applied at collection by location, so opting
+out means editing the hook.
+
+`BASE_URL` also no longer defaults to production. With nothing configured it is
+an RFC 2606 `.invalid` host, so anything that ever does escape the gate connects
+to nothing instead of writing to a live system.
+
+**Then: the suite had nowhere else to run.** `tests/_ephemeral.py` boots a
+private instance per run — temp SQLite, loopback only, `CLUSTER_ENABLED=false`,
+`admin`/`admin`, deleted at exit, ~3s. `LLMPROXY_TEST_EPHEMERAL=1` and the whole
+suite points at it. Three things had to be fixed for that to work:
+
+- **The session cookie was `secure=True`, hardcoded.** Correct for every real
+  deployment, and the actual reason this suite could only ever run against
+  HTTPS: over plain `http://127.0.0.1` neither `requests` nor a browser returns
+  a Secure cookie, so login returned 200 and every authenticated call after it
+  returned 401. Now `SESSION_COOKIE_SECURE`, **defaulting to True** — only the
+  test harness relaxes it, and nothing in compose sets it.
+- **Five files hardcoded their own target.** Two defaulted to production; three
+  UI-pin files hardcoded the smoke instance *and* `ADMIN_PASS = "admin"` — the
+  credential-in-source pattern fixed in v4.4.29, found again in
+  `test_playwright_ui.py` on 2026-08-12, and missed in these three both times.
+  All five now import from `tests/conftest.py`.
+- **A fresh instance has no providers**, so anything calling an LLM endpoint got
+  `503 No providers configured` — 14 of 66 tests. The `mock_server` fixture
+  already existed but only helped tests that requested it; it is now autouse in
+  ephemeral mode only.
+
+Tests that genuinely need the shared nginx estate — the v1 proxy, the
+coordinator hub, paperless — get a `shared_deployment` marker instead. An
+ephemeral run cannot serve them without standing up three unrelated apps.
+
+**Result:** `pytest tests/integration` bare → **162 skipped in 0.3s**, no
+network. With `LLMPROXY_TEST_EPHEMERAL=1` → **53 passed**, where previously none
+could run at all.
+
+**CI.** The hand-maintained 8-file allowlist is gone — it was a strict subset of
+the full suite, and a second place to forget to update. `full-unit-informational`
+(`|| true`, unable to fail the build) is replaced by a blocking run plus
+`tools/run_unit_suite_hermetic.py`, which fails the build on any outbound
+connection, so the next accidental live fixture is caught on its own PR.
+A new `integration-ephemeral` job runs the integration suite — for the first
+time ever — plus `tools/check_integration_hermetic.py`, which fails if a test
+names a shared host without the marker. Both guards were verified to bite.
+
+**13 failures surfaced** by making the suite runnable, recorded in
+`tests/known_integration_failures.txt` with grouped causes. Worth one eye:
+four of them are `usage.output_tokens == 0` on the OpenAI→Anthropic path while
+the mock reports `completion_tokens` correctly. If the translation is dropping
+usage rather than the tests being wrong, every cost figure on that path is zero
+— which would be a live billing-visibility bug, not a test bug. Untriaged; it
+could not be seen before today.
+
 ### v5.22.37 — LOC refactors 2 of 2: the two handlers; known_failures is empty (2026-09-26)
 
 **`known_failures.txt` is now empty and `tests/unit` is fully green — 3985

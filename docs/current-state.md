@@ -367,11 +367,16 @@ OAuth session. Left alone deliberately; if it re-opens and stays open, re-auth t
 - **`known_failures.txt` is EMPTY as of v5.22.37** (75 → 0 over the v5.22.26–37 arc) and
   `tests/unit` is fully green at 3985 passed. Clearing it surfaced six real defects
   (BUG-086…BUG-091) and roughly a dozen guards that had silently stopped testing anything.
-  **The real CI blocker is what it always was:**
-  `tests/conftest.py` session fixtures authenticate against the **live production deployment**.
-  That makes much of the suite unrunnable on a clean runner *and* means running it locally mutates
-  production (see the CAUTION in `docs/test-plan.md`). Making those fixtures hermetic is the single
-  highest-leverage test-infra change available.
+  **The CI blocker is CLOSED as of v5.22.38.** Both suites gate, and neither needs a
+  deployment, network or credentials: `pytest tests/unit` is hermetic (asserted every run
+  by `tools/run_unit_suite_hermetic.py`, which fails on any non-loopback connect), and
+  `tests/integration` boots its own throwaway instance via `LLMPROXY_TEST_EPHEMERAL=1`
+  (53 passing, previously 0 runnable). The earlier note here — that running the suite
+  locally mutates production — was **stale**: that was fixed in v5.22.16. What was still
+  real, and is now fixed, is that the live gate only covered tests using the
+  `admin_session` fixture, so 74 tests reached the live deployment by building their own
+  session or browser page. Remaining: 13 integration failures that becoming runnable
+  surfaced, in `tests/known_integration_failures.txt` — a triage list, not a parking space.
 - **nginx logs on the NFS share are unrotated and large:** `/mnt/s/documents/access.log` **14 GB**
   and `error.log` **41 GB**, both still growing. Not llm-proxy2's doing (shared nginx), but they
   live on the share and no logrotate is trimming them.

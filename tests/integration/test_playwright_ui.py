@@ -6,16 +6,20 @@ Run with:
     playwright install chromium
     python -m pytest tests/integration/test_playwright_ui.py -v
 """
-import os
 import re
 import time
-import pytest
-from playwright.sync_api import sync_playwright, Page, expect
 
-BASE_URL = os.environ.get(
-    "LLMPROXY_TEST_BASE_URL", "https://www.voipguru.org/llm-proxy2"
-)
-ADMIN_USER = "admin"
+import pytest
+from playwright.sync_api import Page, expect, sync_playwright
+
+# v5.22.38 — target and credentials come from tests/conftest.py, the single
+# source of truth. This file used to carry its own BASE_URL default of production, which meant:
+#   - it could not be pointed at the ephemeral instance (LLMPROXY_TEST_EPHEMERAL=1),
+#     so it could only run where that URL resolves;
+#   - it sat outside the live gate, so a bare `pytest tests/integration` sent it
+#     at a shared deployment;
+from tests.conftest import ADMIN_PASS, ADMIN_USER, BASE_URL  # noqa: F401
+
 # v5.22.12 — credential moved out of source, matching tests/conftest.py
 # (v4.4.29). This file kept the plaintext production admin password long
 # after conftest.py was fixed, so it stayed readable by anyone on the
@@ -23,7 +27,6 @@ ADMIN_USER = "admin"
 # raw.githubusercontent.com. Read from LLMPROXY_TEST_ADMIN_PASS; fall
 # back to the documented default "admin" so a from-scratch checkout
 # against a default-credentials dev box still works.
-ADMIN_PASS = os.environ.get("LLMPROXY_TEST_ADMIN_PASS", "admin")
 
 
 @pytest.fixture(scope="session")
@@ -67,6 +70,11 @@ def login(page: Page):
 
 # ── Existing services sanity checks ──────────────────────────────────────────
 
+# v5.22.38 — these three check OTHER applications on the shared nginx (the v1
+# proxy, the coordinator hub, paperless), not llm-proxy2. An ephemeral instance
+# cannot serve them, so they are marked rather than repointed: satisfying them
+# would mean standing up three unrelated apps.
+@pytest.mark.shared_deployment
 class TestExistingServices:
     def test_llm_proxy_v1_health(self, page: Page):
         """v1 proxy still responds — no regression."""
@@ -508,7 +516,6 @@ class TestAPIKeyLimitsUI:
 
     def test_edit_limits_sets_spending_cap(self, page: Page):
         """Fill in spending cap, save, verify value appears in table."""
-        import json as _json
         login(page)
         page.goto(f"{BASE_URL}/keys")
         page.wait_for_load_state("networkidle")

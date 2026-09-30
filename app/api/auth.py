@@ -11,6 +11,7 @@ from app.auth import login_throttle
 from app.auth.admin import (
     SESSION_COOKIE_NAME,
     SESSION_COOKIE_PATH,
+    SESSION_COOKIE_SECURE,
     AdminUser,
     _extract_token,
     _get_session,
@@ -127,7 +128,7 @@ async def login(
         token,
         httponly=True,
         samesite="lax",
-        secure=True,
+        secure=SESSION_COOKIE_SECURE,
         max_age=SESSION_COOKIE_MAX_AGE,
         path=SESSION_COOKIE_PATH,
     )

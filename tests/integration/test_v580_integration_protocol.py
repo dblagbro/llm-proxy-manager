@@ -20,7 +20,12 @@ import urllib.request
 import json as _json
 
 
-BASE = os.environ.get("LLMPROXY_BASE", "https://www.voipguru.org/llm-proxy2-smoke")
+# v5.22.38 — was its own LLMPROXY_BASE defaulting to the smoke instance, so it
+# could not run ephemerally and ignored the live gate. LLMPROXY_BASE still wins
+# if set, for anyone driving this against a specific deployment by hand.
+from tests.conftest import BASE_URL as _CONFTEST_BASE_URL
+
+BASE = os.environ.get("LLMPROXY_BASE") or _CONFTEST_BASE_URL
 PASSPHRASE = os.environ.get("INTEGRATION_PASSPHRASE", "")
 
 

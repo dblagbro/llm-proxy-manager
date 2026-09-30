@@ -28,10 +28,40 @@ def _conftest_src() -> str:
 
 
 class TestOptInGate:
-    def test_helper_exists_and_is_the_single_gate(self):
+    def test_helper_exists_and_the_gate_is_structural(self):
+        """v5.22.38 — was ``test_helper_exists_and_is_the_single_gate``, and it
+        pinned the literal
+        ``LIVE_TESTS_ENABLED = _os.environ.get("LLMPROXY_TEST_LIVE") == "1"``.
+
+        The premise turned out to be wrong: ``require_live_deployment()`` was
+        never the single gate, because it is only reached through
+        ``_api_session()``. Any test building its own ``requests.Session`` or
+        Playwright ``page`` from BASE_URL walked past it — measured 2026-09-28
+        as 71 errors and 3 failures against the live deployment from a bare
+        ``pytest tests/integration``. This test asserting "single gate" is part
+        of why that went unnoticed.
+
+        The gate is now structural: ``pytest_collection_modifyitems`` marks
+        everything under tests/integration/ and skips it unless opted in, so a
+        test cannot escape by not using a fixture. The helper stays for the
+        fixtures, and ``LLMPROXY_TEST_EPHEMERAL=1`` also satisfies the gate
+        because a private throwaway instance is a deployment.
+        """
         src = _conftest_src()
         assert "def require_live_deployment()" in src
-        assert 'LIVE_TESTS_ENABLED = _os.environ.get("LLMPROXY_TEST_LIVE") == "1"' in src
+        assert "LIVE_TESTS_ENABLED = _EPHEMERAL_REQUESTED or " in src, (
+            "an ephemeral instance must satisfy the gate, or the hermetic "
+            "integration run cannot happen"
+        )
+        # The structural half: collection-time skip by location.
+        assert "def pytest_collection_modifyitems" in src
+        assert "tests{os.sep}integration{os.sep}" in src.replace('f"', '"'), (
+            "the gate must skip tests/integration by LOCATION — a gate that "
+            "depends on each test remembering a fixture is not a gate"
+        )
+        assert "_UNROUTABLE" in src, (
+            "BASE_URL must fall back to an unroutable sentinel, not production"
+        )
 
     def test_session_factory_checks_the_gate_before_connecting(self):
         """The check has to come before requests.Session(), or the opt-in is

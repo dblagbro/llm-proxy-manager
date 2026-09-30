@@ -41,6 +41,20 @@ SESSION_IDLE_SEC = 86400      # Extend last_seen on each /me call
 import os
 SESSION_COOKIE_NAME = os.environ.get("SESSION_COOKIE_NAME", "llmproxy_session")
 SESSION_COOKIE_PATH = os.environ.get("SESSION_COOKIE_PATH", "/")
+
+# v5.22.38 — the Secure flag was hardcoded `secure=True` at the set_cookie call.
+# Correct for every real deployment (all served over HTTPS), but it made the
+# integration suite impossible to run against a local instance: `requests` and
+# browsers both refuse to send a Secure cookie over http://127.0.0.1, so login
+# returned 200 and every authenticated call after it returned 401. That is why
+# the suite had no target but a shared HTTPS deployment.
+#
+# Default stays True, so no deployment changes behaviour. Only an explicit
+# SESSION_COOKIE_SECURE=false relaxes it, and only the ephemeral test harness
+# sets that (tests/_ephemeral.py). Do not set it in compose.
+SESSION_COOKIE_SECURE = os.environ.get("SESSION_COOKIE_SECURE", "true").strip().lower() not in (
+    "false", "0", "no", "off",
+)
 _LEGACY_COOKIE_NAME = "session"  # accepted during migration window
 
 

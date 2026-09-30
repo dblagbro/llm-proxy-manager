@@ -21,12 +21,18 @@ Run with:
 from __future__ import annotations
 
 import pytest
-from playwright.sync_api import sync_playwright, Page, expect
+from playwright.sync_api import Page, expect, sync_playwright
 
-
-BASE_URL = "https://www.voipguru.org/llm-proxy2-smoke"
-ADMIN_USER = "admin"
-ADMIN_PASS = "admin"
+# v5.22.38 — target and credentials come from tests/conftest.py, the single
+# source of truth. This file used to carry its own hardcoded smoke URL and admin password, which meant:
+#   - it could not be pointed at the ephemeral instance (LLMPROXY_TEST_EPHEMERAL=1),
+#     so it could only run where that URL resolves;
+#   - it sat outside the live gate, so a bare `pytest tests/integration` sent it
+#     at a shared deployment;
+#   - a rotated admin password broke it, because the fallback was hardcoded
+#     rather than read from LLMPROXY_TEST_ADMIN_PASS (the v4.4.29 lesson,
+#     re-learned on test_playwright_ui.py on 2026-08-12 and missed here).
+from tests.conftest import ADMIN_PASS, ADMIN_USER, BASE_URL  # noqa: F401
 
 
 @pytest.fixture(scope="session")
