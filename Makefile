@@ -1,4 +1,4 @@
-.PHONY: install dev test lint build up down logs shell secret-scan install-hooks
+.PHONY: install dev test lint build up down logs shell secret-scan install-hooks verify-ci
 
 install:
 	pip install -e ".[dev]"
@@ -51,3 +51,9 @@ install-hooks:  ## Point git at .githooks/ (run once per clone)
 	git config core.hooksPath .githooks
 	@echo "hooks installed: $$(git config core.hooksPath)"
 	@echo "pre-commit now blocks credentials and forbidden paths."
+
+verify-ci:
+	# Run the unit suite on CI's interpreter (Python 3.13, project image).
+	# Catches the local/CI divergences that made v5.22.38 go red twice:
+	# a newer resolved dependency, or 3.13-specific behaviour. Needs Docker.
+	./tools/verify_like_ci.sh

@@ -2,6 +2,68 @@
 
 All notable changes since v2.7.6. Older history available in `git log`.
 
+### v5.22.39 — the CI failure emails, root-caused (2026-09-30)
+
+Two separate problems produce those emails. Both fixed, and both now guarded so
+they cannot come back quietly.
+
+**1. Green runs were carrying `failure` annotations.** The `guard` job on a
+**passing** run had **20 annotations at level `failure`**, every one
+`RuntimeError: Event loop is closed`. GitHub renders those as failures in the run
+summary and in the notification email, so a build that passed looked broken and
+there was no way to tell real breakage from teardown noise. Reproduced locally:
+16 occurrences.
+
+Cause: aiosqlite runs each connection on a worker thread that talks to the event
+loop via `call_soon_threadsafe`. Eleven test modules create an `AsyncEngine` on
+`sqlite+aiosqlite:///:memory:` and never `dispose()` it, so the pooled connection
+and its thread outlive the test; when pytest-asyncio closes that loop, the
+thread's next call hits `_check_closed` and raises. The tests had already passed.
+
+Fixed once in `tests/unit/conftest.py` rather than in eleven fixtures, because
+the twelfth would reintroduce it: `create_async_engine` is wrapped to record
+engines, and an **async** autouse fixture disposes them at teardown. Async
+matters — a sync fixture's teardown runs *after* pytest-asyncio has closed the
+loop, so `dispose()` can't run and the synchronous pool fallback merely provokes
+more close attempts against the dead loop (measured: 24, up from 16). Two wrong
+turns are recorded in the comments: `NullPool` looks tidier and destroys
+`:memory:` databases (85 failures, 41 errors), and `AsyncEngine` rejects
+arbitrary attributes, so the loop is kept beside the engine rather than on it.
+
+Guarded by `filterwarnings = ["error::pytest.PytestUnhandledThreadExceptionWarning"]`
+in `pyproject.toml`: an unhandled exception in a background thread is now a hard
+failure, not a cosmetic annotation. Verified both ways — with the old conftest
+and this filter the suite exits 1 (2 failed, 3 errors); with the fix, 4022 passed
+and zero occurrences, on Python 3.10 and on 3.13.
+
+**2. Two annotations on every job, including passing ones.** `ubuntu-latest`
+emitted an Ubuntu 26 migration notice and the v4/v5 actions emitted a Node.js 20
+deprecation warning. Runner pinned to `ubuntu-24.04`; actions bumped to
+`checkout@v7`, `setup-python@v7`, `setup-node@v7`. Pinned deliberately, with a
+note saying to bump on purpose rather than drift with `latest`.
+
+**3. Why a red commit reached CI at all.** v5.22.38 was green locally and red on
+CI because this machine's environment differs from a clean runner's in ways that
+*silently flip test outcomes* — `http-sfv` declared but not installed (which hid
+BUG-093, a live compliance bug, for four months), and an older `fastapi` (whose
+0.141.1 route-introspection change broke six tests).
+
+`tests/unit/test_v52239_behaviour_gating_deps.py` makes that a local failure. It
+deliberately does **not** check all of `requirements.txt`: nine declared packages
+are optional subsystems guarded by `ImportError`, and their absence changes
+nothing about what the suite proves. It checks the few that gate behaviour under
+test, each with the reason it earns a place. It found one real divergence
+immediately — `bcrypt 3.2.0` against a declared `>=4.0.0` floor, on a password
+hashing path — now upgraded.
+
+A floor cannot express "CI resolves something newer than I have", so
+`make verify-ci` (`tools/verify_like_ci.sh`) closes the rest: it stages HEAD plus
+uncommitted and untracked changes and runs the suite on Python 3.13 in the
+project image. Result: 4018 passed, 7 skipped, exit 0. Three git-dependent
+assertions now **skip** outside a checkout instead of failing, because a tool
+that reports three spurious failures every run doesn't get trusted, and an
+untrusted pre-push check doesn't get used.
+
 ### v5.22.38 — the test suite stops needing a shared deployment; gating it finds two product bugs (2026-09-28)
 
 The last CI blocker, closed. **The full unit suite and the integration suite are

@@ -37,8 +37,33 @@ _PLANTED_JWT = (
 _PLANTED_ENTROPY = 'TOKEN = "xQ7fVn2LpR9wZk4TbY6mHc3JsD8gA5eU"'  # pragma: allowlist secret
 
 
+def _skip_unless_git_checkout():
+    """Skip when the tree is not a git checkout.
+
+    v5.22.39 — these assertions shell out to git. ``tools/verify_like_ci.sh``
+    runs the suite against a staged copy of the tree (to exercise CI's Python
+    3.13), which is not a repository, so they failed there for a reason that has
+    nothing to do with the code. A tool that reports three spurious failures
+    every run does not get trusted, and an untrusted pre-push check does not get
+    used. CI does a real checkout, so coverage there is unchanged.
+    """
+    import subprocess
+
+    import pytest as _pytest
+
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "--is-inside-work-tree"],
+            capture_output=True, text=True, check=False,
+        )
+    except FileNotFoundError:
+        _pytest.skip("git is not available in this environment")
+    if out.returncode != 0 or out.stdout.strip() != "true":
+        _pytest.skip("not a git checkout — this assertion needs the real index")
+
 class TestTreeIsClean:
     def test_no_secrets_in_tracked_files(self):
+        _skip_unless_git_checkout()
         findings = scan_paths(git_tracked_files())
         assert findings == [], "possible credentials in tracked source:\n" + "\n".join(
             f"  {f}" for f in findings
@@ -47,6 +72,7 @@ class TestTreeIsClean:
     def test_scanner_runs_as_a_cli_and_reports_clean(self):
         """The pre-commit hook and CI both shell out to this — the exit code
         is the contract, so assert on it rather than on the import path."""
+        _skip_unless_git_checkout()
         proc = subprocess.run(
             ["python3", "tools/secret_scan.py"],
             capture_output=True,

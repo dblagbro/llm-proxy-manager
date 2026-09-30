@@ -57,6 +57,17 @@ select = ["E", "F", "I", "UP"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# v5.22.39 — an unhandled exception in a background thread is a hard failure, not
+# a warning. A GREEN CI run carried 20 annotations at level `failure`, all
+# "RuntimeError: Event loop is closed" from aiosqlite worker threads outliving
+# their event loop. GitHub renders those as failures in the run summary and in the
+# notification email, so a passing build looked broken and the operator could not
+# tell a real failure from teardown noise. Fixed at the source (see the engine
+# disposal fixture in tests/unit/conftest.py); this makes a regression loud
+# instead of cosmetic.
+filterwarnings = [
+    "error::pytest.PytestUnhandledThreadExceptionWarning",
+]
 markers = [
     "real_providers: requires real LLM API calls (use --run-real to enable)",
 ]

@@ -35,6 +35,30 @@ _SEARCH_ROOTS = ("app", "tests", "frontend/src", "sdk", "scripts")
 _SKIP_SUFFIXES = (".pyc", ".png", ".jpg", ".jpeg", ".ico", ".woff", ".woff2", ".map")
 
 
+def _skip_unless_git_checkout():
+    """Skip when the tree is not a git checkout.
+
+    v5.22.39 — these assertions shell out to git. ``tools/verify_like_ci.sh``
+    runs the suite against a staged copy of the tree (to exercise CI's Python
+    3.13), which is not a repository, so they failed there for a reason that has
+    nothing to do with the code. A tool that reports three spurious failures
+    every run does not get trusted, and an untrusted pre-push check does not get
+    used. CI does a real checkout, so coverage there is unchanged.
+    """
+    import subprocess
+
+    import pytest as _pytest
+
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "--is-inside-work-tree"],
+            capture_output=True, text=True, check=False,
+        )
+    except FileNotFoundError:
+        _pytest.skip("git is not available in this environment")
+    if out.returncode != 0 or out.stdout.strip() != "true":
+        _pytest.skip("not a git checkout — this assertion needs the real index")
+
 def _source_files():
     for root in _SEARCH_ROOTS:
         base = Path(root)
@@ -106,6 +130,7 @@ class TestBridgeTokenIsOperatorSupplied:
 
 class TestCompiledArtifactsNotTracked:
     def test_no_pycache_in_git(self):
+        _skip_unless_git_checkout()
         import subprocess
         tracked = subprocess.run(
             ["git", "ls-files"], capture_output=True, text=True
