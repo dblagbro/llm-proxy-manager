@@ -122,11 +122,56 @@ def _parse_hint_rfc8941(header_value: str) -> Optional[LMRHHint]:
     except Exception:
         return None
 
+    # v5.22.38 (BUG-093) — reject a parse that only *happens* to be valid 8941.
+    #
+    # ``region=us,ca;require`` is legal RFC 8941, but it means ``region=us``
+    # plus a separate boolean member ``ca`` — not the list the client meant. In
+    # 8941 the comma is the Dictionary member separator; LMRH clients use it
+    # inside a value (documented for DevinGPT v2.74.x in v3.0.68). So the strict
+    # parser was winning on these inputs and silently truncating every
+    # multi-value dim to its first value:
+    #
+    #   region=us,ca;require            -> region=us   (constraint narrowed)
+    #   provider-hint=a,b               -> provider-hint=a
+    #   task=reasoning, exclude=foo,bar -> exclude=foo
+    #
+    # ``region`` is a compliance-relevant routing constraint, so this was
+    # narrowing a caller's declared sovereignty requirement in production.
+    #
+    # It went unseen because the tests asserting the list behaviour only pass
+    # when http-sfv is ABSENT, and the dev box did not have it installed even
+    # though requirements.txt declares it. Every real deployment does, so the
+    # strict path is what production has always run. Found 2026-09-28 the first
+    # time the suite was gated on a clean runner.
+    #
+    # The tell is exact: LMRH has no boolean dimensions — every dim is
+    # ``key=value``, and ``require``/``sovereign`` are params, not members. So a
+    # boolean member can only be a bare comma-separated token, which means the
+    # input was legacy form. Hand it to the legacy parser, which is strictly
+    # more permissive; nothing that parsed before stops parsing.
+    #
+    # A genuine 8941 client writes lists as an InnerList — ``provider-hint=(a b)``
+    # — which produces no boolean members and still takes this path.
+    for _key, _item in d.items():
+        _v = _item.value if hasattr(_item, "value") else _item
+        if isinstance(_v, bool):
+            return None
+
     hint = LMRHHint(raw=header_value)
     for key, item in d.items():
         value_part = item.value if hasattr(item, "value") else item
-        if isinstance(value_part, list):
-            # InnerList — join values (rare for LMRH, preserve for forward compat)
+        # v5.22.38 — was ``isinstance(value_part, list)``, which is False for
+        # http_sfv's ``InnerList``: it is a sequence but not a Python list. So
+        # the branch never fired and ``provider-hint=(a b c)`` stringified to the
+        # literal ``"(a b c)"`` — brackets and all — instead of ``"a,b,c"``.
+        # The docstring above has claimed InnerList support since v3.0.68; it
+        # never worked. Duck-type on iterability instead, excluding str.
+        if isinstance(value_part, (list, tuple)) or (
+            hasattr(value_part, "__iter__") and not isinstance(value_part, (str, bytes))
+        ):
+            # InnerList — the strict spelling of a multi-value dim. Joined with
+            # commas so downstream consumers see the same shape the legacy
+            # comma-list path produces (app/routing/lmrh/score.py splits on ",").
             value_str = ",".join(_coerce_sfv_value(v) for v in value_part)
         else:
             value_str = _coerce_sfv_value(value_part)

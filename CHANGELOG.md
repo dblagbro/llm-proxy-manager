@@ -2,7 +2,7 @@
 
 All notable changes since v2.7.6. Older history available in `git log`.
 
-### v5.22.38 — the test suite stops needing a shared deployment (2026-09-28)
+### v5.22.38 — the test suite stops needing a shared deployment; gating it finds two product bugs (2026-09-28)
 
 The last CI blocker, closed. **The full unit suite and the integration suite are
 both gating now**, and neither needs a deployment, a network, or credentials.
@@ -65,6 +65,67 @@ connection, so the next accidental live fixture is caught on its own PR.
 A new `integration-ephemeral` job runs the integration suite — for the first
 time ever — plus `tools/check_integration_hermetic.py`, which fails if a test
 names a shared host without the marker. Both guards were verified to bite.
+
+**Turning gating on immediately found two product bugs and a dependency trap.**
+The first CI run of the full suite went red with 11 failures that pass locally —
+which is the entire point of gating on a clean runner.
+
+**BUG-093 — multi-value LMRH dims were truncated in production.** `parse_hint`
+tries RFC 8941 first. `region=us,ca;require` *is* valid 8941 — it just means
+`region=us` plus a separate boolean member `ca` — so the strict parser won and
+everything after the first comma was discarded:
+
+```
+region=us,ca;require            -> region=us      (constraint narrowed)
+provider-hint=a,b               -> provider-hint=a
+task=reasoning, exclude=foo,bar -> exclude=foo
+```
+
+`region` gates sovereignty routing, so a caller's declared compliance constraint
+was being silently narrowed — and `;require` ended up attached to the phantom
+`ca` member, so it wasn't even enforced. Fixed by declining a strict parse that
+yields boolean members: LMRH has no boolean dims, so one can only mean a legacy
+comma list, and the legacy parser (strictly more permissive) takes over.
+
+It hid for four months because **the tests asserting list behaviour only pass
+when `http-sfv` is absent.** `requirements.txt` declares it, so every real
+deployment has it and runs the strict path; this dev box did not, so the legacy
+path always ran and the tests were green. A test that only passes when a declared
+dependency is missing is not testing the deployed configuration —
+`test_v52238_lmrh_strict_parser_comma_lists.py` now pins the behaviour either way
+and fails loudly if the dependency is absent.
+
+Also fixed on the same path: `provider-hint=(a b c)` — the documented RFC 8941
+InnerList form — stringified to the literal `"(a b c)"` because the code checked
+`isinstance(value_part, list)` and `InnerList` is not a `list`. The docstring has
+claimed InnerList support since v3.0.68; it never worked. Both spellings now
+agree.
+
+**Six tests were broken by a FastAPI change, not by the app.** FastAPI 0.141.1 /
+Starlette 1.6.0 stopped flattening included routers into `app.routes` — it now
+holds one opaque `_IncludedRouter` per include, `path = None`:
+
+```
+Counter({'_IncludedRouter': 49, 'Route': 4, 'APIRoute': 3, 'Mount': 1})
+```
+
+So tests walking `app.routes` for a literal path reported `/v1/messages`,
+`/v1/audio/speech`, `/v1/images/generations` and the rolling-stats routes as
+unregistered. The app is fine — a `TestClient` POST to `/v1/audio/speech` returns
+401, not 404 — and production has always run 3.13. `requirements.txt` says
+`fastapi>=0.115.0`, so a clean runner resolves the newest while this box had an
+older one that still flattened. `tests/unit/_route_introspection.py` walks both
+shapes; verified against 0.141.1 (215 paths) and the older one (224).
+
+Two more were honest: the SPA catch-all tests need `frontend/dist`, which is
+gitignored, so CI now builds the frontend (and catches a broken frontend build as
+a bonus). And `test_backup_script_includes_clone_and_smoke` read
+`/home/dblagbro/docker/scripts/backup-safe-dumps.sh` — a path on the operator's
+host. It now skips with a note that the script should be versioned under
+`ops-scripts/` like the cert hooks already are.
+
+Verified on both interpreters: 3996 passed on 3.10, and on 3.13 in the project
+image all 11 former failures pass or skip for a declared reason.
 
 **13 failures surfaced** by making the suite runnable, recorded in
 `tests/known_integration_failures.txt` with grouped causes. Worth one eye:

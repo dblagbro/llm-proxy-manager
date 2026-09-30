@@ -20,14 +20,26 @@ literals win the prefix race.
 """
 from __future__ import annotations
 
+# v5.22.38 — route introspection goes through tests/unit/_route_introspection.py.
+# FastAPI 0.141.1 / Starlette 1.6.0 stopped flattening included routers into
+# ``app.routes``: it now holds one opaque ``_IncludedRouter`` per include, with
+# ``path = None``. Walking ``app.routes`` directly therefore finds none of the
+# app's real endpoints on that version, and these tests reported core routes
+# "not registered" while a TestClient POST to them returned 401, not 404. The
+# helper descends both shapes.
+from tests.unit._route_introspection import ordered_paths, route_methods  # noqa: F401
+
 
 def _route_index(app, path: str) -> int:
-    """Return the index in app.routes where `path` is the route.path,
-    or -1 if not found."""
-    for i, r in enumerate(app.routes):
-        if getattr(r, "path", None) == path:
-            return i
-    return -1
+    """Return the routing-order index of `path`, or -1 if not registered.
+
+    v5.22.38 — walks ``ordered_paths(app)`` rather than ``app.routes``. On
+    FastAPI 0.141.1+ the latter holds one opaque ``_IncludedRouter`` per
+    include, so every real path looked unregistered and this returned -1 for
+    all of them. Order is still what matters here.
+    """
+    paths = ordered_paths(app)
+    return paths.index(path) if path in paths else -1
 
 
 def test_rolling_stats_registered_before_provider_id_catchall():

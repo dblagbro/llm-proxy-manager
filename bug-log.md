@@ -10,6 +10,31 @@ Status flow: **open** → **in-progress** → **fixed** → **verified-fixed** �
 
 ---
 
+## 2026-09-28 — gating CI immediately found two product bugs (v5.22.38)
+
+### BUG-093 — multi-value LMRH dimensions truncated to their first value in production — ✅ **CLOSED v5.22.38**
+
+- **Severity:** high (silently narrowed a caller's declared compliance constraint) · **Category:** parser precedence
+- **Surfaced:** 2026-09-28, the first CI run after the full unit suite became gating. 11 tests failed on a clean runner that pass locally — exactly what gating is for.
+- **Root cause:** `parse_hint` tries `_parse_hint_rfc8941` first and falls back to a comma-tolerant legacy parser. `region=us,ca;require` **is valid RFC 8941** — the comma is the Dictionary member separator, so it means key `region` = `us` plus a separate boolean member `ca`, with `;require` on `ca`. The strict parser therefore succeeded and won, discarding everything after the first comma. Measured: `region=us,ca` → `region=us`; `provider-hint=a,b` → `provider-hint=a`; `task=reasoning, exclude=foo,bar` → `exclude=foo`. Worse, `;require` attached to the phantom `ca`, so the surviving constraint was not even marked required.
+- **Impact:** `region` gates sovereignty routing and `provider-hint`/`exclude` gate provider selection. A caller sending `region=us,ca` got single-region routing, and a caller sending `region=us,ca;require` got a non-required single-region hint. Live since v3.0.68 (2026-05-06), when the comma-list semantics were added for DevinGPT v2.74.x.
+- **Why it hid for four months:** the tests asserting the list behaviour **only pass when `http-sfv` is absent** — then the strict parser returns None and the legacy path runs. `requirements.txt` declares `http-sfv>=0.9.9`, so every deployment has it and runs the strict path, but this dev box did not. Green locally, broken in production. **A test that only passes when a declared dependency is missing is not testing the deployed configuration.**
+- **Fix:** the strict parser declines any parse yielding a boolean member. LMRH has no boolean dimensions — every dim is `key=value`, and `require`/`sovereign` are params — so a boolean member can only be a bare comma-separated token, meaning legacy form. The legacy parser is strictly more permissive, so nothing that parsed before stops parsing, and genuine 8941 InnerLists (`provider-hint=(a b)`) still take the strict path.
+- **Second bug on the same path:** `provider-hint=(a b c)` stringified to the literal `"(a b c)"` because the code tested `isinstance(value_part, list)` and http_sfv's `InnerList` is not a `list`. The docstring has claimed InnerList support since v3.0.68; it never worked. Both spellings now produce `a,b,c`.
+- **Tests:** `test_v52238_lmrh_strict_parser_comma_lists.py` (10), including one that fails loudly when `http-sfv` is not installed, so the strict path can never again be silently unreachable.
+- **Status:** CLOSED — verified on Python 3.10 and 3.13.
+
+### BUG-094 — six route tests broken by FastAPI 0.141.1, reported as missing endpoints — ✅ **CLOSED v5.22.38**
+
+- **Severity:** medium (test-only; no product defect) · **Category:** dependency drift against introspection
+- **Surfaced:** same CI run. Tests reported `/v1/messages`, `/v1/audio/speech`, `/v1/images/generations` and the rolling-stats routes as "not registered" — alarming, and wrong.
+- **Root cause:** FastAPI 0.141.1 / Starlette 1.6.0 stopped flattening included routers into `app.routes`. It now appends one opaque `_IncludedRouter` per `include_router()`, with `path = None`: `Counter({'_IncludedRouter': 49, 'Route': 4, 'APIRoute': 3, 'Mount': 1})`. Six tests walked `app.routes` comparing `.path`, so they found nothing.
+- **Proof it was not a product bug:** a `TestClient` POST to `/v1/audio/speech` under 0.141.1 returns **401** (auth required), not 404. The routes register and serve; only the introspection was wrong. Production has run 3.13 throughout.
+- **Why now:** `requirements.txt` says `fastapi>=0.115.0`, so a clean runner resolves the newest while this box had an older, flattening version. The suite had never run on a clean runner before v5.22.38.
+- **Fix:** `tests/unit/_route_introspection.py` descends both shapes (`include_context.included_router` with its prefix, `original_router`, and plain `.routes`), verified against 0.141.1 (215 paths) and the older version (224). Four tests repointed at it.
+- **Lesson:** introspecting a framework's internal route structures makes tests hostage to its refactors. Where the question is "does this endpoint work", a `TestClient` request answers it version-independently; keep structural introspection for genuinely structural invariants like route *ordering*, and put it behind one helper so the next change is a one-file fix.
+- **Status:** CLOSED.
+
 ## 2026-09-28 — the live-test gate only covered tests that used a fixture (v5.22.38)
 
 ### BUG-092 — 74 integration tests reached the live deployment past the v5.22.16 opt-in gate — ✅ **CLOSED v5.22.38**

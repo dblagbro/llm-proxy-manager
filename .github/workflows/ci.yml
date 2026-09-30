@@ -50,6 +50,21 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements-dev.txt
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build the frontend
+        # v5.22.38 — frontend/dist is a build artifact and gitignored, so a clean
+        # runner has none. app/main.py only registers the SPA catch-all when
+        # frontend/dist/index.html exists, which made two route tests fail the
+        # first time CI ran the full suite — correctly, for a reason nobody could
+        # see. Building here means they actually run, and it catches a broken
+        # frontend build as a bonus (previously only discovered at image build).
+        run: npm --prefix frontend ci && npm --prefix frontend run build
+
       - name: App build smoke (catches import/signature breakage)
         # This alone would have caught the class of bug behind the
         # v5.21.14 leak — a broken dependency signature fails the import.

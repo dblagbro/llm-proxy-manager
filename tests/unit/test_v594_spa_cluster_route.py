@@ -8,7 +8,27 @@ hard-refresh.
 """
 from __future__ import annotations
 
+# v5.22.38 — these assert the SPA catch-all serves index.html, which app/main.py
+# only registers when ``frontend/dist`` exists. That directory is a build
+# artifact and is gitignored, so a clean runner has none and the routes are
+# genuinely absent — the tests were right to fail, they just failed for a reason
+# nobody could see until CI started running them. CI now builds the frontend
+# (see .github/workflows/ci.yml), so they run there; this skip keeps a developer
+# who has not built it from seeing a mystery failure.
+from pathlib import Path
+
+import pytest as _pytest
 from fastapi.testclient import TestClient
+
+_DIST_INDEX = Path(__file__).resolve().parents[2] / "frontend" / "dist" / "index.html"
+frontend_dist_required = _pytest.mark.skipif(
+    not _DIST_INDEX.is_file(),
+    reason=(
+        "needs a built frontend (frontend/dist/index.html) — the SPA catch-all "
+        "is only registered when it exists. Run `npm --prefix frontend ci && "
+        "npm --prefix frontend run build`."
+    ),
+)
 
 
 def _client():
@@ -16,6 +36,7 @@ def _client():
     return TestClient(app)
 
 
+@frontend_dist_required
 def test_bare_cluster_serves_spa_shell_not_json_404():
     c = _client()
     r = c.get("/cluster")
@@ -39,6 +60,7 @@ def test_cluster_subpath_still_returns_json_404():
     assert "application/json" in r.headers.get("content-type", "").lower()
 
 
+@frontend_dist_required
 def test_bare_metrics_serves_spa_shell():
     c = _client()
     r = c.get("/metrics-spa-route-canary")

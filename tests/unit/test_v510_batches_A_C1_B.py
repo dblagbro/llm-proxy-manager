@@ -22,7 +22,23 @@ def test_backup_script_includes_clone_and_smoke():
     """The nightly backup script must dump BOTH the original llm-proxy2
     and the clone llm-proxy DBs (which have different state since the
     snapshot-and-fork). Also the smoke DB for completeness."""
-    src = Path("/home/dblagbro/docker/scripts/backup-safe-dumps.sh").read_text()
+    # v5.22.38 — this reads a file on the OPERATOR'S HOST, outside the repo, so
+    # it can only pass on one machine. It was the one non-hermetic thing left in
+    # tests/unit and it failed the first time CI ran the full suite:
+    # FileNotFoundError: /home/dblagbro/docker/scripts/backup-safe-dumps.sh.
+    #
+    # Skipped rather than deleted: the invariant is real (the nightly backup
+    # must dump the clone and smoke DBs, or an operator restore loses them). The
+    # proper fix is to version the script under ops-scripts/ the way the
+    # tmrwww02 cert hooks already are, and point this at the repo copy.
+    _script = Path("/home/dblagbro/docker/scripts/backup-safe-dumps.sh")
+    if not _script.is_file():
+        pytest.skip(
+            f"{_script} is not on this machine. This asserts about an "
+            "operator-host file; version it under ops-scripts/ to make the "
+            "check portable."
+        )
+    src = _script.read_text()
     assert "llmproxy-clone.db" in src, (
         "backup script missing clone DB — operator restores would lose "
         "the clone's distinct api_keys state."
