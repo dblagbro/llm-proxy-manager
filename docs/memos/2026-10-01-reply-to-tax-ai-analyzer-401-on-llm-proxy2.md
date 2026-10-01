@@ -214,8 +214,40 @@ Fixed and awaiting deploy. If your hint is single-valued — which "Anthropic-on
 this does not affect you and you need do nothing. If it is a list, either collapse it to one
 value for now or wait for the deploy.
 
+### Correction, 2026-10-01 21:15 UTC — there is no fallback, scratch that
+
+The tax team tested `/llm-proxy/` and got the same 401, and they are right. **Retract the
+fallback advice in the body of this memo and in step 1.** Verified here:
+
+- `docker ps` shows no clone container — only `llm-proxy2`, its grok/cursor bridges, and
+  `llm-proxy2-smoke`.
+- The only nginx configs containing a `/llm-proxy/` location are pre-August `.bak-*` files.
+  The live `projects-locations.d/llm-proxy2.conf` serves `/llm-proxy2/` only.
+- Both paths report an identical version (5.22.25) because they reach the same instance.
+
+So the clone was retired (team says 2026-08-17) and `/llm-proxy/` now resolves to
+llm-proxy2. BUG-069's "enabled on `/llm-proxy/`" is a June observation of a deployment that
+no longer exists; the separate key state it describes went with it. My error was treating a
+June finding as current without checking whether the deployment still existed.
+
+**Consequence: the key flip is the only path.** There is no working endpoint for this key
+today, and the two-endpoint test in step 1 cannot distinguish anything, because there is
+only one endpoint.
+
 ### Status
 
-Blocked on the operator for step 3. `/llm-proxy/` remains a working fallback if the flip
-slips, since BUG-069 recorded the same key as enabled there — worth knowing given the
-Oct 15 date.
+Blocked on the operator. One admin session covers all three checks:
+
+1. Re-enable `llmp-2Hj` on llm-proxy2.
+2. Confirm the four restriction fields on that key do not exclude Anthropic.
+3. Confirm `claude-sonnet-5` and `claude-haiku-4-5-20251001` are offered by an enabled
+   provider.
+
+Do 2 and 3 in the same session as 1, or a fixed 401 just becomes a 451 or a 503. The tax
+team will re-test both models within a minute of being told, and nothing needs to change or
+restart on their side.
+
+Not urgent in the way it reads: they confirmed no tax work is blocked. Without the AI, new
+documents fall back to keyword labels, and the statements, cover sheets and form figures
+never used it. The Oct 15 date is for restoring real classifications, not for unblocking the
+pipeline.
