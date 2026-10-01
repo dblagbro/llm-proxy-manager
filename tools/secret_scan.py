@@ -44,6 +44,32 @@ from typing import NamedTuple
 # Each of these carries a vendor prefix, so a match is a real credential
 # shape rather than a guess.
 VENDOR_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
+    # v5.22.40 — an auth header followed by a bare shell variable.
+    #
+    # Narrow on purpose. GitGuardian's generic "X-API-Key Secret" detector raised
+    # an incident against commit 8db3584 for a documentation line reading
+    # ``-H "x-api-key: $LLM_PROXY2_KEY"``. No secret was present — it was a shell  # pragma: allowlist secret
+    # variable — but our own scanner passed the commit, so we had no way to know
+    # that before the operator got the email.
+    #
+    # The first attempt at this rule matched *any* inline value after an auth
+    # header and produced 18 hits across the repo, all legitimate
+    # ``Authorization: Bearer <token>`` examples. A scanner that is wrong 18 times
+    # gets switched off, so it is scoped to the one construct that actually
+    # misfires: a bare ``$VAR`` (no braces, no angle brackets). That form reads as
+    # a placeholder to a human and as a secret to a scanner, and the fix is free —
+    # write ``<paste your key here>`` instead.
+    (
+        "auth header followed by a bare $shell variable (use <placeholder> instead)",
+        re.compile(
+            r"""(?ix)
+            (?:x-api-key|authorization|x-auth-token|api-key)
+            \s* : \s*
+            (?:bearer \s+)?
+            \$ [A-Za-z_][A-Za-z0-9_]{5,}
+            """
+        ),
+    ),
     ("aws-access-key-id", re.compile(r"AKIA[0-9A-Z]{16}")),
     ("anthropic-api-key", re.compile(r"sk-ant-[A-Za-z0-9\-_]{24,}")),
     ("openai-api-key", re.compile(r"sk-(?:proj-)?[A-Za-z0-9]{32,}")),

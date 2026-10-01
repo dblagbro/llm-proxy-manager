@@ -43,9 +43,12 @@ command, from your side, without anyone needing admin access.
 
 ```bash
 # Same key you already have. Only the base URL changes.
+# (Angle-bracket placeholder on purpose: an auth header followed by a shell
+#  variable trips GitGuardian's X-API-Key detector on commit, which costs the
+#  operator a false-positive incident email. Substitute by hand.)
 curl -sS -o /dev/null -w '%{http_code}\n' \
   https://www.voipguru.org/llm-proxy/v1/messages \
-  -H "x-api-key: $LLM_PROXY2_KEY" \
+  -H 'x-api-key: <paste the value of your LLM_PROXY2_KEY here>' \
   -H 'content-type: application/json' \
   -d '{"model":"claude-haiku-4-5-20251001","max_tokens":8,
        "messages":[{"role":"user","content":"ping"}]}'
@@ -143,3 +146,76 @@ them self-serve, since it gives the key correct scope and a budget cap from the 
 Also: there is **no August memo to tax-ai-analyzer in our records.** The only pending item
 addressed to them is the 2026-07-05 one above. They may be thinking of a different thread;
 I did not want to confirm a promise I cannot find.
+
+---
+
+## Addendum, 2026-10-01 — team confirmed the diagnosis; they want the key re-enabled here
+
+They re-tested at 20:50 UTC against `/v1/models`, `/v1/messages` and
+`/v1/chat/completions`, confirmed their key is `llmp-2Hj…` and pointed at the same
+BUG-069 line this memo cites. They would rather stay on `/llm-proxy2/` and have the key
+re-enabled than move to `/llm-proxy/`. That is fine — either deployment works; it is their
+call, and it is one flip.
+
+They also asked the right follow-up: **re-enabling the key fixes the 401 but can expose a
+503**, because they send an Anthropic-only provider hint. Both need checking together, or
+they will be back in a day.
+
+### Operator steps (requires admin auth — the proxy team does not hold the password)
+
+**1. Find the key's `id`** (the PATCH route takes the id, not the prefix):
+
+```bash
+# authenticate first; then
+curl -sS "$BASE/api/keys" -b cookies.txt \
+  | python3 -c 'import sys,json;[print(k["id"], k["name"], k["enabled"]) for k in json.load(sys.stdin) if k.get("key_prefix","").startswith("llmp-2Hj")]'
+```
+
+**2. Check what else would block them, before flipping.** A re-enabled key can still refuse
+Anthropic for four separate reasons, and each has a different symptom:
+
+| Field on the key | If set wrongly | Symptom they would see |
+|---|---|---|
+| `blocked_companies` contains `anthropic` | compliance refusal | **451** with `X-Compliance-Refusal` |
+| `allowed_companies` set and excludes `anthropic` | positive allowlist excludes it | **451** |
+| `allowed_models` set and excludes their two models | fine-grained gate | **451** |
+| no enabled Anthropic provider / model not in catalog | nothing to route to | **503** |
+
+The coordinator-hub key carries `blocked_companies=["anthropic"]` deliberately, so this is
+not hypothetical — check that `llmp-2Hj` does not.
+
+**3. Flip it:**
+
+```bash
+curl -sS -X PATCH "$BASE/api/keys/<id-from-step-1>" -b cookies.txt \
+  -H 'Content-Type: application/json' \
+  -d '{"enabled": true}'
+```
+
+**4. Confirm a route exists for the two models they named** — `claude-sonnet-5` and
+`claude-haiku-4-5-20251001` — on an enabled provider. If neither is in the catalog, the flip
+turns 401 into 503 and nothing is gained.
+
+Per-node note: api_keys changes propagate by cluster sync, but if anything looks divergent,
+check both tmrwww01 and tmrwww02 rather than assuming.
+
+### For the tax team — one thing to check on your side before Oct 15
+
+You said you send an **Anthropic-only provider hint**. On the live version (v5.22.25) there
+is a parsing bug in multi-value `LLM-Hint` dimensions:
+
+- **A single value is fine.** `provider-hint=anthropic` or a single provider name parses
+  correctly, including with `;require`.
+- **A comma-separated list is not.** `provider-hint=a,b` is truncated to `a`, and a
+  `;require` on such a dim is silently dropped rather than enforced. So a list-valued hint
+  with `;require` is currently neither honouring your list nor failing loudly.
+
+Fixed and awaiting deploy. If your hint is single-valued — which "Anthropic-only" suggests —
+this does not affect you and you need do nothing. If it is a list, either collapse it to one
+value for now or wait for the deploy.
+
+### Status
+
+Blocked on the operator for step 3. `/llm-proxy/` remains a working fallback if the flip
+slips, since BUG-069 recorded the same key as enabled there — worth knowing given the
+Oct 15 date.

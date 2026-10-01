@@ -78,7 +78,7 @@ You will need to restart the container OR call `app.monitoring.llm_emergency_sto
 # Should return 503 with llm-emergency-stop reason
 curl -s -o /dev/null -w "%{http_code} %{header_x_compliance_refused}\n" \
   -X POST https://YOUR-DEPLOYMENT/v1/messages \
-  -H "x-api-key: $YOUR_KEY" \
+  -H "x-api-key: <paste your YOUR_KEY here>" \
   -H "Content-Type: application/json" \
   -d '{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}'
 # Expected: 503 llm-emergency-stop

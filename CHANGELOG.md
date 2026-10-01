@@ -2,6 +2,46 @@
 
 All notable changes since v2.7.6. Older history available in `git log`.
 
+### v5.22.40 — a GitGuardian false positive, and the scanner change that earns its keep (2026-10-01)
+
+**No secret leaked.** GitGuardian raised an `X-API-Key Secret` incident against commit
+`8db3584` for one line in a documentation memo:
+
+```
+-H "x-api-key: $LLM_PROXY2_KEY"   <!-- pragma: allowlist secret -->
+```
+
+That is a shell variable, not a credential. Verified: no high-entropy literal anywhere in
+the commit, and a real key is `"llmp-" + secrets.token_urlsafe(32)` ≈ 48 characters, while
+the only key-ish string in the diff is the 8-character prefix `llmp-2Hj` that BUG-069
+already documents. Their generic detector fires on the *shape* of an auth header followed
+by a token-like value, not on a value it has verified. Nothing to rotate.
+
+**The real problem is that our own scanner passed it**, so there was no way to know the
+alert was spurious before the operator got the email. Fixed by matching the construct:
+`tools/secret_scan.py` now flags an auth header followed by a **bare `$VAR`** — which reads
+as a placeholder to a human and as a secret to a scanner, and which has a free fix (write
+`<paste your key here>`).
+
+Deliberately narrow. The first attempt matched *any* inline value after an auth header and
+produced **18 hits across the repo**, every one a legitimate
+`Authorization: Bearer <token>` example. A scanner that is wrong eighteen times gets
+switched off, so the rule is scoped to the one form that actually misfires. Result on the
+full tree: **one** hit, a genuine instance of the same construct in
+`docs/emergency-stop-runbook.md`, fixed the same way rather than allowlisted. Scanner clean
+across 973 files, zero false positives.
+
+Also in this commit: the tax-ai-analyzer memo gains an addendum. The team confirmed the
+BUG-069 diagnosis, asked for `llmp-2Hj` to be re-enabled on `/llm-proxy2/` rather than
+moving to `/llm-proxy/`, and correctly spotted that re-enabling fixes the 401 but can
+expose a 503. The addendum carries the operator steps and the four per-key fields
+(`blocked_companies`, `allowed_companies`, `allowed_models`, `blocked_models`) that would
+turn their 401 into a 451 or 503 — the coordinator-hub key carries
+`blocked_companies=["anthropic"]` deliberately, so that check is not hypothetical. It also
+tells them that a *single-value* provider hint is unaffected by BUG-093 while a
+comma-separated list is truncated, which is the difference between needing the pending
+deploy and not.
+
 ### v5.22.39 — the CI failure emails, root-caused (2026-09-30)
 
 Two separate problems produce those emails. Both fixed, and both now guarded so
