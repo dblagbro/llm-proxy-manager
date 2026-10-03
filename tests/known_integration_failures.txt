@@ -16,17 +16,33 @@
 #
 # Grouped by apparent cause, from a first pass only — none confirmed:
 #
-# (a) usage counts arrive as zero on the OpenAI->Anthropic path (4)
-#     The mock provider is `compatible` (OpenAI-shaped) and returns
-#     usage.completion_tokens correctly (tests/mock_llm_server.py:146), but the
-#     Anthropic-shaped response reaching the caller has output_tokens == 0.
-#     Either the translation drops it or the test's expectation is wrong. This
-#     one is worth looking at first: if the translation is dropping usage, every
-#     cost figure on that path is 0 and that is a live billing-visibility bug,
-#     not a test bug.
-tests/integration/test_routing_mock.py::TestAnthropicNonStream::test_basic_text_response_shape
+# (a) RESOLVED 2026-10-03 — this was BUG-095, a real billing bug, not a test bug.
+#     Three of the four now pass. `call_with_tool_prompt` was discarding the
+#     upstream `resp.usage`, and the six emulated-response builders filled in
+#     hardcoded zeros, so usage and every cost derived from it read $0. The path
+#     is common: the proxy injects its own MCP tools, which makes `has_tools`
+#     true even when the caller sent none, so emulation engages for any provider
+#     without native tool support. Fixed in v5.22.41; see bug-log BUG-095.
+#
+# (a2) emulated SSE stream omits the opening `message_start` frame (1)
+#     Diagnosed 2026-10-03 while fixing BUG-095, and it is a DIFFERENT bug —
+#     protocol conformance, not accounting. `anthropic_text_sse` yields
+#     content_block_start / content_block_delta / content_block_stop /
+#     message_delta / message_stop, with no `message_start`. The Anthropic
+#     streaming contract requires it first, and it is the frame that carries
+#     `input_tokens`, so a strict SDK client on the emulation path may error and
+#     input tokens have nowhere to be reported.
+#
+#     Not bundled into the v5.22.41 commit on purpose: it needs `model` threaded
+#     into the three SSE generators, which is a second behavioural change, and
+#     v5.22.41 touches the billing path. Fix next, with its own test.
+#
+#     The canonical non-emulated frame at app/api/_messages_streaming.py:227 also
+#     hardcodes `"usage":{"input_tokens":0,"output_tokens":0}` in message_start —
+#     worth checking whether input tokens under-report there too.
 tests/integration/test_routing_mock.py::TestAnthropicStream::test_sse_event_sequence
-tests/integration/test_routing_mock.py::TestAnthropicStream::test_usage_in_message_delta
+#
+# (a3) CoT needs a model that emits thinking blocks (1) — see (d); same cause.
 tests/integration/test_routing_mock.py::TestCoTEmulation::test_cot_produces_thinking_blocks
 #
 # (b) cross-family routing refuses the mock for tool-using Anthropic requests (3)

@@ -53,29 +53,57 @@ def sse_done() -> bytes:
 
 # ── Anthropic response generators (tool emulation) ───────────────────────────
 
-async def anthropic_tool_sse(tool_name: str, tool_input: dict) -> AsyncIterator[bytes]:
+def _usage_tokens(usage: dict | None) -> tuple[int, int]:
+    """(input_tokens, output_tokens) from a litellm-shaped usage dict.
+
+    v5.22.41 (BUG-095) — the emulated SSE generators below previously either
+    omitted ``usage`` from their ``message_delta`` frame or, worse, emitted a
+    **fabricated** ``"output_tokens":10``. A made-up number is harder to notice
+    than a zero and equally wrong for billing.
+    """
+    u = usage or {}
+    return (
+        int(u.get("prompt_tokens", 0) or 0),
+        int(u.get("completion_tokens", 0) or 0),
+    )
+
+
+async def anthropic_tool_sse(
+    tool_name: str, tool_input: dict, usage: dict | None = None,
+) -> AsyncIterator[bytes]:
     tool_id = f"toolu_{secrets.token_hex(8)}"
     input_json = json.dumps(tool_input)
     escaped = json.dumps(input_json)[1:-1]
     yield f'data: {{"type":"content_block_start","index":0,"content_block":{{"type":"tool_use","id":"{tool_id}","name":"{tool_name}","input":{{}}}}}}\n\n'.encode()
     yield f'data: {{"type":"content_block_delta","index":0,"delta":{{"type":"input_json_delta","partial_json":"{escaped}"}}}}\n\n'.encode()
     yield b'data: {"type":"content_block_stop","index":0}\n\n'
-    yield b'data: {"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"output_tokens":10}}\n\n'
+    yield sse_message_delta("tool_use", *_usage_tokens(usage))
     yield b'data: {"type":"message_stop"}\n\ndata: [DONE]\n\n'
 
 
-async def anthropic_text_sse(text: str) -> AsyncIterator[bytes]:
+async def anthropic_text_sse(
+    text: str, usage: dict | None = None,
+) -> AsyncIterator[bytes]:
     yield b'data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n'
     chunk = 80
     for i in range(0, len(text), chunk):
         piece = json.dumps(text[i:i + chunk])[1:-1]
         yield f'data: {{"type":"content_block_delta","index":0,"delta":{{"type":"text_delta","text":"{piece}"}}}}\n\n'.encode()
     yield b'data: {"type":"content_block_stop","index":0}\n\n'
-    yield b'data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null}}\n\n'
+    yield sse_message_delta("end_turn", *_usage_tokens(usage))
     yield b'data: {"type":"message_stop"}\n\ndata: [DONE]\n\n'
 
 
-def anthropic_tool_response(tool_name: str, tool_input: dict, model: str) -> dict:
+# v5.22.41 (BUG-095) — the six builders below take an optional ``usage``.
+# They used to hardcode zeros, which is where token accounting was lost on
+# the tool-emulation path: ``call_with_tool_prompt`` discarded the upstream
+# usage, these filled in 0, and every cost computed from them was $0. The
+# path is common, not exotic — the proxy injects its own MCP tools, which
+# makes ``has_tools`` true even for a caller that sent none, and emulation
+# engages for any provider without native tool support.
+def anthropic_tool_response(
+    tool_name: str, tool_input: dict, model: str, usage: dict | None = None,
+) -> dict:
     return {
         "id": f"msg_emul_{secrets.token_hex(4)}",
         "type": "message",
@@ -84,11 +112,16 @@ def anthropic_tool_response(tool_name: str, tool_input: dict, model: str) -> dic
         "model": model,
         "stop_reason": "tool_use",
         "stop_sequence": None,
-        "usage": {"input_tokens": 0, "output_tokens": 0},
+        "usage": {
+            "input_tokens": int((usage or {}).get("prompt_tokens", 0) or 0),
+            "output_tokens": int((usage or {}).get("completion_tokens", 0) or 0),
+        },
     }
 
 
-def anthropic_tools_response(tool_calls: list[dict], model: str) -> dict:
+def anthropic_tools_response(
+    tool_calls: list[dict], model: str, usage: dict | None = None,
+) -> dict:
     """Wave 5 #23 — emit MULTIPLE tool_use blocks for parallel tool calling."""
     content = [
         {
@@ -107,11 +140,16 @@ def anthropic_tools_response(tool_calls: list[dict], model: str) -> dict:
         "model": model,
         "stop_reason": "tool_use",
         "stop_sequence": None,
-        "usage": {"input_tokens": 0, "output_tokens": 0},
+        "usage": {
+            "input_tokens": int((usage or {}).get("prompt_tokens", 0) or 0),
+            "output_tokens": int((usage or {}).get("completion_tokens", 0) or 0),
+        },
     }
 
 
-async def anthropic_tools_sse(tool_calls: list[dict]) -> AsyncIterator[bytes]:
+async def anthropic_tools_sse(
+    tool_calls: list[dict], usage: dict | None = None,
+) -> AsyncIterator[bytes]:
     """Stream MULTIPLE tool_use content blocks (one block index per tool)."""
     for idx, tc in enumerate(tool_calls):
         tool_id = f"toolu_{secrets.token_hex(8)}"
@@ -127,11 +165,13 @@ async def anthropic_tools_sse(tool_calls: list[dict]) -> AsyncIterator[bytes]:
             f'"type":"input_json_delta","partial_json":"{escaped}"}}}}\n\n'
         ).encode()
         yield f'data: {{"type":"content_block_stop","index":{idx}}}\n\n'.encode()
-    yield b'data: {"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"output_tokens":10}}\n\n'
+    yield sse_message_delta("tool_use", *_usage_tokens(usage))
     yield b'data: {"type":"message_stop"}\n\ndata: [DONE]\n\n'
 
 
-def anthropic_text_response(text: str, model: str) -> dict:
+def anthropic_text_response(
+    text: str, model: str, usage: dict | None = None,
+) -> dict:
     return {
         "id": f"msg_emul_{secrets.token_hex(4)}",
         "type": "message",
@@ -140,7 +180,10 @@ def anthropic_text_response(text: str, model: str) -> dict:
         "model": model,
         "stop_reason": "end_turn",
         "stop_sequence": None,
-        "usage": {"input_tokens": 0, "output_tokens": 0},
+        "usage": {
+            "input_tokens": int((usage or {}).get("prompt_tokens", 0) or 0),
+            "output_tokens": int((usage or {}).get("completion_tokens", 0) or 0),
+        },
     }
 
 
@@ -169,7 +212,9 @@ async def openai_tool_sse(tool_name: str, tool_input: dict) -> AsyncIterator[byt
     yield b'data: [DONE]\n\n'
 
 
-def openai_tool_response(tool_name: str, tool_input: dict, model: str) -> dict:
+def openai_tool_response(
+    tool_name: str, tool_input: dict, model: str, usage: dict | None = None,
+) -> dict:
     call_id = f"call_{secrets.token_hex(8)}"
     return {
         "id": f"chatcmpl-emul-{secrets.token_hex(4)}",
@@ -188,11 +233,17 @@ def openai_tool_response(tool_name: str, tool_input: dict, model: str) -> dict:
             },
             "finish_reason": "tool_calls",
         }],
-        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        "usage": {
+            "prompt_tokens": int((usage or {}).get("prompt_tokens", 0) or 0),
+            "completion_tokens": int((usage or {}).get("completion_tokens", 0) or 0),
+            "total_tokens": int((usage or {}).get("total_tokens", 0) or 0),
+        },
     }
 
 
-def openai_tools_response(tool_calls: list[dict], model: str) -> dict:
+def openai_tools_response(
+    tool_calls: list[dict], model: str, usage: dict | None = None,
+) -> dict:
     """Wave 5 #23 — emit multiple tool_calls for parallel tool calling."""
     return {
         "id": f"chatcmpl-emul-{secrets.token_hex(4)}",
@@ -217,7 +268,11 @@ def openai_tools_response(tool_calls: list[dict], model: str) -> dict:
             },
             "finish_reason": "tool_calls",
         }],
-        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        "usage": {
+            "prompt_tokens": int((usage or {}).get("prompt_tokens", 0) or 0),
+            "completion_tokens": int((usage or {}).get("completion_tokens", 0) or 0),
+            "total_tokens": int((usage or {}).get("total_tokens", 0) or 0),
+        },
     }
 
 
@@ -255,7 +310,9 @@ async def openai_tools_sse(tool_calls: list[dict]) -> AsyncIterator[bytes]:
     yield b"data: [DONE]\n\n"
 
 
-def openai_text_response(text: str, model: str) -> dict:
+def openai_text_response(
+    text: str, model: str, usage: dict | None = None,
+) -> dict:
     return {
         "id": f"chatcmpl-emul-{secrets.token_hex(4)}",
         "object": "chat.completion",
@@ -265,7 +322,11 @@ def openai_text_response(text: str, model: str) -> dict:
             "message": {"role": "assistant", "content": text},
             "finish_reason": "stop",
         }],
-        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        "usage": {
+            "prompt_tokens": int((usage or {}).get("prompt_tokens", 0) or 0),
+            "completion_tokens": int((usage or {}).get("completion_tokens", 0) or 0),
+            "total_tokens": int((usage or {}).get("total_tokens", 0) or 0),
+        },
     }
 
 

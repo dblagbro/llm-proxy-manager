@@ -250,8 +250,30 @@ async def call_with_tool_prompt(
     messages: list[dict],
     system: str | None,
     extra: dict,
+    usage_out: dict | None = None,
 ) -> str:
-    """Non-streaming litellm call; returns the assistant text content."""
+    """Non-streaming litellm call; returns the assistant text content.
+
+    ``usage_out``: if given, the upstream ``usage`` is copied into it in place
+    (keys ``prompt_tokens`` / ``completion_tokens`` / ``total_tokens``).
+
+    v5.22.41 (BUG-095) — this used to discard ``resp.usage`` entirely, which is
+    where token accounting was being lost on the whole tool-emulation path. The
+    six emulated-response builders in ``app/cot/sse.py`` then filled in
+    hardcoded zeros, so a caller saw ``output_tokens: 0`` and every cost derived
+    from it computed as $0.
+
+    That path is reached far more often than its name suggests: the proxy
+    injects its own MCP tools into requests, which flips ``has_tools`` to True
+    even when the caller sent none, and emulation engages for any provider
+    without native tool support. Measured on a plain text request with no tools:
+    ``has_tools=True ntools=3 injected=True emul=True native_tools=False``.
+
+    Returned by out-parameter rather than as a tuple because both call sites
+    (``messages.py``, ``completions.py``) assign the text directly, and because
+    it matches the ``resp_headers`` mutate-in-place idiom already used around
+    them.
+    """
     kwargs = {k: v for k, v in extra.items() if k not in ("max_tokens", "system", "tools", "stream")}
     msgs = list(messages)
     if system:
@@ -263,6 +285,14 @@ async def call_with_tool_prompt(
         max_tokens=extra.get("max_tokens", 1024),
         **kwargs,
     )
+    if usage_out is not None:
+        u = getattr(resp, "usage", None)
+        usage_out["prompt_tokens"] = int(getattr(u, "prompt_tokens", 0) or 0)
+        usage_out["completion_tokens"] = int(getattr(u, "completion_tokens", 0) or 0)
+        usage_out["total_tokens"] = int(
+            getattr(u, "total_tokens", 0)
+            or usage_out["prompt_tokens"] + usage_out["completion_tokens"]
+        )
     choice = resp.choices[0]
     return choice.message.content or ""
 

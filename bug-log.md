@@ -10,6 +10,22 @@ Status flow: **open** → **in-progress** → **fixed** → **verified-fixed** �
 
 ---
 
+## 2026-10-03 — token accounting zero on the tool-emulation path (v5.22.41)
+
+### BUG-095 — usage and cost reported as zero whenever tool emulation engaged — ✅ **CLOSED v5.22.41**
+
+- **Severity:** high (silent under-reporting of spend on a common path) · **Category:** data loss in accounting
+- **Surfaced:** 2026-10-03, finishing the triage of the four `usage.output_tokens == 0` entries recorded in `tests/known_integration_failures.txt`. Those became visible only because v5.22.38 made the integration suite runnable for the first time; before that nothing exercised this path.
+- **Operator signal:** "the pricing estimates in llm-proxy are low" (2026-09-26). This is one mechanism for it, and it is a hard zero rather than an underestimate.
+- **Chain:** `call_with_tool_prompt` (`app/cot/tool_emulation.py:248`) did `resp = await litellm.acompletion(...)` then `return choice.message.content or ""` — discarding `resp.usage`. The six emulated-response builders in `app/cot/sse.py` then filled `usage` with hardcoded zeros. Anything computing cost from those numbers got $0.
+- **Why it is a common path, not an edge case:** `tool_emulation = has_tools and not best_profile.native_tools` (`router.py:952`). The proxy **injects its own MCP tools**, so `has_tools` is true even for a caller that sent none. Measured on a plain text request with no tools: `has_tools=True ntools=3 injected=True emul=True native_tools=False`. Affects any key with tool injection enabled against any provider lacking native tool support, on both `/v1/messages` and `/v1/chat/completions`.
+- **How it was found:** four narrowing steps, each ruling out a suspect. litellm parses the mock's usage correctly (`prompt_tokens=10, completion_tokens=2`). `to_anthropic_response`'s mapping is correct **and** instrumenting it showed it is never called on this path. The cascade was ruled out by the absence of `X-Cascade-*` headers. Instrumenting all four early returns in the handler then showed `tool_emulation_text` firing, and instrumenting the gate gave the line above.
+- **Fix:** `call_with_tool_prompt` gained an optional `usage_out` dict populated in place — an out-parameter rather than a changed return type, since both call sites assign the text directly. All six builders take an optional `usage` defaulting to the previous zeros, so no existing caller changes behaviour. Both endpoints collect and thread it.
+- **Verification:** end-to-end against the mock provider (10 in / 2 out): `/v1/messages` `{0,0}` → `{10,2}`; `/v1/chat/completions` `{0,0}` → `{10,2,12}`. Both new guards confirmed to bite by reverting the threading and by restoring one hardcoded zero.
+- **Lesson:** a helper that returns "just the useful bit" quietly discards everything else, and accounting is the kind of thing nobody notices missing until a bill disagrees. **A function that makes a billable call should hand back what it cost**, not only what it said. The zero default in the builders is what made it invisible — it looked like data rather than an absence.
+- **Tests:** `test_v52241_emulation_usage_not_zero.py` (21). Suite: 4043 passed.
+- **Status:** CLOSED — but **undeployed**; live figures stay zero on this path until the pending deploy ships.
+
 ## 2026-09-28 — gating CI immediately found two product bugs (v5.22.38)
 
 ### BUG-093 — multi-value LMRH dimensions truncated to their first value in production — ✅ **CLOSED v5.22.38**

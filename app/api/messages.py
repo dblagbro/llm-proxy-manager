@@ -745,8 +745,13 @@ async def messages(
             merged_system = tool_system + ("\n\n" + system if system else "")
             norm_msgs = normalize_anthropic_messages(messages_list)
             emul_extra = {k: v for k, v in extra.items() if k not in ("tools", "system")}
+            # v5.22.41 (BUG-095) — capture the upstream usage. Without this the
+            # emulated-response builders below fill in zeros and every cost
+            # derived from this request computes as $0.
+            _emul_usage: dict = {}
             response_text = await call_with_tool_prompt(
-                route.litellm_model, norm_msgs, merged_system, emul_extra
+                route.litellm_model, norm_msgs, merged_system, emul_extra,
+                usage_out=_emul_usage
             )
             tool_calls = parse_tool_calls(response_text)
             if route.cot_engaged:
@@ -779,19 +784,28 @@ async def messages(
                 resp_headers["X-Tool-Calls-Emitted"] = str(len(tool_calls))
             if stream:
                 if len(tool_calls) >= 2:
-                    gen = anthropic_tools_sse(tool_calls)
+                    gen = anthropic_tools_sse(tool_calls, usage=_emul_usage)
                 elif len(tool_calls) == 1:
-                    gen = anthropic_tool_sse(tool_calls[0]["name"], tool_calls[0]["input"])
+                    gen = anthropic_tool_sse(tool_calls[0]["name"], tool_calls[0]["input"], usage=_emul_usage)
                 else:
-                    gen = anthropic_text_sse(response_text)
+                    gen = anthropic_text_sse(response_text, usage=_emul_usage)
                 return StreamingResponse(gen, media_type="text/event-stream", headers=resp_headers)
             else:
                 if len(tool_calls) >= 2:
-                    content = anthropic_tools_response(tool_calls, route.litellm_model)
+                    content = anthropic_tools_response(
+                        tool_calls, route.litellm_model,
+                        usage=_emul_usage,
+                    )
                 elif len(tool_calls) == 1:
-                    content = anthropic_tool_response(tool_calls[0]["name"], tool_calls[0]["input"], route.litellm_model)
+                    content = anthropic_tool_response(
+                        tool_calls[0]["name"], tool_calls[0]["input"], route.litellm_model,
+                        usage=_emul_usage,
+                    )
                 else:
-                    content = anthropic_text_response(response_text, route.litellm_model)
+                    content = anthropic_text_response(
+                        response_text, route.litellm_model,
+                        usage=_emul_usage,
+                    )
                 # v3.6.1 — merge X-Quality-Hint for tool-emulation path
                 from app.api._quality_hint import merge_into_headers
                 merge_into_headers(resp_headers, content, endpoint="messages")

@@ -2,6 +2,56 @@
 
 All notable changes since v2.7.6. Older history available in `git log`.
 
+### v5.22.41 — token accounting was zero on the tool-emulation path (2026-10-03)
+
+**BUG-095.** You reported in September that "the pricing estimates in llm-proxy are low".
+This is one mechanism, and it is not a rounding error — it is a hard zero.
+
+The chain:
+
+1. `call_with_tool_prompt` made the upstream call and returned only
+   `choice.message.content`, **discarding `resp.usage` entirely**.
+2. The six emulated-response builders in `app/cot/sse.py` therefore filled `usage` with
+   hardcoded zeros — three Anthropic-shape, three OpenAI-shape.
+3. Every cost derived from those numbers computes as **$0**.
+
+**The path is common, not exotic.** `tool_emulation` engages when
+`has_tools and not provider.native_tools` — and the proxy **injects its own MCP tools**, so
+`has_tools` is true even when the caller sent none. Measured end-to-end on a plain text
+request with no tools against an OpenAI-compatible provider:
+
+```
+has_tools=True  ntools=3  injected=True  emul=True  native_tools=False
+-> usage {"input_tokens": 0, "output_tokens": 0}
+```
+
+while the upstream had reported `prompt_tokens=10, completion_tokens=2`. So any key with
+tool injection enabled, talking to a provider without native tool support, on **either**
+`/v1/messages` or `/v1/chat/completions`, reported zero tokens and zero cost.
+
+**Fix.** `call_with_tool_prompt` gained an optional `usage_out` dict it populates in place —
+an out-parameter rather than a changed return type, because both call sites assign the text
+directly and it matches the `resp_headers` mutate-in-place idiom already around them. All
+six builders take an optional `usage`, defaulting to the previous zeros so no existing
+caller changes behaviour. Both endpoints collect and thread it.
+
+Verified end-to-end against the mock provider, which reports 10 in / 2 out:
+
+| | before | after |
+|---|---|---|
+| `/v1/messages` | `{input_tokens: 0, output_tokens: 0}` | `{input_tokens: 10, output_tokens: 2}` |
+| `/v1/chat/completions` | `{prompt_tokens: 0, completion_tokens: 0}` | `{prompt_tokens: 10, completion_tokens: 2, total_tokens: 12}` |
+
+This was found by finishing the triage of the four `usage.output_tokens == 0` entries in
+`tests/known_integration_failures.txt`, which only became visible once v5.22.38 made the
+integration suite runnable. It took four narrowing steps — ruling out litellm (it parses
+usage correctly), `to_anthropic_response` (its mapping is right, and it is never called on
+this path), and the cascade — before instrumenting the handler's early returns showed
+`tool_emulation_text` firing on a request with no tools.
+
+**Still undeployed**, like everything since v5.22.25. Live cost figures stay zero on this
+path until it ships.
+
 ### v5.22.40 — a GitGuardian false positive, and the scanner change that earns its keep (2026-10-01)
 
 **No secret leaked.** GitGuardian raised an `X-API-Key Secret` incident against commit

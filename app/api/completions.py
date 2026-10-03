@@ -412,8 +412,13 @@ async def chat_completions(
             else:
                 norm_msgs = [{"role": "system", "content": tool_prompt}] + norm_msgs
             emul_extra = {k: v for k, v in extra.items() if k != "tools"}
+            # v5.22.41 (BUG-095) — capture the upstream usage. Without this the
+            # emulated-response builders below fill in zeros and every cost
+            # derived from this request computes as $0.
+            _emul_usage: dict = {}
             response_text = await call_with_tool_prompt(
-                route.litellm_model, norm_msgs, None, emul_extra
+                route.litellm_model, norm_msgs, None, emul_extra,
+                usage_out=_emul_usage
             )
             tool_calls = parse_tool_calls(response_text)
             if route.cot_engaged:
@@ -454,11 +459,20 @@ async def chat_completions(
                 return StreamingResponse(gen, media_type="text/event-stream", headers=resp_headers)
             else:
                 if len(tool_calls) >= 2:
-                    content = openai_tools_response(tool_calls, route.litellm_model)
+                    content = openai_tools_response(
+                        tool_calls, route.litellm_model,
+                        usage=_emul_usage,
+                    )
                 elif len(tool_calls) == 1:
-                    content = openai_tool_response(tool_calls[0]["name"], tool_calls[0]["input"], route.litellm_model)
+                    content = openai_tool_response(
+                        tool_calls[0]["name"], tool_calls[0]["input"], route.litellm_model,
+                        usage=_emul_usage,
+                    )
                 else:
-                    content = openai_text_response(response_text, route.litellm_model)
+                    content = openai_text_response(
+                        response_text, route.litellm_model,
+                        usage=_emul_usage,
+                    )
                 # v3.6.1 — X-Quality-Hint for tool-emulation path
                 from app.api._quality_hint import merge_into_headers
                 merge_into_headers(resp_headers, content, endpoint="completions")
