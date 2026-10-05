@@ -9,6 +9,13 @@ Run with:
 import re
 import time
 
+# v5.22.42 — needed by the transport-reset retry in TestCacheHeaderLive.
+# It was absent, so that `except requests.exceptions.ConnectionError`
+# would have raised NameError on the one path it exists to handle —
+# turning a clear ConnectionError into a confusing one. The branch is
+# rare by nature, so nothing would have caught this until it fired.
+import requests
+
 import pytest
 from playwright.sync_api import Page, expect, sync_playwright
 
@@ -1159,13 +1166,30 @@ class TestCacheHeaderLive:
                 "is not wired into the response pipeline"
             )
             # Second identical call — header must still be present (independent
-            # of hit/miss outcome, since live cache TTL/config may vary)
-            r2 = admin_session.post(
-                f"{BASE_URL}/v1/messages",
-                json=payload,
-                headers=headers,
-                timeout=60,
-            )
+            # of hit/miss outcome, since live cache TTL/config may vary).
+            #
+            # v5.22.42 — retried once on a transport fault. CI attempt 4 failed
+            # here with ConnectionResetError(104) on this second call, after the
+            # first had returned 200 and the header assertion had passed. Not
+            # reproducible locally: three identical calls return 200 with
+            # X-Cache-Status='bypass' and the server logs nothing. A reset is a
+            # transport fault rather than an assertion failure, so one retry
+            # distinguishes a transient from a real one — if it resets twice,
+            # this fails with the original error rather than being swallowed.
+            def _second_call():
+                return admin_session.post(
+                    f"{BASE_URL}/v1/messages",
+                    json=payload,
+                    headers=headers,
+                    timeout=60,
+                )
+
+            try:
+                r2 = _second_call()
+            except requests.exceptions.ConnectionError:
+                time.sleep(1.0)
+                r2 = _second_call()  # a second reset raises and fails the test
+
             assert r2.status_code == 200
             assert "X-Cache-Status" in r2.headers, (
                 "X-Cache-Status header missing on duplicate request — cache "
