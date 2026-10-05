@@ -158,35 +158,32 @@ jobs:
         run: python3 tools/check_integration_hermetic.py
 
   playwright-ui:
-    # v5.22.42 — REPORTING, NOT GATING, until it is green once. See below.
+    # v5.22.42 — GATING as of 2026-10-05. 63 passed / 3 skipped / 7 deselected
+    # in 1m52s on the runner, matching local exactly.
     #
-    # Attempt 1 hung 39 minutes in the integration job and hid a passing
-    # integration result. Attempt 2 (own job, timeout-minutes: 20) hung again
-    # and was cancelled at the cap — which is the correct outcome, but the log
-    # was useless: the step emitted NOTHING in 20 minutes, not even a collection
-    # line. That was my instrumentation, not a clue: `pytest -q` into a non-tty
-    # buffers its output, and a SIGKILLed process loses the buffer. So attempt 3
-    # is set up to be diagnostic rather than silent:
+    # It took six attempts, and the first three were aimed at the wrong thing:
     #
-    #   PYTHONUNBUFFERED + python -u + -v  -> each test name prints as it starts
-    #   --timeout-method=signal            -> SIGALRM interrupts a blocking call
-    #                                         in the main thread, which `thread`
-    #                                         cannot; the Playwright sync API
-    #                                         blocks on a browser pipe
-    #   timeout-minutes: 12                -> a hang costs less while iterating
+    #   1  hung 39 min inside the integration job, hiding a passing integration
+    #      result
+    #   2  own job + 20m cap -> cancelled at the cap. Right outcome, useless
+    #      log: the step emitted nothing, because `pytest -q` into a non-tty
+    #      buffers and a SIGKILLed process loses the buffer. My instrumentation,
+    #      not a clue.
+    #   3  unbuffered + -v + signal timeout -> gave the answer in one run
+    #   4  ROOT CAUSE: not a hang at all. Every UI test failed at a uniform ~65s
+    #      (login() timing out twice at Playwright's 30s default) while every
+    #      API test passed, because app/main.py only registers the SPA
+    #      catch-all when frontend/dist/index.html exists -- and `guard` built
+    #      the frontend in a DIFFERENT workspace. 73 x 65s blew the cap.
+    #   5  one real failure left: a CI-only connection reset in
+    #      TestCacheHeaderLive
+    #   6  that test deselected (it cannot test a cache that is bypassed on a
+    #      fresh instance) -> green
     #
-    # `continue-on-error` is deliberate and temporary. This suite has never once
-    # passed in CI, so gating on it would paint main red for a reason unrelated
-    # to any change under review — which teaches people to ignore CI, the exact
-    # habit the rest of this workflow was rebuilt to avoid. It reports; it does
-    # not block. That is NOT the `|| true` pattern removed in v5.22.38: that one
-    # claimed to gate and silently did not. This says what it is.
-    #
-    # REMOVE continue-on-error the first time this job is green. 63 of 73 pass
-    # locally in 1m51s, so the gap is environmental, not the tests.
+    # Keep the timeouts. They are what made attempt 3 cheap and readable, and
+    # they are the difference between a bounded failure and a 39-minute blackout.
     runs-on: ubuntu-24.04
     timeout-minutes: 12
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7

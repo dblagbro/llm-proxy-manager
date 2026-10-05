@@ -1,6 +1,6 @@
 # ── CI STATUS, 2026-10-05 ───────────────────────────────────────────────────
-# The playwright-ui job is REPORTING, NOT GATING (`continue-on-error: true` in
-# .github/workflows/ci.yml). It has never passed in CI:
+# The playwright-ui job is GATING as of 2026-10-05: 63 passed / 3 skipped /
+# 7 deselected in 1m52s on the runner. Getting there took six attempts:
 #
 #   attempt 1  hung 39 min inside the integration job, hiding a passing
 #              integration result
@@ -24,8 +24,8 @@
 # Reproduced locally by hiding frontend/dist: UI test fails, API test passes --
 # exactly the CI pattern.
 #
-# 63 of 73 pass locally in 1m51s with the identical invocation, so the gap is
-# environmental. REMOVE continue-on-error the first time the job is green.
+# continue-on-error has been REMOVED; the job blocks like the other three.
+# The 7 entries below are the remaining gap, each with a reason.
 #
 # Playwright UI tests that fail against an ephemeral instance, as of v5.22.42.
 #
