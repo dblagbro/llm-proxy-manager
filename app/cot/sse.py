@@ -53,6 +53,23 @@ def sse_done() -> bytes:
 
 # ── Anthropic response generators (tool emulation) ───────────────────────────
 
+def sse_message_start(model: str, input_tokens: int = 0) -> bytes:
+    """The opening frame of an Anthropic stream.
+
+    v5.22.42 (BUG-096) — the three emulated SSE generators never emitted this.
+    They began at ``content_block_start``, so an emulated stream was not a valid
+    Anthropic stream: the contract requires ``message_start`` first, and it is
+    the frame that carries ``input_tokens``. A strict SDK client on the
+    emulation path can reject the stream, and input tokens had nowhere to go.
+    """
+    return (
+        f'data: {{"type":"message_start","message":{{"id":"msg_emul","type":"message",'
+        f'"role":"assistant","content":[],"model":"{model}",'
+        f'"stop_reason":null,"stop_sequence":null,'
+        f'"usage":{{"input_tokens":{input_tokens},"output_tokens":0}}}}}}\n\n'
+    ).encode()
+
+
 def _usage_tokens(usage: dict | None) -> tuple[int, int]:
     """(input_tokens, output_tokens) from a litellm-shaped usage dict.
 
@@ -70,8 +87,10 @@ def _usage_tokens(usage: dict | None) -> tuple[int, int]:
 
 async def anthropic_tool_sse(
     tool_name: str, tool_input: dict, usage: dict | None = None,
+    model: str = "unknown",
 ) -> AsyncIterator[bytes]:
     tool_id = f"toolu_{secrets.token_hex(8)}"
+    yield sse_message_start(model, _usage_tokens(usage)[0])
     input_json = json.dumps(tool_input)
     escaped = json.dumps(input_json)[1:-1]
     yield f'data: {{"type":"content_block_start","index":0,"content_block":{{"type":"tool_use","id":"{tool_id}","name":"{tool_name}","input":{{}}}}}}\n\n'.encode()
@@ -83,8 +102,10 @@ async def anthropic_tool_sse(
 
 async def anthropic_text_sse(
     text: str, usage: dict | None = None,
+    model: str = "unknown",
 ) -> AsyncIterator[bytes]:
     yield b'data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n'
+    yield sse_message_start(model, _usage_tokens(usage)[0])
     chunk = 80
     for i in range(0, len(text), chunk):
         piece = json.dumps(text[i:i + chunk])[1:-1]
@@ -149,8 +170,10 @@ def anthropic_tools_response(
 
 async def anthropic_tools_sse(
     tool_calls: list[dict], usage: dict | None = None,
+    model: str = "unknown",
 ) -> AsyncIterator[bytes]:
     """Stream MULTIPLE tool_use content blocks (one block index per tool)."""
+    yield sse_message_start(model, _usage_tokens(usage)[0])
     for idx, tc in enumerate(tool_calls):
         tool_id = f"toolu_{secrets.token_hex(8)}"
         tool_name = tc["name"]

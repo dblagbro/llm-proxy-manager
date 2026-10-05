@@ -364,19 +364,21 @@ OAuth session. Left alone deliberately; if it re-opens and stays open, re-auth t
   locally but reach the live deployment via `conftest.py`, so they'd fail on a clean runner.
 
 ## Other known gaps
-- **`known_failures.txt` is EMPTY as of v5.22.37** (75 → 0 over the v5.22.26–37 arc) and
-  `tests/unit` is fully green at 3985 passed. Clearing it surfaced six real defects
-  (BUG-086…BUG-091) and roughly a dozen guards that had silently stopped testing anything.
-  **The CI blocker is CLOSED as of v5.22.38.** Both suites gate, and neither needs a
-  deployment, network or credentials: `pytest tests/unit` is hermetic (asserted every run
-  by `tools/run_unit_suite_hermetic.py`, which fails on any non-loopback connect), and
-  `tests/integration` boots its own throwaway instance via `LLMPROXY_TEST_EPHEMERAL=1`
-  (53 passing, previously 0 runnable). The earlier note here — that running the suite
-  locally mutates production — was **stale**: that was fixed in v5.22.16. What was still
-  real, and is now fixed, is that the live gate only covered tests using the
-  `admin_session` fixture, so 74 tests reached the live deployment by building their own
-  session or browser page. Remaining: 13 integration failures that becoming runnable
-  surfaced, in `tests/known_integration_failures.txt` — a triage list, not a parking space.
+- **Test state as of v5.22.42.** `known_failures.txt` EMPTY; unit suite 4044 passing and
+  gated; integration suite 63 passing against a throwaway instance it boots itself
+  (`LLMPROXY_TEST_EPHEMERAL=1`); Playwright UI 63 of 73 running, having run **nowhere**
+  before v5.22.42. Two triage lists remain, both short and both with recorded reasons:
+  `tests/known_integration_failures.txt` (3 — a CoT/tool-emulation precedence question
+  that needs an operator decision) and `tests/known_ui_failures.txt` (6 — need a richer
+  seed in the ephemeral fixture, not test changes).
+- **Clearing those lists has been the highest-yield work in the project's history:**
+  eight real defects nothing had ever exercised — BUG-086…BUG-097 plus F-INFRA-004 —
+  including a live compliance bug (BUG-093, sovereignty constraints narrowed *and*
+  unenforced) and two accounting bugs that made cost read zero (BUG-095, BUG-096).
+- **`make migrate` does not work and never did.** No `alembic/versions/`, zero
+  revisions. Schema comes from `create_all` plus in-place `ALTER TABLE` in `init_db()`.
+  The targets now refuse and explain. Adopting alembic needs a baseline revision
+  stamped on every node — real work, operator's call.
 - **nginx logs on the NFS share are unrotated and large:** `/mnt/s/documents/access.log` **14 GB**
   and `error.log` **41 GB**, both still growing. Not llm-proxy2's doing (shared nginx), but they
   live on the share and no logrotate is trimming them.

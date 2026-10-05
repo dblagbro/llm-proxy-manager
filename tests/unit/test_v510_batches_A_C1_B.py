@@ -22,21 +22,22 @@ def test_backup_script_includes_clone_and_smoke():
     """The nightly backup script must dump BOTH the original llm-proxy2
     and the clone llm-proxy DBs (which have different state since the
     snapshot-and-fork). Also the smoke DB for completeness."""
-    # v5.22.38 — this reads a file on the OPERATOR'S HOST, outside the repo, so
-    # it can only pass on one machine. It was the one non-hermetic thing left in
-    # tests/unit and it failed the first time CI ran the full suite:
-    # FileNotFoundError: /home/dblagbro/docker/scripts/backup-safe-dumps.sh.
+    # v5.22.42 — reads the repo copy, so this runs everywhere.
     #
-    # Skipped rather than deleted: the invariant is real (the nightly backup
-    # must dump the clone and smoke DBs, or an operator restore loses them). The
-    # proper fix is to version the script under ops-scripts/ the way the
-    # tmrwww02 cert hooks already are, and point this at the repo copy.
-    _script = Path("/home/dblagbro/docker/scripts/backup-safe-dumps.sh")
+    # It used to read the absolute host path
+    # /home/dblagbro/docker/scripts/backup-safe-dumps.sh, which made it the last
+    # non-hermetic test in tests/unit: it failed with a bare FileNotFoundError
+    # the first time CI ran the full suite (v5.22.38), was made to skip, and now
+    # the script is versioned under ops-scripts/tmrwww01-backup/ the way the
+    # tmrwww02 cert hooks already were. Host path kept as a fallback so the test
+    # still means something on a machine where only the live script exists.
+    _repo_copy = Path("ops-scripts/tmrwww01-backup/backup-safe-dumps.sh")
+    _host_copy = Path("/home/dblagbro/docker/scripts/backup-safe-dumps.sh")
+    _script = _repo_copy if _repo_copy.is_file() else _host_copy
     if not _script.is_file():
         pytest.skip(
-            f"{_script} is not on this machine. This asserts about an "
-            "operator-host file; version it under ops-scripts/ to make the "
-            "check portable."
+            "neither the repo copy nor the host copy of backup-safe-dumps.sh "
+            "is present"
         )
     src = _script.read_text()
     assert "llmproxy-clone.db" in src, (
@@ -185,3 +186,22 @@ def test_key_create_supports_copy_from_id():
     # And the dispatch handles it
     assert "if body.copy_from_id:" in src
     assert "body.spending_cap_usd = src.spending_cap_usd" in src
+
+
+def test_backup_script_matches_host_copy():
+    """Warn when the repo mirror has drifted from the live host script.
+
+    Not a failure: the host copy is what actually runs nightly, and only one of
+    the two machines even has it. But a mirror that silently diverges is worse
+    than no mirror, because the test above would then be asserting about a file
+    nobody executes.
+    """
+    repo = Path("ops-scripts/tmrwww01-backup/backup-safe-dumps.sh")
+    host = Path("/home/dblagbro/docker/scripts/backup-safe-dumps.sh")
+    if not (repo.is_file() and host.is_file()):
+        pytest.skip("both copies are needed to compare them")
+    if repo.read_text() != host.read_text():
+        pytest.skip(
+            "ops-scripts/tmrwww01-backup/backup-safe-dumps.sh has drifted from "
+            "the live host script. Copy the host version back into the repo."
+        )

@@ -1,0 +1,32 @@
+# Playwright UI tests that fail against an ephemeral instance, as of v5.22.42.
+#
+# READ THIS BEFORE ADDING A LINE.
+#
+# These 6 are not pre-existing known failures — until v5.22.42 the entire
+# Playwright suite ran NOWHERE. It needed a live HTTPS deployment, and under
+# pytest it died on "Playwright Sync API inside the asyncio loop" because
+# asyncio_mode=auto gives every test a running loop. Both are fixed: the suite
+# runs with `-o asyncio_mode=strict` against the ephemeral instance, and 63 of
+# 73 tests pass.
+#
+# The 6 below need a seeded, interacted-with instance rather than a freshly
+# booted one. The ephemeral fixture now seeds the mock provider and one API key,
+# which fixed 2 of the original 8; these need more:
+#
+#   - test_create_api_key_flow, test_edit_limits_* (4): drive modals in the
+#     API-keys page. They need the modal's exact DOM, and they were written
+#     against a deployment with real keys in several states.
+#   - test_activity_page_provider_filter: needs activity_log rows, i.e. traffic
+#     must have flowed before the test runs.
+#   - test_completed_message_triggers_speak: AIRI TTS, needs AIRI state.
+#
+# This is a TRIAGE LIST, not a parking space — see the header of
+# tests/known_integration_failures.txt for why that distinction matters here.
+# The fix for most of them is a richer seed in the ephemeral fixture, not a
+# change to the tests.
+tests/integration/test_playwright_ui.py::TestLLMProxy2UI::test_create_api_key_flow
+tests/integration/test_playwright_ui.py::TestProviderActions::test_activity_page_provider_filter
+tests/integration/test_playwright_ui.py::TestAPIKeyLimitsUI::test_edit_limits_modal_opens_via_pencil
+tests/integration/test_playwright_ui.py::TestAPIKeyLimitsUI::test_edit_limits_sets_spending_cap
+tests/integration/test_playwright_ui.py::TestAPIKeyLimitsUI::test_edit_limits_sets_rate_limit
+tests/integration/test_playwright_ui.py::TestAiriTTS::test_completed_message_triggers_speak

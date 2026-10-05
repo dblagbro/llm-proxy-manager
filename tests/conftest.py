@@ -375,4 +375,11 @@ def _ephemeral_default_provider(request):
     # Reuse the existing fixture rather than duplicating registration, so the
     # mock's lifecycle and teardown stay in one place.
     request.getfixturevalue("mock_server")
+    # v5.22.42 — also seed one API key.
+    #
+    # A freshly booted instance has an empty api_keys table, so the UI renders
+    # "No API keys yet" and every Playwright test that inspects the API-keys
+    # table fails on absent columns rather than on anything real. Those tests
+    # had never run anywhere before v5.22.42, so this had never surfaced.
+    request.getfixturevalue("test_api_key")
     yield

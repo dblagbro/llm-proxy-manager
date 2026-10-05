@@ -36,7 +36,7 @@ afternoon — optimize for legibility, not cleverness.**
 | Full suite | `make test-all` (`pytest tests/ -v`) |
 | Lint | `make lint` (`ruff check` + `ruff format --check`) |
 | Format | `make format` (`ruff format`) |
-| DB migrate / new revision | `make migrate` / `make migrate-new MSG="..."` (alembic) |
+| DB migrate / new revision | **none — alembic has no revisions.** Schema comes from `create_all` + in-place `ALTER TABLE` in `init_db()`. `make migrate` refuses and explains. |
 | Build image (local) | `make build` |
 | Import smoke | `python -c "import app.main"` |
 

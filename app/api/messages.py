@@ -326,9 +326,32 @@ async def messages(
     from app.routing.tool_content import (
         has_anthropic_tool_content, has_anthropic_tool_defs,
     )
+    # Provider types that speak the OpenAI wire shape, so an Anthropic
+    # tool-using conversation can be translated for them.
+    #
+    # v5.22.42 (BUG-097) — ``compatible`` and ``cursor-oauth`` were missing.
+    # ``compatible`` is the project's GENERIC "OpenAI-compatible endpoint" type;
+    # ``litellm_binding.py:203`` maps it straight to the ``openai`` provider
+    # ("OpenAI-compatible uses openai provider with custom base_url"). Omitting
+    # it meant a tool-using Anthropic request that fell back to any
+    # self-hosted or third-party OpenAI-compatible endpoint got a spurious
+    # 503 "non-translatable upstream" for a provider that could have served it.
+    # A hand-maintained allowlist that forgets the generic case is the worst
+    # one to forget.
+    #
+    # NOT derived from ``PROVIDER_TYPE_TO_LITELLM``, though that is tempting:
+    # only four types map to ``openai`` there, while ten of the entries below
+    # map to their own litellm provider (openrouter, groq, mistral, …) and are
+    # nonetheless OpenAI-wire-shaped. The binding map's target is not the wire
+    # shape, so deriving from it would drop ten correct entries to fix two.
+    #
+    # Own-dispatcher types (``claude-oauth``, ``grok-web``, retired
+    # ``ChatGPT-oauth-plan``) never reach the litellm path, so their presence or
+    # absence here is inert; ``grok-web`` is listed for historical reasons.
     _openai_shape_providers = {
         "openai", "openrouter", "grok", "grok-bridge", "grok-web",
         "groq", "mistral", "perplexity", "ollama", "deepseek", "fireworks",
+        "compatible", "cursor-oauth",
     }
     _anthropic_types = {"anthropic", "claude-oauth"}
     _has_tool_blocks = has_anthropic_tool_content(messages_list)
@@ -784,11 +807,16 @@ async def messages(
                 resp_headers["X-Tool-Calls-Emitted"] = str(len(tool_calls))
             if stream:
                 if len(tool_calls) >= 2:
-                    gen = anthropic_tools_sse(tool_calls, usage=_emul_usage)
+                    gen = anthropic_tools_sse(tool_calls, usage=_emul_usage, model=route.litellm_model)
                 elif len(tool_calls) == 1:
-                    gen = anthropic_tool_sse(tool_calls[0]["name"], tool_calls[0]["input"], usage=_emul_usage)
+                    gen = anthropic_tool_sse(
+                        tool_calls[0]["name"], tool_calls[0]["input"],
+                        usage=_emul_usage, model=route.litellm_model,
+                    )
                 else:
-                    gen = anthropic_text_sse(response_text, usage=_emul_usage)
+                    gen = anthropic_text_sse(
+                        response_text, usage=_emul_usage, model=route.litellm_model,
+                    )
                 return StreamingResponse(gen, media_type="text/event-stream", headers=resp_headers)
             else:
                 if len(tool_calls) >= 2:

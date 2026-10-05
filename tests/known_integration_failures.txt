@@ -1,70 +1,42 @@
-# Integration tests that fail against an ephemeral instance, as of v5.22.38.
+# Integration tests that fail against an ephemeral instance, as of v5.22.42.
 #
-# READ THIS BEFORE ADDING A LINE.
+# READ THIS BEFORE ADDING A LINE. This is a TRIAGE LIST, not a parking space.
+# The unit suite's known_failures.txt reached 75 entries by being treated as the
+# latter; driving it to 0 over v5.22.26-37 turned up six real defects. Do not
+# repeat that here — a new line needs a recorded reason.
 #
-# These 13 are NOT pre-existing known failures. They are tests that could never
-# run before: the integration suite required a live HTTPS deployment, so on a
-# clean runner it could only error. v5.22.38 gave it a private throwaway
-# instance, and 53 of the 66 runnable tests pass. These 13 are what that
-# surfaced. Nobody has triaged them yet — nobody could.
+# History: this file started at 13 entries on 2026-09-28, when v5.22.38 first
+# made the integration suite runnable. Clearing them found FIVE real product
+# bugs that nothing had ever exercised:
 #
-# This is a TRIAGE LIST, not a parking space. The unit suite's
-# known_failures.txt reached 75 entries by being treated as the latter; driving
-# it back to 0 over v5.22.26-37 turned up six real defects (BUG-086..BUG-091)
-# and about a dozen guards that had silently stopped testing anything. Do not
-# repeat that here. Adding a line needs a reason recorded next to it.
+#   BUG-095  usage/cost reported as zero on the whole tool-emulation path
+#   BUG-096  emulated SSE streams omitted the mandatory message_start frame,
+#            and the non-emulated stream never reported input_tokens at all
+#   BUG-097  `compatible` — the generic OpenAI-compatible provider type — was
+#            missing from the translatable set, so tool-using Anthropic
+#            requests falling back to one got a spurious 503
+#   (vision) four tests were asserting that image requests get silently
+#            stripped and answered blind; the proxy deliberately refuses now,
+#            and the tests were pinning the fabrication
+#   (keys)   a failing test printed a raw API key into the pytest report
 #
-# Grouped by apparent cause, from a first pass only — none confirmed:
+# 10 of 13 cleared. The 3 below remain.
 #
-# (a) RESOLVED 2026-10-03 — this was BUG-095, a real billing bug, not a test bug.
-#     Three of the four now pass. `call_with_tool_prompt` was discarding the
-#     upstream `resp.usage`, and the six emulated-response builders filled in
-#     hardcoded zeros, so usage and every cost derived from it read $0. The path
-#     is common: the proxy injects its own MCP tools, which makes `has_tools`
-#     true even when the caller sent none, so emulation engages for any provider
-#     without native tool support. Fixed in v5.22.41; see bug-log BUG-095.
+# CoT emulation produces no thinking blocks (3)
+#     Diagnosed 2026-10-04, and it is a real behavioural question rather than a
+#     stale test. The proxy injects its own MCP tools, so `has_tools` is true,
+#     so tool emulation engages — and the emulation branch in messages.py
+#     RETURNS before the CoT engagement block below it. router.py:952 says this
+#     is intended ("when both are true the handler runs the co-emulation path
+#     (a reasoning-prefixed tool prompt), so tools+reasoning are served
+#     together"), but the emulated SSE generators emit no `thinking` frames, so
+#     a caller asking for CoT with injected tools gets neither an error nor
+#     reasoning.
 #
-# (a2) emulated SSE stream omits the opening `message_start` frame (1)
-#     Diagnosed 2026-10-03 while fixing BUG-095, and it is a DIFFERENT bug —
-#     protocol conformance, not accounting. `anthropic_text_sse` yields
-#     content_block_start / content_block_delta / content_block_stop /
-#     message_delta / message_stop, with no `message_start`. The Anthropic
-#     streaming contract requires it first, and it is the frame that carries
-#     `input_tokens`, so a strict SDK client on the emulation path may error and
-#     input tokens have nowhere to be reported.
-#
-#     Not bundled into the v5.22.41 commit on purpose: it needs `model` threaded
-#     into the three SSE generators, which is a second behavioural change, and
-#     v5.22.41 touches the billing path. Fix next, with its own test.
-#
-#     The canonical non-emulated frame at app/api/_messages_streaming.py:227 also
-#     hardcodes `"usage":{"input_tokens":0,"output_tokens":0}` in message_start —
-#     worth checking whether input tokens under-report there too.
-tests/integration/test_routing_mock.py::TestAnthropicStream::test_sse_event_sequence
-#
-# (a3) CoT needs a model that emits thinking blocks (1) — see (d); same cause.
+#     Deliberately NOT fixed by guessing: whether co-emulation should emit
+#     thinking frames, or whether CoT should take precedence over injected-tool
+#     emulation, is a design decision with a routing-cost implication. Needs the
+#     operator's call, then a test.
 tests/integration/test_routing_mock.py::TestCoTEmulation::test_cot_produces_thinking_blocks
-#
-# (b) cross-family routing refuses the mock for tool-using Anthropic requests (3)
-#     503 "Cross-family fallback to a non-translatable upstream for a tool-using
-#     Anthropic request. Providers skipped: pytest-mock". Plausibly correct
-#     behaviour meeting a test written when a real Anthropic provider was always
-#     present. Either the ephemeral instance needs an Anthropic-shaped mock, or
-#     these tests need the real_providers marker.
-tests/integration/test_cross_family_translation.py::test_tool_conversation_to_gemini_not_400
-tests/integration/test_cross_family_translation.py::test_tool_conversation_streaming_completes_cleanly
-tests/integration/test_cross_family_translation.py::test_orphan_tool_result_conversation_not_400
-#
-# (c) vision stripping returns 422 (4)
-#     All four send image blocks and expect 200. Unclear whether the 422 comes
-#     from the proxy's validation or the mock's. Not yet read.
-tests/integration/test_new_features.py::TestVisionStripping::test_image_blocks_replaced_with_text_placeholder
-tests/integration/test_new_features.py::TestVisionStripping::test_image_placeholder_text_in_forwarded_request
-tests/integration/test_new_features.py::TestVisionStripping::test_vision_stripped_header_present
-tests/integration/test_new_features.py::TestVisionStripping::test_mixed_text_and_image_preserves_text
-#
-# (d) CoT needs a model that emits thinking blocks (2)
-#     The mock returns plain text, so no thinking blocks appear and iteration
-#     counts stay 0. These likely belong behind real_providers / --run-real.
-tests/integration/test_settings_permutation.py::TestCoTToggle::test_cot_enabled_produces_thinking_blocks
 tests/integration/test_settings_permutation.py::TestCoTIterations::test_max_iterations_zero_skips_critique
+tests/integration/test_settings_permutation.py::TestCoTToggle::test_cot_enabled_produces_thinking_blocks

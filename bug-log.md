@@ -10,6 +10,40 @@ Status flow: **open** → **in-progress** → **fixed** → **verified-fixed** �
 
 ---
 
+## 2026-10-04 — clearing the integration backlog found three more product bugs (v5.22.42)
+
+### BUG-096 — emulated streams were invalid, and input tokens were never reported to a streaming caller — ✅ **CLOSED v5.22.42**
+
+- **Severity:** medium-high (protocol invalidity + accounting gap) · **Category:** wire-protocol conformance
+- **Surfaced:** 2026-10-04, clearing `tests/known_integration_failures.txt`. Nothing had ever exercised these paths before v5.22.38 made the integration suite runnable.
+- **Half one — missing `message_start`.** The three emulated SSE generators began at `content_block_start`. The Anthropic streaming contract requires `message_start` first, and it is the frame that carries `input_tokens`, so an emulated stream was not a valid Anthropic stream and a strict SDK client could reject it. Fixed with a shared `sse_message_start()` helper; `model` is threaded in from the handler.
+- **Half two — `input_tokens` never reached the caller.** On the non-emulated path, `message_start` sends `input_tokens: 0` — defensible, because a streaming proxy does not know the figure yet (for an OpenAI-shaped upstream the usage frame arrives with the final chunk) — but the closing `message_delta` then carried **only** `output_tokens`. So a streaming caller never learned its input tokens at all, while `record_outcome` was handed the real value. Proxy-side accounting was correct and the caller's was not: anyone costing a request from the response read input as zero. The delta now appends `input_tokens` when known, and only when known, so a provider that reports no usage still produces the previous frame shape rather than a misleading zero.
+- **Status:** CLOSED.
+
+### BUG-097 — `compatible` providers wrongly treated as non-translatable; spurious 503 — ✅ **CLOSED v5.22.42**
+
+- **Severity:** medium (requests refused that could be served) · **Category:** hand-maintained allowlist forgot the generic case
+- **Surfaced:** same pass. Three `test_cross_family_translation` tests were failing with `503 "Cross-family fallback to a non-translatable upstream for a tool-using Anthropic request. Providers skipped: pytest-mock"`.
+- **Root cause:** `messages.py` carries a hardcoded `_openai_shape_providers` set of 11 named vendors. `compatible` — the project's **generic** "OpenAI-compatible endpoint" type — was not in it, despite `litellm_binding.py:203` mapping it straight to the `openai` provider with the comment "OpenAI-compatible uses openai provider with custom base_url". So a tool-using Anthropic request falling back to any self-hosted or third-party OpenAI-compatible endpoint got a 503 for a provider that could have served it. `cursor-oauth` was missing too.
+- **Not fixed by deriving the set**, though that was the obvious move and would have been wrong: only four types map to `openai` in `PROVIDER_TYPE_TO_LITELLM`, while ten of the existing entries (openrouter, groq, mistral, perplexity, deepseek, fireworks, ollama, grok…) map to their own litellm provider and are nonetheless OpenAI-wire-shaped. The binding map's target is not the wire shape; deriving from it would have dropped ten correct entries to fix two. Reasoning recorded at the call site so the next reader does not repeat the attempt.
+- **Lesson:** an allowlist of specific vendors that omits the generic catch-all type is the worst possible omission — every bespoke deployment lands in the gap. Third instance of hand-maintained-inventory drift in this project ([[BUG-086]] frozen set, [[BUG-089]] hardcoded module list).
+- **Status:** CLOSED.
+
+### F-INFRA-004 — a failing test printed a raw API key into the pytest report — ✅ **CLOSED v5.22.42**
+
+- **Severity:** medium (credential exposure path, not a confirmed leak) · **Category:** secret hygiene in test output
+- **Observed:** 2026-10-04, while diagnosing a CoT test. pytest includes fixture values in its failure header, so the report contained `cot_headers = {'Content-Type': 'application/json', 'x-api-key': 'llmp-…'}` in full.
+- **Why it matters:** the key in question came from an ephemeral instance whose database is deleted seconds later, so nothing leaked. But the same suite run against a real deployment — which is exactly what `LLMPROXY_TEST_LIVE=1` is for — would place a live credential into a CI log, where it is durable and readable by anyone with repo access. This repo has lost credentials to incidental exposure twice: v4.4.29 (plaintext admin password in two test files) and `test_playwright_ui.py`, found still carrying it on 2026-08-12.
+- **Fix:** the headers fixture returns a dict subclass that masks sensitive headers in `__repr__`/`__str__` only (`<redacted N chars, prefix 'llmp-'>`). The value handed to the request is unchanged.
+- **Status:** CLOSED.
+
+### Also in v5.22.42, not bugs in the product
+
+- **Four vision tests were pinning a fabrication.** They asserted that an image request to a non-vision provider is stripped, a placeholder injected, and 200 returned. The proxy deliberately refuses now — router.py's own comment: "`vision_stripped` dropped the image → the caller got a confident, entirely fabricated text answer with no error. Refuse instead." Rewritten to pin the refusal, adding the assertion the originals lacked: the upstream must not be called at all.
+- **Playwright 0 → 63 running.** The 73-test suite had never executed anywhere: it needed a live HTTPS deployment, and under pytest it died on "Playwright Sync API inside the asyncio loop" because `asyncio_mode = "auto"` gives every test a loop. `-o asyncio_mode=strict` fixes the second. One of its tests had been asserting `version.startswith("2.")`, failing against live too, unnoticed because the file never ran.
+- **`make migrate` advertised a workflow that does not exist.** No `alembic/versions/` directory, zero revisions, ever; the schema comes from `create_all` plus in-place `ALTER TABLE` in `init_db()`. This corrects the v5.22.33 follow-up, which framed it as "one table lacks a revision" — nothing has one. Both targets now refuse and explain rather than running `--autogenerate` against a live database.
+- **The last non-hermetic unit test now runs**: `backup-safe-dumps.sh` versioned under `ops-scripts/tmrwww01-backup/`.
+
 ## 2026-10-03 — token accounting zero on the tool-emulation path (v5.22.41)
 
 ### BUG-095 — usage and cost reported as zero whenever tool emulation engaged — ✅ **CLOSED v5.22.41**

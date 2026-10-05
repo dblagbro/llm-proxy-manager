@@ -9,8 +9,40 @@ import requests
 from tests.conftest import BASE_URL, ADMIN_USER, ADMIN_PASS
 
 
+class _RedactedHeaders(dict):
+    """A headers dict that will not print its API key.
+
+    v5.22.42 — pytest includes fixture values in a failure header, so a failing
+    test printed the raw key:
+
+        cot_headers = {'Content-Type': 'application/json', 'x-api-key': 'llmp-GiE...'}
+
+    Harmless in an ephemeral run (that DB is deleted seconds later), but the
+    same suite run against a real deployment would put a live credential into
+    the CI log, where it is durable and visible to anyone with read access. The
+    repo has lost credentials to incidental exposure twice before (v4.4.29, and
+    test_playwright_ui.py found again on 2026-08-12), both times because a
+    secret ended up somewhere nobody was looking.
+
+    Masks on repr only. The value is unchanged for the request itself.
+    """
+
+    _SENSITIVE = ("x-api-key", "authorization", "x-auth-token", "api-key")
+
+    def __repr__(self) -> str:  # pragma: no cover - diagnostic only
+        safe = {}
+        for k, v in self.items():
+            if k.lower() in self._SENSITIVE and isinstance(v, str):
+                safe[k] = f"<redacted {len(v)} chars, prefix {v[:5]!r}>"
+            else:
+                safe[k] = v
+        return repr(safe)
+
+    __str__ = __repr__
+
+
 def _llm_headers(api_key: str) -> dict:
-    return {"x-api-key": api_key, "Content-Type": "application/json"}
+    return _RedactedHeaders({"x-api-key": api_key, "Content-Type": "application/json"})
 
 
 def collect_sse(resp: requests.Response) -> list[dict]:

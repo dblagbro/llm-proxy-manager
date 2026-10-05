@@ -2,6 +2,99 @@
 
 All notable changes since v2.7.6. Older history available in `git log`.
 
+### v5.22.42 — cleared the integration backlog; it was hiding three more product bugs (2026-10-04)
+
+Integration triage **13 → 3**, Playwright UI **0 → 63 running**, and the last
+non-hermetic unit test now runs instead of skipping. Clearing the list found
+three more real bugs plus a credential-exposure in test output — none of which
+anything had ever exercised.
+
+**BUG-096 — emulated streams were not valid Anthropic streams, and input tokens
+were never reported.** Two halves:
+
+- The three emulated SSE generators began at `content_block_start`. The Anthropic
+  contract requires `message_start` first, and it is the frame carrying
+  `input_tokens`. A strict SDK client on the emulation path could reject the
+  stream outright.
+- On the **non-emulated** path, `message_start` sends `input_tokens: 0` (a
+  streaming proxy genuinely does not know it yet — for an OpenAI-shaped upstream
+  the usage frame arrives with the last chunk), and the closing `message_delta`
+  carried **only** `output_tokens`. So a streaming caller never learned its input
+  tokens at all, while `record_outcome` was given the real value — proxy-side
+  accounting right, caller's wrong. Anyone costing a request from the response
+  read input as zero. The delta now carries `input_tokens` when known.
+
+**BUG-097 — `compatible` was missing from the translatable-provider set.** A
+tool-using Anthropic request that fell back to an OpenAI-compatible provider got
+a spurious `503 "non-translatable upstream"` for a provider that could have
+served it. `compatible` is the project's **generic** OpenAI-compatible type —
+`litellm_binding.py:203` maps it straight to the `openai` provider — so a
+hand-maintained allowlist of 11 specific vendors had forgotten the generic case,
+which is the worst one to forget. `cursor-oauth` was missing too.
+
+Deliberately *not* derived from `PROVIDER_TYPE_TO_LITELLM`, though that was
+tempting: only four types map to `openai` there, while ten of the entries are
+OpenAI-wire-shaped yet map to their own litellm provider. The binding target is
+not the wire shape, so deriving would have dropped ten correct entries to fix two.
+
+**The vision tests were pinning a fabrication.** Four asserted that an image
+request to a non-vision provider is silently stripped, a placeholder injected,
+and `200` returned. The proxy deliberately refuses now — from router.py's own
+comment on the change: *"`vision_stripped` dropped the image → the caller got a
+confident, entirely fabricated text answer with no error. Refuse instead."* So
+the tests were asserting the old, worse behaviour. Rewritten to pin the refusal,
+including the assertion the originals lacked: **the upstream must not be called
+at all**, so no fabricated answer can exist.
+
+**A failing test printed a raw API key.** pytest includes fixture values in its
+failure header, so `cot_headers = {...'x-api-key': 'llmp-GiE...'}` appeared in
+the report. Harmless in an ephemeral run, but the same suite against a real
+deployment would put a live credential into a CI log, where it is durable and
+readable by anyone with repo access — and this repo has lost credentials to
+incidental exposure twice (v4.4.29, and `test_playwright_ui.py` again on
+2026-08-12). The headers fixture now masks on `repr` only; the request value is
+untouched.
+
+**Playwright: 0 → 63 tests running.** The whole 73-test suite had never executed
+anywhere. Two causes, both fixed: it needed a live HTTPS deployment, and under
+pytest it died on *"Playwright Sync API inside the asyncio loop"* because
+`asyncio_mode = "auto"` gives every test a running loop. `-o asyncio_mode=strict`
+is the entire fix for the second. One of its tests had been asserting
+`version.startswith("2.")` — failing against the live deployment too, unnoticed
+because the file never ran.
+
+The ephemeral fixture now seeds an API key as well as the mock provider, which
+took the UI pass count from 61 to 63. The remaining 6 need a richer seed, not
+test changes, and are listed in `tests/known_ui_failures.txt`.
+
+**`make migrate` was advertising a workflow that does not exist.** `AGENTS.md`
+listed it as an approved command, but `alembic/` contains only `env.py` and
+`script.py.mako` — **no `versions/` directory, zero revisions, ever.** The schema
+comes from `create_all` plus hand-written `ALTER TABLE`s in `init_db()`. So
+`alembic upgrade head` has nothing to apply, and `--autogenerate` would create
+the project's first revision from a live-DB diff — covering some tables and not
+others, which is worse than no history. (This also corrects the v5.22.33
+follow-up note: the hazard was never "one table lacks a revision" but "nothing
+has one".) Both targets now refuse and explain; `AGENTS.md` is corrected.
+Adopting alembic properly needs a baseline revision stamped on every node — real
+work, and the operator's call, not a side effect of running `make`.
+
+**The last non-hermetic unit test now runs.** `backup-safe-dumps.sh` is
+versioned under `ops-scripts/tmrwww01-backup/` the way the tmrwww02 cert hooks
+already were, so the test reads the repo copy instead of an absolute host path
+and executes everywhere rather than skipping. A drift check reports (as a skip,
+not a failure) when the mirror diverges from the live script, since the host copy
+is the one that actually runs nightly.
+
+**Left undone on purpose:** the 3 remaining CoT entries are a design question,
+not a stale test. The proxy injects MCP tools → `has_tools` is true → emulation
+engages → the emulation branch returns *before* the CoT block. router.py says
+co-emulation should serve "tools+reasoning together", but the emulated generators
+emit no `thinking` frames, so a caller asking for CoT with injected tools gets
+neither reasoning nor an error. Whether co-emulation should emit thinking frames,
+or CoT should take precedence over injected-tool emulation, has a routing-cost
+implication and wants your call.
+
 ### v5.22.41 — token accounting was zero on the tool-emulation path (2026-10-03)
 
 **BUG-095.** You reported in September that "the pricing estimates in llm-proxy are low".

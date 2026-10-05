@@ -109,7 +109,14 @@ class TestLLMProxy2API:
         resp = page.request.get(f"{BASE_URL}/health")
         assert resp.status == 200
         data = resp.json()
-        assert data["version"].startswith("2.")
+        # v5.22.42 — was ``startswith("2.")``. The project has been on 3.x, 4.x
+        # and now 5.22.x since this was written, so it had been failing against
+        # the live deployment too — nobody saw it because this file had never
+        # run in CI. Assert the shape, not a frozen major.
+        assert re.match(r"^\d+\.\d+", data["version"]), data["version"]
+        assert int(data["version"].split(".")[0]) >= 5, (
+            f"version went backwards: {data['version']}"
+        )
         assert "status" in data
         assert "circuitBreakers" in data
 

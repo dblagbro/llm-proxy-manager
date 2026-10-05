@@ -49,42 +49,78 @@ class TestVisionStripping:
     image blocks, the proxy must replace them with text placeholders before forwarding.
     """
 
-    def test_image_blocks_replaced_with_text_placeholder(self, only_mock_routing, mock_ctl, llm_headers):
-        mock_ctl.queue(type="text", content="I see the placeholder.")
+    # v5.22.42 — these four used to assert that an image request to a
+    # non-vision provider was STRIPPED: image blocks removed, a placeholder
+    # injected, 200 returned. The proxy deliberately stopped doing that. From
+    # router.py's own comment on the change:
+    #
+    #   "``vision_stripped`` dropped the image -> the caller got a confident,
+    #    entirely fabricated text answer with no error. Refuse instead."
+    #
+    # So the old assertions were pinning the fabrication. Rewritten to pin the
+    # refusal, which is the invariant worth having: a request carrying an image
+    # must never be answered blind.
+    #
+    # The strip-and-placeholder path still exists for the case where a
+    # vision-capable provider IS available (router.py routes to it rather than
+    # refusing). The mock provider has no native vision, so that branch is not
+    # reachable here; testing it needs a vision-capable provider.
+
+    def test_image_request_refused_when_no_vision_provider(self, only_mock_routing, mock_ctl, llm_headers):
+        mock_ctl.queue(type="text", content="OK")
         content = [
-            {"type": "text", "text": "Describe this image:"},
-            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "abc123"}},
+            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "x"}},
         ]
         r = _post(llm_headers, _msg(content))
-        assert r.status_code == 200
+        assert r.status_code == 422, (
+            f"expected a refusal, got {r.status_code}: {r.text[:200]}"
+        )
+        assert "vision-capable" in r.text, r.text[:200]
 
-        # The mock must have received the request WITHOUT the image block
-        received = mock_ctl.last()
-        received_msgs = received.get("messages", [])
-        all_content = []
-        for msg in received_msgs:
-            c = msg.get("content", "")
-            if isinstance(c, list):
-                all_content.extend(c)
-            else:
-                all_content.append({"type": "text", "text": c})
-
-        # No image blocks should survive
-        image_blocks = [b for b in all_content if isinstance(b, dict) and b.get("type") == "image"]
-        assert len(image_blocks) == 0, f"Image block survived stripping: {image_blocks}"
-
-    def test_image_placeholder_text_in_forwarded_request(self, only_mock_routing, mock_ctl, llm_headers):
+    def test_refusal_names_the_skipped_candidates(self, only_mock_routing, mock_ctl, llm_headers):
+        """The operator has to be able to see WHY it refused."""
         mock_ctl.queue(type="text", content="OK")
         content = [
             {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": "data"}},
         ]
         r = _post(llm_headers, _msg(content))
-        assert r.status_code == 200
+        assert r.status_code == 422
+        assert "pytest-mock" in r.text, (
+            f"refusal must name the provider it skipped and why: {r.text[:200]}"
+        )
+        assert "no native vision" in r.text, r.text[:200]
 
-        received = mock_ctl.last()
-        raw = json.dumps(received)
-        # Proxy must inject a placeholder mentioning the media type
-        assert "image/jpeg" in raw or "not supported" in raw
+    def test_upstream_is_never_called_for_a_refused_image_request(self, only_mock_routing, mock_ctl, llm_headers):
+        """The whole point: no call, so no fabricated answer can exist.
+
+        This is the assertion the old tests were missing. They checked that the
+        image had been stripped from the forwarded request — which confirmed the
+        upstream WAS called, with the image silently removed.
+        """
+        mock_ctl.queue(type="text", content="OK")
+        content = [
+            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "abc"}},
+        ]
+        _post(llm_headers, _msg(content))
+        assert mock_ctl.received() == [], (
+            "the provider was called for an image request it cannot serve — a "
+            "fabricated answer is exactly what the 422 exists to prevent"
+        )
+
+    def test_mixed_text_and_image_is_also_refused(self, only_mock_routing, mock_ctl, llm_headers):
+        """Text alongside the image does not make it answerable.
+
+        Previously this asserted the text survived into the forwarded request,
+        i.e. that the model answered the question while blind to the image.
+        """
+        mock_ctl.queue(type="text", content="I see the placeholder")
+        content = [
+            {"type": "text", "text": "This is the question"},
+            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "abc"}},
+        ]
+        r = _post(llm_headers, _msg(content))
+        assert r.status_code == 422, r.text[:200]
+        assert mock_ctl.received() == []
 
     def test_text_only_request_passes_through_unchanged(self, only_mock_routing, mock_ctl, llm_headers):
         mock_ctl.queue(type="text", content="hello")
@@ -95,29 +131,6 @@ class TestVisionStripping:
         raw = json.dumps(received)
         assert "not supported" not in raw
 
-    def test_vision_stripped_header_present(self, only_mock_routing, mock_ctl, llm_headers):
-        mock_ctl.queue(type="text", content="OK")
-        content = [
-            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "x"}},
-        ]
-        r = _post(llm_headers, _msg(content))
-        assert r.status_code == 200
-        # X-Provider header must be present (basic proxy header sanity)
-        assert "x-provider" in r.headers or "X-Provider" in r.headers
-
-    def test_mixed_text_and_image_preserves_text(self, only_mock_routing, mock_ctl, llm_headers):
-        mock_ctl.queue(type="text", content="I see the placeholder")
-        content = [
-            {"type": "text", "text": "This is the question"},
-            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "abc"}},
-        ]
-        _post(llm_headers, _msg(content))
-        received = mock_ctl.last()
-        raw = json.dumps(received)
-        assert "This is the question" in raw
-
-
-# ── Multi-tag tool emulation ──────────────────────────────────────────────────
 
 class TestMultiTagToolEmulation:
     """

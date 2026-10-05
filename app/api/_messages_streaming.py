@@ -311,7 +311,21 @@ async def _stream_anthropic(
             output_tokens = max(1, streamed_chars // 4)
 
         stop_reason = FINISH_TO_STOP.get(finish_reason, "end_turn")
+        # v5.22.42 (BUG-096) — report input_tokens to the caller.
+        #
+        # ``message_start`` above sends input_tokens=0 because a streaming proxy
+        # does not know the real figure yet: for an OpenAI-shaped upstream the
+        # usage frame arrives with the LAST chunk. The closing ``message_delta``
+        # then carried only output_tokens, so a streaming caller never learned
+        # its input tokens at all — while ``record_outcome`` below was given the
+        # real value, so proxy-side accounting was right and the caller's was
+        # not. Any client costing a request from the response read input as 0.
+        #
+        # Emitted only when known, so a provider that reports no usage still
+        # produces the previous frame shape rather than a misleading zero.
         usage_parts = [f'"output_tokens":{output_tokens}']
+        if input_tokens:
+            usage_parts.append(f'"input_tokens":{input_tokens}')
         if cache_creation:
             usage_parts.append(f'"cache_creation_input_tokens":{cache_creation}')
         if cache_read:

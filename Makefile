@@ -34,11 +34,38 @@ logs:
 shell:
 	sudo docker exec -it llm-proxy2 /bin/sh
 
-migrate:
-	alembic upgrade head
-
-migrate-new:
-	alembic revision --autogenerate -m "$(MSG)"
+# v5.22.42 — alembic is CONFIGURED BUT HAS NO REVISIONS.
+#
+# `alembic/` contains only env.py and script.py.mako; there is no versions/
+# directory and never has been. The schema is created by
+# `Base.metadata.create_all` in `init_db()`, plus hand-written `ALTER TABLE`
+# statements there for columns added to existing tables.
+#
+# So `alembic upgrade head` has nothing to apply, and
+# `alembic revision --autogenerate` would produce the project's FIRST revision
+# by diffing target_metadata against a live database — a single revision
+# covering whatever happens to differ, while the other 40 tables stay
+# unmanaged. That is worse than no migration history, and until v5.22.33 it
+# would additionally have emitted `drop_table('model_pricing_catalog')`,
+# because that table was missing from the metadata alembic reads (BUG-089).
+#
+# These targets now refuse and explain, rather than doing something
+# surprising to a database. Adopting alembic properly means a baseline
+# revision that stamps the existing schema on every node, which is real work
+# and the operator's call — not a side effect of running `make`.
+migrate migrate-new:
+	@echo "REFUSED: alembic has no revisions in this project."
+	@echo
+	@echo "  The schema is managed by Base.metadata.create_all in init_db(),"
+	@echo "  plus hand-written ALTER TABLE statements there."
+	@echo
+	@echo "  'alembic upgrade head' has nothing to apply."
+	@echo "  'alembic revision --autogenerate' would create the project's first"
+	@echo "  revision from a live-DB diff, covering some tables and not others."
+	@echo
+	@echo "  To adopt alembic properly you need a baseline revision stamped on"
+	@echo "  every node. See docs/current-state.md."
+	@exit 1
 
 # --- v5.22.15 secret containment -------------------------------------------
 # The repo is public. A committed credential cannot be un-published, so both

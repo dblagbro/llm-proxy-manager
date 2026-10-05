@@ -154,5 +154,23 @@ jobs:
             --ignore=tests/integration/test_manual_override_flow.py \
             $DESELECT
 
+      - name: Playwright UI suite against the ephemeral instance
+        env:
+          LLMPROXY_TEST_EPHEMERAL: "1"
+        # v5.22.42 — these 73 tests had never run anywhere. Two reasons, both
+        # fixed: they needed a live HTTPS deployment, and under pytest they died
+        # on "Playwright Sync API inside the asyncio loop" because
+        # asyncio_mode=auto (pyproject.toml) gives every test a running loop.
+        # `-o asyncio_mode=strict` is the whole fix for the second.
+        #
+        # 63 of 73 pass; the deselect list is tests/known_ui_failures.txt, which
+        # needs a richer seed in the ephemeral fixture rather than test changes.
+        run: |
+          python -m playwright install --with-deps chromium
+          DESELECT=$(grep -vE '^\s*(#|$)' tests/known_ui_failures.txt \
+            | sed 's/^/--deselect=/' | tr '\n' ' ')
+          pytest -q -p no:cacheprovider -o asyncio_mode=strict \
+            tests/integration/test_playwright_ui.py $DESELECT
+
       - name: Integration suite must not need the network
         run: python3 tools/check_integration_hermetic.py
