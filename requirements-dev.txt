@@ -13,3 +13,7 @@ mypy>=1.10.0
 # The browser binary is separate and still needs `playwright install chromium`
 # (the CI step does this with --with-deps).
 playwright>=1.48.0
+# v5.22.42 — bounds a hanging test. The first CI run of the UI suite hung
+# for 39 minutes with no output; --timeout attributes a hang to the test
+# that caused it instead of to the job.
+pytest-timeout>=2.3.0
