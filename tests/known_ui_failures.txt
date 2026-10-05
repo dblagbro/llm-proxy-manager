@@ -1,3 +1,21 @@
+# ── CI STATUS, 2026-10-05 ───────────────────────────────────────────────────
+# The playwright-ui job is REPORTING, NOT GATING (`continue-on-error: true` in
+# .github/workflows/ci.yml). It has never passed in CI:
+#
+#   attempt 1  hung 39 min inside the integration job, hiding a passing
+#              integration result
+#   attempt 2  own job + timeout-minutes 20 -> cancelled at the cap. Correct
+#              outcome, useless log: the step emitted nothing in 20 minutes,
+#              because `pytest -q` into a non-tty buffers and a SIGKILLed
+#              process loses the buffer. My instrumentation, not a clue.
+#   attempt 3  PYTHONUNBUFFERED + python -u + -v so each test name prints as it
+#              starts; --timeout-method=signal (SIGALRM interrupts a blocking
+#              call in the main thread, which `thread` cannot, and the
+#              Playwright sync API blocks on a browser pipe); cap 12 min.
+#
+# 63 of 73 pass locally in 1m51s with the identical invocation, so the gap is
+# environmental. REMOVE continue-on-error the first time the job is green.
+#
 # Playwright UI tests that fail against an ephemeral instance, as of v5.22.42.
 #
 # READ THIS BEFORE ADDING A LINE.
