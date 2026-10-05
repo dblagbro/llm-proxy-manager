@@ -63,6 +63,10 @@ BEHAVIOUR_GATING = {
         "the async SQLite driver every test DB uses; its connection threading is "
         "what produced the 'Event loop is closed' teardown noise."
     ),
+    "playwright": (
+        "gates the Playwright UI suite entirely. Absent, those 73 tests do not "
+        "run and nothing says so — which is how they went unrun for months."
+    ),
     "pydantic": (
         "settings and request models; validation behaviour differs across majors."
     ),
@@ -70,11 +74,21 @@ BEHAVIOUR_GATING = {
 
 
 def _declared_specifiers() -> dict:
-    """name -> specifier, parsed from requirements.txt."""
+    """name -> specifier, parsed from requirements.txt AND requirements-dev.txt.
+
+    v5.22.42 — dev requirements are included because a missing TEST dependency
+    changes test outcomes just as surely as a missing runtime one. `playwright`
+    was undeclared, so the UI suite could not run in CI at all and the first run
+    that tried failed with "No module named playwright".
+    """
     from packaging.requirements import Requirement
 
     out = {}
-    for raw in Path("requirements.txt").read_text().splitlines():
+    lines = Path("requirements.txt").read_text().splitlines()
+    dev = Path("requirements-dev.txt")
+    if dev.is_file():
+        lines += dev.read_text().splitlines()
+    for raw in lines:
         line = raw.split("#")[0].strip()
         if not line or line.startswith("-"):
             continue

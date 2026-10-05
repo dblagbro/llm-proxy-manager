@@ -4,3 +4,12 @@ pytest-asyncio>=0.23.0
 pytest-httpx>=0.30.0
 ruff>=0.4.0
 mypy>=1.10.0
+# v5.22.42 — the Playwright UI suite (tests/integration/test_playwright_ui.py)
+# was undeclared. It had never run in CI, so nothing noticed; the first CI run
+# that tried failed with "No module named playwright" while the rest of the
+# integration suite passed 63. Declared here rather than pip-installed inside
+# the workflow step, so a developer running the suite locally gets it too.
+#
+# The browser binary is separate and still needs `playwright install chromium`
+# (the CI step does this with --with-deps).
+playwright>=1.48.0
