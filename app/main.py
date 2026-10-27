@@ -172,6 +172,24 @@ async def lifespan(app: FastAPI):
     except Exception as _cluster_audit_exc:  # never block boot on the audit
         logger.warning("cluster_auth.config audit failed: %r", _cluster_audit_exc)
 
+    # v5.22.43 — SECRET_KEY is the key-encryption key for stored API keys
+    # (app/auth/key_encryption.py derives a Fernet key from it). Running on the
+    # public placeholder means anyone with the DB file can decrypt every stored
+    # key. Warn loudly at boot — not fatal, so a deploy that has not yet set the
+    # env does not turn into an outage; rotation is an operator step.
+    try:
+        from app.config import settings as _settings
+
+        if getattr(_settings, "secret_key", None) == "change-me-in-production":
+            logger.error(
+                "config.secret_key SECRET_KEY is the public placeholder "
+                "'change-me-in-production'. Stored API keys are encrypted with a "
+                "key derived from it, so this gives zero at-rest confidentiality. "
+                "Set a random 32+ byte LLM_PROXY2_SECRET_KEY per node and rotate."
+            )
+    except Exception as _sk_exc:  # never block boot on the check
+        logger.warning("config.secret_key audit failed: %r", _sk_exc)
+
     # DB init + default admin + runtime settings
     await init_db()
     # v5.21.6 — SIGUSR2 handler dumps the DB-pool trace to stdout logs.
@@ -916,6 +934,22 @@ async def metrics(request: Request):
 # All other unknown paths return index.html for React Router (SPA catch-all).
 _static_dir = os.path.join(os.path.dirname(__file__), "..", "frontend", "dist")
 _assets_dir = os.path.join(_static_dir, "assets")
+_static_root = os.path.realpath(_static_dir)
+
+
+def _confined_static_file(rel_path: str) -> str | None:
+    """Resolve ``rel_path`` under the static dir and return it only if it stays
+    inside the tree and is a regular file. Defence against path traversal in the
+    SPA asset-rescue branch below — a URL like ``/x/assets/../../../etc/passwd``
+    normalises to an absolute path outside ``frontend/dist`` otherwise. Mirrors
+    the confinement audit.py already uses for export downloads."""
+    if "\x00" in rel_path:
+        return None
+    target = os.path.realpath(os.path.join(_static_root, rel_path))
+    if target != _static_root and not target.startswith(_static_root + os.sep):
+        return None
+    return target if os.path.isfile(target) else None
+
 
 if os.path.isdir(_assets_dir):
     app.mount("/assets", StaticFiles(directory=_assets_dir), name="assets")
@@ -1013,9 +1047,12 @@ if os.path.isdir(_static_dir):
         import re as _re
         m = _re.match(r"^(?:.+/)?(assets/.+|favicon\.svg|icons\.svg)$", full_path)
         if m:
-            asset_path = m.group(1)
-            asset_local = os.path.join(_static_dir, asset_path)
-            if os.path.isfile(asset_local):
+            # Confine to frontend/dist: the matched group is URL-derived and can
+            # contain ``../`` (e.g. /x/assets/../../../etc/passwd), so never join
+            # it to _static_dir unchecked — that was an unauthenticated arbitrary
+            # file read reaching the on-disk SQLite credential store.
+            asset_local = _confined_static_file(m.group(1))
+            if asset_local:
                 return FileResponse(asset_local)
         index = os.path.join(_static_dir, "index.html")
         if os.path.isfile(index):

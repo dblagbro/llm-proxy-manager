@@ -138,12 +138,18 @@ async def compliance_epoch_purge(
     # Validate cutoff_date parses.
     try:
         # Strip the trailing Z and treat as UTC.
-        _cutoff_raw = body.cutoff_date.rstrip("Z")
-        datetime.fromisoformat(_cutoff_raw)
+        _cutoff_dt = datetime.fromisoformat(body.cutoff_date.rstrip("Z"))
     except ValueError:
         raise HTTPException(
             400, f"cutoff_date must be ISO 8601; got {body.cutoff_date!r}",
         )
+    # v5.22.43 — SQLite stores DateTime columns as space-separated
+    # 'YYYY-MM-DD HH:MM:SS'. Binding the raw ISO 'T' string made `ts < :cutoff`
+    # over-match by a full day, because ' ' (0x20) < 'T' (0x54): every row of the
+    # cutoff day matched. This is an irreversible hard-delete AND the dry-run
+    # counts shown to the operator were wrong in the same direction. Normalise to
+    # the stored form so the comparison is exact.
+    _cutoff_raw = _cutoff_dt.strftime("%Y-%m-%d %H:%M:%S")
 
     # Survey what would be deleted.
     results: List[TableResult] = []

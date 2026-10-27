@@ -56,6 +56,15 @@ class ApiKeyRecord:
     default_refuse_tolerance: str | None = None
     refusal_retry_enabled: bool = False
     refusal_retry_streaming_heartbeat: bool = False
+    # v5.22.43 — per-key MCP tool policy. The ORM has had these columns and the
+    # admin UI has set them since v5.0, but they were never carried onto the
+    # record, so every enforcement site read ``getattr(..., None)`` → allow-all.
+    # That silently voided the operator's allow/deny lists AND the documented
+    # ``mcp_tools_allow=[]`` "disable MCP entirely" opt-out. Populated here so
+    # both enforcement paths (mcp_server + proxy_tools injection) see the policy.
+    mcp_tools_allow: Optional[List[str]] = None
+    mcp_tools_deny: Optional[List[str]] = None
+    mcp_schema_token_budget: Optional[int] = None
 
 
 def _hash_key(raw_key: str) -> str:
@@ -155,6 +164,11 @@ async def verify_api_key(db: AsyncSession, raw_key: Optional[str]) -> ApiKeyReco
         refusal_retry_streaming_heartbeat=bool(
             getattr(key, "refusal_retry_streaming_heartbeat", False),
         ),
+        # _coerce_str_list preserves the None-vs-[] distinction the policy
+        # relies on: None → allow-all, [] → deny-all.
+        mcp_tools_allow=_coerce_str_list(getattr(key, "mcp_tools_allow", None)),
+        mcp_tools_deny=_coerce_str_list(getattr(key, "mcp_tools_deny", None)),
+        mcp_schema_token_budget=getattr(key, "mcp_schema_token_budget", None),
     )
 
 

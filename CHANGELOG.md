@@ -2,6 +2,88 @@
 
 All notable changes since v2.7.6. Older history available in `git log`.
 
+### v5.22.43 — security self-test: fixed the source-side vulnerabilities; config/secret/infra items handed to the operator (2026-10-11)
+
+A full read-only security pass (auth/authz, SSRF/path-traversal, data layer,
+supply chain/container). The code-side defects are fixed here; the
+secret-rotation, production nginx/compose, and deploy items are operator-only
+and are listed in `docs/security-review-2026-10-11.md`, not changed here.
+
+- **BUG-098 (HIGH) — unauthenticated arbitrary file read via the SPA asset-rescue
+  branch.** `app/main.py` matched `assets/...` with a regex whose group could
+  contain `../` and joined it straight onto `frontend/dist`, so
+  `/x/assets/../../../data/llmproxy.db` escaped the static root and read the
+  on-disk SQLite credential store. Confined with a `realpath` prefix check (the
+  pattern `audit.py` already used). nginx normalises literal `../` on the public
+  path, so this was live on the internal docker network and on any front-less
+  deploy. Test: `tests/unit/test_static_path_traversal.py`.
+- **BUG-099 (HIGH) — per-key MCP tool policy never enforced (authz fail-open).**
+  The ORM had `mcp_tools_allow/deny/mcp_schema_token_budget` and the admin UI set
+  them, but `ApiKeyRecord` carried no such fields, so every enforcement site read
+  `getattr(record, ..., None)` → allow-all. That voided the allow/deny lists and
+  the documented `mcp_tools_allow=[]` "disable MCP" opt-out. Fields added and
+  populated in `verify_api_key`. Test: `tests/unit/test_mcp_policy_on_record.py`.
+- **BUG-100 (MED, latent) — SSO open redirect via `X-Forwarded-Prefix`.** The
+  client-supplied header fed `RedirectResponse` unvalidated; `//evil.example`
+  made the login/callback redirect protocol-relative. Validated to a single
+  absolute path. Latent today (SSO disabled).
+- **BUG-101 (MED/LOW) — webhook SSRF to loopback/metadata.** Caller-supplied
+  `X-Webhook-URL` only had a scheme check. RFC1918 stays allowed (documented
+  decision — internal hubs), but loopback and link-local (169.254.169.254 IMDS,
+  127.0.0.1 = this proxy's own admin API) are now blocked by literal and resolved
+  address. Tests in `tests/unit/test_v358_input_validation.py`.
+- **BUG-102 (LOW) — `/api/integration/self-update` always 500'd** (`ApiKey.key`
+  column does not exist; fail-closed but dead). Fixed to look up by `key_hash`.
+- **BUG-103 (LOW, latent) — `require_catalog_auth` omitted the `deleted_at`
+  tombstone check** unlike every other key path; added as defence-in-depth
+  against a cluster-sync-resurrected row.
+- **Observability:** a loud (non-fatal) boot log when `SECRET_KEY` is the public
+  placeholder, mirroring the existing cluster-auth boot audit.
+
+Data-layer pass (second round of the same review):
+
+- **BUG-104 (HIGH) — ReDoS in the PII email pattern.** `[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}`
+  overlapped the label class with the dot separator and backtracked O(n²) on a
+  long no-match input (~200s at 256 KB), blocking the whole uvicorn event loop
+  because `mask_text` runs synchronously in the async path. Replaced with a
+  bounded, non-overlapping form (262 KB: 197s → 97 ms). Armed only when
+  `pii_masking_enabled` is toggled on — which a gov-compliance deploy does.
+- **BUG-105 (MED) — epoch-purge deleted one extra day (irreversible).** The ISO
+  `T` cutoff string was compared against SQLite's space-separated DateTime text,
+  and `' ' < 'T'`, so `ts < :cutoff` matched the entire cutoff day (and the
+  dry-run counts were wrong the same way). Cutoff is now normalised to the stored
+  form. `app/api/admin_compliance_epoch_purge.py`.
+- **BUG-106 (MED) — cluster sync accepted a peer-chosen primary key.** `apply_sync`'s
+  allowed-column set for `compliance_events` / `compliance_policy_changes` included
+  the autoincrement `id`, letting a peer insert forged rows at a chosen position
+  in an already-hashed day or collide to abort the apply. PK now excluded; dedup
+  stays on the business key. `app/cluster/sync_handlers.py`.
+- **BUG-107 (MED) — compliance cache failed OPEN on blocklist-resolution error.**
+  A transient DB error while resolving a key's blocklist caused the cache to be
+  queried with no company filter, so a banned company's cached response could be
+  served (violating "unknown = blocked"). Now bypasses the cache on error; the
+  live path still enforces the blocklist. `app/cache/middleware.py`.
+- **BUG-108 (HIGH) — secret redaction missed structured bodies and modern tokens.**
+  `_redact` ran lexically over `json.dumps` text, so `{"Authorization": "Bearer …"}`
+  was never matched, and `sk-[A-Za-z0-9]{20,}` broke on `sk-proj-`/`sk-or-v1-`;
+  the default-on activity-log preview path redacted nothing at all. Added a
+  structural redactor (nulls values under sensitive keys before serialization),
+  broadened the lexical table (sk-proj/or, ya29., AKIA, gsk_, xai-, hf_, gh?_,
+  llmp-, JWT), routed previews and the stored upstream-error string through
+  redaction. `app/monitoring/helpers.py`. Tests:
+  `tests/unit/test_activity_redaction.py`.
+- **Doc fix:** `app/models/db_provider.py` claimed the provider `api_key` /
+  `oauth_refresh_token` columns were Fernet-encrypted; nothing encrypts them — the
+  comment now says PLAINTEXT so DB-handling controls are sized correctly.
+
+**Not fixed here — needs your decision (BUG-109, tracked):** the compliance audit
+hash chain (`app/compliance/audit.py`) hashes only 5 of 14 columns, is never
+verified anywhere, short-circuits recomputation to the stored hash, and re-anchors
+silently across gaps; `compliance_policy_changes` has no chain at all. This is the
+gov-compliance evidentiary control and widening the hashed field set is a versioned
+migration affecting every prior day, so it is staged with a concrete plan in
+`docs/security-review-2026-10-11.md` rather than rushed.
+
 ### v5.22.42 — cleared the integration backlog; it was hiding three more product bugs (2026-10-04)
 
 Integration triage **13 → 3**, Playwright UI **0 → 63 running**, and the last

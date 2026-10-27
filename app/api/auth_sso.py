@@ -127,8 +127,25 @@ def _sweep_pending(now: float) -> None:
 
 
 def _base_path(request: Request) -> str:
-    """Public sub-path this app is served under (``/llm-proxy2``)."""
-    return (request.headers.get("x-forwarded-prefix") or "/llm-proxy2").rstrip("/")
+    """Public sub-path this app is served under (``/llm-proxy2``).
+
+    The value feeds RedirectResponse on the SSO login/callback. X-Forwarded-Prefix
+    is client-supplied (nginx does not set or strip it), so an attacker header like
+    ``//evil.example`` would make the redirect protocol-relative and send the
+    browser off-site. Accept only a single-segment absolute path; otherwise fall
+    back to the fixed default.
+    """
+    raw = (request.headers.get("x-forwarded-prefix") or "/llm-proxy2").rstrip("/")
+    # Must be a single leading slash, no scheme/host, no backslash, no control.
+    if (
+        not raw.startswith("/")
+        or raw.startswith("//")
+        or "\\" in raw
+        or ":" in raw
+        or any(c < " " for c in raw)
+    ):
+        return "/llm-proxy2"
+    return raw
 
 
 @router.get("/config")

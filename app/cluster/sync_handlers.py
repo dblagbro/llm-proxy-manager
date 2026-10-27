@@ -483,7 +483,11 @@ async def _apply_compliance_events(db: AsyncSession, rows: list[dict]) -> int:
     logging)."""
     from app.models.db import ComplianceEvent
     applied = 0
-    allowed_cols = {col.name for col in ComplianceEvent.__table__.columns}
+    # v5.22.43 — never accept a peer-chosen primary key. The autoincrement `id`
+    # must be assigned locally; a peer-supplied `id` lets a sync insert forged
+    # rows at a chosen position in an already-hashed day, or collide on an
+    # existing PK to abort the whole apply_sync. Dedup is on `audit_id` below.
+    allowed_cols = {col.name for col in ComplianceEvent.__table__.columns} - {"id"}
     for row in rows:
         audit_id = row.get("audit_id")
         if not audit_id:
@@ -512,7 +516,9 @@ async def _apply_compliance_policy_changes(
     ``_apply_compliance_events``."""
     from app.models.db import CompliancePolicyChange
     applied = 0
-    allowed_cols = {col.name for col in CompliancePolicyChange.__table__.columns}
+    # v5.22.43 — drop peer-supplied PK (see _apply_compliance_events); dedup is
+    # on policy_change_id below.
+    allowed_cols = {col.name for col in CompliancePolicyChange.__table__.columns} - {"id"}
     for row in rows:
         policy_change_id = row.get("policy_change_id")
         if not policy_change_id:

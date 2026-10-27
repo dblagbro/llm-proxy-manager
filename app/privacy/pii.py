@@ -28,9 +28,15 @@ from dataclasses import dataclass
 # Ordered — credit card before phone, because "4111 1111 1111 1111" can
 # partially match the phone pattern; SSN before phone for the same reason.
 _PATTERNS: list[tuple[str, re.Pattern]] = [
-    # Email: RFC 5322-lite (sufficient for >99% of real-world formats)
+    # Email: RFC 5322-lite (sufficient for >99% of real-world formats).
+    # v5.22.43 — the previous form `[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}` overlapped the
+    # label class with the dot separator and backtracked O(n^2) on a long
+    # no-match input (measured: 6s at 64KB, ~200s at 256KB), blocking the whole
+    # uvicorn event loop since mask_text runs synchronously in the async path.
+    # Take '.' out of the label class so the bounded `(?:\.LABEL)+` carries the
+    # dots — no overlap, every quantifier bounded → linear.
     ("EMAIL", re.compile(
-        r"(?P<value>[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})"
+        r"(?P<value>[a-zA-Z0-9._%+-]{1,64}@[a-zA-Z0-9-]{1,63}(?:\.[a-zA-Z0-9-]{1,63})+)"
     )),
     # Credit card: 13-19 digits with optional spaces/dashes (Luhn-unchecked)
     ("CC", re.compile(

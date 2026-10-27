@@ -34,6 +34,7 @@ Security:
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -170,7 +171,12 @@ async def _resolve_key_from_headers(
             supplied = parts[1]
     if not supplied:
         raise HTTPException(status_code=401, detail="missing API key")
-    rs = await db.execute(select(ApiKey).where(ApiKey.key == supplied))
+    # Keys are stored only as sha256(raw) in key_hash — there is no ApiKey.key
+    # column, so the old `ApiKey.key == supplied` raised AttributeError and the
+    # endpoint always 500'd (fail-closed, but dead). Look up by hash like
+    # verify_api_key / catalog_scope do.
+    key_hash = hashlib.sha256(supplied.encode()).hexdigest()
+    rs = await db.execute(select(ApiKey).where(ApiKey.key_hash == key_hash))
     key = rs.scalar_one_or_none()
     if key is None or not key.enabled or key.deleted_at is not None:
         raise HTTPException(status_code=401, detail="invalid or disabled key")

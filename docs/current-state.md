@@ -41,6 +41,14 @@ still valid.
 
 - Local `main` = **v5.22.18**, **4 commits ahead of origin** (v5.22.15–18). `origin/main`
   is still `9766d8b` (v5.22.14). Nothing pushed, no history rewrite.
+- **Security self-test 2026-10-11 → `docs/security-review-2026-10-11.md`.** Fixed in
+  source (v5.22.43, undeployed): BUG-098 unauth file-read path traversal, BUG-099 MCP
+  policy fail-open, BUG-104 PII-regex ReDoS, BUG-108 secret-redaction gaps, plus
+  BUG-100/101/102/103/105/106/107. **Operator-only and still live:** O-1 default
+  `SECRET_KEY` (every stored key decryptable), O-2 the `/cluster/sync` nginx allowlist
+  is absent from the running config, O-3 short/shared/hardcoded secrets, O-4 spoofable
+  client IP. Needs a decision: O-6 (BUG-109) the compliance audit chain hashes 5/14
+  columns and is never verified; O-7 provider/OAuth creds stored plaintext.
 - **Live: both nodes v5.22.14, healthy, 7/7 providers.** So four versions of fixes —
   including the cluster body-read race and the claude-oauth self-heal — are committed
   but NOT deployed.
