@@ -30,6 +30,25 @@ Milestones with measurable acceptance criteria. Reconciles with `docs/remediatio
 Feature work resumes only on the verified foundation. Draw items from `docs/remediation-plan.md`
 and the backlogs; each ships behind M1/M2 gates with a test + measurable acceptance criteria.
 
+### Feature backlog
+- [ ] **Google Gemini accounts as providers** (added 2026-10-27). Add Gemini
+      backed by a Google **account** (consumer OAuth), following the existing
+      account-provider pattern (`claude-oauth`, `ChatGPT-oauth-plan`, `grok-web`,
+      `cursor-oauth`) rather than the already-shipped API-key paths.
+      **Scope to confirm with operator before starting:**
+      - Distinct from the existing `google` (AI Studio / Gemini API key) and
+        `vertex` (GCP service-account) provider types, which already route Gemini
+        models via litellm. The new work is the *account/OAuth* ingress.
+      - Decide the account surface: AI Studio OAuth, a gemini.google.com
+        web-session bridge (à la `grok-web`), or Google OAuth + the
+        generativelanguage API. Each differs in auth, quota, and ToS shape.
+      - Credential storage touches the open O-7 decision (provider creds are
+        PLAINTEXT at rest today) — resolve storage policy before persisting a
+        Google refresh token.
+      **Accept:** a Gemini-account provider can be added in the admin UI, scans
+      its models, serves an Anthropic- and OpenAI-shaped request end-to-end, and
+      has unit coverage for the auth/refresh flow. Behind M1/M2 gates.
+
 ## M4 — Integration & hardening
 End-to-end verification across nodes; reliability soak; security review of the compliance +
 auth + cluster surfaces (`security-reviewer`); dependency/supply-chain check.
