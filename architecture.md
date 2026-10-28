@@ -10,7 +10,7 @@ that can block configured companies (10 built-in + operator-defined customs) at 
 provider-routing, model-family, and client-product layers — with audit-grade event
 logging, daily integrity hash chain, and cluster-quorum policy push.
 
-**Current version: 5.21.8 (2026-07-16)**
+**Current version: 5.22.43 (2026-10-11) — not yet deployed; live nodes trail (see `docs/current-state.md`)**
 
 ### Ship history since v5.0.7 (arc-end summary, doc-drift refresh)
 
@@ -40,6 +40,18 @@ logging, daily integrity hash chain, and cluster-quorum policy push.
 - **v5.22.7–v5.22.11 — account/auth surface**: password reset (admin + self-service email), Cohere
   tool-shape fix, grok-bridge noVNC sub-path + honest `healthz`, Google/OIDC SSO, sign-in by email
   address, and `users.email` replication across the cluster.
+- **v5.22.12–v5.22.24 — routing/provider classification arc**: cluster-sync `403` gate hardening
+  (v5.22.16), xai/OpenAI exception-classification + circuit-breaker flap fixes (v5.22.19/21). Several
+  entries are fixed-but-undeployed pending operator approval (see `bug-log.md`).
+- **v5.22.25–v5.22.42 — "suite green" sweep**: cleared the entire `known_failures.txt` backlog (75+
+  parked failures → zero), which surfaced five real defects (BUG-086…091) and a dozen dead guards;
+  LOC-ceiling splits of `db_provider` / `_messages_streaming` / `messages.py` / `completions.py`.
+  `tests/unit` is now fully green with no parked failures.
+- **v5.22.43 — security self-test**: full read-only pass (auth/authz, SSRF/path-traversal, data
+  layer, supply chain). Fixed BUG-098…108 (incl. unauthenticated file-read reaching the credential
+  DB, and a fail-open per-key MCP tool policy); operator-only items (SECRET_KEY rotation, prod
+  nginx/compose, deploy) tracked in `docs/security-review-2026-10-11.md`. BUG-109 (audit-chain
+  redesign) deferred.
 
 ## DB pool leak diagnostic path (v5.21.6–v5.21.8)
 > Superseded as a root-cause account by the v5.22.x arc above — the pool exhaustion described
