@@ -31,23 +31,47 @@ Feature work resumes only on the verified foundation. Draw items from `docs/reme
 and the backlogs; each ships behind M1/M2 gates with a test + measurable acceptance criteria.
 
 ### Feature backlog
-- [ ] **Google Gemini accounts as providers** (added 2026-10-27). Add Gemini
-      backed by a Google **account** (consumer OAuth), following the existing
-      account-provider pattern (`claude-oauth`, `ChatGPT-oauth-plan`, `grok-web`,
-      `cursor-oauth`) rather than the already-shipped API-key paths.
-      **Scope to confirm with operator before starting:**
-      - Distinct from the existing `google` (AI Studio / Gemini API key) and
-        `vertex` (GCP service-account) provider types, which already route Gemini
-        models via litellm. The new work is the *account/OAuth* ingress.
-      - Decide the account surface: AI Studio OAuth, a gemini.google.com
-        web-session bridge (à la `grok-web`), or Google OAuth + the
-        generativelanguage API. Each differs in auth, quota, and ToS shape.
-      - Credential storage touches the open O-7 decision (provider creds are
-        PLAINTEXT at rest today) — resolve storage policy before persisting a
-        Google refresh token.
-      **Accept:** a Gemini-account provider can be added in the admin UI, scans
-      its models, serves an Anthropic- and OpenAI-shaped request end-to-end, and
-      has unit coverage for the auth/refresh flow. Behind M1/M2 gates.
+- [ ] **Google Gemini accounts as providers** (added 2026-10-27; design spike 2026-10-28).
+      **⛔ BLOCKED on a governance ruling before any code.** A consumer-account /
+      OAuth Google ingress is a *new consumer-subscription OAuth provider* — the
+      exact capability the project formally decided to **stop building**:
+      - `app/api/_provider_type_policy.py` is a hard write-path gate
+        (`RETIRED={ChatGPT-oauth-plan}`, `DEPRECATED={claude-oauth, grok-web}`;
+        `validate_provider_type()` → 422 for a new consumer-OAuth type).
+      - `docs/market-review.md` (2026-09-26) recommendation **NARROW**: stop
+        building consumer-subscription OAuth; M5 goal "zero providers depending on
+        subscription session credentials." Driven by vendor ToS **and** telemetry
+        (`Grok-Web-Devin` 0/27, `Devin-Codex-Gmail` 1/4457).
+      This item therefore needs an **operator policy ruling + a superseding ADR**
+      (`docs/adr/`) before a line is written. Options from the spike:
+      - **Option A — `google-oauth` (new type).** Google OAuth 2.0 + the
+        `generativelanguage` API. *More defensible than claude/grok*: it uses a
+        **published developer OAuth scope**, not browser-session scraping — so a
+        narrow, Google-only exception to NARROW may be justifiable (ADR required).
+        Reuses the full `OAuthProviderSpec` pattern; **no DB migration**; Google
+        refresh tokens are stable (simpler refresh than claude-oauth). Open: confirm
+        whether litellm has a bearer-mode gemini binding or we need a ~150-LOC
+        own-dispatcher; legal ruling on routing others' traffic through one
+        consumer account.
+      - **Option C — in-policy, no reversal.** Extend the existing `google`
+        (AI-Studio **API-key**) type into the `ProviderOAuthAccount` fan-out so
+        several Google accounts load-balance. No new provider type, no gate
+        reversal, no ToS exposure — delivers "multiple Google accounts" if that is
+        the real goal.
+      - **Option B — gemini.google.com web bridge (grok-web style): REJECTED** —
+        reproduces the most-prohibited, least-reliable pattern the project just
+        retired.
+      - Distinct from the existing `google`/`vertex` API-key types that already
+        route Gemini via litellm.
+      - Credential storage: a Google **refresh token** must be stored **encrypted**
+        (ties to O-7); the spike mapped the ~5 encrypt/decrypt plug points. No new
+        columns — reuses `Provider.oauth_refresh_token` + `ProviderOAuthAccount`.
+      **First question to operator:** is the goal "log in with my Google account"
+      (Option A — needs the NARROW reversal + ADR) or "load-balance several of my
+      Google accounts" (Option C — in policy today)?
+      **Accept (whichever option):** provider addable in admin UI, scans models,
+      serves Anthropic- and OpenAI-shaped requests end-to-end, auth/refresh unit
+      coverage, encrypted token storage. Behind M1/M2 gates.
 
 ## M4 — Integration & hardening
 End-to-end verification across nodes; reliability soak; security review of the compliance +
