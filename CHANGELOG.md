@@ -2,6 +2,123 @@
 
 All notable changes since v2.7.6. Older history available in `git log`.
 
+### v5.22.48 — fix: Daybreak Blue authorization must sync cluster-wide (2026-10-30)
+
+- **`api_keys.daybreak_tier` now round-trips via cluster sync.** The v5.22.47
+  push payload (`cluster/manager.py`) and apply handler
+  (`cluster/sync_handlers._apply_api_keys`) both omitted the new
+  `daybreak_tier` column, so authorizing a key for Daybreak Blue on one node
+  never reached its peers — caught during the www2 restore, where the
+  `daybreak` alias had synced but the authorized key still showed
+  `daybreak_tier=NULL` on www2. Same bug class as v4.4.18 (semantic_cache) and
+  v5.0.0 (compliance policy fields): an operator-settable per-key column that
+  didn't propagate.
+- Added `daybreak_tier` to the outbound payload and to both apply branches —
+  update (membership-test, so a pre-v5.22.48 peer can't clobber a local
+  authorization back to NULL) and INSERT (full-field, BUG-084 discipline).
+- Regression tests in `test_v52248_daybreak_tier_sync.py` (push-payload guard +
+  propagate-on-update + set-on-insert + legacy-peer-no-clobber).
+
+### v5.22.47 — feat: Daybreak Blue (OpenAI Trusted Access for Cyber) passthrough (2026-10-30)
+
+- **Daybreak Blue support on the Codex / Sign-In-with-ChatGPT path.** OpenAI
+  withdraws the *individual API-key* route to Daybreak Blue on 2026-11-20; the
+  Codex-via-SIWC path (this proxy's `ChatGPT-oauth-plan` provider) is the
+  surviving channel. Daybreak is NOT a model and NOT automatic — it is a
+  per-request Responses-API field, `access_programs.cyber` ∈ {`standard`,
+  `daybreak_blue`, `daybreak_red`}, which an approved account defaults to
+  `standard` unless explicitly set (verified 2026-10-30 against the live
+  approved Gmail account; the Codex endpoint validates the field server-side).
+  The proxy's Codex client emulation (originator/UA/client-version/
+  ChatGPT-Account-ID) was already faithful; the only gap was that it never set
+  the field, so every request ran at `standard`.
+- **New opt-in, tightly scoped.** A `daybreak`/`daybreak-blue` model alias pins
+  the approved provider (reusing the existing `ModelAlias` pin + capability
+  path), rewrites the slug to `codex-auto-review`, and injects
+  `access_programs.cyber=daybreak_blue`. Policy (`app/providers/daybreak.py`):
+  opt-in ONLY via the alias (normal traffic untouched / `standard`); the
+  calling key must carry `daybreak_tier == "blue"` (403 otherwise — the OpenAI
+  approval is scoped to the vetted account holder, never fanned out);
+  `daybreak_red` is hard-blocked (403) regardless of key; every Daybreak-flagged
+  request writes a `compliance_events` audit row (`event_type=daybreak_access`,
+  `reason_code=daybreak_blue`) for reconstruction if OpenAI asks.
+- New per-key column `api_keys.daybreak_tier` (NULL = not authorized; idempotent
+  ALTER in `init_db`, ORM in `db_apikey.py`). Threaded through
+  `chat_completions_to_responses(..., access_programs=)` →
+  `dispatch_codex_oauth(..., access_programs=)` → `completions.py` gate. Tests:
+  `tests/unit/test_v52247_daybreak_blue.py` (18 cases). Data/operator steps
+  (alias rows, provider marker, key authorization) are applied at deploy.
+
+### v5.22.46 — fix: re-authed OAuth account stayed broken on the peer node (2026-10-29)
+
+- **BUG-112 (HIGH, availability) — a credential re-auth reset the circuit
+  breaker only on the node that served it; the peer kept routing against an
+  open breaker.** `oauth-rotate` (`_do_rotate`) and background token refresh
+  `force_close` the breaker + `clear_auth_failure` on the ORIGIN node, but that
+  state is in-memory / node-local and is never synced. When the operator
+  re-authed an account, the load balancer sent the request to one node; the new
+  token propagated to the peer via cluster sync (DB columns `api_key`,
+  `oauth_refresh_token`, `oauth_expires_at`), but the peer's breaker stayed
+  OPEN with its stale exponential hold-down (observed: `91bafda9…` Gmail
+  half-open with 15 failures / consecutive_opens=5 on www2 while healthy on
+  www1 right after a successful re-auth). Result: the freshly re-authed account
+  still failed on ~half the LB traffic until the peer happened to probe-recover
+  on its own. Fix: `cluster/sync_handlers._apply_providers` snapshots the three
+  credential columns before the merge and, when any changed, `force_close` +
+  `clear_auth_failure` for that provider on the receiving node — so a token
+  rotation anywhere converges the breaker everywhere on the next sync (≤60s,
+  immediate via `/cluster/sync-now`). Non-credential edits (priority, name)
+  leave an open breaker untouched. Regression tests in
+  `tests/unit/test_v52246_sync_resets_breaker_on_reauth.py`.
+
+### v5.22.45 — fix: OAuth Accounts panel polled in a render loop ("Failed to load OAuth accounts" flood) (2026-10-29)
+
+- **BUG-111 (MED, UX/load) — `useToast()` returned a new object every render,
+  driving an unbounded re-fetch loop.** `components/ui/Toast.tsx::useToast`
+  returned a fresh object literal each call. `OAuthAccountsPanel`'s `load` is a
+  `useCallback` with `toast` in its deps, and its `useEffect` depends on
+  `load` — so an unstable `toast` rebuilt `load` every render and re-fired the
+  effect, polling `GET /api/admin/providers/{id}/oauth-accounts` thousands of
+  times/sec (observed ~29/sec sustained at the backend, all 200). While the
+  operator was editing/re-authing a provider the parent re-rendered
+  continuously, and overlapping fetches that got superseded surfaced as a
+  flood of red "Failed to load OAuth accounts" toasts. Fix: `useToast` now
+  returns a stable module-level singleton (the helpers only dispatch through
+  the module-level `_addToast`, so there is no per-render state) — removing the
+  unstable reference for every consumer, not just this panel. Frontend-only;
+  ships in the image.
+
+### v5.22.44 — fix: re-auth of a live deprecated OAuth provider was 422'd; cluster-sync 413 regression (2026-10-29)
+
+Operator could not re-auth the live `Devin-Anthropic-Max-VG` (claude-oauth)
+account, and node-to-node cluster sync had silently stopped. Two regressions
+from recent hardening work, both fixed.
+
+- **BUG-109 (HIGH, availability) — the provider-type retirement gate 422'd
+  edits/re-auth of an existing deprecated provider.** The v5.22.24 gate
+  (`_provider_type_policy.py`) was a pydantic `field_validator` on
+  `provider_type`, inherited by **both** `ProviderCreate` *and*
+  `ProviderUpdate`. A `PUT /api/providers/{id}` re-submits the row's own
+  current type, so saving (or the UI's save-after-re-auth) of the live
+  `claude-oauth` account failed validation → 422, directly contradicting the
+  DEPRECATED tier's stated contract ("the existing row keeps working"). Fix:
+  the create gate stays absolute; `ProviderUpdate` neutralizes the inherited
+  validator and the new `validate_provider_type_change(old, new)` runs in
+  `update_provider()` — keeping an already-closed type is allowed, only a
+  *change into* a closed type is refused. The OAuth `oauth-rotate` path itself
+  was never broken (it returned 200 + the provider test passed); the blocker
+  was the subsequent `PUT`. Tests: `test_v52224_subscription_retirement.py`
+  (`TestUpdateChangeGate`, updated `TestWiredIntoBothModels`).
+- **BUG-110 (HIGH, availability) — cluster sync broke with HTTP 413 after the
+  O-2 nginx allowlist.** The exact-match `location = /llm-proxy2/cluster/sync`
+  (and legacy `/llm-proxy/cluster/sync`) blocks added for the source-IP
+  allowlist omitted `client_max_body_size`, so they inherited nginx's 1M
+  default while the general `/llm-proxy2/` block they diverted traffic from
+  sets 50M. `apply_sync` payloads (providers/api_keys/users/settings) exceed
+  1M → peer nginx returned 413 and sync stopped on both nodes. Fix:
+  `client_max_body_size 50M;` added to all four cluster/sync blocks (both
+  nodes). nginx-only; not shipped in the image.
+
 ### v5.22.43 — security self-test: fixed the source-side vulnerabilities; config/secret/infra items handed to the operator (2026-10-11)
 
 A full read-only security pass (auth/authz, SSRF/path-traversal, data layer,

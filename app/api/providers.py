@@ -4,7 +4,7 @@ import time
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Body
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete
 
@@ -67,7 +67,12 @@ class ProviderCreate(ProviderFieldGuards, BaseModel):
 
 
 class ProviderUpdate(ProviderCreate):
-    pass
+    # Row-relative gate (v5.22.44): neutralize inherited create-time type check;
+    # update_provider() gates a CHANGE into a closed type instead.
+    @field_validator("provider_type")
+    @classmethod
+    def _check_provider_type(cls, v):
+        return v
 
 
 
@@ -482,6 +487,12 @@ async def update_provider(
     _: AdminUser = Depends(require_admin),
 ):
     p = await _get_or_404(db, provider_id)
+    # Row-relative type gate (v5.22.44): refuse only a CHANGE into a closed type.
+    from app.api._provider_type_policy import validate_provider_type_change
+    try:
+        validate_provider_type_change(p.provider_type, body.provider_type)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
     data = body.model_dump()
     blob = data.pop("oauth_credentials_blob", None)
 

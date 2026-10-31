@@ -1328,6 +1328,84 @@ async def login_start():
     return {"status": "navigated", "url": _page.url}
 
 
+def _normalize_cookie(c: dict) -> Optional[dict]:
+    """Map one browser-extension cookie (Cookie-Editor / EditThisCookie
+    export shape) onto Playwright's ``add_cookies`` schema. Returns None
+    for anything missing a name/value/domain (Playwright needs domain+path
+    or a url). v5.22.47 (BUG-113 workaround) — lets the operator import a
+    grok.com session captured in a REAL browser, since Google SSO and
+    Cloudflare's interactive challenge both refuse the bridge's automated
+    Chromium."""
+    name = c.get("name")
+    value = c.get("value")
+    domain = c.get("domain")
+    if not (name and value is not None and domain):
+        return None
+    out: dict = {
+        "name": name,
+        "value": value,
+        "domain": domain,
+        "path": c.get("path") or "/",
+    }
+    # expirationDate (float secs) → expires; absent/-1 ⇒ session cookie.
+    exp = c.get("expirationDate", c.get("expires"))
+    if isinstance(exp, (int, float)) and exp > 0:
+        out["expires"] = float(exp)
+    out["httpOnly"] = bool(c.get("httpOnly", False))
+    secure = bool(c.get("secure", False))
+    # sameSite: extensions emit no_restriction/lax/strict/unspecified;
+    # Playwright accepts only Strict/Lax/None.
+    ss = str(c.get("sameSite", "")).lower()
+    ss_map = {"no_restriction": "None", "none": "None",
+              "lax": "Lax", "strict": "Strict"}
+    if ss in ss_map:
+        out["sameSite"] = ss_map[ss]
+        if out["sameSite"] == "None":
+            secure = True  # Playwright rejects SameSite=None without Secure
+    out["secure"] = secure
+    return out
+
+
+@app.post("/api/login/import-cookies")
+async def import_cookies(req: Request, _: None = Depends(require_bridge_token)):
+    """Inject a grok.com session captured in the operator's own browser.
+
+    Body: a JSON array of cookies, or ``{"cookies": [...]}`` — the export
+    shape from Cookie-Editor / "Get cookies.txt LOCALLY" (JSON). We map
+    each onto Playwright's schema, ``add_cookies`` them into the live
+    persistent context (which flushes to ``/data/playwright-state`` so the
+    session survives restarts), reload grok.com to validate, and report
+    the resulting login state. No cookie values are logged."""
+    if _context is None:
+        raise HTTPException(503, "playwright not ready")
+    body = await req.json()
+    raw = body.get("cookies") if isinstance(body, dict) else body
+    if not isinstance(raw, list):
+        raise HTTPException(400, "expected a JSON array of cookies or {cookies:[...]}")
+    normalized = [n for n in (_normalize_cookie(c) for c in raw if isinstance(c, dict)) if n]
+    if not normalized:
+        raise HTTPException(400, "no importable cookies (need name/value/domain)")
+    async with _lock:
+        await _context.add_cookies(normalized)
+        try:
+            await _page.goto(GROK_BASE + "/", wait_until="domcontentloaded", timeout=30_000)
+        except PlaywrightTimeout:
+            pass
+    cookies = await _cookies_dict()
+    present = {k: (k in cookies) for k in ("cf_clearance", "__cf_bm", "sso", "x-userid")}
+    logged_in = all(present[k] for k in ("sso", "x-userid"))
+    logger.info(
+        "import-cookies: added=%d present_sso=%s present_xuserid=%s logged_in=%s",
+        len(normalized), present["sso"], present["x-userid"], logged_in,
+    )
+    return {
+        "imported": len(normalized),
+        "skipped": len(raw) - len(normalized),
+        "cookies_present": present,
+        "logged_in": logged_in,
+    }
+
+
 @app.get("/login", response_class=HTMLResponse)
 async def login_page():
     """Tiny landing page that frames the noVNC viewer. Operator opens

@@ -1,3 +1,110 @@
+# Live now — 2026-10-29 (v5.22.46)
+
+**Both nodes serve v5.22.46** (rolling, tmrwww01 then tmrwww02; verified via
+`/health` on each node + public LB). This session fixed a cross-node
+availability bug plus (earlier) three code/config regressions and a frontend
+render-loop, all triggered while the operator was editing/re-authing the
+Anthropic Max OAuth accounts. **Account-side blockers that only the operator
+can clear remain open — see the bottom of this block.**
+
+- **⏳ v5.22.47 (Daybreak Blue) — BUILT + unit-tested, AWAITING DEPLOY
+  APPROVAL (not live).** Adds OpenAI Daybreak Blue (Trusted Access for Cyber)
+  passthrough on the Codex/SIWC path — the channel that survives OpenAI's
+  2026-11-20 individual-API-key cutoff. Daybreak is a per-request field
+  (`access_programs.cyber`), defaulted OFF (`standard`) by OpenAI even on an
+  approved account; verified 2026-10-30 that the live approved Gmail account
+  accepts `daybreak_blue` and the Codex endpoint validates the enum
+  server-side. Opt-in ONLY via a `daybreak`/`daybreak-blue` model alias
+  (pins the approved provider, rewrites to `codex-auto-review`); gated to keys
+  with `daybreak_tier="blue"`; `daybreak_red` hard-blocked; every call audited
+  to `compliance_events`. Code + 18 unit tests green; full unit suite 4066
+  passed (the 23 `test_record_outcome_meta` errors are a pre-existing
+  cross-test ordering flake — the file passes standalone). **Deploy-time data
+  steps still pending:** (1) create the `daybreak`/`daybreak-blue` ModelAlias
+  rows → Devin-Codex-Gmail / `codex-auto-review`; (2) mark that provider's
+  `extra_config.daybreak_tier="blue"` (detection signal; VG stays unmarked);
+  (3) authorize ONE operator-chosen key with `daybreak_tier="blue"`. See
+  `app/providers/daybreak.py` and CHANGELOG v5.22.47.
+
+- **BUG-112 (v5.22.46) — a re-authed OAuth account stayed broken on the PEER
+  node.** `oauth-rotate`/background refresh `force_close` the circuit breaker
+  only on the node that served the re-auth; that reset is in-memory/node-local
+  and never synced. The fresh token DID propagate to the peer (DB columns
+  `api_key`/`oauth_refresh_token`/`oauth_expires_at`), but the peer's breaker
+  stayed OPEN on its stale exponential hold-down — so the account still failed
+  on ~half of load-balanced traffic. Observed right after the operator re-authed
+  both Max accounts: `d5123a00…` (VG) healthy on both nodes, but `91bafda9…`
+  (Gmail) sat half-open with 15 failures / consecutive_opens=5 on www2 while
+  closed on www1. Fix: `cluster/sync_handlers._apply_providers` now snapshots
+  the three credential columns before the merge and, when any changed,
+  `force_close` + `clear_auth_failure` on the receiving node — a token rotation
+  anywhere converges the breaker everywhere within one sync cycle (≤60s;
+  immediate via `/cluster/sync-now`). Non-credential edits leave an open
+  breaker alone. The container recreate on deploy also clears the stale
+  in-memory breaker immediately. Tests: `test_v52246_sync_resets_breaker_on_reauth.py`.
+
+- **BUG-111 (v5.22.45) — OAuth Accounts panel polled in a render loop.**
+  `useToast()` returned a fresh object every render, making
+  `OAuthAccountsPanel.load` unstable and re-firing its effect every render →
+  `GET …/oauth-accounts` thousands/sec (all 200 at the backend), which while
+  editing a provider surfaced as a flood of red "Failed to load OAuth
+  accounts" toasts. Fixed: `useToast` returns a stable module-level singleton.
+  Frontend — operator must hard-refresh to load the new bundle.
+- **O-2 allowlist 403'd inter-node cluster sync (same session).** Once the 413
+  (below) was fixed, the O-2 `/cluster/sync` allowlist began returning 403:
+  inter-node sync reaches the peer via the public hostname, hairpins through
+  the site WAN, and arrives from `24.168.14.36` — not a private IP. Fixed:
+  `allow 24.168.14.36;` added to all four cluster/sync blocks (both nodes).
+  Sync verified `200` again; 0 rejections. HMAC remains the second layer;
+  O-3 (strong secret) still the right hardening, and moving sync to a
+  private-LAN path would remove the WAN hairpin entirely (not yet done).
+
+The two regressions reported first (operator could not re-auth
+`Devin-Anthropic-Max-VG`):
+
+- **BUG-109** — the v5.22.24 provider-type retirement gate (a pydantic
+  `field_validator` inherited by `ProviderUpdate`) 422'd *edits/re-auth* of an
+  existing deprecated provider, not just creation. `PUT /api/providers/{id}`
+  re-submits the row's own `claude-oauth` type → 422, blocking the UI
+  save-after-re-auth. Fixed: create gate stays absolute; updates go through
+  `validate_provider_type_change(old, new)` in `update_provider()` — keeping a
+  closed type is allowed, only a *change into* one is refused. The
+  `oauth-rotate` path was never broken (rotate returned 200, provider test
+  200); the token is fresh and the account is serving.
+- **BUG-110** — the O-2 nginx `/cluster/sync` allowlist blocks omitted
+  `client_max_body_size`, inheriting the 1M default while the general block
+  sets 50M; `apply_sync` payloads exceeded 1M → peer nginx 413 → cluster sync
+  silently stopped. Fixed: `client_max_body_size 50M;` on all four cluster/sync
+  blocks, both nodes (nginx reload, not an image change). Verified: www2 now
+  returns 403 (HMAC), not 413, on a 2MB body.
+
+**Account-side blockers — operator action, not fixable in code:**
+- **`Devin-Anthropic-Max-VG` (claude-oauth) is failing upstream.** Anthropic
+  returns HTTP 400 `invalid_request_error`: *"We've updated our Consumer Terms
+  and Privacy Policy. You'll need to accept them in claude.ai…"*. The proxy
+  re-auth/rotate works (stores a fresh token, test 200); Anthropic holds the
+  account behind a terms interstitial. Operator must sign into claude.ai with
+  that account and accept. This is the subscription-OAuth enforcement the
+  2026-09-26 market review predicted. `Devin-Anthropic-Max-Gmail` token
+  expired ~40 days ago (separate).
+- **grok-bridge (tmrwww01 only) — browser had crashed; restarted.** Its
+  Playwright browser died (`TargetClosedError`) while the container stayed
+  "healthy" (healthcheck pings the HTTP server, not the browser), so creates
+  500'd. `docker restart llm-proxy2-grok-bridge` relaunched it; grok.com loads
+  again. But `/api/status` shows `logged_in:false` (sso/x-userid cookies lost
+  in the crash) — operator must re-login via `/grok-bridge/login` or the VNC
+  view. `grok-web` is a DEPRECATED type (no new providers). Follow-up idea:
+  make the sidecar healthcheck probe the browser so Docker auto-restarts it.
+
+Earlier operator items from the v5.22.43 pass: **O-1** (per-node `SECRET_KEY`
+rotation, GPG-sealed) and **O-2** (cluster/sync source-IP allowlist) are DONE
+on both nodes. **Still open:** O-3 (rotate the 19-char `CLUSTER_SYNC_SECRET`
+to 32+, lockstep both nodes — the boot log still warns), O-7 (encrypt
+provider/OAuth creds at rest). Local commits for v5.22.43/44/45 are unpushed
+(origin CI is an operator decision).
+
+---
+
 # Resumed 2026-08-28 — audit re-verified
 
 Re-scan done on resume (the pause block said not to trust the 2026-08-12
