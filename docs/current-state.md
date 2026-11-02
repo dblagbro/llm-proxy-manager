@@ -186,13 +186,22 @@ $2.54/1M input, actual $2.45/1M, against a $2.50 list price. Independently,
 
 Not leaked: 0 of 703 commits contain the key, and it is absent from the working tree.
 
-### BUG (open) — CoT upstream calls are never recorded in `provider_metrics`
+### BUG (FIXED — v5.22.20 + v5.22.51) — CoT upstream calls now recorded in `provider_metrics`
 
-`cot_enabled=True`, `cot_max_iterations=4`. `app/cot/pipeline.py:295` loops
-`for iteration in range(1, iterations + 1)` and issues an upstream `_call(...)` per
-pass, but that module imports **nothing** from `app.monitoring` and records **zero**
-metrics. Those critique passes bill real tokens upstream and are invisible to the
-proxy — a 1.66× multiplier on recorded traffic.
+**Resolved.** v5.22.20 added `app/cot/usage.py` (request-scoped ContextVar
+accumulator; `_call` folds each critique pass via `accumulate_usage`) and wired
+`reset_cot_usage()`/`fold_cot_usage()` into the Anthropic `/v1/messages`
+streaming path. v5.22.51 wired the same into the **OpenAI
+`/v1/chat/completions` streaming path** (`_completions_streaming.py`), which the
+original fix missed — so both streaming CoT paths now fold internal-call tokens
+before `record_outcome`. `run_cot_pipeline` runs only in those two streaming
+entrypoints (the non-streaming dispatch never invokes CoT), so coverage is now
+complete. `test_v52220_cot_usage_accounting.py::TestWiring` guards both files.
+
+Original (pre-fix) note: `cot_enabled=True`, `cot_max_iterations=4`.
+`app/cot/pipeline.py` loops and issues an upstream `_call(...)` per pass but
+recorded **zero** metrics — a 1.66× multiplier on recorded traffic, making
+per-key spend caps unreliable.
 
 Consequence worth acting on: **per-key spending caps are unreliable.** A cap enforced
 on a token count that is ~40% low would let real spend run well past it. Do not rely

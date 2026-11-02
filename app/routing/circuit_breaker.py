@@ -3,11 +3,10 @@ Circuit breaker + hold-down timer per provider.
 State is stored in Redis when available; falls back to in-process dict.
 """
 import asyncio
-import time
 import logging
+import time
+from dataclasses import dataclass
 from enum import Enum
-from typing import Optional
-from dataclasses import dataclass, field
 
 from app.config import settings
 
@@ -42,7 +41,7 @@ _lock = asyncio.Lock()
 _provider_overrides: dict[str, dict] = {}  # provider_id → {hold_down_sec, failure_threshold}
 
 
-def set_provider_config(provider_id: str, hold_down_sec: Optional[int], failure_threshold: Optional[int]):
+def set_provider_config(provider_id: str, hold_down_sec: int | None, failure_threshold: int | None):
     _provider_overrides[provider_id] = {
         "hold_down_sec": hold_down_sec,
         "failure_threshold": failure_threshold,
@@ -113,9 +112,10 @@ def _schedule_auto_probe(provider_id: str) -> None:
         return  # not in an async context
     async def _probe():
         try:
+            from sqlalchemy import select as _select
+
             from app.models.database import AsyncSessionLocal
             from app.models.db import Provider
-            from sqlalchemy import select as _select
             async with AsyncSessionLocal() as db:
                 rs = await db.execute(_select(Provider).where(Provider.id == provider_id))
                 provider = rs.scalar_one_or_none()
@@ -162,6 +162,10 @@ async def record_success(provider_id: str):
                 s.failures = 0
                 s.successes = 0
                 s.consecutive_opens = 0  # v5.9.6 — provider recovered, reset backoff
+                # v5.22.49 — a genuine recovery also ends any auth-failure
+                # streak/hold, so a provider that was auth-tripped and then
+                # succeeds does not carry a stale streak into the next blip.
+                clear_auth_failure(provider_id)
                 logger.info("circuit_breaker.closed", extra={"provider": provider_id})
                 _export_gauge(provider_id, s.state)
         elif s.state == CBState.CLOSED:
@@ -246,6 +250,10 @@ async def force_close(provider_id: str):
         s.successes = 0
         s.hold_down_until = 0.0
         s.consecutive_opens = 0  # v5.9.6 — operator override clears backoff state
+        # v5.22.49 — an operator/sync force-close also clears the auth-failure
+        # streak + map, so a reset after re-auth does not leave a latent streak
+        # that would re-escalate on the next transient blip.
+        clear_auth_failure(provider_id)
         _export_gauge(provider_id, s.state)
 
 
@@ -631,7 +639,7 @@ PERSISTENT_AUTH_THRESHOLD = 3
 PERSISTENT_AUTH_WINDOW_SEC = 1800.0  # 30 min
 
 
-def get_auth_failure(provider_id: str) -> Optional[dict]:
+def get_auth_failure(provider_id: str) -> dict | None:
     return _auth_failed.get(provider_id)
 
 
@@ -653,13 +661,11 @@ async def record_auth_failure(provider_id: str, error_text: str) -> None:
     Admin can clear via the API or by saving a new key."""
     async with _lock:
         s = _get_local(provider_id)
+        now = time.time()
         s.state = CBState.OPEN
-        s.opened_at = time.time()
-        # 24h hold-down — long enough to not waste latency, short enough to
-        # auto-recover if admin fixes it externally and forgets to clear.
-        s.hold_down_until = time.time() + 86400
+        s.opened_at = now
         _auth_failed[provider_id] = {
-            "since": time.time(),
+            "since": now,
             "last_error": (error_text or "")[:300],
         }
         # v3.7.16 — track failure history for the persistent-auth-failure
@@ -667,7 +673,6 @@ async def record_auth_failure(provider_id: str, error_text: str) -> None:
         # the in-memory CB has been hit N times in a window, so a single
         # transient blip doesn't 24h-skip the provider.
         history = _auth_failure_history.setdefault(provider_id, [])
-        now = time.time()
         history.append(now)
         # Prune entries older than the window so the threshold check
         # only sees recent failures.
@@ -675,6 +680,20 @@ async def record_auth_failure(provider_id: str, error_text: str) -> None:
         history[:] = [t for t in history if t > cutoff]
         streak = _auth_failure_streak.get(provider_id, 0) + 1
         _auth_failure_streak[provider_id] = streak
+        # v5.22.49 — the in-memory hold is a SHORT exponential backoff keyed
+        # on the consecutive auth-failure streak, NOT a flat 24h on failure
+        # #1. Pre-fix, a single transient 401 benched a fully-usable provider
+        # for a day (observed 2026-10-31: Devin-Codex-Gmail — the Daybreak
+        # account, OAuth valid 8 more days — and Devin-Cohere both stuck OPEN
+        # with failures=0 and ~12h remaining), and record_success could never
+        # clear it because the breaker never reached half-open within the
+        # hold. Now a blip recovers in ~base seconds; a genuinely dead
+        # provider still backs off and, once the streak crosses
+        # PERSISTENT_AUTH_THRESHOLD, is sidelined durably by _persist_auto_skip
+        # (auto_skip_until = now + 24h) — which is where the real 24h lives.
+        base = _hold_down_sec(provider_id)
+        multiplier = 1 << min(streak - 1, 5)  # cap 32× base
+        s.hold_down_until = now + base * multiplier
         # v5.22.23 — REVERTED the v5.22.20 "persist on the first failure"
         # change. That reasoning was wrong and it caused a production
         # degradation.
@@ -735,8 +754,12 @@ async def _persist_auto_skip(provider_id: str, error_text: str) -> None:
     Idempotent: if the provider already has an auto_skip_until in the
     future for a non-billing reason, we extend it rather than overwrite
     (no need to keep re-stamping the same window)."""
-    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    from datetime import datetime as _dt
+    from datetime import timedelta as _td
+    from datetime import timezone as _tz
+
     from sqlalchemy import select
+
     from app.models.database import AsyncSessionLocal
     from app.models.db import Provider
     new_until = _dt.now(_tz.utc) + _td(hours=24)

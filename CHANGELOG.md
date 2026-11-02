@@ -2,6 +2,116 @@
 
 All notable changes since v2.7.6. Older history available in `git log`.
 
+### v5.22.53 — fix: complete the claude-oauth sweep MissingGreenlet fix (mid-loop rollback) (2026-11-01)
+
+- **v5.22.52 was incomplete.** It snapshotted `id`/`name` for the *current*
+  provider, but the live crash was cross-iteration: a dead-token provider
+  (`invalid_grant`) takes the `await db.rollback()` branch, and `rollback()`
+  **always** expires every ORM instance in the session — independent of the
+  sessionmaker's `expire_on_commit=False` — so the *next* provider's attribute
+  access lazy-reloaded and raised `MissingGreenlet`, killing the sweep right
+  after the first failed provider (seen live: Anthropic-Gmail fail → sweep
+  died before reaching Anthropic-VG).
+- **Fix:** `_run_one_sweep` now selects provider IDs as plain scalars and
+  re-fetches each provider fresh inside the loop, so every attribute access is
+  on a live instance regardless of a prior rollback. This also clears the
+  companion `RuntimeWarning: coroutine 'Connection.cursor' was never awaited`
+  (the artifact of the failed lazy-load).
+- Regression test upgraded to the real scenario: two claude-oauth providers,
+  the first failing (rollback), asserting the sweep still processes the second
+  (`checked == 2`, both recorded) without `MissingGreenlet`.
+
+### v5.22.52 — fix: claude-oauth proactive-refresh sweep crashed every cycle (MissingGreenlet) (2026-11-01)
+
+- **`claude_oauth_expiry_monitor` died on every sweep** with
+  `sqlalchemy.exc.MissingGreenlet: greenlet_spawn has not been called`, so
+  claude-oauth tokens were never proactively refreshed (the worker that exists
+  specifically to break the "breaker-open → no requests → no 401 → no refresh"
+  death-loop was itself dead). Found in the live www1 logs 2026-11-01.
+- **Root cause:** `refresh_and_persist()` commits inside `_refresh_one`, and
+  with the default `expire_on_commit=True` that expires every attribute on the
+  Provider ORM object. The sweep then accessed `provider.id` / `p.id` / `p.name`
+  **synchronously** (for `force_close`, logging, and the detail list); each
+  access lazy-reloaded, and a lazy reload needs greenlet context, so in the
+  async worker it raised `MissingGreenlet` and aborted the whole sweep.
+- **Fix:** snapshot `id`/`name` into locals **before** the commit and use the
+  locals afterward (`app/monitoring/claude_oauth_expiry_monitor.py`, both
+  `_refresh_one` and `_run_one_sweep`). No behavior change beyond not crashing.
+- Regression test `test_v52252_claude_oauth_sweep_greenlet.py` seeds an expired
+  claude-oauth provider, stubs `refresh_and_persist` to commit (reproducing the
+  expiry), and asserts the sweep completes without `MissingGreenlet`.
+- Note: the two live Anthropic providers have dead refresh tokens
+  (`invalid_grant`) and still need operator re-auth — this restores the worker
+  for every other/future claude-oauth token, it does not resurrect a dead one.
+
+### v5.22.51 — fix: CoT token accounting on the OpenAI completions streaming path (2026-11-01)
+
+- **The OpenAI `/v1/chat/completions` streaming + CoT path never folded the
+  pipeline's internal critique-call tokens into `provider_metrics`**, so that
+  path undercounted usage and made per-key spend caps unreliable (the same
+  class the v5.22.20 note measured at ~40% low / 1.66× on one key). v5.22.20
+  fixed this for the Anthropic `/v1/messages` streaming path
+  (`_messages_streaming.py`) but **missed** the OpenAI completions path
+  (`_completions_streaming.py`).
+- Fix: `_completions_streaming.py`'s CoT streaming function now calls
+  `reset_cot_usage()` before `run_cot_pipeline(...)` and
+  `fold_cot_usage(in_tok, out_tok, provider_id)` before `record_outcome(...)`,
+  identical to the Anthropic path.
+- The `test_v52220_cot_usage_accounting.py::TestWiring` static guard is now
+  parametrized over **both** streaming files so the two paths cannot diverge
+  again. (`run_cot_pipeline` runs only in these two streaming entrypoints; the
+  non-streaming dispatch never invokes CoT, so it needs no fold.)
+
+### v5.22.50 — fix: duplicate metric buckets no longer 502 the request path (2026-10-31)
+
+- **`record_request` crashed on duplicate `(provider_id, bucket_ts)` rows,
+  turning live requests into 502s.** `provider_metrics` has no UNIQUE
+  constraint on `(provider_id, bucket_ts)` and `record_request` is a
+  non-atomic SELECT-then-INSERT, so two concurrent writers on a cold 5-min
+  bucket can both INSERT. The read-back used `scalar_one_or_none()`, which then
+  raised `MultipleResultsFound` on the next request that touched that bucket —
+  propagating out of `record_outcome` and 502-ing the request. The error was
+  mis-attributed in logs to whichever provider the except-handler re-recorded
+  (seen as "Provider <OpenRouter> failed: Multiple rows were found…"), masking
+  that the real raise was on the fallback provider's duplicated bucket. Live DB
+  had duplicate buckets on OpenAI-Personal (16), OpenRouter (6), Cohere (5),
+  Grok-Web (1).
+- **Read-side fix (`app/monitoring/metrics.py`):** fold onto the oldest row —
+  `order_by(ProviderMetric.id).scalars().first()` instead of
+  `scalar_one_or_none()`. Never raises on a duplicate bucket; restores routing
+  immediately. (Durable fix — a UNIQUE index + atomic upsert + a dedupe
+  migration — is tracked separately.)
+- **Same bug class hardened in routing (`app/routing/router.py` `_load_profile`):**
+  duplicate `(provider_id, model_id)` `model_capabilities` rows (Grok-Web has a
+  `manual` + `inferred` pair for `x-ai/grok-3`) would crash routing via
+  `scalar_one_or_none()` the instant that model became a provider's
+  `default_model`. Now prefers a `manual` row, else newest, and never crashes.
+- Regression test `test_v52250_metrics_duplicate_bucket.py` seeds the duplicate
+  bucket and asserts `record_request` does not raise and increments the oldest
+  row.
+
+### v5.22.49 — fix: auth-failure breaker uses a short exponential hold, not a flat 24h (2026-10-31)
+
+- **A single transient auth error no longer benches a healthy provider for 24h.**
+  `record_auth_failure` set `hold_down_until = now + 86400` on failure #1, so the
+  breaker never reached half-open within the hold and `record_success` could
+  never close it — a usable provider was sidelined for a full day on one blip.
+  Found while both nodes degraded to 0/7 healthy: `Devin-Codex-Gmail` (the
+  OpenAI **Daybreak** account, OAuth valid 8 more days) and `Devin-Cohere` (key
+  valid) were stuck OPEN with `failures=0` and multi-hour holds remaining, no
+  active `auto_skip`.
+- The in-memory auth hold is now `base × 2^(streak-1)` (capped 32×), matching
+  `record_failure`'s backoff, so a blip recovers in ~base seconds while a
+  genuinely dead provider still backs off and escalates. The **durable** 24h
+  sideline stays exactly where it belongs: `_persist_auto_skip` after the streak
+  crosses `PERSISTENT_AUTH_THRESHOLD` in `PERSISTENT_AUTH_WINDOW_SEC`.
+- `record_success` (HALF_OPEN→CLOSED) and `force_close` now also
+  `clear_auth_failure(provider_id)` so recovery clears the auth-failure
+  streak/map cleanly rather than leaving a stale entry.
+- Regression tests in `test_v52249_auth_breaker_recovery.py` (short-hold-not-24h,
+  exponential back-off, success-clears-and-closes, force_close-clears,
+  streak-still-escalates). Full breaker suite (37 tests) green.
+
 ### v5.22.48 — fix: Daybreak Blue authorization must sync cluster-wide (2026-10-30)
 
 - **`api_keys.daybreak_tier` now round-trips via cluster sync.** The v5.22.47

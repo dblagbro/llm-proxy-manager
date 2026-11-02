@@ -110,15 +110,25 @@ class TestFoldIn:
 
 
 class TestWiring:
-    def test_streaming_wrapper_resets_and_folds(self):
-        src = __import__("pathlib").Path("app/api/_messages_streaming.py").read_text()
+    # v5.22.51 — BOTH streaming CoT paths must reset + fold. The OpenAI
+    # /v1/chat/completions path (_completions_streaming.py) was missed by the
+    # v5.22.20 fix and silently undercounted CoT tokens; guard both so they
+    # cannot diverge again.
+    @pytest.mark.parametrize(
+        "path",
+        ["app/api/_messages_streaming.py", "app/api/_completions_streaming.py"],
+    )
+    def test_streaming_wrapper_resets_and_folds(self, path):
+        src = __import__("pathlib").Path(path).read_text()
         assert "reset_cot_usage()" in src, (
-            "accumulator never reset — usage would leak between requests"
+            f"{path}: accumulator never reset — usage would leak between requests"
         )
-        assert "fold_cot_usage(in_tok, out_tok" in src, "internal usage never folded in"
+        assert "fold_cot_usage(in_tok, out_tok" in src, (
+            f"{path}: internal CoT usage never folded in"
+        )
         reset_at = src.index("reset_cot_usage()")
         fold_at = src.index("fold_cot_usage(in_tok")
-        assert reset_at < fold_at, "fold happens before reset"
+        assert reset_at < fold_at, f"{path}: fold happens before reset"
 
 
 class TestAuthSkipPersistsImmediately:

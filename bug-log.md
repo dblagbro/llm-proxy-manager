@@ -10,6 +10,66 @@ Status flow: **open** → **in-progress** → **fixed** → **verified-fixed** �
 
 ---
 
+## 2026-10-30 — www1→www2 cluster sync has no working network path (found during Daybreak rollout)
+
+### BUG-113 — www1 cannot reach www2 for cluster sync; the authorization/config push direction is dead — 🔴 **OPEN** (infra, operator action required)
+
+- **Severity:** high (availability of cluster convergence) · **Category:** network/infra topology, NOT application logic
+- **Surfaced:** 2026-10-30, verifying that the v5.22.47 Daybreak Blue key authorization
+  (`api_keys.daybreak_tier='blue'`, set on www1) propagated to www2. It did not — and the
+  `daybreak` model alias *had* synced, which isolated it to the api_keys payload. That turned
+  out to be two bugs: a real code bug (the sync payload omitted the new column, fixed in
+  v5.22.48) **and** this one: even with the column in the payload, www1 has no network path to
+  www2 to deliver it. This is also the root cause of the operator's 13h-old "[llm-proxy] Cluster
+  node unreachable: llm-proxy2-www2" alert — it predates the Daybreak work.
+- **Topology:** www1 (tmrwww01) = `192.168.18.11` on `ens160`. www2 (tmrwww02) = `192.168.1.11`
+  only (different subnet; no `192.168.18.x` address). The host tmrwww01 routes to www2 via
+  `192.168.18.1` (ssh :22 works), but the **docker bridge cannot**, and even the host cannot
+  complete TLS to www2:443.
+- **Evidence (all 2026-10-30, from the running containers / host):**
+  - www2-container → www1 `https://192.168.18.11/llm-proxy2/health` → **200** (this direction is fine).
+  - www1-container → www2 via every candidate (`192.168.1.11`, `www2.voipguru.org`,
+    `198.179.77.190`) → **ConnectTimeout**. Only `www.voipguru.org` answers, and it is www1 itself.
+  - host tmrwww01 → www2 `:443` → TCP connects in 0.026s but HTTPS returns **HTTP 000** (TLS/Host
+    layer fails); `:22` is open. So www2's nginx is not serving the raw-IP/LAN vhost, only the LB hostname.
+  - host `iptables -P FORWARD DROP`; docker MASQUERADE rules exist for the bridge subnets, and
+    internet egress from the container works, but forwarding the bridge → `192.168.1.0/24` is not permitted.
+- **Why the earlier "fix" was a false positive:** repointing www1's `cluster_peers` row to
+  `https://192.168.1.11/llm-proxy2` and testing the POST returned 200 **when run from the host**,
+  where `192.168.1.11` is reachable. The sync push runs **inside the container**, which cannot
+  reach it. Host-shell verification of an in-container network path is invalid; always verify with
+  `docker exec <container>`.
+- **Impact:** any config/credential change made on www1 (keys, providers, Daybreak authorization,
+  policy) does not reach www2. www2→www1 still converges, so changes made on www2 propagate. User
+  impact is limited while the load balancer keeps www2 out of rotation, but the cluster is
+  one-directional and silently divergent.
+- **Workaround in place:** the Daybreak key is authorized node-locally on each node
+  (`authorize-daybreak-key.sh`, which documents "apply on each node — cluster sync is currently
+  down"), so the feature is fully live on both nodes independent of sync.
+- **Ruled out:** the `/llm-proxy2/cluster/sync` nginx ACL (already `allow 172.16.0.0/12` + `allow
+  192.168.0.0/16`) and a missing vhost (a `listen 443 ssl default_server` at nginx.conf:548 is the
+  catch-all and would serve a raw-IP request). The failure is below HTTP: off-box HTTPS to www2:443
+  does not complete at all (curl → `HTTP 000`, `-k` so it is not cert validation), while `:22`
+  (ssh) is fine. So the break is on the `192.168.1.x` path to www2:443 specifically.
+- **Drafted fix (NOT applied — shared-host infra + a www2-side remote change; needs operator approval):**
+  1. **On www2, diagnose why `:443` does not complete from the LAN while `:22` does** — likely port
+     filtering or a NAT/hairpin on the `192.168.1.11` path for 443 (cf. the c1conv NAT-hairpin
+     warning in CLAUDE.md), or an nginx TLS issue local to www2. `ss -lntp | grep :443` on www2,
+     then from tmrwww01 `openssl s_client -connect 192.168.1.11:443` to see where the handshake
+     dies. Fix whatever drops it so an off-box client gets a real HTTP response.
+  2. **tmrwww01 host:** permit the docker bridge (`172.18.0.0/16`) to forward to `192.168.1.0/24`
+     (a `DOCKER-USER`/`FORWARD` ACCEPT for that src→dst), so the container's SNAT'd traffic (appears
+     as `192.168.18.11`) can egress — mirrors the already-working internet-egress path. The
+     container currently ConnectTimeouts to `192.168.1.11` even though the host routes there.
+  3. Point the peer URL at whatever address the **container** can reach once (1)+(2) land; re-verify
+     with `docker exec llm-proxy2 ...` (never from the host shell — that was the false-positive trap).
+  4. Re-check the reverse (www2→www1) remains 200 and both breakers/healthy after.
+  - **Cleaner alternative:** give both nodes an address on a shared L2 subnet (e.g. a second NIC /
+    bridge so www2 has a `192.168.18.x`), removing the cross-subnet hop entirely — simplest durable fix.
+- **Status:** OPEN — code side (payload) closed in v5.22.48; network side is an operator/infra task.
+
+---
+
 ## 2026-10-04 — clearing the integration backlog found three more product bugs (v5.22.42)
 
 ### BUG-096 — emulated streams were invalid, and input tokens were never reported to a streaming caller — ✅ **CLOSED v5.22.42**
@@ -1442,7 +1502,7 @@ The 2026-05-27 findings below were remediated. Status updates (now superseded by
 
 Comprehensive QA pass covering the v4.4.20→.23 release arc plus broader regression. Methodology: discovery → planning → test design → execution across unit + cluster contract + auth boundaries + LWW behavioral + schema + per-event header capture + async tracer + cron watchers + frontend (Playwright in-flight) + theme contrast spot. Result: **one HIGH severity (cluster sync silently broken)**, one MEDIUM (input validation), several low/hardening items. The HIGH finding is the headline — six days of cluster sync data divergence undetected by heartbeat-only health checks.
 
-### BUG-079 — Cluster sync silently broken for ~6 days — `_apply_provider_ai_reviews` crashes on duplicate (provider_id, captured_at) — 🔴 **OPEN (HIGH)**
+### BUG-079 — Cluster sync silently broken for ~6 days — `_apply_provider_ai_reviews` crashes on duplicate (provider_id, captured_at) — ✅ **CODE-FIXED v4.4.24** (data-dedupe + UNIQUE constraint still pending operator go)
 
 - **Severity:** **high** · **Category:** confirmed defect · data correctness across cluster
 - **Surfaced:** 2026-05-27 during deep QA pass, by a live LWW behavioral test (created+PATCHed an api_keys row on www1, peers did NOT see it after 80s).
@@ -1482,9 +1542,9 @@ Comprehensive QA pass covering the v4.4.20→.23 release arc plus broader regres
   3. **Hardening**: add `UNIQUE(provider_id, captured_at)` constraint via ALTER (SQLite path: create new table + copy + drop + rename, since SQLite doesn't support adding unique constraints in place).
   4. **Observability gap**: surface apply_sync 500s on the originating peer. Currently `push_sync` in `cluster/manager.py:518-523` fires the POST but **does not inspect the response status**. A `r = await client.post(...)` + `r.status_code != 200` check + log line would have surfaced this immediately. Filed as separate observability hardening item below.
   5. **Tests**: add regression test that drives a duplicate row into `provider_ai_review` and asserts apply_sync still succeeds.
-- **Status:** OPEN, **DO NOT FIX YET** per QA-pass protocol — pause for operator review.
+- **Status:** CODE-FIXED v4.4.24 — `.limit(1)` added to `_apply_provider_ai_reviews` (sync_handlers.py:166). Confirmed present 2026-11-01. **Residual (pending operator go):** step 2 (hard-delete existing duplicate peer rows) + step 3 (`UNIQUE(provider_id, captured_at)` constraint) — same migration class as the provider_metrics dedupe (v5.22.50 read-side fix). The `.limit(1)` makes live dupes harmless meanwhile.
 
-### BUG-080 — 5 of 7 cluster-sync apply handlers share the same crash vulnerability — 🔴 **OPEN (HIGH)**
+### BUG-080 — 5 of 7 cluster-sync apply handlers share the same crash vulnerability — ✅ **CODE-FIXED v4.4.24** (UNIQUE-constraint hardening still pending)
 
 - **Severity:** **high** · **Category:** hardening / latent defect — same class as BUG-079 but not yet triggered
 - **Surfaced:** 2026-05-27, during root-cause investigation of BUG-079. Audited every `scalar_one_or_none` call in `app/cluster/sync_handlers.py`.
@@ -1499,9 +1559,9 @@ Comprehensive QA pass covering the v4.4.20→.23 release arc plus broader regres
   | 310 | `_apply_provider_node_auth_states` | **YES** | safe |
   | 352 | `_apply_external_usage_snapshots` | **YES** | safe (despite having actual duplicates) |
 - **Recommended fix direction:** add `.limit(1)` to all 5 vulnerable queries. Also add UNIQUE constraints to the (provider_id, captured_at) / (api_key_id, captured_at) / (api_key_id, conversation_id, memory_tag) tuples where appropriate.
-- **Status:** OPEN, do not fix yet.
+- **Status:** CODE-FIXED v4.4.24 — all 5 handlers now carry `.limit(1)` (sync_handlers.py:67, 121, 166, 218, 267); the two formerly-safe ones (310/352) unchanged. Confirmed 2026-11-01. UNIQUE-constraint hardening remains (pending operator go, migration class).
 
-### BUG-081 — `push_sync` does not inspect peer response status — 🟡 **OPEN (MEDIUM)**
+### BUG-081 — `push_sync` does not inspect peer response status — ✅ **CODE-FIXED v4.4.24**
 
 - **Severity:** medium · **Category:** observability gap
 - **Area:** `app/cluster/manager.py:517-523` (`push_sync`)
@@ -1509,7 +1569,7 @@ Comprehensive QA pass covering the v4.4.20→.23 release arc plus broader regres
 - **Impact:** BUG-079 was undiscovered for ~6 days specifically because of this. Peers were returning 500 to every sync push; www1 logged nothing.
 - **Fix direction:** assign the response, check `r.status_code != 200`, log a warning with `peer.id` + status + first-N bytes of response body. Same `_exc_str`-style fallback for empty error messages.
 - **Tests:** unit-level — mock httpx client to return 500; assert a warning is logged.
-- **Status:** OPEN, do not fix yet.
+- **Status:** CODE-FIXED v4.4.24 — `push_sync` (manager.py:815-822) now calls `record_attempt(peer.id, resp.status_code)` and logs a warning with status + body preview on `!= 200`. Confirmed 2026-11-01.
 
 ### BUG-082 — F2 cache-control not producing cache hits — ROOT-CAUSED to hub request structure (proxy verified clean) — 🟡 **OPEN (MEDIUM, cross-team) — memo drafted 2026-05-28**
 

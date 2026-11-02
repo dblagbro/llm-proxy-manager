@@ -57,6 +57,14 @@ async def _stream_cot_openai(
     in_tok = out_tok = 0
     t0 = time.monotonic()
 
+    # v5.22.51 — start a fresh CoT usage accumulator. The pipeline's internal
+    # critique calls never reach this SSE stream, so without this their tokens
+    # are billed upstream and recorded nowhere, and per-key spend caps
+    # undercount. The Anthropic /v1/messages path got this in v5.22.20; the
+    # OpenAI /v1/chat/completions path was missed. See app/cot/usage.py.
+    from app.cot.usage import fold_cot_usage, reset_cot_usage
+
+    reset_cot_usage()
     try:
         async for raw in run_cot_pipeline(
             model, messages, session_id, extra, max_iterations, force_verify,
@@ -123,6 +131,8 @@ async def _stream_cot_openai(
         ).encode()
         yield b"data: [DONE]\n\n"
 
+        # v5.22.51 — fold internal CoT call tokens in before recording.
+        in_tok, out_tok = fold_cot_usage(in_tok, out_tok, provider_id)
         await record_outcome(db, provider_id, model, endpoint="completions", success=True,
                              in_tok=in_tok, out_tok=out_tok, t0=t0, key_record_id=key_record_id)
 

@@ -74,14 +74,24 @@ async def record_request(
         in_cost = cost_usd * (input_tokens / total_tok)
         out_cost = cost_usd * (output_tokens / total_tok)
 
-    # Upsert into provider_metrics bucket
+    # Upsert into provider_metrics bucket.
+    # v5.22.50: tolerate duplicate (provider_id, bucket_ts) rows. There is no
+    # UNIQUE constraint on that pair and record_request is a non-atomic
+    # SELECT-then-INSERT, so two concurrent writers on a cold bucket can both
+    # INSERT. A later scalar_one_or_none() then raised MultipleResultsFound,
+    # which propagated out of record_outcome and 502'd the request (the error
+    # was mis-attributed to whichever provider the except-handler re-recorded).
+    # Fold onto the oldest row; the durable fix (unique index + atomic upsert +
+    # dedupe migration) lands separately.
     result = await db.execute(
-        select(ProviderMetric).where(
+        select(ProviderMetric)
+        .where(
             ProviderMetric.provider_id == provider_id,
             ProviderMetric.bucket_ts == bucket,
         )
+        .order_by(ProviderMetric.id)
     )
-    metric = result.scalar_one_or_none()
+    metric = result.scalars().first()
 
     if metric:
         metric.requests += 1
