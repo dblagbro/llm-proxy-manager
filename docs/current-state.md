@@ -429,3 +429,12 @@ tmrwww02 `9cca36eb…`: genuinely distinct hosts.
 - Stage + build (tmrwww01): `/home/dblagbro/docker/scripts/stage-build.sh llm-proxy-v2 --build`
 - Deploy: `cd /home/dblagbro/docker && sudo docker compose up -d --force-recreate --no-deps llm-proxy2 && sudo docker exec nginx nginx -s reload`
 - Pool trace: `sudo docker kill --signal=SIGUSR2 llm-proxy2` then `docker logs --since 8s llm-proxy2`.
+
+
+## Voice-sidecar security candidate — 2026-11-09
+
+Whisper4.3.1 is independently versioned in `whisper_bridge/VERSION`. Its pinned
+asset/runtime recipe and offline speech checks are separate from the gateway
+release. Gateway application and frontend code are unchanged. The tested candidate
+is not yet deployed; the inherited global lint gate awaits an owner decision.
+See [candidate evidence, limits and recovery](whisper-4.3.1-security.md).

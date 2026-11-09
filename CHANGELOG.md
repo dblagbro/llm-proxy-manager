@@ -2,6 +2,15 @@
 
 All notable changes since v2.7.6. Older history available in `git log`.
 
+### Whisper bridge4.3.1 security candidate (2026-11-09)
+
+Independent voice-sidecar dependency release: pinned Python base and speech assets,
+complete hashed Python lock, compatible PyAV17, and offline audio/auth/asset CI.
+The gateway version is unchanged. The candidate passes11 real speech tests and
+reduces High/Critical matches; residual OS findings and the inherited gateway
+lint gate remain explicit. Deployment is pending. See
+[release evidence and rollout](docs/whisper-4.3.1-security.md).
+
 ### v5.22.42 — cleared the integration backlog; it was hiding three more product bugs (2026-10-04)
 
 Integration triage **13 → 3**, Playwright UI **0 → 63 running**, and the last

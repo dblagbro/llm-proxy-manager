@@ -97,3 +97,10 @@ test-whisper:
 	  -e PYTHONPATH=/app -e PYTHONDONTWRITEBYTECODE=1 \
 	  -v $(CURDIR)/whisper_bridge/test_runtime.py:/checks/test_runtime.py:ro \
 	  --entrypoint python $(WHISPER_IMAGE) /checks/test_runtime.py
+	docker run --rm --network none -v $(CURDIR)/whisper_bridge:/checks:ro \
+	  --entrypoint python $(WHISPER_IMAGE) /checks/verify_assets.py
+
+.PHONY: lint-whisper
+lint-whisper:
+	ruff check whisper_bridge/test_runtime.py whisper_bridge/verify_assets.py
+	ruff format --check whisper_bridge/test_runtime.py whisper_bridge/verify_assets.py

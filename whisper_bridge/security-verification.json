@@ -1,0 +1,55 @@
+{
+  "status": "tested_candidate_not_deployed",
+  "image": {
+    "phase": "built_unverified",
+    "source_commit": "9c17771560dfb1747040a0a322f1b3d06d2a7483",
+    "image_tag": "tmr-security/whisper-bridge:4.3.1-20261109",
+    "started": 1794231997.744413,
+    "production_changed": false,
+    "deployed": false,
+    "image_id": "sha256:e39e2fafbe718c31cec29450db7858ca49b2b82601085b363dbc16ed6bf83cda",
+    "image_bytes": 1709651007,
+    "finished": 1794232015.6827905
+  },
+  "runtime_tests": {
+    "tests_run": 11,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "pip_check_exit": 0,
+    "pip_check_output": "No broken requirements found.",
+    "inputs": "synthetic only",
+    "real_models_exercised": [
+      "faster-whisper small",
+      "Piper voice",
+      "Vosk static archive"
+    ],
+    "network": "none"
+  },
+  "assets": {
+    "phase": "passed",
+    "files_and_symlinks": 381,
+    "all_assets_match_original": true,
+    "image": "sha256:e39e2fafbe718c31cec29450db7858ca49b2b82601085b363dbc16ed6bf83cda"
+  },
+  "scan": {
+    "phase": "completed",
+    "image": "sha256:e39e2fafbe718c31cec29450db7858ca49b2b82601085b363dbc16ed6bf83cda",
+    "started": 1794232035.661197,
+    "deployed": false,
+    "exit": 0,
+    "finished": 1794232047.8677955,
+    "critical": 1,
+    "high": 226
+  },
+  "parent_import": "passed in isolated network-disabled container",
+  "origin_main_ci": "passed before change",
+  "scoped_lint": "passed",
+  "global_lint": {
+    "passed": false,
+    "findings": 3244,
+    "app_and_tests_identical_to_origin_main": true
+  },
+  "deployment": false,
+  "merged": false
+}
