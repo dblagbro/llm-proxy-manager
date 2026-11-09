@@ -840,5 +840,8 @@ memory. Operator-locked answers to all 7 design questions on
 Whisper4.3.1 is independently versioned in `whisper_bridge/VERSION`. Its pinned
 asset/runtime recipe and offline speech checks are separate from the gateway
 release. Gateway application and frontend code are unchanged. The tested candidate
-is not yet deployed; the inherited global lint gate awaits an owner decision.
+is not yet deployed. The owner approved the Whisper-only scoped gates and
+independent version exception on 2026-11-09 at 16:16:04 UTC. The 3,244
+inherited gateway lint findings remain explicit debt; all final-head CI and
+scoped checks must pass before release. Gateway 5.22.53 remains unchanged.
 See [candidate evidence, limits and recovery](docs/whisper-4.3.1-security.md).

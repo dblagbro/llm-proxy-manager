@@ -24,12 +24,55 @@ Runtime recipe commit: `9c17771560dfb1747040a0a322f1b3d06d2a7483`.
 
 The original and candidate each passed11 offline runtime tests, with zero failures/skips and a clean `pip check`. All381 speech assets match. The fresh candidate High/Critical scan reports1Critical/226High, versus the earlier original-image baseline16Critical/387High per host. The remaining Critical is Debian libxml2 CVE-2026-6653 without a scanner-listed fixed package. The other OS matches also lack listed fixes; the setuptools70.3 match is embedded SBOM metadata while the installed Python distribution is84.2.1. No finding is dismissed solely because the service is private. The retained native Piper bundle is unchanged and is not claimed comprehensively audited. Lower severities were outside this scan.
 
-The isolated gateway import passed, and published-main CI was green before this change. Global `make lint` reports3244 pre-existing findings in gateway `app/` and `tests/`, which were byte-identical to published main at the baseline lint check. Sidecar test lint passes. Three existing Dockerfile guard tests are now adapted to check pinned asset copying and hashes instead of the previous download commands; the first CI run exposed those stale assertions (4042 passed,3 failed,4 skipped), and the corrected touched-area make test passed3/3 offline. Gateway application code remains unchanged. Global lint is not reported as green, and the project's release-gate decision must be resolved before deployment/merge. This document describes a tested candidate, not a completed rollout.
+The isolated gateway import passed, and published-main CI was green before this change. Global `make lint` reports3244 pre-existing findings in gateway `app/` and `tests/`, which were byte-identical to published main at the baseline lint check. Sidecar test lint passes. Three existing Dockerfile guard tests are now adapted to check pinned asset copying and hashes instead of the previous download commands; the first CI run exposed those stale assertions (4042 passed,3 failed,4 skipped), and the corrected touched-area make test passed3/3 offline. Gateway application code remains unchanged. Global lint is not reported as green. The owner approved the narrowly scoped release contract below on 2026-11-09 at 16:16:04 UTC. This document describes a tested candidate, not a completed rollout.
+
+## Approved release gates
+
+On 2026-11-09 at 16:16:04 UTC, the owner explicitly approved the recommended
+independent Whisper 4.3.1 release gates and version exception for
+[PR11](https://github.com/dblagbro/llm-proxy-manager/pull/11). The approval permits
+this security release to proceed without first reformatting unrelated gateway
+code. It does not claim that global `make lint` passes or waive that gate for a
+gateway change or a later release.
+
+Required evidence for this release:
+
+1. `make lint-whisper` passes both lint and formatting checks.
+2. `make test-whisper WHISPER_IMAGE=<exact-image-id>` passes all 11 offline
+   audio/authentication checks, `pip check`, and all 381 asset comparisons.
+3. The touched voice-recipe guards pass through `make test`; all existing gateway
+   unit, hermetic-network, integration, browser and secret CI jobs pass on the
+   final PR head, together with the dedicated Whisper runtime job and required
+   repository checks. An older passing head is not the final-head gate.
+4. `python -c "import app.main"` passes in an isolated network-disabled container
+   using a synthetic database/key, and `make secret-scan` and diff checks pass.
+5. The exact candidate image has recorded scan results and residual findings.
+   This documentation-only policy update does not rebuild the image or rerun its
+   existing scan. A future runtime-input change requires new build/test/scan
+   evidence before deployment.
+6. Sidecar version `whisper_bridge/VERSION` is 4.3.1. Gateway application,
+   frontend, database and deployed version 5.22.53 stay unchanged; no gateway
+   `app/__version__.py` bump or `llm-proxy2` recreation is part of this release.
+7. The operator verifies actual per-node state, retained rollback images/config,
+   exact-image transfer and acceptance, then rolls only `whisper-bridge` peer
+   first. Record source, PR, CI, merge and deployment as separate states.
+
+The 3,244 inherited gateway lint findings remain explicit follow-up debt. The
+three adapted voice Dockerfile guards are source assertions, not gateway runtime
+changes. The canonical project's six unpublished commits and existing notes
+edits are preserved; this scoped branch does not publish or replace them.
+
+Final local gate verification completed on 2026-11-09 at 16:31:47 UTC:
+`make lint-whisper`, `make test-whisper` (11 tests, no failures/skips, clean
+`pip check`, 381 matching assets), touched-area `make test` (3 guards), isolated
+gateway import, secret scan and diff checks passed. The candidate was not
+rebuilt or rescanned. The canonical unpublished commits and both existing notes
+edits were unchanged. Current-head GitHub checks remain a separate release gate.
 
 ## Sequential deployment and recovery
 
 Use the canonical Compose stack on each node. Preserve the existing environment, token, network, restart policy, mounts and service configuration. Save a root-only copy of the Compose configuration and original container inspection; do not place those secret-bearing files in Git. Retain the original image and confirm its isolated offline tests before changing production.
 
-Load the exact tested image on the peer first and verify its image ID. Update only the `whisper-bridge` image reference in canonical Compose, validate the resolved service, and recreate only that service with `docker compose up -d --force-recreate --no-deps whisper-bridge`. Verify local health, anonymous rejection on all protected routes, authenticated synthetic speech/transcription, unchanged gateway health/version and unchanged service configuration. Check gateway reachability to the recreated sidecar. Then repeat on the primary and observe health before completion. Brief speech requests to the node being changed may need retry; the other gateway and unrelated services remain running.
+Load the exact tested image on the peer first and verify its image ID. Update only the `whisper-bridge` image reference in canonical Compose, validate the resolved service, and recreate only that service with `docker compose up -d --force-recreate --no-deps --no-build --pull never whisper-bridge`. Verify local health, anonymous rejection on all protected routes, authenticated synthetic speech/transcription, unchanged gateway health/version and unchanged service configuration. Check gateway reachability to the recreated sidecar. Then repeat on the primary and observe health before completion. Brief speech requests to the node being changed may need retry; the other gateway and unrelated services remain running.
 
 If a node fails acceptance, restore only that service's original image reference and recreate only `whisper-bridge`; verify health and synthetic speech again. It has no persistent application data and needs no database restoration. Never stop the full stack or remove volumes. Record per-node deployed image IDs, actual checks and any rollback separately from source/PR/check/merge states.

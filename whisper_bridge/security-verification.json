@@ -63,6 +63,42 @@
     "head": "7d8753c450724ed2b2f46d6d95d869b320e751cb",
     "guard": "4042 passed,3 stale recipe assertions failed,4 skipped",
     "other_jobs": "speech-runtime, integration-ephemeral, playwright-ui, secrets, GitGuardian passed",
-    "final_head_ci": "pending rerun after guard correction"
+    "final_head_ci": "Corrected guard head d34b164e646661cca390d276102b96268dab3fae passed all six checks; subsequent current-head checks are required separately."
+  },
+  "release_gate_approval": {
+    "approved_utc": "2026-11-09T16:16:04Z",
+    "scope": "Whisper 4.3.1 / PR11 only",
+    "global_lint_passed": false,
+    "global_lint_findings": 3244,
+    "sidecar_version_exception": true,
+    "gateway_deployed_version_unchanged": "5.22.53",
+    "contract": "docs/whisper-4.3.1-security.md#approved-release-gates",
+    "final_head_checks": "Required; consult exact current PR head"
+  },
+  "approved_final_local_gates": {
+    "checked_utc": "2026-11-09T16:31:47.388504+00:00",
+    "passed": true,
+    "make_lint_whisper": true,
+    "make_test_whisper": {
+      "runtime_tests": 11,
+      "failures": 0,
+      "skipped": 0,
+      "asset_entries": 381,
+      "pip_check_exit": 0,
+      "network": "none"
+    },
+    "touched_make_test": {
+      "passed": 3,
+      "failed": 0,
+      "deselected": 4046,
+      "network": "none"
+    },
+    "make_secret_scan": true,
+    "isolated_gateway_import": true,
+    "git_diff_check": true,
+    "canonical_unpublished_commits_and_notes_preserved": true,
+    "runtime_image_rebuilt": false,
+    "scan_rerun": false,
+    "final_pr_head_ci": "Required separately; see current PR checks"
   }
 }

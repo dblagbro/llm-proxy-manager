@@ -16,6 +16,20 @@ preparation. Nothing here pushes, tags, publishes, or deploys without explicit h
    node at a time**, `sudo docker compose up -d --force-recreate --no-deps llm-proxy2`, then
    `sudo docker exec nginx nginx -s reload`; per-node DB changes applied to each node.
 
+## Approved exception: Whisper 4.3.1 only
+
+The owner approved this independent sidecar release's scoped gates and version
+exception on 2026-11-09 at 16:16:04 UTC (PR11). Apply the
+[approved release contract](../../../docs/whisper-4.3.1-security.md#approved-release-gates):
+`make lint-whisper`, exact-image `make test-whisper`, touched voice-recipe
+`make test`, isolated gateway import, secret scan and all required final-head CI
+must pass. The 3,244 inherited gateway lint findings remain recorded debt;
+global `make lint` is not reported as passing. Version the sidecar through
+`whisper_bridge/VERSION`, leave the gateway version/code/database unchanged, and
+recreate only `whisper-bridge`, sequentially with rollback. This is not a general
+lint waiver or approval for later gateway releases. Existing explicit approval
+covers this scoped release; do not request the same approval again.
+
 ## Prepared, then STOP for approval
 Present exact commands for commit → push → (build/publish) → rolling deploy, each marked
 **AWAITING APPROVAL**, plus a rollback plan. Commits carry **no Claude attribution**.

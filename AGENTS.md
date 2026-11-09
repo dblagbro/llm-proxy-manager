@@ -63,6 +63,24 @@ Full contract: `design.md`. Current state of the code: `architecture.md`.
 4. Affected docs updated (esp. `architecture.md`, `docs/current-state.md`, `CHANGELOG.md`).
 5. No secrets added; no sub-path invariant broken; no unrelated changes.
 
+## Approved Whisper 4.3.1 release exception (2026-11-09)
+
+The owner approved the scoped sidecar gates and independent versioning on
+2026-11-09 at 16:16:04 UTC for [PR11](https://github.com/dblagbro/llm-proxy-manager/pull/11).
+This exception applies only to the independent Whisper 4.3.1 security release:
+`make lint-whisper`, `make test-whisper` against the exact candidate, touched
+voice-recipe `make test`, isolated gateway import, secret scanning, and all
+required checks on the final PR head must pass. Preserve the 3,244 inherited
+gateway lint findings as explicit debt; global `make lint` is not green and is
+not silently waived for gateway changes or later releases.
+
+Use `whisper_bridge/VERSION` for this sidecar; do not bump `app/__version__.py`
+or recreate `llm-proxy2`. Gateway application, frontend, database and deployed
+5.22.53 remain unchanged. Deploy only the exact tested `whisper-bridge` image,
+one node at a time, with per-node rollback. See
+[the approved release contract](docs/whisper-4.3.1-security.md#approved-release-gates)
+for the evidence and operational prerequisites. All other release controls remain.
+
 ## Prohibited / approval-required operations
 - **NEVER** `docker compose down`, `docker compose down -v`, `docker volume rm`, or anything stopping the full stack / destroying volumes. Target single containers by name only (`make down-container` is llm-proxy2-only).
 - **No push, tag, publish, or deploy without explicit approval.** No remote/cluster/DB mutation on peers without approval.

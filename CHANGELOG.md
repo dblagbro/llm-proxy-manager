@@ -8,7 +8,9 @@ Independent voice-sidecar dependency release: pinned Python base and speech asse
 complete hashed Python lock, compatible PyAV17, and offline audio/auth/asset CI.
 The gateway version is unchanged. The candidate passes11 real speech tests and
 reduces High/Critical matches; residual OS findings and the inherited gateway
-lint gate remain explicit. Deployment is pending. See
+lint debt remain explicit. The owner approved the narrowly scoped sidecar gates
+and independent versioning on 2026-11-09; final-head CI remains required.
+Deployment is pending. See
 [release evidence and rollout](docs/whisper-4.3.1-security.md).
 
 ### v5.22.42 — cleared the integration backlog; it was hiding three more product bugs (2026-10-04)
