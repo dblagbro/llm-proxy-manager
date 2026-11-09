@@ -48,8 +48,21 @@
   "global_lint": {
     "passed": false,
     "findings": 3244,
-    "app_and_tests_identical_to_origin_main": true
+    "app_and_tests_identical_to_origin_main_at_baseline": true
   },
   "deployment": false,
-  "merged": false
+  "merged": false,
+  "gateway_app_unchanged": true,
+  "touched_gateway_guards": {
+    "tests_passed": 3,
+    "tests_failed": 0,
+    "network": "none",
+    "change": "Assert pinned asset copies, model manifest and hashed faster-whisper dependency instead of removed download commands"
+  },
+  "ci_first_head": {
+    "head": "7d8753c450724ed2b2f46d6d95d869b320e751cb",
+    "guard": "4042 passed,3 stale recipe assertions failed,4 skipped",
+    "other_jobs": "speech-runtime, integration-ephemeral, playwright-ui, secrets, GitGuardian passed",
+    "final_head_ci": "pending rerun after guard correction"
+  }
 }

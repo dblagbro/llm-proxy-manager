@@ -50,10 +50,12 @@ def test_whisper_bridge_sidecar_present():
 
 def test_whisper_bridge_dockerfile_self_hosted_offline():
     df = Path("whisper_bridge/Dockerfile").read_text()
-    assert "faster-whisper" in df.lower()
+    lock = Path("whisper_bridge/requirements.lock").read_text()
+    assert "faster-whisper==" in lock
+    assert "--require-hashes" in df
     assert "ffmpeg" in df
-    # the model is baked in at build time; the runtime never fetches it
-    assert "HF_HUB_OFFLINE" in df
+    assert "HF_HUB_OFFLINE=1" in df
+    assert "COPY --from=speech_assets /root/.cache/huggingface" in df
 
 
 # --- v4.2.1 milestone 3: hands-free "Airy" wake word -----------------------
@@ -78,10 +80,13 @@ def test_whisper_bridge_serves_vosk_model():
 
 def test_whisper_bridge_dockerfile_bakes_vosk_model():
     df = Path("whisper_bridge/Dockerfile").read_text()
-    assert "vosk-model-small-en-us" in df
-    # the upstream TLS cert is expired, so a pinned SHA256 — not the cert —
-    # is what verifies the download's integrity
-    assert "VOSK_SHA256" in df and "sha256sum -c" in df
+    assets = json.loads(Path("whisper_bridge/assets-manifest.json").read_text())
+    assert "FROM dblagbro/whisper-bridge@sha256:" in df
+    assert "COPY --from=speech_assets /models /models" in df
+    model = assets["/models/vosk-model-small-en-us-0.15.tar.gz"]
+    assert len(model["sha256"]) == 64 and model["bytes"] > 0
+    # Integrity comes from the pinned image and manifest, without a TLS bypass.
+    assert "curl -k" not in df
 
 
 def test_handsfree_component_present_and_wired():
@@ -150,10 +155,12 @@ def test_whisper_bridge_speak_route():
 
 def test_whisper_bridge_dockerfile_bakes_piper():
     df = Path("whisper_bridge/Dockerfile").read_text()
-    assert "piper" in df.lower()
-    # the "Airy" voice and the pinned Piper binary version are baked in
+    assets = json.loads(Path("whisper_bridge/assets-manifest.json").read_text())
+    assert "COPY --from=speech_assets /opt/piper /opt/piper" in df
+    assert "COPY --from=speech_assets /voices /voices" in df
     assert "en_US-amy-medium" in df
-    assert "PIPER_VERSION" in df
+    for name in ["/opt/piper/piper", "/voices/en_US-amy-medium.onnx"]:
+        assert len(assets[name]["sha256"]) == 64 and assets[name]["bytes"] > 0
 
 
 # --- v4.3 milestone 2: speaker-toggle UI -----------------------------------
