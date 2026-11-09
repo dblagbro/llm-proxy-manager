@@ -7,3 +7,6 @@ httpx>=0.28.1,<0.29
 # Build/runtime packaging tools are locked too.
 pip>=26.3,<27
 setuptools>=84.2.1,<85
+# faster-whisper 1.2.1 uses av.open(metadata_errors=...), removed in PyAV19.
+# Keep the deployed major series; the candidate must pass real decode tests.
+av>=17.0.1,<18
