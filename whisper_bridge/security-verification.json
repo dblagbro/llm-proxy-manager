@@ -1,0 +1,104 @@
+{
+  "status": "tested_candidate_not_deployed",
+  "image": {
+    "phase": "built_unverified",
+    "source_commit": "9c17771560dfb1747040a0a322f1b3d06d2a7483",
+    "image_tag": "tmr-security/whisper-bridge:4.3.1-20261109",
+    "started": 1794231997.744413,
+    "production_changed": false,
+    "deployed": false,
+    "image_id": "sha256:e39e2fafbe718c31cec29450db7858ca49b2b82601085b363dbc16ed6bf83cda",
+    "image_bytes": 1709651007,
+    "finished": 1794232015.6827905
+  },
+  "runtime_tests": {
+    "tests_run": 11,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "pip_check_exit": 0,
+    "pip_check_output": "No broken requirements found.",
+    "inputs": "synthetic only",
+    "real_models_exercised": [
+      "faster-whisper small",
+      "Piper voice",
+      "Vosk static archive"
+    ],
+    "network": "none"
+  },
+  "assets": {
+    "phase": "passed",
+    "files_and_symlinks": 381,
+    "all_assets_match_original": true,
+    "image": "sha256:e39e2fafbe718c31cec29450db7858ca49b2b82601085b363dbc16ed6bf83cda"
+  },
+  "scan": {
+    "phase": "completed",
+    "image": "sha256:e39e2fafbe718c31cec29450db7858ca49b2b82601085b363dbc16ed6bf83cda",
+    "started": 1794232035.661197,
+    "deployed": false,
+    "exit": 0,
+    "finished": 1794232047.8677955,
+    "critical": 1,
+    "high": 226
+  },
+  "parent_import": "passed in isolated network-disabled container",
+  "origin_main_ci": "passed before change",
+  "scoped_lint": "passed",
+  "global_lint": {
+    "passed": false,
+    "findings": 3244,
+    "app_and_tests_identical_to_origin_main_at_baseline": true
+  },
+  "deployment": false,
+  "merged": false,
+  "gateway_app_unchanged": true,
+  "touched_gateway_guards": {
+    "tests_passed": 3,
+    "tests_failed": 0,
+    "network": "none",
+    "change": "Assert pinned asset copies, model manifest and hashed faster-whisper dependency instead of removed download commands"
+  },
+  "ci_first_head": {
+    "head": "7d8753c450724ed2b2f46d6d95d869b320e751cb",
+    "guard": "4042 passed,3 stale recipe assertions failed,4 skipped",
+    "other_jobs": "speech-runtime, integration-ephemeral, playwright-ui, secrets, GitGuardian passed",
+    "final_head_ci": "Corrected guard head d34b164e646661cca390d276102b96268dab3fae passed all six checks; subsequent current-head checks are required separately."
+  },
+  "release_gate_approval": {
+    "approved_utc": "2026-11-09T16:16:04Z",
+    "scope": "Whisper 4.3.1 / PR11 only",
+    "global_lint_passed": false,
+    "global_lint_findings": 3244,
+    "sidecar_version_exception": true,
+    "gateway_deployed_version_unchanged": "5.22.53",
+    "contract": "docs/whisper-4.3.1-security.md#approved-release-gates",
+    "final_head_checks": "Required; consult exact current PR head"
+  },
+  "approved_final_local_gates": {
+    "checked_utc": "2026-11-09T16:31:47.388504+00:00",
+    "passed": true,
+    "make_lint_whisper": true,
+    "make_test_whisper": {
+      "runtime_tests": 11,
+      "failures": 0,
+      "skipped": 0,
+      "asset_entries": 381,
+      "pip_check_exit": 0,
+      "network": "none"
+    },
+    "touched_make_test": {
+      "passed": 3,
+      "failed": 0,
+      "deselected": 4046,
+      "network": "none"
+    },
+    "make_secret_scan": true,
+    "isolated_gateway_import": true,
+    "git_diff_check": true,
+    "canonical_unpublished_commits_and_notes_preserved": true,
+    "runtime_image_rebuilt": false,
+    "scan_rerun": false,
+    "final_pr_head_ci": "Required separately; see current PR checks"
+  }
+}

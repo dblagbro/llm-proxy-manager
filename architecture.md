@@ -833,3 +833,15 @@ the protocol-version flag flipped fleet-wide.
 **Design + decisions doc**: `project_lmrhv2_design.md` in operator
 memory. Operator-locked answers to all 7 design questions on
 2026-05-09.
+
+
+## Voice-sidecar security candidate — 2026-11-09
+
+Whisper4.3.1 is independently versioned in `whisper_bridge/VERSION`. Its pinned
+asset/runtime recipe and offline speech checks are separate from the gateway
+release. Gateway application and frontend code are unchanged. The tested candidate
+is not yet deployed. The owner approved the Whisper-only scoped gates and
+independent version exception on 2026-11-09 at 16:16:04 UTC. The 3,244
+inherited gateway lint findings remain explicit debt; all final-head CI and
+scoped checks must pass before release. Gateway 5.22.53 remains unchanged.
+See [candidate evidence, limits and recovery](docs/whisper-4.3.1-security.md).

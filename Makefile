@@ -84,3 +84,23 @@ verify-ci:
 	# Catches the local/CI divergences that made v5.22.38 go red twice:
 	# a newer resolved dependency, or 3.13-specific behaviour. Needs Docker.
 	./tools/verify_like_ci.sh
+
+# Independent voice-sidecar release; does not rebuild or recreate the gateway.
+WHISPER_IMAGE ?= tmr-security/whisper-bridge:4.3.1-20261109
+.PHONY: build-whisper test-whisper
+build-whisper:
+	docker build -t $(WHISPER_IMAGE) whisper_bridge/
+
+test-whisper:
+	docker run --rm --network none --cap-drop ALL --security-opt no-new-privileges \
+	  --cpus 2 --memory 3g --tmpfs /tmp:rw,size=256m \
+	  -e PYTHONPATH=/app -e PYTHONDONTWRITEBYTECODE=1 \
+	  -v $(CURDIR)/whisper_bridge/test_runtime.py:/checks/test_runtime.py:ro \
+	  --entrypoint python $(WHISPER_IMAGE) /checks/test_runtime.py
+	docker run --rm --network none -v $(CURDIR)/whisper_bridge:/checks:ro \
+	  --entrypoint python $(WHISPER_IMAGE) /checks/verify_assets.py
+
+.PHONY: lint-whisper
+lint-whisper:
+	ruff check whisper_bridge/test_runtime.py whisper_bridge/verify_assets.py
+	ruff format --check whisper_bridge/test_runtime.py whisper_bridge/verify_assets.py
