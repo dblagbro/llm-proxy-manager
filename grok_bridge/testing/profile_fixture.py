@@ -22,7 +22,9 @@ async def main():
         cookies = await context.cookies('http://profile.example.test/')
         assert any(c['name']=='synthetic_marker' and c['value']=='fixture-not-a-secret' for c in cookies)
         assert await page.evaluate("localStorage.getItem('synthetic_marker')") == 'fixture-not-a-secret'
-        version = context.browser.version
+        cdp = await context.new_cdp_session(page)
+        version = (await cdp.send('Browser.getVersion'))['product']
+        await cdp.detach()
         await context.close()
     print(json.dumps({'mode':mode,'cookie_preserved':True,'local_storage_preserved':True,
         'closed_cleanly':True,'browser_version':version,'network':'none','real_account_used':False}))
