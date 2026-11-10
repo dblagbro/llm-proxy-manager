@@ -137,7 +137,11 @@ preparation copies over newer production writes.
 All six GitHub checks at f6a7136 pass: GitGuardian, secrets, guard, ephemeral
 integration, Playwright UI and speech runtime. Global lint remains failing with
 3,252 inherited findings versus 3,256 on the reconciled deployed baseline, and
-zero introduced findings. The owner has been asked to approve a one-release
-5.22.54 baseline-no-new lint contract; no answer or waiver is assumed. PR12
-remains draft. All other recovery, rollback and sequential live acceptance
-gates remain required even if that narrow lint exception is approved.
+zero introduced findings. The owner APPROVED a one-release 5.22.54
+baseline-no-new lint contract on 2026-11-10: the candidate may ship with global
+lint red (3,252 inherited findings) because it introduces zero new findings
+versus the reconciled deployed baseline (3,256, i.e. 4 fewer). Scope: lint only,
+this one release; the waiver expires after 5.22.54 and does not extend to any
+later release. PR12 remains draft. All other recovery, rollback and sequential
+live acceptance gates remain required — this waiver does not by itself authorize
+build, push, or deploy.
