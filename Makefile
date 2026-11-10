@@ -19,8 +19,11 @@ lint:
 format:
 	ruff format app/ tests/
 
+GATEWAY_IMAGE ?= llm-proxy2:latest
+GATEWAY_DOCKERFILE ?= Dockerfile
+GATEWAY_BASE_IMAGE ?= llm-proxy2:latest
 build:
-	sudo docker build -t llm-proxy2:latest .
+	sudo docker build --build-arg BASE_IMAGE=$(GATEWAY_BASE_IMAGE) -f $(GATEWAY_DOCKERFILE) -t $(GATEWAY_IMAGE) .
 
 up:
 	sudo docker compose up -d llm-proxy2

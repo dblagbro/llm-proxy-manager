@@ -180,6 +180,35 @@ def validate_webhook_url(url: str) -> None:
         )
     if not parsed.netloc:
         raise HTTPException(400, "x-webhook-url: missing host")
+    # v5.22.43 — RFC1918 stays allowed per the documented decision above
+    # (operators POST to their own hub/alerting on the LAN). But loopback and
+    # the link-local range are NEVER a legitimate webhook target and are the
+    # real SSRF pivots: 127.0.0.1:3000 is this proxy's own admin API, and
+    # 169.254.169.254 is cloud instance metadata. Block those two, by literal
+    # host and by resolved address (best-effort; transient DNS failure does not
+    # block a legitimate webhook).
+    import ipaddress
+    import socket
+
+    def _is_blocked(ip: "ipaddress._BaseAddress") -> bool:
+        return ip.is_loopback or ip.is_link_local
+
+    host = parsed.hostname or ""
+    try:
+        literal = ipaddress.ip_address(host)
+    except ValueError:
+        literal = None
+    if literal is not None and _is_blocked(literal):
+        raise HTTPException(400, "x-webhook-url: loopback/link-local address not allowed")
+    if literal is None and host:
+        try:
+            for fam, _, _, _, sockaddr in socket.getaddrinfo(host, None):
+                if _is_blocked(ipaddress.ip_address(sockaddr[0])):
+                    raise HTTPException(
+                        400, "x-webhook-url: host resolves to a loopback/link-local address"
+                    )
+        except socket.gaierror:
+            pass  # unresolvable now — let the delivery attempt fail naturally
 
 
 def sanitize_upstream_error(error_text: str, max_chars: int = 300) -> str:

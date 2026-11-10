@@ -2,6 +2,19 @@
 
 All notable changes since v2.7.6. Older history available in `git log`.
 
+### v5.22.54 security candidate (2026-11-10)
+
+Remove unused python-jose and its orphan ecdsa dependency from the tested
+runtime. Align editable-install auth metadata with the existing direct bcrypt
+implementation. Apply supported Debian updates and pip26.3 to fix its vendored msgpack and
+urllib3. Set safe setuptools/wheel floors for builds without adding them at runtime. The overlay preserves the deployed 5.22.53 application and
+frontend; only its version changes. The reconciled branch retains the six
+previously local 5.22.43–53 commits and the merged Whisper release.
+
+Candidate preparation only: see docs/gateway-5.22.54-security.md for exact
+build identities, tests, residual findings and the unresolved release gate.
+No authentication configuration or application database change is intended.
+
 ### Whisper bridge4.3.1 security candidate (2026-11-09)
 
 Independent voice-sidecar dependency release: pinned Python base and speech assets,
@@ -12,6 +25,315 @@ lint debt remain explicit. The owner approved the narrowly scoped sidecar gates
 and independent versioning on 2026-11-09; final-head CI remains required.
 Deployment is pending. See
 [release evidence and rollout](docs/whisper-4.3.1-security.md).
+
+### v5.22.53 — fix: complete the claude-oauth sweep MissingGreenlet fix (mid-loop rollback) (2026-11-01)
+
+- **v5.22.52 was incomplete.** It snapshotted `id`/`name` for the *current*
+  provider, but the live crash was cross-iteration: a dead-token provider
+  (`invalid_grant`) takes the `await db.rollback()` branch, and `rollback()`
+  **always** expires every ORM instance in the session — independent of the
+  sessionmaker's `expire_on_commit=False` — so the *next* provider's attribute
+  access lazy-reloaded and raised `MissingGreenlet`, killing the sweep right
+  after the first failed provider (seen live: Anthropic-Gmail fail → sweep
+  died before reaching Anthropic-VG).
+- **Fix:** `_run_one_sweep` now selects provider IDs as plain scalars and
+  re-fetches each provider fresh inside the loop, so every attribute access is
+  on a live instance regardless of a prior rollback. This also clears the
+  companion `RuntimeWarning: coroutine 'Connection.cursor' was never awaited`
+  (the artifact of the failed lazy-load).
+- Regression test upgraded to the real scenario: two claude-oauth providers,
+  the first failing (rollback), asserting the sweep still processes the second
+  (`checked == 2`, both recorded) without `MissingGreenlet`.
+
+### v5.22.52 — fix: claude-oauth proactive-refresh sweep crashed every cycle (MissingGreenlet) (2026-11-01)
+
+- **`claude_oauth_expiry_monitor` died on every sweep** with
+  `sqlalchemy.exc.MissingGreenlet: greenlet_spawn has not been called`, so
+  claude-oauth tokens were never proactively refreshed (the worker that exists
+  specifically to break the "breaker-open → no requests → no 401 → no refresh"
+  death-loop was itself dead). Found in the live www1 logs 2026-11-01.
+- **Root cause:** `refresh_and_persist()` commits inside `_refresh_one`, and
+  with the default `expire_on_commit=True` that expires every attribute on the
+  Provider ORM object. The sweep then accessed `provider.id` / `p.id` / `p.name`
+  **synchronously** (for `force_close`, logging, and the detail list); each
+  access lazy-reloaded, and a lazy reload needs greenlet context, so in the
+  async worker it raised `MissingGreenlet` and aborted the whole sweep.
+- **Fix:** snapshot `id`/`name` into locals **before** the commit and use the
+  locals afterward (`app/monitoring/claude_oauth_expiry_monitor.py`, both
+  `_refresh_one` and `_run_one_sweep`). No behavior change beyond not crashing.
+- Regression test `test_v52252_claude_oauth_sweep_greenlet.py` seeds an expired
+  claude-oauth provider, stubs `refresh_and_persist` to commit (reproducing the
+  expiry), and asserts the sweep completes without `MissingGreenlet`.
+- Note: the two live Anthropic providers have dead refresh tokens
+  (`invalid_grant`) and still need operator re-auth — this restores the worker
+  for every other/future claude-oauth token, it does not resurrect a dead one.
+
+### v5.22.51 — fix: CoT token accounting on the OpenAI completions streaming path (2026-11-01)
+
+- **The OpenAI `/v1/chat/completions` streaming + CoT path never folded the
+  pipeline's internal critique-call tokens into `provider_metrics`**, so that
+  path undercounted usage and made per-key spend caps unreliable (the same
+  class the v5.22.20 note measured at ~40% low / 1.66× on one key). v5.22.20
+  fixed this for the Anthropic `/v1/messages` streaming path
+  (`_messages_streaming.py`) but **missed** the OpenAI completions path
+  (`_completions_streaming.py`).
+- Fix: `_completions_streaming.py`'s CoT streaming function now calls
+  `reset_cot_usage()` before `run_cot_pipeline(...)` and
+  `fold_cot_usage(in_tok, out_tok, provider_id)` before `record_outcome(...)`,
+  identical to the Anthropic path.
+- The `test_v52220_cot_usage_accounting.py::TestWiring` static guard is now
+  parametrized over **both** streaming files so the two paths cannot diverge
+  again. (`run_cot_pipeline` runs only in these two streaming entrypoints; the
+  non-streaming dispatch never invokes CoT, so it needs no fold.)
+
+### v5.22.50 — fix: duplicate metric buckets no longer 502 the request path (2026-10-31)
+
+- **`record_request` crashed on duplicate `(provider_id, bucket_ts)` rows,
+  turning live requests into 502s.** `provider_metrics` has no UNIQUE
+  constraint on `(provider_id, bucket_ts)` and `record_request` is a
+  non-atomic SELECT-then-INSERT, so two concurrent writers on a cold 5-min
+  bucket can both INSERT. The read-back used `scalar_one_or_none()`, which then
+  raised `MultipleResultsFound` on the next request that touched that bucket —
+  propagating out of `record_outcome` and 502-ing the request. The error was
+  mis-attributed in logs to whichever provider the except-handler re-recorded
+  (seen as "Provider <OpenRouter> failed: Multiple rows were found…"), masking
+  that the real raise was on the fallback provider's duplicated bucket. Live DB
+  had duplicate buckets on OpenAI-Personal (16), OpenRouter (6), Cohere (5),
+  Grok-Web (1).
+- **Read-side fix (`app/monitoring/metrics.py`):** fold onto the oldest row —
+  `order_by(ProviderMetric.id).scalars().first()` instead of
+  `scalar_one_or_none()`. Never raises on a duplicate bucket; restores routing
+  immediately. (Durable fix — a UNIQUE index + atomic upsert + a dedupe
+  migration — is tracked separately.)
+- **Same bug class hardened in routing (`app/routing/router.py` `_load_profile`):**
+  duplicate `(provider_id, model_id)` `model_capabilities` rows (Grok-Web has a
+  `manual` + `inferred` pair for `x-ai/grok-3`) would crash routing via
+  `scalar_one_or_none()` the instant that model became a provider's
+  `default_model`. Now prefers a `manual` row, else newest, and never crashes.
+- Regression test `test_v52250_metrics_duplicate_bucket.py` seeds the duplicate
+  bucket and asserts `record_request` does not raise and increments the oldest
+  row.
+
+### v5.22.49 — fix: auth-failure breaker uses a short exponential hold, not a flat 24h (2026-10-31)
+
+- **A single transient auth error no longer benches a healthy provider for 24h.**
+  `record_auth_failure` set `hold_down_until = now + 86400` on failure #1, so the
+  breaker never reached half-open within the hold and `record_success` could
+  never close it — a usable provider was sidelined for a full day on one blip.
+  Found while both nodes degraded to 0/7 healthy: `Devin-Codex-Gmail` (the
+  OpenAI **Daybreak** account, OAuth valid 8 more days) and `Devin-Cohere` (key
+  valid) were stuck OPEN with `failures=0` and multi-hour holds remaining, no
+  active `auto_skip`.
+- The in-memory auth hold is now `base × 2^(streak-1)` (capped 32×), matching
+  `record_failure`'s backoff, so a blip recovers in ~base seconds while a
+  genuinely dead provider still backs off and escalates. The **durable** 24h
+  sideline stays exactly where it belongs: `_persist_auto_skip` after the streak
+  crosses `PERSISTENT_AUTH_THRESHOLD` in `PERSISTENT_AUTH_WINDOW_SEC`.
+- `record_success` (HALF_OPEN→CLOSED) and `force_close` now also
+  `clear_auth_failure(provider_id)` so recovery clears the auth-failure
+  streak/map cleanly rather than leaving a stale entry.
+- Regression tests in `test_v52249_auth_breaker_recovery.py` (short-hold-not-24h,
+  exponential back-off, success-clears-and-closes, force_close-clears,
+  streak-still-escalates). Full breaker suite (37 tests) green.
+
+### v5.22.48 — fix: Daybreak Blue authorization must sync cluster-wide (2026-10-30)
+
+- **`api_keys.daybreak_tier` now round-trips via cluster sync.** The v5.22.47
+  push payload (`cluster/manager.py`) and apply handler
+  (`cluster/sync_handlers._apply_api_keys`) both omitted the new
+  `daybreak_tier` column, so authorizing a key for Daybreak Blue on one node
+  never reached its peers — caught during the www2 restore, where the
+  `daybreak` alias had synced but the authorized key still showed
+  `daybreak_tier=NULL` on www2. Same bug class as v4.4.18 (semantic_cache) and
+  v5.0.0 (compliance policy fields): an operator-settable per-key column that
+  didn't propagate.
+- Added `daybreak_tier` to the outbound payload and to both apply branches —
+  update (membership-test, so a pre-v5.22.48 peer can't clobber a local
+  authorization back to NULL) and INSERT (full-field, BUG-084 discipline).
+- Regression tests in `test_v52248_daybreak_tier_sync.py` (push-payload guard +
+  propagate-on-update + set-on-insert + legacy-peer-no-clobber).
+
+### v5.22.47 — feat: Daybreak Blue (OpenAI Trusted Access for Cyber) passthrough (2026-10-30)
+
+- **Daybreak Blue support on the Codex / Sign-In-with-ChatGPT path.** OpenAI
+  withdraws the *individual API-key* route to Daybreak Blue on 2026-11-20; the
+  Codex-via-SIWC path (this proxy's `ChatGPT-oauth-plan` provider) is the
+  surviving channel. Daybreak is NOT a model and NOT automatic — it is a
+  per-request Responses-API field, `access_programs.cyber` ∈ {`standard`,
+  `daybreak_blue`, `daybreak_red`}, which an approved account defaults to
+  `standard` unless explicitly set (verified 2026-10-30 against the live
+  approved Gmail account; the Codex endpoint validates the field server-side).
+  The proxy's Codex client emulation (originator/UA/client-version/
+  ChatGPT-Account-ID) was already faithful; the only gap was that it never set
+  the field, so every request ran at `standard`.
+- **New opt-in, tightly scoped.** A `daybreak`/`daybreak-blue` model alias pins
+  the approved provider (reusing the existing `ModelAlias` pin + capability
+  path), rewrites the slug to `codex-auto-review`, and injects
+  `access_programs.cyber=daybreak_blue`. Policy (`app/providers/daybreak.py`):
+  opt-in ONLY via the alias (normal traffic untouched / `standard`); the
+  calling key must carry `daybreak_tier == "blue"` (403 otherwise — the OpenAI
+  approval is scoped to the vetted account holder, never fanned out);
+  `daybreak_red` is hard-blocked (403) regardless of key; every Daybreak-flagged
+  request writes a `compliance_events` audit row (`event_type=daybreak_access`,
+  `reason_code=daybreak_blue`) for reconstruction if OpenAI asks.
+- New per-key column `api_keys.daybreak_tier` (NULL = not authorized; idempotent
+  ALTER in `init_db`, ORM in `db_apikey.py`). Threaded through
+  `chat_completions_to_responses(..., access_programs=)` →
+  `dispatch_codex_oauth(..., access_programs=)` → `completions.py` gate. Tests:
+  `tests/unit/test_v52247_daybreak_blue.py` (18 cases). Data/operator steps
+  (alias rows, provider marker, key authorization) are applied at deploy.
+
+### v5.22.46 — fix: re-authed OAuth account stayed broken on the peer node (2026-10-29)
+
+- **BUG-112 (HIGH, availability) — a credential re-auth reset the circuit
+  breaker only on the node that served it; the peer kept routing against an
+  open breaker.** `oauth-rotate` (`_do_rotate`) and background token refresh
+  `force_close` the breaker + `clear_auth_failure` on the ORIGIN node, but that
+  state is in-memory / node-local and is never synced. When the operator
+  re-authed an account, the load balancer sent the request to one node; the new
+  token propagated to the peer via cluster sync (DB columns `api_key`,
+  `oauth_refresh_token`, `oauth_expires_at`), but the peer's breaker stayed
+  OPEN with its stale exponential hold-down (observed: `91bafda9…` Gmail
+  half-open with 15 failures / consecutive_opens=5 on www2 while healthy on
+  www1 right after a successful re-auth). Result: the freshly re-authed account
+  still failed on ~half the LB traffic until the peer happened to probe-recover
+  on its own. Fix: `cluster/sync_handlers._apply_providers` snapshots the three
+  credential columns before the merge and, when any changed, `force_close` +
+  `clear_auth_failure` for that provider on the receiving node — so a token
+  rotation anywhere converges the breaker everywhere on the next sync (≤60s,
+  immediate via `/cluster/sync-now`). Non-credential edits (priority, name)
+  leave an open breaker untouched. Regression tests in
+  `tests/unit/test_v52246_sync_resets_breaker_on_reauth.py`.
+
+### v5.22.45 — fix: OAuth Accounts panel polled in a render loop ("Failed to load OAuth accounts" flood) (2026-10-29)
+
+- **BUG-111 (MED, UX/load) — `useToast()` returned a new object every render,
+  driving an unbounded re-fetch loop.** `components/ui/Toast.tsx::useToast`
+  returned a fresh object literal each call. `OAuthAccountsPanel`'s `load` is a
+  `useCallback` with `toast` in its deps, and its `useEffect` depends on
+  `load` — so an unstable `toast` rebuilt `load` every render and re-fired the
+  effect, polling `GET /api/admin/providers/{id}/oauth-accounts` thousands of
+  times/sec (observed ~29/sec sustained at the backend, all 200). While the
+  operator was editing/re-authing a provider the parent re-rendered
+  continuously, and overlapping fetches that got superseded surfaced as a
+  flood of red "Failed to load OAuth accounts" toasts. Fix: `useToast` now
+  returns a stable module-level singleton (the helpers only dispatch through
+  the module-level `_addToast`, so there is no per-render state) — removing the
+  unstable reference for every consumer, not just this panel. Frontend-only;
+  ships in the image.
+
+### v5.22.44 — fix: re-auth of a live deprecated OAuth provider was 422'd; cluster-sync 413 regression (2026-10-29)
+
+Operator could not re-auth the live `Devin-Anthropic-Max-VG` (claude-oauth)
+account, and node-to-node cluster sync had silently stopped. Two regressions
+from recent hardening work, both fixed.
+
+- **BUG-109 (HIGH, availability) — the provider-type retirement gate 422'd
+  edits/re-auth of an existing deprecated provider.** The v5.22.24 gate
+  (`_provider_type_policy.py`) was a pydantic `field_validator` on
+  `provider_type`, inherited by **both** `ProviderCreate` *and*
+  `ProviderUpdate`. A `PUT /api/providers/{id}` re-submits the row's own
+  current type, so saving (or the UI's save-after-re-auth) of the live
+  `claude-oauth` account failed validation → 422, directly contradicting the
+  DEPRECATED tier's stated contract ("the existing row keeps working"). Fix:
+  the create gate stays absolute; `ProviderUpdate` neutralizes the inherited
+  validator and the new `validate_provider_type_change(old, new)` runs in
+  `update_provider()` — keeping an already-closed type is allowed, only a
+  *change into* a closed type is refused. The OAuth `oauth-rotate` path itself
+  was never broken (it returned 200 + the provider test passed); the blocker
+  was the subsequent `PUT`. Tests: `test_v52224_subscription_retirement.py`
+  (`TestUpdateChangeGate`, updated `TestWiredIntoBothModels`).
+- **BUG-110 (HIGH, availability) — cluster sync broke with HTTP 413 after the
+  O-2 nginx allowlist.** The exact-match `location = /llm-proxy2/cluster/sync`
+  (and legacy `/llm-proxy/cluster/sync`) blocks added for the source-IP
+  allowlist omitted `client_max_body_size`, so they inherited nginx's 1M
+  default while the general `/llm-proxy2/` block they diverted traffic from
+  sets 50M. `apply_sync` payloads (providers/api_keys/users/settings) exceed
+  1M → peer nginx returned 413 and sync stopped on both nodes. Fix:
+  `client_max_body_size 50M;` added to all four cluster/sync blocks (both
+  nodes). nginx-only; not shipped in the image.
+
+### v5.22.43 — security self-test: fixed the source-side vulnerabilities; config/secret/infra items handed to the operator (2026-10-11)
+
+A full read-only security pass (auth/authz, SSRF/path-traversal, data layer,
+supply chain/container). The code-side defects are fixed here; the
+secret-rotation, production nginx/compose, and deploy items are operator-only
+and are listed in `docs/security-review-2026-10-11.md`, not changed here.
+
+- **BUG-098 (HIGH) — unauthenticated arbitrary file read via the SPA asset-rescue
+  branch.** `app/main.py` matched `assets/...` with a regex whose group could
+  contain `../` and joined it straight onto `frontend/dist`, so
+  `/x/assets/../../../data/llmproxy.db` escaped the static root and read the
+  on-disk SQLite credential store. Confined with a `realpath` prefix check (the
+  pattern `audit.py` already used). nginx normalises literal `../` on the public
+  path, so this was live on the internal docker network and on any front-less
+  deploy. Test: `tests/unit/test_static_path_traversal.py`.
+- **BUG-099 (HIGH) — per-key MCP tool policy never enforced (authz fail-open).**
+  The ORM had `mcp_tools_allow/deny/mcp_schema_token_budget` and the admin UI set
+  them, but `ApiKeyRecord` carried no such fields, so every enforcement site read
+  `getattr(record, ..., None)` → allow-all. That voided the allow/deny lists and
+  the documented `mcp_tools_allow=[]` "disable MCP" opt-out. Fields added and
+  populated in `verify_api_key`. Test: `tests/unit/test_mcp_policy_on_record.py`.
+- **BUG-100 (MED, latent) — SSO open redirect via `X-Forwarded-Prefix`.** The
+  client-supplied header fed `RedirectResponse` unvalidated; `//evil.example`
+  made the login/callback redirect protocol-relative. Validated to a single
+  absolute path. Latent today (SSO disabled).
+- **BUG-101 (MED/LOW) — webhook SSRF to loopback/metadata.** Caller-supplied
+  `X-Webhook-URL` only had a scheme check. RFC1918 stays allowed (documented
+  decision — internal hubs), but loopback and link-local (169.254.169.254 IMDS,
+  127.0.0.1 = this proxy's own admin API) are now blocked by literal and resolved
+  address. Tests in `tests/unit/test_v358_input_validation.py`.
+- **BUG-102 (LOW) — `/api/integration/self-update` always 500'd** (`ApiKey.key`
+  column does not exist; fail-closed but dead). Fixed to look up by `key_hash`.
+- **BUG-103 (LOW, latent) — `require_catalog_auth` omitted the `deleted_at`
+  tombstone check** unlike every other key path; added as defence-in-depth
+  against a cluster-sync-resurrected row.
+- **Observability:** a loud (non-fatal) boot log when `SECRET_KEY` is the public
+  placeholder, mirroring the existing cluster-auth boot audit.
+
+Data-layer pass (second round of the same review):
+
+- **BUG-104 (HIGH) — ReDoS in the PII email pattern.** `[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}`
+  overlapped the label class with the dot separator and backtracked O(n²) on a
+  long no-match input (~200s at 256 KB), blocking the whole uvicorn event loop
+  because `mask_text` runs synchronously in the async path. Replaced with a
+  bounded, non-overlapping form (262 KB: 197s → 97 ms). Armed only when
+  `pii_masking_enabled` is toggled on — which a gov-compliance deploy does.
+- **BUG-105 (MED) — epoch-purge deleted one extra day (irreversible).** The ISO
+  `T` cutoff string was compared against SQLite's space-separated DateTime text,
+  and `' ' < 'T'`, so `ts < :cutoff` matched the entire cutoff day (and the
+  dry-run counts were wrong the same way). Cutoff is now normalised to the stored
+  form. `app/api/admin_compliance_epoch_purge.py`.
+- **BUG-106 (MED) — cluster sync accepted a peer-chosen primary key.** `apply_sync`'s
+  allowed-column set for `compliance_events` / `compliance_policy_changes` included
+  the autoincrement `id`, letting a peer insert forged rows at a chosen position
+  in an already-hashed day or collide to abort the apply. PK now excluded; dedup
+  stays on the business key. `app/cluster/sync_handlers.py`.
+- **BUG-107 (MED) — compliance cache failed OPEN on blocklist-resolution error.**
+  A transient DB error while resolving a key's blocklist caused the cache to be
+  queried with no company filter, so a banned company's cached response could be
+  served (violating "unknown = blocked"). Now bypasses the cache on error; the
+  live path still enforces the blocklist. `app/cache/middleware.py`.
+- **BUG-108 (HIGH) — secret redaction missed structured bodies and modern tokens.**
+  `_redact` ran lexically over `json.dumps` text, so `{"Authorization": "Bearer …"}`
+  was never matched, and `sk-[A-Za-z0-9]{20,}` broke on `sk-proj-`/`sk-or-v1-`;
+  the default-on activity-log preview path redacted nothing at all. Added a
+  structural redactor (nulls values under sensitive keys before serialization),
+  broadened the lexical table (sk-proj/or, ya29., AKIA, gsk_, xai-, hf_, gh?_,
+  llmp-, JWT), routed previews and the stored upstream-error string through
+  redaction. `app/monitoring/helpers.py`. Tests:
+  `tests/unit/test_activity_redaction.py`.
+- **Doc fix:** `app/models/db_provider.py` claimed the provider `api_key` /
+  `oauth_refresh_token` columns were Fernet-encrypted; nothing encrypts them — the
+  comment now says PLAINTEXT so DB-handling controls are sized correctly.
+
+**Not fixed here — needs your decision (BUG-109, tracked):** the compliance audit
+hash chain (`app/compliance/audit.py`) hashes only 5 of 14 columns, is never
+verified anywhere, short-circuits recomputation to the stored hash, and re-anchors
+silently across gaps; `compliance_policy_changes` has no chain at all. This is the
+gov-compliance evidentiary control and widening the hashed field set is a versioned
+migration affecting every prior day, so it is staged with a concrete plan in
+`docs/security-review-2026-10-11.md` rather than rushed.
 
 ### v5.22.42 — cleared the integration backlog; it was hiding three more product bugs (2026-10-04)
 

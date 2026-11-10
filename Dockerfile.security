@@ -1,0 +1,11 @@
+# Bounded overlay; verify this local tag against the recorded base image ID.
+ARG BASE_IMAGE=tmr-security/llm-proxy-parent-test-base:20261109
+FROM ${BASE_IMAGE}
+USER root
+RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/* \
+    && python -m pip install --no-cache-dir --upgrade pip==26.3 \
+    && python -m pip uninstall -y python-jose ecdsa \
+    && python -m pip check
+# All other app Python files must match the recorded base before this build.
+COPY app/__version__.py /app/app/__version__.py
+USER appuser

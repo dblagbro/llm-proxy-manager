@@ -36,9 +36,7 @@ class _FakeProvider:
         self.enabled = True
         self.deleted_at = None
         self.oauth_refresh_token = refresh_token
-        self.oauth_expires_at = (
-            None if expires_in_sec is None else time.time() + expires_in_sec
-        )
+        self.oauth_expires_at = None if expires_in_sec is None else time.time() + expires_in_sec
 
 
 class _FakeResult:
@@ -51,6 +49,10 @@ class _FakeResult:
     def all(self):
         return self._items
 
+    def scalar_one_or_none(self):
+        assert len(self._items) <= 1
+        return self._items[0] if self._items else None
+
 
 class _FakeDB:
     def __init__(self, providers):
@@ -58,8 +60,15 @@ class _FakeDB:
         self.commits = 0
         self.rollbacks = 0
 
-    async def execute(self, *_a, **_k):
-        return _FakeResult(self._providers)
+    async def execute(self, statement, **_kwargs):
+        from app.models.db import Provider
+
+        selected = statement.column_descriptions[0]["expr"]
+        if selected is Provider:
+            requested_ids = set(statement.compile().params.values())
+            return _FakeResult([p for p in self._providers if p.id in requested_ids])
+        assert selected.name == "id"
+        return _FakeResult([(p.id,) for p in self._providers])
 
     async def commit(self):
         self.commits += 1
@@ -93,9 +102,7 @@ def harness(monkeypatch):
             state["refreshed"].append(provider.id)
 
         monkeypatch.setattr(flow, "refresh_and_persist", fake_refresh)
-        monkeypatch.setattr(
-            cb, "clear_auth_failure", lambda pid: state["cleared"].append(pid)
-        )
+        monkeypatch.setattr(cb, "clear_auth_failure", lambda pid: state["cleared"].append(pid))
 
         async def fake_force_close(pid):
             state["closed"].append(pid)
@@ -136,9 +143,7 @@ class TestBreaksTheDeadlock:
         import ast
         from pathlib import Path
 
-        tree = ast.parse(
-            Path("app/monitoring/claude_oauth_expiry_monitor.py").read_text()
-        )
+        tree = ast.parse(Path("app/monitoring/claude_oauth_expiry_monitor.py").read_text())
         imported: list[str] = []
         called: list[str] = []
         for node in ast.walk(tree):

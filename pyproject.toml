@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=84.2.1", "wheel>=0.46.2"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -16,7 +16,7 @@ dependencies = [
     "pydantic>=2.7.0",
     "pydantic-settings>=2.3.0",
     # LLM routing — provider abstraction layer
-    "litellm>=1.40.0",
+    "litellm>=1.85.2,<1.87.0",
     # Database
     "sqlalchemy[asyncio]>=2.0.0",  # [asyncio] pulls greenlet; see requirements.txt
     "alembic>=1.13.0",
@@ -25,8 +25,7 @@ dependencies = [
     # Redis — circuit state, hold-down timers, CoT sessions, rate limits
     "redis[hiredis]>=5.0.0",
     # Auth
-    "passlib[bcrypt]>=1.7.4",
-    "python-jose[cryptography]>=3.3.0",
+    "bcrypt>=4.0.0",
     "python-multipart>=0.0.9",
     # HTTP client
     "httpx>=0.27.0",
@@ -35,6 +34,8 @@ dependencies = [
     "structlog>=24.0.0",
     "tenacity>=8.3.0",
     "anyio>=4.4.0",
+    # Runtime security floors; keep requirements.txt aligned.
+    "urllib3>=2.8.0,<3",
 ]
 
 [project.optional-dependencies]

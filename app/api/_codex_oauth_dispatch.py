@@ -130,6 +130,7 @@ async def dispatch_codex_oauth(
     resp_headers: dict,
     key_record_id: Optional[str] = None,
     llm_hint: Optional[str] = None,
+    access_programs: Optional[dict] = None,
 ) -> StreamingResponse | JSONResponse:
     """Translate + forward + translate back. Returns a FastAPI response.
 
@@ -147,7 +148,7 @@ async def dispatch_codex_oauth(
             502, f"codex-oauth provider {provider.name!r} has no access token",
         )
 
-    upstream_body = chat_completions_to_responses(body)
+    upstream_body = chat_completions_to_responses(body, access_programs=access_programs)
     model = body.get("model") or upstream_body.get("model") or "gpt-5.5"
     requested_model = body.get("model") or model
 

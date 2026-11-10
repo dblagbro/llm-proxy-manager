@@ -30,7 +30,7 @@ from typing import Any, AsyncIterator, Optional
 # ── Request: Chat Completions → Responses API ───────────────────────────────
 
 
-def chat_completions_to_responses(body: dict) -> dict:
+def chat_completions_to_responses(body: dict, *, access_programs: Optional[dict] = None) -> dict:
     """Translate a Chat Completions request body to the Responses API shape.
 
     Maps:
@@ -123,6 +123,12 @@ def chat_completions_to_responses(body: dict) -> dict:
     re = body.get("reasoning_effort") or eb.get("reasoning_effort")
     if isinstance(re, str) and re.strip():
         out["reasoning"] = {"effort": re.strip().lower()}
+    # v5.22.47 — Daybreak Blue (OpenAI Trusted Access for Cyber). The route
+    # layer decides the cyber tier (see app/providers/daybreak.py) and passes
+    # it here verbatim; absent = the Codex backend applies standard safeguards.
+    # Values are validated server-side ({standard, daybreak_blue, daybreak_red}).
+    if access_programs:
+        out["access_programs"] = access_programs
     return out
 
 

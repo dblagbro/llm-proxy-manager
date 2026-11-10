@@ -166,13 +166,20 @@ class RouteResult:
 async def _load_profile(db: AsyncSession, provider: Provider) -> CapabilityProfile:
     """Load capability profile from DB, or infer from model name."""
     model_id = provider.default_model or ""
+    # v5.22.50: tolerate duplicate (provider_id, model_id) capability rows.
+    # There is no UNIQUE constraint on that pair; a manual row plus a later
+    # inferred/scanner row can coexist. scalar_one_or_none() would raise
+    # MultipleResultsFound and crash routing for every decision listing this
+    # provider. Prefer a 'manual' row, else newest, and never crash on a dup.
     result = await db.execute(
-        select(ModelCapability).where(
+        select(ModelCapability)
+        .where(
             ModelCapability.provider_id == provider.id,
             ModelCapability.model_id == model_id,
         )
+        .order_by(ModelCapability.source.desc(), ModelCapability.id.desc())
     )
-    cap = result.scalar_one_or_none()
+    cap = result.scalars().first()
     if cap:
         profile = CapabilityProfile(
             provider_id=provider.id,

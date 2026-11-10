@@ -1,0 +1,642 @@
+{
+  "recorded_utc": "2026-11-10T04:37:14.327212+00:00",
+  "candidate_image": "sha256:13771511ed12cf18e122978ccbe48af43010dbf91aa81294dc8eb0d08d00acc3",
+  "candidate_tag": "tmr-security/llm-gateway:5.22.54-20261110-v2",
+  "deployed": false,
+  "production_version": "5.22.53",
+  "candidate_version": "5.22.54",
+  "source_reconciliation_commit": "00bd59309b9777988eca035cff034f9db9e07128",
+  "unit_tests": {
+    "passed": 4101,
+    "skipped": 2,
+    "warnings": 169
+  },
+  "hermetic_unit_tests": {
+    "passed": 4101,
+    "skipped": 2,
+    "non_loopback_network_allowed": false
+  },
+  "checks": {
+    "secret-scan": {
+      "exit": 0,
+      "passed": true,
+      "sha256": "c5280aa0d50ecb602909971f36f17cb262c427edeabea661506ab83e2b1b3ecb"
+    },
+    "diff-check": {
+      "exit": 0,
+      "passed": true,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "candidate-build": {
+      "exit": 0,
+      "passed": true,
+      "sha256": "fd6c432df2bcad97da314045563b95d67dd5903f0e57b09d4b6200ec91046653"
+    },
+    "pip-check": {
+      "exit": 0,
+      "passed": true,
+      "sha256": "9261363b733079a641c2e4cc9bc46ffa1d8336945a87f807b6cf68847dbc9b09"
+    },
+    "exact-runtime-import-auth": {
+      "exit": 0,
+      "passed": true,
+      "sha256": "87b8f5a868916d27ab264e2b04fba91fab7e5ef8198afd0c2b94e62b39b60f22"
+    },
+    "test-tools-build": {
+      "exit": 0,
+      "passed": true,
+      "sha256": "592dfd5bb24e1e4cee2535895766ac82f1b4f408f2e5ee2a311a23d71598ade6"
+    },
+    "make-lint": {
+      "exit": 2,
+      "passed": false,
+      "sha256": "72cd0d08dda39f524b4ea56696b39f120ba1ff55998563cc92db6640f7361f1c"
+    },
+    "make-test": {
+      "exit": 0,
+      "passed": true,
+      "sha256": "0c2d425db20c7300570318600ea7fa29fccbcc4e3d4b62fc38acdf87afed88d8"
+    },
+    "hermetic-unit": {
+      "exit": 0,
+      "passed": true,
+      "sha256": "bf6859bed2e2a1cb6473c4dd766574592b5fcbb9ab474cff9c8637b9918043f0"
+    },
+    "candidate-scan": {
+      "exit": 0,
+      "passed": true,
+      "sha256": "4fd3f685beabcca062efb9a8445fad85f1783ed7c46c1167212588d469779c62"
+    }
+  },
+  "lint": {
+    "baseline_ref": "00bd59309b9777988eca035cff034f9db9e07128",
+    "baseline_count": 3256,
+    "candidate_count": 3252,
+    "introduced": [],
+    "resolved_count": 4
+  },
+  "source_equality": {
+    "checked_utc": "2026-11-10T04:36:16.546612+00:00",
+    "base_image": "sha256:21a85131e8b68dbdcd13c5bc0d7a5ec56fd971565ed3d481eadb1b75e33cd900",
+    "candidate_image": "sha256:13771511ed12cf18e122978ccbe48af43010dbf91aa81294dc8eb0d08d00acc3",
+    "base_files": 307,
+    "candidate_files": 307,
+    "candidate_changed_files": [
+      "app/__version__.py"
+    ],
+    "peer_differs_from_primary": [],
+    "production_modified": false,
+    "image_config_changed_fields": []
+  },
+  "resolved_runtime_packages": {
+    "pip": "26.3",
+    "soupsieve": "3.0.4",
+    "distro": "1.9.0",
+    "magika": "1.0.3",
+    "hf-xet": "1.7.1",
+    "httpcore2": "2.16.0",
+    "jsonpath-ng": "1.14.0",
+    "python-dotenv": "1.2.4",
+    "uvicorn": "0.54.0",
+    "python-ulid": "4.1.0",
+    "PyYAML": "6.0.3",
+    "pydantic": "2.14.1",
+    "jsonschema": "4.26.0",
+    "httpcore": "1.0.9",
+    "bcrypt": "5.0.0",
+    "zipp": "4.1.2",
+    "httpx": "0.28.1",
+    "annotated-doc": "0.0.5",
+    "typing-inspection": "0.4.4",
+    "pydantic_core": "2.50.1",
+    "tqdm": "4.70.1",
+    "certifi": "2026.10.23",
+    "opentelemetry-exporter-otlp-proto-common": "1.45.1",
+    "opentelemetry-proto": "1.45.1",
+    "truststore": "0.10.5",
+    "hiredis": "3.5.0",
+    "httptools": "0.9.0",
+    "http_sfv": "0.9.9",
+    "uvloop": "0.23.0",
+    "sse-starlette": "3.6.0",
+    "numpy": "2.5.4",
+    "cryptography": "50.0.2",
+    "click": "8.5.0",
+    "watchfiles": "1.3.0",
+    "annotated-types": "0.8.0",
+    "alembic": "1.20.1",
+    "opentelemetry-sdk": "1.45.1",
+    "prometheus_client": "0.26.0",
+    "redisvl": "0.28.0",
+    "ml_dtypes": "0.6.0",
+    "websockets": "17.3",
+    "propcache": "0.5.4",
+    "six": "1.17.0",
+    "flatbuffers": "25.12.19",
+    "fastuuid": "0.14.0",
+    "fastapi": "0.162.0",
+    "cffi": "2.1.1",
+    "h11": "0.16.0",
+    "greenlet": "3.5.6",
+    "packaging": "26.3",
+    "rsa": "4.9.1",
+    "httpx2": "2.16.0",
+    "mcp": "1.30.0",
+    "litellm": "1.86.7",
+    "opentelemetry-exporter-http-transport": "0.66b1",
+    "Mako": "1.4.3",
+    "yarl": "1.25.1",
+    "frozenlist": "1.8.0",
+    "pycparser": "3.12",
+    "redis": "8.1.0",
+    "starlette": "1.10.0",
+    "anyio": "4.15.1",
+    "filelock": "4.2.4",
+    "jiter": "0.18.0",
+    "regex": "2026.9.29",
+    "idna": "3.20",
+    "SQLAlchemy": "2.1.6",
+    "protobuf": "7.36.2",
+    "sniffio": "1.3.1",
+    "defusedxml": "0.7.1",
+    "openai": "2.54.0",
+    "urllib3": "2.8.0",
+    "openpyxl": "3.1.5",
+    "importlib_metadata": "8.9.0",
+    "asyncpg": "0.32.0",
+    "opentelemetry-exporter-otlp-common": "0.66b1",
+    "opentelemetry-api": "1.45.1",
+    "markdownify": "1.2.3",
+    "attrs": "26.1.0",
+    "rpds-py": "2026.9.1",
+    "tenacity": "9.2.1",
+    "python-multipart": "0.0.32",
+    "requests": "2.34.2",
+    "tokenizers": "0.23.3",
+    "opentelemetry-exporter-otlp-proto-http": "1.45.1",
+    "charset-normalizer": "3.5.2",
+    "Jinja2": "3.1.6",
+    "typing_extensions": "4.16.0",
+    "et_xmlfile": "2.0.0",
+    "structlog": "26.1.0",
+    "markitdown": "0.1.9",
+    "opentelemetry-semantic-conventions": "0.66b1",
+    "pydantic-settings": "2.16.2",
+    "fsspec": "2026.9.0",
+    "aiohttp": "3.14.5",
+    "pyasn1": "0.6.5",
+    "aiohappyeyeballs": "2.7.1",
+    "jsonschema-specifications": "2025.9.1",
+    "tiktoken": "0.14.0",
+    "referencing": "0.37.0",
+    "huggingface_hub": "2.3.0",
+    "aiosignal": "1.4.0",
+    "beautifulsoup4": "4.15.0",
+    "googleapis-common-protos": "1.76.0",
+    "PyJWT": "2.15.1",
+    "MarkupSafe": "3.0.4",
+    "aiosqlite": "0.22.1",
+    "multidict": "7.2.1",
+    "onnxruntime": "1.31.1",
+    "httpx-sse": "0.4.3"
+  },
+  "scan": {
+    "created_at": "2026-11-09T23:36:16.200439599-05:00",
+    "sha256": "6f2787ff781a719d26738854c1589cca12ade6d6261943af3e967bda0ff77679",
+    "critical": 0,
+    "high": 49,
+    "findings": [
+      {
+        "VulnerabilityID": "CVE-2026-76642",
+        "PkgName": "bsdutils",
+        "InstalledVersion": "1:2.41.5-0+deb13u1",
+        "FixedVersion": null,
+        "Severity": "HIGH",
+        "target": "sha256:13771511ed12cf18e122978ccbe48af43010dbf91aa81294dc8eb0d08d00acc3 (debian 13.7)"
+      },
+      {
+        "VulnerabilityID": "CVE-2026-78408",
+        "PkgName": "bsdutils",
+        "InstalledVersion": "1:2.41.5-0+deb13u1",
+        "FixedVersion": null,
+        "Severity": "HIGH",
+        "target": "sha256:13771511ed12cf18e122978ccbe48af43010dbf91aa81294dc8eb0d08d00acc3 (debian 13.7)"
+      },
+      {
+        "VulnerabilityID": "CVE-2026-78409",
+        "PkgName": "bsdutils",
+        "InstalledVersion": "1:2.41.5-0+deb13u1",
+        "FixedVersion": null,
+        "Severity": "HIGH",
+        "target": "sha256:13771511ed12cf18e122978ccbe48af43010dbf91aa81294dc8eb0d08d00acc3 (debian 13.7)"
+      },
+      {
+        "VulnerabilityID": "CVE-2026-78410",
+        "PkgName": "bsdutils",
+        "InstalledVersion": "1:2.41.5-0+deb13u1",
+        "FixedVersion": null,
+        "Severity": "HIGH",
+        "target": "sha256:13771511ed12cf18e122978ccbe48af43010dbf91aa81294dc8eb0d08d00acc3 (debian 13.7)"
+      },
+      {
+        "VulnerabilityID": "CVE-2026-54369",
+        "PkgName": "libacl1",
+        "InstalledVersion": "2.3.2-2+b1",
+        "FixedVersion": null,
+        "Severity": "HIGH",
+        "target": "sha256:13771511ed12cf18e122978ccbe48af43010dbf91aa81294dc8eb0d08d00acc3 (debian 13.7)"
+      },
+      {
+        "VulnerabilityID": "CVE-2026-76642",
+        "PkgName": "libblkid1",
+        "InstalledVersion": "2.41.5-0+deb13u1",
+        "FixedVersion": null,
+        "Severity": "HIGH",
+        "target": "sha256:13771511ed12cf18e122978ccbe48af43010dbf91aa81294dc8eb0d08d00acc3 (debian 13.7)"
+      },
+      {
+        "VulnerabilityID": "CVE-2026-78408",
+        "PkgName": "libblkid1",
+        "InstalledVersion": "2.41.5-0+deb13u1",
+        "FixedVersion": null,
+        "Severity": "HIGH",
+        "target": "sha256:13771511ed12cf18e122978ccbe48af43010dbf91aa81294dc8eb0d08d00acc3 (debian 13.7)"
+      },
+      {
+        "VulnerabilityID": "CVE-2026-78409",
+        "PkgName": "libblkid1",
+        "InstalledVersion": "2.41.5-0+deb13u1",
+        "FixedVersion": null,
+        "Severity": "HIGH",
+        "target": "sha256:13771511ed12cf18e122978ccbe48af43010dbf91aa81294dc8eb0d08d00acc3 (debian 13.7)"
+      },
+      {
+        "VulnerabilityID": "CVE-2026-78410",
+        "PkgName": "libblkid1",
+        "InstalledVersion": "2.41.5-0+deb13u1",
+        "FixedVersion": null,
+        "Severity": "HIGH",
+        "target": "sha256:13771511ed12cf18e122978ccbe48af43010dbf91aa81294dc8eb0d08d00acc3 (debian 13.7)"
+      },
+      {
+        "VulnerabilityID": "CVE-2026-76642",
+        "PkgName": "liblastlog2-2",
+        "InstalledVersion": "2.41.5-0+deb13u1",
+        "FixedVersion": null,
+        "Severity": "HIGH",
+        "target": "sha256:13771511ed12cf18e122978ccbe48af43010dbf91aa81294dc8eb0d08d00acc3 (debian 13.7)"
+      },
+      {
+        "VulnerabilityID": "CVE-2026-78408",
+        "PkgName": "liblastlog2-2",
+        "InstalledVersion": "2.41.5-0+deb13u1",
+        "FixedVersion": null,
+        "Severity": "HIGH",
+        "target": "sha256:13771511ed12cf18e122978ccbe48af43010dbf91aa81294dc8eb0d08d00acc3 (debian 13.7)"
+      },
+      {
+        "VulnerabilityID": "CVE-2026-78409",
+        "PkgName": "liblastlog2-2",
+        "InstalledVersion": "2.41.5-0+deb13u1",
+        "FixedVersion": null,
+        "Severity": "HIGH",
+        "target": "sha256:13771511ed12cf18e122978ccbe48af43010dbf91aa81294dc8eb0d08d00acc3 (debian 13.7)"
+      },
+      {
+        "VulnerabilityID": "CVE-2026-78410",
+        "PkgName": "liblastlog2-2",
+        "InstalledVersion": "2.41.5-0+deb13u1",
+        "FixedVersion": null,
+        "Severity": "HIGH",
+        "target": "sha256:13771511ed12cf18e122978ccbe48af43010dbf91aa81294dc8eb0d08d00acc3 (debian 13.7)"
+      },
+      {
+        "VulnerabilityID": "CVE-2026-76642",
+        "PkgName": "libmount1",
+        "InstalledVersion": "2.41.5-0+deb13u1",
+        "FixedVersion": null,
+        "Severity": "HIGH",
+        "target": "sha256:13771511ed12cf18e122978ccbe48af43010dbf91aa81294dc8eb0d08d00acc3 (debian 13.7)"
+      },
+      {
+        "VulnerabilityID": "CVE-2026-78408",
+        "PkgName": "libmount1",
+        "InstalledVersion": "2.41.5-0+deb13u1",
+        "FixedVersion": null,
+        "Severity": "HIGH",
+        "target": "sha256:13771511ed12cf18e122978ccbe48af43010dbf91aa81294dc8eb0d08d00acc3 (debian 13.7)"
+      },
+      {
+        "VulnerabilityID": "CVE-2026-78409",
+        "PkgName": "libmount1",
+        "InstalledVersion": "2.41.5-0+deb13u1",
+        "FixedVersion": null,
+        "Severity": "HIGH",
+        "target": "sha256:13771511ed12cf18e122978ccbe48af43010dbf91aa81294dc8eb0d08d00acc3 (debian 13.7)"
+      },
+      {
+        "VulnerabilityID": "CVE-2026-78410",
+        "PkgName": "libmount1",
+        "InstalledVersion": "2.41.5-0+deb13u1",
+        "FixedVersion": null,
+        "Severity": "HIGH",
+        "target": "sha256:13771511ed12cf18e122978ccbe48af43010dbf91aa81294dc8eb0d08d00acc3 (debian 13.7)"
+      },
+      {
+        "VulnerabilityID": "CVE-2025-69720",
+        "PkgName": "libncursesw6",
+        "InstalledVersion": "6.5+20250216-2",
+        "FixedVersion": null,
+        "Severity": "HIGH",
+        "target": "sha256:13771511ed12cf18e122978ccbe48af43010dbf91aa81294dc8eb0d08d00acc3 (debian 13.7)"
+      },
+      {
+        "VulnerabilityID": "CVE-2026-76642",
+        "PkgName": "libsmartcols1",
+        "InstalledVersion": "2.41.5-0+deb13u1",
+        "FixedVersion": null,
+        "Severity": "HIGH",
+        "target": "sha256:13771511ed12cf18e122978ccbe48af43010dbf91aa81294dc8eb0d08d00acc3 (debian 13.7)"
+      },
+      {
+        "VulnerabilityID": "CVE-2026-78408",
+        "PkgName": "libsmartcols1",
+        "InstalledVersion": "2.41.5-0+deb13u1",
+        "FixedVersion": null,
+        "Severity": "HIGH",
+        "target": "sha256:13771511ed12cf18e122978ccbe48af43010dbf91aa81294dc8eb0d08d00acc3 (debian 13.7)"
+      },
+      {
+        "VulnerabilityID": "CVE-2026-78409",
+        "PkgName": "libsmartcols1",
+        "InstalledVersion": "2.41.5-0+deb13u1",
+        "FixedVersion": null,
+        "Severity": "HIGH",
+        "target": "sha256:13771511ed12cf18e122978ccbe48af43010dbf91aa81294dc8eb0d08d00acc3 (debian 13.7)"
+      },
+      {
+        "VulnerabilityID": "CVE-2026-78410",
+        "PkgName": "libsmartcols1",
+        "InstalledVersion": "2.41.5-0+deb13u1",
+        "FixedVersion": null,
+        "Severity": "HIGH",
+        "target": "sha256:13771511ed12cf18e122978ccbe48af43010dbf91aa81294dc8eb0d08d00acc3 (debian 13.7)"
+      },
+      {
+        "VulnerabilityID": "CVE-2026-119373",
+        "PkgName": "libsqlite3-0",
+        "InstalledVersion": "3.46.1-7+deb13u2",
+        "FixedVersion": null,
+        "Severity": "HIGH",
+        "target": "sha256:13771511ed12cf18e122978ccbe48af43010dbf91aa81294dc8eb0d08d00acc3 (debian 13.7)"
+      },
+      {
+        "VulnerabilityID": "CVE-2026-119374",
+        "PkgName": "libsqlite3-0",
+        "InstalledVersion": "3.46.1-7+deb13u2",
+        "FixedVersion": null,
+        "Severity": "HIGH",
+        "target": "sha256:13771511ed12cf18e122978ccbe48af43010dbf91aa81294dc8eb0d08d00acc3 (debian 13.7)"
+      },
+      {
+        "VulnerabilityID": "CVE-2026-119379",
+        "PkgName": "libsqlite3-0",
+        "InstalledVersion": "3.46.1-7+deb13u2",
+        "FixedVersion": null,
+        "Severity": "HIGH",
+        "target": "sha256:13771511ed12cf18e122978ccbe48af43010dbf91aa81294dc8eb0d08d00acc3 (debian 13.7)"
+      },
+      {
+        "VulnerabilityID": "CVE-2026-16742",
+        "PkgName": "libsystemd0",
+        "InstalledVersion": "257.13-1~deb13u1",
+        "FixedVersion": null,
+        "Severity": "HIGH",
+        "target": "sha256:13771511ed12cf18e122978ccbe48af43010dbf91aa81294dc8eb0d08d00acc3 (debian 13.7)"
+      },
+      {
+        "VulnerabilityID": "CVE-2025-69720",
+        "PkgName": "libtinfo6",
+        "InstalledVersion": "6.5+20250216-2",
+        "FixedVersion": null,
+        "Severity": "HIGH",
+        "target": "sha256:13771511ed12cf18e122978ccbe48af43010dbf91aa81294dc8eb0d08d00acc3 (debian 13.7)"
+      },
+      {
+        "VulnerabilityID": "CVE-2026-16742",
+        "PkgName": "libudev1",
+        "InstalledVersion": "257.13-1~deb13u1",
+        "FixedVersion": null,
+        "Severity": "HIGH",
+        "target": "sha256:13771511ed12cf18e122978ccbe48af43010dbf91aa81294dc8eb0d08d00acc3 (debian 13.7)"
+      },
+      {
+        "VulnerabilityID": "CVE-2026-76642",
+        "PkgName": "libuuid1",
+        "InstalledVersion": "2.41.5-0+deb13u1",
+        "FixedVersion": null,
+        "Severity": "HIGH",
+        "target": "sha256:13771511ed12cf18e122978ccbe48af43010dbf91aa81294dc8eb0d08d00acc3 (debian 13.7)"
+      },
+      {
+        "VulnerabilityID": "CVE-2026-78408",
+        "PkgName": "libuuid1",
+        "InstalledVersion": "2.41.5-0+deb13u1",
+        "FixedVersion": null,
+        "Severity": "HIGH",
+        "target": "sha256:13771511ed12cf18e122978ccbe48af43010dbf91aa81294dc8eb0d08d00acc3 (debian 13.7)"
+      },
+      {
+        "VulnerabilityID": "CVE-2026-78409",
+        "PkgName": "libuuid1",
+        "InstalledVersion": "2.41.5-0+deb13u1",
+        "FixedVersion": null,
+        "Severity": "HIGH",
+        "target": "sha256:13771511ed12cf18e122978ccbe48af43010dbf91aa81294dc8eb0d08d00acc3 (debian 13.7)"
+      },
+      {
+        "VulnerabilityID": "CVE-2026-78410",
+        "PkgName": "libuuid1",
+        "InstalledVersion": "2.41.5-0+deb13u1",
+        "FixedVersion": null,
+        "Severity": "HIGH",
+        "target": "sha256:13771511ed12cf18e122978ccbe48af43010dbf91aa81294dc8eb0d08d00acc3 (debian 13.7)"
+      },
+      {
+        "VulnerabilityID": "CVE-2026-76642",
+        "PkgName": "login",
+        "InstalledVersion": "1:4.16.0-2+really2.41.5-0+deb13u1",
+        "FixedVersion": null,
+        "Severity": "HIGH",
+        "target": "sha256:13771511ed12cf18e122978ccbe48af43010dbf91aa81294dc8eb0d08d00acc3 (debian 13.7)"
+      },
+      {
+        "VulnerabilityID": "CVE-2026-78408",
+        "PkgName": "login",
+        "InstalledVersion": "1:4.16.0-2+really2.41.5-0+deb13u1",
+        "FixedVersion": null,
+        "Severity": "HIGH",
+        "target": "sha256:13771511ed12cf18e122978ccbe48af43010dbf91aa81294dc8eb0d08d00acc3 (debian 13.7)"
+      },
+      {
+        "VulnerabilityID": "CVE-2026-78409",
+        "PkgName": "login",
+        "InstalledVersion": "1:4.16.0-2+really2.41.5-0+deb13u1",
+        "FixedVersion": null,
+        "Severity": "HIGH",
+        "target": "sha256:13771511ed12cf18e122978ccbe48af43010dbf91aa81294dc8eb0d08d00acc3 (debian 13.7)"
+      },
+      {
+        "VulnerabilityID": "CVE-2026-78410",
+        "PkgName": "login",
+        "InstalledVersion": "1:4.16.0-2+really2.41.5-0+deb13u1",
+        "FixedVersion": null,
+        "Severity": "HIGH",
+        "target": "sha256:13771511ed12cf18e122978ccbe48af43010dbf91aa81294dc8eb0d08d00acc3 (debian 13.7)"
+      },
+      {
+        "VulnerabilityID": "CVE-2026-76642",
+        "PkgName": "mount",
+        "InstalledVersion": "2.41.5-0+deb13u1",
+        "FixedVersion": null,
+        "Severity": "HIGH",
+        "target": "sha256:13771511ed12cf18e122978ccbe48af43010dbf91aa81294dc8eb0d08d00acc3 (debian 13.7)"
+      },
+      {
+        "VulnerabilityID": "CVE-2026-78408",
+        "PkgName": "mount",
+        "InstalledVersion": "2.41.5-0+deb13u1",
+        "FixedVersion": null,
+        "Severity": "HIGH",
+        "target": "sha256:13771511ed12cf18e122978ccbe48af43010dbf91aa81294dc8eb0d08d00acc3 (debian 13.7)"
+      },
+      {
+        "VulnerabilityID": "CVE-2026-78409",
+        "PkgName": "mount",
+        "InstalledVersion": "2.41.5-0+deb13u1",
+        "FixedVersion": null,
+        "Severity": "HIGH",
+        "target": "sha256:13771511ed12cf18e122978ccbe48af43010dbf91aa81294dc8eb0d08d00acc3 (debian 13.7)"
+      },
+      {
+        "VulnerabilityID": "CVE-2026-78410",
+        "PkgName": "mount",
+        "InstalledVersion": "2.41.5-0+deb13u1",
+        "FixedVersion": null,
+        "Severity": "HIGH",
+        "target": "sha256:13771511ed12cf18e122978ccbe48af43010dbf91aa81294dc8eb0d08d00acc3 (debian 13.7)"
+      },
+      {
+        "VulnerabilityID": "CVE-2025-69720",
+        "PkgName": "ncurses-base",
+        "InstalledVersion": "6.5+20250216-2",
+        "FixedVersion": null,
+        "Severity": "HIGH",
+        "target": "sha256:13771511ed12cf18e122978ccbe48af43010dbf91aa81294dc8eb0d08d00acc3 (debian 13.7)"
+      },
+      {
+        "VulnerabilityID": "CVE-2025-69720",
+        "PkgName": "ncurses-bin",
+        "InstalledVersion": "6.5+20250216-2",
+        "FixedVersion": null,
+        "Severity": "HIGH",
+        "target": "sha256:13771511ed12cf18e122978ccbe48af43010dbf91aa81294dc8eb0d08d00acc3 (debian 13.7)"
+      },
+      {
+        "VulnerabilityID": "CVE-2026-9538",
+        "PkgName": "perl-base",
+        "InstalledVersion": "5.40.1-6+deb13u1",
+        "FixedVersion": null,
+        "Severity": "HIGH",
+        "target": "sha256:13771511ed12cf18e122978ccbe48af43010dbf91aa81294dc8eb0d08d00acc3 (debian 13.7)"
+      },
+      {
+        "VulnerabilityID": "CVE-2026-76642",
+        "PkgName": "util-linux",
+        "InstalledVersion": "2.41.5-0+deb13u1",
+        "FixedVersion": null,
+        "Severity": "HIGH",
+        "target": "sha256:13771511ed12cf18e122978ccbe48af43010dbf91aa81294dc8eb0d08d00acc3 (debian 13.7)"
+      },
+      {
+        "VulnerabilityID": "CVE-2026-78408",
+        "PkgName": "util-linux",
+        "InstalledVersion": "2.41.5-0+deb13u1",
+        "FixedVersion": null,
+        "Severity": "HIGH",
+        "target": "sha256:13771511ed12cf18e122978ccbe48af43010dbf91aa81294dc8eb0d08d00acc3 (debian 13.7)"
+      },
+      {
+        "VulnerabilityID": "CVE-2026-78409",
+        "PkgName": "util-linux",
+        "InstalledVersion": "2.41.5-0+deb13u1",
+        "FixedVersion": null,
+        "Severity": "HIGH",
+        "target": "sha256:13771511ed12cf18e122978ccbe48af43010dbf91aa81294dc8eb0d08d00acc3 (debian 13.7)"
+      },
+      {
+        "VulnerabilityID": "CVE-2026-78410",
+        "PkgName": "util-linux",
+        "InstalledVersion": "2.41.5-0+deb13u1",
+        "FixedVersion": null,
+        "Severity": "HIGH",
+        "target": "sha256:13771511ed12cf18e122978ccbe48af43010dbf91aa81294dc8eb0d08d00acc3 (debian 13.7)"
+      },
+      {
+        "VulnerabilityID": "GHSA-g5ff-637f-6q2m",
+        "PkgName": "litellm",
+        "InstalledVersion": "1.86.7",
+        "FixedVersion": "1.95.0",
+        "Severity": "HIGH",
+        "target": "Python"
+      },
+      {
+        "VulnerabilityID": "CVE-2025-47273",
+        "PkgName": "setuptools",
+        "InstalledVersion": "70.3.0",
+        "FixedVersion": "78.1.1",
+        "Severity": "HIGH",
+        "target": "Python"
+      }
+    ]
+  },
+  "remaining_gates": [
+    "Global make lint fails; no gateway-specific exception approved.",
+    "Required final-head GitHub checks and review must pass.",
+    "Per-node consistent recovery and original-image rollback rehearsal.",
+    "Scoped deployment configuration, peer-first rollout and post-deployment verification."
+  ],
+  "history_secret_scan": [
+    {
+      "commit": "881695d94cf4036dfbcfe1fa2adba860b6468954",
+      "changed_files": 13,
+      "secret_findings": []
+    },
+    {
+      "commit": "a06e3096b3f26df25dfcc2e85c9b1f35f1763178",
+      "changed_files": 19,
+      "secret_findings": []
+    },
+    {
+      "commit": "a658488283256a09011fbf303e8fb84d1162cec8",
+      "changed_files": 1,
+      "secret_findings": []
+    },
+    {
+      "commit": "beb730632f5bfd95bf75893f6354ce072cd85dca",
+      "changed_files": 1,
+      "secret_findings": []
+    },
+    {
+      "commit": "cceb33213d1aa7d847a65c11178a30f8441f975d",
+      "changed_files": 1,
+      "secret_findings": []
+    },
+    {
+      "commit": "aeb2a83ec057f6fc2883560d99722eb0904651d5",
+      "changed_files": 21,
+      "secret_findings": []
+    }
+  ],
+  "recipe_sha256": "f54137a074b078efbaa61e927adaaeb197d7cf2f46f241011a0770e83a24eb8b"
+}

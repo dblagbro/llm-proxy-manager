@@ -95,7 +95,10 @@ async def _try_catalog_apikey(
     from app.models.db import ApiKey
     key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
     rs = await db.execute(
-        select(ApiKey).where(ApiKey.key_hash == key_hash).where(ApiKey.enabled == True)
+        select(ApiKey)
+        .where(ApiKey.key_hash == key_hash)
+        .where(ApiKey.enabled == True)  # noqa: E712
+        .where(ApiKey.deleted_at.is_(None))  # defence-in-depth vs a sync-resurrected row
     )
     key = rs.scalar_one_or_none()
     if key is None:
