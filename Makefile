@@ -110,11 +110,30 @@ lint-whisper:
 
 # Grok sidecar: these targets do not build or deploy the gateway.
 GROK_IMAGE ?= llm-proxy2-grok-bridge:latest
+GROK_PYTHON ?= python
 .PHONY: build-grok test-grok lint-grok
 build-grok:
 	sudo docker build -t $(GROK_IMAGE) grok_bridge
 test-grok:
-	python -m pytest grok_bridge/test_*.py -q
+	$(GROK_PYTHON) -m pytest grok_bridge/test_*.py -q
 lint-grok:
 	ruff check grok_bridge/bridge_security.py grok_bridge/test_*.py
 	ruff format --check grok_bridge/bridge_security.py grok_bridge/test_*.py
+
+# Isolated synthetic HTTPS/noVNC acceptance, using the reviewed exact images.
+# Requires an empty, explicitly chosen local test directory and the storage guard.
+GROK_TEST_DIR ?=
+GROK_CAPACITY_GUARD ?=
+.PHONY: lint-grok-browser test-grok-browser
+lint-grok-browser:
+	ruff check grok_bridge/testing/browser/*.py
+	ruff format --check grok_bridge/testing/browser/*.py
+
+test-grok-browser:
+	test -n "$(GROK_TEST_DIR)" && test -n "$(GROK_CAPACITY_GUARD)"
+	test ! -e "$(GROK_TEST_DIR)"
+	sudo test -f "$(GROK_CAPACITY_GUARD)"
+	mkdir -m 700 "$(GROK_TEST_DIR)"
+	cp grok_bridge/testing/browser/*.py grok_bridge/testing/browser/nginx.conf "$(GROK_TEST_DIR)/"
+	cp grok_bridge/deployment/nginx.grok-bridge.conf "$(GROK_TEST_DIR)/grok-bridge.conf"
+	sudo python3 "$(GROK_CAPACITY_GUARD)" --peak-gib 3 -- python3 "$(GROK_TEST_DIR)/run_browser_rehearsal.py"

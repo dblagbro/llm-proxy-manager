@@ -573,3 +573,14 @@ independent version exception on 2026-11-09 at 16:16:04 UTC. The 3,244
 inherited gateway lint findings remain explicit debt; all final-head CI and
 scoped checks must pass before release. Gateway 5.22.53 remains unchanged.
 See [candidate evidence, limits and recovery](whisper-4.3.1-security.md).
+
+
+### Grok proxy and recovery preparation — 2026-11-10
+
+PR13 now retains the tested HTTPS/Nginx/real-browser fixtures and a scoped image/
+environment overlay. The exact candidate passed noVNC rendering/input, actual
+gateway cookie delivery, nonadmin denial and logout socket revocation. The full
+production Nginx configuration validates without reload. A consistent original
+profile snapshot, independent restore/rollback boot and verified private NAS copy
+exist; refresh at cutover. Production still uses the original Grok image.
+See `docs/grok-bridge-security.md` for evidence and remaining release/rollout gates.

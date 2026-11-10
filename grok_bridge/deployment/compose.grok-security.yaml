@@ -1,0 +1,10 @@
+# Layer over the canonical Compose file after exact-image acceptance.
+# Existing token, data volume, limits and networks come from the base file.
+# Rollout must use a separate restored candidate volume; retain the original.
+services:
+  llm-proxy2-grok-bridge:
+    image: ${GROK_BRIDGE_IMAGE:?Set the verified candidate image reference}
+    environment:
+      BRIDGE_PUBLIC_PATH: /grok-bridge
+      BRIDGE_PUBLIC_ORIGIN: https://www.voipguru.org
+      BRIDGE_AUTH_URL: http://llm-proxy2:3000/api/auth/me

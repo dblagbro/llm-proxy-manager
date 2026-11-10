@@ -16,4 +16,4 @@ jobs:
         with:
           python-version: '3.12'
       - run: python -m pip install -r grok_bridge/requirements.txt pytest==9.2.0 ruff==0.17.4
-      - run: make test-grok lint-grok
+      - run: make test-grok lint-grok lint-grok-browser

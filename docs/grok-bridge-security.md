@@ -2,98 +2,148 @@
 
 ## Status and scope
 
-Prepared November 10, 2026; **not deployed or accepted**. Production remains
-image `sha256:be048c4e54812ef811f14520a0fed1bc71486ad7619296b11c189d482846856e`,
-with retained scan 0 Critical / 36 High. That old image has not been rescanned.
-This scoped branch follows gateway PR12; it does not authorize its rollout.
-Canonical uncommitted operational notes and production build copies are retained.
+Prepared November 10, 2026 in draft PR13, stacked on gateway PR12. **Not deployed
+or accepted for release.** Production retains the original image
+`sha256:be048c4e54812ef811f14520a0fed1bc71486ad7619296b11c189d482846856e`
+and its earlier 0 Critical / 36 High scan. Canonical concurrent notes and the
+production build checkout are preserved.
 
-The existing Nginx `/api/auth/me` subrequest accepts any gateway role. Raw VNC
-5900 and websockify6080 were reachable on the shared Docker network. Direct
-bridge routes could navigate or create conversations without authentication.
-No live conversation or model request was used to test this finding.
+The tested candidate is
+`sha256:61ed90130f77b07b6ca2141fe65be303e77dd504480a7d967621e975f1c337db`.
+Its unsuppressed scan has 0 Critical / 2 High matches, neither with a listed fix:
+CVE-2025-3887 in the two GStreamer bad-plugin packages. This is a package result,
+not proof of exploitability or complete browser vulnerability coverage. Tests
+and proxy configuration added after the build do not change its runtime context.
+The unchanged candidate and production image have not been rescanned.
 
-## Candidate behavior
+## Authorization and runtime changes
 
-Every operator HTTP request and VNC WebSocket verifies an administrator session
-with the fixed internal gateway `/api/auth/me` endpoint. Client identity headers
-are ignored. Browser mutations and sockets require the configured exact Origin.
-Missing configuration and unavailable auth services fail closed. Token-based
-gateway requests remain available without a browser Origin; wrong tokens cannot
-fall back to cookie access. Diagnostic/chat/cookie-import routes retain token
-requirements. No token is sent in UI HTML. Active WebSocket sessions are checked
-again every30seconds. `/healthz` remains a public, browser-aware health probe.
+Previously the outer Nginx session check accepted any gateway role, while raw
+VNC5900 and websockify6080 were accessible from the shared Docker network.
+Those ports were not host-published. Direct bridge routes could mutate browser
+state without authorization. No live conversation/model request tested that issue.
 
-Both VNC listeners bind loopback. FastAPI serves protected noVNC static files
-and proxies binary frames to fixed loopback websockify. Subpath redirects retain
-`/grok-bridge/`. Browser profile storage and inference behavior are unchanged.
+The bridge now verifies administrator sessions with a fixed internal gateway
+`/api/auth/me` URL. Identity headers are ignored. Browser mutations and sockets
+require the configured exact Origin; auth failures fail closed. Machine calls
+still require a constant-time service-token check, without requiring an operator
+cookie or Origin. Diagnostic/chat/cookie-import routes remain token-only. Tokens
+are absent from HTML. An active socket rechecks its session every30seconds.
+`/healthz` remains a browser-aware health probe.
 
-Playwright1.64.1 and its matching Noble base are pinned together by registry
-digest. PyPI1.65.0 existed when checked, but its matching MCR image returned404;
-do not mix browser/package versions. Supported Ubuntu updates and pinned
-FastAPI, Starlette, multipart, uvicorn, httpx and websockets are included.
+Raw VNC and websockify bind loopback. FastAPI protects noVNC static content and
+proxies binary sockets to fixed loopback websockify. The maintained fragment
+`grok_bridge/deployment/nginx.grok-bridge.conf` routes browser HTTP and sockets
+through that authorization layer. Its exact chat route supports token callers.
+Docker DNS is deferred so a stopped sidecar cannot prevent Nginx reload.
 
-## Reproducible checks
+Playwright1.64.1 and its matching Noble base are digest-pinned together. Supported
+Ubuntu and Python updates are installed in an isolated venv. Dependencies are
+locked and checked during the build. Unused global tooling, virtualenv caches
+and runtime pip are removed; scanner package metadata is retained.
 
-Install grok_bridge/requirements.txt plus pytest/ruff in an isolated Python3.12
-environment. Run `make test-grok`, `make lint-grok`, and guarded `make build-grok
-GROK_IMAGE=tmr-security/grok-bridge:1.2.0-candidate-20261110`. The build target
-does not build the gateway. The current59offline tests passed: token rejection,
-explicit admin role, expired/invalid/unavailable sessions, forged headers,
-origin enforcement, route side effects, protected static files, subpaths,
-synthetic binary WebSocket roundtrip and browser-aware health/version checks.
-The httpx TestClient compatibility deprecation remains visible.
+## Reproducible checks and evidence
 
-Exact-image scan, real local VNC handshake, synthetic profile migration/restart
-and original-image rollback boot are still pending. No live credentials are
-allowed in test output, source or GitHub. Real Grok account acceptance remains
-separate from offline browser/profile tests.
+Use an isolated Python3.12 environment with `grok_bridge/requirements.txt`,
+pytest9.2.0 and ruff0.17.4. Run `make test-grok lint-grok lint-grok-browser`.
+The59 offline tests cover token/admin/origin enforcement, side effects,
+subpaths, static files, binary sockets, session revocation and health/version.
+The existing httpx TestClient compatibility warning remains visible.
 
-## Deployment prerequisites and rollback
+Build only this sidecar with guarded `make build-grok GROK_IMAGE=<candidate>`.
+The exact image passed synthetic Chromium127 profile migration to156.0.8078.4,
+cookie/localStorage preservation, startup/shutdown/restart, real RFB handshake,
+raw-port isolation and independent original-image/profile rollback boot.
 
-Use the capacity guard with conservative growth and at least64GiB reserve.
-Production data is approximately1.3GiB. Stop only this bridge for a consistent
-full profile backup, verify the copy/hash, and preserve its original image/profile
-pair. Candidate tests use a synthetic profile and copies, never the live volume.
-Do not run an older Chromium on a profile modified by the new browser.
+The isolated browser harness is retained in `grok_bridge/testing/browser/`.
+Review its three exact image IDs before running. On a host with those images,
+use `make test-grok-browser GROK_TEST_DIR=<new-local-directory>
+GROK_CAPACITY_GUARD=<maintained-capacity_guard.py>` under the normal capacity
+policy. It publishes no ports, uses an internal network and synthetic accounts,
+and removes only its named test containers/network. It retains evidence/data for
+inspection and refuses to overwrite prior state. A failed run needs inspection
+before choosing a new directory.
 
-At cutover, update only this service's pinned image and add
-`BRIDGE_PUBLIC_ORIGIN=https://www.voipguru.org` (the configured public origin).
-Preserve BRIDGE_TOKEN, state volume, limits and all unrelated Compose settings.
-Change the existing Nginx VNC proxy destination from
-`http://$up_llm_proxy2_grok_bridge:6080/$1$is_args$args` to
-`http://$up_llm_proxy2_grok_bridge:8443/vnc/$1$is_args$args`.
-Validate Nginx before reload. Retain the existing outer session gate; the new
-bridge performs the final administrator check. Never republish5900/6080.
+The2026-11-10 final browser run passed HTTPS redirects, the actual gateway login
+router and cookie flags, nonadmin rejection, noVNC framebuffer decoding and real
+keyboard input, token-only machine forwarding, origin/token denial and logout
+revocation of an active VNC connection in28.5seconds. It uses actual baked gateway
+auth/database code, but a minimal fixture app rather than its full middleware
+and workers. All300 gateway Python source files matched production. The test
+Nginx had identical configuration and rootfs layers to production, though image
+IDs differed. This is not full production gateway or live provider acceptance.
 
-If acceptance fails, stop only the candidate, restore the original Nginx/Compose
-and original-image/profile pair, start the bridge, and verify browser health.
-Retain failed candidate data separately. Do not delete volumes or broad-prune.
+The replacement fragment also passed `nginx -t` within a private copy of the
+complete production configuration on the exact production Nginx image. No live
+Nginx configuration was changed or reloaded. Sanitized evidence accompanies this
+document; private profiles/configurations and cookies must never enter GitHub.
 
-## Gates and residual limitations
+## Recovery and deployment prerequisites
 
-The repository's global lint gate still applies. PR12's recorded one-release
-5.22.54 waiver does not cover5.22.55/Grok. No broader exception is assumed.
-Scoped tests/lint do not waive repository checks, independent recovery tests,
-Nginx tests, current-image scan review or live public/private acceptance.
-The inherited root/no-sandbox Chromium policy is not changed by this candidate;
-nonroot sandbox isolation requires a separate tested profile/ownership/seccomp
-change. Package scan findings are not a proof of reachability or full browser
-vulnerability coverage.
+A quiesced preparation snapshot retained the entire original `/data` volume and
+private configuration. Only Grok was stopped for58.93seconds, then the same
+container/image/configuration resumed healthy. Independent restoration verified
+52,817 files and1,230,360,511bytes. The original image booted, stopped cleanly and
+restarted on its independent copy with networking disabled. A root-only NAS
+copy passed an independent hash readback. This is preparation recovery material;
+production has accepted writes since and needs a fresh snapshot at cutover.
 
-References: https://playwright.dev/python/docs/docker (matching versions and
-sandbox guidance); https://websockets.readthedocs.io/en/stable/reference/asyncio/client.html
-(fixed-target asyncio proxy); https://pypi.org/project/fastapi/.
+Candidate recovery on a second private restoration is tracked separately in the
+security report. Never run old Chromium on a profile upgraded by the candidate.
+Prefer a new candidate volume restored from the fresh quiesced snapshot, retaining
+the original volume unchanged for rollback. Keep all retained generations.
 
-Latest preparation: the first build failed when pip tried to replace Ubuntu's
-managed typing_extensions. Application dependencies now use /opt/grok-venv.
-The retry image902ce803 scanned1Critical/11High; ten findings were in unused
-global pip/virtualenv tooling. That retry was never deployed. The final recipe
-removes that unused toolchain and locks resolved application dependencies.
-Review also added active WebSocket session-revocation tests, clean rejection
-of text frames, upstream-handshake error handling, and robust symlink lock
-checks. The old synthetic Chromium127 profile passed creation, independent
-rollback boot and restart; no real account was used.
+`grok_bridge/deployment/compose.grok-security.yaml` specifies only the pinned
+image and bridge origin/auth settings. It is **not a complete rollout command**:
+the deployment operator must also select the independently restored candidate
+volume, retain the existing token/limits, and assert unrelated settings unchanged.
+Stage the canonical Nginx fragment and its compiled block with compare-and-swap
+checks, validate the full configuration, and change only the Grok service.
+Never publish5900/6080, stop the full stack, or remove volumes.
+
+Use a conservative capacity estimate and at least64GiB free reserve. Prepare and
+verify the rollback operator before cutover. On failed acceptance, stop only the
+candidate, restore the original configuration and original-image/volume pair,
+restart and verify health. Preserve failed candidate state separately. Live
+provider/account acceptance and final public/private checks remain unverified.
+
+## Release gates and residual limitations
+
+Global `make lint` remains a release gate. PR12's recorded5.22.54 exception does
+not apply to5.22.55/Grok; no broader waiver is assumed. The parent's approval
+provenance, final-head full CI and PR13 retargeting/merge remain unresolved.
+Scoped checks and passing browser tests do not waive those gates or rollout tests.
+
+Gateway sessions store the role captured at login. Logout revocation is proven;
+an administrator's role demotion does not immediately revoke existing sessions.
+That pre-existing gateway behavior needs a separately tested session-policy fix.
+Chromium still runs as root with `--no-sandbox`; changing profile ownership and
+sandbox/seccomp is a separate unverified change. No real account was used in the
+browser fixture, and offline private-profile tests do not validate account health.
+
+References: <https://playwright.dev/python/docs/docker> (version matching and
+sandbox guidance), <https://websockets.readthedocs.io/en/stable/reference/asyncio/client.html>
+(fixed-target asyncio proxy), <https://pypi.org/project/fastapi/>.
 
 
-The first cache-cleanup candidate passed its real private HTTP/RFB and synthetic profile upgrade/restart rehearsal. Its unsuppressed scan still included the base virtualenv cache and runtime pip bundle. The next candidate removes those unused packaging tools and the cached copy, preserving all library SBOMs rather than suppressing scanner results. Dependency consistency is checked during the build before pip removal; exact-image boot/scan must be repeated for the changed image.
+### Current rehearsal checkpoint
+
+The initial private-profile candidate boot reached health, but its Docker stop
+client exceeded60seconds. The application logged completed shutdown, but clean container lifecycle and
+restart/cookie acceptance still require a passing continuation. Retain the failed
+attempt and prove the next lifecycle checks before accepting this candidate.
+
+Review fixed the reusable harness's mode0700 fixture mount (mount only its
+readable Python file) and cleanup ownership (remove only successfully created
+resource IDs). The first maintained-target invocation failed a root-only guard
+path check; that was corrected. Its retry timed out during Docker exec readiness.
+Readiness now tolerates daemon delays within a bounded180second deadline; the
+corrected target has not yet passed its end-to-end rerun. The earlier manual
+browser acceptance is preserved separately.
+
+A separate Coordinator Hub backup is copying its approximately9GB database on
+the peer. It is outside this remediation worker and must not be interrupted.
+Recheck its completion and disk headroom before running more Grok runtime tests;
+budget remaining backup growth as well as the64GiB free reserve. No continuation
+worker or candidate rollout is active. The snapshot operator also needs explicit
+stop-intent/state reconciliation before reuse after an ambiguous CLI timeout.
