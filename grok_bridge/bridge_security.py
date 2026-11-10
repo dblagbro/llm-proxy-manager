@@ -11,9 +11,10 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.requests import HTTPConnection, Request
 from websockets.asyncio.client import connect
-from websockets.exceptions import ConnectionClosed
+from websockets.exceptions import ConnectionClosed, InvalidHandshake
 
 BRIDGE_VERSION = "1.2.0"
+SESSION_RECHECK_SECONDS = 30
 TOKEN_ONLY_PATHS = {
     "/api/chat",
     "/api/diagnostic/capture_next_send",
@@ -119,7 +120,14 @@ def install_security(app, public_path: str, *, static_directory="/usr/share/novn
 
                 async def to_backend():
                     while True:
-                        await upstream.send(await websocket.receive_bytes())
+                        message = await websocket.receive()
+                        if message["type"] == "websocket.disconnect":
+                            return
+                        data = message.get("bytes")
+                        if not isinstance(data, bytes):
+                            await websocket.close(code=1003)
+                            return
+                        await upstream.send(data)
 
                 async def to_browser():
                     async for data in upstream:
@@ -129,7 +137,7 @@ def install_security(app, public_path: str, *, static_directory="/usr/share/novn
 
                 async def verify_session():
                     while True:
-                        await asyncio.sleep(30)
+                        await asyncio.sleep(SESSION_RECHECK_SECONDS)
                         await access.authorize(websocket)
 
                 tasks = [
@@ -147,6 +155,7 @@ def install_security(app, public_path: str, *, static_directory="/usr/share/novn
             HTTPException,
             WebSocketDisconnect,
             ConnectionClosed,
+            InvalidHandshake,
             OSError,
             TypeError,
             ValueError,

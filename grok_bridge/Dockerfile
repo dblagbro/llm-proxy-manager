@@ -2,12 +2,13 @@
 #
 # Maintains a persistent logged-in grok.com session via Playwright, exposes:
 #   - /login        → noVNC client (live Chromium UI for one-time sign-in)
-#   - /api/auth     → admin endpoint to query session status
+#   - /api/status   → authenticated endpoint to query session status
 #   - /api/chat     → llm-proxy2 calls this with a chat body; bridge does HTTP
 #                     replay against grok.com using its live cookies and
 #                     auto-refreshes the Playwright page on 401/403.
 #
-# Base image already includes Playwright + Chromium + system deps. We add:
+# Base image includes the browsers and system deps. We install the matching
+# Playwright package separately and add:
 #   - xvfb              virtual framebuffer (Chromium needs an X display)
 #   - x11vnc            VNC server that exposes the framebuffer
 #   - websockify+noVNC  HTML5 VNC client served over HTTP/WS
@@ -48,9 +49,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3-venv \
     && rm -rf /var/lib/apt/lists/* \
     && python3 -m venv /opt/grok-venv
 ENV PATH="/opt/grok-venv/bin:${PATH}"
-COPY requirements.txt /app/requirements.txt
+COPY requirements.txt requirements.lock /app/
 RUN pip install --no-cache-dir --upgrade pip==26.3 \
-    && pip install --no-cache-dir -r /app/requirements.txt && pip check
+    && pip install --no-cache-dir -r /app/requirements.txt -c /app/requirements.lock \
+    && pip check
+# The base's build-only virtualenv wheel bundle and global pip are unused by
+# both this isolated application environment and the distribution's VNC tools.
+RUN /usr/bin/python3 -m pip uninstall -y virtualenv python-discovery filelock pip
 
 COPY bridge_security.py /app/bridge_security.py
 COPY app.py /app/app.py

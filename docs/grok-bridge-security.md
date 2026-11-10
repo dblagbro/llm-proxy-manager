@@ -38,7 +38,7 @@ FastAPI, Starlette, multipart, uvicorn, httpx and websockets are included.
 Install grok_bridge/requirements.txt plus pytest/ruff in an isolated Python3.12
 environment. Run `make test-grok`, `make lint-grok`, and guarded `make build-grok
 GROK_IMAGE=tmr-security/grok-bridge:1.2.0-candidate-20261110`. The build target
-does not build the gateway. The initial56offline tests passed: token rejection,
+does not build the gateway. The current59offline tests passed: token rejection,
 explicit admin role, expired/invalid/unavailable sessions, forged headers,
 origin enforcement, route side effects, protected static files, subpaths,
 synthetic binary WebSocket roundtrip and browser-aware health/version checks.
@@ -84,3 +84,13 @@ vulnerability coverage.
 References: https://playwright.dev/python/docs/docker (matching versions and
 sandbox guidance); https://websockets.readthedocs.io/en/stable/reference/asyncio/client.html
 (fixed-target asyncio proxy); https://pypi.org/project/fastapi/.
+
+Latest preparation: the first build failed when pip tried to replace Ubuntu's
+managed typing_extensions. Application dependencies now use /opt/grok-venv.
+The retry image902ce803 scanned1Critical/11High; ten findings were in unused
+global pip/virtualenv tooling. That retry was never deployed. The final recipe
+removes that unused toolchain and locks resolved application dependencies.
+Review also added active WebSocket session-revocation tests, clean rejection
+of text frames, upstream-handshake error handling, and robust symlink lock
+checks. The old synthetic Chromium127 profile passed creation, independent
+rollback boot and restart; no real account was used.

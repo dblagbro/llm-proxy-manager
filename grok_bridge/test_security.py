@@ -301,7 +301,51 @@ def test_authenticated_websocket_binary_roundtrip(site, monkeypatch):
         assert socket.receive_bytes() == b"RFB 003.008\n"
         socket.send_bytes(b"synthetic-binary-frame")
         assert socket.receive_bytes() == b"synthetic-binary-frame"
+        socket.send_text("unsupported text")
+        with pytest.raises(WebSocketDisconnect) as err:
+            socket.receive_bytes()
+        assert err.value.code == 1003
     verifier.assert_awaited_once_with("synthetic=session")
     assert connection_calls[0][0] == "ws://127.0.0.1:6080/websockify"
     assert connection_calls[0][1]["proxy"] is None
+    assert closed == [True]
+
+
+@pytest.mark.parametrize("code", [401, 403, 503])
+def test_active_socket_session_revocation_closes_backend(site, monkeypatch, code):
+    client, _, _, verifier = site
+    verifier.side_effect = [None, HTTPException(code, "session no longer valid")]
+    monkeypatch.setattr(security, "SESSION_RECHECK_SECONDS", 0.01)
+    closed = []
+
+    class Backend:
+        async def __aenter__(self):
+            self.ready = True
+            return self
+
+        async def __aexit__(self, *args):
+            closed.append(True)
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if self.ready:
+                self.ready = False
+                return b"RFB 003.008\n"
+            await asyncio.Event().wait()
+
+        async def send(self, data):
+            pass
+
+    monkeypatch.setattr(security, "connect", lambda *args, **kwargs: Backend())
+    with client.websocket_connect(
+        "/vnc/websockify",
+        headers={"Origin": ORIGIN, "Cookie": "synthetic=session"},
+        subprotocols=["binary"],
+    ) as socket:
+        assert socket.receive_bytes() == b"RFB 003.008\n"
+        with pytest.raises(WebSocketDisconnect):
+            socket.receive_bytes()
+    assert verifier.await_count == 2
     assert closed == [True]
