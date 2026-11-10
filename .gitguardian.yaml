@@ -1,0 +1,13 @@
+# GitGuardian secret-scan config.
+# Silences a KNOWN false-positive: the secret-redaction regression test
+# (tests/unit/test_activity_redaction.py) deliberately holds fabricated token
+# SHAPES (fake Google ya29. tokens, OpenAI sk-proj- / OpenRouter sk-or-v1-,
+# Groq gsk_, llmp- proxy keys, the published AWS docs example access-key
+# placeholder, a truncated JWT) as INPUT, then asserts the redactor rewrites
+# each to ***REDACTED***. None are live credentials.
+version: 2
+
+secret:
+  # The whole file's purpose is to hold fake-secret shapes; exclude it from scanning.
+  ignored-paths:
+    - tests/unit/test_activity_redaction.py
