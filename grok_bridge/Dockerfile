@@ -44,8 +44,13 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
 
 WORKDIR /app
 
+RUN apt-get update && apt-get install -y --no-install-recommends python3-venv \
+    && rm -rf /var/lib/apt/lists/* \
+    && python3 -m venv /opt/grok-venv
+ENV PATH="/opt/grok-venv/bin:${PATH}"
 COPY requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir -r /app/requirements.txt && pip check
+RUN pip install --no-cache-dir --upgrade pip==26.3 \
+    && pip install --no-cache-dir -r /app/requirements.txt && pip check
 
 COPY bridge_security.py /app/bridge_security.py
 COPY app.py /app/app.py
