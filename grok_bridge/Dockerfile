@@ -12,7 +12,7 @@
 #   - x11vnc            VNC server that exposes the framebuffer
 #   - websockify+noVNC  HTML5 VNC client served over HTTP/WS
 #   - python deps       FastAPI / uvicorn / httpx (already present in base)
-FROM mcr.microsoft.com/playwright/python:v1.45.0-jammy
+FROM mcr.microsoft.com/playwright/python:v1.64.1-noble@sha256:330d401ae23c905896a0c26c66c36fc971b621519e7b11b435a8328d7bf6e031
 
 ENV DEBIAN_FRONTEND=noninteractive \
     DISPLAY=:99 \
@@ -23,7 +23,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 # System packages — Xvfb, x11vnc, noVNC + websockify, plus a couple of
 # small fonts so grok.com renders correctly (no font fallback boxes).
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
         xvfb \
         x11vnc \
         x11-utils \
@@ -44,15 +44,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Python deps. The base already has playwright + asyncio; we just need
-# FastAPI + uvicorn for the HTTP surface.
-RUN pip install --no-cache-dir \
-        playwright==1.45.0 \
-        fastapi==0.115.0 \
-        uvicorn[standard]==0.32.0 \
-        httpx==0.27.2 \
-        python-multipart==0.0.12
+COPY requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt && pip check
 
+COPY bridge_security.py /app/bridge_security.py
 COPY app.py /app/app.py
 COPY start.sh /app/start.sh
 COPY supervisord.conf /etc/supervisor/conf.d/grok-bridge.conf

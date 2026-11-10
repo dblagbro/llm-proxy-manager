@@ -2,6 +2,15 @@
 
 All notable changes since v2.7.6. Older history available in `git log`.
 
+### v5.22.55 / Grok bridge 1.2.0 security candidate (2026-11-10)
+
+Protect Grok browser control with a verified LLM Proxy administrator session,
+same-origin checks for browser mutations/WebSockets, and fail-closed service
+tokens. Proxy noVNC through that boundary; bind both raw RFB and websockify to
+loopback. Upgrade the matching Playwright/browser base and supported web
+dependencies. No live provider request or production deployment is claimed.
+See docs/grok-bridge-security.md for tests, rollout prerequisites and residuals.
+
 ### v5.22.54 security candidate (2026-11-10)
 
 Remove unused python-jose and its orphan ecdsa dependency from the tested

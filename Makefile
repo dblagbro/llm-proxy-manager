@@ -107,3 +107,14 @@ test-whisper:
 lint-whisper:
 	ruff check whisper_bridge/test_runtime.py whisper_bridge/verify_assets.py
 	ruff format --check whisper_bridge/test_runtime.py whisper_bridge/verify_assets.py
+
+# Grok sidecar: these targets do not build or deploy the gateway.
+GROK_IMAGE ?= llm-proxy2-grok-bridge:latest
+.PHONY: build-grok test-grok lint-grok
+build-grok:
+	sudo docker build -t $(GROK_IMAGE) grok_bridge
+test-grok:
+	python -m pytest grok_bridge/test_*.py -q
+lint-grok:
+	ruff check grok_bridge/bridge_security.py grok_bridge/test_*.py
+	ruff format --check grok_bridge/bridge_security.py grok_bridge/test_*.py
