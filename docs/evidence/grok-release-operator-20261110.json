@@ -1,0 +1,29 @@
+{
+  "checked_utc": "2026-11-10T23:57:04.569102+00:00",
+  "operator_sha256": "87e042bc57fb80acd122fb3e108ad641f70debf67d51973029afa1f160ecdd30",
+  "unit_tests": {
+    "passed": 35,
+    "platform": "Linux",
+    "python": "3.10",
+    "mocked_Docker": true
+  },
+  "scoped_lint": "passed",
+  "canonical_prepare": "passed",
+  "canonical_configuration_unchanged": true,
+  "original_container_unchanged_and_healthy": true,
+  "unrelated_containers_unchanged": true,
+  "frozen_original_compose_roundtrip": "exact",
+  "staged_full_nginx_test": "passed",
+  "candidate_data_created": false,
+  "production_deployed": false,
+  "actual_rollback_performed": false,
+  "isolated_full_operator_lifecycle_rehearsal": "pending",
+  "release_policy": "unresolved",
+  "first_prepare_attempt": "refused_before_mutation_on_unused_volume_rendering_difference",
+  "runtime_inputs_unchanged": true,
+  "limitations": [
+    "Mock failure-path tests and staged configuration validation do not prove an actual Compose deployment/rollback.",
+    "Full isolated lifecycle rehearsal and final release gates remain required.",
+    "No new vulnerability scan, real provider request or production reload occurred."
+  ]
+}

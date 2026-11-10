@@ -140,3 +140,13 @@ test-grok-browser:
 	cp grok_bridge/testing/browser/*.py grok_bridge/testing/browser/nginx.conf "$(GROK_TEST_DIR)/"
 	cp grok_bridge/deployment/nginx.grok-bridge.conf "$(GROK_TEST_DIR)/grok-bridge.conf"
 	sudo env GROK_TEST_IMAGE="$(GROK_TEST_IMAGE)" GROK_TEST_GATEWAY_IMAGE="$(GROK_TEST_GATEWAY_IMAGE)" GROK_TEST_NGINX_IMAGE="$(GROK_TEST_NGINX_IMAGE)" python3 "$(GROK_CAPACITY_GUARD)" --peak-gib 3 -- python3 "$(GROK_TEST_DIR)/run_browser_rehearsal.py"
+
+# Install release.py, test_release.py, requirements.txt and RUNBOOK.md under
+# grok_bridge/deployment/. These targets perform no Docker or host mutations.
+.PHONY: test-grok-release lint-grok-release
+test-grok-release:
+	python -m pytest grok_bridge/deployment/test_release.py -q -p no:cacheprovider
+
+lint-grok-release:
+	ruff check --target-version py310 grok_bridge/deployment/release.py grok_bridge/deployment/test_release.py
+	ruff format --check --target-version py310 grok_bridge/deployment/release.py grok_bridge/deployment/test_release.py

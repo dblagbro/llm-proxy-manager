@@ -161,3 +161,33 @@ prepare and test exact-byte configuration guards and explicit stop-intent/state 
 after ambiguous CLI timeouts; refresh the quiesced snapshot at cutover and retain
 the original image/volume pair. No production proxy reload, configuration write,
 merge or candidate deployment is claimed. Preserve all retained recovery copies.
+
+
+## Scoped rollout operator preparation (November 10)
+
+The operator and runbook are maintained under `grok_bridge/deployment/`.
+`make test-grok-release` covers 35 synthetic failure-path tests, including a timed-out
+stop, failure between original removal and candidate creation, configuration conflicts,
+separate profile generations and original-runtime recovery. `make lint-grok-release`
+checks these sources. CI runs both targets alongside the existing bridge checks.
+
+The operator stages exact-image Compose and Nginx configuration with compare-and-swap
+guards, snapshots a freshly quiesced original profile into a separate candidate bind
+directory, and retains the original image/volume pair for rollback. It targets only
+Grok. All example release gates remain false. Read the runbook before any execution.
+These preparation files are not copied by the runtime Dockerfile; the tested runtime
+image remains unchanged. Canonical prepare compatibility and a full isolated Docker
+Compose deployment/rollback rehearsal are separate acceptance gates. Synthetic tests
+do not establish that the operator has deployed or rolled back a real service.
+
+
+Canonical `prepare` passed on the primary with PyYAML6.0.3 and Python3.10 after
+fail-closed compatibility fixes for Compose's unused-volume rendering and Python
+UTC support. The frozen original configuration round-trips through Compose exactly;
+resolved dollar values are escaped to prevent a second secret interpolation. The
+full staged Nginx configuration passed without reloading production. All35 synthetic
+operator tests and scoped lint/format pass on Linux. The source adds a Python3.10
+CI job to cover the actual primary host runtime. Sanitized evidence is in
+`docs/evidence/grok-release-operator-20261110.json`. No service stop, cutover snapshot,
+production configuration edit, deployment or real rollback occurred in this stage.
+The full isolated Compose lifecycle rehearsal remains pending.
