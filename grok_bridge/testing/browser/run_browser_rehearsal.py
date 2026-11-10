@@ -1,4 +1,4 @@
-"""Run under capacity_guard on peer; only synthetic state and isolated network."""
+"""Run under capacity_guard; only synthetic state and an isolated network."""
 
 import datetime
 import json
@@ -7,13 +7,26 @@ import subprocess
 import time
 from pathlib import Path
 
+UTC = datetime.timezone.utc  # noqa: UP017 - host operator also runs on Python 3.10
 W = Path(__file__).resolve().parent
 assert os.geteuid() == 0
 assert b"capacity_guard.py" in Path(f"/proc/{os.getppid()}/cmdline").read_bytes()
 assert not (W / "state.json").exists(), "Inspect the prior rehearsal before retrying"
-BRIDGE = "sha256:61ed90130f77b07b6ca2141fe65be303e77dd504480a7d967621e975f1c337db"
-GATEWAY = "sha256:b800ef8a60893c713a6c5161a7716f4686aed731170c619a3eba6afc8913c961"
-NGINX = "sha256:997a3ffadcf7a956b6e9e71d3405c382377c2b16aba55ead1ea626000a3902c8"
+BRIDGE = (
+    os.environ.get("GROK_TEST_IMAGE")
+    or "sha256:61ed90130f77b07b6ca2141fe65be303e77dd504480a7d967621e975f1c337db"
+)
+GATEWAY = (
+    os.environ.get("GROK_TEST_GATEWAY_IMAGE")
+    or "sha256:b800ef8a60893c713a6c5161a7716f4686aed731170c619a3eba6afc8913c961"
+)
+NGINX = (
+    os.environ.get("GROK_TEST_NGINX_IMAGE")
+    or "sha256:997a3ffadcf7a956b6e9e71d3405c382377c2b16aba55ead1ea626000a3902c8"
+)
+for image in (BRIDGE, GATEWAY, NGINX):
+    assert image.startswith("sha256:") and len(image) == 71
+    assert all(c in "0123456789abcdef" for c in image[7:]), "Use verified immutable image IDs"
 NET = "codex-grok-browser-network"
 AUTH = "codex-grok-browser-auth"
 APP = "codex-grok-browser-app"
@@ -23,7 +36,7 @@ names = (CLIENT, PROXY, APP, AUTH)
 owned = []
 network_id = None
 state = {
-    "started_utc": datetime.datetime.now(datetime.UTC).isoformat(),
+    "started_utc": datetime.datetime.now(UTC).isoformat(),
     "production_modified": False,
     "real_account_used": False,
     "images": {"bridge": BRIDGE, "gateway_auth": GATEWAY, "nginx": NGINX},
@@ -31,7 +44,7 @@ state = {
 
 
 def save(phase):
-    state.update(phase=phase, updated_utc=datetime.datetime.now(datetime.UTC).isoformat())
+    state.update(phase=phase, updated_utc=datetime.datetime.now(UTC).isoformat())
     (W / "state.json").write_text(json.dumps(state, indent=2) + "\n")
 
 
@@ -112,7 +125,6 @@ try:
             ]
         )
     )
-    os.chown(W / "data", uid, gid)
     state["auth_fixture_uid"] = uid
     out(
         [
@@ -154,8 +166,8 @@ try:
             "python",
             "-v",
             str(W / "gateway_auth_fixture.py") + ":/fixture/gateway_auth_fixture.py:ro",
-            "-v",
-            str(W / "data") + ":/test-data",
+            "--tmpfs",
+            f"/test-data:rw,size=64m,mode=0700,uid={uid},gid={gid}",
             "-e",
             "DATABASE_URL=sqlite+aiosqlite:////test-data/auth.db",
             "-e",

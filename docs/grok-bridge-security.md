@@ -56,11 +56,13 @@ cookie/localStorage preservation, startup/shutdown/restart, real RFB handshake,
 raw-port isolation and independent original-image/profile rollback boot.
 
 The isolated browser harness is retained in `grok_bridge/testing/browser/`.
-Review its three exact image IDs before running. On a host with those images,
+Review its three exact image IDs before running. Optional `GROK_TEST_IMAGE`,
+`GROK_TEST_GATEWAY_IMAGE` and `GROK_TEST_NGINX_IMAGE` select verified immutable
+local image IDs. On a host with those images,
 use `make test-grok-browser GROK_TEST_DIR=<new-local-directory>
 GROK_CAPACITY_GUARD=<maintained-capacity_guard.py>` under the normal capacity
 policy. It publishes no ports, uses an internal network and synthetic accounts,
-and removes only its named test containers/network. It retains evidence/data for
+and removes only container/network IDs successfully created by that run. It retains evidence/data for
 inspection and refuses to overwrite prior state. A failed run needs inspection
 before choosing a new directory.
 
@@ -126,24 +128,36 @@ sandbox guidance), <https://websockets.readthedocs.io/en/stable/reference/asynci
 (fixed-target asyncio proxy), <https://pypi.org/project/fastapi/>.
 
 
-### Current rehearsal checkpoint
+### Current rehearsal checkpoint (2026-11-10 23:29 UTC)
 
-The initial private-profile candidate boot reached health, but its Docker stop
-client exceeded60seconds. The application logged completed shutdown, but clean container lifecycle and
-restart/cookie acceptance still require a passing continuation. Retain the failed
-attempt and prove the next lifecycle checks before accepting this candidate.
+The fresh primary private-profile rehearsal passed. It independently restored
+all52,817 files from the original immutable archive, started and stopped the
+candidate twice with exit0/noOOM (stop durations0.64and6.54seconds), and preserved
+all80 stable cookies by offline fingerprint. Networking was disabled and no
+cookie values were exported. The failed peer stop-timeout attempt remains
+recorded separately; it is not relabeled successful. The original production
+volume was never mounted by the candidate, and production stays unchanged.
 
-Review fixed the reusable harness's mode0700 fixture mount (mount only its
-readable Python file) and cleanup ownership (remove only successfully created
-resource IDs). The first maintained-target invocation failed a root-only guard
-path check; that was corrected. Its retry timed out during Docker exec readiness.
-Readiness now tolerates daemon delays within a bounded180second deadline; the
-corrected target has not yet passed its end-to-end rerun. The earlier manual
-browser acceptance is preserved separately.
+The maintained Makefile browser target now passes all11 checks on the primary,
+including actual keyboard navigation/framebuffer rendering and active VNC
+revocation26.92seconds after logout. Synthetic auth storage is bounded64MiB
+tmpfs; the real-profile recovery test remains disk-backed. Explicit canvas focus,
+paced keystrokes and a bounded navigation wait make the input test exercise the
+same browser interaction consistently. Earlier readiness/input failures remain
+in retained checkpoint evidence; the earlier manual peer pass is also retained.
+The harness uses the exact primary gateway/Nginx images, a private test directory
+with individual readable fixture mounts, and cleanup of only owned resource IDs.
+All test containers/networks were removed after acceptance.
 
-A separate Coordinator Hub backup is copying its approximately9GB database on
-the peer. It is outside this remediation worker and must not be interrupted.
-Recheck its completion and disk headroom before running more Grok runtime tests;
-budget remaining backup growth as well as the64GiB free reserve. No continuation
-worker or candidate rollout is active. The snapshot operator also needs explicit
-stop-intent/state reconciliation before reuse after an ambiguous CLI timeout.
+Docker import assigned the primary candidate image ID
+`sha256:2d6e56831b6c36dae36e4f775f9397bcf1ffb4a8dc8e9cb533434e85ab56e0c8`.
+Its Config, RootFS layers, OS and architecture match the scanned peer candidate
+exactly; image-identity receipts are retained. No unchanged image was rescanned.
+See `docs/evidence/grok-primary-acceptance-20261110.json` and the updated recovery
+and browser evidence files.
+
+The scoped deployment/rollback operator is still unfinished. Before rollout,
+prepare and test exact-byte configuration guards and explicit stop-intent/state recovery
+after ambiguous CLI timeouts; refresh the quiesced snapshot at cutover and retain
+the original image/volume pair. No production proxy reload, configuration write,
+merge or candidate deployment is claimed. Preserve all retained recovery copies.

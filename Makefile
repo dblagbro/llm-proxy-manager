@@ -124,6 +124,9 @@ lint-grok:
 # Requires an empty, explicitly chosen local test directory and the storage guard.
 GROK_TEST_DIR ?=
 GROK_CAPACITY_GUARD ?=
+GROK_TEST_IMAGE ?=
+GROK_TEST_GATEWAY_IMAGE ?=
+GROK_TEST_NGINX_IMAGE ?=
 .PHONY: lint-grok-browser test-grok-browser
 lint-grok-browser:
 	ruff check grok_bridge/testing/browser/*.py
@@ -136,4 +139,4 @@ test-grok-browser:
 	mkdir -m 700 "$(GROK_TEST_DIR)"
 	cp grok_bridge/testing/browser/*.py grok_bridge/testing/browser/nginx.conf "$(GROK_TEST_DIR)/"
 	cp grok_bridge/deployment/nginx.grok-bridge.conf "$(GROK_TEST_DIR)/grok-bridge.conf"
-	sudo python3 "$(GROK_CAPACITY_GUARD)" --peak-gib 3 -- python3 "$(GROK_TEST_DIR)/run_browser_rehearsal.py"
+	sudo env GROK_TEST_IMAGE="$(GROK_TEST_IMAGE)" GROK_TEST_GATEWAY_IMAGE="$(GROK_TEST_GATEWAY_IMAGE)" GROK_TEST_NGINX_IMAGE="$(GROK_TEST_NGINX_IMAGE)" python3 "$(GROK_CAPACITY_GUARD)" --peak-gib 3 -- python3 "$(GROK_TEST_DIR)/run_browser_rehearsal.py"

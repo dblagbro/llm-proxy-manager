@@ -16,13 +16,13 @@
     "real_noVNC_keyboard_input": true,
     "real_framebuffer_decoded_and_rendered": true,
     "proxy_preserves_origin_and_token_denials": true,
-    "logout_removes_cookie_and_revokes_active_vnc_seconds": 28.5,
+    "logout_removes_cookie_and_revokes_active_vnc_seconds": 26.92,
     "new_browser_requests_denied_after_logout": true
   },
   "websockets": [
     {
       "url": "wss://operator.example.test/grok-bridge/vnc/websockify",
-      "received_frames": 93,
+      "received_frames": 152,
       "closed": true
     }
   ],

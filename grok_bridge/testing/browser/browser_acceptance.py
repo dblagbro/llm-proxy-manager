@@ -99,19 +99,28 @@ async def main():
 
         # Use noVNC's public RFB keyboard API. The target Chromium must navigate
         # to the fixture, proving actual input delivery beyond a handshake.
+        await frame.locator("canvas").click(position={"x": 400, "y": 250})
+        await page.wait_for_timeout(250)
         await frame.evaluate("""async () => {
           const UI=(await import('/grok-bridge/vnc/app/ui.js')).default;
           const r=UI.rfb;
           r.sendKey(0xffe3,'ControlLeft',true);r.sendKey(0x6c,'KeyL');r.sendKey(0xffe3,'ControlLeft',false);
-          for(const c of 'http://llm-proxy2:3000/input-observed') r.sendKey(c.charCodeAt(0));
+          await new Promise(resolve => setTimeout(resolve, 250));
+          for(const c of 'http://llm-proxy2:3000/input-observed') {
+            r.sendKey(c.charCodeAt(0));
+            await new Promise(resolve => setTimeout(resolve, 10));
+          }
           r.sendKey(0xff0d,'Enter');
         }""")
-        for _ in range(40):
+        for _ in range(240):
             response = await admin.request.get(ORIGIN + "/llm-proxy2/observations")
             if (await response.json())["vnc_input_navigation"]:
                 break
             await page.wait_for_timeout(250)
         else:
+            await page.screenshot(path="/evidence/novnc-input-failure-synthetic.png")
+            status = await admin.request.get(ORIGIN + "/grok-bridge/api/status")
+            checks["input_failure_target_url"] = (await status.json()).get("url")
             raise AssertionError("noVNC keyboard navigation never reached target browser")
         checks["real_noVNC_keyboard_input"] = True
         await frame.wait_for_function(
