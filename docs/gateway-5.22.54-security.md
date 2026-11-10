@@ -1,7 +1,8 @@
 # Gateway 5.22.54 security preparation
 
-Status: exact candidate tests and scan pass; CI, the lint policy decision,
-per-node recovery rehearsal and deployment remain pending.
+Status: exact candidate tests, scan and all six CI checks pass at code head
+f6a713612437b7fc60c9c6d10138c180d85acae2. The lint policy decision,
+per-node runtime recovery rehearsal and deployment remain pending.
 This is not a deployed fix. Production is still 5.22.53 on both hosts.
 
 ## Source reconciliation
@@ -9,8 +10,8 @@ This is not a deployed fix. Production is still 5.22.53 on both hosts.
 GitHub main 5c560b3 contained gateway 5.22.42 plus Whisper 4.3.1. The maintained
 gateway checkout at 881695d contained six unpublished commits through 5.22.53.
 Preparation merge00bd593 reconciled both histories. The final PR snapshot
-backfills that same deployed code without rewriting the canonical branches. Its app, frontend and Grok source trees
-are byte-identical to 881695d. The canonical checkout's uncommitted operational
+backfills that same deployed code without rewriting the canonical branches. Before the version bump, its app, frontend and Grok source trees
+were byte-identical to 881695d. The canonical checkout's uncommitted operational
 notes are excluded. These existing deployed fixes must not be lost by building
 an older GitHub tree.
 
@@ -79,7 +80,7 @@ LiteLLM 1.86.7's Proxy credential-file advisory remains a retained finding until
 deployed-handler reachability tests are complete; static library-only evidence
 is insufficient for blanket exemption. SSO remains disabled; complete OIDC
 validation deserves separate review before enablement. Unfixed Debian findings
-remain visible. No fresh candidate scan or passing tests are claimed here yet.
+remain visible. Fresh candidate results appear below; production is unchanged.
 
 Sources: https://github.com/advisories/GHSA-3qf3-8w2g-rqmx ;
 https://github.com/BerriAI/litellm/security/advisories/GHSA-g5ff-637f-6q2m ;
@@ -123,3 +124,20 @@ strings. They now generate nonfunctional samples at test time with the same
 redaction assertions. The security PR branch is rebuilt as a clean snapshot
 from main so its old fixture-only findings do not remain in the PR history.
 Canonical history and working edits are retained. No real token was identified.
+
+## Recovery and release decision checkpoint
+
+On November10, both nodes passed online SQLite backup integrity checks and
+independent file restoration. Private NAS archives were independently read back
+and hash-verified. These are per-node point-in-time backups, not a quiesced
+cluster snapshot. Refresh them at cutover. Candidate runtime restore and
+original-image rollback boot have not yet been exercised. Never restore these
+preparation copies over newer production writes.
+
+All six GitHub checks at f6a7136 pass: GitGuardian, secrets, guard, ephemeral
+integration, Playwright UI and speech runtime. Global lint remains failing with
+3,252 inherited findings versus 3,256 on the reconciled deployed baseline, and
+zero introduced findings. The owner has been asked to approve a one-release
+5.22.54 baseline-no-new lint contract; no answer or waiver is assumed. PR12
+remains draft. All other recovery, rollback and sequential live acceptance
+gates remain required even if that narrow lint exception is approved.
