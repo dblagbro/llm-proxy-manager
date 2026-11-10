@@ -94,3 +94,6 @@ Review also added active WebSocket session-revocation tests, clean rejection
 of text frames, upstream-handshake error handling, and robust symlink lock
 checks. The old synthetic Chromium127 profile passed creation, independent
 rollback boot and restart; no real account was used.
+
+
+The first cache-cleanup candidate passed its real private HTTP/RFB and synthetic profile upgrade/restart rehearsal. Its unsuppressed scan still included the base virtualenv cache and runtime pip bundle. The next candidate removes those unused packaging tools and the cached copy, preserving all library SBOMs rather than suppressing scanner results. Dependency consistency is checked during the build before pip removal; exact-image boot/scan must be repeated for the changed image.

@@ -55,7 +55,9 @@ RUN pip install --no-cache-dir --upgrade pip==26.3 \
     && pip check
 # The base's build-only virtualenv wheel bundle and global pip are unused by
 # both this isolated application environment and the distribution's VNC tools.
-RUN /usr/bin/python3 -m pip uninstall -y virtualenv python-discovery filelock pip
+RUN /usr/bin/python3 -m pip uninstall -y virtualenv python-discovery filelock pip \
+    && /opt/grok-venv/bin/python -m pip uninstall -y pip \
+    && rm -rf /root/.cache/virtualenv
 
 COPY bridge_security.py /app/bridge_security.py
 COPY app.py /app/app.py
