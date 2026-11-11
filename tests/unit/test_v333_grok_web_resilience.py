@@ -7,12 +7,12 @@
 The bridge cool-off (#3) is exercised end-to-end by integration tests
 that run the bridge container; this file covers the proxy-side units.
 """
+
 from __future__ import annotations
 
 import time
 
 import pytest
-
 
 # ── #1 probe back-off ─────────────────────────────────────────────────
 
@@ -22,6 +22,7 @@ def _reset_keepalive_state():
     """Each test starts with a clean back-off dict so ordering doesn't
     matter (the module dicts persist across tests otherwise)."""
     from app.monitoring import keepalive
+
     keepalive._probe_backoff_until.clear()
     keepalive._consecutive_rate_limits.clear()
     yield
@@ -31,6 +32,7 @@ def _reset_keepalive_state():
 
 def test_is_rate_limit_error_recognises_common_patterns():
     from app.monitoring.keepalive import _is_rate_limit_error
+
     assert _is_rate_limit_error("HTTP 429: Too Many Requests")
     assert _is_rate_limit_error("rate_limit hit")
     assert _is_rate_limit_error("ThrottledException")
@@ -44,16 +46,24 @@ def test_is_rate_limit_error_recognises_common_patterns():
 def test_backoff_set_on_rate_limit_doubles_with_consecutive_failures(monkeypatch):
     """Each consecutive 429 doubles the next-probe delay until cap."""
     from app.monitoring import keepalive
+
     # Pin settings for a deterministic check
     monkeypatch.setattr(
-        keepalive.settings, "keepalive_probe_interval_sec", 300, raising=False,
-    )
-    monkeypatch.setattr(
-        keepalive.settings, "keepalive_probe_rate_limit_backoff_factor", 2.0,
+        keepalive.settings,
+        "keepalive_probe_interval_sec",
+        300,
         raising=False,
     )
     monkeypatch.setattr(
-        keepalive.settings, "keepalive_probe_rate_limit_backoff_max_sec", 1800,
+        keepalive.settings,
+        "keepalive_probe_rate_limit_backoff_factor",
+        2.0,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        keepalive.settings,
+        "keepalive_probe_rate_limit_backoff_max_sec",
+        1800,
         raising=False,
     )
 
@@ -81,6 +91,7 @@ def test_backoff_set_on_rate_limit_doubles_with_consecutive_failures(monkeypatch
 def test_backoff_resets_on_success():
     """A successful probe (no error_str) clears any in-progress streak."""
     from app.monitoring import keepalive
+
     pid = "p1"
     keepalive._record_probe_outcome_for_backoff(pid, "429")
     keepalive._record_probe_outcome_for_backoff(pid, "429")
@@ -96,6 +107,7 @@ def test_backoff_resets_on_non_rate_limit_failure():
     """A network error (non-rate-limit failure) also clears state — we
     don't want unrelated errors to extend the back-off window."""
     from app.monitoring import keepalive
+
     pid = "p1"
     keepalive._record_probe_outcome_for_backoff(pid, "429")
     assert pid in keepalive._consecutive_rate_limits
@@ -107,6 +119,7 @@ def test_backoff_resets_on_non_rate_limit_failure():
 def test_backoff_skip_returns_true_during_window_false_after():
     """_backoff_skip blocks the sweep until the window expires."""
     from app.monitoring import keepalive
+
     pid = "p1"
     # Manually plant a future window
     keepalive._probe_backoff_until[pid] = time.time() + 60
@@ -124,8 +137,11 @@ def test_backoff_skip_returns_true_during_window_false_after():
 def test_backoff_disabled_when_factor_le_1(monkeypatch):
     """Factor=1.0 → no back-off (escape hatch for operators)."""
     from app.monitoring import keepalive
+
     monkeypatch.setattr(
-        keepalive.settings, "keepalive_probe_rate_limit_backoff_factor", 1.0,
+        keepalive.settings,
+        "keepalive_probe_rate_limit_backoff_factor",
+        1.0,
         raising=False,
     )
     pid = "p1"
@@ -148,18 +164,31 @@ async def test_record_request_is_probe_skips_metrics(monkeypatch):
     class FakeDB:
         async def execute(self, *_a, **_k):
             db_calls["execute"] += 1
+
             class _R:
-                def scalar_one_or_none(self): return None
+                def scalar_one_or_none(self):
+                    return None
+
             return _R()
+
         async def commit(self):
             db_calls["commit"] += 1
+
         def add(self, _o):
             db_calls["add"] += 1
 
     fake = FakeDB()
     await metrics.record_request(
-        fake, "p1", True, 100, 50, 1500.0, 0.001,
-        api_key_id="k1", ttft_ms=50.0, is_probe=True,
+        fake,
+        "p1",
+        True,
+        100,
+        50,
+        1500.0,
+        0.001,
+        api_key_id="k1",
+        ttft_ms=50.0,
+        is_probe=True,
     )
     assert db_calls == {"execute": 0, "commit": 0, "add": 0}, (
         "is_probe=True should be a no-op; saw " + str(db_calls)
@@ -174,14 +203,19 @@ async def test_record_request_real_traffic_still_writes(monkeypatch):
     seen_writes = []
 
     class FakeQueryResult:
-        def scalar_one_or_none(self):
+        def scalars(self):
+            return self
+
+        def first(self):
             return None  # no existing bucket → triggers ProviderMetric()
 
     class FakeDB:
         async def execute(self, *_a, **_k):
             return FakeQueryResult()
+
         async def commit(self):
             seen_writes.append("commit")
+
         def add(self, obj):
             seen_writes.append(("add", type(obj).__name__))
 
@@ -189,13 +223,21 @@ async def test_record_request_real_traffic_still_writes(monkeypatch):
     # Stub get_all_states so circuit-breaker import doesn't fail
     monkeypatch.setattr(metrics, "get_all_states", lambda: {})
     await metrics.record_request(
-        fake, "p1", True, 100, 50, 1500.0, 0.001,
-        api_key_id="k1", ttft_ms=50.0, is_probe=False,
+        fake,
+        "p1",
+        True,
+        100,
+        50,
+        1500.0,
+        0.001,
+        api_key_id="k1",
+        ttft_ms=50.0,
+        is_probe=False,
     )
     # Should have at minimum: 1 add (new metric) + 1 execute (api_key
     # update) + 1 commit
-    assert any(w == "commit" for w in seen_writes), (
-        "real traffic should commit; saw " + str(seen_writes)
+    assert any(w == "commit" for w in seen_writes), "real traffic should commit; saw " + str(
+        seen_writes
     )
     assert any(isinstance(w, tuple) and w[0] == "add" for w in seen_writes), (
         "real traffic should add a ProviderMetric; saw " + str(seen_writes)
@@ -207,6 +249,7 @@ async def test_record_request_real_traffic_still_writes(monkeypatch):
 
 def test_user_call_timeout_reads_setting(monkeypatch):
     from app.api import _grok_web_dispatch as gwd
+
     monkeypatch.setattr(gwd.settings, "grok_web_user_timeout_sec", 8, raising=False)
     assert gwd._user_call_timeout() == 8.0
 
@@ -221,6 +264,7 @@ def test_user_call_timeout_handles_missing_setting(monkeypatch):
     legacy fallback path, separate from the operator-configured
     default."""
     from app.api import _grok_web_dispatch as gwd
+
     monkeypatch.setattr(gwd.settings, "grok_web_user_timeout_sec", None, raising=False)
     assert gwd._user_call_timeout() == 30.0
 
@@ -232,5 +276,6 @@ def test_user_call_timeout_default_is_20s_in_v340(monkeypatch):
     # We don't monkeypatch — read the actual value from the imported
     # settings instance which reflects the field default.
     from app.config import Settings
+
     s = Settings()
     assert s.grok_web_user_timeout_sec == 20

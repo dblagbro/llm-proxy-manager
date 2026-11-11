@@ -12,14 +12,26 @@ interface ToastItem {
 
 let _addToast: ((msg: string, variant: ToastVariant) => void) | null = null
 
+// v5.22.45 (BUG-111) — STABLE singleton. These helpers only dispatch through
+// the module-level `_addToast`, so there is no per-render state to close over.
+// Returning a fresh object literal on every call made `toast` an unstable
+// reference, which turned any useCallback/useEffect that listed it into a
+// render loop: OAuthAccountsPanel's `load` (dep: [provider.id, toast]) was
+// rebuilt every render, re-firing its effect and polling
+// /api/admin/providers/{id}/oauth-accounts thousands of times/sec — which,
+// while editing/re-authing a provider, flooded the UI with "Failed to load
+// OAuth accounts" as overlapping fetches aborted. A constant reference fixes
+// this for every consumer.
+const _toastApi = {
+  toast: (message: string, variant: ToastVariant = 'info') => _addToast?.(message, variant),
+  success: (msg: string) => _addToast?.(msg, 'success'),
+  error:   (msg: string) => _addToast?.(msg, 'error'),
+  warning: (msg: string) => _addToast?.(msg, 'warning'),
+  info:    (msg: string) => _addToast?.(msg, 'info'),
+} as const
+
 export function useToast() {
-  return {
-    toast: (message: string, variant: ToastVariant = 'info') => _addToast?.(message, variant),
-    success: (msg: string) => _addToast?.(msg, 'success'),
-    error:   (msg: string) => _addToast?.(msg, 'error'),
-    warning: (msg: string) => _addToast?.(msg, 'warning'),
-    info:    (msg: string) => _addToast?.(msg, 'info'),
-  }
+  return _toastApi
 }
 
 export function Toaster() {

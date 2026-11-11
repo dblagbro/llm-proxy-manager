@@ -318,3 +318,27 @@ def test_webhook_url_rejects_missing_host():
         validate_webhook_url("https:///")
     assert ex.value.status_code == 400
     assert "host" in ex.value.detail
+
+
+def test_webhook_url_rejects_loopback():
+    """v5.22.43: 127.0.0.1 is this proxy's own admin API — never a webhook."""
+    from app.api._input_validation import validate_webhook_url
+    for u in ("http://127.0.0.1:3000/cluster/sync", "http://localhost/x", "http://[::1]/x"):
+        with pytest.raises(HTTPException) as ex:
+            validate_webhook_url(u)
+        assert ex.value.status_code == 400
+
+
+def test_webhook_url_rejects_cloud_metadata():
+    """v5.22.43: 169.254.169.254 is the cloud instance-metadata endpoint."""
+    from app.api._input_validation import validate_webhook_url
+    with pytest.raises(HTTPException) as ex:
+        validate_webhook_url("http://169.254.169.254/latest/meta-data/")
+    assert ex.value.status_code == 400
+
+
+def test_webhook_url_still_allows_rfc1918():
+    """The documented decision stands: internal LAN hubs remain allowed."""
+    from app.api._input_validation import validate_webhook_url
+    validate_webhook_url("http://192.168.18.5:8080/api/webhook")  # no raise
+    validate_webhook_url("http://10.0.0.5/hook")  # no raise

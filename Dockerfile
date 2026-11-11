@@ -17,7 +17,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+# Apply supported distribution fixes on clean builds as well as the overlay.
+RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
+
 FROM base AS deps
+# pip 26.3 updates its vendored msgpack and urllib3, not just top-level packages.
+RUN python -m pip install --no-cache-dir --upgrade pip==26.3
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 

@@ -34,7 +34,7 @@ class Provider(Base):
     id = Column(String, primary_key=True, default=lambda: secrets.token_hex(8))
     name = Column(String, nullable=False)
     provider_type = Column(String, nullable=False)  # anthropic|openai|google|ollama|compatible|vertex|grok|claude-oauth
-    api_key = Column(String)                         # for OAuth providers: stores the access_token
+    api_key = Column(String)                         # PLAINTEXT. for OAuth providers: stores the access_token
     base_url = Column(String)
     default_model = Column(String)
     priority = Column(Integer, default=10)
@@ -58,7 +58,12 @@ class Provider(Base):
     # v2.7.0: OAuth-specific fields. Only populated when provider_type
     # is *-oauth (claude-oauth in v2.7.0). refresh_token lets us auto-
     # refresh before expires_at without admin intervention.
-    oauth_refresh_token = Column(String, nullable=True)    # encrypted Fernet
+    # NOTE (v5.22.43): despite the historical "encrypted Fernet" note, this
+    # column is stored PLAINTEXT — nothing in app/ encrypts/decrypts it (the
+    # key_encryption module is used only for api_keys.encrypted_key). Treat
+    # llmproxy.db as a cleartext upstream-credential store until this is either
+    # encrypted with a KMS/env key or the fact is documented in backup-plan.md.
+    oauth_refresh_token = Column(String, nullable=True)    # PLAINTEXT (see note above)
     oauth_expires_at = Column(Float, nullable=True)        # unix timestamp
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())

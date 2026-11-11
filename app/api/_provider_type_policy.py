@@ -63,9 +63,10 @@ def validate_provider_type(value: str | None) -> str | None:
     """Reject creation of a retired or deprecated provider type.
 
     Raises ``ValueError`` so a pydantic field validator renders a 422 rather
-    than a 500. Existing rows are untouched — this guards the write path only,
-    which is what keeps a deprecated type serving while still being closed to
-    new configuration.
+    than a 500. Existing rows are untouched — this guards *creation* only.
+    Updates to an existing row go through ``validate_provider_type_change``
+    instead, which keeps a deprecated type serving (incl. edits + re-auth)
+    while still being closed to new configuration.
     """
     if not value:
         return value
@@ -77,6 +78,27 @@ def validate_provider_type(value: str | None) -> str | None:
             f"providers. {_REASON}"
         )
     return value
+
+
+def validate_provider_type_change(old: str | None, new: str | None) -> None:
+    """Gate ``provider_type`` on UPDATE, relative to the existing row.
+
+    The DEPRECATED tier's contract (see the module docstring) is that an
+    existing row *keeps working* — which must include operator edits and
+    OAuth re-auth via ``PUT /api/providers/{id}``. Applying the create-time
+    gate on every update broke exactly that: re-authing the live
+    ``Devin-Anthropic-Max-VG`` (``claude-oauth``) returned 422 because the
+    row's own, unchanged type is deprecated. That is the regression this
+    guards (v5.22.44).
+
+    So: keeping an already-deprecated/retired type is allowed; only a change
+    INTO a closed type is refused — an operator must not resurrect a retired
+    integration by editing a healthy row's ``provider_type`` field. Raises
+    ``ValueError`` (the caller renders it as 422).
+    """
+    if new is None or new == old:
+        return
+    validate_provider_type(new)
 
 
 class ProviderFieldGuards:

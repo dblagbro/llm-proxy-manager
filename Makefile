@@ -19,8 +19,11 @@ lint:
 format:
 	ruff format app/ tests/
 
+GATEWAY_IMAGE ?= llm-proxy2:latest
+GATEWAY_DOCKERFILE ?= Dockerfile
+GATEWAY_BASE_IMAGE ?= llm-proxy2:latest
 build:
-	sudo docker build -t llm-proxy2:latest .
+	sudo docker build --build-arg BASE_IMAGE=$(GATEWAY_BASE_IMAGE) -f $(GATEWAY_DOCKERFILE) -t $(GATEWAY_IMAGE) .
 
 up:
 	sudo docker compose up -d llm-proxy2
@@ -104,3 +107,19 @@ test-whisper:
 lint-whisper:
 	ruff check whisper_bridge/test_runtime.py whisper_bridge/verify_assets.py
 	ruff format --check whisper_bridge/test_runtime.py whisper_bridge/verify_assets.py
+
+# Offline primary gateway recovery: unit tests use synthetic state and fake Docker.
+GATEWAY_RECOVERY_PYTHON ?= python3
+GATEWAY_RECOVERY_RUN_ID ?=
+GATEWAY_CAPACITY_GUARD ?=
+.PHONY: test-gateway-recovery lint-gateway-recovery test-gateway-recovery-docker
+test-gateway-recovery:
+	$(GATEWAY_RECOVERY_PYTHON) -m pytest tools/gateway_recovery/test_rehearse_gateway.py -q -p no:cacheprovider
+
+lint-gateway-recovery:
+	ruff check --config tools/gateway_recovery/ruff.toml tools/gateway_recovery
+	ruff format --check --config tools/gateway_recovery/ruff.toml tools/gateway_recovery
+
+test-gateway-recovery-docker:
+	test -n "$(GATEWAY_RECOVERY_RUN_ID)" && test -n "$(GATEWAY_CAPACITY_GUARD)"
+	sudo "$(GATEWAY_RECOVERY_PYTHON)" "$(GATEWAY_CAPACITY_GUARD)" --peak-gib 3 -- "$(GATEWAY_RECOVERY_PYTHON)" "$(CURDIR)/tools/gateway_recovery/rehearse_gateway.py" --run-id "$(GATEWAY_RECOVERY_RUN_ID)"

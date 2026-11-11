@@ -174,6 +174,15 @@ class ApiKey(Base):
     #   compliance_ column, any oauth_ column. Enforced server-side
     #   at the endpoint — see app/integration/self_update.py::ALLOWED_FIELDS.
     self_edit_permissions = Column(JSON, nullable=True)
+    # v5.22.47 — Daybreak Blue (OpenAI Trusted Access for Cyber) authorization.
+    # NULL = not authorized (default for every key); "blue" = this key may
+    # invoke the `daybreak`/`daybreak-blue` alias, which sets
+    # access_programs.cyber=daybreak_blue on the approved Codex provider.
+    # Deliberately per-key and off by default: the OpenAI approval is scoped
+    # to the vetted account holder, so Daybreak is never fanned out to
+    # arbitrary callers. Red is hard-blocked in code regardless of this value.
+    # See app/providers/daybreak.py.
+    daybreak_tier = Column(String, nullable=True)
 
 
 class ApiKeyAiReview(Base):

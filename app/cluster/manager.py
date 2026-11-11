@@ -390,6 +390,11 @@ async def _build_sync_payload(db) -> dict:
          "blocked_models": getattr(k, "blocked_models", None),
          "allowed_models": getattr(k, "allowed_models", None),
          "debug_echo_enabled": bool(getattr(k, "debug_echo_enabled", False)),
+         # v5.22.47 — OpenAI Daybreak Blue authorization tier. Operator-
+         # settable (NULL = not authorized, "blue" = authorized); must
+         # round-trip via sync like every other per-key policy column,
+         # otherwise authorizing a key on one node never reaches peers.
+         "daybreak_tier": getattr(k, "daybreak_tier", None),
          # v4.4.20 — LWW gate, mirrors providers. Pre-v4.4.20 peers
          # omit this; apply handler treats absence as "legacy peer"
          # and falls through to last-sync-wins, same as today.

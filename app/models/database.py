@@ -566,6 +566,10 @@ async def init_db():
             # Base.metadata.create_all above; only the column ALTER lands
             # here.
             "ALTER TABLE providers ADD COLUMN oauth_account_strategy TEXT",
+            # v5.22.47 — per-key Daybreak Blue (OpenAI Trusted Access)
+            # authorization. NULL = not authorized (default); "blue" = may
+            # invoke the daybreak alias. See app/providers/daybreak.py.
+            "ALTER TABLE api_keys ADD COLUMN daybreak_tier TEXT",
         ]:
             try:
                 await conn.exec_driver_sql(stmt)

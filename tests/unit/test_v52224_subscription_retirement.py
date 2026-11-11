@@ -25,6 +25,7 @@ from app.api._provider_type_policy import (
     DEPRECATED_PROVIDER_TYPES,
     RETIRED_PROVIDER_TYPES,
     validate_provider_type,
+    validate_provider_type_change,
 )
 from app.api.providers import ProviderCreate, ProviderUpdate
 
@@ -78,11 +79,20 @@ class TestTheGate:
 
 
 class TestWiredIntoBothModels:
-    @pytest.mark.parametrize("model", [ProviderCreate, ProviderUpdate])
     @pytest.mark.parametrize("ptype", ["grok-web", "claude-oauth"])
-    def test_refused_on_create_and_update(self, model, ptype):
+    def test_create_is_refused_at_construction(self, ptype):
+        """CREATE is absolute: a new deprecated/retired provider is closed."""
         with pytest.raises(Exception):
-            model(name="x", provider_type=ptype)
+            ProviderCreate(name="x", provider_type=ptype)
+
+    @pytest.mark.parametrize("ptype", ["grok-web", "claude-oauth"])
+    def test_update_constructs_for_a_deprecated_type(self, ptype):
+        """UPDATE is row-relative (v5.22.44). A PUT re-submits the row's own
+        current provider_type; constructing ProviderUpdate must NOT reject it,
+        or every edit/re-auth of a live deprecated provider 422s. The real
+        gate (refuse a CHANGE into a closed type) runs in update_provider()
+        where the existing type is known — see TestUpdateChangeGate."""
+        assert ProviderUpdate(name="x", provider_type=ptype).provider_type == ptype
 
     @pytest.mark.parametrize("model", [ProviderCreate, ProviderUpdate])
     def test_permitted_type_still_constructs(self, model):
@@ -90,10 +100,37 @@ class TestWiredIntoBothModels:
 
     @pytest.mark.parametrize("model", [ProviderCreate, ProviderUpdate])
     def test_the_ssrf_guard_survived_the_mixin_refactor(self, model):
-        """Both validators moved into one mixin; neither may be lost."""
+        """Both validators moved into one mixin; neither may be lost.
+        Neutralizing the provider_type validator on ProviderUpdate must not
+        take the base_url SSRF guard with it."""
         with pytest.raises(Exception):
             model(name="x", provider_type="openai",
                   base_url="http://169.254.169.254/latest/meta-data/")
+
+
+class TestUpdateChangeGate:
+    """v5.22.44 — the row-relative gate for PUT /api/providers/{id}.
+
+    Regression: re-authing the live ``Devin-Anthropic-Max-VG`` (claude-oauth)
+    returned 422 because the create-time gate fired on the row's own
+    unchanged deprecated type, contradicting the DEPRECATED tier's contract
+    that the existing row keeps working (incl. edits + OAuth re-auth)."""
+
+    @pytest.mark.parametrize("ptype", ["claude-oauth", "grok-web", "ChatGPT-oauth-plan"])
+    def test_keeping_a_closed_type_is_allowed(self, ptype):
+        # old == new: the operator is editing/re-authing an existing row.
+        assert validate_provider_type_change(ptype, ptype) is None
+
+    @pytest.mark.parametrize("closed", ["claude-oauth", "grok-web", "ChatGPT-oauth-plan"])
+    def test_changing_into_a_closed_type_is_refused(self, closed):
+        with pytest.raises(ValueError):
+            validate_provider_type_change("openai", closed)
+
+    def test_changing_between_open_types_is_allowed(self):
+        assert validate_provider_type_change("openai", "anthropic") is None
+
+    def test_none_new_passes(self):
+        assert validate_provider_type_change("claude-oauth", None) is None
 
 
 class TestGuardsWritesOnly:

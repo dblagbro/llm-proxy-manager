@@ -7,10 +7,10 @@ Covers:
   cost_per_1m_input_usd vs _output_usd as different rates
 - well-known config advertises /lmrh/stream when v2 enabled
 """
+
 from __future__ import annotations
 
 import pytest
-
 
 # ── pricing.estimate_cost_split ───────────────────────────────────────
 
@@ -18,6 +18,7 @@ import pytest
 def test_estimate_cost_split_returns_tuple():
     """v3.4.0: new helper returns (input_cost, output_cost)."""
     from app.monitoring.pricing import estimate_cost_split
+
     in_c, out_c = estimate_cost_split("openai/gpt-4o", 1000, 500)
     assert isinstance(in_c, float)
     assert isinstance(out_c, float)
@@ -30,6 +31,7 @@ def test_estimate_cost_split_returns_tuple():
 def test_estimate_cost_total_equals_split_sum():
     """estimate_cost is now a thin wrapper that sums the split."""
     from app.monitoring.pricing import estimate_cost, estimate_cost_split
+
     total = estimate_cost("openai/gpt-4o", 1000, 500)
     in_c, out_c = estimate_cost_split("openai/gpt-4o", 1000, 500)
     assert abs(total - (in_c + out_c)) < 1e-9
@@ -37,6 +39,7 @@ def test_estimate_cost_total_equals_split_sum():
 
 def test_estimate_cost_split_unknown_model_returns_zero_zero():
     from app.monitoring.pricing import estimate_cost_split
+
     assert estimate_cost_split("ollama/local-model", 100, 50) == (0.0, 0.0)
 
 
@@ -48,6 +51,7 @@ async def test_record_request_writes_per_direction_columns(monkeypatch):
     """When cost_split is passed, per-direction columns get the real
     values rather than the heuristic 50/50 split."""
     from app.monitoring import metrics
+
     captured = {}
 
     class FakeMetric:
@@ -68,22 +72,32 @@ async def test_record_request_writes_per_direction_columns(monkeypatch):
         output_tokens = 0
 
     class FakeQR:
-        def scalar_one_or_none(self):
+        def scalars(self):
+            return self
+
+        def first(self):
             return None  # force new-row branch
 
     class FakeDB:
         async def execute(self, *_a, **_k):
             return FakeQR()
+
         async def commit(self):
             pass
+
         def add(self, obj):
             captured["metric"] = obj
 
     monkeypatch.setattr(metrics, "get_all_states", lambda: {})
     fake = FakeDB()
     await metrics.record_request(
-        fake, "p1", True, input_tokens=1000, output_tokens=500,
-        latency_ms=200.0, cost_usd=0.0125,
+        fake,
+        "p1",
+        True,
+        input_tokens=1000,
+        output_tokens=500,
+        latency_ms=200.0,
+        cost_usd=0.0125,
         api_key_id=None,
         cost_split=(0.0025, 0.005),  # input cheap, output 2× per-token
     )
@@ -100,20 +114,37 @@ async def test_record_request_split_fallback_when_none(monkeypatch):
     token-proportional heuristic so per-direction columns still
     populate (better than zero)."""
     from app.monitoring import metrics
+
     captured = {}
 
     class FakeQR:
-        def scalar_one_or_none(self): return None
+        def scalars(self):
+            return self
+
+        def first(self):
+            return None
+
     class FakeDB:
-        async def execute(self, *_a, **_k): return FakeQR()
-        async def commit(self): pass
-        def add(self, obj): captured["metric"] = obj
+        async def execute(self, *_a, **_k):
+            return FakeQR()
+
+        async def commit(self):
+            pass
+
+        def add(self, obj):
+            captured["metric"] = obj
 
     monkeypatch.setattr(metrics, "get_all_states", lambda: {})
     fake = FakeDB()
     # 600 in / 400 out, $0.01 total, no cost_split passed
     await metrics.record_request(
-        fake, "p1", True, 600, 400, 100.0, 0.01,
+        fake,
+        "p1",
+        True,
+        600,
+        400,
+        100.0,
+        0.01,
         api_key_id=None,  # cost_split=None default
     )
     m = captured["metric"]
@@ -128,7 +159,9 @@ async def test_record_request_split_fallback_when_none(monkeypatch):
 def test_well_known_config_advertises_stream_when_v2_on(monkeypatch):
     """v3.4.0: /lmrh/stream is in endpoints when LMRHv2 enabled."""
     import asyncio
+
     from app.api import lmrh_v2 as lv2
+
     monkeypatch.setattr(lv2, "_v2_enabled", lambda: True)
     cfg = asyncio.run(lv2.well_known_config())
     assert "stream" in cfg["endpoints"]
@@ -139,7 +172,9 @@ def test_well_known_config_advertises_stream_when_v2_on(monkeypatch):
 def test_well_known_config_omits_stream_when_v2_off(monkeypatch):
     """When LMRHv2 disabled, no v2 endpoints are advertised."""
     import asyncio
+
     from app.api import lmrh_v2 as lv2
+
     monkeypatch.setattr(lv2, "_v2_enabled", lambda: False)
     cfg = asyncio.run(lv2.well_known_config())
     assert "stream" not in cfg["endpoints"]

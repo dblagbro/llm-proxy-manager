@@ -70,6 +70,11 @@ async def _refresh_one(provider, db) -> tuple[bool, str]:
     from app.providers.claude_oauth_flow import refresh_and_persist
     from app.routing.circuit_breaker import clear_auth_failure, force_close
 
+    # v5.22.52 — capture id BEFORE refresh_and_persist(): that call commits,
+    # which expires ORM attributes (expire_on_commit defaults True), so a later
+    # synchronous ``provider.id`` access triggers a lazy reload and raises
+    # sqlalchemy MissingGreenlet in this async context.
+    pid = provider.id
     try:
         await refresh_and_persist(provider, db)
     except Exception as exc:
@@ -81,8 +86,8 @@ async def _refresh_one(provider, db) -> tuple[bool, str]:
     # This is the half that actually un-sticks the provider. Without it the
     # row has a valid token but routing still skips it for the rest of the
     # 24-hour hold-down.
-    clear_auth_failure(provider.id)
-    await force_close(provider.id)
+    clear_auth_failure(pid)
+    await force_close(pid)
     return True, "refreshed; auth-failure cleared and breaker force-closed"
 
 
@@ -97,21 +102,36 @@ async def _run_one_sweep() -> None:
     detail: list[dict[str, Any]] = []
 
     async with AsyncSessionLocal() as db:
-        rows = await db.execute(
-            select(Provider).where(
+        # v5.22.53 — select IDs as plain scalars, then re-fetch each provider
+        # fresh inside the loop. A refresh failure takes the ``db.rollback()``
+        # branch below, and rollback() ALWAYS expires every ORM instance in the
+        # session (independent of the sessionmaker's expire_on_commit=False).
+        # Iterating a pre-loaded list of ORM objects and touching the next
+        # one's attributes then lazy-reloads and raises
+        # sqlalchemy MissingGreenlet in this async worker — which is exactly
+        # how the sweep died after the first invalid_grant provider (the
+        # v5.22.52 per-field snapshot only covered the current row, not the
+        # next iteration). Re-fetching per iteration keeps every access on a
+        # live instance.
+        id_rows = await db.execute(
+            select(Provider.id).where(
                 Provider.provider_type == "claude-oauth",
                 Provider.enabled.is_(True),
                 Provider.deleted_at.is_(None),
             )
         )
-        providers = list(rows.scalars().all())
+        provider_ids = [r[0] for r in id_rows.all()]
 
-        for p in providers:
-            if not p.oauth_refresh_token:
+        for pid in provider_ids:
+            p = (await db.execute(
+                select(Provider).where(Provider.id == pid).limit(1)
+            )).scalar_one_or_none()
+            if p is None or not p.oauth_refresh_token:
                 # Nothing this worker can do; the UI already shows
                 # "Needs re-auth" for this state.
                 continue
             checked += 1
+            pname = p.name
             expires_at = p.oauth_expires_at
             # A NULL expiry means we cannot reason about staleness. Treat it
             # as due: refreshing is cheap and idempotent, and leaving it
@@ -126,8 +146,8 @@ async def _run_one_sweep() -> None:
                 await db.commit()
                 logger.info(
                     "claude_oauth_expiry.refreshed provider=%s name=%s %s",
-                    p.id,
-                    p.name,
+                    pid,
+                    pname,
                     note,
                 )
             else:
@@ -135,11 +155,11 @@ async def _run_one_sweep() -> None:
                 await db.rollback()
                 logger.warning(
                     "claude_oauth_expiry.refresh_failed provider=%s name=%s %s",
-                    p.id,
-                    p.name,
+                    pid,
+                    pname,
                     note,
                 )
-            detail.append({"provider_id": p.id, "name": p.name, "ok": ok, "note": note})
+            detail.append({"provider_id": pid, "name": pname, "ok": ok, "note": note})
 
     _last_sweep.update(at=now, checked=checked, refreshed=refreshed, failed=failed, detail=detail)
 

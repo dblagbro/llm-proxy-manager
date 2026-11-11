@@ -148,6 +148,21 @@ async def chat_completions(
             f"Use POST /v1/embeddings instead of /v1/chat/completions.",
         )
     alias = await resolve_alias(db, body.get("model")) if not is_auto else None
+    # v5.22.47 — Daybreak Blue (OpenAI Trusted Access for Cyber) gate. Opt-in
+    # ONLY via the `daybreak`/`daybreak-blue` alias; authorized keys only; Red
+    # hard-blocked; audited. Returns the access_programs dict to inject into the
+    # Codex Responses body, or None for all normal traffic. The provider pin +
+    # model resolution ride the existing alias path (the `daybreak` ModelAlias
+    # row → approved provider, model_id codex-auto-review).
+    from app.providers.daybreak import daybreak_gate
+    _daybreak_access_programs = await daybreak_gate(
+        db, requested_model=body.get("model"), key_record=key_record, alias=alias,
+        client_user_agent=request.headers.get("user-agent"),
+    )
+    if _daybreak_access_programs is not None and alias is not None:
+        # The Codex dispatch sends body["model"] upstream; rewrite the alias
+        # name to the approved account's real slug so it isn't rejected.
+        body = {**body, "model": alias.model_id}
     # v3.0.x refactor: provider selection + 503 conversion + auto-model
     # resolution moved into _request_pipeline shared helpers. Both
     # /v1/messages and /v1/chat/completions go through the same code path
@@ -324,6 +339,8 @@ async def chat_completions(
             # can call record_outcome with the right tenant + lmrh_hint.
             key_record_id=key_record.id,
             llm_hint=llm_hint,
+            # v5.22.47 — Daybreak Blue cyber tier (None for normal traffic).
+            access_programs=_daybreak_access_programs,
         )
 
     # v5.22.37 — dispatch extracted to ``_completions_claude_oauth``; see that

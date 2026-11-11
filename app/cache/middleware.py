@@ -137,10 +137,17 @@ async def maybe_check(
             from app.compliance import get_effective_blocklist
             blocked_companies = await get_effective_blocklist(db, api_key_id)
         except Exception as exc:
-            # Resolving the blocklist must never block a cache lookup; fall
-            # through with no filter so the request itself can proceed.
-            logger.warning("cache.middleware.blocklist_resolve_failed %s", exc)
-            blocked_companies = None
+            # v5.22.43 — fail CLOSED. Resolving the blocklist failed, so we
+            # cannot prove a cached hit is from a permitted company. Bypassing
+            # the *filter* (blocked_companies=None) would serve a possibly-banned
+            # company's response — violating design decision 7 ("unknown =
+            # blocked"). Bypass the *cache* instead: the live request path still
+            # enforces the blocklist itself.
+            logger.warning(
+                "cache.middleware.blocklist_resolve_failed %s — bypassing cache", exc
+            )
+            observe_cache_lookup("bypass", endpoint)
+            return None
     cache = get_cache()
     hit = await cache.check(
         decision.namespace,

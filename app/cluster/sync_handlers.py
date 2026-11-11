@@ -483,7 +483,11 @@ async def _apply_compliance_events(db: AsyncSession, rows: list[dict]) -> int:
     logging)."""
     from app.models.db import ComplianceEvent
     applied = 0
-    allowed_cols = {col.name for col in ComplianceEvent.__table__.columns}
+    # v5.22.43 — never accept a peer-chosen primary key. The autoincrement `id`
+    # must be assigned locally; a peer-supplied `id` lets a sync insert forged
+    # rows at a chosen position in an already-hashed day, or collide on an
+    # existing PK to abort the whole apply_sync. Dedup is on `audit_id` below.
+    allowed_cols = {col.name for col in ComplianceEvent.__table__.columns} - {"id"}
     for row in rows:
         audit_id = row.get("audit_id")
         if not audit_id:
@@ -512,7 +516,9 @@ async def _apply_compliance_policy_changes(
     ``_apply_compliance_events``."""
     from app.models.db import CompliancePolicyChange
     applied = 0
-    allowed_cols = {col.name for col in CompliancePolicyChange.__table__.columns}
+    # v5.22.43 — drop peer-supplied PK (see _apply_compliance_events); dedup is
+    # on policy_change_id below.
+    allowed_cols = {col.name for col in CompliancePolicyChange.__table__.columns} - {"id"}
     for row in rows:
         policy_change_id = row.get("policy_change_id")
         if not policy_change_id:
@@ -726,6 +732,11 @@ async def _apply_api_keys(
                 existing.debug_echo_enabled = bool(
                     k_data["debug_echo_enabled"]
                 )
+            # v5.22.47 — Daybreak Blue authorization tier. Membership-test
+            # so a pre-v5.22.47 peer (which omits the key) can't clobber a
+            # local authorization back to None.
+            if "daybreak_tier" in k_data:
+                existing.daybreak_tier = k_data["daybreak_tier"]
             if peer_user_edit_at is not None:
                 existing.last_user_edit_at = peer_user_edit_at
         else:
@@ -758,6 +769,7 @@ async def _apply_api_keys(
                 debug_echo_enabled=bool(
                     k_data.get("debug_echo_enabled", False)
                 ),
+                daybreak_tier=k_data.get("daybreak_tier"),
                 last_user_edit_at=peer_user_edit_at,
             ))
         key_id = k_data.get("id")
@@ -870,6 +882,20 @@ async def _apply_providers(db: AsyncSession, rows: list[dict]) -> None:
                     or peer_updated_at >= local_updated
                 )
             if accept:
+                # v5.22.46 (BUG-112) — capture credential material before the
+                # merge. A re-auth (oauth-rotate) or background token refresh
+                # on the ORIGIN node force_closes its OWN circuit breaker, but
+                # that reset is node-local/in-memory and never crossed the
+                # wire — the peer kept routing against an open breaker (long
+                # exponential hold-down) until it happened to probe-recover,
+                # so a freshly re-authed account still looked broken on ~half
+                # of LB traffic. We reset the peer's breaker below iff the
+                # synced credentials actually changed.
+                _cred_before = (
+                    existing.api_key,
+                    existing.oauth_refresh_token,
+                    existing.oauth_expires_at,
+                )
                 if "name" in p_data:
                     existing.name = p_data["name"]
                 if "provider_type" in p_data:
@@ -970,6 +996,24 @@ async def _apply_providers(db: AsyncSession, rows: list[dict]) -> None:
                     existing.updated_at = peer_updated_at
                 if peer_user_edit_at is not None:
                     existing.last_user_edit_at = peer_user_edit_at
+                # v5.22.46 (BUG-112) — credentials rotated upstream: give this
+                # node's breaker a clean slate so the fresh token is tried at
+                # once instead of waiting out a stale exponential hold-down.
+                _cred_after = (
+                    existing.api_key,
+                    existing.oauth_refresh_token,
+                    existing.oauth_expires_at,
+                )
+                if _cred_after != _cred_before:
+                    try:
+                        from app.routing.circuit_breaker import (
+                            force_close,
+                            clear_auth_failure,
+                        )
+                        await force_close(existing.id)
+                        clear_auth_failure(existing.id)
+                    except Exception:
+                        pass
             continue
 
         if peer_deleted_at is not None:

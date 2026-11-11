@@ -56,13 +56,42 @@ SUBSCRIPTION_TIER_PROVIDER_TYPES = frozenset({
 # Anyone providing an api_key in the request body, or a system prompt with a
 # leaked token, gets it scrubbed before persisting.
 _SECRET_PATTERNS = [
+    # Anthropic
     (re.compile(r"sk-ant-(?:api|oat|ort)\d*-[\w-]+", re.I), "sk-ant-***REDACTED***"),
-    (re.compile(r"sk-[A-Za-z0-9]{20,}", re.I), "sk-***REDACTED***"),
-    (re.compile(r"AIza[A-Za-z0-9_-]{35}", re.I), "AIza***REDACTED***"),
-    (re.compile(r'"api_key"\s*:\s*"[^"]+"', re.I), '"api_key": "***REDACTED***"'),
-    (re.compile(r'(Authorization|x-api-key)\s*:\s*[^\s",]+', re.I),
+    # OpenAI family incl. sk-proj- / sk-svcacct- / OpenRouter sk-or-v1- — v5.22.43
+    # broadened: the old `sk-[A-Za-z0-9]{20,}` broke on the first hyphen of
+    # sk-proj-/sk-or-v1- and never matched them. Allow _ and - after sk-.
+    (re.compile(r"sk-[A-Za-z0-9_-]{16,}", re.I), "sk-***REDACTED***"),
+    # Google API key + Google OAuth access token
+    (re.compile(r"AIza[A-Za-z0-9_-]{35}"), "AIza***REDACTED***"),
+    (re.compile(r"ya29\.[A-Za-z0-9._-]+"), "ya29.***REDACTED***"),
+    # AWS access key id
+    (re.compile(r"AKIA[0-9A-Z]{16}"), "AKIA***REDACTED***"),
+    # Groq / xAI / HuggingFace / GitHub / this proxy's own caller keys
+    (re.compile(r"gsk_[A-Za-z0-9]{20,}"), "gsk_***REDACTED***"),
+    (re.compile(r"xai-[A-Za-z0-9]{20,}"), "xai-***REDACTED***"),
+    (re.compile(r"hf_[A-Za-z0-9]{20,}"), "hf_***REDACTED***"),
+    (re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}"), "gh_***REDACTED***"),
+    (re.compile(r"llmp-[A-Za-z0-9_-]{20,}"), "llmp-***REDACTED***"),
+    # Generic JWT (bearer tokens, id_tokens)
+    (re.compile(r"eyJ[\w-]+\.[\w-]+\.[\w-]+"), "eyJ***REDACTED***"),
+    # JSON "key": "value" for any sensitive-looking key (defence-in-depth; the
+    # structural pass below is the primary defence for structured bodies)
+    (re.compile(
+        r'"(?i:authorization|api[_-]?key|access[_-]?token|refresh[_-]?token|'
+        r'client[_-]?secret|password|secret|token|cookie)"\s*:\s*"[^"]*"'
+    ), '"***REDACTED***": "***REDACTED***"'),
+    # Raw header form: redact the VALUE, not just the scheme word (the old
+    # pattern left `Bearer <token>` intact).
+    (re.compile(r'(?im)^(authorization|x-api-key)\s*:\s*.+$'),
      r'\1: ***REDACTED***'),
 ]
+
+# Keys whose VALUE is a secret, matched structurally before serialization.
+_SENSITIVE_KEY_RE = re.compile(
+    r"(?i)(authorization|api[_-]?key|access[_-]?token|refresh[_-]?token|"
+    r"client[_-]?secret|password|secret|token|cookie|credential|set-cookie)"
+)
 
 
 def _redact(text: str) -> str:
@@ -71,13 +100,34 @@ def _redact(text: str) -> str:
     return text
 
 
+def _redact_structure(obj: Any, _depth: int = 0) -> Any:
+    """Walk a dict/list and null any value whose KEY names a secret. This is the
+    primary defence for structured bodies: the lexical pass over json.dumps text
+    could never redact ``{"Authorization": "Bearer ya29..."}`` because the key is
+    quoted, so ``\\s*:\\s*`` never matched after the closing quote. Bounded depth
+    so a pathological body cannot blow the stack."""
+    if _depth > 25:
+        return obj
+    if isinstance(obj, dict):
+        out = {}
+        for k, v in obj.items():
+            if isinstance(k, str) and _SENSITIVE_KEY_RE.search(k):
+                out[k] = "***REDACTED***"
+            else:
+                out[k] = _redact_structure(v, _depth + 1)
+        return out
+    if isinstance(obj, list):
+        return [_redact_structure(v, _depth + 1) for v in obj]
+    return obj
+
+
 def _serialize_body(body: Any, max_chars: int) -> Optional[str]:
     """Compact-JSON serialize + redact + truncate. Returns None on failure."""
     if body is None:
         return None
     try:
         if isinstance(body, (dict, list)):
-            text = json.dumps(body, ensure_ascii=False, default=str)
+            text = json.dumps(_redact_structure(body), ensure_ascii=False, default=str)
         else:
             text = str(body)
     except Exception:
@@ -89,6 +139,15 @@ def _serialize_body(body: Any, max_chars: int) -> Optional[str]:
 
 
 def _extract_preview(body: Any, max_chars: int = 240) -> Optional[str]:
+    """Redacting wrapper (v5.22.43). The preview path is default-on
+    (``activity_log_capture_previews`` defaults True) and previously stored the
+    extracted text verbatim — so a secret a caller pasted into a user message
+    landed un-redacted in activity_log. Scrub the extracted text before storing."""
+    raw = _extract_preview_raw(body, max_chars)
+    return _redact(raw) if isinstance(raw, str) else raw
+
+
+def _extract_preview_raw(body: Any, max_chars: int = 240) -> Optional[str]:
     """v3.0.34: extract a short text preview from a request/response body
     BEFORE truncation. Frontend was falling through to raw JSON when the
     serialized body exceeded the truncation cap (50k default) — JSON.parse
@@ -721,7 +780,9 @@ async def record_outcome(
         # filtering: auth / billing / rate_limit / timeout / network /
         # upstream_5xx / bad_request / unknown. Lets ops answer "are
         # timeout errors spiking?" without grepping the error blob.
-        meta["error"] = error_str[:2000] if error_str else None
+        # v5.22.43 — upstream auth-error strings sometimes echo the request /
+        # the offending credential; redact before persisting to event_meta.
+        meta["error"] = _redact(error_str)[:2000] if error_str else None
         meta["error_class"] = classify_error(error_str or "")
         meta = _attach_bodies(meta, request_body, response_body)
         meta = _maybe_sample_4xx_body(meta, request_body, meta["error_class"])
