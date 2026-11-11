@@ -156,10 +156,9 @@ exactly; image-identity receipts are retained. No unchanged image was rescanned.
 See `docs/evidence/grok-primary-acceptance-20261110.json` and the updated recovery
 and browser evidence files.
 
-The scoped deployment/rollback operator is still unfinished. Before rollout,
-prepare and test exact-byte configuration guards and explicit stop-intent/state recovery
-after ambiguous CLI timeouts; refresh the quiesced snapshot at cutover and retain
-the original image/volume pair. No production proxy reload, configuration write,
+The maintained deployment/rollback operator and its isolated lifecycle rehearsal
+are complete as described below. Before rollout, refresh the quiesced snapshot
+at cutover and retain the original image/volume pair. No production proxy reload, configuration write,
 merge or candidate deployment is claimed. Preserve all retained recovery copies.
 
 
@@ -190,7 +189,7 @@ operator tests and scoped lint/format pass on Linux. The source adds a Python3.1
 CI job to cover the actual primary host runtime. Sanitized evidence is in
 `docs/evidence/grok-release-operator-20261110.json`. No service stop, cutover snapshot,
 production configuration edit, deployment or real rollback occurred in this stage.
-The full isolated Compose lifecycle rehearsal remains pending.
+The subsequently completed isolated Compose lifecycle rehearsal is recorded below.
 
 
 ### Maintained operator lifecycle rehearsal (2026-11-11)
