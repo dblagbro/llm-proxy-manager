@@ -59,5 +59,55 @@
   "limitations": [
     "Synthetic lifecycle does not establish production release approval or provider acceptance.",
     "The original image and candidate image are pinned; this is not an unchanged-image rescan."
-  ]
+  ],
+  "maintained_makefile_target": {
+    "phase": "isolated_full_operator_rehearsal_passed_not_deployed",
+    "operator_sha256": "87e042bc57fb80acd122fb3e108ad641f70debf67d51973029afa1f160ecdd30",
+    "harness_sha256": "29c2777eda0b1b4baebc0bf28e76b42e1b5b436666d05c0c2330d018c2837207",
+    "source_commit": "b06a02c041a767697897a852d4a24784f8c989a0",
+    "production_deployed": false,
+    "production_data_used": false,
+    "provider_network_used": false,
+    "original_image": "sha256:be048c4e54812ef811f14520a0fed1bc71486ad7619296b11c189d482846856e",
+    "candidate_image": "sha256:2d6e56831b6c36dae36e4f775f9397bcf1ffb4a8dc8e9cb533434e85ab56e0c8",
+    "nginx_image": "sha256:67a10554437ff2017327a3ebb36c8a779f38a7f67f861980109c1cd81e133c4a",
+    "scenarios": [
+      {
+        "scenario": "roundtrip",
+        "passed": true,
+        "final_phase": "rolled_back",
+        "snapshot_verified": true,
+        "original_volume_preserved": true,
+        "candidate_data_retained": true,
+        "nginx_container_unchanged": true,
+        "config_bytes_restored": true,
+        "missing_container_fault_injected": false,
+        "proxy_without_provider_probe": true,
+        "retained_synthetic_volumes": [
+          "grok-op-20261111c-a-data"
+        ],
+        "owned_containers_and_networks_removed": true
+      },
+      {
+        "scenario": "missing-after-create-failure",
+        "passed": true,
+        "final_phase": "rolled_back",
+        "snapshot_verified": true,
+        "original_volume_preserved": true,
+        "candidate_data_retained": true,
+        "nginx_container_unchanged": true,
+        "config_bytes_restored": true,
+        "missing_container_fault_injected": true,
+        "proxy_without_provider_probe": false,
+        "retained_synthetic_volumes": [
+          "grok-op-20261111c-b-data"
+        ],
+        "owned_containers_and_networks_removed": true
+      }
+    ],
+    "updated_utc": "2026-11-11T00:21:18.854025+00:00",
+    "production_runtime_unchanged": true,
+    "operator_source_unchanged": true,
+    "synthetic_gates_not_production_authorization": true
+  }
 }
