@@ -145,3 +145,37 @@ this one release; the waiver expires after 5.22.54 and does not extend to any
 later release. PR12 remains draft. All other recovery, rollback and sequential
 live acceptance gates remain required — this waiver does not by itself authorize
 build, push, or deploy.
+
+
+## Primary offline recovery acceptance (November 11)
+
+The primary-only maintained harness under `tools/gateway_recovery/` passed two
+candidate boot/clean-stop cycles and original-image recovery from a separate
+fresh snapshot copy. Every copied SQLite database passed integrity checks;
+credential-record subsets, schema agreement across cycles, retained snapshot
+hashes and unrelated production container identities remained valid. Owned
+test containers were removed, while fresh copies and private logs are retained.
+The 56 source-only tests pass on the server's Python 3.10; scoped lint and
+formatting pass. CI checks the harness on Python 3.10 and 3.13.
+
+This uses the already-recorded immutable images and performs no new scan.
+Network mode `none`, no published ports or sockets, private copy-only mounts,
+resource limits and a read-only root filesystem constrain the test. Background
+workers still run and may modify copied runtime records; their provider/cluster
+delivery is prevented by network isolation. Raw logs/environment and private
+credential fingerprints are excluded from GitHub. See the
+[sanitized result](evidence/gateway-primary-offline-recovery-20261111.json) and
+[runbook](../tools/gateway_recovery/RUNBOOK.md).
+
+Production remains on 5.22.53. The peer's independent runtime recovery, actual
+single-service rollout/rollback configuration, fresh cutover snapshots, final
+release checks and live acceptance remain open. Recovery uses an original
+snapshot copy and does not prove downgrade over candidate-modified data. This
+test supplies no new approval or waiver of repository release controls.
+
+Release-policy evidence note (November 11): the earlier owner-approval statement
+above has not been reconciled to direct owner evidence in this remediation
+checkpoint. The recorded gateway blocker thread contains a clarification request
+and the agent response, with no approval reply. Keep the lint-policy gate open
+until the original approval evidence or an explicit owner decision is available.
+This recovery result does not establish that approval.

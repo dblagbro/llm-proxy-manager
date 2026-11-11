@@ -158,3 +158,19 @@ test-grok-release-docker:
 	test -n "$(GROK_RELEASE_TEST_DIR)" && test -n "$(GROK_CAPACITY_GUARD)"
 	test ! -e "$(GROK_RELEASE_TEST_DIR)"
 	sudo "$(GROK_RELEASE_PYTHON)" "$(GROK_CAPACITY_GUARD)" --peak-gib 3 -- "$(GROK_RELEASE_PYTHON)" "$(CURDIR)/grok_bridge/deployment/rehearse_release.py" --source-root "$(CURDIR)" --out "$(GROK_RELEASE_TEST_DIR)"
+
+# Offline primary gateway recovery: unit tests use synthetic state and fake Docker.
+GATEWAY_RECOVERY_PYTHON ?= python3
+GATEWAY_RECOVERY_RUN_ID ?=
+GATEWAY_CAPACITY_GUARD ?=
+.PHONY: test-gateway-recovery lint-gateway-recovery test-gateway-recovery-docker
+test-gateway-recovery:
+	$(GATEWAY_RECOVERY_PYTHON) -m pytest tools/gateway_recovery/test_rehearse_gateway.py -q -p no:cacheprovider
+
+lint-gateway-recovery:
+	ruff check --config tools/gateway_recovery/ruff.toml tools/gateway_recovery
+	ruff format --check --config tools/gateway_recovery/ruff.toml tools/gateway_recovery
+
+test-gateway-recovery-docker:
+	test -n "$(GATEWAY_RECOVERY_RUN_ID)" && test -n "$(GATEWAY_CAPACITY_GUARD)"
+	sudo "$(GATEWAY_RECOVERY_PYTHON)" "$(GATEWAY_CAPACITY_GUARD)" --peak-gib 3 -- "$(GATEWAY_RECOVERY_PYTHON)" "$(CURDIR)/tools/gateway_recovery/rehearse_gateway.py" --run-id "$(GATEWAY_RECOVERY_RUN_ID)"

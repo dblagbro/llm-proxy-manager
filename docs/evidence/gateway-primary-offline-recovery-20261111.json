@@ -1,0 +1,53 @@
+{
+  "background_workers_disabled": false,
+  "candidate_clean_cycles": 2,
+  "candidate_image": "sha256:13771511ed12cf18e122978ccbe48af43010dbf91aa81294dc8eb0d08d00acc3",
+  "candidate_restart_and_original_schema_equal": true,
+  "credential_subsets_preserved": true,
+  "database_integrity_passed": true,
+  "deployed": false,
+  "downgrade_on_candidate_migrated_database_tested": false,
+  "fresh_copies_verified": true,
+  "network_mode": "none",
+  "offline_endpoint_statuses": {
+    "candidate": [
+      "healthy",
+      "healthy"
+    ],
+    "original-recovery": [
+      "healthy"
+    ]
+  },
+  "online_behavior_verified": false,
+  "original_image": "sha256:21a85131e8b68dbdcd13c5bc0d7a5ec56fd971565ed3d481eadb1b75e33cd900",
+  "original_recovery_clean_cycles": 1,
+  "phase": "offline_recovery_passed_not_deployed",
+  "production_rollout_approved": false,
+  "provider_or_cluster_delivery_possible": false,
+  "published_ports": false,
+  "snapshot_unchanged": true,
+  "unrelated_container_identity_state_unchanged": true,
+  "harness_sha256": "81d5cc2e7c4c4f93875c5b3bb48a0ad3ed97cfae65b5b7b6d55bea85cd39b2bc",
+  "unit_tests": {
+    "passed": 56,
+    "platform": "Linux",
+    "python": "3.10",
+    "Docker": "simulated"
+  },
+  "scoped_lint": "passed",
+  "host": "tmrwww01",
+  "peer_runtime_recovery_tested": false,
+  "runtime_image_changed": false,
+  "new_vulnerability_scan": false,
+  "private_logs_credentials_and_application_data_exported": false,
+  "checked_utc": "2026-11-11T00:42:03.092215+00:00",
+  "prior_attempts": [
+    {
+      "run_id": "20261111t0034z",
+      "phase": "failed_not_deployed",
+      "cause": "Harness expected the shadowed static health response; active cluster health route returns healthy or degraded. Corrected probe has response regression tests.",
+      "owned_containers_removed": true,
+      "cleanup_errors": []
+    }
+  ]
+}
