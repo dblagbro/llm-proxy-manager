@@ -1,14 +1,14 @@
 # Grok release operator — staged, not deployed
 
-This source is a reviewable candidate for the maintained repository. Its unit
-tests use synthetic files and simulated Docker commands. They do not certify
-that an actual deployment or rollback has succeeded. No release command was run
-while developing this operator. The repository's Grok release/lint gate remains
-unresolved; The requested gateway5.22.54 exception does not cover Grok.
-
-An isolated full-operator Docker Compose lifecycle rehearsal is still pending.
-Source tests and a successful prepare stage do not prove that lifecycle. Exercise
-actual create/recreate/rollback against synthetic state before production cutover.
+The maintained operator has 35 passing synthetic failure-path tests on Linux /
+Python 3.10. Guarded prepare also passed against the actual canonical Compose and
+complete Nginx configuration without changing production. The full isolated Docker
+rehearsal passed both candidate deployment followed by explicit rollback, and
+recovery after the stopped original fixture was removed before failed creation.
+See `docs/evidence/grok-operator-lifecycle-20261111.json` for immutable image and
+operator source identities. Production has not been upgraded or rolled back.
+The repository's Grok release/lint policy remains unresolved; the requested gateway
+5.22.54 exception does not cover Grok.
 
 ## Scope and invariants
 
@@ -32,27 +32,53 @@ actual create/recreate/rollback against synthetic state before production cutove
   retain the old inode after an atomic rename. Exact-byte CAS and advisory locks
   detect changes before writing; nginx is tested before reload.
 
-## Review and tests before integration
+## Repeatable tests
 
 Install `requirements.txt`, pytest and ruff in an isolated development environment.
-Run `python -m pytest test_release.py -q -p no:cacheprovider` and scoped ruff checks.
+Run `make test-grok-release lint-grok-release`.
 Tests cover original/candidate data separation, exact CAS conflicts, archive
 traversal, real restored-file hash checks, stop timeout recovery, missing service
 after a failed Compose create, rollback after a failed probe, preservation of a
 concurrent edit, immutable ownership checks, and release-policy refusal.
 
-Integrate the operator/tests/runbook into maintained source and expose commands
-through the repository Makefile. Review the final source/CI and the exact candidate
-mapping. Do not change the example evidence booleans merely to make the command
-run. The operator consumes an audited evidence record; it cannot independently
-verify GitHub approvals or establish a new lint exception.
+For the real Docker rehearsal, use a fresh directory directly under
+`/tmp/codex-remediate-20261109` on the primary host:
+
+```sh
+make test-grok-release-docker \
+  GROK_RELEASE_TEST_DIR=/tmp/codex-remediate-20261109/NEW-UNIQUE-ATTEMPT \
+  GROK_CAPACITY_GUARD=/absolute/path/to/capacity_guard.py \
+  GROK_RELEASE_PYTHON=/absolute/path/to/isolated-venv/bin/python
+```
+
+The venv needs the pinned deployment requirements. Three GiB of estimated growth
+plus the shared reserve must fit. The harness imports the maintained operator,
+changes fixture identities/paths, and exercises its actual Compose, snapshot,
+probe, rollback and lock code. Its network is internal with no published ports;
+profiles, tokens and configuration are synthetic. It verifies candidate-only
+writes cannot reach the original volume, restores all configuration bytes, and
+checks unrelated container IDs, image IDs, configuration hashes and mounts.
+Only newly owned containers/networks are removed. Synthetic volumes, snapshots
+and failed generations remain for inspection. Never reuse an attempt directory.
+
+Production Docker metadata is read for invariants. Raw operator logs may contain
+private environment values from inspection: keep the entire attempt root-only
+and export only the reviewed `result.json`, never `commands.private.log` or other
+transaction files. In-memory fixture gate values are explicitly synthetic; they
+must never be reused as production approval evidence. A first attempt refused
+root Git ownership before fixture creation; the harness now supplies the exact
+reviewed repository as a per-command safe directory without changing Git config.
+
+Review the final source/CI and exact candidate mapping. Do not change the example
+evidence booleans merely to make the command run. The operator consumes an audited
+evidence record; it cannot verify GitHub approval or establish a lint exception.
 
 The main agent must first test `prepare` against the actual canonical configuration
 and review its private resolved diff. This does not change production service
 configuration or stop a service, but it writes private staging files and creates
 an owned temporary Nginx validation container. It is not a zero-side-effect check.
 
-## Exact invocation shape (not executed)
+## Production invocation shape (deployment not executed)
 
 Use absolute paths for the reviewed operator, current capacity guard, maintained
 Nginx fragment and a new private transaction directory. Example path names below
@@ -138,8 +164,9 @@ transaction. Start a new preparation only after the prior state is understood.
 
 ## Remaining acceptance limits
 
-- Source/unit tests do not prove actual canonical Compose compatibility or an actual
-  deployment/rollback. Run the non-deploying prepare stage after integration first.
+- Canonical prepare and isolated lifecycle passed for the recorded source and images.
+  Repeat prepare on fresh live configuration at cutover; isolated success does not
+  establish production browser/provider acceptance or release-policy approval.
 - Advisory file locks cannot serialize unrelated editors that ignore those locks;
   whole-file CAS detects existing conflicts, but filesystem compare-and-write is
   not a kernel-supported transaction across the three configuration files.

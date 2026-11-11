@@ -191,3 +191,19 @@ CI job to cover the actual primary host runtime. Sanitized evidence is in
 `docs/evidence/grok-release-operator-20261110.json`. No service stop, cutover snapshot,
 production configuration edit, deployment or real rollback occurred in this stage.
 The full isolated Compose lifecycle rehearsal remains pending.
+
+
+### Maintained operator lifecycle rehearsal (2026-11-11)
+
+`make test-grok-release-docker` exercises the maintained release operator with the
+exact primary original/candidate images on synthetic, isolated Docker resources.
+Both full deployment/explicit rollback and failed-create recovery passed. The
+original named volume remains separate from candidate data; independent restore,
+candidate-only writes, Nginx container/configuration restoration and unchanged
+production inventory were verified. All owned containers/networks were removed,
+with synthetic data retained. See [sanitized evidence](evidence/grok-operator-lifecycle-20261111.json)
+and the [operator runbook](../grok_bridge/deployment/RUNBOOK.md).
+
+Production remains on the original image. No real provider call or new scan was
+performed. Global lint/release policy, parent PR resolution, final CI and a fresh
+cutover snapshot still gate deployment.

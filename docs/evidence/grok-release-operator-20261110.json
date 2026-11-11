@@ -17,13 +17,15 @@
   "candidate_data_created": false,
   "production_deployed": false,
   "actual_rollback_performed": false,
-  "isolated_full_operator_lifecycle_rehearsal": "pending",
+  "isolated_full_operator_lifecycle_rehearsal": "passed",
   "release_policy": "unresolved",
   "first_prepare_attempt": "refused_before_mutation_on_unused_volume_rendering_difference",
   "runtime_inputs_unchanged": true,
   "limitations": [
-    "Mock failure-path tests and staged configuration validation do not prove an actual Compose deployment/rollback.",
-    "Full isolated lifecycle rehearsal and final release gates remain required.",
-    "No new vulnerability scan, real provider request or production reload occurred."
-  ]
+    "Production remains unchanged; successful isolated rollback does not certify a production rollout.",
+    "Release policy, final required checks, cutover snapshot and live acceptance remain required.",
+    "No new vulnerability scan or real provider/account request was performed."
+  ],
+  "isolated_lifecycle_evidence": "grok-operator-lifecycle-20261111.json",
+  "isolated_actual_rollback_performed": true
 }
