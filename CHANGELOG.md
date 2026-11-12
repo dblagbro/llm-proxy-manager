@@ -2,6 +2,19 @@
 
 All notable changes since v2.7.6. Older history available in `git log`.
 
+### v5.22.56 (2026-11-12)
+
+Per-API-key `metered_allowed` guard. New `api_keys.metered_allowed` column
+(BOOLEAN NOT NULL, default true; idempotent ALTER). When false, `select_provider`
+drops every provider whose effective cost_class is not "subscription" (explicit
+`cost_class`, else derived from `SUBSCRIPTION_TIER_PROVIDER_TYPES` via the new
+`monitoring.helpers.is_subscription_provider`) after the tenant filter and
+before the circuit-breaker filter, so an outage of the key's unmetered providers
+degrades to a 503 instead of failing over to a pay-per-call provider (tax-ai-analyzer
+incident). Retry/failover paths re-enter `select_provider` with the same key and
+inherit it. Round-trips through cluster sync (membership-test apply) and
+`PATCH /api/keys/{id}` (`{"metered_allowed": false}`). Default true = no behavior change.
+
 ### v5.22.55 / Grok bridge 1.2.0 security candidate (2026-11-10)
 
 Protect Grok browser control with a verified LLM Proxy administrator session,

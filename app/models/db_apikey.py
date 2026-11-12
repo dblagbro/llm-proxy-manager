@@ -183,6 +183,12 @@ class ApiKey(Base):
     # arbitrary callers. Red is hard-blocked in code regardless of this value.
     # See app/providers/daybreak.py.
     daybreak_tier = Column(String, nullable=True)
+    # v5.22.56 — per-key metered-provider guard. True (default) = key may
+    # route to any provider. False = the router drops every provider whose
+    # effective cost_class is not "subscription", so when the key's
+    # unmetered providers are down the request degrades to a 503 instead of
+    # failing over to a pay-per-call provider and spending money.
+    metered_allowed = Column(Boolean, nullable=False, default=True, server_default="1")
 
 
 class ApiKeyAiReview(Base):

@@ -52,6 +52,18 @@ SUBSCRIPTION_TIER_PROVIDER_TYPES = frozenset({
 })
 
 
+def is_subscription_provider(provider) -> bool:
+    """True when the provider's EFFECTIVE cost_class is "subscription".
+
+    Explicit ``cost_class`` wins; NULL derives from provider_type via
+    SUBSCRIPTION_TIER_PROVIDER_TYPES. Mirrors routing/lmrh/snapshot.py.
+    """
+    cc = getattr(provider, "cost_class", None)
+    if cc is not None:
+        return cc == "subscription"
+    return getattr(provider, "provider_type", None) in SUBSCRIPTION_TIER_PROVIDER_TYPES
+
+
 # v2.8.4: redact known secret patterns in case they leak into logged bodies.
 # Anyone providing an api_key in the request body, or a system prompt with a
 # leaked token, gets it scrubbed before persisting.

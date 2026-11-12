@@ -570,6 +570,8 @@ async def init_db():
             # authorization. NULL = not authorized (default); "blue" = may
             # invoke the daybreak alias. See app/providers/daybreak.py.
             "ALTER TABLE api_keys ADD COLUMN daybreak_tier TEXT",
+            # v5.22.56 — per-key metered-provider guard (default allowed).
+            "ALTER TABLE api_keys ADD COLUMN metered_allowed BOOLEAN NOT NULL DEFAULT 1",
         ]:
             try:
                 await conn.exec_driver_sql(stmt)

@@ -300,6 +300,23 @@ def _drop_own_dispatcher_types(providers: list) -> list:
     return filtered
 
 
+async def _key_metered_allowed(db: AsyncSession, key_id: str) -> bool:
+    """Return the key's ``metered_allowed`` flag (True when unknown).
+
+    Only an explicit False restricts routing. Lookup failures fail open
+    (logged) so a transient DB error can't turn into a routing outage.
+    """
+    from app.models.db import ApiKey
+    try:
+        val = (await db.execute(
+            select(ApiKey.metered_allowed).where(ApiKey.id == key_id)
+        )).scalar_one_or_none()
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("metered_allowed lookup failed for key %s: %s", key_id, exc)
+        return True
+    return val is not False
+
+
 async def select_provider(
     db: AsyncSession,
     hint: Optional[LMRHHint],
@@ -520,6 +537,22 @@ async def select_provider(
             "a different key. Provision your own provider records or ask the "
             "operator to grant access."
         )
+
+    # v5.22.56 — per-key metered guard. A key with metered_allowed=False may
+    # only use subscription (unmetered) providers; metered/per_call ones are
+    # dropped BEFORE the availability filter so an outage of the unmetered
+    # providers degrades to the "no providers" error (503) rather than
+    # silently failing over to a pay-per-call provider. Every retry/failover
+    # path re-enters select_provider with the same key, so it inherits this.
+    if effective_key and not await _key_metered_allowed(db, effective_key):
+        from app.monitoring.helpers import is_subscription_provider
+        providers = [p for p in providers if is_subscription_provider(p)]
+        if not providers:
+            raise RuntimeError(
+                "No unmetered providers available — this key is restricted "
+                "to subscription providers (metered_allowed=false) and none "
+                "are eligible."
+            )
 
     # Filter available (circuit breaker + hold-down)
     available = [p for p in providers if await is_available(p.id)]
