@@ -141,6 +141,58 @@ def test_machine_token_does_not_need_browser_origin(site):
     assert calls == ["chat"]
 
 
+@pytest.mark.parametrize("path", ["/api/login/start", "/api/conversation/new"])
+def test_token_alone_denied_on_browser_control_paths(site, path):
+    client, _, calls, verifier = site
+    verifier.side_effect = HTTPException(401, "administrator login required")
+    # Valid token, no Origin, no session: must not authorize.
+    assert client.post(path, headers={"X-Bridge-Token": TOKEN}).status_code == 403
+    # Valid token + correct Origin but no admin session: still denied.
+    assert client.post(path, headers={"X-Bridge-Token": TOKEN, "Origin": ORIGIN}).status_code == 401
+    assert not calls
+
+
+def test_token_alone_denied_on_safe_browser_path(site):
+    client, _, calls, verifier = site
+    verifier.side_effect = HTTPException(401, "administrator login required")
+    assert client.get("/api/status", headers={"X-Bridge-Token": TOKEN}).status_code == 401
+    assert not calls
+
+
+def test_token_does_not_bypass_admin_session_check(site):
+    client, _, calls, verifier = site
+    response = client.post(
+        "/api/login/start",
+        headers={"X-Bridge-Token": TOKEN, "Cookie": "synthetic=session", "Origin": ORIGIN},
+    )
+    assert response.status_code == 200
+    verifier.assert_awaited_once_with("synthetic=session")
+    assert calls == ["navigate"]
+
+
+def test_websocket_token_alone_denied(site, monkeypatch):
+    client, _, _, verifier = site
+    verifier.side_effect = HTTPException(401, "administrator login required")
+    connect = AsyncMock()
+    monkeypatch.setattr(security, "connect", connect)
+    for headers in ({"X-Bridge-Token": TOKEN}, {"X-Bridge-Token": TOKEN, "Origin": ORIGIN}):
+        with (
+            pytest.raises(WebSocketDisconnect),
+            client.websocket_connect("/vnc/websockify", headers=headers),
+        ):
+            pytest.fail("token-only socket opened")
+    connect.assert_not_called()
+
+
+@pytest.mark.parametrize("path", sorted(security.TOKEN_ONLY_PATHS - {"/api/chat"}))
+def test_token_only_paths_still_accept_token(site, path):
+    # Routes other than /api/chat are not registered in the fixture app, so a
+    # 404 from the router (not 401/403/503 from the gate) proves authorization.
+    client, _, _, verifier = site
+    assert client.post(path, headers={"X-Bridge-Token": TOKEN}).status_code == 404
+    verifier.assert_not_called()
+
+
 def test_cookie_cannot_replace_machine_token(site):
     client, _, calls, verifier = site
     assert (
@@ -156,9 +208,9 @@ def test_cookie_cannot_replace_machine_token(site):
 def test_wrong_token_cannot_fall_back_to_admin_cookie(site):
     client, _, calls, verifier = site
     assert (
-        client.get(
-            "/api/status",
-            headers={"X-Bridge-Token": "wrong", "Cookie": "synthetic=session"},
+        client.post(
+            "/api/chat",
+            headers={"X-Bridge-Token": "wrong", "Cookie": "synthetic=session", "Origin": ORIGIN},
         ).status_code
         == 401
     )

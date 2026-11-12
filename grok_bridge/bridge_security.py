@@ -59,7 +59,10 @@ class BridgeAccess:
         # Missing configuration must never open either token or browser access.
         if not self.token:
             raise HTTPException(503, "bridge authentication is not configured")
-        if supplied is not None or token_only:
+        # The machine token is honoured ONLY on the token-only inference paths.
+        # Everywhere else (browser control, VNC websocket, static assets) a
+        # supplied token grants nothing: fall through to Origin + admin session.
+        if token_only:
             require_token(self.token, supplied)
             return
         is_websocket = connection.scope["type"] == "websocket"

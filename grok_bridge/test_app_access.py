@@ -50,19 +50,28 @@ def test_anonymous_actual_routes_have_no_side_effects(bridge, path, method):
     module._context.add_cookies.assert_not_called()
 
 
-def test_token_navigation_executes_only_after_auth(bridge):
-    _, client, page = bridge
-    assert (
-        client.post("/api/login/start", headers={"X-Bridge-Token": "incorrect"}).status_code == 401
-    )
+def _admin_session(module, monkeypatch):
+    """Same mechanism as test_security.py: stub the admin-session verifier."""
+    verifier = AsyncMock()
+    monkeypatch.setattr(module.app.state.bridge_access, "admin_session", verifier)
+    return verifier
+
+
+ADMIN_HEADERS = {"Cookie": "synthetic=session", "Origin": "https://operator.example.test"}
+
+
+def test_token_navigation_executes_only_after_auth(bridge, monkeypatch):
+    module, client, page = bridge
+    # The bridge token (valid or not) grants nothing on /api/login/start.
+    for token in ("incorrect", "synthetic-bridge-test-value"):
+        response = client.post("/api/login/start", headers={"X-Bridge-Token": token})
+        assert response.status_code in (401, 403)
     page.goto.assert_not_called()
-    assert (
-        client.post(
-            "/api/login/start",
-            headers={"X-Bridge-Token": "synthetic-bridge-test-value"},
-        ).status_code
-        == 200
-    )
+    # Authenticated administrator session + same origin: navigation runs.
+    verifier = _admin_session(module, monkeypatch)
+    response = client.post("/api/login/start", headers=ADMIN_HEADERS)
+    assert response.status_code == 200
+    verifier.assert_awaited_once_with("synthetic=session")
     page.goto.assert_awaited_once()
 
 
@@ -75,9 +84,15 @@ def test_health_version_and_dead_browser(bridge):
     assert client.get("/healthz").status_code == 503
 
 
-def test_login_html_preserves_subpath_and_hides_token(bridge):
-    _, client, _ = bridge
-    response = client.get("/login", headers={"X-Bridge-Token": "synthetic-bridge-test-value"})
+def test_login_html_preserves_subpath_and_hides_token(bridge, monkeypatch):
+    module, client, _ = bridge
+    # No admin session: the bridge token must not unlock the login page.
+    denied = client.get("/login", headers={"X-Bridge-Token": "synthetic-bridge-test-value"})
+    assert denied.status_code in (401, 403)
+    _admin_session(module, monkeypatch)
+    response = client.get(
+        "/login", headers={**ADMIN_HEADERS, "X-Bridge-Token": "synthetic-bridge-test-value"}
+    )
     assert response.status_code == 200
     assert "synthetic-bridge-test-value" not in response.text
     assert "/grok-bridge/vnc/vnc.html" in response.text
