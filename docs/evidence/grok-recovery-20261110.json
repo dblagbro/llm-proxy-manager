@@ -1,0 +1,64 @@
+{
+  "original": {
+    "phase": "backup_and_original_rollback_verified",
+    "original_image": "sha256:be048c4e54812ef811f14520a0fed1bc71486ad7619296b11c189d482846856e",
+    "deployed": false,
+    "provider_network_used": false,
+    "profile_contents_exported": false,
+    "source_bytes": 1233431169,
+    "production_stopped_seconds": 58.93,
+    "original_runtime_restored": true,
+    "independent_file_restore": {
+      "verified": true,
+      "files": 52817,
+      "bytes": 1230360511,
+      "manifest_sha256": "0f438100ab121375b753e18790073ab1bc9bbce9933692218c3a80670ca634c6"
+    },
+    "original_image_isolated_boot_and_restart": true,
+    "production_health": "healthy",
+    "scope": "Quiesced preparation snapshot. Refresh before cutover; production continues after snapshot. Do not restore this over newer data.",
+    "verified_private_nas_copy": true
+  },
+  "candidate": {
+    "image": "sha256:2d6e56831b6c36dae36e4f775f9397bcf1ffb4a8dc8e9cb533434e85ab56e0c8",
+    "source_candidate_image": "sha256:61ed90130f77b07b6ca2141fe65be303e77dd504480a7d967621e975f1c337db",
+    "real_profile_used": true,
+    "provider_network_used": false,
+    "deployed": false,
+    "private_data_exported": false,
+    "fresh_restore_from_original_snapshot": true,
+    "phase": "fresh_private_profile_candidate_recovery_passed_not_deployed",
+    "updated_utc": "2026-11-10T23:28:20.167357+00:00",
+    "independent_restore": {
+      "verified": true,
+      "files": 52817,
+      "manifest_sha256": "0f438100ab121375b753e18790073ab1bc9bbce9933692218c3a80670ca634c6"
+    },
+    "clean_cycles": 2,
+    "stop_seconds": [
+      0.64,
+      6.54
+    ],
+    "candidate_boot_shutdown_restart": true,
+    "cookie_fingerprint_matches_original": true,
+    "stable_cookies_preserved": 80,
+    "browser": "HeadlessChrome/156.0.8078.4"
+  },
+  "first_attempt": {
+    "image": "sha256:61ed90130f77b07b6ca2141fe65be303e77dd504480a7d967621e975f1c337db",
+    "real_profile_used": true,
+    "provider_network_used": false,
+    "deployed": false,
+    "private_data_exported": false,
+    "phase": "failed",
+    "updated_utc": "2026-11-10T10:14:14.957924+00:00",
+    "independent_restore": {
+      "verified": true,
+      "files": 52817,
+      "manifest_sha256": "0f438100ab121375b753e18790073ab1bc9bbce9933692218c3a80670ca634c6"
+    },
+    "error_class": "TimeoutExpired",
+    "error": "Command '['docker', 'stop', '-t', '30', 'codex-grok-private-candidate-20261110']' timed out after 60 seconds"
+  },
+  "deployment_performed": false
+}

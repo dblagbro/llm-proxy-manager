@@ -1,0 +1,77 @@
+{
+  "browser": {
+    "passed": true,
+    "checks": {
+      "anonymous_redirect_and_tokenless_chat_denied": true,
+      "machine_token_forwarded_without_cookie_or_origin": true,
+      "real_nonadmin_session_denied": true,
+      "gateway_secure_cookie_accepted_by_browser": {
+        "name": "llmproxy_session",
+        "secure": true,
+        "httpOnly": true,
+        "sameSite": "Lax",
+        "path": "/"
+      },
+      "browser_noVNC_connected_through_tls_subpath": true,
+      "browser_cookie_reaches_status_and_websocket": true,
+      "real_noVNC_keyboard_input": true,
+      "real_framebuffer_decoded_and_rendered": true,
+      "proxy_preserves_origin_and_token_denials": true,
+      "logout_removes_cookie_and_revokes_active_vnc_seconds": 26.92,
+      "new_browser_requests_denied_after_logout": true
+    },
+    "websockets": [
+      {
+        "url": "wss://operator.example.test/grok-bridge/vnc/websockify",
+        "received_frames": 152,
+        "closed": true
+      }
+    ],
+    "real_account_used": false,
+    "production_modified": false
+  },
+  "private_profile": {
+    "image": "sha256:2d6e56831b6c36dae36e4f775f9397bcf1ffb4a8dc8e9cb533434e85ab56e0c8",
+    "source_candidate_image": "sha256:61ed90130f77b07b6ca2141fe65be303e77dd504480a7d967621e975f1c337db",
+    "real_profile_used": true,
+    "provider_network_used": false,
+    "deployed": false,
+    "private_data_exported": false,
+    "fresh_restore_from_original_snapshot": true,
+    "phase": "fresh_private_profile_candidate_recovery_passed_not_deployed",
+    "updated_utc": "2026-11-10T23:28:20.167357+00:00",
+    "independent_restore": {
+      "verified": true,
+      "files": 52817,
+      "manifest_sha256": "0f438100ab121375b753e18790073ab1bc9bbce9933692218c3a80670ca634c6"
+    },
+    "clean_cycles": 2,
+    "stop_seconds": [
+      0.64,
+      6.54
+    ],
+    "candidate_boot_shutdown_restart": true,
+    "cookie_fingerprint_matches_original": true,
+    "stable_cookies_preserved": 80,
+    "browser": "HeadlessChrome/156.0.8078.4"
+  },
+  "primary_import": {
+    "source_image": "sha256:61ed90130f77b07b6ca2141fe65be303e77dd504480a7d967621e975f1c337db",
+    "tag": "tmr-security/grok-bridge:1.2.0-candidate-final2-20261110",
+    "image_size": 1207628860,
+    "deployed": false,
+    "production_modified": false,
+    "phase": "imported_identity_verified_not_deployed",
+    "updated_utc": "2026-11-10T10:47:10.914250+00:00",
+    "primary_image": "sha256:2d6e56831b6c36dae36e4f775f9397bcf1ffb4a8dc8e9cb533434e85ab56e0c8",
+    "identity_equal": {
+      "Config": true,
+      "RootFS": true,
+      "Os": true,
+      "Architecture": true
+    },
+    "config_sha256": "edf740eea889268d472b255b883db6c8ef6bfbd7ffb6ca9d0a5b8ec112cffae4",
+    "rootfs_sha256": "afd208a8d3c902cf636013c6a6ec70cc8c5c4d4057737721759ab60621bed7ad",
+    "fresh_scan_performed": false
+  }
+}

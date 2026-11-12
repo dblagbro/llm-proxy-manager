@@ -1,0 +1,31 @@
+{
+  "passed": true,
+  "checks": {
+    "anonymous_redirect_and_tokenless_chat_denied": true,
+    "machine_token_forwarded_without_cookie_or_origin": true,
+    "real_nonadmin_session_denied": true,
+    "gateway_secure_cookie_accepted_by_browser": {
+      "name": "llmproxy_session",
+      "secure": true,
+      "httpOnly": true,
+      "sameSite": "Lax",
+      "path": "/"
+    },
+    "browser_noVNC_connected_through_tls_subpath": true,
+    "browser_cookie_reaches_status_and_websocket": true,
+    "real_noVNC_keyboard_input": true,
+    "real_framebuffer_decoded_and_rendered": true,
+    "proxy_preserves_origin_and_token_denials": true,
+    "logout_removes_cookie_and_revokes_active_vnc_seconds": 26.92,
+    "new_browser_requests_denied_after_logout": true
+  },
+  "websockets": [
+    {
+      "url": "wss://operator.example.test/grok-bridge/vnc/websockify",
+      "received_frames": 152,
+      "closed": true
+    }
+  ],
+  "real_account_used": false,
+  "production_modified": false
+}

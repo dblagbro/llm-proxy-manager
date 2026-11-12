@@ -50,6 +50,8 @@ from playwright.async_api import (
 )
 
 
+from bridge_security import BRIDGE_VERSION, install_security, require_token
+
 logger = logging.getLogger("grok-bridge")
 # Log level is env-tunable so the operator can raise verbosity on a running
 # node without a rebuild (2026-08-18). Previously hardcoded INFO, which meant
@@ -200,19 +202,13 @@ async def lifespan(app: FastAPI):
             await _playwright.stop()
 
 
-app = FastAPI(title="grok-bridge", version="1.1.0", lifespan=lifespan)
+app = FastAPI(title="grok-bridge", version=BRIDGE_VERSION, lifespan=lifespan)
 
 
 # ── Auth dependency ─────────────────────────────────────────────────────
 def require_bridge_token(x_bridge_token: Optional[str] = Header(default=None)) -> None:
-    """Internal endpoints use a shared HMAC-style token. Empty BRIDGE_TOKEN
-    disables the check (dev only). llm-proxy2 sends ``X-Bridge-Token`` on
-    every /api/chat call; nginx terminates TLS so the token rides over a
-    plaintext internal hop."""
-    if not BRIDGE_TOKEN:
-        return
-    if x_bridge_token != BRIDGE_TOKEN:
-        raise HTTPException(401, "invalid bridge token")
+    """Reject missing configuration and compare service tokens in constant time."""
+    require_token(BRIDGE_TOKEN, x_bridge_token)
 
 
 # ── Cookie / header capture ──────────────────────────────────────────────
@@ -503,7 +499,7 @@ async def healthz(response: Response):
     return {
         "status": "ok" if browser_ok else "degraded",
         "browser": detail,
-        "version": "1.1.1",
+        "version": BRIDGE_VERSION,
         "ts": int(time.time()),
     }
 
@@ -525,10 +521,7 @@ def _conv_id_from_url(url: Optional[str]) -> Optional[str]:
 
 @app.get("/api/status")
 async def status():
-    """Public — exposes login state + cookie freshness so the operator-
-    facing /login page can render without leaking BRIDGE_TOKEN to the
-    browser. Doesn't return any sensitive values (no cookie contents,
-    no statsig-id), just booleans and a count."""
+    """Operator status; protected by admin-session or service-token authentication."""
     cookies = await _cookies_dict()
     needed = ["cf_clearance", "__cf_bm", "sso", "x-userid"]
     present = {k: (k in cookies) for k in needed}
@@ -1311,10 +1304,8 @@ async def create_new_conversation():
 # ── Login flow ───────────────────────────────────────────────────────────
 @app.post("/api/login/start")
 async def login_start():
-    # Public — just navigates the embedded Chromium tab. The operator's
-    # /login HTML calls this; protecting it would require shipping the
-    # token to the browser. Side effect (a page navigation) isn't
-    # sensitive on its own.
+    # The operator's existing administrator cookie is verified by middleware.
+    # No bridge token is embedded in the browser-facing login page.
     """Navigate the Playwright tab to grok.com's login flow so the
     operator (watching via noVNC) can sign in via Google OAuth.
     """
@@ -2052,17 +2043,5 @@ async def chat(req: Request, _: None = Depends(require_bridge_token)):
     })
 
 
-# ── /vnc proxy → websockify ──────────────────────────────────────────────
-# We don't do a Python-side reverse proxy — nginx handles /grok-bridge/vnc/
-# routing directly (websockify needs WebSocket upgrade headers nginx is
-# better at). The bridge container exposes 6080 alongside 8443 for nginx
-# to reach. For local-only setups (no nginx in front), uvicorn's static
-# serving here just emits a redirect to the canonical noVNC URL.
-@app.get("/vnc")
-async def vnc_redirect():
-    return RedirectResponse(url="/vnc/")
-
-
-@app.get("/vnc/")
-async def vnc_index():
-    return RedirectResponse(url=f"http://localhost:{NOVNC_PORT}/vnc.html?autoconnect=true&resize=remote")
+# HTTP operator routes and the loopback VNC proxy share one access boundary.
+install_security(app, BRIDGE_PUBLIC_PATH)

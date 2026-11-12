@@ -2,17 +2,18 @@
 #
 # Maintains a persistent logged-in grok.com session via Playwright, exposes:
 #   - /login        → noVNC client (live Chromium UI for one-time sign-in)
-#   - /api/auth     → admin endpoint to query session status
+#   - /api/status   → authenticated endpoint to query session status
 #   - /api/chat     → llm-proxy2 calls this with a chat body; bridge does HTTP
 #                     replay against grok.com using its live cookies and
 #                     auto-refreshes the Playwright page on 401/403.
 #
-# Base image already includes Playwright + Chromium + system deps. We add:
+# Base image includes the browsers and system deps. We install the matching
+# Playwright package separately and add:
 #   - xvfb              virtual framebuffer (Chromium needs an X display)
 #   - x11vnc            VNC server that exposes the framebuffer
 #   - websockify+noVNC  HTML5 VNC client served over HTTP/WS
 #   - python deps       FastAPI / uvicorn / httpx (already present in base)
-FROM mcr.microsoft.com/playwright/python:v1.45.0-jammy
+FROM mcr.microsoft.com/playwright/python:v1.64.1-noble@sha256:330d401ae23c905896a0c26c66c36fc971b621519e7b11b435a8328d7bf6e031
 
 ENV DEBIAN_FRONTEND=noninteractive \
     DISPLAY=:99 \
@@ -23,7 +24,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 # System packages — Xvfb, x11vnc, noVNC + websockify, plus a couple of
 # small fonts so grok.com renders correctly (no font fallback boxes).
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
         xvfb \
         x11vnc \
         x11-utils \
@@ -44,15 +45,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Python deps. The base already has playwright + asyncio; we just need
-# FastAPI + uvicorn for the HTTP surface.
-RUN pip install --no-cache-dir \
-        playwright==1.45.0 \
-        fastapi==0.115.0 \
-        uvicorn[standard]==0.32.0 \
-        httpx==0.27.2 \
-        python-multipart==0.0.12
+RUN apt-get update && apt-get install -y --no-install-recommends python3-venv \
+    && rm -rf /var/lib/apt/lists/* \
+    && python3 -m venv /opt/grok-venv
+ENV PATH="/opt/grok-venv/bin:${PATH}"
+COPY requirements.txt requirements.lock /app/
+RUN pip install --no-cache-dir --upgrade pip==26.3 \
+    && pip install --no-cache-dir -r /app/requirements.txt -c /app/requirements.lock \
+    && pip check
+# The base's build-only virtualenv wheel bundle and global pip are unused by
+# both this isolated application environment and the distribution's VNC tools.
+RUN /usr/bin/python3 -m pip uninstall -y virtualenv python-discovery filelock pip \
+    && /opt/grok-venv/bin/python -m pip uninstall -y pip \
+    && rm -rf /root/.cache/virtualenv
 
+COPY bridge_security.py /app/bridge_security.py
 COPY app.py /app/app.py
 COPY start.sh /app/start.sh
 COPY supervisord.conf /etc/supervisor/conf.d/grok-bridge.conf

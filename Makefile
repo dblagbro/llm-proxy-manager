@@ -108,6 +108,57 @@ lint-whisper:
 	ruff check whisper_bridge/test_runtime.py whisper_bridge/verify_assets.py
 	ruff format --check whisper_bridge/test_runtime.py whisper_bridge/verify_assets.py
 
+# Grok sidecar: these targets do not build or deploy the gateway.
+GROK_IMAGE ?= llm-proxy2-grok-bridge:latest
+GROK_PYTHON ?= python
+.PHONY: build-grok test-grok lint-grok
+build-grok:
+	sudo docker build -t $(GROK_IMAGE) grok_bridge
+test-grok:
+	$(GROK_PYTHON) -m pytest grok_bridge/test_*.py -q
+lint-grok:
+	ruff check grok_bridge/bridge_security.py grok_bridge/test_*.py
+	ruff format --check grok_bridge/bridge_security.py grok_bridge/test_*.py
+
+# Isolated synthetic HTTPS/noVNC acceptance, using the reviewed exact images.
+# Requires an empty, explicitly chosen local test directory and the storage guard.
+GROK_TEST_DIR ?=
+GROK_CAPACITY_GUARD ?=
+GROK_TEST_IMAGE ?=
+GROK_TEST_GATEWAY_IMAGE ?=
+GROK_TEST_NGINX_IMAGE ?=
+.PHONY: lint-grok-browser test-grok-browser
+lint-grok-browser:
+	ruff check grok_bridge/testing/browser/*.py
+	ruff format --check grok_bridge/testing/browser/*.py
+
+test-grok-browser:
+	test -n "$(GROK_TEST_DIR)" && test -n "$(GROK_CAPACITY_GUARD)"
+	test ! -e "$(GROK_TEST_DIR)"
+	sudo test -f "$(GROK_CAPACITY_GUARD)"
+	mkdir -m 700 "$(GROK_TEST_DIR)"
+	cp grok_bridge/testing/browser/*.py grok_bridge/testing/browser/nginx.conf "$(GROK_TEST_DIR)/"
+	cp grok_bridge/deployment/nginx.grok-bridge.conf "$(GROK_TEST_DIR)/grok-bridge.conf"
+	sudo env GROK_TEST_IMAGE="$(GROK_TEST_IMAGE)" GROK_TEST_GATEWAY_IMAGE="$(GROK_TEST_GATEWAY_IMAGE)" GROK_TEST_NGINX_IMAGE="$(GROK_TEST_NGINX_IMAGE)" python3 "$(GROK_CAPACITY_GUARD)" --peak-gib 3 -- python3 "$(GROK_TEST_DIR)/run_browser_rehearsal.py"
+
+# Synthetic operator unit tests and scoped lint perform no Docker or host mutations.
+.PHONY: test-grok-release lint-grok-release
+test-grok-release:
+	python -m pytest grok_bridge/deployment/test_release.py -q -p no:cacheprovider
+
+lint-grok-release:
+	ruff check --target-version py310 grok_bridge/deployment/release.py grok_bridge/deployment/test_release.py grok_bridge/deployment/rehearse_release.py
+	ruff format --check --target-version py310 grok_bridge/deployment/release.py grok_bridge/deployment/test_release.py grok_bridge/deployment/rehearse_release.py
+
+# Real, isolated Docker lifecycle; primary host only, synthetic data and no ports.
+GROK_RELEASE_PYTHON ?= python3
+GROK_RELEASE_TEST_DIR ?=
+.PHONY: test-grok-release-docker
+test-grok-release-docker:
+	test -n "$(GROK_RELEASE_TEST_DIR)" && test -n "$(GROK_CAPACITY_GUARD)"
+	test ! -e "$(GROK_RELEASE_TEST_DIR)"
+	sudo "$(GROK_RELEASE_PYTHON)" "$(GROK_CAPACITY_GUARD)" --peak-gib 3 -- "$(GROK_RELEASE_PYTHON)" "$(CURDIR)/grok_bridge/deployment/rehearse_release.py" --source-root "$(CURDIR)" --out "$(GROK_RELEASE_TEST_DIR)"
+
 # Offline primary gateway recovery: unit tests use synthetic state and fake Docker.
 GATEWAY_RECOVERY_PYTHON ?= python3
 GATEWAY_RECOVERY_RUN_ID ?=

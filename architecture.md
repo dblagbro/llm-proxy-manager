@@ -1,3 +1,6 @@
+> Grok security candidate 1.2.0 / repository 5.22.55 is **not deployed**.
+> See [docs/grok-bridge-security.md](docs/grok-bridge-security.md) for the staged access boundary and release gates.
+
 > 2026-11-10 security candidate: gateway **5.22.54 is not deployed**.
 > Production remains 5.22.53. Source history is reconciled with the Whisper
 > release without changing deployed application behavior. Dependency changes,

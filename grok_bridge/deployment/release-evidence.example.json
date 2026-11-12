@@ -1,0 +1,10 @@
+{
+  "candidate_image": "sha256:2d6e56831b6c36dae36e4f775f9397bcf1ffb4a8dc8e9cb533434e85ab56e0c8",
+  "source_commit": "REPLACE_WITH_VERIFIED_MERGED_COMMIT",
+  "source_merged": false,
+  "required_checks_passed": false,
+  "grok_release_gate_satisfied": false,
+  "gate_evidence_reference": "REPLACE_WITH_GROK_SPECIFIC_POLICY_AND_CHECK_EVIDENCE",
+  "browser_acceptance_passed": false,
+  "private_recovery_passed": false
+}

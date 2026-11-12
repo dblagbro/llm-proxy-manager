@@ -1,0 +1,11 @@
+{
+  "checked_utc": "2026-11-10T09:54:19.170738+00:00",
+  "passed": true,
+  "nginx_image": "sha256:67a10554437ff2017327a3ebb36c8a779f38a7f67f861980109c1cd81e133c4a",
+  "original_config_sha256": "aa2ecf87237176311f8da0879ad36fab93e7d17079a6d1b963edc207bda124c9",
+  "staged_config_sha256": "3a36581510876bf1bca04b62c50f010731ea36ae2e34e83dba003a4d216ddd5f",
+  "fragment_sha256": "034ac4fb159ad31a597aa537bd67187529817fa420eac1c6c99066ce012de5dc",
+  "production_modified": false,
+  "full_config_checked": true,
+  "nginx_reloaded": false
+}
