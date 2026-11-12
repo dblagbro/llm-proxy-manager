@@ -1,3 +1,7 @@
+> November12 update: PR13 is merged; final authorization requires a new candidate.
+> See [final-source reconciliation](grok-final-source-20261112.md) for current evidence and open release gates.
+> Older candidate results below remain historical, not tests of the new image.
+
 # Grok bridge security candidate
 
 ## Status and scope
