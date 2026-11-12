@@ -10,6 +10,42 @@ Status flow: **open** → **in-progress** → **fixed** → **verified-fixed** �
 
 ---
 
+## 2026-11-06 — both Devin Anthropic Max OAuth grants revoked (401 auth) within ~1h (found during hourly QA loop)
+
+### OPS-2026-11-06a — Devin-Anthropic-Max-VG + Devin-Anthropic-Max-Gmail both returning 401 authentication_error — ✅ **RESOLVED 2026-11-11** (both grants recovered; re-verified healthy, 0 errors/24h, carrying traffic)
+
+- **Resolution (2026-11-11):** both Max OAuth grants are healthy again — keepalive probes succeeding and both providers serving live traffic with 0 errors. The OpenAI cost bleed (below) correspondingly stopped. Left as dated history.
+- **Severity:** high (two premium claude-oauth providers down) · **Category:** external OAuth credential revocation, NOT application logic
+- **Surfaced:** 2026-11-06, hourly breaker-health tick. Both Max OAuth accounts began returning
+  `401 {"type":"authentication_error","message":"OAuth access token has been revoked."}` against
+  `https://platform.claude.com/v1/messages?beta=true` (`error_class=auth`).
+- **Timeline (UTC, from activity_log + provider_metrics on www1):**
+  - Max-VG (`d5123a00f6ee749b`): last successful llm_request **11:03:30**; first 401 **~11:09:57**.
+    11:00 bucket was 22/22/0; by 11:35 bucket 2/0/2 → open.
+  - Max-Gmail (`91bafda9cc28d0d6`): last successful llm_request **12:03:25**; first 401 **~12:28:34**.
+  - Staggered ~1h apart; both now hard-401 on every request and keepalive probe.
+- **Why it will not self-heal:** the tokens are *revoked*, not expired. `claude_oauth_expiry_monitor`
+  only refreshes on expiry (it reported `refreshed=0 failed=0` throughout, i.e. it does not see an
+  expiry to act on), and a revoked grant typically invalidates the refresh token too. No code path
+  recovers this.
+- **Impact contained:** breakers opened and hold both out of rotation; traffic fails over to the
+  remaining providers (codex-oauth, cursor, etc.). Grok-Web is separately down (bridge not logged in),
+  so the three premium providers are all unavailable, but non-claude traffic is unaffected.
+- **Remediation (operator — I cannot perform OAuth re-auth / account login):** re-authorize both Max
+  OAuth grants in the llm-proxy2 admin UI (Providers → each provider → reconnect/re-authorize). If
+  Anthropic revoked them for an account reason, resolve on the Anthropic side first. Breakers will
+  close on the next successful probe once re-auth takes.
+- **Cost impact (added 2026-11-07):** with both Max providers down, `tax-ai-analyzer`'s
+  steady ~140 req/hr gpt-4o job failed over to the metered `Devin Personal OpenAI ChatGPT`
+  account. tax-ai→OpenAI went from 111 reqs (Nov 1-5) to 2117+ (Nov 6-7); OpenAI MTD ~$17.6,
+  Nov 6 alone $8.00 vs ~$1.5/day baseline → projects ~$240/mo, which tripped the $20/mo alert.
+  Re-auth (above) returns tax-ai to the unmetered subscription and drops OpenAI to ~$1/day.
+  Follow-up worth considering: cap/pin the tax-ai key so a provider outage degrades rather
+  than silently spending on a metered account; confirm the 140 req/hr 24x7 volume is intended.
+- **Note:** not a regression; env remains clean through v5.22.53. No code change made.
+
+---
+
 ## 2026-10-30 — www1→www2 cluster sync has no working network path (found during Daybreak rollout)
 
 ### BUG-113 — www1 cannot reach www2 for cluster sync; the authorization/config push direction is dead — 🔴 **OPEN** (infra, operator action required)
@@ -1502,7 +1538,7 @@ The 2026-05-27 findings below were remediated. Status updates (now superseded by
 
 Comprehensive QA pass covering the v4.4.20→.23 release arc plus broader regression. Methodology: discovery → planning → test design → execution across unit + cluster contract + auth boundaries + LWW behavioral + schema + per-event header capture + async tracer + cron watchers + frontend (Playwright in-flight) + theme contrast spot. Result: **one HIGH severity (cluster sync silently broken)**, one MEDIUM (input validation), several low/hardening items. The HIGH finding is the headline — six days of cluster sync data divergence undetected by heartbeat-only health checks.
 
-### BUG-079 — Cluster sync silently broken for ~6 days — `_apply_provider_ai_reviews` crashes on duplicate (provider_id, captured_at) — ✅ **CODE-FIXED v4.4.24** (data-dedupe + UNIQUE constraint still pending operator go)
+### BUG-079 — Cluster sync silently broken for ~6 days — `_apply_provider_ai_reviews` crashes on duplicate (provider_id, captured_at) — ✅ **FULLY CLOSED v4.4.27** (`.limit(1)` guard v4.4.24; data-dedupe + `UNIQUE(provider_id, captured_at)` index v4.4.27)
 
 - **Severity:** **high** · **Category:** confirmed defect · data correctness across cluster
 - **Surfaced:** 2026-05-27 during deep QA pass, by a live LWW behavioral test (created+PATCHed an api_keys row on www1, peers did NOT see it after 80s).
@@ -1542,7 +1578,7 @@ Comprehensive QA pass covering the v4.4.20→.23 release arc plus broader regres
   3. **Hardening**: add `UNIQUE(provider_id, captured_at)` constraint via ALTER (SQLite path: create new table + copy + drop + rename, since SQLite doesn't support adding unique constraints in place).
   4. **Observability gap**: surface apply_sync 500s on the originating peer. Currently `push_sync` in `cluster/manager.py:518-523` fires the POST but **does not inspect the response status**. A `r = await client.post(...)` + `r.status_code != 200` check + log line would have surfaced this immediately. Filed as separate observability hardening item below.
   5. **Tests**: add regression test that drives a duplicate row into `provider_ai_review` and asserts apply_sync still succeeds.
-- **Status:** CODE-FIXED v4.4.24 — `.limit(1)` added to `_apply_provider_ai_reviews` (sync_handlers.py:166). Confirmed present 2026-11-01. **Residual (pending operator go):** step 2 (hard-delete existing duplicate peer rows) + step 3 (`UNIQUE(provider_id, captured_at)` constraint) — same migration class as the provider_metrics dedupe (v5.22.50 read-side fix). The `.limit(1)` makes live dupes harmless meanwhile.
+- **Status:** ✅ **FULLY CLOSED v4.4.27.** Step 1 (`.limit(1)` on `_apply_provider_ai_reviews`, sync_handlers.py:166) shipped v4.4.24. Steps 2+3 (dedupe + `UNIQUE(provider_id, captured_at)`) shipped v4.4.27 as idempotent raw SQL in `init_db` (`ROW_NUMBER()` dedupe → `CREATE UNIQUE INDEX IF NOT EXISTS ux_provider_ai_review_provider_id_captured_at`), applied on all 3 nodes per CHANGELOG (removed 3 dups www2, 1 c1conv). `api_key_ai_review` got the matching `ux_api_key_ai_review_api_key_id_captured_at`. **Re-verified www1 2026-11-10:** both unique indexes present, 0 duplicate groups (www2/c1conv not re-checked this pass). Regression test drafted `tests/unit/test_bug079_apply_sync_tolerates_duplicate_provider_ai_review.py`. NOTE: the index lives only in `init_db` raw SQL, not the ORM models (`ProviderAiReview` db_provider.py:403 / `ApiKeyAiReview` db_apikey.py:188), so a pure `create_all` DB (e.g. unit tests) lacks the constraint — harmless given `.limit(1)`, but worth folding into the models if migrating off `init_db`.
 
 ### BUG-080 — 5 of 7 cluster-sync apply handlers share the same crash vulnerability — ✅ **CODE-FIXED v4.4.24** (UNIQUE-constraint hardening still pending)
 

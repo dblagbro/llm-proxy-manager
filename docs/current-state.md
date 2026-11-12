@@ -1,7 +1,88 @@
-> 2026-11-10 security candidate: gateway **5.22.54 is not deployed**.
-> Production remains 5.22.53. Source history is reconciled with the Whisper
-> release without changing deployed application behavior. Dependency changes,
-> tests and release blockers are tracked in [the security release note](gateway-5.22.54-security.md).
+# ✅ Live now — 2026-11-11 (v5.22.54, both nodes)
+
+**v5.22.54 deployed to tmrwww01 + tmrwww02** (rolling, peer-first; each node
+verified `/health` version + healthy, RestartCount=0; public
+https://www.voipguru.org/llm-proxy2/health → 200 v5.22.54). PR #12 merged to
+origin/main (merge `1d27cb7`). QA sweep PASS (4101 unit pass / 2 skip / 0 fail;
+auth, sub-path, path-traversal invariants green; cluster sync 200/fresh=true).
+Per-node rollback tag `llm-proxy2:rollback-5.22.53-pre54` retained; pre-deploy
+DB + config backups in `/home/dblagbro/backups/`.
+
+**Provider fleet (2026-11-11, verified from activity_log):**
+- **Both Anthropic Max OAuth grants recovered/healthy** — carrying traffic with
+  0 errors (Max-VG + Max-Gmail). Resolves OPS-2026-11-06a.
+- **Cohere + Codex + both Max** carry 100% of current load, 0 errors.
+- **OpenRouter-Devin-Personal deweighted** (priority 6 → 20, still enabled,
+  last-resort only): its API key is invalid (`sk-or-v1…` AuthenticationError)
+  AND it was routing into OpenAI's spend cap. Refresh the key to restore weight.
+- **OpenAI (Devin Personal ChatGPT) spend-capped** since ~Nov 9 — project
+  `enforced spend limit` → RateLimitError on every probe; auto-skipped until
+  2026-11-12 18:52. Raise the limit at platform.openai.com to restore. This is
+  why OpenAI traffic went 3135 ok (Nov 7) → 0 (Nov 9–10). The 2026-11-11
+  upstream OpenAI status-page outage is a non-event here (provider already dormant).
+- **Grok-Web** still down (bridge token fixed; grok.com cookies not yet
+  imported into `/home/dblagbro/.secret-handoff/grok.json` — backlogged per operator).
+
+The 2026-11-07 pause block below is **superseded** — kept as dated history.
+
+---
+
+# ⏸ Paused 2026-11-07 ~01:47 EST (v5.22.53 live both nodes) — resume checklist ⟶ SUPERSEDED 2026-11-11 (see banner above)
+
+Session paused with the proxy UP (non-premium providers serving) but **all three
+premium providers down**, each needing an operator action I cannot perform
+(OAuth login / credential / providers-table write are classifier-blocked):
+
+1. **OPS-2026-11-06a — both Anthropic Max OAuth grants REVOKED** (`401 "OAuth access
+   token has been revoked"`, `error_class=auth`). Max-VG failing since ~11:09 UTC
+   Nov 6, Max-Gmail since ~12:28 UTC Nov 6. Will NOT self-heal (revoked, not expired).
+   → **Action:** admin UI → Providers → reconnect/re-authorize `Devin-Anthropic-Max-VG`
+   AND `Devin-Anthropic-Max-Gmail`. (Two accounts revoked ~1h apart — check the
+   Anthropic account side for why.) Details in `bug-log.md` OPS-2026-11-06a.
+
+2. **💸 OpenAI cost bleed (consequence of #1).** With Max down, `tax-ai-analyzer`'s
+   steady ~140 req/hr gpt-4o job FAILED OVER to the metered `Devin Personal OpenAI
+   ChatGPT` account. OpenAI MTD ~$17.6 (Nov 6 = $8.00 vs ~$1.5/day baseline);
+   projects ~$240/mo while Max stays down — this tripped the $20/mo alert.
+   → **Fix = do #1.** Re-auth routes tax-ai back to the unmetered Anthropic
+   subscription; OpenAI drops to ~$1/day. Longer-term: consider capping/pinning the
+   tax-ai key so a provider outage degrades instead of silently spending on OpenAI,
+   and confirm tax-ai's 140 req/hr 24x7 volume is intended.
+
+3. **Grok-Web — two independent breaks (post-reboot):**
+   a. `extra_config.bridge_token` is EMPTY → bridge rejects "invalid bridge token".
+      → **Action:** `bash /home/dblagbro/fix-grok-bridge-token.sh` (copies BRIDGE_TOKEN
+      from `/home/dblagbro/docker/.env` into the provider; never prints it; classifier-
+      blocked for me, operator must run).
+   b. Bridge not logged into grok.com (`logged_in:false`, no `sso`/`x-userid`).
+      → **Action:** export grok.com cookies (Cookie-Editor → JSON) to
+      `/home/dblagbro/.secret-handoff/grok.json`, then
+      `bash /home/dblagbro/import-grok-cookies.sh /home/dblagbro/.secret-handoff/grok.json`.
+      BOTH a+b needed before grok-web serves.
+
+Env otherwise clean through v5.22.53; no code change pending. Breakers are
+in-memory and reset on container recreate — they re-trip on live failure, so
+`/health` state is authoritative. Pre-existing operator-gated backlog unchanged:
+BUG-113 (www1→www2 sync path, infra), Fix B dedupe+UNIQUE migration, O-3 rotate
+CLUSTER_SYNC_SECRET.
+
+**Lower-priority signals observed during the pause (2026-11-07, watch — not blocking):**
+- **OpenRouter-Devin-Personal** (`a40257f80cf0cae9`, openrouter): intermittent
+  `AuthenticationError` — the OpenRouter API key looks invalid/expired. Flaps
+  half-open; verify/refresh the key when convenient.
+- **Devin-Codex-Gmail** (`c549ed05a1cd86d3`, ChatGPT-oauth-plan): a one-off upstream
+  `400 {"detail":"Unsupported parameter: temperature"}` (a caller sent `temperature`
+  to a codex model that rejects it) — 0 recurrences, not a provider fault. Also the
+  usual benign `ConnectTimeout` keepalive-probe flaps.
+- One transient multi-provider dip (OpenAI+Cohere `network`/"Cannot connect" ~18:46
+  UTC) that self-cleared; container egress to all upstreams verified healthy, so it
+  was an upstream/transit blip, not a local outage.
+- Candidate improvement still noted: keepalive-probe `ConnectTimeout`s counting toward
+  the same breaker that gates real traffic is what makes healthy providers flap in
+  `/health`; a one-retry-before-count (or not counting probe transport-timeouts) would
+  stop the cosmetic flapping without masking real outages. Work-item, not urgent.
+
+---
 
 # Live now — 2026-10-29 (v5.22.46)
 
