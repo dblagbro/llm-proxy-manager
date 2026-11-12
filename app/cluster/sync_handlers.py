@@ -737,6 +737,10 @@ async def _apply_api_keys(
             # local authorization back to None.
             if "daybreak_tier" in k_data:
                 existing.daybreak_tier = k_data["daybreak_tier"]
+            # v5.22.56 — metered guard. Membership-test so a pre-v5.22.56
+            # peer (omits the key) can't re-enable metered routing.
+            if "metered_allowed" in k_data:
+                existing.metered_allowed = bool(k_data["metered_allowed"])
             if peer_user_edit_at is not None:
                 existing.last_user_edit_at = peer_user_edit_at
         else:
@@ -770,6 +774,7 @@ async def _apply_api_keys(
                     k_data.get("debug_echo_enabled", False)
                 ),
                 daybreak_tier=k_data.get("daybreak_tier"),
+                metered_allowed=bool(k_data.get("metered_allowed", True)),
                 last_user_edit_at=peer_user_edit_at,
             ))
         key_id = k_data.get("id")

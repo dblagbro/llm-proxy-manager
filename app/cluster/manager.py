@@ -395,6 +395,9 @@ async def _build_sync_payload(db) -> dict:
          # round-trip via sync like every other per-key policy column,
          # otherwise authorizing a key on one node never reaches peers.
          "daybreak_tier": getattr(k, "daybreak_tier", None),
+         # v5.22.56 — per-key metered-provider guard; must round-trip so a
+         # restriction set on one node is not bypassed on a peer.
+         "metered_allowed": bool(getattr(k, "metered_allowed", True)),
          # v4.4.20 — LWW gate, mirrors providers. Pre-v4.4.20 peers
          # omit this; apply handler treats absence as "legacy peer"
          # and falls through to last-sync-wins, same as today.

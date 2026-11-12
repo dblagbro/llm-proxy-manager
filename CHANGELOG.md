@@ -2,6 +2,39 @@
 
 All notable changes since v2.7.6. Older history available in `git log`.
 
+### v5.22.57 (2026-11-12)
+
+Fix activity_log error attribution across the ordered fallback chain. When the
+primary provider failed and the chain fell through to a DIFFERENT provider that
+raised the final exception, the single `llm_request` ERROR row was written with
+the PRIMARY provider's `provider_id` + `event_meta.provider_name` while
+`event_meta.error` held the LAST (actual failing) provider's exception text, so
+the row's provider and error disagreed. `try_ranked_non_streaming` now attaches
+the failing `RouteResult` to the raised exception as
+`_llmproxy_attributed_route` (the `raise last_exc` is unchanged, so
+retry/circuit-breaker semantics are identical). The `/v1/messages` and
+`/v1/chat/completions` handlers resolve
+`failed_route = getattr(e, "_llmproxy_attributed_route", None) or route` and
+attribute the `record_outcome(success=False)` call (plus the messages.py
+diagnostic log line) to `failed_route`; when the attribute is absent (fallback
+disabled or the primary itself raised) it falls back to `route`. The
+client-facing `HTTPException` and compliance disclosure headers stay on the
+original `route` (intentionally about the primary/compliance-substituted
+provider). No routing/selection behavior changed.
+
+### v5.22.56 (2026-11-12)
+
+Per-API-key `metered_allowed` guard. New `api_keys.metered_allowed` column
+(BOOLEAN NOT NULL, default true; idempotent ALTER). When false, `select_provider`
+drops every provider whose effective cost_class is not "subscription" (explicit
+`cost_class`, else derived from `SUBSCRIPTION_TIER_PROVIDER_TYPES` via the new
+`monitoring.helpers.is_subscription_provider`) after the tenant filter and
+before the circuit-breaker filter, so an outage of the key's unmetered providers
+degrades to a 503 instead of failing over to a pay-per-call provider (tax-ai-analyzer
+incident). Retry/failover paths re-enter `select_provider` with the same key and
+inherit it. Round-trips through cluster sync (membership-test apply) and
+`PATCH /api/keys/{id}` (`{"metered_allowed": false}`). Default true = no behavior change.
+
 ### v5.22.55 / Grok bridge 1.2.0 security candidate (2026-11-10)
 
 Protect Grok browser control with a verified LLM Proxy administrator session,

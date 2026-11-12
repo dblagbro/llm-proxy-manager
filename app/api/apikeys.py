@@ -92,6 +92,9 @@ class KeyUpdate(BaseModel):
     blocked_models: Optional[List[str]] = None
     allowed_models: Optional[List[str]] = None
     debug_echo_enabled: Optional[bool] = None
+    # v5.22.56 — False restricts the key to unmetered (subscription)
+    # providers; None = no change.
+    metered_allowed: Optional[bool] = None
     # v5.20.7 — refusal detection + cascade toggles surfaced on the
     # PATCH surface. These are NOT compliance-policy fields (no reason
     # required); they're per-key debug/behavior flags that DevinGPT
@@ -325,6 +328,8 @@ async def update_key(
         k.hourly_cap_usd = None if body.hourly_cap_usd < 0 else body.hourly_cap_usd
     if body.semantic_cache_enabled is not None:
         k.semantic_cache_enabled = body.semantic_cache_enabled
+    if body.metered_allowed is not None:
+        k.metered_allowed = body.metered_allowed
     if body.caller_memory_ttl_days is not None:
         # 0 or negative clears the TTL; positive int sets it
         k.caller_memory_ttl_days = (
@@ -653,6 +658,7 @@ def _serialize(k: ApiKey) -> dict:
         "daily_hard_cap_usd": k.daily_hard_cap_usd,
         "hourly_cap_usd": k.hourly_cap_usd,
         "semantic_cache_enabled": bool(k.semantic_cache_enabled),
+        "metered_allowed": bool(getattr(k, "metered_allowed", True)),
         "caller_memory_ttl_days": getattr(k, "caller_memory_ttl_days", None),
         # v5.0.0 — compliance per-key fields
         "blocked_companies": list(k.blocked_companies) if k.blocked_companies else None,
