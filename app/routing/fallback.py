@@ -86,6 +86,12 @@ async def try_ranked_non_streaming(
     current = primary_route
     tried: set[str] = set()
     last_exc: Optional[Exception] = None
+    # v5.22.57: track the route that actually raised ``last_exc`` so the
+    # handler can attribute the ERROR activity_log row to the failing
+    # provider, not the stale primary. Without this the single llm_request
+    # ERROR row carried the primary provider_id while event_meta.error held
+    # the last (real) provider's exception text.
+    last_failed_route = None
 
     if current is not None and current.provider.provider_type in ("claude-oauth", "ChatGPT-oauth-plan"):
         tried.add(current.provider.id)
@@ -107,6 +113,7 @@ async def try_ranked_non_streaming(
             return result, current, chain
         except Exception as exc:
             last_exc = exc
+            last_failed_route = current  # the route that actually raised
             if is_same_provider_retriable(exc):
                 # Retry.py already exhausted same-provider retries for these.
                 chain.add(current.provider.name, "retry-exhausted")
@@ -129,6 +136,11 @@ async def try_ranked_non_streaming(
 
     # All candidates exhausted
     if last_exc is not None:
+        # Attach the route that actually raised so the handler attributes the
+        # ERROR row to the failing provider. ``raise last_exc`` is unchanged so
+        # retry/circuit-breaker semantics are identical.
+        if last_failed_route is not None:
+            setattr(last_exc, "_llmproxy_attributed_route", last_failed_route)
         raise last_exc
     raise RuntimeError("fallback chain exhausted with no exception captured")
 

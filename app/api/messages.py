@@ -909,10 +909,16 @@ async def messages(
 
     except Exception as e:
         err_str = str(e)
+        # v5.22.57: when the fallback chain fell through to a different
+        # provider that raised the final exception, attribute the ERROR row to
+        # the provider that actually failed (not the stale primary ``route``).
+        # The attribute is absent when fallback is disabled or the primary
+        # itself raised; ``route`` is already correct in that case.
+        failed_route = getattr(e, "_llmproxy_attributed_route", None) or route
         await record_outcome(
-            db, route.provider.id, route.litellm_model, success=False,
+            db, failed_route.provider.id, failed_route.litellm_model, success=False,
             key_record_id=key_record.id, error_str=err_str,
-            provider_name=route.provider.name,
+            provider_name=failed_route.provider.name,
             request_body=body,
             requested_model=body.get("model") if isinstance(body, dict) else None,
             had_lmrh_hint=bool(llm_hint),
@@ -928,10 +934,10 @@ async def messages(
         logger.error(
             "Provider %s failed: %s [name=%s type=%s litellm_model=%s "
             "requested=%s cross_family=%s api_base=%s]",
-            route.provider.id, err_str, route.provider.name,
-            route.provider.provider_type, route.litellm_model,
+            failed_route.provider.id, err_str, failed_route.provider.name,
+            failed_route.provider.provider_type, failed_route.litellm_model,
             (body.get("model") if isinstance(body, dict) else None),
-            getattr(route, "cross_family_fallback", False),
+            getattr(failed_route, "cross_family_fallback", False),
             # v5.22.21 — api_base is the one field that can explain a vendor
             # mismatch. Production reported XaiException/console.x.ai while a
             # direct call with the same model and credentials returned

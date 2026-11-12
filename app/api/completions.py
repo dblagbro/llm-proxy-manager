@@ -849,11 +849,15 @@ async def chat_completions(
 
     except Exception as e:
         err_str = str(e)
+        # v5.22.57: attribute the ERROR row to the provider that actually
+        # failed when the fallback chain fell through to a different provider.
+        # Absent attribute (fallback disabled / primary raised) → ``route``.
+        failed_route = getattr(e, "_llmproxy_attributed_route", None) or route
         await record_outcome(
-            db, route.provider.id, route.litellm_model,
+            db, failed_route.provider.id, failed_route.litellm_model,
             endpoint="completions", success=False,
             key_record_id=key_record.id, error_str=err_str,
-            provider_name=route.provider.name,
+            provider_name=failed_route.provider.name,
             request_body=body,
             requested_model=requested_model,
             had_lmrh_hint=bool(llm_hint),
