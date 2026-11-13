@@ -2,6 +2,26 @@
 
 All notable changes since v2.7.6. Older history available in `git log`.
 
+### v5.22.60 (2026-11-13)
+
+grok-web routing and health fixes.
+
+- **Fallback chain no longer sends grok-web through litellm.** `routing/fallback.py`
+  skipped only `claude-oauth` / `ChatGPT-oauth-plan`; a `grok-web` candidate reached
+  litellm, which sent the placeholder key to api.x.ai ("Incorrect API key") and the
+  breaker recorded an auth failure. Both skip sites (primary and `_next_route`) now use
+  `OWN_DISPATCHER_PROVIDER_TYPES`; the provider is skipped and the next candidate used.
+- **Keepalive probe timeout is per provider type.** New `_PROBE_TIMEOUT_BY_TYPE`
+  (`grok-web`: 60s); all other types keep 15s.
+- **Bridge reports login state.** `grok_bridge/app.py`: the cookie-refresh tick logs a
+  WARNING "logged out" instead of "ok" when `sso`/`x-userid` are missing; `/api/chat`
+  returns 401 `{"error":"grok session logged out"}` before any browser interaction;
+  `/healthz` adds `logged_in` (HTTP status unchanged). Auth checks untouched. The proxy
+  maps that 401 to a clear `GrokWebAuthError` message.
+- **provider_test no longer logs failures as ok.** `test_provider()` results use
+  `success`, but the activity log read `ok` with a default of True, so failed tests
+  (e.g. "invalid bridge token") were recorded as ok. `_test_result_ok` now honours
+  `success`/`ok`/`error`.
 ### v5.22.59 (2026-11-13)
 
 Usage-reset advisor v1 (built, OFF by default, advisory only). Watches each

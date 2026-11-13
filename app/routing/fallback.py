@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.routing.router import select_provider, RouteResult
+from app.routing.litellm_binding import OWN_DISPATCHER_PROVIDER_TYPES
 from app.routing.lmrh import LMRHHint
 
 logger = logging.getLogger(__name__)
@@ -93,7 +94,7 @@ async def try_ranked_non_streaming(
     # the last (real) provider's exception text.
     last_failed_route = None
 
-    if current is not None and current.provider.provider_type in ("claude-oauth", "ChatGPT-oauth-plan"):
+    if current is not None and current.provider.provider_type in OWN_DISPATCHER_PROVIDER_TYPES:
         tried.add(current.provider.id)
         chain.add(current.provider.name, "skip:oauth-not-via-litellm")
         try:
@@ -211,8 +212,9 @@ async def _next_route(
                 f"({candidate.provider.id}); refusing to loop"
             )
 
-        if candidate.provider.provider_type in ("claude-oauth", "ChatGPT-oauth-plan"):
-            # OAuth-based providers can't go through litellm; skip them in
+        if candidate.provider.provider_type in OWN_DISPATCHER_PROVIDER_TYPES:
+            # v5.22.60: own-dispatcher providers (claude-oauth, ChatGPT-oauth-plan,
+            # grok-web) can't go through litellm; skip them in
             # the fallback chain. Add to excluded so the next pick is fresh.
             extended_excluded.add(candidate.provider.id)
             continue

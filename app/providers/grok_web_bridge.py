@@ -75,6 +75,12 @@ async def _bridge_chat(
             )
         except httpx.HTTPError as e:
             raise GrokWebError(f"grok-web bridge unreachable: {e}")
+    if r.status_code == 401 and "logged out" in r.text.lower():
+        # v5.22.60: bridge fails fast when its grok.com session is logged out.
+        raise GrokWebAuthError(
+            "grok-web bridge session is logged out of grok.com — open the "
+            "bridge /login page in a browser and sign in again."
+        )
     if r.status_code == 401:
         raise GrokWebAuthError(
             f"grok-web bridge auth: {r.text[:200]}. The bridge's "

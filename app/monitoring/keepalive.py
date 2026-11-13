@@ -47,7 +47,15 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_INTERVAL_SEC = 300         # 5 min
 _PROBE_TIMEOUT_SEC = 15
+# v5.22.60: per-provider-type probe timeout overrides. Browser-driven
+# providers (grok-web) need far longer than a plain HTTP probe.
+_PROBE_TIMEOUT_BY_TYPE = {"grok-web": 60}
 _PROBE_MAX_TOKENS = 8
+
+
+def _probe_timeout_sec(provider_type: str) -> int:
+    """Probe timeout for a provider type (default ``_PROBE_TIMEOUT_SEC``)."""
+    return _PROBE_TIMEOUT_BY_TYPE.get(provider_type, _PROBE_TIMEOUT_SEC)
 
 
 def _probe_interval_sec() -> int:
@@ -317,9 +325,9 @@ async def _probe_one(provider: Provider) -> None:
                     provider.extra_config or {},
                     messages=[{"role": "user", "content": prompt}],
                     model=model,
-                    timeout=float(_PROBE_TIMEOUT_SEC),
+                    timeout=float(_probe_timeout_sec("grok-web")),
                 ),
-                timeout=float(_PROBE_TIMEOUT_SEC),
+                timeout=float(_probe_timeout_sec("grok-web")),
             )
             success = True
             usage = resp.get("usage") or {}
