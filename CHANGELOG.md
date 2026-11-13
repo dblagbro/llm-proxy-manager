@@ -2,6 +2,18 @@
 
 All notable changes since v2.7.6. Older history available in `git log`.
 
+### v5.22.58 (2026-11-13)
+
+Treat OpenAI's project spend-cap 429 ("Your project has reached its configured
+enforced spend limit") as a billing error. The text matched none of
+`BILLING_ERROR_PATTERNS`, so `acompletion_with_retry` retried it as a transient
+rate limit (4 app attempts x 2 SDK retries, ~20s added latency per request,
+~2,700 `openai_client_retry` rows/day) and the breaker never held the provider
+down. Added the `"spend limit"` pattern: the retry loop now raises on the first
+attempt and `record_failure(billing_error=True)` opens the breaker with a 6h
+hold-down. Also logs `router.metered_guard_rejected` (api_key_id, dropped count)
+when the per-key metered guard leaves zero providers; behaviour unchanged.
+
 ### v5.22.57 (2026-11-12)
 
 Fix activity_log error attribution across the ordered fallback chain. When the

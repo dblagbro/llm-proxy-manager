@@ -229,3 +229,35 @@ class TestDeprecationAutoBump:
                 [{"role": "user", "content": "hi"}],
                 max_retries=2,
             )
+
+
+# v5.22.58 — OpenAI project spend-cap 429 is a billing error, not a transient
+# rate limit: it must raise on the first attempt (no retries / no sleeps).
+_SPEND_LIMIT_MSG = "Your project has reached its configured enforced spend limit"
+
+
+def test_spend_limit_text_is_billing_error():
+    from app.routing.circuit_breaker import classify_error, is_billing_error
+    assert is_billing_error(_SPEND_LIMIT_MSG)
+    assert is_billing_error("Error code: 429 - " + _SPEND_LIMIT_MSG.upper())
+    assert classify_error(_SPEND_LIMIT_MSG) == "billing"
+
+
+@pytest.mark.asyncio
+async def test_spend_limit_429_not_retried(monkeypatch):
+    calls = []
+    sleeps = []
+
+    async def fake_acompletion(model, messages, **kw):
+        calls.append(1)
+        raise _rate_limit_error(_SPEND_LIMIT_MSG)
+
+    async def fake_sleep(s):
+        sleeps.append(s)
+
+    monkeypatch.setattr(sys.modules["litellm"], "acompletion", fake_acompletion)
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+    with pytest.raises(RateLimitError):
+        await acompletion_with_retry("gpt-4o", [{"role": "user", "content": "hi"}], max_retries=3)
+    assert len(calls) == 1
+    assert sleeps == []

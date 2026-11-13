@@ -298,6 +298,11 @@ BILLING_ERROR_PATTERNS = [
     # variants catch the OpenAI message + the plural form.
     "exceeded your current quota",
     "exceeded your quota",
+    # v5.22.58: OpenAI project spend cap — HTTP 429 "Your project has reached
+    # its configured enforced spend limit". Permanent until the operator
+    # raises the cap, so it must fail fast + open the breaker, not be retried
+    # as a transient rate limit.
+    "spend limit",
     "billing",
     "payment required",
     "subscription",
