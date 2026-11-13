@@ -651,3 +651,15 @@ independent version exception on 2026-11-09 at 16:16:04 UTC. The 3,244
 inherited gateway lint findings remain explicit debt; all final-head CI and
 scoped checks must pass before release. Gateway 5.22.53 remains unchanged.
 See [candidate evidence, limits and recovery](whisper-4.3.1-security.md).
+
+## Usage-reset advisor (v5.22.59) - built, OFF
+
+Advisory watcher for Anthropic Fable-only limit resets (`app/monitoring/usage_reset_advisor.py`,
+flag `USAGE_RESET_ADVISOR_ENABLED`, default false). Emails the operator when weekly >= 95% and
+Fable >= 30 pp of it, unless the weekly window resets within 2 h; once per window per account
+(marker in `usage_reset_advisor_state`, not cluster-synced). Needs SMTP enabled to alert. Second
+watcher: `scripts/usage_reset_advisor_cron.py` (no crontab installed). Redemption is NOT
+implemented (`redeem_fable_reset()` raises; the endpoint must be captured from a real click). The
+live `/usage` response exposes no "resets available" count, so that input is always None.
+The existing 4-hourly scraper writes `external_usage_snapshot` and IS running (fresh rows);
+the stale 2026-05-06 table is `provider_usage_windows`, a different (proxy-internal) table.

@@ -2,6 +2,25 @@
 
 All notable changes since v2.7.6. Older history available in `git log`.
 
+### v5.22.59 (2026-11-13)
+
+Usage-reset advisor v1 (built, OFF by default, advisory only). Watches each
+claude-oauth account's claude.ai `/usage` response and emails the operator when
+a Fable-only limit reset is worth spending: weekly >= 95% AND Fable's share of
+the weekly limit (`weekly_scoped_shares[].used_percent_of_weekly` for the
+"Fable" scoped limit) >= 30 pp, never when the weekly window resets within 2 h,
+at most once per account per weekly window. New pure `decide()` in
+`app/monitoring/usage_reset_advisor.py`, `parse_fable_usage()` in
+`app/providers/anthropic_billing.py`, new table `usage_reset_advisor_state`
+(last decision + "advised for window" marker, created by `create_all`), worker
+started from `app/main.py` (idles unless `USAGE_RESET_ADVISOR_ENABLED=true`),
+and `scripts/usage_reset_advisor_cron.py` as a second watcher sharing the same
+marker. Stale cookies / HTTP errors / unparseable or Fable-less responses send
+one "cannot read usage, check manually" alert per condition. A disabled
+`redeem_fable_reset()` stub raises NotImplementedError (redemption endpoint not
+captured; never called unless `USAGE_RESET_ADVISOR_REDEEM_ENABLED`, and even then
+only raises). No redemption, no extra claude.ai calls. Settings:
+`USAGE_RESET_ADVISOR_{ENABLED,INTERVAL_SEC,WEEKLY_PCT,FABLE_MIN_PP,SKIP_IF_RESET_WITHIN_SEC,REDEEM_ENABLED}`.
 ### v5.22.58 (2026-11-13)
 
 Treat OpenAI's project spend-cap 429 ("Your project has reached its configured

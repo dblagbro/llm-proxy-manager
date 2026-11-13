@@ -563,6 +563,22 @@ class Settings(BaseSettings):
         14400, alias="ANTHROPIC_BILLING_SCRAPE_INTERVAL_SEC",
     )
 
+    # v5.22.59 — usage-reset advisor (built-but-OFF). Watches the weekly
+    # limit + Fable share and EMAILS the operator when a Fable-only limit
+    # reset is worth spending. Never redeems anything (see
+    # ``app/monitoring/usage_reset_advisor.py``).
+    usage_reset_advisor_enabled: bool = Field(False, alias="USAGE_RESET_ADVISOR_ENABLED")
+    usage_reset_advisor_interval_sec: int = Field(900, alias="USAGE_RESET_ADVISOR_INTERVAL_SEC")
+    usage_reset_advisor_weekly_pct: float = Field(95.0, alias="USAGE_RESET_ADVISOR_WEEKLY_PCT")
+    usage_reset_advisor_fable_min_pp: float = Field(30.0, alias="USAGE_RESET_ADVISOR_FABLE_MIN_PP")
+    usage_reset_advisor_skip_if_reset_within_sec: int = Field(
+        7200, alias="USAGE_RESET_ADVISOR_SKIP_IF_RESET_WITHIN_SEC",
+    )
+    # Redemption is NOT implemented; this flag only gates the stub.
+    usage_reset_advisor_redeem_enabled: bool = Field(
+        False, alias="USAGE_RESET_ADVISOR_REDEEM_ENABLED",
+    )
+
     # v3.7.1 — auto-rotation rule thresholds. The router skips providers
     # whose latest snapshot reports ``seven_day_utilization >=
     # external_rotation_capacity_pct``. Skip is cleared once
