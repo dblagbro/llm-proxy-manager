@@ -1175,7 +1175,218 @@ def assert_original_commands_and_volume(image, resolved, live):
     )
 
 
-def assert_runtime(old, live, data, image, managed_environment=None, *, network_id=None):
+def _runtime_reject_lab(old, live, data, binding):
+    require(binding is None, "Lab runtime binding requires its exact context")
+    from network_lab_context import ROOT as LAB_ROOT
+
+    paths = [data]
+    for item in (old, live):
+        labels = item.get("Config", {}).get("Labels") or {}
+        require(
+            not str(item.get("Name", "")).startswith("/codex-grok-nettest-")
+            and not str(labels.get("com.docker.compose.project", "")).startswith(
+                "codex-grok-nettest-"
+            ),
+            "Lab runtime identity requires its exact context",
+        )
+        paths.extend(m.get("Source") for m in item.get("Mounts", []))
+    for value in paths:
+        if isinstance(value, (str, PurePosixPath, Path)):
+            path = PurePosixPath(value)
+            require(
+                path != LAB_ROOT and LAB_ROOT not in path.parents,
+                "Lab runtime path requires its exact context",
+            )
+
+
+def _runtime_lab_path(value):
+    require(type(value) is str, "Lab runtime path must be a canonical string")
+    path = PurePosixPath(value)
+    require(
+        path.is_absolute()
+        and str(path) == value
+        and value != "/"
+        and not value.startswith("//")
+        and ".." not in path.parts
+        and not any(character in value for character in "\\\r\n\0"),
+        "Lab runtime path must be canonical and absolute",
+    )
+    return value
+
+
+def _runtime_lab_policy(old, live, data, image, network_id, context, binding):
+    """Check supplied records/binding only, without observing or admitting a host."""
+    names = network_policy._identity(context)
+    try:
+        context.verify_journal_binding(binding)
+    except ValueError:
+        raise Refused("Lab runtime journal binding differs") from None
+    network_policy._json_value(old)
+    network_policy._json_value(live)
+    pins = dict(context.images)
+    require(
+        type(image) is str and image in (pins["original"], pins["candidate"]),
+        "Lab runtime image is not pinned",
+    )
+    for item in (old, live):
+        require(type(item) is dict, "Invalid lab runtime record")
+        require(
+            type(item.get("Id")) is str
+            and bool(re.fullmatch(r"[0-9a-f]{64}", item["Id"]))
+            and item.get("Name") == "/" + names[SERVICE],
+            "Lab runtime physical identity differs",
+        )
+        require(
+            type(item.get("Config")) is dict and type(item.get("HostConfig")) is dict,
+            "Invalid lab runtime configuration",
+        )
+        labels = item["Config"].get("Labels")
+        require(
+            type(labels) is dict
+            and labels.get("com.docker.compose.project") == context.project
+            and labels.get("com.docker.compose.service") == SERVICE,
+            "Lab runtime Compose ownership differs",
+        )
+        require(
+            type(item.get("RestartCount", 0)) is int and item.get("RestartCount", 0) >= 0,
+            "Invalid lab restart count",
+        )
+        mounts = item.get("Mounts")
+        require(
+            type(mounts) is list and all(type(m) is dict for m in mounts),
+            "Invalid lab runtime mounts",
+        )
+        require(
+            all(
+                type(m.get("Source")) is str
+                and type(m.get("Type")) is str
+                and type(m.get("RW")) is bool
+                for m in mounts
+            ),
+            "Malformed lab mount fields",
+        )
+        destinations = [mount.get("Destination") for mount in mounts]
+        require(
+            all(type(target) is str for target in destinations)
+            and len(destinations) == len(set(destinations)),
+            "Ambiguous lab mount destinations",
+        )
+        environment = item["Config"].get("Env")
+        require(
+            type(environment) is list
+            and all(
+                type(entry) is str and "=" in entry and entry.split("=", 1)[0]
+                for entry in environment
+            ),
+            "Invalid lab runtime environment",
+        )
+        keys = [entry.split("=", 1)[0] for entry in environment]
+        require(len(keys) == len(set(keys)), "Duplicate lab environment keys")
+        require(type(item.get("NetworkSettings")) is dict, "Invalid lab network settings")
+        require(
+            type(item["NetworkSettings"].get("Networks")) is dict, "Invalid lab network mappings"
+        )
+        require(
+            all(
+                type(name) is str and type(endpoint) is dict
+                for name, endpoint in item["NetworkSettings"]["Networks"].items()
+            ),
+            "Malformed lab network endpoint",
+        )
+        require(type(item["NetworkSettings"].get("Ports", {})) is dict, "Invalid lab port mappings")
+    require(
+        old.get("Image") == pins["original"] and live.get("Image") == image,
+        "Lab runtime immutable image differs",
+    )
+    old_networks = old["NetworkSettings"]["Networks"]
+    default = names[network_policy.DEFAULT_NAME]
+    require(
+        set(old_networks) == {default} and type(old_networks[default]) is dict,
+        "Original lab default network differs",
+    )
+    original_network_id = old_networks[default].get("NetworkID")
+    require(
+        type(original_network_id) is str
+        and bool(re.fullmatch(r"[0-9a-f]{64}", original_network_id))
+        and old["HostConfig"].get("NetworkMode") == default,
+        "Original lab network identity differs",
+    )
+    require(
+        not old["HostConfig"].get("PortBindings")
+        and not any(old["NetworkSettings"].get("Ports", {}).values()),
+        "Original lab service ports must be unpublished",
+    )
+    original_mounts = [m for m in old["Mounts"] if m["Destination"] == "/data"]
+    current_mounts = [m for m in live["Mounts"] if m["Destination"] == "/data"]
+    require(len(original_mounts) == len(current_mounts) == 1, "Missing or duplicate lab data mount")
+    original, current = original_mounts[0], current_mounts[0]
+    require(
+        original.get("Type") == "volume"
+        and original.get("RW") is True
+        and type(original.get("Name")) is str
+        and bool(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", original["Name"])),
+        "Original lab data requires a writable named volume",
+    )
+    _runtime_lab_path(original.get("Source"))
+    _runtime_lab_path(current.get("Source"))
+    _runtime_lab_path(data)
+    require(current.get("RW") is True, "Lab data mount must remain writable")
+    if image == pins["candidate"]:
+        candidate, additions = _compose_parameters(data, context)
+        require(
+            type(network_id) is str
+            and bool(re.fullmatch(r"[0-9a-f]{64}", network_id))
+            and network_id != original_network_id,
+            "Lab candidate requires its exact owned dedicated network ID",
+        )
+        require(live["Id"] != old["Id"], "Candidate cannot reuse the original container identity")
+        require(
+            current.get("Type") == "bind" and not current.get("Name") and current["Source"] == data,
+            "Lab candidate data binding differs",
+        )
+    else:
+        require(network_id is None, "Original lab runtime cannot use a candidate network ID")
+        require(
+            data == original["Source"]
+            and all(
+                network_policy._same_json(current.get(key), original[key])
+                for key in ("Name", "Source", "Type", "RW")
+            ),
+            "Original lab named-volume binding changed",
+        )
+        candidate, additions = _compose_parameters(
+            str(context.generation_root / "candidate-data"), context
+        )
+    require(
+        bool(dict(entry.split("=", 1) for entry in old["Config"]["Env"]).get("BRIDGE_TOKEN")),
+        "Original lab token is missing",
+    )
+    return candidate, additions, default, names[network_policy.NETWORK_NAME]
+
+
+def assert_runtime(
+    old,
+    live,
+    data,
+    image,
+    managed_environment=None,
+    *,
+    network_id=None,
+    lab_context=None,
+    lab_binding=None,
+):
+    """Compare supplied configuration; lab binding is not observed identity or admission."""
+    candidate, additions = CANDIDATE, ENV_ADDITIONS
+    default, dedicated = network_policy.DEFAULT_NAME, network_policy.NETWORK_NAME
+    if lab_context is None:
+        _runtime_reject_lab(old, live, data, lab_binding)
+    else:
+        candidate, additions, default, dedicated = _runtime_lab_policy(
+            old, live, data, image, network_id, lab_context, lab_binding
+        )
+        if managed_environment is not None:
+            network_policy._json_value(managed_environment)
+            require(type(managed_environment) is dict, "Invalid lab managed environment")
     require(live["Image"] == image, "Runtime image mismatch")
     expected_restarts = old.get("RestartCount", 0) if live["Id"] == old["Id"] else 0
     require(
@@ -1184,7 +1395,11 @@ def assert_runtime(old, live, data, image, managed_environment=None, *, network_
     )
     for key in ("Cmd", "Entrypoint", "Healthcheck"):
         require(
-            old["Config"].get(key) == live["Config"].get(key),
+            (
+                network_policy._same_json(old["Config"].get(key), live["Config"].get(key))
+                if lab_context is not None
+                else old["Config"].get(key) == live["Config"].get(key)
+            ),
             "Command/entrypoint/healthcheck drift",
         )
     keys = (
@@ -1203,7 +1418,12 @@ def assert_runtime(old, live, data, image, managed_environment=None, *, network_
         "PortBindings",
     )
     require(
-        all(old["HostConfig"].get(k) == live["HostConfig"].get(k) for k in keys),
+        all(
+            network_policy._same_json(old["HostConfig"].get(k), live["HostConfig"].get(k))
+            if lab_context is not None
+            else old["HostConfig"].get(k) == live["HostConfig"].get(k)
+            for k in keys
+        ),
         "Runtime limits/security drift",
     )
     old_networks, live_networks = (
@@ -1212,13 +1432,13 @@ def assert_runtime(old, live, data, image, managed_environment=None, *, network_
     )
     if network_id is not None:
         require(
-            image == CANDIDATE
+            image == candidate
             and type(network_id) is str
             and bool(re.fullmatch("[0-9a-f]{64}", network_id))
-            and set(old_networks) == {network_policy.DEFAULT_NAME}
-            and set(live_networks) == {network_policy.NETWORK_NAME}
-            and live_networks[network_policy.NETWORK_NAME].get("NetworkID") == network_id
-            and live["HostConfig"].get("NetworkMode") == network_policy.NETWORK_NAME
+            and set(old_networks) == {default}
+            and set(live_networks) == {dedicated}
+            and live_networks[dedicated].get("NetworkID") == network_id
+            and live["HostConfig"].get("NetworkMode") == dedicated
             and not live["HostConfig"].get("PortBindings")
             and not any(live["NetworkSettings"].get("Ports", {}).values()),
             "Candidate network differs from the owned dedicated network",
@@ -1248,11 +1468,15 @@ def assert_runtime(old, live, data, image, managed_environment=None, *, network_
     require(
         len(mounts) == 1
         and mounts[0]["RW"]
-        and Path(mounts[0]["Source"]).resolve() == Path(data).resolve(),
+        and (
+            mounts[0]["Source"] == data
+            if lab_context is not None
+            else Path(mounts[0]["Source"]).resolve() == Path(data).resolve()
+        ),
         "Wrong runtime data mount",
     )
     require(
-        mounts[0]["Type"] == ("bind" if image == CANDIDATE else "volume"),
+        mounts[0]["Type"] == ("bind" if image == candidate else "volume"),
         "Wrong runtime volume type",
     )
     previous = dict(x.split("=", 1) for x in old["Config"]["Env"])
@@ -1262,15 +1486,15 @@ def assert_runtime(old, live, data, image, managed_environment=None, *, network_
         "Service token changed",
     )
     expected = {key: str(value) for key, value in (managed_environment or {}).items()}
-    if image == CANDIDATE:
-        expected.update(ENV_ADDITIONS)
+    if image == candidate:
+        expected.update(additions)
     require(
         all(current.get(key) == value for key, value in expected.items()),
         "Managed environment drift",
     )
-    if image == CANDIDATE:
+    if image == candidate:
         require(
-            all(current.get(k) == v for k, v in ENV_ADDITIONS.items()),
+            all(current.get(k) == v for k, v in additions.items()),
             "Bridge origin/auth drift",
         )
 

@@ -423,3 +423,37 @@ Makefile targets. Scoped Ruff lint/format passed. Windows passed the 100
 original release and 98 new tests. All 44 other original definitions, decorators
 and existing top-level code/assignments were verified unchanged by source/AST
 comparison. No runtime acceptance was performed.
+
+## Supplied lab runtime-record verification
+
+The shared assert_runtime verifier accepts an explicit lab context and mandatory
+caller-supplied full journal binding. Raw original/current container IDs, physical
+names, Compose project/service labels and immutable image IDs must match that
+context. The candidate requires the exact caller-supplied dedicated network ID,
+distinct from the retained original default network; omission cannot fall back to
+the shared bridge. Original/rollback mode rejects any candidate network ID.
+
+Original /data remains an exact writable named volume: its retained name, source,
+type and writable flag must match. Its backing directory is not assumed to live
+under a default Docker root. Candidate /data is a bind of exactly the generation's
+candidate-data path. Lab paths use canonical lexical comparisons without
+filesystem resolution. Duplicate mount destinations/environment keys, malformed
+IDs/record shapes, inconsistent context and scalar/nested comparison type drift
+refuse. Existing command, security/limit, non-data-mount, restart, token and
+managed-environment checks remain active; candidate origin/auth use the existing
+fixed synthetic lab configuration.
+
+Stopped and created records can be validated for ambiguous recovery. Passing this
+comparison does not grant running/healthy admission. All inputs are supplied
+records: this does not observe VM/engine identity, establish network/volume
+ownership, prove local storage or synthetic provenance, or authorize execution.
+Production calls preserve their existing comparison behavior and path resolution,
+with explicit rejection of recognizable lab identity, paths and supplied bindings.
+
+Only the existing assert_runtime definition changes in this increment, plus
+private pure helpers. Host, outer journals, prepare/deploy/rollback, CLI, release
+gate, operation lock, hostname/NAS and production capacity checks remain unchanged.
+Distinct admission and integration into the full lifecycle body remain pending.
+No live collector/validator, accepted fixture repetition, image scan, deployment,
+backup/permission change or cleanup occurred. See
+docs/evidence/grok-lab-runtime-context-source-20261114.json for source checks.
