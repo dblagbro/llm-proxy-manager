@@ -1,0 +1,17 @@
+{
+  "checked_utc": "2026-11-14T08:30:02.995352+00:00",
+  "phase": "canonical_and_pr17_combined_resolution_passed",
+  "canonical_sha256": "70c98583ec39f370e28200c26daf3f032702adfc060023da936225a311b9b6a9",
+  "renderer_sha256": "da17980d06d91f4a428e2f1e29f192032306829fd8130232d1f9bae81f75f758",
+  "pr17_operator_sha256": "abbd6580c5fecc314fa63da6fd7bc7423cdcc37dae2a46c1a216665f9ba607e8",
+  "private_candidate_written": false,
+  "private_resolved_model_written": false,
+  "production_modified": false,
+  "new_networks_or_containers": false,
+  "network_only_scope_passed": true,
+  "combined_image_environment_data_network_scope_passed": true,
+  "preexisting_container_count": 138,
+  "all_existing_container_configuration_unchanged": true,
+  "compose_default_normalization": "only new dedicated network: internal:false omitted, empty ipam added",
+  "release_lifecycle_integrated": false
+}

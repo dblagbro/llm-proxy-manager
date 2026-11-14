@@ -359,3 +359,43 @@ codex-grok-nettest-UNIQUE --image sha256:EXACT_LOCAL_IMAGE_ID --output
 /var/backups/NEW_PRIVATE_GENERATION`. Use lowercase project names. This target
 does not pull images or delete resources. It retains named stopped fixtures for
 review; do not repeat a passed fixture without a new change or unresolved concern.
+
+### Canonical Compose network renderer preparation
+
+The pure `deployment/network_compose.py` renderer accepts private UTF-8/LF Compose
+bytes plus reviewed original/desired network maps. Call it after corrected PR17's
+image/environment/data renderer, then resolve the result with Compose using the
+original project directory and project name. Never print or persist these private
+inputs, resolved models or candidate bytes outside the reviewed private release
+journal. This module performs no Docker commands or file writes.
+
+The renderer derives the permitted desired mappings from the fixed network policy.
+It edits only the three service network fields and one new root network declaration.
+Unrelated text remains byte-for-byte intact; comments inside replaced fields retain
+their text as separate comment lines. It refuses duplicate/non-string/merge keys,
+anchors, aliases, multiple documents, unsupported indentation/flow service mappings,
+network collisions and stale raw network mappings. A type-sensitive whole-document
+semantic comparison verifies the result; raw YAML success does not replace resolved
+Compose validation, live identity checks or the release maintenance lock/CAS.
+
+Run `make test-grok-network lint-grok-network` with the deployment requirements
+installed in GROK_PYTHON. The 76 synthetic cases comprise 18 policy, 21 journal,
+22 adapter and 15 renderer tests. Renderer tests cover implicit/list/default options,
+unrelated private-value and literal-scalar preservation, comments, EOF insertion,
+collisions, drift, malformed or ambiguous YAML, arbitrary desired scope and errors
+that must not reveal private values.
+
+A read-only canonical check on November 14 resolved both the network-only result
+and the result chained after exact corrected PR17 head bc7be1c. The full comparison
+accepted only the reviewed image/environment/data/network changes. Compose 5.7.1
+adds empty `ipam: {}` and omits `internal: false` on the new dedicated declaration;
+the check normalized only those exact defaults on that new declaration. Existing
+network definitions and unrelated services remained strictly compared. All 138
+existing container identities/configuration fingerprints and the canonical file
+were unchanged. No private candidate/model was written and no network/container
+was created. See `docs/evidence/grok-network-compose-20261114.json`.
+
+This verifies source rendering and resolution only. The runtime release operator
+still needs integration, multi-network Nginx validation, interruption/rollback
+acceptance, authenticated browser checks and outsider denial. No image is deployed,
+no release gate is waived and the already-passed adapter fixture was not rerun.

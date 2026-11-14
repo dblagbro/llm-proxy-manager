@@ -181,8 +181,8 @@ test-grok-network:
 	$(GROK_PYTHON) -m unittest discover -s grok_bridge/deployment -p 'test_network_*.py' -v
 
 lint-grok-network:
-	ruff check --target-version py310 grok_bridge/deployment/network_policy.py grok_bridge/deployment/test_network_policy.py grok_bridge/deployment/network_transaction.py grok_bridge/deployment/test_network_transaction.py grok_bridge/deployment/network_docker.py grok_bridge/deployment/test_network_docker.py grok_bridge/deployment/rehearse_network.py
-	ruff format --check --target-version py310 grok_bridge/deployment/network_policy.py grok_bridge/deployment/test_network_policy.py grok_bridge/deployment/network_transaction.py grok_bridge/deployment/test_network_transaction.py grok_bridge/deployment/network_docker.py grok_bridge/deployment/test_network_docker.py grok_bridge/deployment/rehearse_network.py
+	ruff check --target-version py310 grok_bridge/deployment/network_policy.py grok_bridge/deployment/test_network_policy.py grok_bridge/deployment/network_transaction.py grok_bridge/deployment/test_network_transaction.py grok_bridge/deployment/network_docker.py grok_bridge/deployment/test_network_docker.py grok_bridge/deployment/network_compose.py grok_bridge/deployment/test_network_compose.py grok_bridge/deployment/rehearse_network.py
+	ruff format --check --target-version py310 grok_bridge/deployment/network_policy.py grok_bridge/deployment/test_network_policy.py grok_bridge/deployment/network_transaction.py grok_bridge/deployment/test_network_transaction.py grok_bridge/deployment/network_docker.py grok_bridge/deployment/test_network_docker.py grok_bridge/deployment/network_compose.py grok_bridge/deployment/test_network_compose.py grok_bridge/deployment/rehearse_network.py
 
 # Explicit isolated fixture only; no release integration or automatic deletion.
 .PHONY: test-grok-network-docker

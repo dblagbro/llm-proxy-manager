@@ -720,3 +720,8 @@ accompanies the dedicated-network planner and consumer journal. Read-only is the
 default; explicit transaction/container bindings gate mutations. This is unshipped
 preparation with no release-operator integration or production change. See
 [security preparation](grok-bridge-security.md).
+
+Canonical network rendering update (2026-11-14): a pure, bounded Compose-source
+renderer now accompanies the planner/journal/adapter. Read-only canonical and
+corrected-PR17 chained resolution passed. Runtime lifecycle integration and full
+browser/network/recovery acceptance remain pending; production is unchanged.
