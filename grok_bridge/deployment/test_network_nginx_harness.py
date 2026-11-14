@@ -193,7 +193,16 @@ def test_lost_create_receipt_reconciles_exact_fixture_and_reuses(acceptance):
 
 @pytest.mark.parametrize(
     "change",
-    ["config", "endpoint", "state", "network", "new-container", "canonical", "source", "compose"],
+    [
+        "config",
+        "endpoint",
+        "state",
+        "network",
+        "new-container",
+        "canonical",
+        "source",
+        "compose",
+    ],
 )
 def test_unrelated_drift_refuses_second_run_and_reports_invariants(acceptance, change):
     host, _, canonical, _ = acceptance
@@ -541,7 +550,9 @@ def test_short_inventory_ids_cannot_authorize_a_fixture(acceptance):
     assert result["invariants"] == "unverified"
 
 
-def test_source_failure_reports_unverified_identity_without_inventing_counts(acceptance):
+def test_source_failure_reports_unverified_identity_without_inventing_counts(
+    acceptance,
+):
     def fail_source():
         raise h.Refused("Private source context")
 
@@ -574,3 +585,254 @@ def test_only_owned_ephemeral_default_endpoint_is_tolerated(acceptance):
     )
     result = perform(acceptance)
     assert result["acceptance"] == "passed"
+
+
+def damage_fixture_configuration(host):
+    # Unlike Docker's false/null OomKillDisable representation, this is actual
+    # unreviewed configuration drift after the original fingerprint was saved.
+    host.fixture["HostConfig"]["OomScoreAdj"] = 123
+
+
+def test_bad_fixture_fingerprint_does_not_suppress_original_or_input_audits(acceptance):
+    host = acceptance[0]
+    host.after_start = damage_fixture_configuration
+    result = perform(acceptance)
+    assert result["acceptance"] == "failed" and result["invariants"] == "failed"
+    assert result["fixture"] is None
+    assert result["fixture_observation"] == {
+        "name": host.fixture["Name"].lstrip("/"),
+        "id": FIXTURE_ID,
+        "state": "stopped",
+        "exit_code": 0,
+        "oom_killed": False,
+        "configuration_verified": False,
+        "observation_only": True,
+    }
+    assert result["audit_status"] == {
+        "inventory_capture": "passed",
+        "inventory_evidence": "passed",
+        "ownership": "failed",
+        "preexisting_containers": "passed",
+        "preexisting_networks": "passed",
+        "inputs": "passed",
+        "include_inputs": "passed",
+        "source": "passed",
+    }
+    assert result["preexisting_audit"]["containers"]["checked"] == 2
+    assert result["preexisting_audit"]["networks"]["checked"] == 1
+    assert result["input_audit"]["checked"] == 5
+    assert sum(call[1] == "start" for call in host.calls) == 1
+    assert not any(call[1] == "stop" for call in host.calls)
+
+
+def test_bad_fixture_still_reports_all_original_config_endpoint_and_lifecycle_changes(
+    acceptance,
+):
+    host = acceptance[0]
+
+    def drift(value):
+        damage_fixture_configuration(value)
+        value.nginx["Config"]["Labels"]["unexpected"] = "PRIVATE-DRIFT"
+        value.bridge["NetworkSettings"]["Networks"][h.n.DEFAULT]["EndpointID"] = "changed"
+        value.bridge["State"]["Paused"] = True
+
+    host.after_start = drift
+    result = perform(acceptance)
+    assert result["acceptance"] == "failed"
+    assert result["audit_status"]["ownership"] == "failed"
+    assert result["preexisting_audit"]["containers"] == {
+        "expected": 2,
+        "checked": 2,
+        "missing": 0,
+        "configuration_changed": 1,
+        "endpoints_changed": 1,
+        "lifecycle_changed": 1,
+        "unreadable": 0,
+        "status": "failed",
+    }
+    assert result["audit_status"]["preexisting_networks"] == "passed"
+    assert result["audit_status"]["inputs"] == "passed"
+    assert result["audit_status"]["source"] == "passed"
+    assert "PRIVATE-DRIFT" not in json.dumps(result)
+
+
+def test_weaker_fixture_observation_does_not_exempt_its_network_endpoint(acceptance):
+    host = acceptance[0]
+
+    def drift(value):
+        damage_fixture_configuration(value)
+        value.networks[DEFAULT_ID]["Containers"][FIXTURE_ID] = {
+            "Name": value.fixture["Name"].lstrip("/")
+        }
+
+    host.after_start = drift
+    result = perform(acceptance)
+    assert result["fixture_observation"]["id"] == FIXTURE_ID
+    assert result["fixture"] is None
+    assert result["audit_status"]["ownership"] == "failed"
+    assert result["audit_status"]["preexisting_containers"] == "passed"
+    assert result["preexisting_audit"]["networks"]["changed"] == 1
+    assert result["audit_status"]["preexisting_networks"] == "failed"
+
+
+def test_final_inventory_failure_still_independently_audits_files_and_source(
+    acceptance,
+):
+    host, _, canonical, _ = acceptance
+    source = {"commit": "a" * 40}
+
+    def drift(value):
+        value.final_inventory_fail = True
+        canonical.write_bytes(b"PRIVATE-CONCURRENT-INPUT")
+        source["commit"] = "b" * 40
+
+    host.after_start = drift
+    result = perform(acceptance, lambda: copy.deepcopy(source))
+    assert result["audit_status"] == {
+        "inventory_capture": "failed",
+        "inventory_evidence": "unverified",
+        "ownership": "unverified",
+        "preexisting_containers": "unverified",
+        "preexisting_networks": "unverified",
+        "inputs": "failed",
+        "include_inputs": "passed",
+        "source": "failed",
+    }
+    for category in ("InventoryAudit:", "InputAudit:", "SourceAudit:"):
+        assert any(error.startswith(category) for error in result["errors"])
+    assert result["input_audit"]["checked"] == 5
+    assert result["input_audit"]["changed"] == 1
+    assert result["fixture_observation"] is None
+    assert "PRIVATE-CONCURRENT-INPUT" not in json.dumps(result)
+    assert "PRIVATE-DOCKER-OUTPUT" not in json.dumps(result)
+
+
+@pytest.mark.parametrize("operation", ["start", "stop"])
+def test_weaker_observation_cannot_authorize_lifecycle_mutation(acceptance, monkeypatch, operation):
+    host = acceptance[0]
+    assert perform(acceptance)["acceptance"] == "passed"
+    damage_fixture_configuration(host)
+    observation = h.fixture_observation(host.folder, h.inventory(host), {NGINX_ID, BRIDGE_ID})
+    assert observation["configuration_verified"] is False
+    guarded = h.GuardedHost(host.folder)
+    guarded.baseline_ids = {NGINX_ID, BRIDGE_ID}
+    monkeypatch.setattr(guarded, "inspect", host.inspect)
+    calls = []
+    monkeypatch.setattr(h.r.Host, "run", lambda self, args, timeout=180: calls.append(args))
+    args = (
+        ["docker", "start", "-a", FIXTURE_ID]
+        if operation == "start"
+        else ["docker", "stop", "--time", "5", FIXTURE_ID]
+    )
+    with pytest.raises(h.n.NginxValidationError):
+        guarded.run(args)
+    assert calls == [] and guarded.start_calls == 0
+
+
+@pytest.mark.parametrize("mismatch", ["id", "name", "owner", "preexisting"])
+def test_weaker_observation_requires_persisted_full_id_name_and_owner(acceptance, mismatch):
+    host = acceptance[0]
+    assert perform(acceptance)["acceptance"] == "passed"
+    current = h.inventory(host)
+    before_ids = {NGINX_ID, BRIDGE_ID}
+    if mismatch == "id":
+        current["containers"][FIXTURE_ID]["Id"] = "9" * 64
+    elif mismatch == "name":
+        current["containers"][FIXTURE_ID]["Name"] += "-different"
+    elif mismatch == "owner":
+        current["containers"][FIXTURE_ID]["Config"]["Labels"][h.n.OWNER] = "not-owner"
+    else:
+        before_ids.add(FIXTURE_ID)
+    assert h.fixture_observation(host.folder, current, before_ids) is None
+
+
+def test_weaker_observation_never_adopts_matching_name_without_persisted_id(
+    acceptance, monkeypatch
+):
+    host = acceptance[0]
+    assert perform(acceptance)["acceptance"] == "passed"
+    state = h.n._load(host.folder)
+    state["id"] = None
+    monkeypatch.setattr(h.n, "_load", lambda _: state)
+    assert h.fixture_observation(host.folder, h.inventory(host), {NGINX_ID, BRIDGE_ID}) is None
+    state["id"] = FIXTURE_ID[:12]
+    assert h.fixture_observation(host.folder, h.inventory(host), {NGINX_ID, BRIDGE_ID}) is None
+
+
+def test_failed_private_audit_log_does_not_suppress_later_checks(acceptance, monkeypatch):
+    host = acceptance[0]
+    host.after_start = damage_fixture_configuration
+    original_write = h.r.private_write
+
+    def cannot_write_ownership_log(path, data):
+        if path.name == "audit-ownership.private.log":
+            raise OSError("PRIVATE-EVIDENCE-FAILURE")
+        return original_write(path, data)
+
+    monkeypatch.setattr(h.r, "private_write", cannot_write_ownership_log)
+    result = perform(acceptance)
+    assert "EvidenceWriteAudit:OSError" in result["errors"]
+    for category in (
+        "preexisting_containers",
+        "preexisting_networks",
+        "inputs",
+        "source",
+    ):
+        assert result["audit_status"][category] == "passed"
+    assert result["fixture_observation"]["configuration_verified"] is False
+    assert "PRIVATE-EVIDENCE-FAILURE" not in json.dumps(result)
+
+
+def test_input_audit_continues_after_unreadable_file(monkeypatch):
+    first, second = Path("first-private"), Path("second-private")
+    visited = []
+
+    def read(path):
+        visited.append(path)
+        if path == first:
+            raise OSError("PRIVATE-ERROR")
+        return b"changed"
+
+    monkeypatch.setattr(h, "read_regular", read)
+    audit = h.input_audit({first: b"first", second: b"second"})
+    assert visited == [first, second]
+    assert audit == {
+        "expected": 2,
+        "checked": 2,
+        "changed": 1,
+        "unreadable": 1,
+        "status": "failed",
+    }
+
+
+def test_preexisting_audit_continues_after_malformed_original(acceptance):
+    host = acceptance[0]
+    before = host.rows()
+    after = copy.deepcopy(before)
+    after[NGINX_ID]["State"] = None
+    after[BRIDGE_ID]["Config"]["Labels"]["changed"] = "yes"
+    audit = h.preexisting_container_audit(before, after)
+    assert audit["checked"] == 2 and audit["unreadable"] == 1
+    assert audit["configuration_changed"] == 1 and audit["status"] == "failed"
+
+
+def test_include_audit_runs_independently_when_fixture_validation_fails(acceptance, monkeypatch):
+    host = acceptance[0]
+
+    def changed_include(folder, original_nginx):
+        raise h.n.NginxValidationError("Synthetic include changed")
+
+    def damage(value):
+        damage_fixture_configuration(value)
+        monkeypatch.setattr(h.n, "verify_validation_inputs", changed_include)
+
+    host.after_start = damage
+    result = perform(acceptance)
+    assert result["audit_status"]["ownership"] == "failed"
+    assert result["audit_status"]["include_inputs"] == "failed"
+    assert result["audit_status"]["preexisting_containers"] == "passed"
+    assert result["audit_status"]["preexisting_networks"] == "passed"
+    assert result["audit_status"]["inputs"] == "passed"
+    assert result["audit_status"]["source"] == "passed"
+    assert "IncludeInputAudit:NginxValidationError" in result["errors"]
+    assert result["acceptance"] == result["invariants"] == "failed"

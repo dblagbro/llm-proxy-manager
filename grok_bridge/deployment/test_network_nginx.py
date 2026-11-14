@@ -2,6 +2,7 @@
 
 import copy
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -50,10 +51,19 @@ def original(name, cid):
         "Args": [],
         "NetworkSettings": {
             "Networks": {
-                n.DEFAULT: {"NetworkID": DEFAULT_ID, "EndpointID": cid, "Gateway": "192.0.2.1"}
+                n.DEFAULT: {
+                    "NetworkID": DEFAULT_ID,
+                    "EndpointID": cid,
+                    "Gateway": "192.0.2.1",
+                }
             }
         },
-        "State": {"Running": True, "Restarting": False, "ExitCode": 0, "OOMKilled": False},
+        "State": {
+            "Running": True,
+            "Restarting": False,
+            "ExitCode": 0,
+            "OOMKilled": False,
+        },
     }
 
 
@@ -96,13 +106,30 @@ class FakeHost:
             "NanoCpus": 500000000,
             "PidsLimit": 64,
             "CapDrop": ["ALL"],
+            "OomKillDisable": False,
             "SecurityOpt": ["no-new-privileges:true"],
             "IpcMode": "private",
             "CgroupnsMode": "private",
             "Runtime": "runc",
             "RestartPolicy": {"Name": "no", "MaximumRetryCount": 0},
             "Tmpfs": n.TMPFS,
-            "LogConfig": {"Type": "json-file", "Config": {"max-size": "1m", "max-file": "1"}},
+            "LogConfig": {
+                "Type": "json-file",
+                "Config": {"max-size": "1m", "max-file": "1"},
+            },
+            "Mounts": [
+                {
+                    "Type": "bind",
+                    "Source": mount["Source"],
+                    "Target": mount["Destination"],
+                    "ReadOnly": not mount["RW"],
+                    "BindOptions": {
+                        "Propagation": "rprivate",
+                        **({"ReadOnlyForceRecursive": True} if not mount["RW"] else {}),
+                    },
+                }
+                for mount in state["mounts"]
+            ],
         }
         config = copy.deepcopy(self.defaults)
         config.update(
@@ -123,7 +150,12 @@ class FakeHost:
             "HostConfig": hc,
             "Mounts": copy.deepcopy(state["mounts"]),
             "NetworkSettings": {"Networks": {n.DEFAULT: {"NetworkID": DEFAULT_ID}}},
-            "State": {"Running": False, "Restarting": False, "ExitCode": 0, "OOMKilled": False},
+            "State": {
+                "Running": False,
+                "Restarting": False,
+                "ExitCode": 0,
+                "OOMKilled": False,
+            },
         }
 
     def run(self, args, timeout=180):
@@ -152,7 +184,12 @@ class FakeHost:
         if args[1] == "start":
             assert state["phase"] == "start_intent" and state["id"] == FIXTURE_ID
             assert args == ["docker", "start", "-a", FIXTURE_ID]
-            if self.fault in ("start-timeout", "stop-timeout-effect", "stop-still-running"):
+            self.fixture["HostConfig"]["OomKillDisable"] = None
+            if self.fault in (
+                "start-timeout",
+                "stop-timeout-effect",
+                "stop-still-running",
+            ):
                 self.fixture["State"]["Running"] = True
                 raise TimeoutError("synthetic-private-diagnostic")
             if self.fault == "start-failed":
@@ -169,7 +206,10 @@ class FakeHost:
             return "nginx syntax valid"
         if args[1] == "stop":
             assert args == ["docker", "stop", "--time", "5", FIXTURE_ID]
-            assert state["phase"] in {"stop_intent", "stop_interrupted_validation_intent"}
+            assert state["phase"] in {
+                "stop_intent",
+                "stop_interrupted_validation_intent",
+            }
             if self.fault != "stop-still-running":
                 self.fixture["State"]["Running"] = False
             if self.fault == "stop-timeout-effect":
@@ -204,8 +244,11 @@ def test_pre_cutover_check_creates_bounded_retained_fixture_and_reuses(context):
     assert create[create.index("--network") + 1] == DEFAULT_ID
     assert DEDICATED_ID not in create and all("container:" not in arg for arg in create)
     assert "--read-only" in create and "--pull" in create and "never" in create
+    assert "--cap-add" not in create
     mounts = [create[i + 1] for i, arg in enumerate(create) if arg == "--mount"]
-    assert len(mounts) == 3 and sum(arg.endswith(",readonly") for arg in mounts) == 2
+    assert len(mounts) == 3
+    assert sum(arg.endswith(",readonly,bind-recursive=readonly") for arg in mounts) == 2
+    assert all("bind-propagation=rprivate" in arg for arg in mounts)
     assert all("synthetic-secret" not in arg for arg in create)
     assert validate(context) == FIXTURE_ID
     assert sum(args[1] == "create" for args in host.calls) == 1
@@ -329,6 +372,62 @@ def test_wrong_fixture_refuses_start_or_stop(context, change):
     with pytest.raises(n.NginxValidationError):
         validate(context)
     assert not any(args[1] in {"start", "stop", "rm"} for args in host.calls)
+
+
+def test_only_fixture_oom_default_normalization_survives_start(context):
+    host, _, _ = context
+    assert validate(context) == FIXTURE_ID
+    before = copy.deepcopy(host.fixture)
+    before["HostConfig"]["OomKillDisable"] = False
+    assert host.fixture["HostConfig"]["OomKillDisable"] is None
+    assert n._config(before) != n._config(host.fixture)
+    assert n._fixture_config(before) == n._fixture_config(host.fixture)
+    assert validate(context) == FIXTURE_ID
+    assert sum(call[1] == "create" for call in host.calls) == 1
+
+
+@pytest.mark.parametrize("value", [True, 0, "false"])
+def test_nondefault_fixture_oom_setting_refuses_before_start(context, value):
+    host, _, _ = context
+    host.mutate = lambda fixture: fixture["HostConfig"].update(OomKillDisable=value)
+    with pytest.raises(n.NginxValidationError):
+        validate(context)
+    assert not any(call[1] == "start" for call in host.calls)
+
+
+@pytest.mark.parametrize(
+    "capabilities",
+    [["DAC_READ_SEARCH"], ["DAC_OVERRIDE"], ["DAC_READ_SEARCH", "SYS_ADMIN"]],
+)
+def test_no_added_capability_is_allowed(context, capabilities):
+    host, _, _ = context
+    host.mutate = lambda fixture: fixture["HostConfig"].update(CapAdd=capabilities)
+    with pytest.raises(n.NginxValidationError):
+        validate(context)
+    assert not any(call[1] == "start" for call in host.calls)
+
+
+@pytest.mark.parametrize("option", ["missing", "nonrecursive", "shared", "extra", "writable"])
+def test_recursive_readonly_declaration_is_required(context, option):
+    host, _, _ = context
+
+    def mutate(fixture):
+        mount = next(m for m in fixture["HostConfig"]["Mounts"] if m["ReadOnly"])
+        if option == "missing":
+            mount["BindOptions"].pop("ReadOnlyForceRecursive")
+        elif option == "nonrecursive":
+            mount["BindOptions"]["ReadOnlyNonRecursive"] = True
+        elif option == "shared":
+            mount["BindOptions"]["Propagation"] = "rshared"
+        elif option == "extra":
+            mount["BindOptions"]["NonRecursive"] = True
+        else:
+            mount["ReadOnly"] = False
+
+    host.mutate = mutate
+    with pytest.raises(n.NginxValidationError):
+        validate(context)
+    assert not any(call[1] == "start" for call in host.calls)
 
 
 def test_running_owned_fixture_is_not_excluded_and_resumed_safely(context):
@@ -567,3 +666,76 @@ def test_edit_between_pending_write_and_replace_refuses_overwrite(context, monke
         n._save(host.folder, state)
     assert ledger(host)["phase"] == "concurrent_change"
     assert len(list(host.folder.glob("nginx-validation.pending-*.private.json"))) == 1
+
+
+@pytest.fixture
+def include_context(context, monkeypatch):
+    if os.name != "posix":
+        pytest.skip("Real absolute Docker source paths require POSIX")
+    host, _, bridge = context
+    root = host.folder
+    attempt = root / "attempt"
+    attempt.mkdir(mode=0o700)
+    (attempt / "nginx.after").write_bytes((root / "nginx.after").read_bytes())
+    host.folder = attempt
+    for target, suffix in n.inputs.TARGETS.items():
+        source = root / suffix
+        source.mkdir(mode=0o700)
+        private_file = source / "private.conf"
+        private_file.write_bytes(b"# synthetic private include\n")
+        private_file.chmod(0o600)
+        host.nginx["Mounts"].append(
+            {"Destination": target, "Source": str(source), "Type": "bind", "RW": False}
+        )
+    # These synthetic trees belong to the CI user. The runtime module separately
+    # enforces root; Linux descriptor/mode/atime checks remain active here.
+    monkeypatch.setattr(n.inputs, "_private_owner", lambda info: None)
+    monkeypatch.setattr(n.inputs.os, "geteuid", lambda: 0)
+    return host, copy.deepcopy(host.nginx), bridge
+
+
+def test_private_include_sources_are_copied_readonly_and_reused(include_context):
+    host, original_nginx, _ = include_context
+    assert validate(include_context) == FIXTURE_ID
+    state = ledger(host)
+    assert set(state["config_inputs"]["trees"]) == set(n.inputs.TARGETS)
+    for mount in state["mounts"]:
+        if mount["Destination"] in n.inputs.TARGETS:
+            assert Path(mount["Source"]).is_relative_to(host.folder / n.inputs.COPY_ROOT)
+            assert mount["RW"] is False
+    assert validate(include_context) == FIXTURE_ID
+    assert len([c for c in host.calls if c[1] == "create"]) == 1
+    assert len([c for c in host.calls if c[1] == "start"]) == 2
+    n.verify_validation_inputs(host.folder, original_nginx)
+
+
+def test_original_include_changed_after_create_prevents_start(include_context):
+    host, _, _ = include_context
+    source = Path(host.nginx["Mounts"][-1]["Source"]) / "private.conf"
+    host.mutate = lambda fixture: source.write_bytes(b"changed by another writer\n")
+    with pytest.raises(n.NginxValidationError):
+        validate(include_context)
+    assert host.fixture is not None and not host.fixture["State"]["Running"]
+    assert not [c for c in host.calls if c[1] == "start"]
+
+
+def test_private_include_drift_prevents_retained_fixture_restart(include_context):
+    host, _, _ = include_context
+    validate(include_context)
+    copied = host.folder / n.inputs.COPY_ROOT / "conf.d/private.conf"
+    copied.write_bytes(b"changed private copy\n")
+    with pytest.raises(n.NginxValidationError):
+        validate(include_context)
+    assert len([c for c in host.calls if c[1] == "start"]) == 1
+    assert not host.fixture["State"]["Running"]
+
+
+def test_include_snapshot_cannot_be_rebound_to_another_source(include_context):
+    host, _, _ = include_context
+    validate(include_context)
+    state = ledger(host)
+    state["config_inputs"]["trees"]["/etc/nginx/conf.d"]["source"] = "/different/source"
+    (host.folder / n.LEDGER).write_text(json.dumps(state))
+    with pytest.raises(n.NginxValidationError):
+        validate(include_context)
+    assert len([c for c in host.calls if c[1] == "start"]) == 1

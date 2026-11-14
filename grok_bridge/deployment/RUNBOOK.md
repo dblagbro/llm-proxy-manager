@@ -150,3 +150,33 @@ network is changed. Diagnostics remain private. The sanitized result names its
 reviewed source and retained fixture. Snapshot comparisons do not exclude
 transient changes between observations. Passing this component cannot satisfy
 production dual-network, browser, outsider-denial or integrated recovery gates.
+
+
+## Private Nginx include inputs
+
+The first real validator attempt at commit `913dda18` failed and is retained;
+see `docs/evidence/grok-nginx-validator-first-attempt-20261114.json`. Docker
+changed the fixture OOM default from false to null after starting, and the
+capability-dropped fixture could not read a uid1000 mode0600 include. The
+independent follow-up audit verified all 139 preexisting containers and 14
+networks unchanged; the runner failure itself did not establish that proof.
+
+The helper now normalizes only that observed false/null fixture OOM default;
+original-runtime fingerprints stay strict. All capabilities remain dropped.
+It takes private byte-identical copies of only `/etc/nginx/conf.d` and
+`/etc/nginx/projects-locations.d` when those mounts exist. Shared bounds are
+256 entries, eight levels and 8 MiB. Symlinks, special files, drift and interrupted
+copy generations refuse reuse. Original content, metadata and membership are
+checked before each start and afterward; copies use root-owned 0700 directories
+and 0600 files. No original modes, ownership or ACLs are changed. Linux reads
+use descriptor-relative NOFOLLOW and NOATIME. Records and copied include data
+remain inside the private attempt; never publish them.
+
+Every read-only bind requests `bind-recursive=readonly` and private propagation;
+unsupported enforcement must fail rather than fall back. See the Docker
+[recursive-bind documentation](https://docs.docker.com/engine/storage/bind-mounts/#recursive-mounts).
+No DAC-bypass capability is granted. The runner independently audits original
+containers, networks, staged/canonical files, include copies and source even
+when fixture ownership verification fails. An exact-ID/name/owner observation
+may be reported as unverified; it never authorizes lifecycle changes or a
+network endpoint exemption. These changes still require real acceptance.

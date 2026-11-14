@@ -19,6 +19,8 @@ import stat
 import uuid
 from pathlib import Path, PurePosixPath
 
+import network_nginx_inputs as inputs
+
 DEFAULT = "docker_default"
 DEDICATED = "docker_grok_security"
 BRIDGE = "llm-proxy2-grok-bridge"
@@ -74,6 +76,18 @@ def _config(value):
     )
 
 
+def _fixture_config(value):
+    """Normalize only Docker's observed false/null OOM default on fixture start."""
+    fields = {
+        key: value.get(key) for key in ("Image", "Config", "HostConfig", "Mounts", "Path", "Args")
+    }
+    fields["HostConfig"] = dict(fields["HostConfig"])
+    oom = fields["HostConfig"].get("OomKillDisable")
+    _require(oom is None or oom is False, "OOM kill protection must remain enabled")
+    fields["HostConfig"]["OomKillDisable"] = False
+    return _digest(fields)
+
+
 def _private_regular(path):
     fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     with os.fdopen(fd, "rb") as stream:
@@ -87,7 +101,10 @@ def _private_regular(path):
 
 def _folder(folder):
     folder = Path(folder)
-    _require(folder.is_absolute() and not folder.is_symlink(), "Release directory requires review")
+    _require(
+        folder.is_absolute() and not folder.is_symlink(),
+        "Release directory requires review",
+    )
     info = folder.stat()
     _require(stat.S_ISDIR(info.st_mode), "Release directory is absent")
     if os.name == "posix":
@@ -155,7 +172,8 @@ def _load(folder):
             "Invalid validation ledger",
         )
         _require(
-            value["name"] == "codex-grok-nginxcheck-" + value["transaction"], "Invalid fixture name"
+            value["name"] == "codex-grok-nginxcheck-" + value["transaction"],
+            "Invalid fixture name",
         )
         _require(_hex(value["default_network_id"]), "Invalid validation network identity")
         _require(_hex(value["config_sha256"]), "Invalid staged configuration fingerprint")
@@ -185,11 +203,15 @@ def _same_runtime(current, original, name, dedicated_id=None):
     _require(_hex(old[DEFAULT].get("NetworkID")), "Original network identity is invalid")
     allowed = {DEFAULT}
     if dedicated_id is not None:
-        _require(name == "nginx" and _hex(dedicated_id), "Dedicated validation binding is invalid")
+        _require(
+            name == "nginx" and _hex(dedicated_id),
+            "Dedicated validation binding is invalid",
+        )
         allowed.add(DEDICATED)
         if DEDICATED in actual:
             _require(
-                actual[DEDICATED].get("NetworkID") == dedicated_id, "Dedicated endpoint differs"
+                actual[DEDICATED].get("NetworkID") == dedicated_id,
+                "Dedicated endpoint differs",
             )
     _require(set(actual) <= allowed, "Unreviewed runtime network attachment")
 
@@ -208,11 +230,13 @@ def _runtime(host, original_nginx, original_bridge, dedicated_id):
 
 def _path(value):
     _require(
-        type(value) is str and not any(char in value for char in ",\r\n\0"), "Unsafe mount path"
+        type(value) is str and not any(char in value for char in ",\r\n\0"),
+        "Unsafe mount path",
     )
     path = PurePosixPath(value)
     _require(
-        path.is_absolute() and ".." not in path.parts and value != "/", "Unreviewed mount path"
+        path.is_absolute() and ".." not in path.parts and value != "/",
+        "Unreviewed mount path",
     )
     _require(
         not any(
@@ -246,13 +270,66 @@ def _mounts(nginx, config, logs):
         )
     targets = [row["Destination"] for row in result]
     _require(
-        len(targets) == len(set(targets)) and len(targets) <= 32, "Ambiguous validation mounts"
+        len(targets) == len(set(targets)) and len(targets) <= 32,
+        "Ambiguous validation mounts",
     )
     _require(
         {"/etc/nginx/nginx.conf", "/var/log/nginx"} <= set(targets),
         "Required Nginx mounts are absent",
     )
     return sorted(result, key=lambda row: row["Destination"])
+
+
+def _input_overrides(folder, state, nginx):
+    expected = {
+        item["Destination"]: item["Source"]
+        for item in nginx["Mounts"]
+        if item["Destination"] in inputs.TARGETS
+    }
+    record = state.get("config_inputs")
+    if not expected:
+        _require(record is None, "Unexpected private include snapshot")
+        _require(
+            not (folder / inputs.COPY_ROOT).exists(),
+            "Unexpected include copy directory",
+        )
+        return {}
+    _require(type(record) is dict, "Private include snapshot is missing")
+    trees = record.get("trees")
+    _require(type(trees) is dict and set(trees) == set(expected), "Include targets changed")
+    _require(
+        all(trees[target].get("source") == source for target, source in expected.items()),
+        "Original include binding changed",
+    )
+    return inputs.overrides(folder, record)
+
+
+def _reviewed_mounts(folder, state, nginx):
+    mounts = _mounts(nginx, folder / "nginx.after", folder / "nginx-validation-logs")
+    overrides = _input_overrides(folder, state, nginx)
+    for mount in mounts:
+        if mount["Destination"] in overrides:
+            mount["Source"] = _path(overrides[mount["Destination"]])
+    return mounts
+
+
+@_sanitized
+def verify_validation_inputs(folder, original_nginx):
+    """Read-only audit independent of fixture ownership and Docker availability."""
+    folder = _folder(folder)
+    state = _load(folder)
+    if state is None:
+        _require(not (folder / inputs.COPY_ROOT).exists(), "Incomplete include copy retained")
+        return
+    _require(
+        state["original_nginx_id"] == original_nginx["Id"]
+        and state["original_nginx_sha256"] == _config(original_nginx),
+        "Include snapshot original runtime differs",
+    )
+    _require(
+        _reviewed_mounts(folder, state, original_nginx) == state["mounts"],
+        "Private include mount binding changed",
+    )
 
 
 def _fixture(value, state):
@@ -278,7 +355,14 @@ def _fixture(value, state):
         and not config.get("Domainname"),
         "Validation image or hostname declaration differs",
     )
-    for key in ("Env", "User", "WorkingDir", "ExposedPorts", "Healthcheck", "StopSignal"):
+    for key in (
+        "Env",
+        "User",
+        "WorkingDir",
+        "ExposedPorts",
+        "Healthcheck",
+        "StopSignal",
+    ):
         expected = defaults.get(key)
         # Docker image inspection can omit User, while container creation records
         # the unchanged default as an empty string. Do not normalize a named user.
@@ -304,10 +388,14 @@ def _fixture(value, state):
         "Runtime": "runc",
         "RestartPolicy": {"Name": "no", "MaximumRetryCount": 0},
         "Tmpfs": TMPFS,
-        "LogConfig": {"Type": "json-file", "Config": {"max-size": "1m", "max-file": "1"}},
+        "LogConfig": {
+            "Type": "json-file",
+            "Config": {"max-size": "1m", "max-file": "1"},
+        },
     }
     _require(
-        all(hc.get(key) == val for key, val in exact.items()), "Validation execution bounds changed"
+        all(hc.get(key) == val for key, val in exact.items()),
+        "Validation execution bounds changed",
     )
     for key in (
         "Privileged",
@@ -348,6 +436,53 @@ def _fixture(value, state):
         sorted(actual_mounts, key=lambda row: row["Destination"]) == state["mounts"],
         "Validation mount differs",
     )
+    declarations = hc.get("Mounts")
+    _require(type(declarations) is list, "Validation bind declarations are absent")
+    declared_mounts = []
+    for mount in declarations:
+        _require(
+            set(mount) <= {"Type", "Source", "Target", "ReadOnly", "BindOptions"}
+            and mount.get("Type") == "bind"
+            and type(mount.get("ReadOnly", False)) is bool,
+            "Unreviewed validation bind declaration",
+        )
+        options = mount.get("BindOptions")
+        _require(
+            type(options) is dict
+            and set(options)
+            <= {
+                "Propagation",
+                "ReadOnlyForceRecursive",
+                "ReadOnlyNonRecursive",
+                "NonRecursive",
+                "CreateMountpoint",
+            }
+            and options.get("Propagation") == "rprivate",
+            "Unreviewed bind propagation",
+        )
+        for option in ("ReadOnlyNonRecursive", "NonRecursive", "CreateMountpoint"):
+            _require(
+                options.get(option) is None or options.get(option) is False,
+                "Unreviewed bind mount option",
+            )
+        force = options.get("ReadOnlyForceRecursive")
+        readonly = mount.get("ReadOnly", False)
+        _require(
+            force is True if readonly else force is None or force is False,
+            "Read-only binds must require recursive read-only enforcement",
+        )
+        declared_mounts.append(
+            {
+                "Source": mount.get("Source"),
+                "Destination": mount.get("Target"),
+                "RW": not readonly,
+                "Type": "bind",
+            }
+        )
+    _require(
+        sorted(declared_mounts, key=lambda row: row["Destination"]) == state["mounts"],
+        "Validation bind declarations differ",
+    )
     nets = value["NetworkSettings"]["Networks"]
     _require(set(nets) == {DEFAULT}, "Validation fixture must use only the default network")
     _require(
@@ -376,7 +511,7 @@ def _fixture(value, state):
     )
     if state.get("fixture_sha256"):
         _require(
-            _config(value) == state["fixture_sha256"],
+            _fixture_config(value) == state["fixture_sha256"],
             "Validation configuration fingerprint changed",
         )
     return value["Id"]
@@ -447,7 +582,13 @@ def _create_args(state):
         args.extend(["--tmpfs", path + ":" + options])
     for mount in state["mounts"]:
         argument = "type=bind,src=" + mount["Source"] + ",dst=" + mount["Destination"]
-        args.extend(["--mount", argument + ("" if mount["RW"] else ",readonly")])
+        argument += ",bind-propagation=rprivate"
+        args.extend(
+            [
+                "--mount",
+                argument + ("" if mount["RW"] else ",readonly,bind-recursive=readonly"),
+            ]
+        )
     return [*args, state["image"], "-t"]
 
 
@@ -491,6 +632,15 @@ def validate_staged_nginx(
             image.get("Id") == original_nginx["Image"] and not image["Config"].get("Volumes"),
             "Validation image has unreviewed volumes",
         )
+        # Validate the full mount inventory before copying only the two bounded
+        # include trees. Private copies avoid granting DAC-bypass capabilities or
+        # changing the live source's access modes. Failed partial copies remain.
+        _mounts(original_nginx, config, logs)
+        config_inputs = (
+            inputs.prepare(folder, original_nginx["Mounts"])
+            if any(m["Destination"] in inputs.TARGETS for m in original_nginx["Mounts"])
+            else None
+        )
         tx = uuid.uuid4().hex
         state = {
             "schema": 1,
@@ -503,13 +653,14 @@ def validate_staged_nginx(
             "default_network_id": original_nginx["NetworkSettings"]["Networks"][DEFAULT][
                 "NetworkID"
             ],
-            "mounts": _mounts(original_nginx, config, logs),
+            "config_inputs": config_inputs,
             "id": None,
             "original_nginx_id": original_nginx["Id"],
             "original_bridge_id": original_bridge["Id"],
             "original_nginx_sha256": _config(original_nginx),
             "original_bridge_sha256": _config(original_bridge),
         }
+        state["mounts"] = _reviewed_mounts(folder, state, original_nginx)
         _save(folder, state)
     _require(
         state["config_sha256"] == checksum
@@ -522,6 +673,7 @@ def validate_staged_nginx(
         and state["original_bridge_sha256"] == _config(original_bridge),
         "Original configuration review changed",
     )
+    verify_validation_inputs(folder, original_nginx)
     logs = folder / "nginx-validation-logs"
     if not logs.exists():
         _require(not logs.is_symlink(), "Validation scratch requires review")
@@ -543,7 +695,7 @@ def validate_staged_nginx(
         value = _lookup(host, state["name"])
         _require(value is not None, "Validation creation did not complete")
     cid = _fixture(value, state)
-    state.update(id=cid, fixture_sha256=_config(value), phase="created_retained")
+    state.update(id=cid, fixture_sha256=_fixture_config(value), phase="created_retained")
     _save(folder, state)
     error = None
     try:
@@ -553,7 +705,10 @@ def validate_staged_nginx(
             host.run(["docker", "stop", "--time", "5", cid], timeout=15)
             value = host.inspect(cid)
             _fixture(value, state)
-            _require(not value["State"].get("Running"), "Interrupted validation remains running")
+            _require(
+                not value["State"].get("Running"),
+                "Interrupted validation remains running",
+            )
         _require(
             _runtime(host, original_nginx, original_bridge, dedicated_network_id) == baseline,
             "Runtime changed before staged validation",
@@ -562,6 +717,7 @@ def validate_staged_nginx(
             hashlib.sha256(_private_regular(config)).hexdigest() == checksum,
             "Staged artifact changed",
         )
+        verify_validation_inputs(folder, original_nginx)
         state["phase"] = "start_intent"
         _save(folder, state)
         host.run(["docker", "start", "-a", cid], timeout=90)
@@ -582,11 +738,17 @@ def validate_staged_nginx(
                 _save(folder, state)
             current = host.inspect(cid)
             _fixture(current, state)
-        _require(not current["State"].get("Running"), "Owned validation fixture remains running")
+        _require(
+            not current["State"].get("Running"),
+            "Owned validation fixture remains running",
+        )
         state.update(
-            phase="stopped_retained", error_class=error, exit_code=current["State"].get("ExitCode")
+            phase="stopped_retained",
+            error_class=error,
+            exit_code=current["State"].get("ExitCode"),
         )
         _save(folder, state)
+        verify_validation_inputs(folder, original_nginx)
     _require(
         error is None
         and current["State"].get("ExitCode") == 0

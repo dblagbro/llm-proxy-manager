@@ -31,6 +31,7 @@ HEX = re.compile(r"[0-9a-f]{64}\Z")
 MODULES = (
     "release",
     "network_nginx",
+    "network_nginx_inputs",
     "network_docker",
     "network_policy",
     "network_compose",
@@ -85,13 +86,19 @@ def private_json(path, value):
 def require_platform():
     require(sys.platform == "linux" and os.geteuid() == 0, "Linux root is required")
     parent = Path(f"/proc/{os.getppid()}/cmdline").read_bytes().split(b"\0")
-    require(os.fsencode(GUARD) in parent, "Use the exact shared capacity guard as direct parent")
+    require(
+        os.fsencode(GUARD) in parent,
+        "Use the exact shared capacity guard as direct parent",
+    )
 
 
 def validate_attempt(path):
     path = no_symlinks(path)
     require(path.parent == BASE, "Attempt must be a direct child of the private Nginx root")
-    require(re.fullmatch(r"nginx-[a-z0-9][a-z0-9-]{0,47}", path.name), "Invalid attempt name")
+    require(
+        re.fullmatch(r"nginx-[a-z0-9][a-z0-9-]{0,47}", path.name),
+        "Invalid attempt name",
+    )
     require(not path.exists(), "Attempt must be fresh; retain previous attempts")
     for parent_path in (BASE.parent, BASE):
         if parent_path.exists():
@@ -127,7 +134,8 @@ def create_attempt(path):
             parent.mkdir(mode=0o700)
         private_directory(parent)
         require(
-            parent.stat().st_dev == Path("/mnt/s").stat().st_dev, "Private parent moved off NAS"
+            parent.stat().st_dev == Path("/mnt/s").stat().st_dev,
+            "Private parent moved off NAS",
         )
     path.mkdir(mode=0o700)
     private_directory(path)
@@ -242,7 +250,10 @@ def list_ids(host, kind):
             "{{.ID}}",
         ]
     ).split()
-    require(len(result) <= 4096 and len(result) == len(set(result)), "Ambiguous Docker inventory")
+    require(
+        len(result) <= 4096 and len(result) == len(set(result)),
+        "Ambiguous Docker inventory",
+    )
     require(all(HEX.fullmatch(item) for item in result), "Inventory requires immutable IDs")
     return sorted(result)
 
@@ -255,8 +266,14 @@ def inventory(host):
         for offset in range(0, len(ids), 64):
             batch = ids[offset : offset + 64]
             rows = json.loads(host.run([*prefix, *batch]))
-            require(type(rows) is list and len(rows) == len(batch), "Incomplete Docker inspection")
-            require(sorted(row["Id"] for row in rows) == batch, "Inspection identity mismatch")
+            require(
+                type(rows) is list and len(rows) == len(batch),
+                "Incomplete Docker inspection",
+            )
+            require(
+                sorted(row["Id"] for row in rows) == batch,
+                "Inspection identity mismatch",
+            )
             for row in rows:
                 result[kind][row["Id"]] = row
     require(
@@ -276,7 +293,10 @@ class GuardedHost(r.Host):
         self.start_calls = 0
 
     def run(self, args, timeout=180):
-        require(args and args[0] == "docker", "Only bounded local Docker operations are allowed")
+        require(
+            args and args[0] == "docker",
+            "Only bounded local Docker operations are allowed",
+        )
         tail = args[1:]
         readonly = tail[:2] in (
             ["container", "ls"],
@@ -304,7 +324,10 @@ class GuardedHost(r.Host):
                 )
                 require(
                     args
-                    in (["docker", "start", "-a", cid], ["docker", "stop", "--time", "5", cid]),
+                    in (
+                        ["docker", "start", "-a", cid],
+                        ["docker", "stop", "--time", "5", cid],
+                    ),
                     "Only exact retained fixture lifecycle commands are allowed",
                 )
                 n._fixture(self.inspect(cid), state)
@@ -361,7 +384,288 @@ def owned_receipt(folder, current, before_ids):
         "state": "running" if row["State"].get("Running") else "stopped",
         "exit_code": row["State"].get("ExitCode"),
         "oom_killed": bool(row["State"].get("OOMKilled")),
+        "configuration_verified": True,
     }
+
+
+def fixture_observation(folder, current, before_ids):
+    """Informational only: never grants a lifecycle command or endpoint exemption.
+
+    A failed full configuration check can still leave an exact recorded fixture.
+    Recognize it only by its persisted full ID, expected name and owner label.
+    No lookup/adoption by name, prefix, partial ID or unverified configuration.
+    """
+    state = n._load(folder)
+    if state is None:
+        return None
+    cid = state.get("id")
+    if type(cid) is not str or not HEX.fullmatch(cid) or cid in before_ids:
+        return None
+    row = current["containers"].get(cid)
+    if type(row) is not dict or row.get("Id") != cid or row.get("Name") != "/" + state["name"]:
+        return None
+    config = row.get("Config")
+    labels = config.get("Labels") if type(config) is dict else None
+    if type(labels) is not dict or labels.get(n.OWNER) != state["transaction"]:
+        return None
+    runtime = row.get("State")
+    runtime = runtime if type(runtime) is dict else {}
+    running, exit_code, oom = (
+        runtime.get("Running"),
+        runtime.get("ExitCode"),
+        runtime.get("OOMKilled"),
+    )
+    return {
+        "name": state["name"],
+        "id": cid,
+        "state": {True: "running", False: "stopped"}.get(running, "unknown")
+        if type(running) is bool
+        else "unknown",
+        "exit_code": exit_code if type(exit_code) is int else None,
+        "oom_killed": oom if type(oom) is bool else None,
+        "configuration_verified": False,
+        "observation_only": True,
+    }
+
+
+def preexisting_container_audit(before, after):
+    """Check every original even when a previous container is missing or changed."""
+    counts = {
+        "expected": len(before),
+        "checked": 0,
+        "missing": 0,
+        "configuration_changed": 0,
+        "endpoints_changed": 0,
+        "lifecycle_changed": 0,
+        "unreadable": 0,
+    }
+    for cid, original in before.items():
+        counts["checked"] += 1
+        if cid not in after:
+            counts["missing"] += 1
+            continue
+        try:
+            old, new = (
+                container_fingerprint(original),
+                container_fingerprint(after[cid]),
+            )
+            counts["configuration_changed"] += old["config_sha256"] != new["config_sha256"]
+            counts["endpoints_changed"] += old["network_sha256"] != new["network_sha256"]
+            counts["lifecycle_changed"] += (
+                old["lifecycle"] != new["lifecycle"] or old["restart_count"] != new["restart_count"]
+            )
+        except Exception:  # noqa: BLE001 -- malformed inspection must not skip other originals.
+            counts["unreadable"] += 1
+    counts["status"] = (
+        "failed"
+        if any(
+            counts[key]
+            for key in (
+                "missing",
+                "configuration_changed",
+                "endpoints_changed",
+                "lifecycle_changed",
+                "unreadable",
+            )
+        )
+        else "passed"
+    )
+    return counts
+
+
+def preexisting_network_audit(before, after, validated_owned_id=None):
+    """Only a fully validated fixture may account for an added default endpoint."""
+    counts = {
+        "expected": len(before),
+        "checked": 0,
+        "missing": 0,
+        "changed": 0,
+        "unreadable": 0,
+        "added": len(set(after) - set(before)),
+    }
+    for nid, original in before.items():
+        counts["checked"] += 1
+        if nid not in after:
+            counts["missing"] += 1
+            continue
+        try:
+            value = copy.deepcopy(after[nid])
+            if validated_owned_id is not None and validated_owned_id in value.get("Containers", {}):
+                require(value.get("Name") == n.DEFAULT, "Validator endpoint requires review")
+                del value["Containers"][validated_owned_id]
+            counts["changed"] += fingerprint(original) != fingerprint(value)
+        except Exception:  # noqa: BLE001 -- continue every original network on malformed data.
+            counts["unreadable"] += 1
+    counts["status"] = (
+        "failed"
+        if any(counts[key] for key in ("missing", "changed", "unreadable", "added"))
+        else "passed"
+    )
+    return counts
+
+
+def input_audit(files):
+    counts = {"expected": len(files), "checked": 0, "changed": 0, "unreadable": 0}
+    for path, data in files.items():
+        counts["checked"] += 1
+        try:
+            counts["changed"] += read_regular(path) != data
+        except Exception:  # noqa: BLE001 -- an unreadable input must not hide a second edit.
+            counts["unreadable"] += 1
+    counts["status"] = (
+        "unverified"
+        if not files
+        else ("failed" if counts["changed"] or counts["unreadable"] else "passed")
+    )
+    return counts
+
+
+def record_audit_error(result, folder, label, filename, exc):
+    result["errors"].append(label + ":" + type(exc).__name__)
+    try:
+        r.private_write(folder / filename, traceback.format_exc().encode())
+    except BaseException as write_error:  # noqa: BLE001 -- evidence failure cannot suppress audits.
+        result["errors"].append("EvidenceWriteAudit:" + type(write_error).__name__)
+
+
+def final_audits(host, result, before, files, source, verify_source):
+    """Audit categories independently; ownership failure never skips originals."""
+    status = result["audit_status"]
+    current, validated_owned_id = None, None
+    if before is not None:
+        try:
+            current = inventory(host)
+            status["inventory_capture"] = "passed"
+        except BaseException as exc:  # noqa: BLE001
+            status["inventory_capture"] = "failed"
+            record_audit_error(
+                result,
+                host.folder,
+                "InventoryAudit",
+                "audit-inventory.private.log",
+                exc,
+            )
+        if current is not None:
+            try:
+                private_json(host.folder / "inventory-after.private.json", current)
+                status["inventory_evidence"] = "passed"
+            except BaseException as exc:  # noqa: BLE001
+                status["inventory_evidence"] = "failed"
+                record_audit_error(
+                    result,
+                    host.folder,
+                    "InventoryEvidenceAudit",
+                    "audit-inventory-evidence.private.log",
+                    exc,
+                )
+            try:
+                receipt = owned_receipt(host.folder, current, set(before["containers"]))
+                result["fixture"] = receipt
+                # This ID comes only from the full _fixture check, never the
+                # weaker observation below. Other ownership requirements may fail.
+                validated_owned_id = receipt["id"] if receipt else None
+                added = set(current["containers"]) - set(before["containers"])
+                require(
+                    added == ({validated_owned_id} if receipt else set()),
+                    "Unexpected new container",
+                )
+                if receipt:
+                    require(receipt["state"] == "stopped", "Owned validator remains running")
+                    if result.get("runs_returned_same_id"):
+                        require(
+                            type(receipt["exit_code"]) is int
+                            and receipt["exit_code"] == 0
+                            and not receipt["oom_killed"],
+                            "Retained successful validator has an unclean exit",
+                        )
+                status["ownership"] = "passed"
+            except BaseException as exc:  # noqa: BLE001
+                status["ownership"] = "failed"
+                record_audit_error(
+                    result,
+                    host.folder,
+                    "OwnershipAudit",
+                    "audit-ownership.private.log",
+                    exc,
+                )
+            if result["fixture"] is None:
+                try:
+                    result["fixture_observation"] = fixture_observation(
+                        host.folder, current, set(before["containers"])
+                    )
+                except BaseException as exc:  # noqa: BLE001
+                    record_audit_error(
+                        result,
+                        host.folder,
+                        "ObservationAudit",
+                        "audit-observation.private.log",
+                        exc,
+                    )
+            for kind, function, args in (
+                (
+                    "containers",
+                    preexisting_container_audit,
+                    (before["containers"], current["containers"]),
+                ),
+                (
+                    "networks",
+                    preexisting_network_audit,
+                    (before["networks"], current["networks"], validated_owned_id),
+                ),
+            ):
+                try:
+                    audit = function(*args)
+                    result["preexisting_audit"][kind] = audit
+                    status["preexisting_" + kind] = audit["status"]
+                    require(
+                        audit["status"] == "passed",
+                        "Preexisting " + kind + " changed or unreadable",
+                    )
+                except BaseException as exc:  # noqa: BLE001
+                    status["preexisting_" + kind] = "failed"
+                    record_audit_error(
+                        result,
+                        host.folder,
+                        kind.title() + "Audit",
+                        "audit-" + kind + ".private.log",
+                        exc,
+                    )
+    # These checks do not depend on final inventory capture, fixture validation,
+    # each other, or successful persistence of an earlier audit traceback.
+    if before is not None:
+        try:
+            originals = [x for x in before["containers"].values() if x.get("Name") == "/nginx"]
+            require(len(originals) == 1, "Original Nginx input binding is ambiguous")
+            n.verify_validation_inputs(host.folder, originals[0])
+            status["include_inputs"] = "passed"
+        except BaseException as exc:  # noqa: BLE001
+            status["include_inputs"] = "failed"
+            record_audit_error(
+                result,
+                host.folder,
+                "IncludeInputAudit",
+                "audit-include-input.private.log",
+                exc,
+            )
+    try:
+        audit = input_audit(files)
+        result["input_audit"] = audit
+        status["inputs"] = audit["status"]
+        require(audit["status"] != "failed", "Inputs changed or unreadable")
+    except BaseException as exc:  # noqa: BLE001
+        status["inputs"] = "failed"
+        record_audit_error(result, host.folder, "InputAudit", "audit-input.private.log", exc)
+    if source is not None:
+        try:
+            require(verify_source() == source, "Source changed during acceptance")
+            status["source"] = "passed"
+        except BaseException as exc:  # noqa: BLE001
+            status["source"] = "failed"
+            record_audit_error(result, host.folder, "SourceAudit", "audit-source.private.log", exc)
+    if before is not None and all(value == "passed" for value in status.values()):
+        result["invariants"] = "passed"
+    if any("Audit:" in error for error in result["errors"]):
+        result["invariants"] = "failed"
 
 
 def exercise(host, fragment, verify_source):
@@ -371,7 +675,23 @@ def exercise(host, fragment, verify_source):
         "scope": "pre-cutover retained Nginx validator only",
         "errors": [],
         "fixture": None,
+        "fixture_observation": None,
         "invariants": "unverified",
+        "audit_status": {
+            key: "unverified"
+            for key in (
+                "inventory_capture",
+                "inventory_evidence",
+                "ownership",
+                "preexisting_containers",
+                "preexisting_networks",
+                "inputs",
+                "include_inputs",
+                "source",
+            )
+        },
+        "preexisting_audit": {"containers": None, "networks": None},
+        "input_audit": None,
         "reviewed_source": None,
         "preexisting_counts": None,
         "input_sha256": {},
@@ -393,11 +713,15 @@ def exercise(host, fragment, verify_source):
                 "Original runtime changed",
             )
         compiled = [m for m in nginx["Mounts"] if m["Destination"] == "/etc/nginx/nginx.conf"]
-        require(len(compiled) == 1 and compiled[0]["Type"] == "bind", "Review Nginx config mount")
+        require(
+            len(compiled) == 1 and compiled[0]["Type"] == "bind",
+            "Review Nginx config mount",
+        )
         canonical = r.ROOT / "config/nginx/projects-locations.d/grok-bridge.conf"
         compose = r.ROOT / "docker-compose.yml"
         config = Path(compiled[0]["Source"])
-        files = {path: read_regular(path) for path in (canonical, compose, config, fragment)}
+        for path in (canonical, compose, config, fragment):
+            files[path] = read_regular(path)
         staged = host.folder / "nginx.after"
         content = r.render_nginx(files[config], files[fragment])
         r.private_write(staged, content)
@@ -444,59 +768,12 @@ def exercise(host, fragment, verify_source):
         result["runs_returned_same_id"] = True
     except BaseException as exc:  # noqa: BLE001 -- audit even on interruption; diagnostics private.
         result["errors"].append(type(exc).__name__)
-        r.private_write(host.folder / "failure.private.log", traceback.format_exc().encode())
+        try:
+            r.private_write(host.folder / "failure.private.log", traceback.format_exc().encode())
+        except BaseException as write_error:  # noqa: BLE001 -- continue the independent final audit.
+            result["errors"].append("EvidenceWriteAudit:" + type(write_error).__name__)
     finally:
-        if before is not None:
-            # Independent audits: a failed Docker read must not suppress file or
-            # source checks. Audit failures never trigger cleanup or production changes.
-            current = None
-            try:
-                current = inventory(host)
-                private_json(host.folder / "inventory-after.private.json", current)
-                receipt = owned_receipt(host.folder, current, set(before["containers"]))
-                invariant_audit(before, current, {}, receipt["id"] if receipt else None)
-                result["invariants"] = "passed"
-            except BaseException as exc:  # noqa: BLE001
-                result["errors"].append("InventoryAudit:" + type(exc).__name__)
-                r.private_write(
-                    host.folder / "audit-inventory.private.log", traceback.format_exc().encode()
-                )
-            try:
-                for path, data in files.items():
-                    require(read_regular(path) == data, "Input changed")
-                require(verify_source() == source, "Source changed during acceptance")
-            except BaseException as exc:  # noqa: BLE001
-                result["errors"].append("InputAudit:" + type(exc).__name__)
-                r.private_write(
-                    host.folder / "audit-input.private.log", traceback.format_exc().encode()
-                )
-            if current is not None:
-                try:
-                    result["fixture"] = owned_receipt(
-                        host.folder, current, set(before["containers"])
-                    )
-                    added = set(current["containers"]) - set(before["containers"])
-                    receipt = result["fixture"]
-                    require(
-                        added == ({receipt["id"]} if receipt else set()),
-                        "Unexpected new container; manual review required",
-                    )
-                    if receipt:
-                        require(receipt["state"] == "stopped", "Owned validator remains running")
-                        if result.get("runs_returned_same_id"):
-                            require(
-                                type(receipt["exit_code"]) is int
-                                and receipt["exit_code"] == 0
-                                and not receipt["oom_killed"],
-                                "Retained successful validator must still have a clean exit",
-                            )
-                except BaseException as exc:  # noqa: BLE001
-                    result["errors"].append("OwnershipAudit:" + type(exc).__name__)
-                    r.private_write(
-                        host.folder / "audit-ownership.private.log", traceback.format_exc().encode()
-                    )
-        if any("Audit:" in error for error in result["errors"]):
-            result["invariants"] = "failed"
+        final_audits(host, result, before, files, source, verify_source)
         if not result["errors"] and result.get("runs_returned_same_id") and result["fixture"]:
             result["acceptance"] = "passed"
         private_json(host.folder / "result.json", result)
