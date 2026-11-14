@@ -178,8 +178,8 @@ test-gateway-recovery-docker:
 # Pure dedicated-network preparation: no Docker or host changes.
 .PHONY: test-grok-network lint-grok-network
 test-grok-network:
-	$(GROK_PYTHON) -m unittest discover -s grok_bridge/deployment -p test_network_policy.py -v
+	$(GROK_PYTHON) -m unittest discover -s grok_bridge/deployment -p 'test_network_*.py' -v
 
 lint-grok-network:
-	ruff check --target-version py310 grok_bridge/deployment/network_policy.py grok_bridge/deployment/test_network_policy.py
-	ruff format --check --target-version py310 grok_bridge/deployment/network_policy.py grok_bridge/deployment/test_network_policy.py
+	ruff check --target-version py310 grok_bridge/deployment/network_policy.py grok_bridge/deployment/test_network_policy.py grok_bridge/deployment/network_transaction.py grok_bridge/deployment/test_network_transaction.py
+	ruff format --check --target-version py310 grok_bridge/deployment/network_policy.py grok_bridge/deployment/test_network_policy.py grok_bridge/deployment/network_transaction.py grok_bridge/deployment/test_network_transaction.py

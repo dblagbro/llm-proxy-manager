@@ -264,3 +264,42 @@ resolved model entirely in memory; target container IDs, images and configuratio
 fingerprints were unchanged. No network/container was created. The repository
 `make lint` command still fails with 3,255 findings in unchanged `app/`/`tests/`;
 this is an open release gate, not a newly passing global check.
+
+### Consumer attachment journal preparation
+
+`deployment/network_transaction.py` adds a dependency-injected transaction engine
+beside the planner. It has **no Docker adapter or deployment CLI** and is not wired
+into `release.py`. Only synthetic fake-host tests invoke its mutation interface.
+The shared policy module supplies all names and permitted consumer identities.
+
+`NetworkTransaction.begin(host, save, transaction_id)` snapshots sanitized identity,
+configuration/default-route and original-attachment fingerprints. The caller must
+hold the exclusive maintenance lock; `save` must durably write the supplied private
+journal before returning. The host adapter must return the exact validated schema,
+including network transaction ownership and immutable IDs. It must distinguish
+absence from inspection failure. Never pass raw Docker Config/Env or command errors
+into a public receipt. The journal has fingerprints and fixed identifiers only.
+
+Creation, connect and disconnect intents precede their corresponding calls.
+Ambiguous transport errors are reconciled through current inspection. The engine
+attaches only Nginx and the gateway in place, resumes from the last durable journal,
+and removes only attachments proven to belong to that transaction on unchanged
+container/network identities. It never removes a network. A rollback leaves the
+empty created network retained, so a new transaction cannot silently adopt it.
+
+The Grok release operator still owns Grok creation and rollback. It must record an
+independently verified Grok container ID with `record_bridge_id`, and restore/remove
+that membership before consumer rollback. Unknown members, replaced containers,
+configuration changes, original-attachment changes, owned endpoint changes and
+default-route drift stop the engine. Those cases require operator reconciliation;
+they are **not** claimed as successful automatic recovery. Cross-file configuration
+CAS, a real sanitized host adapter, endpoint/route inspection, Nginx validation with
+two networks, current image integration, real interruption tests and browser/network
+acceptance all remain pending.
+
+`make test-grok-network lint-grok-network` now covers both preparation modules:
+18 topology tests plus 21 transaction tests. New failure-path cases cover journal
+persistence before action and after an observed effect, fresh-instance resume,
+timeout ambiguity, ownership collisions, endpoint/consumer replacement, route drift
+and prevention of duplicate or unowned disconnects. These synthetic checks do not
+establish the behavior of Docker or production rollback.
