@@ -8,6 +8,10 @@ network only; it never joins the dedicated network or borrows a namespace.
 This checks configuration parsing before original Grok is stopped. It does not
 prove candidate reachability; post-cutover nginx -t/reload and real acceptance
 must use the production Nginx container. All returned errors are sanitized.
+
+An explicit lab descriptor selects a separate context-bound ledger and physical
+resource names. This is consistency checking only: it does not observe VM or
+engine identity or grant isolation, storage, image or execution admission.
 """
 
 import functools
@@ -26,6 +30,8 @@ DEDICATED = "docker_grok_security"
 BRIDGE = "llm-proxy2-grok-bridge"
 OWNER = "com.tmr.security.grok-nginx-validation"
 LEDGER = "nginx-validation.private.json"
+LAB_LEDGER = "nginx-validation.lab.private.json"
+LAB_OWNER = OWNER + ".lab-context"
 MEMORY = 128 * 1024 * 1024
 # nginx -t assigns its new temporary cache directories to the configured worker.
 # Only owned scratch/tmpfs is writable; every original bind is recursively read-only.
@@ -41,6 +47,154 @@ _TX = re.compile(r"[0-9a-f]{32}\Z")
 
 class NginxValidationError(RuntimeError):
     """Private diagnostics belong in the caller's log, never this exception."""
+
+
+class LabBindingError(NginxValidationError):
+    """Lost lab consistency; do not reconcile a fixture after this refusal."""
+
+
+def _lab_context(context):
+    from network_lab_context import LabContext, from_record
+
+    try:
+        if type(context) is not LabContext or from_record(context.to_record()) != context:
+            raise ValueError
+        return context
+    except Exception:
+        raise LabBindingError("Invalid lab validation context") from None
+
+
+def _lab_logical_path(value, generation, *, exact=False):
+    if not isinstance(value, (str, Path, PurePosixPath)):
+        raise LabBindingError("Invalid lab validation path")
+    text = str(value)
+    path = PurePosixPath(text)
+    if (
+        str(path) != text
+        or any(character in text for character in "\\,\r\n\0")
+        or not path.is_absolute()
+        or ".." in path.parts
+        or (path != generation if exact else generation not in path.parents)
+    ):
+        raise LabBindingError("Lab validation path is outside its exact generation")
+    return path
+
+
+def _lab_filesystem_path(logical, generation):
+    """Pin every ancestor without resolving symlinks or changing any permissions."""
+    if os.name != "posix":
+        raise LabBindingError("Lab validation paths require POSIX filesystem semantics")
+    path = Path(logical)
+    chain = []
+    for item in [*reversed(path.parents), path]:
+        info = item.lstat()
+        inside = item == Path(generation) or Path(generation) in item.parents
+        if (
+            stat.S_ISLNK(info.st_mode)
+            or info.st_uid != 0
+            or info.st_mode & (0o077 if inside else 0o022)
+            or (item != path and not stat.S_ISDIR(info.st_mode))
+            or not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode))
+            or (
+                inside
+                and stat.S_IMODE(info.st_mode) != (0o700 if stat.S_ISDIR(info.st_mode) else 0o600)
+            )
+        ):
+            raise LabBindingError("Lab validation path ownership or type requires review")
+        chain.append((info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid))
+    return path, tuple(chain)
+
+
+def _opposite_ledger(folder, lab):
+    opposite = folder / (LEDGER if lab else LAB_LEDGER)
+    if opposite.exists() or opposite.is_symlink():
+        raise LabBindingError("Opposite-mode validation ledger requires review")
+
+
+class _LabScope:
+    """Consistency guard only: no VM, engine, isolation or execution admission."""
+
+    def __init__(self, context, folder, *, host=None, nginx=None, bridge=None):
+        self.context = _lab_context(context)
+        self.context_digest = context.digest()
+        self.logical_folder = _lab_logical_path(folder, context.generation_root, exact=True)
+        self.host = host
+        self.originals = []
+        self.paths = {}
+        pins = dict(context.images)
+        names = context.resource_map()
+        for value, role, pin in ((nginx, "nginx", "nginx"), (bridge, BRIDGE, "original")):
+            if value is None:
+                continue
+            if (
+                value.get("Name") != "/" + names[role]
+                or not _hex(value.get("Id"))
+                or value.get("Image") != pins[pin]
+                or set(value.get("NetworkSettings", {}).get("Networks", {})) != {names[DEFAULT]}
+            ):
+                raise LabBindingError("Original lab runtime identity differs")
+            self.originals.append((value, _digest(value)))
+        if nginx is not None:
+            mounts = nginx.get("Mounts")
+            if type(mounts) is not list or not mounts or len(mounts) > 32:
+                raise LabBindingError("Invalid lab Nginx mount inventory")
+            for mount in mounts:
+                if type(mount) is not dict or mount.get("Type") != "bind":
+                    raise LabBindingError("Lab Nginx requires generation-owned bind sources")
+                source = _lab_logical_path(mount.get("Source"), context.generation_root)
+                self.paths[source] = None
+        self.folder, fingerprint = _lab_filesystem_path(
+            self.logical_folder, context.generation_root
+        )
+        if not self.folder.is_dir():
+            raise LabBindingError("Lab validation generation is not a directory")
+        self.paths[self.logical_folder] = fingerprint
+        for path in self.paths:
+            self.paths[path] = _lab_filesystem_path(path, context.generation_root)[1]
+        _opposite_ledger(self.folder, True)
+        state = _load(self.folder, lab_context=context)
+        self.state = state
+        self.expected_ledger = state.get("_ledger_sha256") if state else None
+        self.guard()
+
+    def guard(self):
+        try:
+            if _lab_context(self.context).digest() != self.context_digest:
+                raise ValueError
+            if self.host is not None:
+                _lab_logical_path(self.host.folder, self.context.generation_root, exact=True)
+            if any(_digest(value) != digest for value, digest in self.originals):
+                raise ValueError
+            for path, expected in self.paths.items():
+                if _lab_filesystem_path(path, self.context.generation_root)[1] != expected:
+                    raise ValueError
+            _opposite_ledger(self.folder, True)
+            _expected_ledger(self.folder / LAB_LEDGER, self.expected_ledger)
+        except Exception:
+            raise LabBindingError(
+                "Lab validation binding changed; retained artifacts require review"
+            ) from None
+
+
+class _LabHost:
+    def __init__(self, host, scope):
+        self._host, self._scope = host, scope
+
+    def _call(self, method, *args, **kwargs):
+        self._scope.guard()
+        try:
+            return getattr(self._host, method)(*args, **kwargs)
+        finally:
+            self._scope.guard()
+
+    def inspect(self, name):
+        return self._call("inspect", name)
+
+    def image(self, image_id):
+        return self._call("image", image_id)
+
+    def run(self, argv, timeout):
+        return self._call("run", argv, timeout=timeout)
 
 
 def _sanitized(function):
@@ -134,20 +288,28 @@ def _write_pending(path, data):
         os.fsync(stream.fileno())
 
 
-def _save(folder, state):
+def _save(folder, state, *, scope=None):
     """Atomic journal write under caller's lock; expected digest is never rebased.
 
     Failed pending files are retained privately. Compare again after the pending
     file is durable. The caller's lock serializes cooperating controllers; this
     is not a security boundary against a concurrent filesystem administrator.
     """
-    path = folder / LEDGER
+    _ledger_binding(state, scope.context if scope is not None else None)
+    if scope is not None:
+        scope.guard()
+        if state.get("_ledger_sha256") != scope.expected_ledger:
+            raise LabBindingError("Lab validation save receipt differs")
+    path = folder / (LAB_LEDGER if scope is not None else LEDGER)
+    _opposite_ledger(folder, scope is not None)
     expected = state.get("_ledger_sha256")
     _expected_ledger(path, expected)
     payload = {key: value for key, value in state.items() if key != "_ledger_sha256"}
     data = (json.dumps(payload, sort_keys=True, indent=2) + "\n").encode()
     pending = folder / ("nginx-validation.pending-" + uuid.uuid4().hex + ".private.json")
     _write_pending(pending, data)
+    if scope is not None:
+        scope.guard()
     _expected_ledger(path, expected)
     os.replace(pending, path)
     if os.name == "posix":
@@ -157,20 +319,66 @@ def _save(folder, state):
         finally:
             os.close(fd)
     state["_ledger_sha256"] = hashlib.sha256(data).hexdigest()
+    if scope is not None:
+        # Only this operation's completed owned save advances the expected receipt.
+        scope.expected_ledger = state["_ledger_sha256"]
+        scope.guard()
 
 
-def _load(folder):
-    path = folder / LEDGER
+def _ledger_binding(value, context):
+    if context is None:
+        if value.get("schema") == 2 or "mode" in value or "lab_context" in value:
+            raise LabBindingError("Lab validation ledger cannot be used in production")
+        _require(
+            type(value.get("schema")) is int and value["schema"] == 1,
+            "Invalid validation ledger",
+        )
+        return
+    try:
+        context = _lab_context(context)
+        if (
+            type(value.get("schema")) is not int
+            or value["schema"] != 2
+            or value.get("mode") != "lab"
+        ):
+            raise ValueError
+        context.verify_journal_binding(value.get("lab_context"))
+        if value.get("image") != dict(context.images)["nginx"]:
+            raise ValueError
+    except Exception:
+        raise LabBindingError("Lab validation ledger context differs") from None
+
+
+def _load(folder, *, lab_context=None):
+    if lab_context is not None:
+        _lab_context(lab_context)
+    else:
+        from network_lab_context import ROOT
+
+        if PurePosixPath(folder) == ROOT or ROOT in PurePosixPath(folder).parents:
+            raise LabBindingError("Lab validation directory requires its exact context")
+    _opposite_ledger(folder, lab_context is not None)
+    path = folder / (LAB_LEDGER if lab_context is not None else LEDGER)
+    _require(not path.is_symlink(), "Validation ledger must not be a symlink")
     if not path.exists():
         _require(not path.is_symlink(), "Validation ledger requires review")
         return None
     try:
         raw = _private_regular(path)
-        value = json.loads(raw)
+
+        def unique(pairs):
+            result = {}
+            for key, item in pairs:
+                _require(key not in result, "Invalid private validation ledger")
+                result[key] = item
+            return result
+
+        value = json.loads(raw, object_pairs_hook=unique)
+        _ledger_binding(value, lab_context)
         _require("_ledger_sha256" not in value, "Invalid private validation ledger")
         _require(
             type(value["schema"]) is int
-            and value["schema"] == 1
+            and value["schema"] == (2 if lab_context is not None else 1)
             and _TX.fullmatch(value["transaction"]),
             "Invalid validation ledger",
         )
@@ -187,7 +395,9 @@ def _load(folder):
         raise NginxValidationError("Invalid private validation ledger") from None
 
 
-def _same_runtime(current, original, name, dedicated_id=None):
+def _same_runtime(current, original, name, dedicated_id=None, *, lab_context=None):
+    names = lab_context.resource_map() if lab_context is not None else {}
+    default, dedicated = names.get(DEFAULT, DEFAULT), names.get(DEDICATED, DEDICATED)
     _require(
         current.get("Id") == original.get("Id")
         and _hex(current.get("Id"))
@@ -198,34 +408,37 @@ def _same_runtime(current, original, name, dedicated_id=None):
     )
     old = original["NetworkSettings"]["Networks"]
     actual = current["NetworkSettings"]["Networks"]
-    _require(set(old) == {DEFAULT}, "Original network topology requires review")
+    _require(set(old) == {default}, "Original network topology requires review")
     _require(
-        DEFAULT in actual and _digest(actual[DEFAULT]) == _digest(old[DEFAULT]),
+        default in actual and _digest(actual[default]) == _digest(old[default]),
         "Original endpoint changed",
     )
-    _require(_hex(old[DEFAULT].get("NetworkID")), "Original network identity is invalid")
-    allowed = {DEFAULT}
+    _require(_hex(old[default].get("NetworkID")), "Original network identity is invalid")
+    allowed = {default}
     if dedicated_id is not None:
         _require(
-            name == "nginx" and _hex(dedicated_id),
+            name == names.get("nginx", "nginx") and _hex(dedicated_id),
             "Dedicated validation binding is invalid",
         )
-        allowed.add(DEDICATED)
-        if DEDICATED in actual:
+        allowed.add(dedicated)
+        if dedicated in actual:
             _require(
-                actual[DEDICATED].get("NetworkID") == dedicated_id,
+                actual[dedicated].get("NetworkID") == dedicated_id,
                 "Dedicated endpoint differs",
             )
     _require(set(actual) <= allowed, "Unreviewed runtime network attachment")
 
 
-def _runtime(host, original_nginx, original_bridge, dedicated_id):
-    nginx, bridge = host.inspect("nginx"), host.inspect(BRIDGE)
-    _same_runtime(nginx, original_nginx, "nginx", dedicated_id)
-    _same_runtime(bridge, original_bridge, BRIDGE)
+def _runtime(host, original_nginx, original_bridge, dedicated_id, *, lab_context=None):
+    names = lab_context.resource_map() if lab_context is not None else {}
+    nginx_name, bridge_name = names.get("nginx", "nginx"), names.get(BRIDGE, BRIDGE)
+    default = names.get(DEFAULT, DEFAULT)
+    nginx, bridge = host.inspect(nginx_name), host.inspect(bridge_name)
+    _same_runtime(nginx, original_nginx, nginx_name, dedicated_id, lab_context=lab_context)
+    _same_runtime(bridge, original_bridge, bridge_name, lab_context=lab_context)
     _require(
-        nginx["NetworkSettings"]["Networks"][DEFAULT]["NetworkID"]
-        == bridge["NetworkSettings"]["Networks"][DEFAULT]["NetworkID"],
+        nginx["NetworkSettings"]["Networks"][default]["NetworkID"]
+        == bridge["NetworkSettings"]["Networks"][default]["NetworkID"],
         "Original upstream is not on the retained default network",
     )
     return _digest([nginx["Id"], nginx["NetworkSettings"], bridge["Id"], bridge["NetworkSettings"]])
@@ -316,11 +529,7 @@ def _reviewed_mounts(folder, state, nginx):
     return mounts
 
 
-@_sanitized
-def verify_validation_inputs(folder, original_nginx):
-    """Read-only audit independent of fixture ownership and Docker availability."""
-    folder = _folder(folder)
-    state = _load(folder)
+def _verify_validation_inputs(folder, original_nginx, state):
     if state is None:
         _require(not (folder / inputs.COPY_ROOT).exists(), "Incomplete include copy retained")
         return
@@ -335,7 +544,28 @@ def verify_validation_inputs(folder, original_nginx):
     )
 
 
-def _fixture(value, state):
+@_sanitized
+def verify_validation_inputs(folder, original_nginx, *, lab_context=None):
+    """Read-only input consistency audit; a lab descriptor is not admission."""
+    scope = (
+        _LabScope(lab_context, folder, nginx=original_nginx) if lab_context is not None else None
+    )
+    if lab_context is None and str(original_nginx.get("Name", "")).startswith(
+        "/codex-grok-nettest-"
+    ):
+        raise LabBindingError("Lab validation runtime requires its exact context")
+    folder = scope.folder if scope else _folder(folder)
+    state = scope.state if scope else _load(folder)
+    if scope:
+        scope.guard()
+    _verify_validation_inputs(folder, original_nginx, state)
+    if scope:
+        scope.guard()
+
+
+def _fixture(value, state, *, lab_context=None):
+    _ledger_binding(state, lab_context)
+    default = lab_context.resource_map()[DEFAULT] if lab_context is not None else DEFAULT
     _require(
         _hex(value.get("Id")) and value.get("Name") == "/" + state["name"],
         "Validation identity differs",
@@ -351,6 +581,8 @@ def _fixture(value, state):
     defaults = state["image_defaults"]
     labels = dict(defaults.get("Labels") or {})
     labels[OWNER] = state["transaction"]
+    if lab_context is not None:
+        labels[LAB_OWNER] = lab_context.digest()
     _require(config.get("Labels") == labels, "Validation ownership differs")
     _require(
         config.get("Image") == state["image"]
@@ -487,17 +719,17 @@ def _fixture(value, state):
         "Validation bind declarations differ",
     )
     nets = value["NetworkSettings"]["Networks"]
-    _require(set(nets) == {DEFAULT}, "Validation fixture must use only the default network")
+    _require(set(nets) == {default}, "Validation fixture must use only the default network")
     _require(
-        nets[DEFAULT].get("NetworkID") in (state["default_network_id"], ""),
+        nets[default].get("NetworkID") in (state["default_network_id"], ""),
         "Validation network changed",
     )
     _require(
         not value["State"].get("Running")
-        or nets[DEFAULT].get("NetworkID") == state["default_network_id"],
+        or nets[default].get("NetworkID") == state["default_network_id"],
         "Running validation network is unresolved",
     )
-    endpoint = nets[DEFAULT]
+    endpoint = nets[default]
     for key in ("Aliases", "DNSNames"):
         aliases = endpoint.get(key) or []
         _require(
@@ -539,7 +771,8 @@ def _lookup(host, name):
     return host.inspect(ids[0]) if ids else None
 
 
-def _create_args(state):
+def _create_args(state, *, lab_context=None):
+    _ledger_binding(state, lab_context)
     args = [
         "docker",
         "create",
@@ -583,6 +816,8 @@ def _create_args(state):
         "--entrypoint",
         "nginx",
     ]
+    if lab_context is not None:
+        args.extend(["--label", LAB_OWNER + "=" + lab_context.digest()])
     for path, options in TMPFS.items():
         args.extend(["--tmpfs", path + ":" + options])
     for mount in state["mounts"]:
@@ -598,37 +833,66 @@ def _create_args(state):
 
 
 @_sanitized
-def retained_validation_ids(folder, inspected_container_list):
+def retained_validation_ids(folder, inspected_container_list, *, lab_context=None):
     """Exclude only the exact, unchanged, stopped fixture; never prefix-match."""
-    state = _load(_folder(folder))
+    scope = _LabScope(lab_context, folder) if lab_context is not None else None
+    folder = scope.folder if scope else _folder(folder)
+    state = scope.state if scope else _load(folder)
+    if scope:
+        scope.guard()
     if state is None or state.get("id") is None:
         return set()
     matches = [item for item in inspected_container_list if item.get("Id") == state["id"]]
     _require(len(matches) == 1, "Retained validation fixture is absent or ambiguous")
-    _fixture(matches[0], state)
+    _fixture(matches[0], state, lab_context=lab_context)
     _require(
         not matches[0]["State"].get("Running") and not matches[0]["State"].get("Restarting"),
         "Retained validation fixture is not stopped",
     )
+    if scope:
+        scope.guard()
     return {state["id"]}
 
 
 @_sanitized
 def validate_staged_nginx(
-    host, config, original_nginx, original_bridge, *, dedicated_network_id=None
+    host, config, original_nginx, original_bridge, *, dedicated_network_id=None, lab_context=None
 ):
     """Run one retained fixture before cutover; return its exact owned ID.
 
     Host exposes folder, run(argv, timeout), inspect(name_or_id), image(image_id).
     Only the caller's private log may contain raw Docker/Nginx diagnostics.
     """
-    folder = _folder(host.folder)
-    config = Path(config)
+    scope = None
+    if lab_context is not None:
+        scope = _LabScope(
+            lab_context, host.folder, host=host, nginx=original_nginx, bridge=original_bridge
+        )
+        logical_config = _lab_logical_path(config, lab_context.generation_root)
+        if logical_config != lab_context.generation_root / "nginx.after":
+            raise LabBindingError("Use the exact lab staged Nginx artifact")
+        scope.paths[logical_config] = _lab_filesystem_path(
+            logical_config, lab_context.generation_root
+        )[1]
+        folder, config = scope.folder, scope.folder / "nginx.after"
+        host = _LabHost(host, scope)
+    else:
+        if any(
+            str(value.get("Name", "")).startswith("/codex-grok-nettest-")
+            for value in (original_nginx, original_bridge)
+        ):
+            raise LabBindingError("Lab validation runtime requires its exact context")
+        folder, config = _folder(host.folder), Path(config)
+    # Check both ledger modes before inspecting any host or creating private copies.
+    state = scope.state if scope else _load(folder)
+    if scope:
+        scope.guard()
     _require(config == folder / "nginx.after", "Use the reviewed staged Nginx artifact")
     source = _private_regular(config)
     checksum = hashlib.sha256(source).hexdigest()
-    baseline = _runtime(host, original_nginx, original_bridge, dedicated_network_id)
-    state = _load(folder)
+    baseline = _runtime(
+        host, original_nginx, original_bridge, dedicated_network_id, lab_context=lab_context
+    )
     if state is None:
         logs = folder / "nginx-validation-logs"
         _require(not logs.exists(), "Validation scratch already exists without a ledger")
@@ -641,6 +905,8 @@ def validate_staged_nginx(
         # configuration trees. Private copies avoid granting DAC-bypass capabilities or
         # changing the live source's access modes. Failed partial copies remain.
         _mounts(original_nginx, config, logs)
+        if scope:
+            scope.guard()
         config_inputs = (
             inputs.prepare(folder, original_nginx["Mounts"])
             if any(m["Destination"] in inputs.TARGETS for m in original_nginx["Mounts"])
@@ -655,9 +921,9 @@ def validate_staged_nginx(
             "image": original_nginx["Image"],
             "image_defaults": image["Config"],
             "config_sha256": checksum,
-            "default_network_id": original_nginx["NetworkSettings"]["Networks"][DEFAULT][
-                "NetworkID"
-            ],
+            "default_network_id": original_nginx["NetworkSettings"]["Networks"][
+                lab_context.resource_map()[DEFAULT] if lab_context is not None else DEFAULT
+            ]["NetworkID"],
             "config_inputs": config_inputs,
             "id": None,
             "original_nginx_id": original_nginx["Id"],
@@ -665,8 +931,10 @@ def validate_staged_nginx(
             "original_nginx_sha256": _config(original_nginx),
             "original_bridge_sha256": _config(original_bridge),
         }
+        if scope:
+            state.update(schema=2, mode="lab", lab_context=lab_context.journal_binding())
         state["mounts"] = _reviewed_mounts(folder, state, original_nginx)
-        _save(folder, state)
+        _save(folder, state, scope=scope)
     _require(
         state["config_sha256"] == checksum
         and state["original_nginx_id"] == original_nginx["Id"]
@@ -678,71 +946,94 @@ def validate_staged_nginx(
         and state["original_bridge_sha256"] == _config(original_bridge),
         "Original configuration review changed",
     )
-    verify_validation_inputs(folder, original_nginx)
+    _verify_validation_inputs(folder, original_nginx, state)
     logs = folder / "nginx-validation-logs"
     if not logs.exists():
         _require(not logs.is_symlink(), "Validation scratch requires review")
+        if scope:
+            scope.guard()
         logs.mkdir(mode=0o700)
     _folder(logs)
+    if scope:
+        logical_logs = lab_context.generation_root / "nginx-validation-logs"
+        scope.paths[logical_logs] = _lab_filesystem_path(logical_logs, lab_context.generation_root)[
+            1
+        ]
+        scope.guard()
     value = _lookup(host, state["name"])
     if value is None:
         _require(state.get("id") is None, "Retained validation fixture disappeared")
         try:
-            result = host.run(_create_args(state), timeout=60).strip()
+            result = host.run(_create_args(state, lab_context=lab_context), timeout=60).strip()
             _require(_hex(result), "Invalid creation receipt")
             state["id"] = result
-            _save(folder, state)
+            _save(folder, state, scope=scope)
+        except LabBindingError:
+            raise
         except Exception as exc:  # noqa: BLE001 -- reconcile effect instead of exposing diagnostics.
             # Persisted unique intent plus strict desired inspection can reconcile
             # a daemon-side create whose CLI response was lost.
             state["create_error_class"] = type(exc).__name__
-            _save(folder, state)
+            _save(folder, state, scope=scope)
         value = _lookup(host, state["name"])
         _require(value is not None, "Validation creation did not complete")
-    cid = _fixture(value, state)
+    cid = _fixture(value, state, lab_context=lab_context)
     state.update(id=cid, fixture_sha256=_fixture_config(value), phase="created_retained")
-    _save(folder, state)
+    _save(folder, state, scope=scope)
     error = None
+    binding_failed = False
     try:
         if value["State"].get("Running"):
             state["phase"] = "stop_interrupted_validation_intent"
-            _save(folder, state)
+            _save(folder, state, scope=scope)
             host.run(["docker", "stop", "--time", "5", cid], timeout=15)
             value = host.inspect(cid)
-            _fixture(value, state)
+            _fixture(value, state, lab_context=lab_context)
             _require(
                 not value["State"].get("Running"),
                 "Interrupted validation remains running",
             )
         _require(
-            _runtime(host, original_nginx, original_bridge, dedicated_network_id) == baseline,
+            _runtime(
+                host, original_nginx, original_bridge, dedicated_network_id, lab_context=lab_context
+            )
+            == baseline,
             "Runtime changed before staged validation",
         )
         _require(
             hashlib.sha256(_private_regular(config)).hexdigest() == checksum,
             "Staged artifact changed",
         )
-        verify_validation_inputs(folder, original_nginx)
+        _verify_validation_inputs(folder, original_nginx, state)
         state["phase"] = "start_intent"
-        _save(folder, state)
+        _save(folder, state, scope=scope)
         host.run(["docker", "start", "-a", cid], timeout=90)
+    except LabBindingError:
+        binding_failed = True
+        raise
     except BaseException as exc:  # noqa: BLE001 -- reconcile own fixture even on interruption.
         error = type(exc).__name__
     finally:
+        if binding_failed:
+            raise LabBindingError("Lab validation binding refused; fixture retained") from None
+        if scope:
+            scope.guard()
         current = host.inspect(cid)
-        _fixture(current, state)
+        _fixture(current, state, lab_context=lab_context)
         if current["State"].get("Running"):
             if error is None:
                 error = "UnexpectedRunningValidation"
             state["phase"] = "stop_intent"
-            _save(folder, state)
+            _save(folder, state, scope=scope)
             try:
                 host.run(["docker", "stop", "--time", "5", cid], timeout=15)
+            except LabBindingError:
+                raise
             except Exception as exc:  # noqa: BLE001 -- a timeout does not establish daemon state.
                 state["stop_error_class"] = type(exc).__name__
-                _save(folder, state)
+                _save(folder, state, scope=scope)
             current = host.inspect(cid)
-            _fixture(current, state)
+            _fixture(current, state, lab_context=lab_context)
         _require(
             not current["State"].get("Running"),
             "Owned validation fixture remains running",
@@ -752,8 +1043,8 @@ def validate_staged_nginx(
             error_class=error,
             exit_code=current["State"].get("ExitCode"),
         )
-        _save(folder, state)
-        verify_validation_inputs(folder, original_nginx)
+        _save(folder, state, scope=scope)
+        _verify_validation_inputs(folder, original_nginx, state)
     _require(
         error is None
         and current["State"].get("ExitCode") == 0
@@ -761,7 +1052,10 @@ def validate_staged_nginx(
         "Staged Nginx validation failed; fixture retained",
     )
     _require(
-        _runtime(host, original_nginx, original_bridge, dedicated_network_id) == baseline,
+        _runtime(
+            host, original_nginx, original_bridge, dedicated_network_id, lab_context=lab_context
+        )
+        == baseline,
         "Runtime changed during staged validation",
     )
     _require(
@@ -769,5 +1063,5 @@ def validate_staged_nginx(
         "Staged artifact changed during validation",
     )
     state["phase"] = "passed_stopped_retained"
-    _save(folder, state)
+    _save(folder, state, scope=scope)
     return cid

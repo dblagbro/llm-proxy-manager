@@ -341,3 +341,44 @@ body framing, the separate-containerd-store omission and a fixture mode dependen
 See docs/evidence/grok-lab-storage-source-20261114.json. A separate read-only
 production info query reported classic overlay2; it did not invoke this collector
 or establish lab eligibility.
+
+## Explicit lab Nginx validation context
+
+The retained validator accepts an explicit keyword-only lab_context on
+validate_staged_nginx, verify_validation_inputs and retained_validation_ids.
+Raw inspect names, network keys and immutable image IDs must already match the
+descriptor; records are never rewritten to resemble production. The original
+Nginx/Grok snapshots are pinned and checked around host calls and journal writes.
+
+Lab validation uses nginx-validation.lab.private.json schema 2, the complete
+context binding and a context-digest fixture label. Production continues to use
+schema 1 and its existing filename/defaults. Both ledger filenames are checked
+before host I/O, including broken opposite-mode symlinks, so another mode cannot
+silently create a second fixture. The initially validated ledger is reused;
+expected-content digests advance only after this operation's successful save.
+Any lab binding refusal stops reconciliation, including cleanup in a finally
+block, rather than inspecting or stopping a fixture under uncertain identity.
+
+Lab generation and Nginx bind sources require exact canonical paths, root
+ownership, private modes and nonsymlink ancestry. Every original Nginx source
+must lie below the exact generation; volumes and external configuration/TLS
+sources refuse before copying or host calls. Ancestor identity, mode, original
+snapshot, context, host-folder and ledger drift are checked before and after
+host operations. Existing bounded private include copies and recursive read-only
+mount protections remain. The fixture joins only the retained physical default
+network, retains CAP_CHOWN as its sole added capability, and remains stopped and
+retained after acceptance. A failed validation is retained for review.
+
+These checks establish consistency only. They neither observe the actual VM or
+engine identity nor grant isolation, storage, image or execution admission.
+The separate admission path, shared release-body integration and full lifecycle
+harness remain pending. No production hostname/NAS/capacity guard, CLI entry
+point, accepted fixture or container was changed or invoked. Lab filesystem
+tests simulate ownership at a private test seam; Linux also exercises real
+temporary lstat/symlink behavior. See
+docs/evidence/grok-lab-nginx-source-20261114.json for final scoped checks.
+
+Validation: 100 release tests and 771 network tests (75 new lab Nginx tests),
+with 201 subtests and zero Linux skips, passed canonical Makefile targets.
+Scoped Ruff lint/format passed. Focused Windows checks passed 139 tests with
+14 POSIX skips, including 66 new lab tests and 9 new lab platform skips.

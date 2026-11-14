@@ -1,0 +1,66 @@
+{
+  "schema": "grok-lab-nginx-source-evidence-v1",
+  "based_on": "212970c91a611c347eecb9109b3527c6ea23e1f3",
+  "scope": "Explicit descriptor-bound retained lab Nginx validation source; no live invocation or execution admission",
+  "source_sha256": {
+    "network_nginx.py": "5b4fadf21b2d25a5ab7610d90dd88d4d959066d07d89fa095f4cab32293a9948",
+    "test_network_lab_nginx.py": "ea2bce146ca882342093dd1530f72e937fb243b5ef690a0e52eaaebd04d5d24f"
+  },
+  "review": {
+    "passed": true,
+    "kind": "Release-engineering preparation and primary source/boundary review",
+    "corrections": [
+      "Latch every lab binding failure before lifecycle finally reconciliation, including receipt refusals with unchanged guard fields",
+      "Production ledger saves reject lab metadata before creating pending files",
+      "Public input and retained-fixture audits consume the initially validated pinned ledger instead of reloading from disk",
+      "Normalize Windows CRLF transport to repository LF; AST verified unchanged and lint repeated"
+    ],
+    "remaining_component_blockers_identified": false
+  },
+  "production_operator_sha256": "1a9dd48f10fb3e56889af2ce3254760e48d30482867a333f68006d5166ac0960",
+  "production_operator_unchanged": true,
+  "live_collector_invoked": false,
+  "live_validator_invoked": false,
+  "lab_execution_authorized": false,
+  "lab_created": false,
+  "full_harness_implemented": false,
+  "production_deployed": false,
+  "new_image_or_vulnerability_scan": false,
+  "accepted_component_repeated": false,
+  "cleanup_performed": false,
+  "limits": [
+    "Context consistency does not observe VM/engine identity or grant isolation/storage/image/execution admission",
+    "Production CLI, hostname/NAS/capacity guards remain unchanged; shared release-body context integration and full harness remain pending",
+    "Caller still holds release lock/capacity admission; guard/save comparisons are not a security boundary against a concurrent root filesystem administrator",
+    "Lab requires canonical private root-owned generation-contained Nginx bind sources; named volumes or external TLS/config sources refuse",
+    "Linux path tests use real temporary lstat/symlink mechanics with explicit ownership/outer-ancestor simulation; Docker responses are fake",
+    "Retained original and accepted runtime fixtures are not rerun; global lint/H7-W16/Coordinator/private backup gates remain open"
+  ],
+  "checks": {
+    "linux_release_tests": 100,
+    "linux_network_tests": 771,
+    "lab_nginx_tests": 75,
+    "network_subtests": 201,
+    "linux_skipped": 0,
+    "windows_passed": 139,
+    "windows_platform_skipped": 14,
+    "windows_lab_nginx_passed": 66,
+    "windows_lab_nginx_platform_skipped": 9,
+    "scoped_lint": "passed",
+    "scoped_format": "passed",
+    "warning": "Retained unrelated asyncio_mode warning in synchronous source-test environment"
+  },
+  "linux_run": {
+    "returncode": 0,
+    "elapsed_seconds": 44.95,
+    "log": "/tmp/codex-grok-lab-nginx-checks-ibjdluht.log",
+    "summaries": [
+      "100 passed, 1 warning in 8.40s",
+      "771 passed, 1 warning, 201 subtests passed in 35.62s",
+      "All checks passed!",
+      "3 files already formatted",
+      "All checks passed!",
+      "25 files already formatted"
+    ]
+  }
+}
