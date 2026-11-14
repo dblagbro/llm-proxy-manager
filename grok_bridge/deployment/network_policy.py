@@ -4,8 +4,9 @@ Inputs are resolved Compose JSON, not raw YAML. The caller must independently
 verify Docker network-connect gateway-priority support and Compose >= 2.33.1
 before deployment, then verify actual routes and membership. This module does
 not inspect Docker, authorize a release, write files, or establish reachability.
-Private configuration remains in memory. Receipts contain constant topology
-identifiers only; exceptions never interpolate input values.
+Private configuration remains in memory. Receipts contain topology identifiers
+and, in lab mode, a context digest; exceptions never interpolate input values.
+The optional lab descriptor changes physical names, never release authority.
 """
 
 import copy
@@ -58,6 +59,26 @@ def _same_json(left, right):
     return json.dumps(left, sort_keys=True) == json.dumps(right, sort_keys=True)
 
 
+def _identity(lab_context=None):
+    """Return exact physical names; a lab descriptor never grants authority."""
+    if lab_context is None:
+        return {name: name for name in (*MEMBERS, DEFAULT_NAME, NETWORK_NAME)}
+    # Delayed import: the pure descriptor imports the canonical roles above.
+    from network_lab_context import LabContext, LabContextError, from_record
+
+    _require(type(lab_context) is LabContext, "Invalid lab context type")
+    try:
+        validated = from_record(lab_context.to_record())
+    except LabContextError:
+        raise NetworkPolicyError("Invalid lab context identity") from None
+    _require(validated == lab_context, "Lab context identity differs")
+    return validated.resource_map()
+
+
+def _dedicated(names):
+    return {"name": names[NETWORK_NAME], "driver": "bridge", "internal": False}
+
+
 def _attachment(value):
     if value is None:
         return
@@ -83,16 +104,19 @@ def _attachment(value):
             _require(value[key] >= 0, "Existing network priority requires review")
 
 
-def _definition(model, candidate=False):
+def _definition(model, candidate=False, *, lab_context=None):
+    names = _identity(lab_context)
     _json_value(model)
     _require(type(model) is dict, "Expected resolved Compose object")
+    if lab_context is not None:
+        _require(model.get("name") == lab_context.project, "Lab Compose project differs")
     services, networks = model.get("services"), model.get("networks")
     _require(type(services) is dict and type(networks) is dict, "Missing Compose mappings")
     _require(all(type(service) is dict for service in services.values()), "Invalid service")
     _require(all(member in services for member in MEMBERS), "Required service is absent")
     default = networks.get(DEFAULT)
     _require(type(default) is dict, "Missing reviewed default network")
-    _require(default.get("name") == DEFAULT_NAME, "Default network identity differs")
+    _require(default.get("name") == names[DEFAULT_NAME], "Default network identity differs")
     _require(
         set(default) <= {"name", "driver", "internal", "external", "attachable", "ipam", "labels"},
         "Unreviewed default network options",
@@ -110,11 +134,11 @@ def _definition(model, candidate=False):
         _require(type(name) is str and bool(_ALIAS.fullmatch(name)), "Unresolved network name")
         physical.append(name)
         if key != NETWORK:
-            _require(name != NETWORK_NAME, "Dedicated network name collision")
+            _require(name != names[NETWORK_NAME], "Dedicated network name collision")
     _require(len(physical) == len(set(physical)), "Physical network name collision")
     if candidate:
         _require(
-            _same_json(networks.get(NETWORK), NETWORK_DEFINITION),
+            _same_json(networks.get(NETWORK), _dedicated(names)),
             "Dedicated network definition differs",
         )
     else:
@@ -133,18 +157,44 @@ def _memberships(service):
     return memberships
 
 
-def _target(service, name):
+def _target(service, name, *, lab_context=None):
+    names = _identity(lab_context)
     if name == BRIDGE:
         _require(
             "ports" not in service or service["ports"] == [], "Bridge ports must be unpublished"
         )
-    _require(service.get("container_name", name) == name, "Target container alias requires review")
+    _require(
+        service.get("container_name", name) == names[name],
+        "Target container alias requires review",
+    )
 
 
-def _alias_ownership(services, networks):
+def _identity_aliases(name, service):
+    result = [name]
+    for key in ("container_name", "hostname"):
+        if key in service:
+            _require(type(service[key]) is str, "Invalid service identity")
+            result.append(service[key])
+    return result
+
+
+def _check_aliases(name, aliases, names):
+    reserved = {value.casefold() for value in (*MEMBERS, *(names[r] for r in MEMBERS))}
+    allowed = {name.casefold(), names[name].casefold()} if name in MEMBERS else set()
+    _require(
+        not ({alias.casefold() for alias in aliases} & (reserved - allowed)),
+        "Reserved service alias collision",
+    )
+
+
+def _alias_ownership(services, networks, *, lab_context=None):
     """Check declared default-network aliases without exporting their values."""
-    reserved = set(MEMBERS)
+    names = _identity(lab_context)
     for name, service in services.items():
+        if lab_context is not None:
+            # Candidate Grok is dedicated-only; its hostname and all physical
+            # container identities must still be checked without default.
+            _check_aliases(name, _identity_aliases(name, service), names)
         memberships = service.get("networks", {})
         if "network_mode" in service:
             # Namespace sharing can inherit a target's dedicated network even
@@ -168,15 +218,7 @@ def _alias_ownership(services, networks):
         aliases = [] if attachment is None else attachment.get("aliases", [])
         _require(type(aliases) is list, "Invalid default aliases")
         _require(all(type(alias) is str for alias in aliases), "Invalid default aliases")
-        aliases = [*aliases, name]
-        for key in ("container_name", "hostname"):
-            if key in service:
-                _require(type(service[key]) is str, "Invalid service identity")
-                aliases.append(service[key])
-        _require(
-            not ({alias.casefold() for alias in aliases} & (reserved - {name})),
-            "Reserved service alias collision",
-        )
+        _check_aliases(name, [*aliases, *_identity_aliases(name, service)], names)
 
 
 def _new_attachment(name):
@@ -187,13 +229,14 @@ def _new_attachment(name):
     return {"aliases": [name]} if name == BRIDGE else {"aliases": [name], "gw_priority": -1}
 
 
-def plan_networks(model):
+def plan_networks(model, *, lab_context=None):
     """Return (private copied Compose model, sanitized topology receipt)."""
-    services, networks = _definition(model)
-    _alias_ownership(services, networks)
+    names = _identity(lab_context)
+    services, networks = _definition(model, lab_context=lab_context)
+    _alias_ownership(services, networks, lab_context=lab_context)
     for name in MEMBERS:
         service = services[name]
-        _target(service, name)
+        _target(service, name, lab_context=lab_context)
         memberships = _memberships(service)
         _require(set(memberships) == {DEFAULT}, "Target network topology requires review")
         _attachment(memberships[DEFAULT])
@@ -204,21 +247,22 @@ def plan_networks(model):
                 "Additional bridge aliases require review",
             )
     result = copy.deepcopy(model)
-    result["networks"][NETWORK] = copy.deepcopy(NETWORK_DEFINITION)
+    result["networks"][NETWORK] = _dedicated(names)
     for name in MEMBERS:
         memberships = {} if name == BRIDGE else copy.deepcopy(services[name]["networks"])
         memberships[NETWORK] = _new_attachment(name)
         result["services"][name]["networks"] = memberships
-    expected_runtime_networks(result)
+    expected_runtime_networks(result, lab_context=lab_context)
     receipt = {
         "schema": 1,
         "status": "prepared_not_deployed",
         "production_modified": False,
-        "network": {**NETWORK_DEFINITION, "logical_name": NETWORK, "members": list(MEMBERS)},
+        "network": {**_dedicated(names), "logical_name": NETWORK, "members": list(MEMBERS)},
         "services": {
             name: {
-                "before_networks": [DEFAULT_NAME],
-                "after_networks": ([DEFAULT_NAME] if name in CONSUMERS else []) + [NETWORK_NAME],
+                "before_networks": [names[DEFAULT_NAME]],
+                "after_networks": ([names[DEFAULT_NAME]] if name in CONSUMERS else [])
+                + [names[NETWORK_NAME]],
                 "dedicated_gateway_priority": 0 if name == BRIDGE else -1,
             }
             for name in MEMBERS
@@ -230,18 +274,21 @@ def plan_networks(model):
         "live_routes_and_reachability_verified": False,
         "release_gate_satisfied": False,
     }
+    if lab_context is not None:
+        receipt["mode"] = "lab"
+        receipt["context_sha256"] = lab_context.digest()
     return result, receipt
 
 
-def expected_runtime_networks(candidate):
+def expected_runtime_networks(candidate, *, lab_context=None):
     """Map only the three approved services to physical networks and options.
 
     This is expected state, not Docker inspect output. It rejects extra members
     and unsafe target topology. Call verify_network_scope too when comparing a
     prepared candidate with a baseline; this function cannot establish provenance.
     """
-    services, networks = _definition(candidate, candidate=True)
-    _alias_ownership(services, networks)
+    services, networks = _definition(candidate, candidate=True, lab_context=lab_context)
+    _alias_ownership(services, networks, lab_context=lab_context)
     members = set()
     for name, service in services.items():
         memberships = service.get("networks", {})
@@ -252,7 +299,7 @@ def expected_runtime_networks(candidate):
     result = {}
     for name in MEMBERS:
         service = services[name]
-        _target(service, name)
+        _target(service, name, lab_context=lab_context)
         memberships = _memberships(service)
         expected = {NETWORK} | ({DEFAULT} if name in CONSUMERS else set())
         _require(set(memberships) == expected, "Candidate target topology differs")
@@ -267,9 +314,23 @@ def expected_runtime_networks(candidate):
     return result
 
 
-def verify_network_scope(before, candidate):
-    """Refuse any change outside the exact reviewed network transformation."""
-    expected, _ = plan_networks(before)
+def _review_binding(receipt, expected, *, lab_context=None):
+    if lab_context is None:
+        _require(receipt is None, "Lab review receipt requires lab context")
+        return
+    _json_value(receipt)
+    _require(_same_json(receipt, expected), "Lab review receipt differs")
+
+
+def verify_network_scope(before, candidate, *, lab_context=None, review_receipt=None):
+    """Refuse changes outside scope and require the lab context's exact receipt.
+
+    The receipt detects context drift, not an authorized reviewer: its hash is
+    not a signature or permit. Runtime identity/isolation and release gates are
+    independent. expected_runtime_networks validates topology only.
+    """
+    expected, receipt = plan_networks(before, lab_context=lab_context)
+    _review_binding(review_receipt, receipt, lab_context=lab_context)
     _json_value(candidate)
     _require(_same_json(candidate, expected), "Candidate differs from reviewed network scope")
-    expected_runtime_networks(candidate)
+    expected_runtime_networks(candidate, lab_context=lab_context)

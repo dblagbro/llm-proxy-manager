@@ -154,7 +154,14 @@ def _logical_networks(service):
     }
 
 
-def _desired(original_networks, desired_networks, dedicated_definition):
+def _desired(
+    original_networks,
+    desired_networks,
+    dedicated_definition,
+    *,
+    lab_context=None,
+    review_receipt=None,
+):
     _json(original_networks)
     _json(desired_networks)
     _json(dedicated_definition)
@@ -162,14 +169,25 @@ def _desired(original_networks, desired_networks, dedicated_definition):
         type(original_networks) is dict and set(original_networks) == set(policy.MEMBERS),
         "Original network review is incomplete",
     )
+    try:
+        names = policy._identity(lab_context)
+    except policy.NetworkPolicyError:
+        raise ComposeNetworkError("Invalid lab context identity") from None
     synthetic = {
         "services": {
-            name: {"networks": copy.deepcopy(original_networks[name])} for name in policy.MEMBERS
+            name: {
+                "container_name": names[name],
+                "networks": copy.deepcopy(original_networks[name]),
+            }
+            for name in policy.MEMBERS
         },
-        "networks": {policy.DEFAULT: {"name": policy.DEFAULT_NAME, "ipam": {}}},
+        "networks": {policy.DEFAULT: {"name": names[policy.DEFAULT_NAME], "ipam": {}}},
     }
+    if lab_context is not None:
+        synthetic["name"] = lab_context.project
     try:
-        planned, _ = policy.plan_networks(synthetic)
+        planned, receipt = policy.plan_networks(synthetic, lab_context=lab_context)
+        policy._review_binding(review_receipt, receipt, lab_context=lab_context)
     except policy.NetworkPolicyError:
         raise ComposeNetworkError("Original network policy requires review") from None
     expected = {name: planned["services"][name]["networks"] for name in policy.MEMBERS}
@@ -178,7 +196,7 @@ def _desired(original_networks, desired_networks, dedicated_definition):
         "Desired service networks differ from fixed policy",
     )
     _require(
-        _json(dedicated_definition) == _json(policy.NETWORK_DEFINITION),
+        _json(dedicated_definition) == _json(planned["networks"][policy.NETWORK]),
         "Dedicated definition differs from fixed policy",
     )
     return copy.deepcopy(expected)
@@ -193,13 +211,23 @@ def _dump(value, indent):
     )
 
 
-def render_networks(raw, *, original_networks, desired_networks, dedicated_definition):
+def render_networks(
+    raw,
+    *,
+    original_networks,
+    desired_networks,
+    dedicated_definition,
+    lab_context=None,
+    review_receipt=None,
+):
     """Return private transformed bytes after exact-scope semantic verification.
 
     Original mappings are reviewed logical mappings (implicit/list default becomes
     {default: None}); desired mappings/definition must match the fixed policy.
     This only supports LF, UTF-8, two-space canonical service blocks. Anchors,
     aliases, merge keys, duplicate keys and multiple documents always refuse.
+    Lab mode requires concrete raw identities and a context-bound review receipt;
+    the latter detects drift but is not a signature, permit or isolation proof.
     """
     _require(
         type(raw) is bytes and 0 < len(raw) <= 8 * 1024 * 1024,
@@ -213,8 +241,24 @@ def render_networks(raw, *, original_networks, desired_networks, dedicated_defin
         "\r" not in text and not text.startswith("\ufeff"),
         "Unsupported source encoding or line endings",
     )
-    desired = _desired(original_networks, desired_networks, dedicated_definition)
+    desired = _desired(
+        original_networks,
+        desired_networks,
+        dedicated_definition,
+        lab_context=lab_context,
+        review_receipt=review_receipt,
+    )
     before, document = _parse(text)
+    if lab_context is not None:
+        try:
+            policy._definition(before, lab_context=lab_context)
+            normalized = copy.deepcopy(before)
+            for service in normalized.get("services", {}).values():
+                if "network_mode" not in service:
+                    service["networks"] = _logical_networks(service)
+            policy.plan_networks(normalized, lab_context=lab_context)
+        except policy.NetworkPolicyError:
+            raise ComposeNetworkError("Raw lab source identity differs") from None
     root = _entries(document)
     _require(
         "services" in root and type(before.get("services")) is dict,

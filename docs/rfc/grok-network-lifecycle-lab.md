@@ -192,3 +192,32 @@ Validation: 67 descriptor tests, 100 release tests and 378 network tests
 (the 67 are included), with 201 subtests, passed on Linux. Scoped lint and
 format checks passed. See the sanitized source-evidence receipt in docs/evidence.
 No runtime fixture, image scan or production operation was repeated.
+
+## Context-aware network preparation checkpoint
+
+The pure planner and canonical-source renderer now accept a validated, explicit
+lab context. Production calls with no context keep their original names, topology
+and receipt shape. Lab logical roles and aliases stay canonical; project,
+container and physical network identities must match the descriptor. The actual
+network definition remains Internal=false. Reserved canonical and physical
+aliases are checked on service keys, container names, hostnames and attachments,
+including the dedicated-only candidate bridge.
+
+Lab plan receipts include mode=lab and the full descriptor digest without
+exporting VM/engine/source/image fields. verify_network_scope and render_networks
+require the exact bound receipt; matching physical names alone cannot bind VM,
+engine, source or images. expected_runtime_networks checks topology only. The
+receipt is neither a signature nor an operator permit: it detects drift between
+supplied artifacts and context, not reviewer identity or host isolation.
+
+The renderer separately checks concrete identities and normalized network policy
+in the actual raw source, then preserves unrelated bytes. Full resolved Compose
+validation remains mandatory. Production release.py, its admission gates and
+runtime path remain unchanged. This is still source preparation: separate lab
+admission, capacity/storage policy, runtime context integration, transaction body
+and the executable lifecycle harness remain pending. No lab execution, production
+operation, image scan or accepted runtime fixture was performed for this increment.
+
+Validation for this increment: 100 release tests and 477 network tests, including
+99 new lab-policy checks, with 201 subtests, passed on Linux. Scoped lint and
+format passed. See docs/evidence/grok-lab-policy-source-20261114.json.
