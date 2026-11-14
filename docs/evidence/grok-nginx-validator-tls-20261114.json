@@ -1,0 +1,30 @@
+{
+  "checked_utc": "2026-11-14T11:17:59.716119+00:00",
+  "base_commit": "06a3b8be0306211ac3aea402f0fa5c00320657c1",
+  "status": "TLS_source_checks_passed_real_acceptance_pending",
+  "linux": {
+    "release_tests": 100,
+    "network_tests": 294,
+    "network_subtests": 201,
+    "skipped": 0,
+    "scoped_lint": "passed",
+    "scoped_format": "passed"
+  },
+  "windows_snapshot_module": {
+    "passed": 62,
+    "platform_skips": 19
+  },
+  "source_sha256": {
+    "network_nginx.py": "a43172d05941f03c145ea69ff02c77704fd31bb1e0f2dbc9765aa5ca2a709140",
+    "test_network_nginx.py": "00f2d88ec429eccf366deae8c6008135532737f394119dcc9a757ca4e893fdd5",
+    "network_nginx_inputs.py": "dc675b3e1cea19f1cd89e12fd8586b496b77fa4f6db7e2cb1b05ef61cb4ce347",
+    "test_network_nginx_inputs.py": "d401ae3df7b862f9e7ddce1eb763c7dbda9b914d97dff41a2bab1e453f1cec9e"
+  },
+  "independent_source_review": "no blockers found; not operator release approval",
+  "capabilities_added": false,
+  "original_permissions_modified": false,
+  "production_deployed": false,
+  "real_tls_validator_passed": false,
+  "retained_previous_attempts": 2,
+  "private_bytes_published": false
+}

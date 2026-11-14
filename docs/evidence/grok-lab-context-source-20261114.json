@@ -1,0 +1,38 @@
+{
+  "schema": "grok-lab-context-source-evidence-v1",
+  "based_on": "c82f4d7a029a37b85c9c22f31670ef989a9f167f",
+  "scope": "Pure descriptor and journal-binding preparation only; not wired into production or a runnable lifecycle harness",
+  "source_sha256": {
+    "network_lab_context.py": "4b86d6bac55a9deeeb025e6aced68012ef14450ffe9220e70b200f9f9c712f07",
+    "test_network_lab_context.py": "65dccdd733362595aa2143260ba108db577519e796865ca6667bc81f898c7a7d"
+  },
+  "checks": {
+    "linux_release_tests": 100,
+    "linux_network_tests": 378,
+    "network_subtests": 201,
+    "lab_context_tests": 67,
+    "scoped_lint": "passed",
+    "scoped_format": "passed",
+    "warning": "Retained unrelated asyncio_mode warning in synchronous source test environment"
+  },
+  "review": {
+    "kind": "read-only release-engineering source review",
+    "finding": "Separate scenarios with a reused context ID originally shared resource/path namespaces",
+    "correction": "Names now derive from context ID plus scenario; pairwise disjointness and Docker adapter compatibility are tested for all four scenarios",
+    "other_blockers_identified": false
+  },
+  "production_operator_unchanged": true,
+  "lab_execution_authorized": false,
+  "lab_created": false,
+  "full_harness_implemented": false,
+  "production_deployed": false,
+  "new_image_or_vulnerability_scan": false,
+  "accepted_component_repeated": false,
+  "cleanup_performed": false,
+  "limits": [
+    "Descriptor and supplied identity observations confer no authority or verified isolation",
+    "VM allocation/access and working-container lifecycle scope still await operator",
+    "Lab permit, isolation/capacity/resource admission and full recovery harness remain to implement",
+    "Production release, lint, H7/W16 and backup gates remain open"
+  ]
+}

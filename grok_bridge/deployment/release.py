@@ -20,15 +20,23 @@ import stat
 import subprocess
 import tarfile
 import time
+import uuid
 from pathlib import Path, PurePosixPath
 
+import network_compose
+import network_docker
+import network_nginx
+import network_policy
+import network_transaction
 import yaml
 
 SERVICE = "llm-proxy2-grok-bridge"
 ORIGINAL = "sha256:be048c4e54812ef811f14520a0fed1bc71486ad7619296b11c189d482846856e"
-CANDIDATE = "sha256:2d6e56831b6c36dae36e4f775f9397bcf1ffb4a8dc8e9cb533434e85ab56e0c8"
+CANDIDATE = "sha256:587311da177cc015292981a01649226c8b909e8310d74fdbab481175cb2b16e9"
 ROOT = Path("/home/dblagbro/docker")
-BACKUPS = Path("/var/backups/codex-grok-releases")
+BACKUPS = Path("/mnt/s/backups/codex-private-security-20261109/grok-releases")
+LEGACY_NAS_BACKUPS = Path("/mnt/s/backups/codex-security-20261109/grok-releases")
+LEGACY_BACKUPS = Path("/var/backups/codex-grok-releases")
 MARKER = "# ── from projects-locations.d/grok-bridge.conf ──"
 ENV_ADDITIONS = {
     "BRIDGE_PUBLIC_PATH": "/grok-bridge",
@@ -36,6 +44,7 @@ ENV_ADDITIONS = {
     "BRIDGE_AUTH_URL": "http://llm-proxy2:3000/api/auth/me",
 }
 GIB = 1024**3
+NETWORK_RELEASE_SCHEMA = 1
 
 
 class Refused(RuntimeError):
@@ -173,7 +182,9 @@ def render_compose(content, data_path):
     output = (text[:start] + block + text[end:]).encode()
     expected = copy.deepcopy(before)
     expected["services"][SERVICE] = service
-    require(yaml.safe_load(output) == expected, "Non-Grok Compose modification")
+    require(
+        network_policy._same_json(yaml.safe_load(output), expected), "Non-Grok Compose modification"
+    )
     return output
 
 
@@ -214,9 +225,59 @@ def assert_resolved_scope(before, after, data_path):
             ):
                 mount.pop("read_only")
     require(
-        actual == expected,
+        network_policy._same_json(actual, expected),
         "Resolved Compose scope changed outside reviewed Grok fields",
     )
+
+
+def render_network_compose(content, resolved, data_path):
+    """Pure private-source rendering; all live checks remain separate."""
+    planned, _ = network_policy.plan_networks(resolved)
+    specification = {
+        "original_networks": {
+            role: resolved["services"][role]["networks"] for role in network_policy.MEMBERS
+        },
+        "desired_networks": {
+            role: planned["services"][role]["networks"] for role in network_policy.MEMBERS
+        },
+        "dedicated_definition": network_policy.NETWORK_DEFINITION,
+    }
+    # Reject ambiguous original YAML before the older service renderer could
+    # collapse duplicate keys inside the Grok block.
+    network_compose.render_networks(content, **specification)
+    return network_compose.render_networks(render_compose(content, data_path), **specification)
+
+
+def assert_network_resolved_scope(before, after, data_path):
+    planned, _ = network_policy.plan_networks(before)
+    actual = copy.deepcopy(after)
+    require(
+        isinstance(actual.get("networks"), dict) and network_policy.NETWORK in actual["networks"],
+        "Dedicated network declaration is absent",
+    )
+    definition = actual["networks"].pop(network_policy.NETWORK)
+    require(type(definition) is dict, "Invalid dedicated network declaration")
+    if "ipam" in definition:
+        require(
+            type(definition["ipam"]) is dict and definition["ipam"] == {},
+            "Dedicated IPAM requires review",
+        )
+        definition.pop("ipam")
+    definition.setdefault("internal", False)
+    require(
+        network_policy._same_json(definition, network_policy.NETWORK_DEFINITION),
+        "Dedicated network declaration differs",
+    )
+    for role in network_policy.MEMBERS:
+        require(
+            network_policy._same_json(
+                actual.get("services", {}).get(role, {}).get("networks"),
+                planned["services"][role]["networks"],
+            ),
+            "Resolved service network differs from reviewed policy",
+        )
+        actual["services"][role]["networks"] = before["services"][role]["networks"]
+    assert_resolved_scope(before, actual, data_path)
 
 
 def render_nginx(content, fragment):
@@ -367,6 +428,8 @@ class Host:
         self.folder = Path(folder)
 
     def run(self, args, timeout=180):
+        if args and args[0] == "docker":
+            args = [network_docker.DOCKER, "--host", network_docker.DOCKER_SOCKET, *args[1:]]
         try:
             result = subprocess.run(args, capture_output=True, timeout=timeout, check=False)
         except subprocess.TimeoutExpired as exc:
@@ -375,6 +438,22 @@ class Host:
             stream.write(result.stdout + result.stderr)
         require(result.returncode == 0, "Host command failed; inspect private log")
         return result.stdout.decode()
+
+    def network_adapter(self, state=None, *, mutate=False):
+        """The sanitized adapter captures inspection without private command logs."""
+        if state is None:
+            require(not mutate, "Initial network inspection must be read-only")
+            allowed = {role: self.inspect(role)["Id"] for role in network_policy.CONSUMERS}
+            return network_docker.DockerHost(allowed_consumers=allowed, compose_project="docker")
+        require(state.get("project") == "docker", "Network project requires review")
+        journal = state["network_transaction"]
+        return network_docker.DockerHost(
+            enable_mutations=mutate,
+            transaction_id=journal["transaction_id"],
+            allowed_consumers={role: item["id"] for role, item in journal["consumers"].items()},
+            allowed_bridge_id=journal["bridge_id"],
+            compose_project="docker",
+        )
 
     def inspect(self, name):
         return json.loads(self.run(["docker", "inspect", name]))[0]
@@ -421,8 +500,11 @@ class Host:
     def others(self):
         ids = self.run(["docker", "ps", "-aq"]).split()
         values = json.loads(self.run(["docker", "inspect", *ids])) if ids else []
+        owned = network_nginx.retained_validation_ids(self.folder, values)
         return {
-            x["Name"]: [x["Id"], x["State"]["Status"]] for x in values if x["Name"] != "/" + SERVICE
+            x["Name"]: [x["Id"], x["State"]["Status"]]
+            for x in values
+            if x["Name"] != "/" + SERVICE and x["Id"] not in owned
         }
 
     def exclusive_volume(self, source, owner):
@@ -476,44 +558,8 @@ class Host:
             self.run(["docker", "start", cid])
         self.healthy(ORIGINAL, cid)
 
-    def validate_nginx(self, config, original_nginx):
-        current = self.inspect("nginx")
-        require(
-            current["Id"] == original_nginx["Id"] and current["Image"] == original_nginx["Image"],
-            "Nginx identity changed",
-        )
-        networks = list(current["NetworkSettings"]["Networks"])
-        require(len(networks) == 1, "Nginx network needs review")
-        logs = self.folder / "nginx-validation-logs"
-        logs.mkdir(mode=0o700, exist_ok=True)
-        args = [
-            "docker",
-            "create",
-            "--network",
-            networks[0],
-            "--memory",
-            "128m",
-            "--entrypoint",
-            "nginx",
-        ]
-        for mount in current["Mounts"]:
-            source, destination = mount["Source"], mount["Destination"]
-            if destination == "/etc/nginx/nginx.conf":
-                source = str(config)
-            elif destination == "/var/log/nginx":
-                source = str(logs)
-            args += [
-                "-v",
-                source + ":" + destination + ("" if destination == "/var/log/nginx" else ":ro"),
-            ]
-        cid = self.run([*args, current["Image"], "-t"]).strip()
-        require(bool(re.fullmatch("[0-9a-f]{64}", cid)), "Invalid owned validation ID")
-        try:
-            self.run(["docker", "start", "-a", cid], timeout=90)
-            require(self.inspect(cid)["State"]["ExitCode"] == 0, "Staged nginx -t failed")
-        finally:
-            # Only the immutable ID returned by this invocation is removable.
-            self.run(["docker", "rm", "-f", cid])
+    def validate_nginx(self, config, original_nginx, original_bridge):
+        return network_nginx.validate_staged_nginx(self, config, original_nginx, original_bridge)
 
     def reload_nginx(self, original_nginx):
         require(
@@ -524,14 +570,187 @@ class Host:
         self.run(["docker", "exec", original_nginx["Id"], "nginx", "-s", "reload"])
 
 
+def read_journal(path):
+    require(not path.is_symlink(), "Private journal must be regular")
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except OSError:
+        raise Refused("Cannot safely read private journal") from None
+    with os.fdopen(fd, "rb") as stream:
+        require(stat.S_ISREG(os.fstat(stream.fileno()).st_mode), "Private journal must be regular")
+        return stream.read()
+
+
 def save(folder, state):
     state["updated_utc"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
     path = Path(folder) / "state.private.json"
-    data = (json.dumps(state, indent=2) + "\n").encode()
+    require(not path.is_symlink(), "Private journal must be regular")
+    serialized = {key: value for key, value in state.items() if key != "_journal_sha256"}
+    data = (json.dumps(serialized, indent=2) + "\n").encode()
+    previous = None
     if path.exists():
-        cas_write(path, path.read_bytes(), data)
+        require(not path.is_symlink() and path.is_file(), "Private journal must be regular")
+        previous = read_journal(path)
+        require(state.get("_journal_sha256") == digest(previous), "Private journal CAS conflict")
     else:
-        private_write(path, data)
+        require("_journal_sha256" not in state, "Private journal disappeared")
+    # The journal is not a bind-mounted configuration: atomic replacement is
+    # necessary so interruption cannot leave a truncated recovery journal.
+    temporary = path.with_name(".state.private-" + uuid.uuid4().hex + ".tmp")
+    private_write(temporary, data)
+    require(
+        read_journal(path) == previous if previous is not None else not path.exists(),
+        "Private journal CAS conflict",
+    )
+    os.replace(temporary, path)
+    if os.name == "posix":
+        fd = os.open(Path(folder), os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    state["_journal_sha256"] = digest(data)
+
+
+def load_state(folder):
+    path = Path(folder) / "state.private.json"
+    require(not path.is_symlink() and path.is_file(), "Private journal must be regular")
+    data = read_journal(path)
+    try:
+        state = json.loads(data)
+    except (ValueError, UnicodeError):
+        raise Refused("Invalid private journal JSON") from None
+    require(type(state) is dict and "_journal_sha256" not in state, "Invalid private journal")
+    state["_journal_sha256"] = digest(data)
+    return state
+
+
+def network_save(folder, state):
+    def persist(journal):
+        state["network_transaction"] = copy.deepcopy(journal)
+        save(folder, state)
+
+    return persist
+
+
+def prepare_network(folder, state, host):
+    require(state["project"] == "docker", "Network project requires review")
+    adapter = host.network_adapter()
+    current = adapter.container(SERVICE)
+    require(
+        current["id"] == state["original_id"]
+        and set(current["networks"]) == {network_policy.DEFAULT_NAME},
+        "Original bridge network differs",
+    )
+    state["network_contract"] = NETWORK_RELEASE_SCHEMA
+    state["original_network_projection"] = current
+    state["network_intent"] = False
+    network_transaction.NetworkTransaction.begin(
+        adapter, network_save(folder, state), uuid.uuid4().hex
+    )
+
+
+def network_contract_present(state):
+    markers = {
+        "network_contract",
+        "network_transaction",
+        "original_network_projection",
+        "network_intent",
+    }
+    if not (markers & set(state)):
+        return False  # Genuine pre-network journal only; never infer from malformed schema.
+    require(
+        type(state.get("network_contract")) is int
+        and state["network_contract"] == NETWORK_RELEASE_SCHEMA
+        and markers <= set(state)
+        and type(state["network_intent"]) is bool,
+        "Missing reviewed network preparation; prepare a new transaction",
+    )
+    network_transaction.NetworkTransaction._validate_state(state["network_transaction"])
+    original = network_transaction._container(state["original_network_projection"], SERVICE)
+    require(
+        original["id"] == state["original_id"]
+        and set(original["networks"]) == {network_policy.DEFAULT_NAME},
+        "Original network journal differs",
+    )
+    return True
+
+
+def network_engine(folder, state, host, *, mutate=False):
+    require(
+        network_contract_present(state), "Missing network preparation; prepare a new transaction"
+    )
+    return network_transaction.NetworkTransaction(
+        host.network_adapter(state, mutate=mutate),
+        network_save(folder, state),
+        state["network_transaction"],
+    )
+
+
+def audit_network(folder, state, host):
+    """Read-only audit; never try to repair a drifted consumer or owned endpoint."""
+    engine = network_engine(folder, state, host)
+    engine._audit(engine.host.network(network_policy.NETWORK_NAME))
+
+
+def audit_prepared_original(state, host, old):
+    current = host.inspect(SERVICE)
+    require(
+        current["State"]["Running"]
+        and current["Id"] == state["original_id"]
+        and all(
+            network_policy._same_json(current.get(key), old.get(key))
+            for key in (
+                "Image",
+                "Config",
+                "HostConfig",
+                "Mounts",
+                "NetworkSettings",
+                "RestartCount",
+            )
+        )
+        and current["State"].get("StartedAt") == old["State"].get("StartedAt"),
+        "Original runtime changed since preparation",
+    )
+    projection = host.network_adapter(state).container(SERVICE)
+    require(
+        network_policy._same_json(projection, state["original_network_projection"]),
+        "Original route or endpoint changed since preparation",
+    )
+
+
+def record_candidate(folder, state, host, old, live):
+    """Verify the complete reviewed candidate before allowing its exact network ID."""
+    require(
+        type(live.get("Id")) is str and bool(re.fullmatch("[0-9a-f]{64}", live["Id"])),
+        "Candidate identity is invalid",
+    )
+    require(
+        state.get("candidate_id") in (None, live["Id"]),
+        "Candidate rollback identity mismatch",
+    )
+    labels = live.get("Config", {}).get("Labels", {})
+    require(
+        labels.get("com.docker.compose.project") == state["project"]
+        and labels.get("com.docker.compose.service") == SERVICE,
+        "Candidate Compose ownership differs",
+    )
+    network_id = state["network_transaction"]["network"]["id"]
+    require(bool(network_id), "Owned network identity is absent")
+    assert_runtime(
+        old,
+        live,
+        state["candidate_data"],
+        CANDIDATE,
+        state.get("managed_environment"),
+        network_id=network_id,
+    )
+    state["candidate_id"] = live["Id"]
+    save(folder, state)
+    # record_bridge_id does not inspect/mutate Docker. Only after it is durable
+    # may an adapter recognize the new bridge in network membership audits.
+    network_engine(folder, state, host).record_bridge_id(live["Id"])
+    audit_network(folder, state, host)
 
 
 def assert_inputs(state):
@@ -595,6 +814,11 @@ def gate(record):
         "grok_release_gate_satisfied",
         "browser_acceptance_passed",
         "private_recovery_passed",
+        "network_plan_reviewed",
+        "network_recovery_acceptance_passed",
+        "network_outsider_denial_passed",
+        "multi_network_nginx_validation_passed",
+        "operator_deployment_approved",
     ):
         require(record.get(key) is True, "Unresolved release evidence: " + key)
     require(
@@ -628,6 +852,7 @@ def prepare(folder, fragment, host):
     image_defaults = host.image(ORIGINAL)
     host.image(CANDIDATE)
     project = old["Config"]["Labels"]["com.docker.compose.project"]
+    require(project == "docker", "Network project requires review")
     compose = ROOT / "docker-compose.yml"
     canonical_fragment = ROOT / "config/nginx/projects-locations.d/grok-bridge.conf"
     mounts = [m for m in old["Mounts"] if m["Destination"] == "/data"]
@@ -652,19 +877,19 @@ def prepare(folder, fragment, host):
     )
     inputs = input_hashes(cb)
     proposal = fragment.read_bytes()
+    resolved = json.loads(host.compose(compose, project, "config", "--format", "json"))
     staged = {
-        "compose": (compose, cb, render_compose(cb, str(data))),
+        "compose": (compose, cb, render_network_compose(cb, resolved, str(data))),
         "fragment": (canonical_fragment, fb, proposal),
         "nginx": (Path(compiled[0]), nb, render_nginx(nb, proposal)),
     }
     for key, (_, before, after) in staged.items():
         private_write(folder / (key + ".before"), before)
         private_write(folder / (key + ".after"), after)
-    resolved = json.loads(host.compose(compose, project, "config", "--format", "json"))
     candidate = json.loads(
         host.compose(folder / "compose.after", project, "config", "--format", "json")
     )
-    assert_resolved_scope(resolved, candidate, str(data))
+    assert_network_resolved_scope(resolved, candidate, str(data))
     assert_original_environment(image_defaults, resolved["services"][SERVICE], old)
     assert_original_commands_and_volume(image_defaults, resolved, old)
     frozen = copy.deepcopy(resolved)
@@ -702,10 +927,15 @@ def prepare(folder, fragment, host):
         if p.name.endswith((".before", ".after"))
         or p.name in ("original-resolved.json", "original-inspect.json", "nginx-inspect.json")
     }
-    host.validate_nginx(folder / "nginx.after", nginx)
+    host.validate_nginx(folder / "nginx.after", nginx, old)
     assert_files(folder, state, "before")
     assert_inputs(state)
-    save(folder, state)
+    prepare_network(folder, state, host)
+    require(
+        state["network_transaction"]["consumers"]["nginx"]["id"] == nginx["Id"],
+        "Nginx changed during preparation",
+    )
+    audit_prepared_original(state, host, old)
     return state
 
 
@@ -810,7 +1040,7 @@ def assert_original_commands_and_volume(image, resolved, live):
     )
 
 
-def assert_runtime(old, live, data, image, managed_environment=None):
+def assert_runtime(old, live, data, image, managed_environment=None, *, network_id=None):
     require(live["Image"] == image, "Runtime image mismatch")
     expected_restarts = old.get("RestartCount", 0) if live["Id"] == old["Id"] else 0
     require(
@@ -830,7 +1060,6 @@ def assert_runtime(old, live, data, image, managed_environment=None):
         "PidsLimit",
         "RestartPolicy",
         "ShmSize",
-        "NetworkMode",
         "Privileged",
         "CapAdd",
         "CapDrop",
@@ -842,10 +1071,33 @@ def assert_runtime(old, live, data, image, managed_environment=None):
         all(old["HostConfig"].get(k) == live["HostConfig"].get(k) for k in keys),
         "Runtime limits/security drift",
     )
-    require(
-        set(old["NetworkSettings"]["Networks"]) == set(live["NetworkSettings"]["Networks"]),
-        "Network drift",
+    old_networks, live_networks = (
+        old["NetworkSettings"]["Networks"],
+        live["NetworkSettings"]["Networks"],
     )
+    if network_id is not None:
+        require(
+            image == CANDIDATE
+            and type(network_id) is str
+            and bool(re.fullmatch("[0-9a-f]{64}", network_id))
+            and set(old_networks) == {network_policy.DEFAULT_NAME}
+            and set(live_networks) == {network_policy.NETWORK_NAME}
+            and live_networks[network_policy.NETWORK_NAME].get("NetworkID") == network_id
+            and live["HostConfig"].get("NetworkMode") == network_policy.NETWORK_NAME
+            and not live["HostConfig"].get("PortBindings")
+            and not any(live["NetworkSettings"].get("Ports", {}).values()),
+            "Candidate network differs from the owned dedicated network",
+        )
+    else:
+        require(
+            old["HostConfig"].get("NetworkMode") == live["HostConfig"].get("NetworkMode")
+            and set(old_networks) == set(live_networks)
+            and all(
+                old_networks[name].get("NetworkID") == live_networks[name].get("NetworkID")
+                for name in old_networks
+            ),
+            "Network drift",
+        )
     old_mounts = {
         (m["Destination"], m["Type"], m["Source"], m["RW"])
         for m in old["Mounts"]
@@ -890,16 +1142,32 @@ def assert_runtime(old, live, data, image, managed_environment=None):
 
 def nonprovider_probe(host, live):
     # Token is read inside the container, never interpolated in argv or logs.
-    script = """import os,urllib.request,urllib.error,socket
+    # Empty chat input is rejected before any browser/provider action. The exact
+    # detail distinguishes successful machine authentication from a generic 400.
+    script = """import json,os,urllib.request,urllib.error,socket
 base='http://'+socket.gethostbyname(socket.gethostname())+':8443'
-def get(path,token=None):
- r=urllib.request.Request(base+path,headers={'X-Bridge-Token':token} if token else {})
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+ def redirect_request(self,*args,**kwargs):return None
+opener=urllib.request.build_opener(urllib.request.ProxyHandler({}),NoRedirect())
+def request(path,token=None,body=None):
+ headers={'X-Bridge-Token':token} if token is not None else {}
+ if body is not None:headers['Content-Type']='application/json'
+ r=urllib.request.Request(base+path,headers=headers,data=body)
  try:
-  with urllib.request.urlopen(r,timeout=5) as response:return response.status
- except urllib.error.HTTPError as error:return error.code
-assert get('/healthz')==200
-assert get('/api/status')==401
-assert get('/api/status',os.environ['BRIDGE_TOKEN'])==200
+  with opener.open(r,timeout=5) as response:return response.status,response.read(65537)
+ except urllib.error.HTTPError as error:
+  with error:return error.code,error.read(65537)
+token=os.environ['BRIDGE_TOKEN']
+assert token and token.strip()
+assert request('/healthz')[0]==200
+assert request('/api/status')[0]==401
+assert request('/api/status',token)[0]==401
+assert request('/api/chat',body=b'{}')[0]==401
+wrong=token+'-invalid-probe-value'
+assert request('/api/chat',wrong,b'{}')[0]==401
+status,body=request('/api/chat',token,b'{}')
+assert status==400 and len(body)<=65536
+assert json.loads(body)=={'detail':'conversation_id is required'}
 print('nonprovider-probe-passed')
 """
     require(
@@ -922,6 +1190,7 @@ def restore_configs(folder, state):
 
 
 def rollback(folder, state, host):
+    has_network = network_contract_present(state)
     assert_artifacts(folder, state)
     old = json.loads((folder / "original-inspect.json").read_text())
     nginx = json.loads((folder / "nginx-inspect.json").read_text())
@@ -933,6 +1202,27 @@ def rollback(folder, state, host):
         live is None or live["Image"] in (ORIGINAL, CANDIDATE),
         "Unexpected rollback runtime; refuse to stop it",
     )
+    if has_network:
+        if (
+            live is not None
+            and live["Image"] == CANDIDATE
+            and state.get("cutover_intent")
+            and state["network_transaction"]["bridge_id"] is None
+        ):
+            # Reconcile a crash between candidate-id persistence and the nested
+            # bridge binding; full runtime validation precedes any network audit.
+            record_candidate(folder, state, host, old, live)
+        if not state.get("stop_intent"):
+            require(state.get("network_intent") is True, "No network or stop action was requested")
+            # A pre-stop interruption must not stop/recreate the healthy original.
+            assert_files(folder, state, "before")
+            audit_prepared_original(state, host, old)
+            network_engine(folder, state, host, mutate=True).rollback()
+            state.update(phase="network_only_rolled_back", deployed=False)
+            save(folder, state)
+            require(host.others() == state["others"], "Unrelated container changed during rollback")
+            return
+        audit_network(folder, state, host)
     if live is not None and live["Image"] == CANDIDATE:
         require(
             state.get("candidate_id") == live["Id"],
@@ -963,8 +1253,16 @@ def rollback(folder, state, host):
         )
     live = host.healthy(ORIGINAL)
     assert_runtime(old, live, state["original_data"], ORIGINAL, state.get("managed_environment"))
+    # Persist the newly recovered original before any later check/reload can fail;
+    # a second controller must recognize this exact rollback container.
+    state.update(rollback_id=live["Id"], phase="original_runtime_recovered")
+    save(folder, state)
     if not conflicts:
         host.reload_nginx(nginx)
+        if has_network:
+            # Only the original bridge on its original network may remain when
+            # consumer attachments are detached. The engine refuses a bridge member.
+            network_engine(folder, state, host, mutate=True).rollback()
     state.update(
         phase="rolled_back" if not conflicts else "original_runtime_recovered_config_conflict",
         deployed=False,
@@ -995,11 +1293,23 @@ def deploy(folder, state, host, evidence):
     host.exclusive_volume(state["original_data"], state["original_id"])
     old = json.loads((folder / "original-inspect.json").read_text())
     nginx = json.loads((folder / "nginx-inspect.json").read_text())
+    network_engine(folder, state, host)
+    audit_network(folder, state, host)
+    audit_prepared_original(state, host, old)
     # Resolve production upstream DNS while the original is still available.
-    host.validate_nginx(folder / "nginx.after", nginx)
+    host.validate_nginx(folder / "nginx.after", nginx, old)
     assert_files(folder, state, "before")
     assert_inputs(state)
     try:
+        # The nested journal persists intent before every network action. This
+        # outer marker makes pre-stop interruptions explicitly recoverable.
+        state.update(phase="attaching_consumers", network_intent=True)
+        save(folder, state)
+        network_engine(folder, state, host, mutate=True).attach_consumers()
+        audit_prepared_original(state, host, old)
+        assert_files(folder, state, "before")
+        assert_inputs(state)
+        require(host.others() == state["others"], "Unrelated runtime changed before stop")
         # Persist BEFORE submitting the stop, including in timeout/error paths.
         state.update(phase="quiescing_original", stop_intent=True)
         save(folder, state)
@@ -1026,8 +1336,7 @@ def deploy(folder, state, host, evidence):
         )
         live = host.inspect(SERVICE)
         require(live["Image"] == CANDIDATE, "Candidate creation selected wrong image")
-        state["candidate_id"] = live["Id"]
-        save(folder, state)
+        record_candidate(folder, state, host, old, live)
         live = host.healthy(CANDIDATE, live["Id"])
         assert_runtime(
             old,
@@ -1035,7 +1344,9 @@ def deploy(folder, state, host, evidence):
             state["candidate_data"],
             CANDIDATE,
             state.get("managed_environment"),
+            network_id=state["network_transaction"]["network"]["id"],
         )
+        audit_network(folder, state, host)
         nonprovider_probe(host, live)
         host.reload_nginx(nginx)
         for _ in range(3):
@@ -1047,7 +1358,9 @@ def deploy(folder, state, host, evidence):
                 state["candidate_data"],
                 CANDIDATE,
                 state.get("managed_environment"),
+                network_id=state["network_transaction"]["network"]["id"],
             )
+            audit_network(folder, state, host)
             nonprovider_probe(host, live)
             require(
                 host.others() == state["others"],
@@ -1070,47 +1383,46 @@ def deploy(folder, state, host, evidence):
         if state["cutover_intent"]:
             # Reconcile an ambiguous compose command without trusting a name alone.
             live = host.optional_service()
-            if live is not None and live["Image"] == CANDIDATE and "candidate_id" not in state:
-                require(
-                    any(
-                        m["Destination"] == "/data" and m["Source"] == state["candidate_data"]
-                        for m in live["Mounts"]
-                    ),
-                    "Unrecognized candidate after ambiguous compose",
+            if (
+                live is not None
+                and live["Image"] == CANDIDATE
+                and (
+                    "candidate_id" not in state or state["network_transaction"]["bridge_id"] is None
                 )
-                state["candidate_id"] = live["Id"]
-                save(folder, state)
+            ):
+                record_candidate(folder, state, host, old, live)
             rollback(folder, state, host)
         else:
-            current = host.optional_service()
-            if current is None:
-                host.compose(
-                    folder / "original-resolved.json",
-                    state["project"],
-                    "up",
-                    "-d",
-                    "--no-deps",
-                    "--no-build",
-                    "--pull",
-                    "never",
-                    "--force-recreate",
-                    SERVICE,
-                )
-                recovered = host.healthy(ORIGINAL)
-                assert_runtime(
-                    old,
-                    recovered,
-                    state["original_data"],
-                    ORIGINAL,
-                    state.get("managed_environment"),
-                )
-                state["rollback_id"] = recovered["Id"]
-            else:
-                host.start_original(state["original_id"])
-            state.update(phase="pre_cutover_failed_original_restarted", deployed=False)
+            rollback(folder, state, host)
+            state.update(
+                phase=(
+                    "pre_cutover_failed_original_restarted"
+                    if state["stop_intent"]
+                    else "pre_stop_failed_network_recovered"
+                ),
+                deployed=False,
+            )
             save(folder, state)
         raise
     return state
+
+
+def validate_release_path(folder, mode):
+    # New preparations/deploy snapshots stay on the requested NAS. Existing
+    # local generations remain available for rollback without moving any data.
+    roots = (BACKUPS, LEGACY_NAS_BACKUPS, LEGACY_BACKUPS) if mode == "rollback" else (BACKUPS,)
+    require(
+        any(folder.is_relative_to(root) and folder != root for root in roots),
+        "Use a dedicated private NAS release directory (legacy paths are rollback-only)",
+    )
+
+
+def require_nas_storage():
+    nas = Path("/mnt/s")
+    require(
+        os.path.ismount(nas) and nas.stat().st_dev != Path("/").stat().st_dev,
+        "NAS is not mounted separately; refusing new root-filesystem snapshots",
+    )
 
 
 def main():
@@ -1122,24 +1434,27 @@ def main():
     args = parser.parse_args()
     os.umask(0o077)
     folder = args.release_dir.resolve()
-    require(
-        folder.is_relative_to(BACKUPS) and folder != BACKUPS,
-        "Use a dedicated private backup directory",
-    )
+    validate_release_path(folder, args.mode)
     with operation_lock():
+        if args.mode != "rollback":
+            require_nas_storage()
         if args.mode == "prepare":
             require(
                 args.fragment is not None and not folder.exists(),
                 "Prepare needs fragment and a new directory",
             )
             folder.mkdir(parents=True, mode=0o700)
+            require(
+                folder.stat().st_uid == 0 and stat.S_IMODE(folder.stat().st_mode) == 0o700,
+                "New release directory must be root-only before private inputs are saved",
+            )
             state = prepare(folder, args.fragment, Host(folder))
         else:
             require(
                 folder.stat().st_uid == 0 and stat.S_IMODE(folder.stat().st_mode) == 0o700,
                 "Release directory must be root-only",
             )
-            state = json.loads((folder / "state.private.json").read_text())
+            state = load_state(folder)
             if args.mode == "deploy":
                 require(
                     args.release_evidence is not None,
@@ -1152,7 +1467,10 @@ def main():
                     json.loads(args.release_evidence.read_text()),
                 )
             else:
-                require(state.get("stop_intent"), "No stop or cutover was requested")
+                require(
+                    state.get("stop_intent") or state.get("network_intent"),
+                    "No network, stop or cutover action was requested",
+                )
                 rollback(folder, state, Host(folder))
         print(
             json.dumps(

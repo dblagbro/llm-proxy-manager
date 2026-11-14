@@ -1,0 +1,46 @@
+{
+  "schema": "grok-lab-policy-source-evidence-v1",
+  "based_on": "c8ab11a0f4b4ab5a45312bd2541f11d0a2af50b1",
+  "scope": "Pure context-aware network planning and rendering; production operator and runtime integration unchanged",
+  "source_sha256": {
+    "network_policy.py": "7d890c7f3a3310bbd4a2aa0a65f9d494ef8dd7d8ee89fc3ec68880cccddc4191",
+    "network_compose.py": "8e7d7897f77c07f3610b67a74a1e97b267a791b433848d2d20c4edd8ddcfe861",
+    "test_network_lab_policy.py": "a4465e115151ff2888d4dfcb3e87c94b53587f1c70d1bceb28f2493d74d66cd9"
+  },
+  "checks": {
+    "linux_release_tests": 100,
+    "linux_network_tests": 477,
+    "lab_policy_tests": 99,
+    "network_subtests": 201,
+    "scoped_lint": "passed",
+    "scoped_format": "passed",
+    "warning": "Retained unrelated asyncio_mode warning in synchronous source test environment"
+  },
+  "review": {
+    "kind": "read-only release-engineering source review",
+    "blockers_identified": false,
+    "requirements": [
+      "Strict descriptor type and physical identities",
+      "Canonical and physical alias ownership including dedicated-only bridge",
+      "Exact full-context receipt at scope/render boundary",
+      "Actual raw source policy validation independent of synthetic specification",
+      "Omitted-context production behavior preserved"
+    ]
+  },
+  "production_operator_sha256": "1a9dd48f10fb3e56889af2ce3254760e48d30482867a333f68006d5166ac0960",
+  "production_operator_unchanged": true,
+  "lab_execution_authorized": false,
+  "lab_created": false,
+  "full_harness_implemented": false,
+  "production_deployed": false,
+  "new_image_or_vulnerability_scan": false,
+  "accepted_component_repeated": false,
+  "cleanup_performed": false,
+  "limits": [
+    "Topology-only expected_runtime_networks does not prove provenance",
+    "Receipt is not a signature, reviewer identity, isolation proof or operator permit",
+    "Distinct lab admission/storage/capacity and runtime/shared-lifecycle integration remain pending",
+    "VM allocation/access and working-fixture lifecycle scope remain unanswered",
+    "Production release, inherited global lint, H7/W16 and backup gates remain open"
+  ]
+}

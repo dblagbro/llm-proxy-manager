@@ -1,0 +1,30 @@
+{
+  "checked_utc": "2026-11-14T10:17:28.458617+00:00",
+  "kind": "offline source checks",
+  "release_tests": 100,
+  "network_tests": 181,
+  "network_subtests": 201,
+  "nginx_helper_tests": 49,
+  "nginx_harness_tests": 52,
+  "make_targets": [
+    "test-grok-release",
+    "test-grok-network",
+    "lint-grok-release",
+    "lint-grok-network"
+  ],
+  "result": "passed",
+  "source_sha256": {
+    "network_nginx.py": "f9423e0775a29127963b7da3a131ccaee9917d912932cc45fda361f7d176837a",
+    "test_network_nginx.py": "f499a089cba661ba14f2ff4dbf222c77584b9f2b23b37924417e8e94dbdcf4ed",
+    "rehearse_nginx.py": "749580711965c226ef042ed70d9beb08510b02b4282c00241ce8cbd7d767b6b9",
+    "test_network_nginx_harness.py": "8ca89a12a3af6ebbd0063530f98c5b6d66cae947e6378437fe13a5413e7e1e4f"
+  },
+  "linux_python": "3.10",
+  "local_agent_helper_and_harness_tests": 101,
+  "real_fixture_passed": false,
+  "production_modified": false,
+  "warnings": [
+    "Isolated environment lacks pytest-asyncio; unrelated asyncio_mode config warning; selected tests synchronous."
+  ],
+  "release_gates": "unchanged; all example flags remain false; global lint unresolved"
+}

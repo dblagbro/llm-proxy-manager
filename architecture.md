@@ -1,3 +1,5 @@
+> November 14 preparation: the Grok dedicated-network planner is tested source, **not deployed or wired into the release operator**. See [the network preparation limits](docs/grok-bridge-security.md#dedicated-network-preparation-2026-11-14-not-deployed).
+
 > Grok security candidate 1.2.0 / repository 5.22.55 is **not deployed**.
 > See [docs/grok-bridge-security.md](docs/grok-bridge-security.md) for the staged access boundary and release gates.
 
@@ -865,3 +867,31 @@ independent version exception on 2026-11-09 at 16:16:04 UTC. The 3,244
 inherited gateway lint findings remain explicit debt; all final-head CI and
 scoped checks must pass before release. Gateway 5.22.53 remains unchanged.
 See [candidate evidence, limits and recovery](docs/whisper-4.3.1-security.md).
+
+Network preparation update (2026-11-14): a sanitized local Docker adapter now
+accompanies the dedicated-network planner and consumer journal. Read-only is the
+default; explicit transaction/container bindings gate mutations. This is unshipped
+preparation with no release-operator integration or production change. See
+[security preparation](docs/grok-bridge-security.md).
+
+Canonical network rendering update (2026-11-14): a pure, bounded Compose-source
+renderer now accompanies the planner/journal/adapter. Read-only canonical and
+corrected-PR17 chained resolution passed. Runtime lifecycle integration and full
+browser/network/recovery acceptance remain pending; production is unchanged.
+
+
+## November 14: draft Grok network lifecycle integration
+
+Draft PR21 integrates corrected PR17 candidate controls with exact-identity network
+attachment/recovery and a retained staged Nginx validator. This is source preparation,
+not deployed isolation. See grok_bridge/deployment/RUNBOOK.md for tests, gates,
+private NAS storage, topology scope and recovery limits. The old Docker lifecycle
+harness refuses the new operator before mutation; integrated real recovery and
+browser/outsider-denial acceptance remain pending. Coordinator remains separate.
+
+
+November 14: added a source-bound, capacity-guarded retained Nginx acceptance runner.
+It checks the staged full configuration twice without a production reload, audits
+all existing containers/networks and canonical files, and retains its fixture.
+Docker image User omission is normalized only to an empty container User;
+noninteger private journal schemas are refused. Real results are recorded separately.

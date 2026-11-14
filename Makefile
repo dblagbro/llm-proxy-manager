@@ -144,7 +144,7 @@ test-grok-browser:
 # Synthetic operator unit tests and scoped lint perform no Docker or host mutations.
 .PHONY: test-grok-release lint-grok-release
 test-grok-release:
-	python -m pytest grok_bridge/deployment/test_release.py -q -p no:cacheprovider
+	$(GROK_PYTHON) -m pytest grok_bridge/deployment/test_release.py -q -p no:cacheprovider
 
 lint-grok-release:
 	ruff check --target-version py310 grok_bridge/deployment/release.py grok_bridge/deployment/test_release.py grok_bridge/deployment/rehearse_release.py
@@ -174,3 +174,26 @@ lint-gateway-recovery:
 test-gateway-recovery-docker:
 	test -n "$(GATEWAY_RECOVERY_RUN_ID)" && test -n "$(GATEWAY_CAPACITY_GUARD)"
 	sudo "$(GATEWAY_RECOVERY_PYTHON)" "$(GATEWAY_CAPACITY_GUARD)" --peak-gib 3 -- "$(GATEWAY_RECOVERY_PYTHON)" "$(CURDIR)/tools/gateway_recovery/rehearse_gateway.py" --run-id "$(GATEWAY_RECOVERY_RUN_ID)"
+
+# Dedicated-network synthetic checks: no Docker or host changes.
+.PHONY: test-grok-network lint-grok-network
+test-grok-network:
+	$(GROK_PYTHON) -m pytest grok_bridge/deployment/test_network_*.py -q -p no:cacheprovider
+
+lint-grok-network:
+	ruff check --target-version py310 grok_bridge/deployment/network_policy.py grok_bridge/deployment/test_network_policy.py grok_bridge/deployment/network_transaction.py grok_bridge/deployment/test_network_transaction.py grok_bridge/deployment/network_docker.py grok_bridge/deployment/test_network_docker.py grok_bridge/deployment/network_compose.py grok_bridge/deployment/test_network_compose.py grok_bridge/deployment/rehearse_network.py grok_bridge/deployment/network_nginx.py grok_bridge/deployment/test_network_nginx.py grok_bridge/deployment/test_network_harness_guard.py grok_bridge/deployment/rehearse_nginx.py grok_bridge/deployment/test_network_nginx_harness.py grok_bridge/deployment/network_nginx_inputs.py grok_bridge/deployment/test_network_nginx_inputs.py grok_bridge/deployment/network_lab_context.py grok_bridge/deployment/test_network_lab_context.py grok_bridge/deployment/test_network_lab_policy.py grok_bridge/deployment/test_network_lab_transaction.py grok_bridge/deployment/network_lab_capacity.py grok_bridge/deployment/test_network_lab_capacity.py
+	ruff format --check --target-version py310 grok_bridge/deployment/network_policy.py grok_bridge/deployment/test_network_policy.py grok_bridge/deployment/network_transaction.py grok_bridge/deployment/test_network_transaction.py grok_bridge/deployment/network_docker.py grok_bridge/deployment/test_network_docker.py grok_bridge/deployment/network_compose.py grok_bridge/deployment/test_network_compose.py grok_bridge/deployment/rehearse_network.py grok_bridge/deployment/network_nginx.py grok_bridge/deployment/test_network_nginx.py grok_bridge/deployment/test_network_harness_guard.py grok_bridge/deployment/rehearse_nginx.py grok_bridge/deployment/test_network_nginx_harness.py grok_bridge/deployment/network_nginx_inputs.py grok_bridge/deployment/test_network_nginx_inputs.py grok_bridge/deployment/network_lab_context.py grok_bridge/deployment/test_network_lab_context.py grok_bridge/deployment/test_network_lab_policy.py grok_bridge/deployment/test_network_lab_transaction.py grok_bridge/deployment/network_lab_capacity.py grok_bridge/deployment/test_network_lab_capacity.py
+
+# Explicit isolated fixture only; no release integration or automatic deletion.
+.PHONY: test-grok-network-docker
+test-grok-network-docker:
+	$(GROK_PYTHON) grok_bridge/deployment/rehearse_network.py $(GROK_NETWORK_FIXTURE_ARGS)
+
+# Bounded retained pre-cutover Nginx validator only; never deploys a service.
+GROK_NGINX_TEST_DIR ?=
+GROK_NGINX_EXPECTED_COMMIT ?=
+.PHONY: test-grok-nginx-docker
+test-grok-nginx-docker:
+	test -n "$(GROK_NGINX_TEST_DIR)" && test -n "$(GROK_NGINX_EXPECTED_COMMIT)" && test -n "$(GROK_CAPACITY_GUARD)"
+	test ! -e "$(GROK_NGINX_TEST_DIR)"
+	sudo -n "$(GROK_PYTHON)" "$(GROK_CAPACITY_GUARD)" --peak-gib 0.1 -- "$(GROK_PYTHON)" "$(CURDIR)/grok_bridge/deployment/rehearse_nginx.py" --source "$(CURDIR)" --expected-commit "$(GROK_NGINX_EXPECTED_COMMIT)" --fragment "$(CURDIR)/grok_bridge/deployment/nginx.grok-bridge.conf" --attempt "$(GROK_NGINX_TEST_DIR)"

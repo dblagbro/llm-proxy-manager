@@ -1,5 +1,18 @@
 # Changelog
 
+### Unreleased preparation — Grok network policy (2026-11-14)
+
+- Add a pure, fail-closed dedicated-network planner plus a journaled consumer
+  attachment engine with injected host operations and synthetic failure-path tests.
+  Add a read-only-by-default local Docker adapter with explicit mutation bindings
+  and synthetic boundary/failure-path tests. Add a pure canonical Compose network renderer with exact-scope checks and
+  synthetic coverage. No application version, deployed configuration or release
+  operator changes.
+- Keep Grok-only membership, consumer aliases/default routes, unrelated settings
+  and private configuration boundaries explicit. Runtime isolation, transaction
+  integration, rollback acceptance and release-policy clearance remain pending.
+
+
 All notable changes since v2.7.6. Older history available in `git log`.
 
 ### v5.22.61 (2026-11-13)
@@ -8600,3 +8613,20 @@ When cutting a new tag:
 1. `git tag -a vX.Y.Z HEAD -m "vX.Y.Z — short description"`
 2. Add a section to this file in chronological-reverse order
 3. Lead with the *why* and *what behavior changes* for operators / API consumers — not just *what files changed*
+
+
+## November 14: draft Grok network lifecycle integration
+
+Draft PR21 integrates corrected PR17 candidate controls with exact-identity network
+attachment/recovery and a retained staged Nginx validator. This is source preparation,
+not deployed isolation. See grok_bridge/deployment/RUNBOOK.md for tests, gates,
+private NAS storage, topology scope and recovery limits. The old Docker lifecycle
+harness refuses the new operator before mutation; integrated real recovery and
+browser/outsider-denial acceptance remain pending. Coordinator remains separate.
+
+
+November 14: added a source-bound, capacity-guarded retained Nginx acceptance runner.
+It checks the staged full configuration twice without a production reload, audits
+all existing containers/networks and canonical files, and retains its fixture.
+Docker image User omission is normalized only to an empty container User;
+noninteger private journal schemas are refused. Real results are recorded separately.

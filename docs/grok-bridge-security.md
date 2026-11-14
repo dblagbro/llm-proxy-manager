@@ -206,3 +206,213 @@ and the [operator runbook](../grok_bridge/deployment/RUNBOOK.md).
 Production remains on the original image. No real provider call or new scan was
 performed. Global lint/release policy, parent PR resolution, final CI and a fresh
 cutover snapshot still gate deployment.
+
+## Dedicated network preparation (2026-11-14, not deployed)
+
+`deployment/network_policy.py` is a pure planner over resolved Compose JSON.
+It does not read Docker, write configuration, attach containers, or run a release.
+`plan_networks` returns a private copied model and a separate sanitized receipt;
+never publish or log the copied model because it retains existing secrets.
+`verify_network_scope` rejects changes outside the exact network transformation.
+`expected_runtime_networks` describes expected state, not observed Docker state.
+
+The reviewed input has Grok, Nginx and the gateway solely on logical `default`
+(`docker_default`). The candidate puts Grok only on `docker_grok_security`,
+an egress-capable bridge, and adds that network to Nginx and the gateway while
+preserving their existing attachments and all other service configuration.
+Explicit service-name aliases preserve Nginx upstream resolution and the
+`http://llm-proxy2:3000/api/auth/me` callback. No Grok host ports are allowed.
+The hardened image binds both raw VNC 5900 and noVNC 6080 to loopback; trusted
+consumers should reach the authenticated bridge on 8443 only.
+
+New consumer attachments use `gw_priority: -1`; the reviewed existing attachment
+must have a nonnegative gateway priority. Before use, verify Docker supports
+`network connect --gw-priority` and Compose is at least 2.33.1. Docker's
+[`gw_priority` documentation](https://docs.docker.com/reference/compose-file/services/#gw_priority)
+explains that highest priority selects the default gateway; `priority` does not.
+The planner preserves old options and does not assume attachment order determines
+routing. Current policy conservatively refuses unfamiliar topologies for review.
+
+Run `make test-grok-network lint-grok-network`. These checks use synthetic data.
+They establish planning behavior, not runtime isolation, rollback, or release
+approval. The gateway application version is unchanged because this is unshipped
+preparation and is not connected to the release operator.
+
+Before migration, integrate with the final-image operator correction in PR17;
+the existing operator rejects network changes and cannot deploy this plan.
+Record current IDs, network membership/aliases, config hashes and default routes;
+reject existing-network collisions and extra live members. Journal intent before
+each in-place consumer attachment, reconcile timeouts by exact IDs, and preserve
+concurrent edits. Rollback may detach only attachments added by that transaction
+to unchanged containers and restore Grok's original network and retained volume.
+Do not recreate the gateway/Nginx just to attach a network. Persist the final
+canonical Compose source so a later recreation keeps the reviewed topology.
+
+Required isolated acceptance still includes unchanged consumer routes; gateway
+auth callback and Nginx-to-8443; denial of outsider access to 5900/6080/8443 and
+trusted-consumer access to 5900/6080; admin HTTP/WebSocket flows; restart/recreation
+persistence; interrupted attachment and rollback. Check reachability independently
+of Docker configuration and use synthetic browser state. Production browser
+profiles, cookies, login and provider calls are outside this preparation test.
+Global lint/release policy remains unresolved. Coordinator uses its separate
+review/publication process and is not part of this planner.
+
+Preparation evidence at 2026-11-14 07:09 UTC: 18 synthetic network tests and
+scoped lint/formatting passed. Docker 29.9.3 / Compose 5.7.1 accepted the synthetic
+model and preserved consumer gateway priority -1. The planner accepted the live
+resolved model entirely in memory; target container IDs, images and configuration
+fingerprints were unchanged. No network/container was created. The repository
+`make lint` command still fails with 3,255 findings in unchanged `app/`/`tests/`;
+this is an open release gate, not a newly passing global check.
+
+### Consumer attachment journal preparation
+
+`deployment/network_transaction.py` adds a dependency-injected transaction engine
+beside the planner. It has **no deployment CLI** and is not wired into `release.py`.
+The separate Docker adapter below remains preparation, not a release operator.
+The shared policy module supplies all names and permitted consumer identities.
+
+`NetworkTransaction.begin(host, save, transaction_id)` snapshots sanitized identity,
+configuration/default-route and original-attachment fingerprints. The caller must
+hold the exclusive maintenance lock; `save` must durably write the supplied private
+journal before returning. The host adapter must return the exact validated schema,
+including network transaction ownership and immutable IDs. It must distinguish
+absence from inspection failure. Never pass raw Docker Config/Env or command errors
+into a public receipt. The journal has fingerprints and fixed identifiers only.
+
+Creation, connect and disconnect intents precede their corresponding calls.
+Ambiguous transport errors are reconciled through current inspection. The engine
+attaches only Nginx and the gateway in place, resumes from the last durable journal,
+and removes only attachments proven to belong to that transaction on unchanged
+container/network identities. It never removes a network. A rollback leaves the
+empty created network retained, so a new transaction cannot silently adopt it.
+
+The Grok release operator still owns Grok creation and rollback. It must record an
+independently verified Grok container ID with `record_bridge_id`, and restore/remove
+that membership before consumer rollback. Unknown members, replaced containers,
+configuration changes, original-attachment changes, owned endpoint changes and
+default-route drift stop the engine. Those cases require operator reconciliation;
+they are **not** claimed as successful automatic recovery. Cross-file configuration
+CAS, Nginx validation with two networks, current image integration, real interruption
+tests and browser/network acceptance all remain pending. The adapter below supplies
+sanitation and endpoint/route inspection, but does not complete those release gates.
+
+The original planner/journal preparation checks covered:
+18 topology tests plus 21 transaction tests. New failure-path cases cover journal
+persistence before action and after an observed effect, fresh-instance resume,
+timeout ambiguity, ownership collisions, endpoint/consumer replacement, route drift
+and prevention of duplicate or unowned disconnects. These synthetic checks do not
+establish the behavior of Docker or production rollback.
+
+### Sanitized local Docker adapter preparation
+
+`deployment/network_docker.py` implements the injected host contract, read-only by
+default. Every Docker command selects `unix:///var/run/docker.sock` explicitly;
+namespace route reads must never be paired with a remote Docker context. The
+subprocess runner uses argv, captured output and bounded timeouts, without a shell.
+Errors omit command diagnostics. Private Config/HostConfig/Mounts/Image and full
+endpoint metadata are fingerprinted in memory, not returned or logged. IPv4 and
+IPv6 default routes are hashed with volatile cache/expiry fields excluded.
+
+Container observations bind exact IDs, PIDs, start times, restart counters and
+configuration/network hashes before and after namespace reads. Mutations require
+explicit enablement, a 32-hex transaction ID and the exact Nginx/gateway IDs.
+Network labels bind transaction and Compose ownership; only successful empty
+exact-name listing means absence. All members and endpoints must match. Creation
+and connect/detach check namespace-sharing inventory. Attachments use exact IDs,
+service aliases and gateway priority -1; detach is never forced. This adapter
+never changes Grok lifecycle or removes a network. It is not a security boundary
+against a concurrent Docker administrator; the caller still needs the exclusive
+maintenance lock and journal/configuration CAS. Drift refuses further automatic
+action and requires reconciliation.
+
+Isolated fixtures can supply a complete resource map under one explicit
+`codex-grok-nettest-*` project. Mixed production/fixture names are refused. A new
+Grok ID must be separately verified and bound before a mutating adapter accepts
+its membership. Production names cannot be changed through this mapping.
+
+`make test-grok-network lint-grok-network` covers 18 topology, 21 journal and 22
+injected-runner adapter tests (61 total). The adapter tests exercise sanitization,
+read-only refusal, ownership/identity mismatch, namespace sharing, process/config
+and route drift, IPv4/IPv6 routes, and post-effect timeout reconciliation through
+the journal. Synthetic success does not establish real Docker recovery, browser
+authorization, isolation, or release acceptance. The adapter is not connected to
+the release operator, and no production deployment is authorized by these checks.
+
+Adapter acceptance at 2026-11-14 08:01 UTC: 61 synthetic tests/scoped lint passed.
+Read-only observation accepted the three live roles and namespace-sharing guard.
+The isolated real Docker fixture created two sleep-only consumers with no mounts,
+published ports or application data. Fresh controllers attached and rolled them
+back from a durable journal, reconciling injected errors after actual connect and
+disconnect effects. Original endpoints/routes/configuration matched afterward.
+All 136 preexisting containers remained unchanged. Both new fixtures were stopped;
+both networks and the journal are retained for named operator cleanup review.
+No preexisting artifact was removed. This tests adapter attachment/recovery only,
+not Grok replacement, browser authorization, outsider denial or production rollback.
+See [sanitized evidence](evidence/grok-network-adapter-20261114.json).
+
+To reproduce, use a root-capable host, a new private output directory under
+`/var/backups`, and an already-local image ID with `/bin/sleep` and no declared
+volumes. Run `make test-grok-network-docker` with `GROK_PYTHON` selecting the tested
+Python and `GROK_NETWORK_FIXTURE_ARGS` containing `--execute --project
+codex-grok-nettest-UNIQUE --image sha256:EXACT_LOCAL_IMAGE_ID --output
+/var/backups/NEW_PRIVATE_GENERATION`. Use lowercase project names. This target
+does not pull images or delete resources. It retains named stopped fixtures for
+review; do not repeat a passed fixture without a new change or unresolved concern.
+
+### Canonical Compose network renderer preparation
+
+The pure `deployment/network_compose.py` renderer accepts private UTF-8/LF Compose
+bytes plus reviewed original/desired network maps. Call it after corrected PR17's
+image/environment/data renderer, then resolve the result with Compose using the
+original project directory and project name. Never print or persist these private
+inputs, resolved models or candidate bytes outside the reviewed private release
+journal. This module performs no Docker commands or file writes.
+
+The renderer derives the permitted desired mappings from the fixed network policy.
+It edits only the three service network fields and one new root network declaration.
+Unrelated text remains byte-for-byte intact; comments inside replaced fields retain
+their text as separate comment lines. It refuses duplicate/non-string/merge keys,
+anchors, aliases, multiple documents, unsupported indentation/flow service mappings,
+network collisions and stale raw network mappings. A type-sensitive whole-document
+semantic comparison verifies the result; raw YAML success does not replace resolved
+Compose validation, live identity checks or the release maintenance lock/CAS.
+
+Run `make test-grok-network lint-grok-network` with the deployment requirements
+installed in GROK_PYTHON. The 76 synthetic cases comprise 18 policy, 21 journal,
+22 adapter and 15 renderer tests. Renderer tests cover implicit/list/default options,
+unrelated private-value and literal-scalar preservation, comments, EOF insertion,
+collisions, drift, malformed or ambiguous YAML, arbitrary desired scope and errors
+that must not reveal private values.
+
+A read-only canonical check on November 14 resolved both the network-only result
+and the result chained after exact corrected PR17 head bc7be1c. The full comparison
+accepted only the reviewed image/environment/data/network changes. Compose 5.7.1
+adds empty `ipam: {}` and omits `internal: false` on the new dedicated declaration;
+the check normalized only those exact defaults on that new declaration. Existing
+network definitions and unrelated services remained strictly compared. All 138
+existing container identities/configuration fingerprints and the canonical file
+were unchanged. No private candidate/model was written and no network/container
+was created. See `docs/evidence/grok-network-compose-20261114.json`.
+
+This verifies source rendering and resolution only. The runtime release operator
+still needs integration, multi-network Nginx validation, interruption/rollback
+acceptance, authenticated browser checks and outsider denial. No image is deployed,
+no release gate is waived and the already-passed adapter fixture was not rerun.
+
+
+## November 14: draft Grok network lifecycle integration
+
+Draft PR21 integrates corrected PR17 candidate controls with exact-identity network
+attachment/recovery and a retained staged Nginx validator. This is source preparation,
+not deployed isolation. See grok_bridge/deployment/RUNBOOK.md for tests, gates,
+private NAS storage, topology scope and recovery limits. The old Docker lifecycle
+harness refuses the new operator before mutation; integrated real recovery and
+browser/outsider-denial acceptance remain pending. Coordinator remains separate.
+
+
+November 14: added a source-bound, capacity-guarded retained Nginx acceptance runner.
+It checks the staged full configuration twice without a production reload, audits
+all existing containers/networks and canonical files, and retains its fixture.
+Docker image User omission is normalized only to an empty container User;
+noninteger private journal schemas are refused. Real results are recorded separately.

@@ -1,0 +1,32 @@
+{
+  "checked_utc": "2026-11-14T11:01:26.733952+00:00",
+  "status": "source_checks_passed_real_acceptance_pending",
+  "base_commit": "913dda18a89ac966f6c3fec9d08decaebaf651ab",
+  "source_sha256": {
+    "network_nginx.py": "be0ae7a26a55ec63956b9acab00df35ef6e16d36c9282b2aa6ecd5a7c9f95d5f",
+    "test_network_nginx.py": "e6c0815af3dd7e12cfc2f8f88ab69b4412980227eee34e4f74ef4accd95e9e76",
+    "network_nginx_inputs.py": "4469f58d248588c1fe21a4843b74b3d0b6cdc3c19e9315c9b8561bfb9a6aecf3",
+    "test_network_nginx_inputs.py": "f666484d44450f0525550243348b14a7842e037ac8f4c941833423b5df69cc06",
+    "rehearse_nginx.py": "51fda221410488e00a8e1f1e51fb1e26cf58a754d205f9df81fce106ac734963",
+    "test_network_nginx_harness.py": "3b3e1164eb8c3bb3b856d7722a8af5a5ab35923f3af2f80a8d8289f3a5e2b59a"
+  },
+  "linux": {
+    "release_tests": 100,
+    "network_tests": 257,
+    "network_subtests": 201,
+    "platform_skips": 0,
+    "scoped_lint": "passed",
+    "scoped_format": "passed"
+  },
+  "windows": {
+    "component_tests": 166,
+    "platform_skips": 11
+  },
+  "first_failed_fixture_retained": "83e69a57655dcf5c1921cd95dba8ed19bf2e0d0e38d3857649070e13c062e1d2",
+  "real_corrected_validator_passed": false,
+  "production_deployed": false,
+  "global_lint_waived": false,
+  "new_capabilities": false,
+  "original_permissions_changed": false,
+  "new_vulnerability_scan": false
+}
