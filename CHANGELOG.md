@@ -2,6 +2,20 @@
 
 All notable changes since v2.7.6. Older history available in `git log`.
 
+### v5.22.61 (2026-11-13)
+
+**Fix: billing failures absorbed by a successful fallback now open the breaker.**
+
+- v5.22.60 made the OpenAI spend-limit 429 fail on the first attempt, but the
+  provider's breaker still never opened: `try_ranked_non_streaming` swallowed the
+  failure when a later provider served the request, and the handler records only
+  the final outcome. Live soak after the v5.22.60 deploy showed the dead provider
+  still being tried once per request (2 SDK retries each).
+- `app/routing/fallback.py` now calls `record_failure(billing_error=True)` for a
+  billing-class failure inside the chain (6 h hold-down, existing behaviour).
+  Transient and auth failures are unchanged.
+- Test: `tests/unit/test_v52261_fallback_billing_breaker.py`.
+
 ### v5.22.60 (2026-11-13)
 
 grok-web routing and health fixes.
