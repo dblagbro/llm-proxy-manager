@@ -1,4 +1,53 @@
-# ✅ Live now — 2026-11-11 (v5.22.54, both nodes)
+# ✅ Live now — 2026-11-13 (v5.22.61, both nodes)
+
+**v5.22.61 deployed to tmrwww01 + tmrwww02** (rolling, peer-first; each node
+verified `/health` version + healthy, RestartCount=0). Releases since the
+2026-11-11 banner below: v5.22.57 (PR #16, per-key `metered_allowed` guard +
+fallback error attribution), v5.22.60 (PR #18), v5.22.61 (PR #19). Rollback tags
+per node: `llm-proxy2:rollback-5.22.57-pre60`, `llm-proxy2:rollback-5.22.60-pre61`.
+Pre-deploy DB backups: `/home/dblagbro/backups/tmrwww0{1,2}-pre-5.22.60-20261113-215525.db`.
+
+**What changed and what was verified live (2026-11-13/14 UTC):**
+- **OpenAI spend-cap retry storm fixed.** The capped OpenAI project answers 429
+  "enforced spend limit"; it was retried 8 times (~20 s) on every coordinator-hub
+  `gpt-4o` request, ~2,700 `openai_client_retry` rows/day. v5.22.60 classifies it
+  as billing (fail on first attempt); v5.22.61 opens the breaker when the failure
+  is absorbed by a successful fallback. Soak on tmrwww01: first request after
+  deploy made 2 SDK retries and opened the breaker (6 h hold); the next `gpt-4o`
+  request went straight to Cohere with 0 retries. The breaker is in-memory per
+  node: it re-probes after 6 h and re-trips until the cap is raised.
+- **grok-web:** fallback no longer sends it through litellm to api.x.ai; probe
+  timeout is 60 s for grok-web; provider-test rows no longer log "ok" on failure
+  (all provider types). **Grok is still down:** the bridge is logged out of
+  grok.com, and the RUNNING bridge image (built 2026-10-29) predates PRs #13/#14,
+  so the merged bridge access-control and the new logged-out checks are not in
+  force until the bridge is rebuilt. Rebuild + operator login pending.
+- **Usage reset advisor** (see section below): shipped OFF
+  (`USAGE_RESET_ADVISOR_ENABLED` unset). Advisory only; never redeems.
+- **Per-key metered guard:** `tax-ai-analyzer` key has `metered_allowed=0`
+  (subscription providers only). No real tax-ai request has exercised it: the app
+  has sent only its 6-hourly `GET /v1/models` health check since 2026-11-09 11:58 UTC.
+
+**Ops changes outside the repo (2026-11-13):**
+- **nginx docs/metrics lockdown now actually in force.** `/llm-proxy2/{docs,redoc,
+  openapi.json,metrics}` are allow-listed to private networks INLINE in
+  `nginx.conf` on both nodes. The 2026-11-11 edit to
+  `projects-locations.d/llm-proxy2.conf` never took effect: that directory is
+  flattened into `nginx.conf` and no longer included. **Edit `nginx.conf`, not
+  `projects-locations.d/`.** Not yet confirmed with a 403 from an outside address.
+- **`llm-proxy2-smoke` torn down on tmrwww01** (compose service, nginx routes,
+  container, image). Volumes `docker_llm-proxy2-smoke-data` / `-logs` kept.
+  tmrwww02's compose file still carries a dormant smoke service definition.
+
+**Provider fleet (2026-11-14 03:41 UTC):** 6 of 7 healthy; OpenAI held open by the
+billing breaker (expected). OpenRouter key still invalid (priority 20, last
+resort). Codex, both Max accounts and Cohere carry the load.
+
+The 2026-11-11 banner below is kept as dated history.
+
+---
+
+# Live 2026-11-11 (v5.22.54, both nodes) — superseded 2026-11-13
 
 **v5.22.54 deployed to tmrwww01 + tmrwww02** (rolling, peer-first; each node
 verified `/health` version + healthy, RestartCount=0; public
