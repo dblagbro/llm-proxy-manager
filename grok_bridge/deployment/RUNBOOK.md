@@ -183,7 +183,7 @@ No DAC-bypass capability is granted. The runner independently audits original
 containers, networks, staged/canonical files, include copies and source even
 when fixture ownership verification fails. An exact-ID/name/owner observation
 may be reported as unverified; it never authorizes lifecycle changes or a
-network endpoint exemption. These changes still require real acceptance.
+network endpoint exemption. The bounded acceptance receipt below covers this component only.
 
 The second retained attempt at `06a3b8be` could parse its private include copies
 but failed on certificate access in the original mixed-ownership TLS mount.
@@ -203,14 +203,14 @@ prevented the all-original inventory invariant from passing: 140 other original
 containers matched, one Coordinator identity changed, and one network changed.
 This is not a production-wide unchanged-state claim. See the third-attempt receipt.
 
-The next source revision drops ALL capabilities and adds exactly CHOWN for
+The current source drops ALL capabilities and adds exactly CAP_CHOWN for
 Nginx cache initialization. No DAC, FOWNER, or SYS_ADMIN capability is allowed.
 Every original/config/certificate bind remains forced recursively read-only;
 the root filesystem is read-only. Only bounded tmpfs and this attempt's private
 log scratch are writable. The exact capability list is checked before actions
 and retained-fixture reuse; old fixtures without CHOWN refuse reuse. No original
-permissions or service configuration change. This correction is not an accepted
-Docker result until a fresh guarded attempt and every independent audit pass.
+permissions or service configuration change. The accepted bounded result below
+passed with all independent audits; integrated release acceptance remains open.
 
 Rationale: [Nginx ngx_create_paths](https://github.com/nginx/nginx/blob/master/src/core/ngx_file.c)
 creates mode0700 cache directories and assigns the worker UID;
@@ -225,3 +225,28 @@ its default exit code0 does not prove nginx succeeded. All142 originals and14
 networks matched. The source now requests and verifies exactly CAP_CHOWN;
 short-name aliases are refused in inspection, and observations retain Docker
 status so created-only attempts are explicit. All four fixtures remain retained.
+
+
+### Accepted bounded result (November 14, 11:42 UTC)
+
+At source 0e77488275984075d68c95a37abba83fc31d12c7, the guarded runner
+validated the full staged Nginx configuration twice using the same fixture,
+910fdcad4666945ee3a04846315336f1213b511b110a548db2688d4c6b8f4385.
+Both checks returned success; the fixture is retained stopped, restart=no,
+exit0, OOM=false. All eight audit categories passed: exact ownership, inventory
+capture/evidence, 144 preexisting containers, 14 networks, five canonical/staged
+files, original/private include and TLS inputs, and reviewed source.
+
+See docs/evidence/grok-nginx-validator-accepted-20261114.json. The generation is
+/mnt/s/backups/codex-private-security-20261109/nginx-validation/nginx-20261114t1142z.
+The four earlier attempts remain retained (the fourth was created but never
+started). No cleanup, image pull, production deployment or shared permission
+change occurred. Snapshot audits do not exclude transient unrelated changes
+between observations. Do not repeat this unchanged passed component.
+
+Source checks: 100 release tests and311 network tests,201 subtests, scoped Ruff
+and formatting passed; tracked secret scanning passed. Full network-aware
+lifecycle/recovery, H7/W16 topology, browser authorization, outsider denial and
+independent backup acceptance remain open. The retained global lint findings
+are not waived. Coordinator remains outside this PR and its release process
+is unchanged.
