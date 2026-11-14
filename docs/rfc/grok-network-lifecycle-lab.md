@@ -171,3 +171,24 @@ application outage and no production data migration.
 Design review inputs: the release-engineering read-only review identified the
 hardcoded context, production-gate, containment and Compose-retention constraints.
 This document resolves a proposed approach; execution and acceptance remain open.
+
+
+## Descriptor preparation checkpoint
+
+A pure frozen descriptor is implemented in network_lab_context.py. It validates
+bounded duplicate-rejecting JSON, VM/engine/source/image identity, deterministic
+private paths and the adapter-compatible resource map, with exact journal binding.
+Namespaces include both context identity and scenario, so separate scenarios with
+the same context identity have disjoint paths, projects and resource names. Fresh
+filesystem and Docker-resource admission still require independent verification.
+Returned records do not alias the descriptor. The network definition stays
+Internal=false. Descriptor and supplied-observation checks perform no I/O and
+grant no execution authority. VM eligibility, hypervisor isolation, operator
+permit, capacity, actual resource admission and the full harness remain pending.
+The production operator does not consume this descriptor yet. Tests are included
+in make test-grok-network; scoped lint includes the new module and tests.
+
+Validation: 67 descriptor tests, 100 release tests and 378 network tests
+(the 67 are included), with 201 subtests, passed on Linux. Scoped lint and
+format checks passed. See the sanitized source-evidence receipt in docs/evidence.
+No runtime fixture, image scan or production operation was repeated.
