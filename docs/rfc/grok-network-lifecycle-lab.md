@@ -253,3 +253,35 @@ now refuse before subsequent I/O or save callbacks. Validation: 100 release test
 and 527 network tests (50 new lab-journal checks included), with 201 subtests,
 passed on Linux; scoped lint and format passed. See
 docs/evidence/grok-lab-journal-source-20261114.json.
+
+## Lab capacity arithmetic checkpoint
+
+A separate pure lab capacity policy computes the fixed 10 GiB reserve plus
+explicit simultaneous upcoming evidence and Docker-storage peaks. Roles on the
+same filesystem share one reserve and aggregate both peaks; conservative minimum
+available bytes are used when the supplied observations differ, while conflicting
+totals refuse. Distinct filesystems each require their own reserve and peak.
+Strict counters and full-context receipt binding prevent accidental type/context
+drift; no implicit zero peak or production 64 GiB override is introduced.
+
+This is arithmetic over supplied values, not a measurement or admission decision.
+It does not establish freshness, peak-estimate adequacy, filesystem/mount identity,
+continued free space, VM containment, eligibility or authorization. A future
+read-only collector must identify the actual bound engine's Docker data root and
+the exact private lab generation, validate paths and mount/device identities,
+reject symlink/shared/readonly/unexpected-mount substitutions, collect fresh
+space under the separate lab lock, and repeat checks before material allocation.
+Retained artifacts consume measured free space; future allocations belong in the
+reviewed peak. A cached assessment cannot replace fresh observation. There is no
+CLI, filesystem access, Docker call or permit in this component. Production
+capacity(), hostname/NAS guards and release entry points remain unchanged.
+
+The next runtime context seam is staged Nginx validation: preserve raw inspection
+truth while validating physical names from the lab descriptor, bind a distinct
+lab ledger before I/O, and retain the production ledger/accepted-fixture contract.
+That integration, actual storage/admission collection and the full harness remain
+pending. No accepted runtime fixture or unchanged-image scan is repeated here.
+
+Validation: 100 release tests and 603 network tests (76 new capacity tests
+included), with 201 subtests, passed on Linux. Scoped lint and format passed.
+See docs/evidence/grok-lab-capacity-source-20261114.json.
