@@ -382,3 +382,44 @@ Validation: 100 release tests and 771 network tests (75 new lab Nginx tests),
 with 201 subtests and zero Linux skips, passed canonical Makefile targets.
 Scoped Ruff lint/format passed. Focused Windows checks passed 139 tests with
 14 POSIX skips, including 66 new lab tests and 9 new lab platform skips.
+
+## Shared pure release rendering for the lab
+
+The existing release preparation helpers now accept an explicit lab descriptor.
+The two network wrapper APIs additionally require the caller's exact reviewed
+network receipt. They reuse the maintained candidate-service, canonical-source,
+network-planner and resolved-scope algorithms, without rewriting raw resource
+identities or creating implicit approval fields.
+
+Lab rendering requires immutable original/candidate image pins, the exact
+generation's candidate-data path and the full context/receipt binding. It uses
+the fixed synthetic origin https://grok-lab.invalid and the canonical gateway
+alias for synthetic authentication. Logical service keys remain canonical;
+physical project/container/network names must match the descriptor. The desired
+dedicated bridge remains Internal=false. Input objects are unchanged and
+unrelated raw bytes remain preserved under the existing canonical YAML limits.
+Changing VM, engine, reviewed source or image identity in the same namespace
+invalidates the receipt. This does not prove that supplied data is synthetic or
+that an image is admitted for use. Unmodified mounts and named-volume backing
+storage still require separate admission; a concrete volume name alone does not
+establish ownership or local-storage provenance.
+
+Production calls retain their existing image, environment, path and network
+defaults. Host, outer journals, prepare/deploy/rollback, CLI, release gate,
+operation lock, NAS check and capacity policy are unchanged. This is a pure
+source transformation and scope check: it performs no filesystem or Docker I/O
+and introduces no lab execution entry point. Actual isolation, observed machine
+and engine identity, source/image admission, capacity, operation locking and
+authorized working-container replacement remain separate requirements.
+
+The shared runtime body and distinct lab admission are still pending; producing
+valid bytes is not integrated lifecycle or provider acceptance. No accepted
+fixture, image scan, live validator/collector or production operation was run.
+See docs/evidence/grok-lab-release-render-source-20261114.json.
+
+Validation: 100 original release tests and 869 network tests (98 new lab
+release-render tests), with 201 subtests and zero Linux skips, passed canonical
+Makefile targets. Scoped Ruff lint/format passed. Windows passed the 100
+original release and 98 new tests. All 44 other original definitions, decorators
+and existing top-level code/assignments were verified unchanged by source/AST
+comparison. No runtime acceptance was performed.

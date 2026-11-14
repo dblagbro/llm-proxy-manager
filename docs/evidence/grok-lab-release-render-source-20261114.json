@@ -1,0 +1,128 @@
+{
+  "schema": "grok-lab-release-render-source-evidence-v1",
+  "based_on": "0b3e576231e62552fdbc943ffe83b02f20351197",
+  "scope": "Pure shared release Compose preparation and supplied-model scope validation for explicit lab contexts; no execution admission",
+  "production_operator_unchanged": false,
+  "production_execution_unchanged": true,
+  "live_collector_invoked": false,
+  "live_validator_invoked": false,
+  "lab_execution_authorized": false,
+  "lab_created": false,
+  "full_harness_implemented": false,
+  "production_deployed": false,
+  "new_image_or_vulnerability_scan": false,
+  "accepted_component_repeated": false,
+  "cleanup_performed": false,
+  "limits": [
+    "Pure input validation does not observe VM/engine identity, attest synthetic provenance or grant isolation/storage/image/execution admission",
+    "Concrete named-volume references and retained unmodified mounts do not establish ownership or local backing-storage provenance",
+    "Raw rendering and comparison of supplied resolved models do not run Docker Compose resolution; actual resolved artifact acceptance remains required",
+    "Shared runtime body, distinct admission and full lifecycle harness remain pending; production execution paths and release/hostname/NAS/capacity gates are unchanged",
+    "Original accepted runtime fixtures and image vulnerability scans are not repeated; global lint/H7-W16/Coordinator/private backup gates remain open"
+  ],
+  "source_sha256": {
+    "release.py": "bc243328cf25adb9f6998580e2964092d547a83216036f10f7df728d5d15c991",
+    "test_network_lab_release_render.py": "ad6c9cd53b3356cd48ab8b5614c2f75e8712cd9fa1c8835fe54cbe254d8146db"
+  },
+  "production_release_before_sha256": "1a9dd48f10fb3e56889af2ce3254760e48d30482867a333f68006d5166ac0960",
+  "protected_source_scope": {
+    "production_execution_unchanged": true,
+    "existing_global_assignments_unchanged": true,
+    "changed_existing_helpers": [
+      "assert_network_resolved_scope",
+      "assert_resolved_scope",
+      "candidate_service",
+      "render_compose",
+      "render_network_compose"
+    ],
+    "new_helpers": [
+      "_compose_parameters",
+      "_lab_compose_identity",
+      "_lab_compose_source",
+      "_lab_data_source"
+    ],
+    "protected_definitions_sha256": {
+      "Refused": "c137c90a6101d3467d7fac688154091b84f4b6498c4309041b8a20e1541916ff",
+      "require": "ef687eb37568338b5c2fb73c40d6b22aafc0ccf5bc64e500d9ac436175ef2694",
+      "digest": "b46c442db8153d4caa4e3d7ebb3560f6dc261f2c614ac20722d41b32fb1785fd",
+      "file_digest": "11bd37030ab00c79e6ed67ad62568ccef8362882031adf0508226c053a0c0311",
+      "private_write": "8ed1897bca7f9c6e6efe28f8832b0383cfe6d29f37f37494e2a75fd54f806a9d",
+      "cas_write": "8d7e2607fac817d5e61b0da06e43a05dd80dd017099a648fe94bf020401481f9",
+      "service_span": "7abab0c47c9f6df3f3f782c79e170b521cc21c447d0c272c42cc7c71e800a55d",
+      "environment_mapping": "7257816830f0d1f1063c9c055c078010cd2b456077495b8342cadc3ef91363cb",
+      "render_nginx": "3e8e8a7b7b8a4e06ea30a40eba98a290b8015786f7ada03f00fd196fcd7cf3fe",
+      "archive_manifest": "9769b600e1f7d7b18c263bb53a3118e5c54f2b877f630d3f01538197e6ba7f6b",
+      "verify_restore": "e65358aa95005f906dbb3ab1e53e2886660ab5117362abe067d8ae1d4909b759",
+      "assert_separate_volume": "7effad9d7569bce4c1b5b5c4adfe3aa681588f17611752921ee892f688a5412d",
+      "capacity": "16606114fd58a4f90affb7f0829032f9d2d6c2b4a4ae4b4a6e6d980424748257",
+      "operation_lock": "a9f07fe3315bc7e203da6af97ad960212220e0c1d81411d60028e43d9c9bcb95",
+      "Host": "54adf02c06606e9a5fe32c5a3a0061d1ea05d2bd46eb58ff24aec363418e92a6",
+      "read_journal": "cc24e6007d4e267964630595c3e08b3995c0ad46f1a4a1d291e6b0313bd3eae4",
+      "save": "5f52f99464dd58377b8b3393da94397d579ffc7c8842cda3d936a8e347097eaf",
+      "load_state": "e93d813f21d52147d3cb1c72a41ff9816daa2f0eed9f7dbee8843215fd761608",
+      "network_save": "7bda35cc7d0652fa1e951d7b35f8a86f189588a9efe547d70f404d1584ffa9bd",
+      "prepare_network": "65eccd4991f512a28ab75f04c3f1ff2fd9ce38d1512ccc25454fe003d332c0f7",
+      "network_contract_present": "e4ce172f0087690ac7401c308f9d610314ac82b52dde90226040ed4fc47ac6ec",
+      "network_engine": "ce8c1cb0ddd15e7070c1c43ca7cbf20b2dee3304ce663f9002935b34b8d09c77",
+      "audit_network": "b318722d53e65f83c3f6869caae3bb544f649e16758ff01d7a8f78a631ad4b9a",
+      "audit_prepared_original": "6880e0a355981efed59272645d6d15015cfabc8c3d921519d880798f96e10cdb",
+      "record_candidate": "1dff7f2e31011bd351915e95da8cdf93bc765c99bcf07bdc33c8f7b4718413df",
+      "assert_inputs": "e785e8ab502c8d15f9685bf60a89ba4526867cabe26d48bad7106c2c6a4b438a",
+      "assert_artifacts": "f6f362b8c019c8dc88bb592beb07cf6cbd3b3cbc4e27401da17eb0c3d8b32fda",
+      "input_hashes": "d81314bc77d60923e7b2546c32b3fdc541eefd4ad87f5f26b3b7cc097a1cbb76",
+      "configuration_entries": "e4e8ed743091158825b21292f47fa931c5c1d205208cc753ce94b130014daee5",
+      "assert_files": "3c419aec058e25b69833b2fcb906003171f601e665259defe855bc987d288b24",
+      "gate": "ad680bb4dc29bc4b375886bd0d93d827f798f96ca2f6724a8f4f4bbee2895e91",
+      "literal_compose_values": "7a6021019ee5320a4d2d390182cc5f890b8cd26c4d4da577f9336b15445bfcda",
+      "prepare": "9ac4cbd38da3995230dc459bfdefbb57d4cd729eb8ada61afe8ce14f32017b18",
+      "fresh_snapshot": "8ae902ae1dd04a666b3250f0f89376a08879e2934fc143ef02e8cdddba3ed4ad",
+      "assert_original_environment": "b53a5c1f8b5bcb170bf84b4997b303a443aae6335105879fcee686d171ff71df",
+      "assert_original_commands_and_volume": "8705e23300238a1521c0a604b64283372cebbe02e7bf7274ecfd83fef5adf1a1",
+      "assert_runtime": "c7628c79363faa81fab872add057837c5d1cb240916fe11fccf2a7068d5e5629",
+      "nonprovider_probe": "200ca48b677926e722ace44099f877651edc63ef8461428b016eff3828339b1e",
+      "restore_configs": "07d979406f2f6b8223f450b9164aef1adf3f317802d926df23a1dbe2dba12202",
+      "rollback": "6369b2c02932596083593bdc46fea0ffc28ea15a948cea9c8e8ba1f095849dc3",
+      "deploy": "438f7962301a9fb1364211b491f327ba1c53499754782c50999afc3ceaac7e06",
+      "validate_release_path": "231abcbab0ccf2cee02fffd4b254d876aec2c5644fcd420be470edad7d82cbb6",
+      "require_nas_storage": "d72720d938ff99301821bb3478fe1a25b065d783098ad7211f7001190413cc80",
+      "main": "d4a3903c36fdafbeaa8530278850b9294c39b6667c8ece2c773aeacbe8e52c3a"
+    }
+  },
+  "review": {
+    "passed": true,
+    "kind": "Release-engineering preparation and primary source/boundary review",
+    "corrections": [
+      "Independently verify raw and supplied resolved Grok/Nginx image pins before transformation, since the network receipt alone does not bind arbitrary source fields",
+      "Require concrete named-volume source syntax for lab original /data in both forms and reject raw/resolved source disagreement",
+      "Preserve every non-helper definition/decorator and all existing top-level code/assignments; compare source segments and AST before publication"
+    ],
+    "remaining_component_blockers_identified": false
+  },
+  "checks": {
+    "linux_release_tests": 100,
+    "linux_network_tests": 869,
+    "lab_release_render_tests": 98,
+    "network_subtests": 201,
+    "linux_skipped": 0,
+    "windows_release_tests": 100,
+    "windows_lab_release_render_tests": 98,
+    "windows_passed": 198,
+    "windows_skipped": 0,
+    "scoped_lint": "passed",
+    "scoped_format": "passed",
+    "warning": "Retained unrelated asyncio_mode warning in synchronous source-test environment"
+  },
+  "linux_run": {
+    "returncode": 0,
+    "elapsed_seconds": 18.01,
+    "log": "/tmp/codex-grok-lab-release-render-checks-305k987q.log",
+    "summaries": [
+      "100 passed, 1 warning in 1.84s",
+      "869 passed, 1 warning, 201 subtests passed in 15.39s",
+      "All checks passed!",
+      "3 files already formatted",
+      "All checks passed!",
+      "26 files already formatted"
+    ]
+  }
+}

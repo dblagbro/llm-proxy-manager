@@ -126,17 +126,124 @@ def environment_mapping(value):
     return result
 
 
-def candidate_service(before, data_path):
+def _compose_parameters(data_path, lab_context):
+    """Pure context consistency, never observed isolation or execution authority."""
+    network_policy._identity(lab_context)
+    if lab_context is None:
+        from network_lab_context import ROOT as LAB_ROOT
+
+        if isinstance(data_path, (str, PurePosixPath, Path)):
+            path = PurePosixPath(data_path)
+            require(
+                path != LAB_ROOT and LAB_ROOT not in path.parents,
+                "Lab candidate path requires its exact context",
+            )
+        return CANDIDATE, ENV_ADDITIONS
+    require(
+        type(data_path) is str and data_path == str(lab_context.generation_root / "candidate-data"),
+        "Use the exact lab candidate-data path",
+    )
+    return dict(lab_context.images)["candidate"], {
+        **ENV_ADDITIONS,
+        "BRIDGE_PUBLIC_ORIGIN": "https://grok-lab.invalid",
+    }
+
+
+def _lab_compose_identity(model, lab_context):
+    if lab_context is None:
+        if type(model) is dict:
+            require(
+                not str(model.get("name", "")).startswith("codex-grok-nettest-"),
+                "Lab project requires its exact context",
+            )
+        return
+    names = network_policy._identity(lab_context)
+    require(type(model) is dict and model.get("name") == lab_context.project, "Lab project differs")
+    services = model.get("services")
+    require(type(services) is dict, "Missing lab service mapping")
+    for role in network_policy.MEMBERS:
+        require(
+            type(services.get(role)) is dict
+            and services[role].get("container_name") == names[role],
+            "Lab physical service identity differs",
+        )
+    pins = dict(lab_context.images)
+    require(
+        services[SERVICE].get("image") == pins["original"]
+        and services["nginx"].get("image") == pins["nginx"],
+        "Original lab image pins differ",
+    )
+    _lab_data_source(services[SERVICE])
+
+
+def _lab_data_source(service):
+    """Concrete named-volume syntax only; this does not establish volume ownership."""
+    mounts = service.get("volumes")
+    require(type(mounts) is list, "Missing original lab data volume")
+    sources = []
+    for mount in mounts:
+        if type(mount) is str:
+            fields = mount.split(":")
+            if len(fields) > 1 and fields[1] == "/data":
+                require(
+                    len(fields) == 2 or (len(fields) == 3 and fields[2] == "rw"),
+                    "Invalid original lab data options",
+                )
+                sources.append(fields[0])
+        elif type(mount) is dict and mount.get("target") == "/data":
+            require(
+                mount.get("type", "volume") == "volume", "Original lab data must be a named volume"
+            )
+            sources.append(mount.get("source"))
+    require(
+        len(sources) == 1
+        and type(sources[0]) is str
+        and bool(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", sources[0])),
+        "Original lab data requires a concrete named-volume token",
+    )
+    return sources[0]
+
+
+def _lab_compose_source(content, lab_context):
+    require(
+        type(content) is bytes and 0 < len(content) <= 8 * 1024 * 1024,
+        "Invalid lab source size or type",
+    )
+    try:
+        text = content.decode("utf-8")
+    except UnicodeError:
+        raise Refused("Lab source must be UTF-8") from None
+    require("\r" not in text and not text.startswith("\ufeff"), "Invalid lab source encoding")
+    before, _ = network_compose._parse(text)
+    _lab_compose_identity(before, lab_context)
+    return text, before
+
+
+def candidate_service(before, data_path, *, lab_context=None):
+    candidate, additions = _compose_parameters(data_path, lab_context)
+    if lab_context is not None:
+        require(
+            type(before) is dict
+            and before.get("image") == dict(lab_context.images)["original"]
+            and before.get("container_name") == lab_context.resource_map()[SERVICE],
+            "Original lab service identity or image differs",
+        )
+        _lab_data_source(before)
+    else:
+        require(
+            not str(before.get("container_name", "")).startswith("codex-grok-nettest-"),
+            "Lab service requires its exact context",
+        )
     require(PurePosixPath(data_path).is_absolute(), "Candidate data path must be absolute")
     result = copy.deepcopy(before)
-    result["image"] = CANDIDATE
+    result["image"] = candidate
     env = environment_mapping(result.get("environment", {}))
     require(bool(env.get("BRIDGE_TOKEN")), "Missing existing service token")
     require(
         env.get("BRIDGE_PUBLIC_PATH") == "/grok-bridge",
         "Unexpected existing public path",
     )
-    env.update(ENV_ADDITIONS)
+    env.update(additions)
     result["environment"] = env
     mounts = result.get("volumes", [])
     found = []
@@ -167,16 +274,21 @@ def candidate_service(before, data_path):
     return result
 
 
-def render_compose(content, data_path):
-    text = content.decode("utf-8")
-    require("\r" not in text, "Unexpected Compose line endings")
-    before = yaml.safe_load(text)
+def render_compose(content, data_path, *, lab_context=None):
+    _compose_parameters(data_path, lab_context)
+    if lab_context is None:
+        text = content.decode("utf-8")
+        require("\r" not in text, "Unexpected Compose line endings")
+        before = yaml.safe_load(text)
+        _lab_compose_identity(before, None)
+    else:
+        text, before = _lab_compose_source(content, lab_context)
     require(
         isinstance(before, dict) and SERVICE in before.get("services", {}),
         "Missing service",
     )
     start, end = service_span(text)
-    service = candidate_service(before["services"][SERVICE], data_path)
+    service = candidate_service(before["services"][SERVICE], data_path, lab_context=lab_context)
     rendered = yaml.safe_dump({SERVICE: service}, sort_keys=False, allow_unicode=True)
     block = "".join("  " + line + "\n" for line in rendered.splitlines())
     output = (text[:start] + block + text[end:]).encode()
@@ -188,9 +300,13 @@ def render_compose(content, data_path):
     return output
 
 
-def assert_resolved_scope(before, after, data_path):
+def assert_resolved_scope(before, after, data_path, *, lab_context=None):
+    _compose_parameters(data_path, lab_context)
+    _lab_compose_identity(before, lab_context)
     expected = copy.deepcopy(before)
-    expected["services"][SERVICE] = candidate_service(before["services"][SERVICE], data_path)
+    expected["services"][SERVICE] = candidate_service(
+        before["services"][SERVICE], data_path, lab_context=lab_context
+    )
     # Compose adds the default read_only:false on bind mounts in some versions.
     actual = copy.deepcopy(after)
 
@@ -230,9 +346,19 @@ def assert_resolved_scope(before, after, data_path):
     )
 
 
-def render_network_compose(content, resolved, data_path):
-    """Pure private-source rendering; all live checks remain separate."""
-    planned, _ = network_policy.plan_networks(resolved)
+def render_network_compose(content, resolved, data_path, *, lab_context=None, review_receipt=None):
+    """Pure rendering; a lab context/receipt establishes no provenance or admission."""
+    _compose_parameters(data_path, lab_context)
+    _lab_compose_identity(resolved, lab_context)
+    planned, expected_receipt = network_policy.plan_networks(resolved, lab_context=lab_context)
+    network_policy._review_binding(review_receipt, expected_receipt, lab_context=lab_context)
+    if lab_context is not None:
+        _, raw_before = _lab_compose_source(content, lab_context)
+        require(
+            _lab_data_source(raw_before["services"][SERVICE])
+            == _lab_data_source(resolved["services"][SERVICE]),
+            "Raw and resolved original lab data sources differ",
+        )
     specification = {
         "original_networks": {
             role: resolved["services"][role]["networks"] for role in network_policy.MEMBERS
@@ -240,16 +366,25 @@ def render_network_compose(content, resolved, data_path):
         "desired_networks": {
             role: planned["services"][role]["networks"] for role in network_policy.MEMBERS
         },
-        "dedicated_definition": network_policy.NETWORK_DEFINITION,
+        "dedicated_definition": planned["networks"][network_policy.NETWORK],
+        "lab_context": lab_context,
+        "review_receipt": review_receipt,
     }
     # Reject ambiguous original YAML before the older service renderer could
     # collapse duplicate keys inside the Grok block.
     network_compose.render_networks(content, **specification)
-    return network_compose.render_networks(render_compose(content, data_path), **specification)
+    return network_compose.render_networks(
+        render_compose(content, data_path, lab_context=lab_context), **specification
+    )
 
 
-def assert_network_resolved_scope(before, after, data_path):
-    planned, _ = network_policy.plan_networks(before)
+def assert_network_resolved_scope(
+    before, after, data_path, *, lab_context=None, review_receipt=None
+):
+    _compose_parameters(data_path, lab_context)
+    _lab_compose_identity(before, lab_context)
+    planned, expected_receipt = network_policy.plan_networks(before, lab_context=lab_context)
+    network_policy._review_binding(review_receipt, expected_receipt, lab_context=lab_context)
     actual = copy.deepcopy(after)
     require(
         isinstance(actual.get("networks"), dict) and network_policy.NETWORK in actual["networks"],
@@ -265,7 +400,7 @@ def assert_network_resolved_scope(before, after, data_path):
         definition.pop("ipam")
     definition.setdefault("internal", False)
     require(
-        network_policy._same_json(definition, network_policy.NETWORK_DEFINITION),
+        network_policy._same_json(definition, planned["networks"][network_policy.NETWORK]),
         "Dedicated network declaration differs",
     )
     for role in network_policy.MEMBERS:
@@ -277,7 +412,7 @@ def assert_network_resolved_scope(before, after, data_path):
             "Resolved service network differs from reviewed policy",
         )
         actual["services"][role]["networks"] = before["services"][role]["networks"]
-    assert_resolved_scope(before, actual, data_path)
+    assert_resolved_scope(before, actual, data_path, lab_context=lab_context)
 
 
 def render_nginx(content, fragment):
