@@ -8613,3 +8613,13 @@ When cutting a new tag:
 1. `git tag -a vX.Y.Z HEAD -m "vX.Y.Z — short description"`
 2. Add a section to this file in chronological-reverse order
 3. Lead with the *why* and *what behavior changes* for operators / API consumers — not just *what files changed*
+
+
+## November 14: draft Grok network lifecycle integration
+
+Draft PR21 integrates corrected PR17 candidate controls with exact-identity network
+attachment/recovery and a retained staged Nginx validator. This is source preparation,
+not deployed isolation. See grok_bridge/deployment/RUNBOOK.md for tests, gates,
+private NAS storage, topology scope and recovery limits. The old Docker lifecycle
+harness refuses the new operator before mutation; integrated real recovery and
+browser/outsider-denial acceptance remain pending. Coordinator remains separate.

@@ -399,3 +399,13 @@ This verifies source rendering and resolution only. The runtime release operator
 still needs integration, multi-network Nginx validation, interruption/rollback
 acceptance, authenticated browser checks and outsider denial. No image is deployed,
 no release gate is waived and the already-passed adapter fixture was not rerun.
+
+
+## November 14: draft Grok network lifecycle integration
+
+Draft PR21 integrates corrected PR17 candidate controls with exact-identity network
+attachment/recovery and a retained staged Nginx validator. This is source preparation,
+not deployed isolation. See grok_bridge/deployment/RUNBOOK.md for tests, gates,
+private NAS storage, topology scope and recovery limits. The old Docker lifecycle
+harness refuses the new operator before mutation; integrated real recovery and
+browser/outsider-denial acceptance remain pending. Coordinator remains separate.

@@ -878,3 +878,13 @@ Canonical network rendering update (2026-11-14): a pure, bounded Compose-source
 renderer now accompanies the planner/journal/adapter. Read-only canonical and
 corrected-PR17 chained resolution passed. Runtime lifecycle integration and full
 browser/network/recovery acceptance remain pending; production is unchanged.
+
+
+## November 14: draft Grok network lifecycle integration
+
+Draft PR21 integrates corrected PR17 candidate controls with exact-identity network
+attachment/recovery and a retained staged Nginx validator. This is source preparation,
+not deployed isolation. See grok_bridge/deployment/RUNBOOK.md for tests, gates,
+private NAS storage, topology scope and recovery limits. The old Docker lifecycle
+harness refuses the new operator before mutation; integrated real recovery and
+browser/outsider-denial acceptance remain pending. Coordinator remains separate.

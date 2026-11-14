@@ -144,7 +144,7 @@ test-grok-browser:
 # Synthetic operator unit tests and scoped lint perform no Docker or host mutations.
 .PHONY: test-grok-release lint-grok-release
 test-grok-release:
-	python -m pytest grok_bridge/deployment/test_release.py -q -p no:cacheprovider
+	$(GROK_PYTHON) -m pytest grok_bridge/deployment/test_release.py -q -p no:cacheprovider
 
 lint-grok-release:
 	ruff check --target-version py310 grok_bridge/deployment/release.py grok_bridge/deployment/test_release.py grok_bridge/deployment/rehearse_release.py
@@ -178,11 +178,11 @@ test-gateway-recovery-docker:
 # Dedicated-network synthetic checks: no Docker or host changes.
 .PHONY: test-grok-network lint-grok-network
 test-grok-network:
-	$(GROK_PYTHON) -m unittest discover -s grok_bridge/deployment -p 'test_network_*.py' -v
+	$(GROK_PYTHON) -m pytest grok_bridge/deployment/test_network_*.py -q -p no:cacheprovider
 
 lint-grok-network:
-	ruff check --target-version py310 grok_bridge/deployment/network_policy.py grok_bridge/deployment/test_network_policy.py grok_bridge/deployment/network_transaction.py grok_bridge/deployment/test_network_transaction.py grok_bridge/deployment/network_docker.py grok_bridge/deployment/test_network_docker.py grok_bridge/deployment/network_compose.py grok_bridge/deployment/test_network_compose.py grok_bridge/deployment/rehearse_network.py
-	ruff format --check --target-version py310 grok_bridge/deployment/network_policy.py grok_bridge/deployment/test_network_policy.py grok_bridge/deployment/network_transaction.py grok_bridge/deployment/test_network_transaction.py grok_bridge/deployment/network_docker.py grok_bridge/deployment/test_network_docker.py grok_bridge/deployment/network_compose.py grok_bridge/deployment/test_network_compose.py grok_bridge/deployment/rehearse_network.py
+	ruff check --target-version py310 grok_bridge/deployment/network_policy.py grok_bridge/deployment/test_network_policy.py grok_bridge/deployment/network_transaction.py grok_bridge/deployment/test_network_transaction.py grok_bridge/deployment/network_docker.py grok_bridge/deployment/test_network_docker.py grok_bridge/deployment/network_compose.py grok_bridge/deployment/test_network_compose.py grok_bridge/deployment/rehearse_network.py grok_bridge/deployment/network_nginx.py grok_bridge/deployment/test_network_nginx.py grok_bridge/deployment/test_network_harness_guard.py
+	ruff format --check --target-version py310 grok_bridge/deployment/network_policy.py grok_bridge/deployment/test_network_policy.py grok_bridge/deployment/network_transaction.py grok_bridge/deployment/test_network_transaction.py grok_bridge/deployment/network_docker.py grok_bridge/deployment/test_network_docker.py grok_bridge/deployment/network_compose.py grok_bridge/deployment/test_network_compose.py grok_bridge/deployment/rehearse_network.py grok_bridge/deployment/network_nginx.py grok_bridge/deployment/test_network_nginx.py grok_bridge/deployment/test_network_harness_guard.py
 
 # Explicit isolated fixture only; no release integration or automatic deletion.
 .PHONY: test-grok-network-docker
