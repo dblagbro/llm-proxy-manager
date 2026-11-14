@@ -1,3 +1,5 @@
+> November 14 preparation: the Grok dedicated-network planner is tested source, **not deployed or wired into the release operator**. See [the network preparation limits](docs/grok-bridge-security.md#dedicated-network-preparation-2026-11-14-not-deployed).
+
 > Grok security candidate 1.2.0 / repository 5.22.55 is **not deployed**.
 > See [docs/grok-bridge-security.md](docs/grok-bridge-security.md) for the staged access boundary and release gates.
 

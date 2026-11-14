@@ -174,3 +174,12 @@ lint-gateway-recovery:
 test-gateway-recovery-docker:
 	test -n "$(GATEWAY_RECOVERY_RUN_ID)" && test -n "$(GATEWAY_CAPACITY_GUARD)"
 	sudo "$(GATEWAY_RECOVERY_PYTHON)" "$(GATEWAY_CAPACITY_GUARD)" --peak-gib 3 -- "$(GATEWAY_RECOVERY_PYTHON)" "$(CURDIR)/tools/gateway_recovery/rehearse_gateway.py" --run-id "$(GATEWAY_RECOVERY_RUN_ID)"
+
+# Pure dedicated-network preparation: no Docker or host changes.
+.PHONY: test-grok-network lint-grok-network
+test-grok-network:
+	$(GROK_PYTHON) -m unittest discover -s grok_bridge/deployment -p test_network_policy.py -v
+
+lint-grok-network:
+	ruff check --target-version py310 grok_bridge/deployment/network_policy.py grok_bridge/deployment/test_network_policy.py
+	ruff format --check --target-version py310 grok_bridge/deployment/network_policy.py grok_bridge/deployment/test_network_policy.py

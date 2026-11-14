@@ -206,3 +206,61 @@ and the [operator runbook](../grok_bridge/deployment/RUNBOOK.md).
 Production remains on the original image. No real provider call or new scan was
 performed. Global lint/release policy, parent PR resolution, final CI and a fresh
 cutover snapshot still gate deployment.
+
+## Dedicated network preparation (2026-11-14, not deployed)
+
+`deployment/network_policy.py` is a pure planner over resolved Compose JSON.
+It does not read Docker, write configuration, attach containers, or run a release.
+`plan_networks` returns a private copied model and a separate sanitized receipt;
+never publish or log the copied model because it retains existing secrets.
+`verify_network_scope` rejects changes outside the exact network transformation.
+`expected_runtime_networks` describes expected state, not observed Docker state.
+
+The reviewed input has Grok, Nginx and the gateway solely on logical `default`
+(`docker_default`). The candidate puts Grok only on `docker_grok_security`,
+an egress-capable bridge, and adds that network to Nginx and the gateway while
+preserving their existing attachments and all other service configuration.
+Explicit service-name aliases preserve Nginx upstream resolution and the
+`http://llm-proxy2:3000/api/auth/me` callback. No Grok host ports are allowed.
+The hardened image binds both raw VNC 5900 and noVNC 6080 to loopback; trusted
+consumers should reach the authenticated bridge on 8443 only.
+
+New consumer attachments use `gw_priority: -1`; the reviewed existing attachment
+must have a nonnegative gateway priority. Before use, verify Docker supports
+`network connect --gw-priority` and Compose is at least 2.33.1. Docker's
+[`gw_priority` documentation](https://docs.docker.com/reference/compose-file/services/#gw_priority)
+explains that highest priority selects the default gateway; `priority` does not.
+The planner preserves old options and does not assume attachment order determines
+routing. Current policy conservatively refuses unfamiliar topologies for review.
+
+Run `make test-grok-network lint-grok-network`. These checks use synthetic data.
+They establish planning behavior, not runtime isolation, rollback, or release
+approval. The gateway application version is unchanged because this is unshipped
+preparation and is not connected to the release operator.
+
+Before migration, integrate with the final-image operator correction in PR17;
+the existing operator rejects network changes and cannot deploy this plan.
+Record current IDs, network membership/aliases, config hashes and default routes;
+reject existing-network collisions and extra live members. Journal intent before
+each in-place consumer attachment, reconcile timeouts by exact IDs, and preserve
+concurrent edits. Rollback may detach only attachments added by that transaction
+to unchanged containers and restore Grok's original network and retained volume.
+Do not recreate the gateway/Nginx just to attach a network. Persist the final
+canonical Compose source so a later recreation keeps the reviewed topology.
+
+Required isolated acceptance still includes unchanged consumer routes; gateway
+auth callback and Nginx-to-8443; denial of outsider access to 5900/6080/8443 and
+trusted-consumer access to 5900/6080; admin HTTP/WebSocket flows; restart/recreation
+persistence; interrupted attachment and rollback. Check reachability independently
+of Docker configuration and use synthetic browser state. Production browser
+profiles, cookies, login and provider calls are outside this preparation test.
+Global lint/release policy remains unresolved. Coordinator uses its separate
+review/publication process and is not part of this planner.
+
+Preparation evidence at 2026-11-14 07:09 UTC: 18 synthetic network tests and
+scoped lint/formatting passed. Docker 29.9.3 / Compose 5.7.1 accepted the synthetic
+model and preserved consumer gateway priority -1. The planner accepted the live
+resolved model entirely in memory; target container IDs, images and configuration
+fingerprints were unchanged. No network/container was created. The repository
+`make lint` command still fails with 3,255 findings in unchanged `app/`/`tests/`;
+this is an open release gate, not a newly passing global check.

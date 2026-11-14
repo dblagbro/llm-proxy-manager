@@ -1,3 +1,5 @@
+> November 14 preparation: the Grok dedicated-network planner is tested source, **not deployed or wired into the release operator**. See [the network preparation limits](grok-bridge-security.md#dedicated-network-preparation-2026-11-14-not-deployed).
+
 # ✅ Live now — 2026-11-13 (v5.22.61, both nodes)
 
 **v5.22.61 deployed to tmrwww01 + tmrwww02** (rolling, peer-first; each node

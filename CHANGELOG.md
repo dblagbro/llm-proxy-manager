@@ -1,5 +1,14 @@
 # Changelog
 
+### Unreleased preparation — Grok network policy (2026-11-14)
+
+- Add a pure, fail-closed dedicated-network planner and synthetic topology/scope
+  tests. No application version, deployed configuration or release operator changes.
+- Keep Grok-only membership, consumer aliases/default routes, unrelated settings
+  and private configuration boundaries explicit. Runtime isolation, transaction
+  integration, rollback acceptance and release-policy clearance remain pending.
+
+
 All notable changes since v2.7.6. Older history available in `git log`.
 
 ### v5.22.61 (2026-11-13)
