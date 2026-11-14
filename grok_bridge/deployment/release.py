@@ -2053,13 +2053,20 @@ def restore_configs(folder, state):
 
 
 def rollback(folder, state, host):
-    has_network = network_contract_present(state)
+    return _rollback_transaction(folder, state, host)
+
+
+def _rollback_transaction(folder, state, host):
+    """Production recovery stays independent of deployment approval evidence."""
+    _production_deployment_scope(folder, state)
+    dependencies = _ProductionDeployment(folder, state, host)
+    has_network = dependencies.has_network()
     assert_artifacts(folder, state)
     old = json.loads((folder / "original-inspect.json").read_text())
     nginx = json.loads((folder / "nginx-inspect.json").read_text())
     host.image(ORIGINAL)
     state["phase"] = "rollback_intent"
-    save(folder, state)
+    dependencies.persist()
     live = host.optional_service()
     require(
         live is None or live["Image"] in (ORIGINAL, CANDIDATE),
@@ -2074,25 +2081,25 @@ def rollback(folder, state, host):
         ):
             # Reconcile a crash between candidate-id persistence and the nested
             # bridge binding; full runtime validation precedes any network audit.
-            record_candidate(folder, state, host, old, live)
+            dependencies.record_candidate(old, live)
         if not state.get("stop_intent"):
             require(state.get("network_intent") is True, "No network or stop action was requested")
             # A pre-stop interruption must not stop/recreate the healthy original.
             assert_files(folder, state, "before")
-            audit_prepared_original(state, host, old)
-            network_engine(folder, state, host, mutate=True).rollback()
+            dependencies.audit_original(old)
+            dependencies.network(mutate=True).rollback()
             state.update(phase="network_only_rolled_back", deployed=False)
-            save(folder, state)
+            dependencies.persist()
             require(host.others() == state["others"], "Unrelated container changed during rollback")
             return
-        audit_network(folder, state, host)
+        dependencies.audit_network()
     if live is not None and live["Image"] == CANDIDATE:
         require(
             state.get("candidate_id") == live["Id"],
             "Candidate rollback identity mismatch",
         )
         host.stop(live["Id"], allow_unclean=True)
-    conflicts = restore_configs(folder, state)
+    conflicts = dependencies.restore_configs()
     # Frozen resolved config preserves the original token, image and named volume
     # even if another operator changed a canonical env/config file meanwhile.
     if live is not None and live["Image"] == ORIGINAL:
@@ -2115,24 +2122,24 @@ def rollback(folder, state, host):
             SERVICE,
         )
     live = host.healthy(ORIGINAL)
-    assert_runtime(old, live, state["original_data"], ORIGINAL, state.get("managed_environment"))
+    dependencies.verify_original(old, live)
     # Persist the newly recovered original before any later check/reload can fail;
     # a second controller must recognize this exact rollback container.
     state.update(rollback_id=live["Id"], phase="original_runtime_recovered")
-    save(folder, state)
+    dependencies.persist()
     if not conflicts:
         host.reload_nginx(nginx)
         if has_network:
             # Only the original bridge on its original network may remain when
             # consumer attachments are detached. The engine refuses a bridge member.
-            network_engine(folder, state, host, mutate=True).rollback()
+            dependencies.network(mutate=True).rollback()
     state.update(
         phase="rolled_back" if not conflicts else "original_runtime_recovered_config_conflict",
         deployed=False,
         rollback_id=live["Id"],
         configuration_conflicts=conflicts,
     )
-    save(folder, state)
+    dependencies.persist()
     require(host.others() == state["others"], "Unrelated container changed during rollback")
     require(
         not conflicts,
@@ -2144,12 +2151,12 @@ def deploy(folder, state, host, evidence):
     return _deploy_transaction(folder, state, host, evidence)
 
 
-def _production_deployment_scope(folder, state, evidence):
-    """Reject recognizable lab inputs; this is not a replacement for release gates."""
+def _production_deployment_scope(folder, state, evidence=None):
+    """Reject lab inputs; omitted evidence imposes no deployment gate on recovery."""
     from network_lab_context import ROOT as LAB_ROOT
 
     _journal_production(state)
-    for record in (state, evidence):
+    for record in (state,) if evidence is None else (state, evidence):
         require(
             not {"lab_context", "lab_binding", "execution_admission"} & set(record)
             and record.get("mode") != "lab"
@@ -2206,6 +2213,21 @@ class _ProductionDeployment:
 
     def rollback(self):
         return rollback(self.folder, self.state, self.host)
+
+    def has_network(self):
+        return network_contract_present(self.state)
+
+    def restore_configs(self):
+        return restore_configs(self.folder, self.state)
+
+    def verify_original(self, old, live):
+        return assert_runtime(
+            old,
+            live,
+            self.state["original_data"],
+            ORIGINAL,
+            self.state.get("managed_environment"),
+        )
 
 
 def _deploy_transaction(folder, state, host, evidence):

@@ -574,3 +574,41 @@ authority, and context-aware Host/capacity/snapshot/rollback integration. Only
 after those seams are complete can a separate admitted lab dispatcher reuse the
 transaction body. Production release/lint, H7/W16, independent Coordinator and
 private backup gates remain open; this is not a deployment approval.
+
+
+## Production recovery factoring (source preparation, 2026-11-14)
+
+The public `rollback(folder, state, host)` entry now delegates to one private
+`_rollback_transaction`. It rejects recognizable lab records and generation
+paths before file or host effects, then constructs the same fixed production
+delegation used by deploy. Recovery never invokes the deployment release gate
+and does not need deployment-approval evidence; a failed deployment must remain
+recoverable. The scope helper accepts omitted evidence only for this state/path
+check. Deployment still performs its complete existing gate first and passes its
+explicit evidence unchanged. No caller context, adapter or callback is accepted.
+
+The rollback transaction never calls the dispatcher's `rollback` method, avoiding
+recursive dispatch. The deploy recovery route remains: deploy transaction,
+fixed rollback delegation, public rollback, private rollback transaction.
+Existing dispatch methods are unchanged; three fixed methods delegate network
+contract detection, configuration restoration and original-runtime validation.
+
+Expanding fixed delegation reproduces the prior rollback algorithm AST exactly.
+Network-only recovery before original stop preserves the running original.
+Ambiguous candidate identity is recorded before candidate stop or network audit.
+Only the retained original identity is restarted, or the frozen original
+configuration recreates it. The recovered original ID is saved before reload or
+later checks can fail. Concurrent configuration edits are retained; recovery
+records the conflict and leaves consumer attachments intact before refusing final
+acceptance. Genuine legacy recovery remains supported. No deployment approval
+has been added as a prerequisite for emergency recovery.
+
+Source tests exercise these branches through synthetic fixtures, including
+explicit failure if recovery calls the deploy gate. The existing tests, deploy
+transaction, Host, preparation, snapshot/capacity, CLI, locks and release gate
+remain unchanged. No live recovery, observer/collector, lab fixture or production
+operation is performed by this source work. The lab dispatcher, context-aware
+Host/snapshot/rollback operations and independently verified lab admission remain
+pending; the observation session grants no mutation permission. Allocation,
+console access, working-fixture replacement authority and all existing release,
+H7/W16, Coordinator and private backup gates remain open.
