@@ -29,7 +29,7 @@ LEDGER = "nginx-validation.private.json"
 MEMORY = 128 * 1024 * 1024
 # nginx -t assigns its new temporary cache directories to the configured worker.
 # Only owned scratch/tmpfs is writable; every original bind is recursively read-only.
-CAP_ADD = ["CHOWN"]
+CAP_ADD = ["CAP_CHOWN"]
 TMPFS = {
     "/tmp": "rw,noexec,nosuid,size=16m",
     "/var/cache/nginx": "rw,noexec,nosuid,size=16m",
@@ -559,7 +559,7 @@ def _create_args(state):
         "--cap-drop",
         "ALL",
         "--cap-add",
-        "CHOWN",
+        "CAP_CHOWN",
         "--security-opt",
         "no-new-privileges:true",
         "--memory",

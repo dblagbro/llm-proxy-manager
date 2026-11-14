@@ -425,6 +425,11 @@ def fixture_observation(folder, current, before_ids):
         "oom_killed": oom if type(oom) is bool else None,
         "configuration_verified": False,
         "observation_only": True,
+        "docker_status": runtime.get("Status")
+        if type(runtime.get("Status")) is str
+        and runtime.get("Status")
+        in {"created", "running", "paused", "restarting", "removing", "exited", "dead"}
+        else "unknown",
     }
 
 

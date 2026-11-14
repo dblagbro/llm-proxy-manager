@@ -106,7 +106,7 @@ class FakeHost:
             "NanoCpus": 500000000,
             "PidsLimit": 64,
             "CapDrop": ["ALL"],
-            "CapAdd": ["CHOWN"],
+            "CapAdd": ["CAP_CHOWN"],
             "OomKillDisable": False,
             "SecurityOpt": ["no-new-privileges:true"],
             "IpcMode": "private",
@@ -246,7 +246,7 @@ def test_pre_cutover_check_creates_bounded_retained_fixture_and_reuses(context):
     assert DEDICATED_ID not in create and all("container:" not in arg for arg in create)
     assert "--read-only" in create and "--pull" in create and "never" in create
     assert create.count("--cap-add") == 1
-    assert create[create.index("--cap-add") + 1] == "CHOWN"
+    assert create[create.index("--cap-add") + 1] == "CAP_CHOWN"
     assert create[create.index("--cap-drop") + 1] == "ALL"
     mounts = [create[i + 1] for i, arg in enumerate(create) if arg == "--mount"]
     assert len(mounts) == 3
@@ -403,16 +403,17 @@ def test_nondefault_fixture_oom_setting_refuses_before_start(context, value):
     [
         None,
         [],
-        "CHOWN",
+        "CAP_CHOWN",
+        ["CHOWN"],
         ["ALL"],
-        ["CHOWN", "CHOWN"],
+        ["CAP_CHOWN", "CAP_CHOWN"],
         ["FOWNER"],
         ["DAC_READ_SEARCH"],
         ["DAC_OVERRIDE"],
         ["DAC_READ_SEARCH", "SYS_ADMIN"],
-        ["CHOWN", "FOWNER"],
-        ["CHOWN", "DAC_OVERRIDE"],
-        ["CHOWN", "SYS_ADMIN"],
+        ["CAP_CHOWN", "FOWNER"],
+        ["CAP_CHOWN", "DAC_OVERRIDE"],
+        ["CAP_CHOWN", "SYS_ADMIN"],
     ],
 )
 def test_only_exact_chown_capability_is_allowed(context, capabilities):
@@ -423,7 +424,7 @@ def test_only_exact_chown_capability_is_allowed(context, capabilities):
     assert not any(call[1] == "start" for call in host.calls)
 
 
-@pytest.mark.parametrize("capabilities", [None, ["CHOWN", "DAC_OVERRIDE"]])
+@pytest.mark.parametrize("capabilities", [None, ["CAP_CHOWN", "DAC_OVERRIDE"]])
 def test_capability_drift_on_retained_fixture_cannot_authorize_actions(context, capabilities):
     host, _, _ = context
     validate(context)
@@ -757,7 +758,7 @@ def test_certificate_link_resolves_inside_private_snapshot(include_context):
     assert Path(tls["Source"]) == private and tls["RW"] is False
     link = private / "live/cert.pem"
     assert link.is_symlink() and link.resolve() == private / "archive/cert1.pem"
-    assert host.fixture["HostConfig"]["CapAdd"] == ["CHOWN"]
+    assert host.fixture["HostConfig"]["CapAdd"] == ["CAP_CHOWN"]
 
 
 def test_original_include_changed_after_create_prevents_start(include_context):

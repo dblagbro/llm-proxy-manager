@@ -593,6 +593,26 @@ def damage_fixture_configuration(host):
     host.fixture["HostConfig"]["OomScoreAdj"] = 123
 
 
+@pytest.mark.parametrize("status", ["created", [], {}, None, "PRIVATE-INVALID-STATUS"])
+def test_created_fixture_zero_exit_code_is_not_validation_success(acceptance, status):
+    host = acceptance[0]
+
+    def wrong_capability(fixture):
+        fixture["HostConfig"]["CapAdd"] = ["CHOWN"]
+        fixture["State"].update(Status=status, ExitCode=0)
+
+    host.mutate = wrong_capability
+    result = perform(acceptance)
+    assert result["acceptance"] == "failed"
+    assert result["fixture"] is None
+    assert result["fixture_observation"]["docker_status"] == (
+        "created" if status == "created" else "unknown"
+    )
+    assert result["fixture_observation"]["exit_code"] == 0
+    assert result["fixture_observation"]["observation_only"] is True
+    assert not any(c[1] == "start" for c in host.calls)
+
+
 def test_bad_fixture_fingerprint_does_not_suppress_original_or_input_audits(acceptance):
     host = acceptance[0]
     host.after_start = damage_fixture_configuration
@@ -607,6 +627,7 @@ def test_bad_fixture_fingerprint_does_not_suppress_original_or_input_audits(acce
         "oom_killed": False,
         "configuration_verified": False,
         "observation_only": True,
+        "docker_status": "unknown",
     }
     assert result["audit_status"] == {
         "inventory_capture": "passed",

@@ -218,3 +218,10 @@ creates mode0700 cache directories and assigns the worker UID;
 is separate from discretionary-access bypass;
 [forced recursive read-only mounts](https://docs.docker.com/engine/storage/bind-mounts/#recursive-mounts)
 prevent writes through original mounted trees.
+
+The fourth attempt at 1284b1c refused immediately after Docker create: Docker
+reports the canonical capability name CAP_CHOWN. The fixture never started;
+its default exit code0 does not prove nginx succeeded. All142 originals and14
+networks matched. The source now requests and verifies exactly CAP_CHOWN;
+short-name aliases are refused in inspection, and observations retain Docker
+status so created-only attempts are explicit. All four fixtures remain retained.
