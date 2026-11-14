@@ -13,6 +13,12 @@ Restore/remove that bridge membership through its release operator before callin
 rollback. Networks are never deleted, including empty networks after rollback.
 A changed default route is a refusal requiring operator reconciliation; this
 primitive deliberately does not claim automatic rollback can safely repair drift.
+
+Optional lab mode binds the full descriptor into a distinct journal schema and
+requires the exact maintained Docker adapter's physical map/project. The adapter
+still returns canonical projections; the transaction algorithm is shared. These
+bindings do not verify actual VM/engine identity, isolation, storage, capacity or
+operator permission. No lab entrypoint or admission bypass is provided here.
 """
 
 import copy
@@ -91,6 +97,52 @@ def _network(value, txid):
     return value
 
 
+def _lab_context(context):
+    if context is None:
+        return
+    try:
+        policy._identity(context)
+    except policy.NetworkPolicyError:
+        raise TransactionError("Invalid lab context") from None
+
+
+def _lab_host(host, context, transaction_id, consumers=None):
+    if context is None:
+        return
+    # Delayed import avoids changing the production injected-host contract.
+    from network_docker import DockerHost
+
+    _require(type(host) is DockerHost, "Lab requires the maintained Docker adapter")
+    _require(
+        type(host.resources) is dict
+        and all(type(k) is str and type(v) is str for k, v in host.resources.items())
+        and host.resources == context.resource_map()
+        and type(host.project) is str
+        and host.project == context.project,
+        "Lab adapter namespace differs",
+    )
+    _require(type(host.enabled) is bool, "Invalid lab adapter capability")
+    if host.allowed is not None:
+        _require(
+            type(host.allowed) is dict
+            and set(host.allowed) == set(CONSUMERS)
+            and all(_hex(value) for value in host.allowed.values()),
+            "Invalid lab consumer allowlist",
+        )
+        if consumers is not None:
+            _require(
+                host.allowed == {role: value["id"] for role, value in consumers.items()},
+                "Lab consumer binding differs",
+            )
+    if host.enabled:
+        _require(host.allowed is not None, "Lab mutation binding is incomplete")
+    if host.enabled or host.transaction_id is not None:
+        _require(
+            type(host.transaction_id) is str and host.transaction_id == transaction_id,
+            "Lab adapter transaction differs",
+        )
+
+
 class NetworkTransaction:
     """Inject host and save callbacks; inspect `state` for a detached journal copy.
 
@@ -102,9 +154,16 @@ class NetworkTransaction:
     persist its supplied sanitized JSON before returning, without exposing secrets.
     """
 
-    def __init__(self, host, save, state):
+    def __init__(self, host, save, state, *, lab_context=None):
+        _lab_context(lab_context)
+        self._lab_mode = lab_context is not None
+        self._lab_context = lab_context
         self.host, self.save = host, save
-        self._validate_state(state)
+        self._validate_state(state, lab_context=lab_context)
+        _lab_host(host, lab_context, state["transaction_id"], state["consumers"])
+        if lab_context is not None:
+            _require(host.bridge_id == state["bridge_id"], "Lab bridge binding differs")
+            self._lab_adapter_enabled = host.enabled
         self._state = copy.deepcopy(state)
 
     @property
@@ -112,11 +171,24 @@ class NetworkTransaction:
         return copy.deepcopy(self._state)
 
     @staticmethod
-    def _validate_state(state):
-        _fields(state, ("schema", "transaction_id", "phase", "network", "consumers", "bridge_id"))
+    def _validate_state(state, *, lab_context=None):
+        _lab_context(lab_context)
+        fields = ("schema", "transaction_id", "phase", "network", "consumers", "bridge_id")
+        if lab_context is not None:
+            fields += ("mode", "lab_context")
+        _fields(state, fields)
         _require(
-            type(state["schema"]) is int and state["schema"] == 1, "Unsupported journal schema"
+            type(state["schema"]) is int and state["schema"] == (2 if lab_context else 1),
+            "Unsupported journal schema",
         )
+        if lab_context is not None:
+            from network_lab_context import LabContextError
+
+            _require(type(state["mode"]) is str and state["mode"] == "lab", "Invalid lab mode")
+            try:
+                lab_context.verify_journal_binding(state["lab_context"])
+            except LabContextError:
+                raise TransactionError("Lab journal context differs") from None
         _require(
             type(state["transaction_id"]) is str and bool(_TX.fullmatch(state["transaction_id"])),
             "Invalid transaction identity",
@@ -198,48 +270,90 @@ class NetworkTransaction:
             "Duplicate journal consumer identity",
         )
 
+    def _guard_lab(self, *, host_operation=False):
+        marked = self._state.get("schema") == 2 or any(
+            key in self._state for key in ("mode", "lab_context")
+        )
+        if self._lab_mode or self._lab_context is not None or marked:
+            _require(self._lab_mode and self._lab_context is not None, "Lab context is required")
+            self._validate_state(self._state, lab_context=self._lab_context)
+            _lab_host(
+                self.host,
+                self._lab_context,
+                self._state["transaction_id"],
+                self._state["consumers"],
+            )
+            _require(
+                self.host.enabled is self._lab_adapter_enabled, "Lab adapter capability changed"
+            )
+            if host_operation:
+                _require(
+                    self.host.bridge_id == self._state["bridge_id"], "Lab bridge binding differs"
+                )
+
     def _checkpoint(self, change):
+        self._guard_lab()
         next_state = self.state
         change(next_state)
-        self._validate_state(next_state)
+        self._validate_state(next_state, lab_context=self._lab_context)
         try:
             self.save(copy.deepcopy(next_state))
         except Exception:  # noqa: BLE001 -- injected persistence errors may contain private data.
             raise TransactionError(
                 "Journal persistence failed; no next action authorized"
             ) from None
+        self._guard_lab()
         self._state = next_state
 
     def _read(self, method, *args):
+        self._guard_lab(host_operation=True)
         try:
-            return getattr(self.host, method)(*args)
+            result = getattr(self.host, method)(*args)
         except Exception:  # noqa: BLE001 -- injected adapter errors must not leak raw inspection data.
             raise TransactionError("Host inspection failed; reconcile before continuing") from None
+        self._guard_lab(host_operation=True)
+        return result
 
     def _attempt(self, method, *args):
+        self._guard_lab(host_operation=True)
         try:
-            return getattr(self.host, method)(*args)
+            result = getattr(self.host, method)(*args)
         except Exception:  # noqa: BLE001 -- reconcile observations; never log private adapter errors.
-            return None
+            result = None
+        self._guard_lab(host_operation=True)
+        return result
 
     @classmethod
-    def begin(cls, host, save, transaction_id):
+    def begin(cls, host, save, transaction_id, *, lab_context=None):
+        _lab_context(lab_context)
         _require(
             type(transaction_id) is str and bool(_TX.fullmatch(transaction_id)),
             "Invalid transaction identity",
         )
+        _lab_host(host, lab_context, transaction_id)
+        if lab_context is not None:
+            _require(host.bridge_id is None, "Initial lab bridge binding must be empty")
         initial = {
-            "schema": 1,
+            "schema": 2 if lab_context else 1,
             "transaction_id": transaction_id,
             "phase": "prepared",
             "network": {"phase": "planned", "id": None, "proof": None},
             "consumers": {},
             "bridge_id": None,
         }
+        if lab_context is not None:
+            initial.update(mode="lab", lab_context=lab_context.journal_binding())
+        enabled = host.enabled if lab_context is not None else None
         try:
             _require(host.network(NETWORK) is None, "Dedicated network already exists")
+            _lab_host(host, lab_context, transaction_id)
+            if lab_context is not None:
+                _require(host.enabled is enabled, "Lab adapter capability changed")
             for name in CONSUMERS:
                 current = _container(host.container(name), name)
+                _lab_host(host, lab_context, transaction_id)
+                if lab_context is not None:
+                    _require(host.enabled is enabled, "Lab adapter capability changed")
                 _require(set(current["networks"]) == {DEFAULT}, "Initial consumer topology differs")
                 attachment = current["networks"][DEFAULT]
                 _require(attachment["gw_priority"] >= 0, "Original default route requires review")
@@ -265,7 +379,9 @@ class NetworkTransaction:
             len({r["default_network_id"] for r in initial["consumers"].values()}) == 1,
             "Original network identities differ",
         )
-        result = cls(host, save, initial)
+        if lab_context is not None:
+            _require(host.enabled is enabled, "Lab adapter capability changed")
+        result = cls(host, save, initial, lab_context=lab_context)
         result._checkpoint(lambda _: None)
         return result
 

@@ -221,3 +221,35 @@ operation, image scan or accepted runtime fixture was performed for this increme
 Validation for this increment: 100 release tests and 477 network tests, including
 99 new lab-policy checks, with 201 subtests, passed on Linux. Scoped lint and
 format passed. See docs/evidence/grok-lab-policy-source-20261114.json.
+
+## Lab journal and adapter consistency checkpoint
+
+NetworkTransaction now accepts an explicit validated lab context. Lab journals
+use schema 2 with mode=lab and the complete context binding. Production schema 1
+and default calls retain their prior contract and reject lab metadata. No missing
+binding is inferred or upgraded. A changed full descriptor refuses cold resume,
+including when VM, engine, source or image changes leave physical names identical.
+
+Lab mode requires the exact maintained DockerHost adapter with the descriptor's
+physical resource map and Compose project. Transaction identity and consumer IDs
+must match its existing capability and the journal; no read-only adapter is enabled
+automatically. Rechecks surround reads, mutations and saves. Identity drift is
+outside ambiguous-transport handling and cannot be swallowed as a timeout. The
+canonical projection/transaction algorithm is shared. The new bridge ID is saved
+before adapter rebinding; subsequent host operations require the matching bridge
+binding. Caller-held lock, durable persistence and configuration CAS remain required.
+
+This is consistency checking, not observation of the actual VM/engine identity,
+containment, capacity or authorization. Tests use the real adapter with simulated
+command responses, including ambiguous effects and controller interruption before
+receipt persistence; they are not runtime acceptance or power-loss proof. No new
+CLI or actual lab invocation is provided. Production release.py is unchanged.
+Distinct admission/storage/capacity, runtime release/Nginx context integration and
+the full lifecycle harness remain pending; allocation and execution gates stand.
+
+Review corrected two early-refusal gaps: a pre-bound bridge on initial preparation
+and loss of the active context. Initial binding checks and pinned instance mode
+now refuse before subsequent I/O or save callbacks. Validation: 100 release tests
+and 527 network tests (50 new lab-journal checks included), with 201 subtests,
+passed on Linux; scoped lint and format passed. See
+docs/evidence/grok-lab-journal-source-20261114.json.
