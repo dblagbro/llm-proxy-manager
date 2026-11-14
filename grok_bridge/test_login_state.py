@@ -77,8 +77,7 @@ def test_refresh_tick_warns_when_logged_out(bridge, monkeypatch, caplog):
         asyncio.run(module._cookie_refresh_loop())
     assert module._last_refresh_status == "logged out"
     assert any(
-        r.levelno == logging.WARNING and "logged out" in r.getMessage()
-        for r in caplog.records
+        r.levelno == logging.WARNING and "logged out" in r.getMessage() for r in caplog.records
     )
     assert not any("tick: ok" in r.getMessage() for r in caplog.records)
 
