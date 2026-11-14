@@ -208,6 +208,44 @@ def parse_usage_response(body: dict) -> dict:
     return out
 
 
+def parse_fable_usage(body: Any) -> dict:
+    """Extract weekly + Fable figures for the usage-reset advisor.
+
+    Live shape (captured 2026-11-13): ``seven_day.utilization`` /
+    ``seven_day.resets_at`` for the weekly window, plus a
+    ``weekly_scoped_shares`` list whose ``limit_index`` points into
+    ``limits[]``; the entry whose ``scope.model.display_name`` is "Fable"
+    carries ``used_percent_of_weekly`` (Fable's contribution to the weekly
+    limit, in percentage points). No "resets available" count exists in the
+    response, so ``resets_available`` is always None for now.
+
+    Never raises; missing pieces come back as None.
+    """
+    out: dict = {
+        "weekly_pct": None, "weekly_resets_at": None,
+        "fable_pp": None, "resets_available": None,
+    }
+    if not isinstance(body, dict):
+        return out
+    util, resets = _extract_window(body.get("seven_day"))
+    out["weekly_pct"], out["weekly_resets_at"] = util, resets
+    limits = body.get("limits")
+    shares = body.get("weekly_scoped_shares")
+    if isinstance(limits, list) and isinstance(shares, list):
+        for sh in shares:
+            try:
+                lim = limits[int(sh.get("limit_index"))]
+                name = ((lim.get("scope") or {}).get("model") or {}).get("display_name")
+                pp = sh.get("used_percent_of_weekly")
+            except Exception:
+                continue
+            if isinstance(name, str) and name.strip().lower() == "fable" \
+                    and isinstance(pp, (int, float)) and not isinstance(pp, bool):
+                out["fable_pp"] = float(pp)
+                break
+    return out
+
+
 async def fetch_usage(
     *,
     org_uuid: str,

@@ -425,6 +425,14 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"anthropic_billing_worker failed to start: {e}")
 
+    # v5.22.59 — usage-reset advisor. Idles unless
+    # USAGE_RESET_ADVISOR_ENABLED=true; advisory email only, never redeems.
+    try:
+        from app.monitoring import usage_reset_advisor as _ura
+        _ura.start()
+    except Exception as e:
+        logger.warning(f"usage_reset_advisor failed to start: {e}")
+
     # v3.7.27 (#245) — ChatGPT Plus / Codex Cloud billing scraper.
     # Same shape as the Anthropic one. No-op until the operator pastes
     # codex_session_cookies + codex_usage_endpoint_url on a codex-oauth

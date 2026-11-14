@@ -2,6 +2,57 @@
 
 All notable changes since v2.7.6. Older history available in `git log`.
 
+### v5.22.60 (2026-11-13)
+
+grok-web routing and health fixes.
+
+- **Fallback chain no longer sends grok-web through litellm.** `routing/fallback.py`
+  skipped only `claude-oauth` / `ChatGPT-oauth-plan`; a `grok-web` candidate reached
+  litellm, which sent the placeholder key to api.x.ai ("Incorrect API key") and the
+  breaker recorded an auth failure. Both skip sites (primary and `_next_route`) now use
+  `OWN_DISPATCHER_PROVIDER_TYPES`; the provider is skipped and the next candidate used.
+- **Keepalive probe timeout is per provider type.** New `_PROBE_TIMEOUT_BY_TYPE`
+  (`grok-web`: 60s); all other types keep 15s.
+- **Bridge reports login state.** `grok_bridge/app.py`: the cookie-refresh tick logs a
+  WARNING "logged out" instead of "ok" when `sso`/`x-userid` are missing; `/api/chat`
+  returns 401 `{"error":"grok session logged out"}` before any browser interaction;
+  `/healthz` adds `logged_in` (HTTP status unchanged). Auth checks untouched. The proxy
+  maps that 401 to a clear `GrokWebAuthError` message.
+- **provider_test no longer logs failures as ok.** `test_provider()` results use
+  `success`, but the activity log read `ok` with a default of True, so failed tests
+  (e.g. "invalid bridge token") were recorded as ok. `_test_result_ok` now honours
+  `success`/`ok`/`error`.
+### v5.22.59 (2026-11-13)
+
+Usage-reset advisor v1 (built, OFF by default, advisory only). Watches each
+claude-oauth account's claude.ai `/usage` response and emails the operator when
+a Fable-only limit reset is worth spending: weekly >= 95% AND Fable's share of
+the weekly limit (`weekly_scoped_shares[].used_percent_of_weekly` for the
+"Fable" scoped limit) >= 30 pp, never when the weekly window resets within 2 h,
+at most once per account per weekly window. New pure `decide()` in
+`app/monitoring/usage_reset_advisor.py`, `parse_fable_usage()` in
+`app/providers/anthropic_billing.py`, new table `usage_reset_advisor_state`
+(last decision + "advised for window" marker, created by `create_all`), worker
+started from `app/main.py` (idles unless `USAGE_RESET_ADVISOR_ENABLED=true`),
+and `scripts/usage_reset_advisor_cron.py` as a second watcher sharing the same
+marker. Stale cookies / HTTP errors / unparseable or Fable-less responses send
+one "cannot read usage, check manually" alert per condition. A disabled
+`redeem_fable_reset()` stub raises NotImplementedError (redemption endpoint not
+captured; never called unless `USAGE_RESET_ADVISOR_REDEEM_ENABLED`, and even then
+only raises). No redemption, no extra claude.ai calls. Settings:
+`USAGE_RESET_ADVISOR_{ENABLED,INTERVAL_SEC,WEEKLY_PCT,FABLE_MIN_PP,SKIP_IF_RESET_WITHIN_SEC,REDEEM_ENABLED}`.
+### v5.22.58 (2026-11-13)
+
+Treat OpenAI's project spend-cap 429 ("Your project has reached its configured
+enforced spend limit") as a billing error. The text matched none of
+`BILLING_ERROR_PATTERNS`, so `acompletion_with_retry` retried it as a transient
+rate limit (4 app attempts x 2 SDK retries, ~20s added latency per request,
+~2,700 `openai_client_retry` rows/day) and the breaker never held the provider
+down. Added the `"spend limit"` pattern: the retry loop now raises on the first
+attempt and `record_failure(billing_error=True)` opens the breaker with a 6h
+hold-down. Also logs `router.metered_guard_rejected` (api_key_id, dropped count)
+when the per-key metered guard leaves zero providers; behaviour unchanged.
+
 ### v5.22.57 (2026-11-12)
 
 Fix activity_log error attribution across the ordered fallback chain. When the

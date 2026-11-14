@@ -546,8 +546,13 @@ async def select_provider(
     # path re-enters select_provider with the same key, so it inherits this.
     if effective_key and not await _key_metered_allowed(db, effective_key):
         from app.monitoring.helpers import is_subscription_provider
+        _before_guard = len(providers)
         providers = [p for p in providers if is_subscription_provider(p)]
         if not providers:
+            logger.warning(
+                "router.metered_guard_rejected api_key_id=%s dropped=%d",
+                effective_key, _before_guard,
+            )
             raise RuntimeError(
                 "No unmetered providers available — this key is restricted "
                 "to subscription providers (metered_allowed=false) and none "

@@ -124,8 +124,12 @@ from app.models.db_cluster_peer import (
 from app.models.db_model_pricing import (
     ModelPricingEntry,
 )
+from app.models.db_usage_reset_advisor import (
+    UsageResetAdvisorState,
+)
 
 __all__ = [
+    "UsageResetAdvisorState",
     "Base",
     "Session",
     # Provider domain

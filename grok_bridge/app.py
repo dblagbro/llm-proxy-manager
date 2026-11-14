@@ -211,6 +211,20 @@ def require_bridge_token(x_bridge_token: Optional[str] = Header(default=None)) -
     require_token(BRIDGE_TOKEN, x_bridge_token)
 
 
+def _cookies_logged_in(cookies) -> bool:
+    """True when the session cookies grok.com sets on login are present.
+
+    Accepts either a name->value dict or a Playwright cookie list. Same
+    criterion as /api/status (``sso`` and ``x-userid``). Values are never
+    inspected beyond presence and are never logged.
+    """
+    if isinstance(cookies, dict):
+        names = set(cookies)
+    else:
+        names = {c.get("name") for c in (cookies or [])}
+    return "sso" in names and "x-userid" in names
+
+
 # ── Cookie / header capture ──────────────────────────────────────────────
 async def _cookies_dict() -> dict[str, str]:
     """Snapshot the live BrowserContext cookies as a name→value map.
@@ -440,8 +454,19 @@ async def _cookie_refresh_loop():
                 async with _lock:
                     await _page.goto(GROK_BASE + "/", wait_until="domcontentloaded", timeout=20_000)
                     _last_refresh_at = time.time()
-                    _last_refresh_status = "ok"
-                logger.info("cookie-refresh tick: %s", _last_refresh_status)
+                    # v1.1.2: page.goto loading says nothing about login. A
+                    # logged-out session used to log "ok" here forever.
+                    if _cookies_logged_in(await _cookies_dict()):
+                        _last_refresh_status = "ok"
+                    else:
+                        _last_refresh_status = "logged out"
+                if _last_refresh_status == "ok":
+                    logger.info("cookie-refresh tick: %s", _last_refresh_status)
+                else:
+                    logger.warning(
+                        "cookie-refresh tick: logged out (sso/x-userid cookie missing) "
+                        "- re-login via the bridge /login page"
+                    )
             except Exception as e:
                 _last_refresh_status = f"error: {e}"
                 logger.warning("cookie-refresh failed: %s", e)
@@ -483,11 +508,13 @@ async def healthz(response: Response):
     recovery is still ``docker restart llm-proxy2-grok-bridge``.
     """
     browser_ok = False
+    logged_in = False
     detail = "no context"
     if _context is not None:
         try:
             # Cheap call that fails fast if the target is gone.
-            await _context.cookies(["https://grok.com"])
+            _cookies = await _context.cookies(["https://grok.com"])
+            logged_in = _cookies_logged_in(_cookies)
             browser_ok = True
             detail = "ok"
         except Exception as exc:
@@ -499,6 +526,9 @@ async def healthz(response: Response):
     return {
         "status": "ok" if browser_ok else "degraded",
         "browser": detail,
+        # Informational only: never changes the HTTP status, so the container
+        # healthcheck keeps passing and the operator can reach /login to fix it.
+        "logged_in": logged_in,
         "version": BRIDGE_VERSION,
         "ts": int(time.time()),
     }
@@ -1917,6 +1947,14 @@ async def chat(req: Request, _: None = Depends(require_bridge_token)):
         raise HTTPException(400, "conversation_id is required")
     if not messages:
         raise HTTPException(400, "messages is required")
+
+    # Fail fast when the grok.com session is logged out, before any browser
+    # interaction (cookie read only) or lock acquisition.
+    if not _cookies_logged_in(await _cookies_dict()):
+        return JSONResponse(
+            status_code=401,
+            content={"error": "grok session logged out"},
+        )
 
     # v3.3.3: short-circuit if we've recently been 429'd by grok.com.
     # Cuts grok-side load by ~half during throttle windows + lets the

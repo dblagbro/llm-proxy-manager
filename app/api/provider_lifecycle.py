@@ -140,6 +140,14 @@ async def release_manual_overrides(
     return {"released": result.rowcount, "re_enabled": enable}
 
 
+def _test_result_ok(result: dict) -> bool:
+    """Interpret a test_provider() result dict as pass/fail."""
+    for key in ("success", "ok"):
+        if key in result:
+            return bool(result[key])
+    return not result.get("error")
+
+
 @router.post("/{provider_id}/test")
 async def test_provider_endpoint(
     provider_id: str,
@@ -164,7 +172,10 @@ async def test_provider_endpoint(
     # Was previously invisible: no activity_log entry on test/scan/etc.
     try:
         from app.monitoring.activity import log_event
-        ok = bool(result.get("ok", True))
+        # v5.22.60: test_provider() results use ``success`` (not ``ok``); the
+        # old ``result.get("ok", True)`` therefore logged every failed test as
+        # ok. An ``error`` payload with no explicit flag also counts as failed.
+        ok = _test_result_ok(result)
         await log_event(
             db,
             event_type="provider_test",
@@ -176,7 +187,7 @@ async def test_provider_endpoint(
                 "provider_type": p.provider_type,
                 "ok": ok,
                 "result_summary": {k: v for k, v in result.items()
-                                   if k in ("ok", "error", "model", "latency_ms",
+                                   if k in ("ok", "success", "error", "model", "latency_ms",
                                             "deprecation_warning",
                                             "recommended_default_model")},
             },
