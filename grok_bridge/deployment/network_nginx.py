@@ -149,7 +149,9 @@ def _load(folder):
         value = json.loads(raw)
         _require("_ledger_sha256" not in value, "Invalid private validation ledger")
         _require(
-            value["schema"] == 1 and _TX.fullmatch(value["transaction"]),
+            type(value["schema"]) is int
+            and value["schema"] == 1
+            and _TX.fullmatch(value["transaction"]),
             "Invalid validation ledger",
         )
         _require(
@@ -277,7 +279,12 @@ def _fixture(value, state):
         "Validation image or hostname declaration differs",
     )
     for key in ("Env", "User", "WorkingDir", "ExposedPorts", "Healthcheck", "StopSignal"):
-        _require(config.get(key) == defaults.get(key), "Validation image defaults changed")
+        expected = defaults.get(key)
+        # Docker image inspection can omit User, while container creation records
+        # the unchanged default as an empty string. Do not normalize a named user.
+        if key == "User" and expected is None:
+            expected = ""
+        _require(config.get(key) == expected, "Validation image defaults changed")
     _require(
         config.get("Entrypoint") == ["nginx"]
         and config.get("Cmd") == ["-t"]

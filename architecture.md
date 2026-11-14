@@ -888,3 +888,10 @@ not deployed isolation. See grok_bridge/deployment/RUNBOOK.md for tests, gates,
 private NAS storage, topology scope and recovery limits. The old Docker lifecycle
 harness refuses the new operator before mutation; integrated real recovery and
 browser/outsider-denial acceptance remain pending. Coordinator remains separate.
+
+
+November 14: added a source-bound, capacity-guarded retained Nginx acceptance runner.
+It checks the staged full configuration twice without a production reload, audits
+all existing containers/networks and canonical files, and retains its fixture.
+Docker image User omission is normalized only to an empty container User;
+noninteger private journal schemas are refused. Real results are recorded separately.

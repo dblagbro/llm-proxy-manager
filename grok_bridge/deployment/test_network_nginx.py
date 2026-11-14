@@ -362,6 +362,26 @@ def test_changed_runtime_or_stage_during_check_is_not_success(context, fault):
     assert ledger(host)["phase"] != "passed_stopped_retained"
 
 
+@pytest.mark.parametrize("missing", [True, False])
+def test_omitted_image_user_is_explicit_empty_container_user(context, missing):
+    host, _, _ = context
+    if missing:
+        host.defaults.pop("User")
+    else:
+        host.defaults["User"] = None
+    host.mutate = lambda value: value["Config"].update(User="")
+    assert validate(context) == FIXTURE_ID
+
+
+def test_omitted_image_user_does_not_allow_container_user_override(context):
+    host, _, _ = context
+    host.defaults.pop("User")
+    host.mutate = lambda value: value["Config"].update(User="1000")
+    with pytest.raises(n.NginxValidationError, match="image defaults changed"):
+        validate(context)
+    assert not any(call[1] == "start" for call in host.calls)
+
+
 def test_absent_or_replaced_retained_fixture_never_hidden(context):
     host, _, _ = context
     validate(context)
@@ -450,6 +470,19 @@ def test_other_prefixed_container_is_never_in_inventory_exclusion(context):
     other["Id"] = "9" * 64
     other["Name"] += "-other"
     assert n.retained_validation_ids(host.folder, [other, host.fixture]) == {FIXTURE_ID}
+
+
+@pytest.mark.parametrize("schema", [True, 1.0, "1"])
+def test_noninteger_ledger_schema_is_refused_before_fixture_action(context, schema):
+    host, _, _ = context
+    validate(context)
+    state = ledger(host)
+    state["schema"] = schema
+    (host.folder / n.LEDGER).write_text(json.dumps(state))
+    host.calls.clear()
+    with pytest.raises(n.NginxValidationError, match="Invalid validation ledger"):
+        validate(context)
+    assert not host.calls
 
 
 def test_stale_controller_cannot_overwrite_newer_ledger(context):

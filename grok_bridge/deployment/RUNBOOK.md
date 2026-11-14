@@ -127,3 +127,26 @@ Real integrated recovery, interruption/power-loss behavior, browser session and
 outsider-denial acceptance, current engine capabilities, private NAS behavior and
 backup coverage, source review and release-policy resolution remain gates. Local
 `deployed_local_checks_passed` never means all project findings are closed.
+
+
+## Bounded retained Nginx acceptance runner
+
+`make test-grok-nginx-docker` runs only the pre-cutover staged full-configuration
+validator twice and verifies exact fixture reuse. Supply `GROK_PYTHON` as the
+absolute reviewed venv interpreter, `GROK_CAPACITY_GUARD` as
+`/usr/local/lib/codex-remediation/retention/capacity_guard.py`,
+`GROK_NGINX_EXPECTED_COMMIT` as the exact reviewed clean commit, and
+`GROK_NGINX_TEST_DIR` as a fresh direct child named `nginx-<unique-suffix>` under
+`/mnt/s/backups/codex-private-security-20261109/nginx-validation`.
+The 0.1 GiB guard bounds small fixture/metadata growth; no images are pulled.
+Only its two exact private parent directories may be created root:root 0700;
+shared parents and existing permissions remain unchanged. Off-site coverage
+remains unverified. All retained test artifacts require named cleanup approval.
+
+The runner captures all preexisting container/network identities and fingerprints,
+checks canonical Compose and Nginx files, and re-audits after success or failure.
+Only the exactly owned new validator may start or stop; no production service or
+network is changed. Diagnostics remain private. The sanitized result names its
+reviewed source and retained fixture. Snapshot comparisons do not exclude
+transient changes between observations. Passing this component cannot satisfy
+production dual-network, browser, outsider-denial or integrated recovery gates.
