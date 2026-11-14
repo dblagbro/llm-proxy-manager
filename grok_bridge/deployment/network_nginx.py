@@ -27,6 +27,9 @@ BRIDGE = "llm-proxy2-grok-bridge"
 OWNER = "com.tmr.security.grok-nginx-validation"
 LEDGER = "nginx-validation.private.json"
 MEMORY = 128 * 1024 * 1024
+# nginx -t assigns its new temporary cache directories to the configured worker.
+# Only owned scratch/tmpfs is writable; every original bind is recursively read-only.
+CAP_ADD = ["CHOWN"]
 TMPFS = {
     "/tmp": "rw,noexec,nosuid,size=16m",
     "/var/cache/nginx": "rw,noexec,nosuid,size=16m",
@@ -382,6 +385,7 @@ def _fixture(value, state):
         "NanoCpus": 500000000,
         "PidsLimit": 64,
         "CapDrop": ["ALL"],
+        "CapAdd": CAP_ADD,
         "SecurityOpt": ["no-new-privileges:true"],
         "IpcMode": "private",
         "CgroupnsMode": "private",
@@ -401,7 +405,6 @@ def _fixture(value, state):
         "Privileged",
         "PublishAllPorts",
         "AutoRemove",
-        "CapAdd",
         "PortBindings",
         "Devices",
         "DeviceRequests",
@@ -555,6 +558,8 @@ def _create_args(state):
         "--read-only",
         "--cap-drop",
         "ALL",
+        "--cap-add",
+        "CHOWN",
         "--security-opt",
         "no-new-privileges:true",
         "--memory",

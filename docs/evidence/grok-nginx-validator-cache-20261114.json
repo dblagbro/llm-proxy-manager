@@ -1,0 +1,29 @@
+{
+  "checked_utc": "2026-11-14T11:34:25.935172+00:00",
+  "base_commit": "283bdc6d6b3b3692005f847660f520193ae42c5d",
+  "linux": {
+    "release_tests": 100,
+    "network_tests": 305,
+    "network_subtests": 201,
+    "skipped": 0,
+    "scoped_lint": "passed",
+    "scoped_format": "passed"
+  },
+  "capabilities": {
+    "drop": [
+      "ALL"
+    ],
+    "add": [
+      "CHOWN"
+    ],
+    "production_binds_forced_recursively_read_only": true
+  },
+  "source_sha256": {
+    "network_nginx.py": "dfffcdddaa91c153fdae50e23ddef138da5dc10f1293aa065827e4c29e49a992",
+    "test_network_nginx.py": "3cecc2518b3e419161d63dd169d19fa7e94bfcdec76b42f3e4e0da09ef687843"
+  },
+  "real_acceptance_passed": false,
+  "production_deployed": false,
+  "global_lint_waived": false,
+  "new_vulnerability_scan": false
+}

@@ -106,6 +106,7 @@ class FakeHost:
             "NanoCpus": 500000000,
             "PidsLimit": 64,
             "CapDrop": ["ALL"],
+            "CapAdd": ["CHOWN"],
             "OomKillDisable": False,
             "SecurityOpt": ["no-new-privileges:true"],
             "IpcMode": "private",
@@ -244,7 +245,9 @@ def test_pre_cutover_check_creates_bounded_retained_fixture_and_reuses(context):
     assert create[create.index("--network") + 1] == DEFAULT_ID
     assert DEDICATED_ID not in create and all("container:" not in arg for arg in create)
     assert "--read-only" in create and "--pull" in create and "never" in create
-    assert "--cap-add" not in create
+    assert create.count("--cap-add") == 1
+    assert create[create.index("--cap-add") + 1] == "CHOWN"
+    assert create[create.index("--cap-drop") + 1] == "ALL"
     mounts = [create[i + 1] for i, arg in enumerate(create) if arg == "--mount"]
     assert len(mounts) == 3
     assert sum(arg.endswith(",readonly,bind-recursive=readonly") for arg in mounts) == 2
@@ -397,14 +400,43 @@ def test_nondefault_fixture_oom_setting_refuses_before_start(context, value):
 
 @pytest.mark.parametrize(
     "capabilities",
-    [["DAC_READ_SEARCH"], ["DAC_OVERRIDE"], ["DAC_READ_SEARCH", "SYS_ADMIN"]],
+    [
+        None,
+        [],
+        "CHOWN",
+        ["ALL"],
+        ["CHOWN", "CHOWN"],
+        ["FOWNER"],
+        ["DAC_READ_SEARCH"],
+        ["DAC_OVERRIDE"],
+        ["DAC_READ_SEARCH", "SYS_ADMIN"],
+        ["CHOWN", "FOWNER"],
+        ["CHOWN", "DAC_OVERRIDE"],
+        ["CHOWN", "SYS_ADMIN"],
+    ],
 )
-def test_no_added_capability_is_allowed(context, capabilities):
+def test_only_exact_chown_capability_is_allowed(context, capabilities):
     host, _, _ = context
     host.mutate = lambda fixture: fixture["HostConfig"].update(CapAdd=capabilities)
     with pytest.raises(n.NginxValidationError):
         validate(context)
     assert not any(call[1] == "start" for call in host.calls)
+
+
+@pytest.mark.parametrize("capabilities", [None, ["CHOWN", "DAC_OVERRIDE"]])
+def test_capability_drift_on_retained_fixture_cannot_authorize_actions(context, capabilities):
+    host, _, _ = context
+    validate(context)
+    if capabilities is None:
+        del host.fixture["HostConfig"]["CapAdd"]  # Older retained policy: refuse reuse.
+    else:
+        host.fixture["HostConfig"]["CapAdd"] = capabilities
+    previous_actions = sum(c[1] in {"start", "stop"} for c in host.calls)
+    with pytest.raises(n.NginxValidationError):
+        validate(context)
+    with pytest.raises(n.NginxValidationError):
+        n.retained_validation_ids(host.folder, [host.fixture, host.nginx])
+    assert sum(c[1] in {"start", "stop"} for c in host.calls) == previous_actions
 
 
 @pytest.mark.parametrize("option", ["missing", "nonrecursive", "shared", "extra", "writable"])
@@ -725,7 +757,7 @@ def test_certificate_link_resolves_inside_private_snapshot(include_context):
     assert Path(tls["Source"]) == private and tls["RW"] is False
     link = private / "live/cert.pem"
     assert link.is_symlink() and link.resolve() == private / "archive/cert1.pem"
-    assert "CapAdd" not in host.fixture["HostConfig"]
+    assert host.fixture["HostConfig"]["CapAdd"] == ["CHOWN"]
 
 
 def test_original_include_changed_after_create_prevents_start(include_context):

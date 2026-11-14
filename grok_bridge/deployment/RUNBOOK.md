@@ -69,7 +69,7 @@ The sample overlay alone is not a migration or rollback artifact.
 Preparation creates or reuses one exactly owned, stopped Nginx validation
 container per transaction. It uses the original image, read-only existing mounts,
 the staged full config and private scratch logs. It has no published ports,
-read-only rootfs, dropped capabilities and bounded memory/CPU/PIDs. It joins only
+read-only rootfs, all capabilities dropped except CHOWN, and bounded memory/CPU/PIDs. It joins only
 the retained default network while original Grok still supplies upstream DNS.
 It never borrows a namespace or joins the dedicated network. The fixture and
 ledger are retained; inventory exclusion requires the exact verified stopped ID.
@@ -162,7 +162,7 @@ independent follow-up audit verified all 139 preexisting containers and 14
 networks unchanged; the runner failure itself did not establish that proof.
 
 The helper now normalizes only that observed false/null fixture OOM default;
-original-runtime fingerprints stay strict. All capabilities remain dropped.
+original-runtime fingerprints stay strict. The third-attempt cache correction below adds only CHOWN.
 It takes private copies of only `/etc/nginx/conf.d`,
 `/etc/nginx/projects-locations.d` and `/etc/letsencrypt` when those mounts exist.
 Regular-file bytes and certificate link text/target semantics are preserved. Shared bounds are
@@ -192,3 +192,29 @@ see `docs/evidence/grok-nginx-validator-second-attempt-20261114.json`. The exact
 certificate-mount snapshot handles that input without a DAC capability or any
 source permission change. Certificate/private-key bytes and snapshot manifests
 must remain private and must never be added to Git or public evidence.
+
+
+### Retained validator cache ownership (November 14)
+
+The third attempt at 283bdc6d passed its private include/TLS and source audits,
+but nginx -t failed while assigning its ephemeral cache directory to the worker
+UID. Its stopped fixture remains retained. A concurrent Coordinator replacement
+prevented the all-original inventory invariant from passing: 140 other original
+containers matched, one Coordinator identity changed, and one network changed.
+This is not a production-wide unchanged-state claim. See the third-attempt receipt.
+
+The next source revision drops ALL capabilities and adds exactly CHOWN for
+Nginx cache initialization. No DAC, FOWNER, or SYS_ADMIN capability is allowed.
+Every original/config/certificate bind remains forced recursively read-only;
+the root filesystem is read-only. Only bounded tmpfs and this attempt's private
+log scratch are writable. The exact capability list is checked before actions
+and retained-fixture reuse; old fixtures without CHOWN refuse reuse. No original
+permissions or service configuration change. This correction is not an accepted
+Docker result until a fresh guarded attempt and every independent audit pass.
+
+Rationale: [Nginx ngx_create_paths](https://github.com/nginx/nginx/blob/master/src/core/ngx_file.c)
+creates mode0700 cache directories and assigns the worker UID;
+[CHOWN](https://docs.docker.com/engine/containers/run/#runtime-privilege-and-linux-capabilities)
+is separate from discretionary-access bypass;
+[forced recursive read-only mounts](https://docs.docker.com/engine/storage/bind-mounts/#recursive-mounts)
+prevent writes through original mounted trees.
