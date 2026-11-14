@@ -2141,7 +2141,78 @@ def rollback(folder, state, host):
 
 
 def deploy(folder, state, host, evidence):
+    return _deploy_transaction(folder, state, host, evidence)
+
+
+def _production_deployment_scope(folder, state, evidence):
+    """Reject recognizable lab inputs; this is not a replacement for release gates."""
+    from network_lab_context import ROOT as LAB_ROOT
+
+    _journal_production(state)
+    for record in (state, evidence):
+        require(
+            not {"lab_context", "lab_binding", "execution_admission"} & set(record)
+            and record.get("mode") != "lab"
+            and not str(record.get("schema", "")).startswith("grok-network-lab-"),
+            "Lab evidence or state cannot dispatch a production deployment",
+        )
+    path = PurePosixPath(str(folder).replace("\\", "/"))
+    require(
+        path != LAB_ROOT and LAB_ROOT not in path.parents,
+        "Lab generation cannot dispatch production",
+    )
+
+
+class _ProductionDeployment:
+    """Fixed delegation, not an admission token or a Python tampering boundary.
+
+    Only the internal production entry constructs this dispatcher. There is no
+    lab implementation, caller-supplied callback, or configurable policy/pin.
+    """
+
+    def __init__(self, folder, state, host):
+        self.folder, self.state, self.host = folder, state, host
+
+    def persist(self):
+        return save(self.folder, self.state)
+
+    def network(self, *, mutate=False):
+        return network_engine(self.folder, self.state, self.host, mutate=mutate)
+
+    def audit_network(self):
+        return audit_network(self.folder, self.state, self.host)
+
+    def audit_original(self, old):
+        return audit_prepared_original(self.state, self.host, old)
+
+    def record_candidate(self, old, live):
+        return record_candidate(self.folder, self.state, self.host, old, live)
+
+    def verify_candidate(self, old, live):
+        return assert_runtime(
+            old,
+            live,
+            self.state["candidate_data"],
+            CANDIDATE,
+            self.state.get("managed_environment"),
+            network_id=self.state["network_transaction"]["network"]["id"],
+        )
+
+    def snapshot(self):
+        return fresh_snapshot(self.folder, self.state, self.host)
+
+    def capacity(self):
+        return capacity(self.folder)
+
+    def rollback(self):
+        return rollback(self.folder, self.state, self.host)
+
+
+def _deploy_transaction(folder, state, host, evidence):
+    """One production algorithm; future lab admission/dispatch remains unimplemented."""
     gate(evidence)
+    _production_deployment_scope(folder, state, evidence)
+    dependencies = _ProductionDeployment(folder, state, host)
     require(state["phase"] == "prepared_not_deployed", "Not a fresh prepared transaction")
     assert_artifacts(folder, state)
     assert_files(folder, state, "before")
@@ -2156,9 +2227,9 @@ def deploy(folder, state, host, evidence):
     host.exclusive_volume(state["original_data"], state["original_id"])
     old = json.loads((folder / "original-inspect.json").read_text())
     nginx = json.loads((folder / "nginx-inspect.json").read_text())
-    network_engine(folder, state, host)
-    audit_network(folder, state, host)
-    audit_prepared_original(state, host, old)
+    dependencies.network()
+    dependencies.audit_network()
+    dependencies.audit_original(old)
     # Resolve production upstream DNS while the original is still available.
     host.validate_nginx(folder / "nginx.after", nginx, old)
     assert_files(folder, state, "before")
@@ -2167,21 +2238,21 @@ def deploy(folder, state, host, evidence):
         # The nested journal persists intent before every network action. This
         # outer marker makes pre-stop interruptions explicitly recoverable.
         state.update(phase="attaching_consumers", network_intent=True)
-        save(folder, state)
-        network_engine(folder, state, host, mutate=True).attach_consumers()
-        audit_prepared_original(state, host, old)
+        dependencies.persist()
+        dependencies.network(mutate=True).attach_consumers()
+        dependencies.audit_original(old)
         assert_files(folder, state, "before")
         assert_inputs(state)
         require(host.others() == state["others"], "Unrelated runtime changed before stop")
         # Persist BEFORE submitting the stop, including in timeout/error paths.
         state.update(phase="quiescing_original", stop_intent=True)
-        save(folder, state)
+        dependencies.persist()
         host.stop(state["original_id"])
-        fresh_snapshot(folder, state, host)
+        dependencies.snapshot()
         assert_files(folder, state, "before")
         assert_inputs(state)
         state.update(phase="cutover_intent", cutover_intent=True)
-        save(folder, state)
+        dependencies.persist()
         for path, before, after in configuration_entries(folder, state):
             cas_write(path, before, after)
         assert_files(folder, state, "after")
@@ -2199,31 +2270,17 @@ def deploy(folder, state, host, evidence):
         )
         live = host.inspect(SERVICE)
         require(live["Image"] == CANDIDATE, "Candidate creation selected wrong image")
-        record_candidate(folder, state, host, old, live)
+        dependencies.record_candidate(old, live)
         live = host.healthy(CANDIDATE, live["Id"])
-        assert_runtime(
-            old,
-            live,
-            state["candidate_data"],
-            CANDIDATE,
-            state.get("managed_environment"),
-            network_id=state["network_transaction"]["network"]["id"],
-        )
-        audit_network(folder, state, host)
+        dependencies.verify_candidate(old, live)
+        dependencies.audit_network()
         nonprovider_probe(host, live)
         host.reload_nginx(nginx)
         for _ in range(3):
             time.sleep(10)
             live = host.healthy(CANDIDATE, state["candidate_id"])
-            assert_runtime(
-                old,
-                live,
-                state["candidate_data"],
-                CANDIDATE,
-                state.get("managed_environment"),
-                network_id=state["network_transaction"]["network"]["id"],
-            )
-            audit_network(folder, state, host)
+            dependencies.verify_candidate(old, live)
+            dependencies.audit_network()
             nonprovider_probe(host, live)
             require(
                 host.others() == state["others"],
@@ -2231,7 +2288,7 @@ def deploy(folder, state, host, evidence):
             )
             assert_files(folder, state, "after")
             assert_inputs(state)
-        capacity(folder)
+        dependencies.capacity()
         state.update(
             phase="deployed_local_checks_passed",
             deployed=True,
@@ -2239,10 +2296,10 @@ def deploy(folder, state, host, evidence):
             provider_acceptance=False,
             public_browser_acceptance=False,
         )
-        save(folder, state)
+        dependencies.persist()
     except BaseException as error:
         state.update(phase="deployment_failed", error_class=type(error).__name__)
-        save(folder, state)
+        dependencies.persist()
         if state["cutover_intent"]:
             # Reconcile an ambiguous compose command without trusting a name alone.
             live = host.optional_service()
@@ -2253,10 +2310,10 @@ def deploy(folder, state, host, evidence):
                     "candidate_id" not in state or state["network_transaction"]["bridge_id"] is None
                 )
             ):
-                record_candidate(folder, state, host, old, live)
-            rollback(folder, state, host)
+                dependencies.record_candidate(old, live)
+            dependencies.rollback()
         else:
-            rollback(folder, state, host)
+            dependencies.rollback()
             state.update(
                 phase=(
                     "pre_cutover_failed_original_restarted"
@@ -2265,7 +2322,7 @@ def deploy(folder, state, host, evidence):
                 ),
                 deployed=False,
             )
-            save(folder, state)
+            dependencies.persist()
         raise
     return state
 

@@ -540,3 +540,37 @@ and ownership; Linux exercises real temporary descriptor/flock lifetime and
 contention. Windows results do not establish Linux flock behavior. No live
 observation session, collector, fixture or lab execution was invoked.
 See docs/evidence/grok-lab-session-source-20261114.json.
+
+
+## Production deployment factoring (source preparation, 2026-11-14)
+
+The production `deploy(folder, state, host, evidence)` entry now delegates to a
+private `_deploy_transaction` entry. That entry calls the existing production
+release gate once, rejects recognizable lab state/evidence/generation paths,
+and only then constructs fixed `_ProductionDeployment` delegation. No caller
+adapter, policy, image, path or context override is accepted. An observation
+session receipt does not admit a deployment. These checks do not form a security
+boundary against arbitrary Python execution or module monkeypatching.
+
+The existing deployment algorithm remains in one transaction body. Persistence,
+network audits, original/candidate checks, snapshotting, capacity and rollback
+delegate to the existing production operations. Durable intent still precedes
+consumer attachment and original stop; ambiguous candidate creation is recorded
+before recovery; failures before the original stop recover network attachments
+without restarting the original. Both snapshot peak checks and the final 64 GiB
+production reserve remain unchanged. Expanding the fixed delegation reproduces
+the original deployment AST exactly. Every other preexisting definition,
+decorator and top-level statement is unchanged, including Host, preparation,
+rollback, locks, NAS/hostname/path checks and the CLI.
+
+This increment adds no lab lifecycle entry, runtime admission, collector call,
+container or network action. Source tests reuse synthetic transaction fixtures;
+they test gate/refusal ordering and durable recovery behavior, not authorization
+to operate a real host. The existing 100 release tests remain unchanged. The
+future lab path still requires genuine operator/hypervisor admission, allocated
+isolated VM and console access, source/image/synthetic-material acceptance,
+guest workload/network and storage checks, bounded working-fixture replacement
+authority, and context-aware Host/capacity/snapshot/rollback integration. Only
+after those seams are complete can a separate admitted lab dispatcher reuse the
+transaction body. Production release/lint, H7/W16, independent Coordinator and
+private backup gates remain open; this is not a deployment approval.

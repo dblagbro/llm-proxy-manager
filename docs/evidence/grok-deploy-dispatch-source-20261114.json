@@ -1,0 +1,76 @@
+{
+  "schema": 1,
+  "kind": "production_deployment_factoring_source_tests",
+  "based_on": "19c0f2950437f8a9707238fd1580a8889359b4ef",
+  "scope": "Fixed production delegation and refusal of lab inputs; no lab dispatcher",
+  "source_sha256": {
+    "Makefile": "4fd83eaaaa80242ba5381ab5a8075d81b1fa5e82bf3d9d6c532532a7cf55d0aa",
+    "docs/rfc/grok-network-lifecycle-lab.md": "beba4a5e109fd782ee8083e78dfa918a12734f0080e7c7ebeff4109182df1b50",
+    "grok_bridge/deployment/release.py": "5991d846d1a482e9b08d212ac6bc858b7c4202c38ebfaea45274b1ff8ef43050",
+    "grok_bridge/deployment/test_network_release_dispatch.py": "373decda672445f351400991d426f8105f4aa7d3610ac116bfee607474f479af"
+  },
+  "review": {
+    "added_definitions": [
+      "_ProductionDeployment",
+      "_deploy_transaction",
+      "_production_deployment_scope"
+    ],
+    "changed_existing_definitions": [
+      "deploy"
+    ],
+    "delegation_expanded_algorithm_ast_sha256": "2a35d1b7b39b58352d194f8cc2d11125e5d6e9fe761ec93c732aa53eb550dc42",
+    "existing_top_level_statements_unchanged": true,
+    "lab_dispatch_available": false,
+    "limitation": "Static source equivalence and simulated behavioral tests; no runtime admission or host execution proof.",
+    "passed": true,
+    "production_gate_first_and_once": true,
+    "unchanged_existing_definitions": 66,
+    "python": "3.10",
+    "kind": "Release-engineering preparation plus primary source/boundary review"
+  },
+  "production_operator_changed": true,
+  "production_cli_and_gate_unchanged": true,
+  "production_algorithm_equivalent": true,
+  "lab_dispatch_available": false,
+  "checks": {
+    "linux_release_tests": 100,
+    "linux_network_tests": 1276,
+    "new_dispatch_tests": 55,
+    "network_subtests": 201,
+    "linux_skipped": 0,
+    "scoped_lint": "passed",
+    "scoped_format": "passed",
+    "local_windows_passed": 155
+  },
+  "linux_run": {
+    "returncode": 0,
+    "elapsed_seconds": 21.32,
+    "log": "/tmp/codex-grok-deploy-factoring-c9xrlo0p.log",
+    "summaries": [
+      "100 passed, 1 warning in 5.42s",
+      "1276 passed, 1 warning, 201 subtests passed in 15.32s",
+      "All checks passed!",
+      "3 files already formatted",
+      "All checks passed!",
+      "31 files already formatted"
+    ],
+    "command": "make test-grok-release test-grok-network lint-grok-release lint-grok-network GROK_PYTHON=/var/backups/codex-remediation-20261109/workspace/grok-release-venv/bin/python"
+  },
+  "execution_admission": false,
+  "lab_created": false,
+  "live_collector_invoked": false,
+  "full_harness_implemented": false,
+  "production_modified": false,
+  "deployed": false,
+  "merged": false,
+  "new_vulnerability_scan": false,
+  "accepted_fixture_repeated": false,
+  "limitations": [
+    "All deployment/refusal tests use synthetic retained transaction fixtures; no host operation or real admission is proved.",
+    "Static algorithm comparison expands fixed delegation; AST hash is specific to Python 3.10.",
+    "Recognition of lab records does not protect against arbitrary Python execution/module tampering.",
+    "Real lab allocation/access/operator/hypervisor/material/runtime admission and context-aware Host/capacity/snapshot/rollback remain pending.",
+    "Global lint, release review, H7/W16, private backup and independent Coordinator controls remain open."
+  ],
+  "checked_utc": "2026-11-14T20:47:04.385Z"
+}
