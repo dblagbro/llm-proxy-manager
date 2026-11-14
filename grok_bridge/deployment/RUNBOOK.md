@@ -73,7 +73,8 @@ read-only rootfs, all capabilities dropped except CHOWN, and bounded memory/CPU/
 the retained default network while original Grok still supplies upstream DNS.
 It never borrows a namespace or joins the dedicated network. The fixture and
 ledger are retained; inventory exclusion requires the exact verified stopped ID.
-Docker compatibility of this new validator still needs real acceptance.
+The bounded Docker validator was accepted on November 14; see its receipt below.
+Full network-aware lifecycle acceptance remains pending.
 
 ## Deployment sequence — invocation shape only, gates remain pending
 
@@ -250,3 +251,13 @@ lifecycle/recovery, H7/W16 topology, browser authorization, outsider denial and
 independent backup acceptance remain open. The retained global lint findings
 are not waived. Coordinator remains outside this PR and its release process
 is unchanged.
+
+
+## Full network lifecycle lab preparation
+
+The [disconnected-VM lab proposal](../../docs/rfc/grok-network-lifecycle-lab.md)
+records the required identity, isolation, admission, storage and retention
+boundaries for four synthetic recovery scenarios. Allocation and execution are
+pending. No full-lifecycle harness command is available yet; retain the legacy
+harness guard and the already accepted component evidence. Production release,
+Grok lint, H7/W16, browser/provider acceptance and backup gates remain open.
