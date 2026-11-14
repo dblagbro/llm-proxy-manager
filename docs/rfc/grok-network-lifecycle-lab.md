@@ -285,3 +285,59 @@ pending. No accepted runtime fixture or unchanged-image scan is repeated here.
 Validation: 100 release tests and 603 network tests (76 new capacity tests
 included), with 201 subtests, passed on Linux. Scoped lint and format passed.
 See docs/evidence/grok-lab-capacity-source-20261114.json.
+
+## Read-only storage collector source checkpoint
+
+`network_lab_storage.collect(context, peaks=...)` observes the exact existing
+generation and the bound local engine's reported Docker data root. It creates no
+directory, lock, file or Docker resource. The generation and private ancestors
+must already be root-owned 0700; the distinct storage lock must already be a
+root-owned 0600 single-link regular file. Other queried ancestors must be
+root-owned and not writable by group or others.
+
+The collector pins directory descriptors and their mount IDs, reopens every
+queried ancestor, and compares identity, ownership, mode and relevant mount
+records. Queried storage mounts require writable ext4/xfs and mount root `/`;
+symlinks and subtree mount roots refuse. Legitimate nested Docker overlay mounts
+are not queried. Lexical and inode/device ancestry checks reject overlapping
+evidence/Docker trees. Two bounded, deadline-limited read-only HTTP requests use
+the fixed local Unix socket, root peer credentials and repeated socket checks.
+The reported engine ID must match the full context and the engine/root/peer
+binding must remain stable. No Docker CLI context or credential file is read.
+
+Two descriptor-based space samples use unprivileged available blocks and the
+lower available byte count. Device/fsid and total-byte drift refuse before the
+existing capacity arithmetic runs. The storage lock serializes only this
+snapshot and is released before return. A later lifecycle controller must hold
+its own operation lock and freshly collect/compare storage before material
+allocations; the result is neither a reservation nor an execution permit.
+Public results contain hashes and counters, with sanitized failures.
+
+Only classic `overlay2` is currently supported; missing/unknown driver metadata
+or a containerd snapshotter refuses before querying storage. Docker's
+[separate containerd storage](https://docs.docker.com/engine/daemon/#daemon-data-directory)
+can lie outside DockerRootDir. Supporting that layout requires a reviewed
+multi-root collector and capacity accounting; this change does not switch any
+storage backend or authorize such a switch.
+
+This does not prove VM eligibility, physical disconnection, physical storage
+provenance, source/image admission, estimate adequacy or future free space.
+Whole-filesystem binds and ext4/xfs over SAN/iSCSI remain provenance limitations;
+the collector does not claim complete bind or remote-storage detection.
+There is no CLI or full harness, and the production operator is unchanged.
+No live collector invocation, accepted runtime-fixture repetition or image scan
+was performed for this source preparation.
+
+Kernel interfaces: [mountinfo and descriptor mount IDs](https://www.kernel.org/doc/Documentation/filesystems/proc.txt),
+[Linux advisory flock semantics](https://man7.org/linux/man-pages/man2/flock.2.html)
+and [Python descriptor filesystem statistics](https://docs.python.org/3/library/os.html#os.fstatvfs).
+
+Validation: 100 release tests and 696 network tests (93 collector tests included),
+with 201 subtests and zero Linux skips, passed using canonical Makefile targets.
+Scoped lint and format passed. Windows ran 74 collector tests with 19 platform
+skips; Linux ran all 93, including real temporary FD/flock/symlink operations
+with simulated ownership/mount observations. Primary review corrected short HTTP
+body framing, the separate-containerd-store omission and a fixture mode dependency.
+See docs/evidence/grok-lab-storage-source-20261114.json. A separate read-only
+production info query reported classic overlay2; it did not invoke this collector
+or establish lab eligibility.
