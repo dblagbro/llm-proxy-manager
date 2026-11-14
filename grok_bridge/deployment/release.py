@@ -705,57 +705,561 @@ class Host:
         self.run(["docker", "exec", original_nginx["Id"], "nginx", "-s", "reload"])
 
 
-def read_journal(path):
-    require(not path.is_symlink(), "Private journal must be regular")
+LAB_JOURNAL = "state.lab.private.json"
+LAB_JOURNAL_MAX_BYTES = 16 * 1024 * 1024
+LAB_RELEASE_SCHEMA = 1
+
+
+def _journal_errors(function):
+    import functools
+
+    @functools.wraps(function)
+    def operation(*args, **kwargs):
+        try:
+            return function(*args, **kwargs)
+        except Refused:
+            raise
+        except (
+            OSError,
+            ValueError,
+            TypeError,
+            RecursionError,
+            network_policy.NetworkPolicyError,
+            network_transaction.TransactionError,
+            network_nginx.NginxValidationError,
+        ):
+            if kwargs.get("lab_context") is not None or kwargs.get("lab_private") is True:
+                raise Refused(
+                    "Lab private journal operation refused; retain private evidence"
+                ) from None
+            raise
+
+    return operation
+
+
+def _journal_binding(context, binding):
+    network_policy._identity(context)
+    if context is None:
+        require(binding is None, "Lab journal binding requires its exact context")
+        return
     try:
-        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-    except OSError:
-        raise Refused("Cannot safely read private journal") from None
-    with os.fdopen(fd, "rb") as stream:
-        require(stat.S_ISREG(os.fstat(stream.fileno()).st_mode), "Private journal must be regular")
-        return stream.read()
+        context.verify_journal_binding(binding)
+    except ValueError:
+        raise Refused("Lab release journal binding differs") from None
 
 
-def save(folder, state):
-    state["updated_utc"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    path = Path(folder) / "state.private.json"
-    require(not path.is_symlink(), "Private journal must be regular")
-    serialized = {key: value for key, value in state.items() if key != "_journal_sha256"}
-    data = (json.dumps(serialized, indent=2) + "\n").encode()
-    previous = None
-    if path.exists():
-        require(not path.is_symlink() and path.is_file(), "Private journal must be regular")
-        previous = read_journal(path)
-        require(state.get("_journal_sha256") == digest(previous), "Private journal CAS conflict")
-    else:
-        require("_journal_sha256" not in state, "Private journal disappeared")
-    # The journal is not a bind-mounted configuration: atomic replacement is
-    # necessary so interruption cannot leave a truncated recovery journal.
-    temporary = path.with_name(".state.private-" + uuid.uuid4().hex + ".tmp")
-    private_write(temporary, data)
+def _journal_production(state):
+    require(type(state) is dict, "Invalid private journal")
     require(
-        read_journal(path) == previous if previous is not None else not path.exists(),
-        "Private journal CAS conflict",
+        not {"release_schema", "mode", "lab_context"} & set(state),
+        "Lab journal cannot be used in production",
     )
-    os.replace(temporary, path)
+    nested = state.get("network_transaction")
+    if type(nested) is dict:
+        require(
+            nested.get("schema") != 2 and not {"mode", "lab_context"} & set(nested),
+            "Lab network journal cannot be used in production",
+        )
+    require(
+        not str(state.get("project", "")).startswith("codex-grok-nettest-"),
+        "Lab project requires its exact context",
+    )
+    from network_lab_context import ROOT as LAB_ROOT
+
+    paths = [state.get(key) for key in ("original_data", "candidate_data")]
+    for key in ("files", "inputs"):
+        values = state.get(key)
+        if type(values) is dict:
+            paths.extend(values.values() if key == "files" else values)
+    for value in paths:
+        if type(value) is str:
+            path = PurePosixPath(value)
+            require(
+                path != LAB_ROOT and LAB_ROOT not in path.parents,
+                "Lab journal paths require their exact context",
+            )
+
+
+def _journal_generation_path(value, context, *, configuration=False):
+    _runtime_lab_path(value)
+    root = context.configuration_root if configuration else context.generation_root
+    require(root in PurePosixPath(value).parents, "Lab journal path is outside its generation")
+
+
+def _journal_lab_envelope(state, context, binding):
+    """Validate retained records, not observations, authority or recovery success."""
+    _journal_binding(context, binding)
+    network_policy._json_value(state)
+    require(type(state) is dict, "Invalid lab release journal")
+    required = {
+        "release_schema",
+        "mode",
+        "lab_context",
+        "phase",
+        "project",
+        "original_id",
+        "original_image",
+        "candidate_image",
+        "original_data",
+        "candidate_data",
+        "files",
+        "inputs",
+        "artifacts",
+        "others",
+        "stop_intent",
+        "cutover_intent",
+        "deployed",
+        "network_contract",
+        "network_transaction",
+        "network_intent",
+        "original_network_projection",
+    }
+    optional = {
+        "updated_utc",
+        "_journal_sha256",
+        "candidate_id",
+        "rollback_id",
+        "snapshot",
+        "managed_environment",
+        "configuration_conflicts",
+        "error_class",
+        "soak_seconds",
+        "provider_acceptance",
+        "public_browser_acceptance",
+    }
+    require(required <= set(state) <= required | optional, "Invalid lab release journal fields")
+    require(
+        type(state["release_schema"]) is int
+        and state["release_schema"] == LAB_RELEASE_SCHEMA
+        and state["mode"] == "lab",
+        "Invalid lab release journal schema or mode",
+    )
+    _journal_binding(context, state["lab_context"])
+    require(
+        network_policy._same_json(state["lab_context"], binding),
+        "Lab release journal binding changed",
+    )
+    require(state["project"] == context.project, "Lab release project differs")
+    pins = dict(context.images)
+    require(
+        state["original_image"] == pins["original"]
+        and state["candidate_image"] == pins["candidate"],
+        "Lab release image pins differ",
+    )
+    for key in ("original_id", "candidate_id", "rollback_id", "_journal_sha256"):
+        if key in state:
+            require(network_transaction._hex(state[key]), "Invalid lab release identity or receipt")
+    candidate, rollback = state.get("candidate_id"), state.get("rollback_id")
+    require(
+        candidate is None or candidate not in {state["original_id"], rollback},
+        "Contradictory lab container identities",
+    )
+    for key in ("network_intent", "stop_intent", "cutover_intent", "deployed"):
+        require(type(state[key]) is bool, "Invalid lab release intent flag")
+    require(
+        not state["stop_intent"] or state["network_intent"], "Stop intent has no network intent"
+    )
+    require(
+        not state["cutover_intent"] or state["stop_intent"], "Cutover intent has no stop intent"
+    )
+    require(
+        candidate is None or state["cutover_intent"], "Candidate identity precedes cutover intent"
+    )
+    require(rollback is None or state["stop_intent"], "Rollback identity precedes stop intent")
+    require(
+        not state["deployed"] or (state["cutover_intent"] and candidate is not None),
+        "Deployed journal lacks candidate intent",
+    )
+    phases = {
+        "prepared_not_deployed",
+        "attaching_consumers",
+        "quiescing_original",
+        "cutover_intent",
+        "deployed_local_checks_passed",
+        "deployment_failed",
+        "rollback_intent",
+        "network_only_rolled_back",
+        "original_runtime_recovered",
+        "rolled_back",
+        "original_runtime_recovered_config_conflict",
+        "pre_cutover_failed_original_restarted",
+        "pre_stop_failed_network_recovered",
+    }
+    require(type(state["phase"]) is str and state["phase"] in phases, "Unknown lab release phase")
+    if state["phase"] == "prepared_not_deployed":
+        require(
+            not any(
+                state[key]
+                for key in ("network_intent", "stop_intent", "cutover_intent", "deployed")
+            )
+            and candidate is None
+            and rollback is None,
+            "Prepared lab journal contains lifecycle effects",
+        )
+    _runtime_lab_path(state["original_data"])
+    _compose_parameters(state["candidate_data"], context)
+    require(state["original_data"] != state["candidate_data"], "Lab data paths collide")
+    files = state["files"]
+    require(
+        type(files) is dict and set(files) == {"compose", "fragment", "nginx"},
+        "Invalid lab configuration paths",
+    )
+    for value in files.values():
+        _journal_generation_path(value, context, configuration=True)
+    require(len(set(files.values())) == len(files), "Lab configuration paths collide")
+    require(
+        type(state["inputs"]) is dict and type(state["artifacts"]) is dict,
+        "Invalid lab input fingerprints",
+    )
+    for path, checksum in state["inputs"].items():
+        _journal_generation_path(path, context)
+        require(
+            checksum is None or network_transaction._hex(checksum), "Invalid lab input fingerprint"
+        )
+    for name, checksum in state["artifacts"].items():
+        require(
+            type(name) is str
+            and name not in {".", ".."}
+            and bool(re.fullmatch(r"[A-Za-z0-9_.-]+", name))
+            and network_transaction._hex(checksum),
+            "Invalid lab artifact fingerprint",
+        )
+    require(
+        type(state["network_contract"]) is int
+        and state["network_contract"] == NETWORK_RELEASE_SCHEMA,
+        "Invalid lab network contract",
+    )
+    network_transaction.NetworkTransaction._validate_state(
+        state["network_transaction"], lab_context=context
+    )
+    projection = network_transaction._container(state["original_network_projection"], SERVICE)
+    require(
+        projection["id"] == state["original_id"]
+        and set(projection["networks"]) == {network_policy.DEFAULT_NAME},
+        "Lab original network binding differs",
+    )
+    nested = state["network_transaction"]
+    if not state["network_intent"]:
+        require(
+            nested["phase"] == "prepared"
+            and nested["network"]["phase"] == "planned"
+            and nested["bridge_id"] is None
+            and all(
+                entry["phase"] == "pending" and not entry["owned"]
+                for entry in nested["consumers"].values()
+            ),
+            "Lab network effects lack retained intent",
+        )
+    require(
+        nested["bridge_id"] is None or nested["bridge_id"] == candidate,
+        "Lab candidate network binding differs",
+    )
+    consumer_ids = {entry["id"] for entry in nested["consumers"].values()}
+    require(
+        not consumer_ids & {state["original_id"], candidate, rollback},
+        "Lab consumer and bridge identities collide",
+    )
+    default_id = projection["networks"][network_policy.DEFAULT_NAME]["id"]
+    require(
+        all(entry["default_network_id"] == default_id for entry in nested["consumers"].values()),
+        "Lab default network identities differ",
+    )
+    require(
+        nested["network"]["id"] != default_id,
+        "Lab dedicated and default network identities collide",
+    )
+    if state["cutover_intent"]:
+        require(
+            nested["network"]["phase"] == "owned", "Lab cutover lacks retained network ownership"
+        )
+
+
+def _journal_lab_progress(previous, working):
+    """Keep retained preparation evidence while allowing lifecycle progress."""
+    fixed = {
+        "release_schema",
+        "mode",
+        "lab_context",
+        "project",
+        "original_id",
+        "original_image",
+        "candidate_image",
+        "original_data",
+        "candidate_data",
+        "files",
+        "inputs",
+        "artifacts",
+        "others",
+        "managed_environment",
+        "original_network_projection",
+        "network_contract",
+    }
+    for key in fixed | {"candidate_id", "snapshot"}:
+        if key in fixed or key in previous:
+            require(
+                (key in previous) == (key in working)
+                and network_policy._same_json(previous.get(key), working.get(key)),
+                "Lab retained preparation or receipt changed",
+            )
+    old_network, new_network = previous["network_transaction"], working["network_transaction"]
+    require(
+        old_network["transaction_id"] == new_network["transaction_id"],
+        "Lab transaction identity changed",
+    )
+    if old_network["network"]["id"] is not None:
+        require(
+            all(
+                network_policy._same_json(old_network["network"][key], new_network["network"][key])
+                for key in ("id", "proof")
+            ),
+            "Lab retained network ownership changed",
+        )
+    if old_network["bridge_id"] is not None:
+        require(
+            old_network["bridge_id"] == new_network["bridge_id"],
+            "Lab retained bridge identity changed",
+        )
+    for role in old_network["consumers"]:
+        before, after = old_network["consumers"][role], new_network["consumers"][role]
+        for key in (
+            "id",
+            "config_sha256",
+            "default_route_sha256",
+            "default_network_id",
+            "default_attachment_sha256",
+        ):
+            require(
+                network_policy._same_json(before[key], after[key]),
+                "Lab retained consumer baseline changed",
+            )
+
+
+def _journal_file_metadata(info):
+    require(
+        stat.S_ISREG(info.st_mode)
+        and info.st_nlink == 1
+        and info.st_uid == 0
+        and stat.S_IMODE(info.st_mode) == 0o600,
+        "Lab journal must be a private single-link root-owned regular file",
+    )
+
+
+def _journal_metadata(info):
+    return tuple(
+        getattr(info, key)
+        for key in (
+            "st_dev",
+            "st_ino",
+            "st_mode",
+            "st_uid",
+            "st_gid",
+            "st_nlink",
+            "st_size",
+            "st_mtime_ns",
+            "st_ctime_ns",
+        )
+    )
+
+
+def _journal_sync_directory(folder):
     if os.name == "posix":
-        fd = os.open(Path(folder), os.O_RDONLY | os.O_DIRECTORY)
+        fd = os.open(folder, os.O_RDONLY | os.O_DIRECTORY)
         try:
             os.fsync(fd)
         finally:
             os.close(fd)
+
+
+class _ReleaseJournalScope:
+    """Cooperating-controller scope; caller still holds its lifecycle operation lock."""
+
+    def __init__(self, folder, context, binding):
+        _journal_binding(context, binding)
+        self.context, self.binding = context, binding
+        self.lab = context is not None
+        if self.lab:
+            self.context_digest = context.digest()
+            self.logical = _runtime_lab_path(str(folder))
+            require(
+                self.logical == str(context.generation_root), "Use the exact lab release generation"
+            )
+            self.folder, self.fingerprint = network_nginx._lab_filesystem_path(
+                PurePosixPath(self.logical), context.generation_root
+            )
+            require(self.folder.is_dir(), "Lab release generation must already exist")
+        else:
+            from network_lab_context import ROOT as LAB_ROOT
+
+            path = PurePosixPath(str(folder))
+            require(
+                path != LAB_ROOT and LAB_ROOT not in path.parents,
+                "Lab release generation requires its exact context",
+            )
+            self.folder = Path(folder)
+        self.path = self.folder / (LAB_JOURNAL if self.lab else "state.private.json")
+        self.check()
+
+    def check(self):
+        _journal_binding(self.context, self.binding)
+        if self.lab:
+            require(self.context.digest() == self.context_digest, "Lab release context changed")
+            current, fingerprint = network_nginx._lab_filesystem_path(
+                PurePosixPath(self.logical), self.context.generation_root
+            )
+            require(
+                current == self.folder and fingerprint == self.fingerprint,
+                "Lab release path identity changed",
+            )
+        require(not self.path.is_symlink(), "Private journal must be regular")
+        opposite = self.folder / ("state.private.json" if self.lab else LAB_JOURNAL)
+        require(
+            not opposite.exists() and not opposite.is_symlink(),
+            "Opposite-mode release journal requires review",
+        )
+
+    def read(self, path=None):
+        self.check()
+        value = read_journal(
+            self.path if path is None else path,
+            max_bytes=LAB_JOURNAL_MAX_BYTES if self.lab else None,
+            lab_private=self.lab,
+        )
+        self.check()
+        return value
+
+
+def _journal_parse(data):
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError
+            result[key] = value
+        return result
+
+    def nonfinite(value):
+        raise ValueError
+
+    try:
+        state = json.loads(data, object_pairs_hook=unique, parse_constant=nonfinite)
+    except (ValueError, UnicodeError, RecursionError):
+        raise Refused("Invalid private journal JSON") from None
+    require(type(state) is dict and "_journal_sha256" not in state, "Invalid private journal")
+    return state
+
+
+@_journal_errors
+def read_journal(path, *, max_bytes=None, lab_private=False):
+    require(type(lab_private) is bool, "Invalid journal read mode")
+    if lab_private and max_bytes is None:
+        max_bytes = LAB_JOURNAL_MAX_BYTES
+    require(
+        max_bytes is None or (type(max_bytes) is int and 0 < max_bytes <= LAB_JOURNAL_MAX_BYTES),
+        "Invalid journal read bound",
+    )
+    require(not path.is_symlink(), "Private journal must be regular")
+    try:
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        if lab_private:
+            flags |= getattr(os, "O_NONBLOCK", 0)
+        fd = os.open(path, flags)
+    except OSError:
+        raise Refused("Cannot safely read private journal") from None
+    with os.fdopen(fd, "rb") as stream:
+        before = os.fstat(stream.fileno())
+        require(stat.S_ISREG(before.st_mode), "Private journal must be regular")
+        if lab_private:
+            _journal_file_metadata(before)
+        require(
+            max_bytes is None or before.st_size <= max_bytes, "Private journal exceeds read bound"
+        )
+        data = stream.read() if max_bytes is None else stream.read(max_bytes + 1)
+        require(max_bytes is None or len(data) <= max_bytes, "Private journal exceeds read bound")
+        if lab_private:
+            after = os.fstat(stream.fileno())
+            _journal_file_metadata(after)
+            require(
+                _journal_metadata(before) == _journal_metadata(after)
+                and len(data) == after.st_size,
+                "Lab journal changed during read",
+            )
+            require(
+                _journal_metadata(after) == _journal_metadata(path.lstat()),
+                "Lab journal path changed during read",
+            )
+        return data
+
+
+@_journal_errors
+def save(folder, state, *, lab_context=None, lab_binding=None):
+    _journal_binding(lab_context, lab_binding)
+    if lab_context is None:
+        _journal_production(state)
+    else:
+        _journal_lab_envelope(state, lab_context, lab_binding)
+    scope = _ReleaseJournalScope(folder, lab_context, lab_binding)
+    retained = copy.deepcopy(state) if scope.lab else None
+    working = copy.deepcopy(state) if scope.lab else state
+    working["updated_utc"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    path = scope.path
+    serialized = {key: value for key, value in working.items() if key != "_journal_sha256"}
+    data = (json.dumps(serialized, indent=2, allow_nan=False) + "\n").encode()
+    require(not scope.lab or len(data) <= LAB_JOURNAL_MAX_BYTES, "Lab journal exceeds write bound")
+    previous = None
+    if path.exists():
+        require(not path.is_symlink() and path.is_file(), "Private journal must be regular")
+        previous = scope.read()
+        require(state.get("_journal_sha256") == digest(previous), "Private journal CAS conflict")
+        if scope.lab:
+            previous_state = _journal_parse(previous)
+            _journal_lab_envelope(previous_state, lab_context, lab_binding)
+            _journal_lab_progress(previous_state, working)
+    else:
+        require("_journal_sha256" not in state, "Private journal disappeared")
+
+    # The journal is not a bind-mounted configuration: atomic replacement is
+    # necessary so interruption cannot leave a truncated recovery journal.
+    def guard():
+        scope.check()
+        if scope.lab:
+            require(network_policy._same_json(state, retained), "Lab journal caller state changed")
+            _journal_lab_envelope(state, lab_context, lab_binding)
+
+    guard()
+    temporary = path.with_name(
+        (".state.lab.private-" if scope.lab else ".state.private-") + uuid.uuid4().hex + ".tmp"
+    )
+    private_write(temporary, data)
+    guard()
+    if scope.lab:
+        require(scope.read(temporary) == data, "Lab pending journal changed")
+    require(
+        scope.read() == previous if previous is not None else not path.exists(),
+        "Private journal CAS conflict",
+    )
+    guard()
+    os.replace(temporary, path)
+    _journal_sync_directory(scope.folder)
+    if scope.lab:
+        guard()
+        require(scope.read() == data, "Lab durable journal changed before receipt")
+        guard()
+        state["updated_utc"] = working["updated_utc"]
     state["_journal_sha256"] = digest(data)
 
 
-def load_state(folder):
-    path = Path(folder) / "state.private.json"
+@_journal_errors
+def load_state(folder, *, lab_context=None, lab_binding=None):
+    scope = _ReleaseJournalScope(folder, lab_context, lab_binding)
+    path = scope.path
     require(not path.is_symlink() and path.is_file(), "Private journal must be regular")
-    data = read_journal(path)
-    try:
-        state = json.loads(data)
-    except (ValueError, UnicodeError):
-        raise Refused("Invalid private journal JSON") from None
-    require(type(state) is dict and "_journal_sha256" not in state, "Invalid private journal")
+    data = scope.read()
+    state = _journal_parse(data)
+    if scope.lab:
+        _journal_lab_envelope(state, lab_context, lab_binding)
+    else:
+        _journal_production(state)
+    scope.check()
     state["_journal_sha256"] = digest(data)
     return state
 

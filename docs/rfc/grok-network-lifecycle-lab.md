@@ -457,3 +457,50 @@ Distinct admission and integration into the full lifecycle body remain pending.
 No live collector/validator, accepted fixture repetition, image scan, deployment,
 backup/permission change or cleanup occurred. See
 docs/evidence/grok-lab-runtime-context-source-20261114.json for source checks.
+
+## Separate outer lab release journal
+
+The shared save/load_state APIs accept explicit lab_context and lab_binding
+keywords. Production keeps its unversioned state.private.json, including genuine
+legacy recovery journals. Lab uses state.lab.private.json with release_schema 1,
+mode lab and the caller's complete retained context binding. A caller must supply
+the same full binding; the persistence layer never generates a replacement.
+
+The lab generation must already exist at its exact canonical private path.
+Existing ancestor metadata checks are reused without directory creation,
+permission changes or path resolution. Opposite-mode journals, including broken
+symlinks, refuse. Lab reads are bounded and reject duplicate JSON keys and
+malformed values. Headers, physical project, pinned images, immutable IDs,
+intent flags, paths and the nested schema2 network journal must agree.
+
+Persistence reuses the pending-file, exact-byte CAS, atomic replacement and
+directory-fsync mechanism. Validation occurs before a lab timestamp or receipt
+changes. A failed write/replacement retains its pending file and the caller's
+old receipt; an observed disk digest never silently becomes a new receipt.
+Existing disk bytes must validate against the same full binding even when their
+CAS digest matches. Original/configuration and nested consumer preparation
+baselines cannot change across saves. Recorded candidate/snapshot and network/
+bridge ownership receipts remain retained. Durable final bytes are reread after
+directory fsync before advancing the caller's receipt.
+The operation requires the caller's lock. Rechecks detect ordinary concurrent
+changes; this is not protection against a hostile filesystem administrator.
+
+Recovery journals deliberately preserve incomplete actions: network creation or
+attachment intent without a receipt, cutover intent before candidate identity,
+candidate identity before nested bridge binding, and original recovery before
+reload/configuration-conflict resolution. Restarting the retained original may
+legitimately make rollback_id equal original_id. A candidate cannot reuse either
+identity. No recovery or health action is authorized by loading these records.
+
+CLI, Host, lifecycle methods, network_save, release gates, operation lock,
+hostname, NAS and production capacity policy remain unchanged. Their full
+context dispatch and separate lab admission remain to implement. These journals
+do not observe VM/engine identity or establish physical isolation, storage
+provenance, operator authorization or source/image admission. No live journal,
+fixture, collector, validator or deployment was exercised for this increment.
+See docs/evidence/grok-lab-outer-journal-source-20261114.json.
+
+Tests use actual temporary files with explicit generation-path and root-ownership
+simulation. Linux exercises real descriptor metadata, FIFO, symlink, hardlink,
+replacement and fsync behavior; Windows uses explicit metadata/symlink substitutes.
+No test result establishes actual lab eligibility or physical isolation.
