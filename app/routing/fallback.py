@@ -115,6 +115,13 @@ async def try_ranked_non_streaming(
         except Exception as exc:
             last_exc = exc
             last_failed_route = current  # the route that actually raised
+            # v5.22.61: a billing-class failure (quota exhausted / spend cap) is
+            # permanent until the operator acts. The handler records only the
+            # FINAL outcome of the chain, so when a later provider served the
+            # request the dead provider's breaker never opened and every
+            # request tried it again first. Open it here. Billing only:
+            # transient and auth failures keep their existing handling.
+            await _record_billing_failure(current, exc)
             if is_same_provider_retriable(exc):
                 # Retry.py already exhausted same-provider retries for these.
                 chain.add(current.provider.name, "retry-exhausted")
@@ -144,6 +151,22 @@ async def try_ranked_non_streaming(
             setattr(last_exc, "_llmproxy_attributed_route", last_failed_route)
         raise last_exc
     raise RuntimeError("fallback chain exhausted with no exception captured")
+
+
+async def _record_billing_failure(route: RouteResult, exc: Exception) -> None:
+    """Open the circuit breaker for ``route``'s provider if ``exc`` is a
+    billing-class error. Never raises: breaker bookkeeping must not turn a
+    recoverable fallback into a failed request."""
+    try:
+        from app.routing.circuit_breaker import is_billing_error, record_failure
+
+        if is_billing_error(str(exc)):
+            await record_failure(route.provider.id, billing_error=True)
+            logger.warning(
+                "fallback.billing_failure_recorded provider=%s", route.provider.id
+            )
+    except Exception:  # pragma: no cover - defensive
+        logger.debug("fallback.billing_failure_record_failed", exc_info=True)
 
 
 async def _next_route(
