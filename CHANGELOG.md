@@ -4,7 +4,9 @@
 
 - Add a pure, fail-closed dedicated-network planner plus a journaled consumer
   attachment engine with injected host operations and synthetic failure-path tests.
-  No application version, deployed configuration, Docker adapter or release operator changes.
+  Add a read-only-by-default local Docker adapter with explicit mutation bindings
+  and synthetic boundary/failure-path tests. No application version, deployed
+  configuration or release operator changes.
 - Keep Grok-only membership, consumer aliases/default routes, unrelated settings
   and private configuration boundaries explicit. Runtime isolation, transaction
   integration, rollback acceptance and release-policy clearance remain pending.

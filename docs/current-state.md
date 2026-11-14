@@ -714,3 +714,9 @@ implemented (`redeem_fable_reset()` raises; the endpoint must be captured from a
 live `/usage` response exposes no "resets available" count, so that input is always None.
 The existing 4-hourly scraper writes `external_usage_snapshot` and IS running (fresh rows);
 the stale 2026-05-06 table is `provider_usage_windows`, a different (proxy-internal) table.
+
+Network preparation update (2026-11-14): a sanitized local Docker adapter now
+accompanies the dedicated-network planner and consumer journal. Read-only is the
+default; explicit transaction/container bindings gate mutations. This is unshipped
+preparation with no release-operator integration or production change. See
+[security preparation](grok-bridge-security.md).

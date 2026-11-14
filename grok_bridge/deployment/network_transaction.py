@@ -1,4 +1,4 @@
-"""Journaled preparation primitive; no real host adapter or deployment entrypoint.
+"""Journaled preparation primitive; no deployment entrypoint.
 
 The injected host returns sanitized projections, never raw Docker inspect data.
 The caller must hold an exclusive maintenance lock, verify engine/Compose gateway

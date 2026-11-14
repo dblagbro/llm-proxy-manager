@@ -268,8 +268,8 @@ this is an open release gate, not a newly passing global check.
 ### Consumer attachment journal preparation
 
 `deployment/network_transaction.py` adds a dependency-injected transaction engine
-beside the planner. It has **no Docker adapter or deployment CLI** and is not wired
-into `release.py`. Only synthetic fake-host tests invoke its mutation interface.
+beside the planner. It has **no deployment CLI** and is not wired into `release.py`.
+The separate Docker adapter below remains preparation, not a release operator.
 The shared policy module supplies all names and permitted consumer identities.
 
 `NetworkTransaction.begin(host, save, transaction_id)` snapshots sanitized identity,
@@ -293,13 +293,69 @@ that membership before consumer rollback. Unknown members, replaced containers,
 configuration changes, original-attachment changes, owned endpoint changes and
 default-route drift stop the engine. Those cases require operator reconciliation;
 they are **not** claimed as successful automatic recovery. Cross-file configuration
-CAS, a real sanitized host adapter, endpoint/route inspection, Nginx validation with
-two networks, current image integration, real interruption tests and browser/network
-acceptance all remain pending.
+CAS, Nginx validation with two networks, current image integration, real interruption
+tests and browser/network acceptance all remain pending. The adapter below supplies
+sanitation and endpoint/route inspection, but does not complete those release gates.
 
-`make test-grok-network lint-grok-network` now covers both preparation modules:
+The original planner/journal preparation checks covered:
 18 topology tests plus 21 transaction tests. New failure-path cases cover journal
 persistence before action and after an observed effect, fresh-instance resume,
 timeout ambiguity, ownership collisions, endpoint/consumer replacement, route drift
 and prevention of duplicate or unowned disconnects. These synthetic checks do not
 establish the behavior of Docker or production rollback.
+
+### Sanitized local Docker adapter preparation
+
+`deployment/network_docker.py` implements the injected host contract, read-only by
+default. Every Docker command selects `unix:///var/run/docker.sock` explicitly;
+namespace route reads must never be paired with a remote Docker context. The
+subprocess runner uses argv, captured output and bounded timeouts, without a shell.
+Errors omit command diagnostics. Private Config/HostConfig/Mounts/Image and full
+endpoint metadata are fingerprinted in memory, not returned or logged. IPv4 and
+IPv6 default routes are hashed with volatile cache/expiry fields excluded.
+
+Container observations bind exact IDs, PIDs, start times, restart counters and
+configuration/network hashes before and after namespace reads. Mutations require
+explicit enablement, a 32-hex transaction ID and the exact Nginx/gateway IDs.
+Network labels bind transaction and Compose ownership; only successful empty
+exact-name listing means absence. All members and endpoints must match. Creation
+and connect/detach check namespace-sharing inventory. Attachments use exact IDs,
+service aliases and gateway priority -1; detach is never forced. This adapter
+never changes Grok lifecycle or removes a network. It is not a security boundary
+against a concurrent Docker administrator; the caller still needs the exclusive
+maintenance lock and journal/configuration CAS. Drift refuses further automatic
+action and requires reconciliation.
+
+Isolated fixtures can supply a complete resource map under one explicit
+`codex-grok-nettest-*` project. Mixed production/fixture names are refused. A new
+Grok ID must be separately verified and bound before a mutating adapter accepts
+its membership. Production names cannot be changed through this mapping.
+
+`make test-grok-network lint-grok-network` covers 18 topology, 21 journal and 22
+injected-runner adapter tests (61 total). The adapter tests exercise sanitization,
+read-only refusal, ownership/identity mismatch, namespace sharing, process/config
+and route drift, IPv4/IPv6 routes, and post-effect timeout reconciliation through
+the journal. Synthetic success does not establish real Docker recovery, browser
+authorization, isolation, or release acceptance. The adapter is not connected to
+the release operator, and no production deployment is authorized by these checks.
+
+Adapter acceptance at 2026-11-14 08:01 UTC: 61 synthetic tests/scoped lint passed.
+Read-only observation accepted the three live roles and namespace-sharing guard.
+The isolated real Docker fixture created two sleep-only consumers with no mounts,
+published ports or application data. Fresh controllers attached and rolled them
+back from a durable journal, reconciling injected errors after actual connect and
+disconnect effects. Original endpoints/routes/configuration matched afterward.
+All 136 preexisting containers remained unchanged. Both new fixtures were stopped;
+both networks and the journal are retained for named operator cleanup review.
+No preexisting artifact was removed. This tests adapter attachment/recovery only,
+not Grok replacement, browser authorization, outsider denial or production rollback.
+See [sanitized evidence](evidence/grok-network-adapter-20261114.json).
+
+To reproduce, use a root-capable host, a new private output directory under
+`/var/backups`, and an already-local image ID with `/bin/sleep` and no declared
+volumes. Run `make test-grok-network-docker` with `GROK_PYTHON` selecting the tested
+Python and `GROK_NETWORK_FIXTURE_ARGS` containing `--execute --project
+codex-grok-nettest-UNIQUE --image sha256:EXACT_LOCAL_IMAGE_ID --output
+/var/backups/NEW_PRIVATE_GENERATION`. Use lowercase project names. This target
+does not pull images or delete resources. It retains named stopped fixtures for
+review; do not repeat a passed fixture without a new change or unresolved concern.

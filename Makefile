@@ -175,11 +175,16 @@ test-gateway-recovery-docker:
 	test -n "$(GATEWAY_RECOVERY_RUN_ID)" && test -n "$(GATEWAY_CAPACITY_GUARD)"
 	sudo "$(GATEWAY_RECOVERY_PYTHON)" "$(GATEWAY_CAPACITY_GUARD)" --peak-gib 3 -- "$(GATEWAY_RECOVERY_PYTHON)" "$(CURDIR)/tools/gateway_recovery/rehearse_gateway.py" --run-id "$(GATEWAY_RECOVERY_RUN_ID)"
 
-# Pure dedicated-network preparation: no Docker or host changes.
+# Dedicated-network synthetic checks: no Docker or host changes.
 .PHONY: test-grok-network lint-grok-network
 test-grok-network:
 	$(GROK_PYTHON) -m unittest discover -s grok_bridge/deployment -p 'test_network_*.py' -v
 
 lint-grok-network:
-	ruff check --target-version py310 grok_bridge/deployment/network_policy.py grok_bridge/deployment/test_network_policy.py grok_bridge/deployment/network_transaction.py grok_bridge/deployment/test_network_transaction.py
-	ruff format --check --target-version py310 grok_bridge/deployment/network_policy.py grok_bridge/deployment/test_network_policy.py grok_bridge/deployment/network_transaction.py grok_bridge/deployment/test_network_transaction.py
+	ruff check --target-version py310 grok_bridge/deployment/network_policy.py grok_bridge/deployment/test_network_policy.py grok_bridge/deployment/network_transaction.py grok_bridge/deployment/test_network_transaction.py grok_bridge/deployment/network_docker.py grok_bridge/deployment/test_network_docker.py grok_bridge/deployment/rehearse_network.py
+	ruff format --check --target-version py310 grok_bridge/deployment/network_policy.py grok_bridge/deployment/test_network_policy.py grok_bridge/deployment/network_transaction.py grok_bridge/deployment/test_network_transaction.py grok_bridge/deployment/network_docker.py grok_bridge/deployment/test_network_docker.py grok_bridge/deployment/rehearse_network.py
+
+# Explicit isolated fixture only; no release integration or automatic deletion.
+.PHONY: test-grok-network-docker
+test-grok-network-docker:
+	$(GROK_PYTHON) grok_bridge/deployment/rehearse_network.py $(GROK_NETWORK_FIXTURE_ARGS)

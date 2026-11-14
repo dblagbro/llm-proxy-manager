@@ -867,3 +867,9 @@ independent version exception on 2026-11-09 at 16:16:04 UTC. The 3,244
 inherited gateway lint findings remain explicit debt; all final-head CI and
 scoped checks must pass before release. Gateway 5.22.53 remains unchanged.
 See [candidate evidence, limits and recovery](docs/whisper-4.3.1-security.md).
+
+Network preparation update (2026-11-14): a sanitized local Docker adapter now
+accompanies the dedicated-network planner and consumer journal. Read-only is the
+default; explicit transaction/container bindings gate mutations. This is unshipped
+preparation with no release-operator integration or production change. See
+[security preparation](docs/grok-bridge-security.md).
