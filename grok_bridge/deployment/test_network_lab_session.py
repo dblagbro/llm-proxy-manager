@@ -119,6 +119,201 @@ def manager(state, **overrides):
     return session.observation_session(state.context, **values)
 
 
+@pytest.fixture
+def bootstrap_observer(simulated, monkeypatch):
+    state = SimpleNamespace(calls=0, hook=lambda: None)
+    state.receipt = {
+        "schema": session.bootstrap.SCHEMA,
+        "scope": session.bootstrap.SCOPE,
+        "context_sha256": simulated.context.digest(),
+        "engine_socket_peer_sha256": "b" * 64,
+        "inventory_before_sha256": "c" * 64,
+        "inventory_after_sha256": "c" * 64,
+        "observed_counts": {"containers": 0, "volumes": 0, "networks": 3, "endpoints": 0},
+        "required_image_inspections": 3,
+        "unrelated_images_observed": False,
+        "execution_admission": False,
+    }
+
+    def collect(ctx, *, lab_binding):
+        assert simulated.locks[-1].held
+        ctx.verify_journal_binding(lab_binding)
+        simulated.calls.append("bootstrap")
+        state.calls += 1
+        state.hook()
+        return copy.deepcopy(state.receipt)
+
+    monkeypatch.setattr(session.bootstrap, "collect", collect)
+    return state
+
+
+def test_bootstrap_has_guarded_storage_before_and_after_and_detached_result(
+    simulated, bootstrap_observer
+):
+    with manager(simulated) as current:
+        simulated.calls.clear()
+        result = current.observe_bootstrap_engine(peaks=peaks())
+        work = [item for item in simulated.calls if item in {"collect", "bootstrap"}]
+        assert work == ["collect", "bootstrap", "collect"]
+        assert result["execution_admission"] is False
+        assert result["operation_lock_held_at_observation"] is True
+        assert (
+            result["storage_before"]["bindings_sha256"]
+            == result["storage_after"]["bindings_sha256"]
+        )
+        assert result["bootstrap_observation"] == bootstrap_observer.receipt
+        result["bootstrap_observation"]["execution_admission"] = True
+        assert current.observe_bootstrap_engine(peaks=peaks())["execution_admission"] is False
+    assert not simulated.locks[-1].held
+
+
+@pytest.mark.parametrize(
+    "bad", [None, {}, {"evidence": 0, "docker": 0}, {"evidence": False, "docker": 1}]
+)
+def test_bootstrap_invalid_peaks_precede_any_collection(simulated, bootstrap_observer, bad):
+    with manager(simulated) as current:
+        before = list(simulated.calls)
+        with pytest.raises(session.LabSessionError):
+            current.observe_bootstrap_engine(peaks=bad)
+        assert simulated.calls == before and bootstrap_observer.calls == 0
+        assert current.refresh(peaks=peaks())["execution_admission"] is False
+
+
+def test_bootstrap_peaks_are_detached_before_callbacks(simulated, bootstrap_observer):
+    upcoming = peaks()
+    with manager(simulated) as current:
+        bootstrap_observer.hook = lambda: upcoming.update(evidence=0, docker=0)
+        current.observe_bootstrap_engine(peaks=upcoming)
+        assert simulated.collected[-2:] == [peaks(), peaks()]
+
+
+@pytest.mark.parametrize("change", ["binding", "guest", "storage", "lock", "pid"])
+def test_bootstrap_drift_latches_failure_before_more_collection(
+    simulated, bootstrap_observer, monkeypatch, change
+):
+    with manager(simulated) as current:
+        before_count = len(simulated.collected)
+        original_pid = session.os.getpid
+
+        def changed():
+            if change == "binding":
+                simulated.binding["context"]["source_commit"] = "f" * 40
+            elif change == "guest":
+                simulated.guest["boot"]["value"] = "99999999-2222-3333-4444-555555555555"
+            elif change == "storage":
+                simulated.storage_binding = "e" * 64
+            elif change == "lock":
+                simulated.locks[-1].binding_sha256 = lambda: "e" * 64
+            else:
+                monkeypatch.setattr(session.os, "getpid", lambda: current._creator_pid + 1)
+
+        bootstrap_observer.hook = changed
+        with pytest.raises(session.LabSessionError):
+            current.observe_bootstrap_engine(peaks=peaks())
+        monkeypatch.setattr(session.os, "getpid", original_pid)
+        assert current._failed is True
+        assert len(simulated.collected) == before_count + (2 if change == "storage" else 1)
+        previous = len(simulated.collected)
+        with pytest.raises(session.LabSessionError):
+            current.refresh(peaks=peaks())
+        assert len(simulated.collected) == previous and bootstrap_observer.calls == 1
+
+
+@pytest.mark.parametrize("operation", ["refresh", "observe_bootstrap_engine", "__enter__"])
+def test_bootstrap_refuses_nested_observation_entry(simulated, bootstrap_observer, operation):
+    with manager(simulated) as current:
+
+        def nested():
+            with pytest.raises(session.LabSessionError):
+                if operation == "__enter__":
+                    current.__enter__()
+                else:
+                    getattr(current, operation)(peaks=peaks())
+
+        bootstrap_observer.hook = nested
+        assert current.observe_bootstrap_engine(peaks=peaks())["execution_admission"] is False
+        assert bootstrap_observer.calls == 1 and len(simulated.collected) == 3
+
+
+@pytest.mark.parametrize("failure", [RuntimeError, KeyboardInterrupt, SystemExit])
+def test_bootstrap_collection_failure_latches_and_owner_always_closes(
+    simulated, bootstrap_observer, failure
+):
+    def fail():
+        raise failure("private-engine-diagnostic")
+
+    bootstrap_observer.hook = fail
+    expected = session.LabSessionError if failure is RuntimeError else failure
+    with pytest.raises(expected) as caught:
+        with manager(simulated) as current:
+            current.observe_bootstrap_engine(peaks=peaks())
+    assert current._failed and not simulated.locks[-1].held
+    if failure is RuntimeError:
+        assert "private-engine" not in str(caught.value)
+    with pytest.raises(session.LabSessionError):
+        current.observe_bootstrap_engine(peaks=peaks())
+    assert bootstrap_observer.calls == 1
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("schema", "other"),
+        ("scope", "admitted"),
+        ("context_sha256", "f" * 64),
+        ("execution_admission", True),
+        ("execution_admission", 0),
+        ("unrelated_images_observed", True),
+        ("required_image_inspections", 3.0),
+        ("engine_socket_peer_sha256", "bad"),
+        ("inventory_after_sha256", "f" * 64),
+        ("observed_counts", {"containers": False, "volumes": 0, "networks": 3, "endpoints": 0}),
+    ],
+)
+def test_bootstrap_receipt_consistency_refusal_is_latched(
+    simulated, bootstrap_observer, field, value
+):
+    with manager(simulated) as current:
+        bootstrap_observer.receipt[field] = value
+        with pytest.raises(session.LabSessionError, match="receipt"):
+            current.observe_bootstrap_engine(peaks=peaks())
+        assert current._failed and len(simulated.collected) == 2
+
+
+def test_bootstrap_repeated_binding_drift_refuses(simulated, bootstrap_observer):
+    with manager(simulated) as current:
+        current.observe_bootstrap_engine(peaks=peaks())
+        bootstrap_observer.receipt["engine_socket_peer_sha256"] = "f" * 64
+        with pytest.raises(session.LabSessionError, match="binding changed"):
+            current.observe_bootstrap_engine(peaks=peaks())
+        assert current._failed
+
+
+def test_bootstrap_cross_thread_and_forked_pid_refuse_before_io(
+    simulated, bootstrap_observer, monkeypatch
+):
+    with manager(simulated) as current:
+        failures = []
+        before = list(simulated.calls)
+
+        def foreign():
+            try:
+                current.observe_bootstrap_engine(peaks=peaks())
+            except session.LabSessionError:
+                failures.append(True)
+
+        worker = threading.Thread(target=foreign)
+        worker.start()
+        worker.join(timeout=5)
+        assert failures == [True] and simulated.calls == before
+        real_pid = session.os.getpid
+        monkeypatch.setattr(session.os, "getpid", lambda: current._creator_pid + 1)
+        with pytest.raises(session.LabSessionError, match="process"):
+            current.observe_bootstrap_engine(peaks=peaks())
+        monkeypatch.setattr(session.os, "getpid", real_pid)
+        assert simulated.calls == before and bootstrap_observer.calls == 0
+
+
 def test_session_holds_lock_across_fresh_observations_and_releases_after_body(simulated):
     with manager(simulated) as current:
         assert simulated.locks[-1].held and len(simulated.collected) == 1

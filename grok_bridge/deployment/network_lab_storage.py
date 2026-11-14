@@ -363,9 +363,24 @@ def _classic_store(data):
     return {"storage_driver": data["Driver"], "driver_status": status}
 
 
-def _engine_info(socket_leaf):
+def _engine_get(socket_leaf, route, *, deadline=None):
+    """Fixed local, read-only routes only; an outer deadline can only shorten a request."""
+    _require(
+        type(route) is str
+        and (
+            route in {"/info", "/containers/json?all=1", "/volumes", "/networks"}
+            or re.fullmatch(r"/networks/[0-9a-f]{64}", route)
+            or re.fullmatch(r"/images/sha256:[0-9a-f]{64}/json", route)
+        ),
+        "Unsupported local engine observation route",
+    )
+    now = time.monotonic()
+    _require(
+        deadline is None or (type(deadline) in (int, float) and 0 < deadline - now < float("inf")),
+        "Invalid local engine observation deadline",
+    )
+    deadline = now + ENGINE_SECONDS if deadline is None else min(deadline, now + ENGINE_SECONDS)
     socket_leaf.verify()
-    deadline = time.monotonic() + ENGINE_SECONDS
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
         connection.settimeout(_remaining(deadline))
         connection.connect(SOCKET)
@@ -374,8 +389,8 @@ def _engine_info(socket_leaf):
         socket_leaf.verify()
         connection.settimeout(_remaining(deadline))
         connection.sendall(
-            b"GET /info HTTP/1.1\r\nHost: localhost\r\n"
-            b"Accept: application/json\r\nConnection: close\r\n\r\n"
+            ("GET " + route + " HTTP/1.1\r\nHost: localhost\r\n").encode("ascii")
+            + b"Accept: application/json\r\nConnection: close\r\n\r\n"
         )
         with http.client.HTTPResponse(_HTTPStream(connection, deadline)) as response:
             response.begin()
@@ -403,6 +418,11 @@ def _engine_info(socket_leaf):
     data = json.loads(
         body.decode("utf-8"), object_pairs_hook=_unique_object, parse_constant=_invalid_constant
     )
+    return data, peer
+
+
+def _engine_identity(data, peer):
+    """Private identity projection shared by the fixed /info observers."""
     _require(type(data) is dict and type(data.get("ID")) is str, "Invalid local engine identity")
     _require(
         re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9:._-]{0,127}", data["ID"]),
@@ -414,6 +434,10 @@ def _engine_info(socket_leaf):
         "peer": peer,
         **_classic_store(data),
     }
+
+
+def _engine_info(socket_leaf):
+    return _engine_identity(*_engine_get(socket_leaf, "/info"))
 
 
 def _space(chain):

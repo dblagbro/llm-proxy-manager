@@ -1,0 +1,75 @@
+{
+  "schema": 1,
+  "kind": "empty_engine_bootstrap_observer_source_tests",
+  "based_on": "f0bd01b656a3b1eebb1ea1c59f11db2e02bd91e3",
+  "scope": "Read-only bootstrap inventory and held-session integration; no runtime admission",
+  "source_sha256": {
+    "Makefile": "d35de3dc05e3656af0184b074ef3aefcfd29cf5eef8aee79c5a61242e44af92a",
+    "docs/rfc/grok-network-lifecycle-lab.md": "c0e3598870bdc239416acc6a72404b4bd9ffbbdb762521c5bf7418d32ddba0f5",
+    "grok_bridge/deployment/network_lab_bootstrap.py": "80fc09bc8c9de2bf912310b9f0a2f5c5c523819fb6c2ea2e9db3011a4f21d69d",
+    "grok_bridge/deployment/network_lab_session.py": "6a5ad5fb39511092ecfe73b5fd8c9d4044fa12ee4884232edd52473b46ec5c5a",
+    "grok_bridge/deployment/network_lab_storage.py": "7b9c5bcd8d5fb79bc7ffef15ed1100ba37b0cca0bf4bbff18b0af63ab2facb11",
+    "grok_bridge/deployment/test_network_lab_bootstrap.py": "5a5c5890b50223112ba86845bf95bb55899a8040d46f8216abea54f0ee37f702",
+    "grok_bridge/deployment/test_network_lab_session.py": "71388b2acb58b7382120e62515bc923cd95d79ebf91c806156d960decf987cd0"
+  },
+  "review": {
+    "existing_storage_tests_unchanged": true,
+    "lab_dispatch_available": false,
+    "passed": true,
+    "prior_engine_identity_projection_preserved": true,
+    "prior_framing_and_peer_checks_preserved": true,
+    "prior_refresh_algorithm_preserved": true,
+    "prior_session_methods_unchanged_except_init_and_refresh": true,
+    "prior_storage_definitions_unchanged_except_engine_info": true,
+    "production_release_unchanged": true,
+    "kind": "Release-engineering preparation and primary boundary/source review"
+  },
+  "checks": {
+    "linux_release_tests": 100,
+    "linux_network_tests": 1472,
+    "new_bootstrap_tests": 121,
+    "new_session_tests": 29,
+    "network_subtests": 201,
+    "linux_skipped": 0,
+    "scoped_lint": "passed",
+    "scoped_format": "passed",
+    "windows_focused_passed": 286,
+    "windows_posix_skipped": 42
+  },
+  "linux_run": {
+    "returncode": 0,
+    "elapsed_seconds": 38.37,
+    "log": "/tmp/codex-grok-bootstrap-1az4v0lk.log",
+    "summaries": [
+      "100 passed, 1 warning in 7.63s",
+      "1472 passed, 1 warning, 201 subtests passed in 29.78s",
+      "All checks passed!",
+      "3 files already formatted",
+      "All checks passed!",
+      "34 files already formatted"
+    ],
+    "command": "make test-grok-release test-grok-network lint-grok-release lint-grok-network GROK_PYTHON=/var/backups/codex-remediation-20261109/workspace/grok-release-venv/bin/python"
+  },
+  "production_operator_changed": false,
+  "production_cli_and_gate_unchanged": true,
+  "execution_admission": false,
+  "lab_dispatch_available": false,
+  "lab_created": false,
+  "live_collector_invoked": false,
+  "full_harness_implemented": false,
+  "production_modified": false,
+  "deployed": false,
+  "merged": false,
+  "new_vulnerability_scan": false,
+  "accepted_fixture_repeated": false,
+  "limitations": [
+    "HTTP acquisition uses one 30-second deadline; filesystem metadata calls do not have an OS-enforced hard deadline.",
+    "Two matching samples do not exclude transient changes or reserve the engine; operation lock is advisory.",
+    "Only three pinned images are inspected. Unrelated images, provenance, host jobs, hypervisor/network isolation and operator authority remain unverified.",
+    "Bootstrap refuses all retained resources; later retained-fixture admission and lifecycle dispatch remain unimplemented."
+  ],
+  "api_review_sources": [
+    "https://raw.githubusercontent.com/moby/moby/v28.5.1/api/swagger.yaml",
+    "https://raw.githubusercontent.com/moby/moby/v28.5.1/api/server/router/network/network_routes.go"
+  ]
+}

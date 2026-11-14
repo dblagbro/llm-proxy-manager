@@ -18,6 +18,7 @@ import sys
 import threading
 from pathlib import PurePosixPath
 
+import network_lab_bootstrap as bootstrap
 import network_lab_capacity as capacity
 import network_lab_storage as storage
 
@@ -213,6 +214,7 @@ class _ObservationSession:
         self._lock = None
         self._guest_binding = None
         self._storage_binding = None
+        self._bootstrap_binding = None
         self._operation_binding = None
         self._used = self._active = self._failed = False
         self._owner = None
@@ -282,6 +284,68 @@ class _ObservationSession:
                 self._lock.close()
             raise
 
+    def _refresh_observation(self, detached):
+        self._guard()
+        result = storage.collect(self._context, peaks=detached)
+        self._guard()
+        _require(
+            type(result) is dict
+            and set(result)
+            == {
+                "schema",
+                "scope",
+                "context_sha256",
+                "bindings_sha256",
+                "capacity_assessment",
+                "snapshot_lock_released_on_return",
+                "execution_admission",
+            }
+            and result["schema"] == storage.SCHEMA
+            and result["scope"] == "read_only_storage_observation_and_capacity_arithmetic"
+            and result["context_sha256"] == self._context_digest
+            and type(result["bindings_sha256"]) is str
+            and bool(re.fullmatch(r"[0-9a-f]{64}", result["bindings_sha256"]))
+            and result["snapshot_lock_released_on_return"] is True
+            and result["execution_admission"] is False,
+            "Unexpected storage observation receipt",
+        )
+        identity = result["bindings_sha256"]
+        arithmetic = result["capacity_assessment"]
+        _require(
+            type(arithmetic) is dict
+            and set(arithmetic)
+            == {
+                "schema",
+                "mode",
+                "status",
+                "scope",
+                "context_sha256",
+                "inputs_sha256",
+                "filesystems",
+            }
+            and arithmetic["schema"] == capacity.SCHEMA
+            and arithmetic["mode"] == "lab"
+            and arithmetic["status"] == "supplied_capacity_arithmetic_satisfied"
+            and arithmetic["scope"] == "supplied_values_only_not_execution_admission"
+            and arithmetic["context_sha256"] == self._context_digest,
+            "Unexpected nested capacity context or scope",
+        )
+        _require(
+            self._storage_binding is None or self._storage_binding == identity,
+            "Observed storage binding changed during session",
+        )
+        self._storage_binding = identity
+        return {
+            "schema": SCHEMA,
+            "scope": "read_only_guest_storage_observation_under_operation_lock",
+            "context_sha256": self._context_digest,
+            "guest_binding_sha256": capacity._digest(self._guest_binding),
+            "storage_observation": copy.deepcopy(result),
+            "operation_lock_held_at_observation": True,
+            "operation_lock_binding_sha256": self._operation_binding,
+            "execution_admission": False,
+        }
+
     @_sanitized
     def refresh(self, *, peaks):
         detached = _peaks(peaks)
@@ -293,62 +357,89 @@ class _ObservationSession:
         _require(self._refreshing is False, "Lab observation refresh is already active")
         self._refreshing = True
         try:
+            return self._refresh_observation(detached)
+        except BaseException:
+            self._failed = True
+            raise
+        finally:
+            self._refreshing = False
+
+    @_sanitized
+    def observe_bootstrap_engine(self, *, peaks):
+        """Sample only an empty bootstrap engine while retaining this advisory lock.
+
+        Fresh storage surrounds the two inventory samples. Neither matching
+        samples nor the held lock exclude transient changes or grant admission.
+        Existing/retained containers, volumes or custom networks are not adopted.
+        """
+        detached = _peaks(peaks)
+        _require(os.getpid() == self._creator_pid, "Lab observation session cannot cross processes")
+        _require(
+            threading.get_ident() == self._owner,
+            "Lab observation session belongs to another controller",
+        )
+        _require(self._refreshing is False, "Lab observation refresh is already active")
+        self._refreshing = True
+        try:
+            before = self._refresh_observation(detached)
             self._guard()
-            result = storage.collect(self._context, peaks=detached)
+            observed = bootstrap.collect(self._context, lab_binding=self._binding)
             self._guard()
             _require(
-                type(result) is dict
-                and set(result)
+                type(observed) is dict
+                and set(observed)
                 == {
                     "schema",
                     "scope",
                     "context_sha256",
-                    "bindings_sha256",
-                    "capacity_assessment",
-                    "snapshot_lock_released_on_return",
+                    "engine_socket_peer_sha256",
+                    "inventory_before_sha256",
+                    "inventory_after_sha256",
+                    "observed_counts",
+                    "required_image_inspections",
+                    "unrelated_images_observed",
                     "execution_admission",
                 }
-                and result["schema"] == storage.SCHEMA
-                and result["scope"] == "read_only_storage_observation_and_capacity_arithmetic"
-                and result["context_sha256"] == self._context_digest
-                and type(result["bindings_sha256"]) is str
-                and bool(re.fullmatch(r"[0-9a-f]{64}", result["bindings_sha256"]))
-                and result["snapshot_lock_released_on_return"] is True
-                and result["execution_admission"] is False,
-                "Unexpected storage observation receipt",
+                and observed["schema"] == bootstrap.SCHEMA
+                and observed["scope"] == bootstrap.SCOPE
+                and observed["context_sha256"] == self._context_digest
+                and all(
+                    type(observed[key]) is str
+                    and bool(re.fullmatch(r"[0-9a-f]{64}", observed[key]))
+                    for key in (
+                        "engine_socket_peer_sha256",
+                        "inventory_before_sha256",
+                        "inventory_after_sha256",
+                    )
+                )
+                and observed["inventory_before_sha256"] == observed["inventory_after_sha256"]
+                and capacity._exact(
+                    observed["observed_counts"],
+                    {"containers": 0, "volumes": 0, "networks": 3, "endpoints": 0},
+                )
+                and type(observed["required_image_inspections"]) is int
+                and observed["required_image_inspections"] == 3
+                and observed["unrelated_images_observed"] is False
+                and observed["execution_admission"] is False,
+                "Unexpected bootstrap observation receipt",
             )
-            identity = result["bindings_sha256"]
-            arithmetic = result["capacity_assessment"]
+            observed = copy.deepcopy(observed)
+            binding = (observed["engine_socket_peer_sha256"], observed["inventory_after_sha256"])
             _require(
-                type(arithmetic) is dict
-                and set(arithmetic)
-                == {
-                    "schema",
-                    "mode",
-                    "status",
-                    "scope",
-                    "context_sha256",
-                    "inputs_sha256",
-                    "filesystems",
-                }
-                and arithmetic["schema"] == capacity.SCHEMA
-                and arithmetic["mode"] == "lab"
-                and arithmetic["status"] == "supplied_capacity_arithmetic_satisfied"
-                and arithmetic["scope"] == "supplied_values_only_not_execution_admission"
-                and arithmetic["context_sha256"] == self._context_digest,
-                "Unexpected nested capacity context or scope",
+                self._bootstrap_binding is None or self._bootstrap_binding == binding,
+                "Observed bootstrap binding changed during session",
             )
-            _require(
-                self._storage_binding is None or self._storage_binding == identity,
-                "Observed storage binding changed during session",
-            )
-            self._storage_binding = identity
+            after = self._refresh_observation(detached)
+            self._guard()
+            self._bootstrap_binding = binding
             return {
                 "schema": SCHEMA,
-                "scope": "read_only_guest_storage_observation_under_operation_lock",
+                "scope": "read_only_empty_engine_bootstrap_under_operation_lock",
                 "context_sha256": self._context_digest,
                 "guest_binding_sha256": capacity._digest(self._guest_binding),
-                "storage_observation": copy.deepcopy(result),
+                "storage_before": before["storage_observation"],
+                "storage_after": after["storage_observation"],
+                "bootstrap_observation": observed,
                 "operation_lock_held_at_observation": True,
                 "operation_lock_binding_sha256": self._operation_binding,
                 "execution_admission": False,
@@ -384,7 +475,9 @@ def observation_session(context, *, lab_binding, peaks):
 
     Entry observes the guest and storage once before yielding. refresh repeats
     real observations with an explicit new peak estimate while the lock remains
-    held. Only the owning controller thread may refresh. The lock is released on
+    held. observe_bootstrap_engine additionally samples an empty engine and its
+    three required images, surrounded by fresh storage observations. These calls
+    share the same non-reentrant controller guard. The lock is released on
     exit, including BaseException; returned records then remain historical only.
     The complete caller-supplied binding is verified, never generated here.
     Nothing in this API admits a VM, verifies consent, or authorizes allocation.

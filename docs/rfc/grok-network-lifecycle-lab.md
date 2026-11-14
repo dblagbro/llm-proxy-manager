@@ -612,3 +612,40 @@ Host/snapshot/rollback operations and independently verified lab admission remai
 pending; the observation session grants no mutation permission. Allocation,
 console access, working-fixture replacement authority and all existing release,
 H7/W16, Coordinator and private backup gates remain open.
+
+
+## Empty-engine bootstrap observations (source preparation, 2026-11-14)
+
+The held read-only session now offers `observe_bootstrap_engine(peaks=...)`.
+It refreshes storage around two Docker inventory samples and checks the owning
+process/thread, guest boot, operation lock and retained context before returning.
+The operation lock stays held. Collection failure invalidates the session; no
+CLI, lab dispatcher, lifecycle operation or execution permit is introduced.
+
+Only the fixed local Unix socket is used. Bounded allowlisted GET requests require
+the root daemon peer and unchanged socket/engine identity. Bootstrap refuses any
+container (including stopped/created fixtures), any volume, Swarm membership,
+custom networks or endpoints. It requires the three built-in local networks and
+inspects each by its full ID because modern network-list responses omit endpoints.
+The three immutable image pins must be locally inspectable as Linux/amd64. Other
+images are not inventoried; no claim is made about their absence or provenance.
+Response framing, body/header/wire limits and existing per-request timeouts remain
+in force. One 30-second HTTP deadline spans both samples and all their requests;
+it is not an OS-level deadline for arbitrary filesystem metadata syscalls.
+
+The sanitized result contains counts and identity/configuration digests with
+`execution_admission=false`. Matching samples detect observed drift; they cannot
+exclude transient changes or reserve the engine against other actors. The lock is
+advisory. Host jobs/autostart, physical NIC isolation, shared devices/storage,
+source and image provenance, operator scope and working-fixture replacement
+authority remain separate requirements. This observer applies only before the
+first fixtures exist. It never adopts, removes or stops retained resources, and
+refusal does not authorize cleanup. Later retained-fixture admission is unfinished.
+
+The HTTP extraction preserves the prior `/info` projection and framing/peer
+checks. Factoring the session's storage refresh preserves its previous algorithm.
+Production release/Host/CLI and release gates are unchanged. Tests use synthetic
+inventory/socket/session fixtures; no live collector, image scan, container,
+network, VM, backup or permission operation is performed by this preparation.
+Lab allocation, console access, full admission and the shared lifecycle harness
+remain pending. API review: [Docker Engine API v1.51](https://docs.docker.com/reference/api/engine/version/v1.51/).
