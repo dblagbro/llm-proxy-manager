@@ -1,0 +1,87 @@
+{
+  "schema": 1,
+  "kind": "held_read_only_lab_observation_source_tests",
+  "based_on": "a5666646d189faa6e2bf74075334b64f88d94441",
+  "scope": "New held observation session; production operator and existing collectors remain unchanged",
+  "source_sha256": {
+    "network_lab_session.py": "11bbd9d7c61ea2448ebe1607dce4ae45d27c401b1ca31c51ac08cc435d240f06",
+    "test_network_lab_session.py": "5707eb03807ad3ccca28d80ecac750fa40db6f8b0d341ce336ed9ea9e0835df2"
+  },
+  "protected_existing_source": {
+    "grok_bridge/deployment/release.py": "d691edb48a55c19e372c0a6e422ef23e88ab7db82bc1d5be613a12b632abc81e",
+    "grok_bridge/deployment/network_lab_context.py": "4b86d6bac55a9deeeb025e6aced68012ef14450ffe9220e70b200f9f9c712f07",
+    "grok_bridge/deployment/network_lab_storage.py": "021e4c3d4eed3269fc1578cde5a0e3b503dfd56d02d44ddf534d256f69359879",
+    "grok_bridge/deployment/network_lab_capacity.py": "3dd5bfa0d9f772d4430ae2fdca6cefa8a3f0862650f9ef24266444015b7e9fc0"
+  },
+  "review": {
+    "passed": true,
+    "kind": "Release-engineering preparation plus primary source/boundary review",
+    "corrections": [
+      "Bind session to creator PID and owning controller thread; refuse fork/foreign-thread collection",
+      "Refuse foreign-thread exit before cleanup to preserve the owner's held lock",
+      "Close-only fork cleanup; never unlock the parent's shared open description",
+      "Protect single-use entry against concurrent reentry",
+      "Retain hashed exact operation-lock identity and nested capacity context/scope",
+      "Linux-only simulated parent verifier corrected to raise the intended refusal for both held descriptor and pathname metadata drift"
+    ]
+  },
+  "production_operator_unchanged_this_increment": true,
+  "production_entrypoints_and_gates_unchanged": true,
+  "existing_collectors_unchanged": true,
+  "held_observation_session_added": true,
+  "execution_admission": false,
+  "lab_created": false,
+  "live_collector_invoked": false,
+  "full_harness_implemented": false,
+  "production_modified": false,
+  "deployed": false,
+  "merged": false,
+  "new_vulnerability_scan": false,
+  "accepted_fixture_repeated": false,
+  "limitations": [
+    "Actual module reads fixed guest kernel UUID/boot files and the existing storage collector, but no live invocation occurred in this workgroup",
+    "Source tests map fixed kernel/lock paths to temporary files, simulate ownership/mount observations and replace guest/engine/storage responses",
+    "Linux tests exercise real descriptor flags, no-follow reads, FIFO/symlink/hardlink refusals, flock contention/lifetime and fork cleanup; Windows skips Linux-only cases",
+    "Advisory lock coordinates cooperating controllers; it does not protect against hostile root or reserve capacity",
+    "SMBIOS UUID and local-engine observation cannot establish management-plane identity, physical isolation, boot/autostart/device/shared-folder/storage provenance, operator authority, source/images/synthetic-data acceptance or guest runtime eligibility"
+  ],
+  "checked_utc": "2026-11-14T20:02:24.891Z",
+  "checks": {
+    "linux_release_tests": 100,
+    "linux_network_tests": 1221,
+    "lab_session_tests": 85,
+    "network_subtests": 201,
+    "linux_skipped": 0,
+    "windows_passed": 62,
+    "windows_linux_only_skipped": 23,
+    "windows_preceded_linux_only_fixture_correction": true,
+    "scoped_lint": "passed",
+    "scoped_format": "passed",
+    "warning": "Retained unrelated asyncio_mode warning in synchronous source-test environment"
+  },
+  "commands": [
+    "make test-grok-release test-grok-network lint-grok-release lint-grok-network GROK_PYTHON=/var/backups/codex-remediation-20261109/workspace/grok-release-venv/bin/python",
+    "make test-grok-network lint-grok-release lint-grok-network GROK_PYTHON=/var/backups/codex-remediation-20261109/workspace/grok-release-venv/bin/python"
+  ],
+  "linux_run": {
+    "returncode": 0,
+    "elapsed_seconds": 39.76,
+    "log": "/tmp/codex-grok-lab-session-final-bigu57ue.log",
+    "summaries": [
+      "1221 passed, 1 warning, 201 subtests passed in 39.31s",
+      "All checks passed!",
+      "3 files already formatted",
+      "All checks passed!",
+      "30 files already formatted"
+    ],
+    "failure_tail": []
+  },
+  "initial_linux_attempt": {
+    "returncode": 2,
+    "release_tests_passed": 100,
+    "network_tests_passed": 1220,
+    "network_tests_failed": 1,
+    "failed_test": "test_linux_held_lock_drift_refuses[parent-mode]",
+    "cause": "Test-only simulated parent verifier used AssertionError instead of the intended parent-change refusal; corrected fixture to reject either FD or pathname metadata drift. Implementation unchanged."
+  }
+}

@@ -504,3 +504,39 @@ Tests use actual temporary files with explicit generation-path and root-ownershi
 simulation. Linux exercises real descriptor metadata, FIFO, symlink, hardlink,
 replacement and fsync behavior; Windows uses explicit metadata/symlink substitutes.
 No test result establishes actual lab eligibility or physical isolation.
+
+## Held lab observation session
+
+A separate observation_session API holds a preexisting private operation lock
+across the caller's scope and each fresh storage collection. The operation lock
+is distinct from the collector's short snapshot lock; neither lock creates,
+changes permissions on, or reserves capacity in the generation.
+
+Before I/O, the explicit context, retained full binding and upcoming peaks must
+validate. Linux/root, amd64 guest architecture, bounded kernel-reported SMBIOS
+UUID and boot identity are checked. Guest UUID must match the descriptor; the
+guest hostname is not substituted for the hypervisor VM name. Guest, context,
+binding and lock identity are rechecked around the existing local-engine/storage
+collector. Refresh requires the owning process and controller thread in an active held
+session. Reentry and cross-process use refuse. A foreign thread cannot close the
+owner's lock; forked children only close inherited descriptors, without unlocking
+the parent's open description. Failed entry, owning-body exceptions and normal
+exit release the operation lock. Closed sessions cannot collect again.
+
+This is an observation scope, not admission. Returned receipts retain
+execution_admission=false. Guest-reported UUID/boot and local engine/storage
+consistency cannot prove hypervisor identity, every NIC disconnected at boot,
+VM ownership or autostart policy, device/shared-folder/storage provenance,
+operator authorization, source/image or synthetic-data provenance, or runtime
+eligibility. Guest interfaces, routes, DNS, jobs, workload/resource inventory
+and independently obtained management-plane evidence remain to integrate.
+The operator's allocation and permitted working-container replacement decision
+is still required. No pending email or supplied descriptor becomes a permit.
+
+Production operator, journal persistence, existing storage collector, context,
+capacity policy, CLI and release gates remain unchanged. The full lifecycle
+controller is still unwired. Source tests simulate kernel/engine observations
+and ownership; Linux exercises real temporary descriptor/flock lifetime and
+contention. Windows results do not establish Linux flock behavior. No live
+observation session, collector, fixture or lab execution was invoked.
+See docs/evidence/grok-lab-session-source-20261114.json.
