@@ -163,11 +163,15 @@ networks unchanged; the runner failure itself did not establish that proof.
 
 The helper now normalizes only that observed false/null fixture OOM default;
 original-runtime fingerprints stay strict. All capabilities remain dropped.
-It takes private byte-identical copies of only `/etc/nginx/conf.d` and
-`/etc/nginx/projects-locations.d` when those mounts exist. Shared bounds are
-256 entries, eight levels and 8 MiB. Symlinks, special files, drift and interrupted
-copy generations refuse reuse. Original content, metadata and membership are
-checked before each start and afterward; copies use root-owned 0700 directories
+It takes private copies of only `/etc/nginx/conf.d`,
+`/etc/nginx/projects-locations.d` and `/etc/letsencrypt` when those mounts exist.
+Regular-file bytes and certificate link text/target semantics are preserved. Shared bounds are
+256 entries, eight levels and 8 MiB. Both include trees reject symlinks. Certificate links must be relative, remain
+inside that exact tree, traverse only inventoried directories and end at an
+inventoried regular file. Absolute, escaping, chained and directory links,
+special files, drift and interrupted copy generations refuse reuse. Original content, metadata and membership are
+checked before each start and afterward (only symlink atime is excluded because
+readlink may update it; source times are never reset). Copies use root-owned 0700 directories
 and 0600 files. No original modes, ownership or ACLs are changed. Linux reads
 use descriptor-relative NOFOLLOW and NOATIME. Records and copied include data
 remain inside the private attempt; never publish them.
@@ -180,3 +184,11 @@ containers, networks, staged/canonical files, include copies and source even
 when fixture ownership verification fails. An exact-ID/name/owner observation
 may be reported as unverified; it never authorizes lifecycle changes or a
 network endpoint exemption. These changes still require real acceptance.
+
+The second retained attempt at `06a3b8be` could parse its private include copies
+but failed on certificate access in the original mixed-ownership TLS mount.
+All independent audits passed for its 140 preexisting containers and 14 networks;
+see `docs/evidence/grok-nginx-validator-second-attempt-20261114.json`. The exact
+certificate-mount snapshot handles that input without a DAC capability or any
+source permission change. Certificate/private-key bytes and snapshot manifests
+must remain private and must never be added to Git or public evidence.

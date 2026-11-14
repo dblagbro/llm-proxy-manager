@@ -28,7 +28,7 @@ def trees(tmp_path, monkeypatch):
         path.chmod(0o600)
     mounts = [
         {"Destination": target, "Source": str(source), "Type": "bind", "RW": False}
-        for target, source in zip(n.TARGETS, (conf, projects), strict=True)
+        for target, source in zip(list(n.TARGETS)[:2], (conf, projects), strict=True)
     ]
     # CI runs as an unprivileged owner of these synthetic inputs. Exercise all
     # permission checks and Linux NOATIME reads, substituting only root identity.
@@ -47,7 +47,7 @@ def test_snapshot_is_byte_identical_private_and_original_metadata_is_unchanged(t
     record = n.prepare(folder, mounts)
     assert json.loads(json.dumps(record)) == record
     mapping = n.overrides(folder, record)
-    assert set(mapping) == set(n.TARGETS)
+    assert set(mapping) == {mount["Destination"] for mount in mounts}
     for target, source in mapping.items():
         assert Path(source).is_relative_to(folder)
         original = Path(record["trees"][target]["source"])
@@ -304,3 +304,277 @@ def test_linux_open_flags_require_nofollow_and_noatime(monkeypatch):
     monkeypatch.setattr(n.os, "O_NOFOLLOW", 0x20000, raising=False)
     flags = n._flags()
     assert flags & n.os.O_NOATIME and flags & n.os.O_NOFOLLOW
+
+
+def renewal_inventory():
+    return {
+        "": {"kind": "directory"},
+        "live": {"kind": "directory"},
+        "live/example": {"kind": "directory"},
+        "archive": {"kind": "directory"},
+        "archive/example": {"kind": "directory"},
+        "archive/example/fullchain1.pem": {"kind": "file"},
+        "archive/example/fullchain2.pem": {"kind": "file"},
+        "archive/example/privkey1.pem": {"kind": "file"},
+        "live/example/fullchain.pem": {"kind": "symlink"},
+        "archive/alias": {"kind": "symlink"},
+    }
+
+
+def test_relative_renewal_leaf_normalizes_to_inventoried_regular_file():
+    assert (
+        n._leaf_target(
+            "live/example/fullchain.pem",
+            "../../archive/example/fullchain1.pem",
+            renewal_inventory(),
+        )
+        == "archive/example/fullchain1.pem"
+    )
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "/archive/example/fullchain1.pem",
+        "../../../outside.pem",
+        "../../archive/example",
+        "fullchain.pem",
+        "../../archive/missing.pem",
+        "../../archive/alias/../example/fullchain1.pem",
+        "../../archive/example/fullchain1.pem/../fullchain2.pem",
+        "../../archive/example/fullchain1.pem/",
+        "../../archive/example/fullchain1.pem/.",
+        "C:\\outside.pem",
+        "",
+        ".",
+        "../..",
+        "x" * (n.MAX_LINK_BYTES + 1),
+    ],
+)
+def test_certificate_link_rejects_escapes_chains_directories_and_nonleaf_paths(text):
+    with pytest.raises(n.NginxInputsError):
+        n._leaf_target("live/example/fullchain.pem", text, renewal_inventory())
+
+
+def test_include_record_cannot_enable_certificate_symlink_policy():
+    rows = renewal_inventory()
+    rows.pop("archive/alias")
+    rows["live/example/fullchain.pem"].update(
+        link_text="../../archive/example/fullchain1.pem", target="archive/example/fullchain1.pem"
+    )
+    n._check_links(rows, True)
+    with pytest.raises(n.NginxInputsError, match="forbidden"):
+        n._check_links(rows, False)
+
+
+@pytest.mark.parametrize("change", ["none", "atime", "identity", "text", "permissions"])
+def test_link_read_binds_identity_text_and_only_ignores_symlink_atime(
+    tmp_path, monkeypatch, change
+):
+    source = tmp_path / "template"
+    source.write_bytes(b"template")
+    actual = source.stat()
+    fields = {
+        key: getattr(actual, key)
+        for key in (
+            "st_dev",
+            "st_ino",
+            "st_mode",
+            "st_uid",
+            "st_gid",
+            "st_size",
+            "st_mtime_ns",
+            "st_ctime_ns",
+            "st_atime_ns",
+        )
+    }
+    fields.update(st_mode=stat.S_IFLNK | 0o777, st_size=32)
+    before = SimpleNamespace(**fields)
+    after_fields = dict(fields)
+    if change == "atime":
+        after_fields["st_atime_ns"] += 1000
+    elif change == "identity":
+        after_fields["st_ino"] += 1
+    elif change == "permissions":
+        after_fields["st_mode"] = stat.S_IFLNK | 0o700
+    after = SimpleNamespace(**after_fields)
+    monkeypatch.setattr(n, "_linux", lambda: True)
+    calls = []
+
+    def readlink(name, *, dir_fd):
+        assert name == "cert.pem" and dir_fd == 123
+        calls.append(name)
+        return "changed.pem" if change == "text" and len(calls) == 2 else "original.pem"
+
+    def inspect(name, *, dir_fd, follow_symlinks):
+        assert name == "cert.pem" and dir_fd == 123 and follow_symlinks is False
+        return after
+
+    monkeypatch.setattr(n.os, "readlink", readlink)
+    monkeypatch.setattr(n.os, "stat", inspect)
+    if change in {"none", "atime"}:
+        result = n._read_leaf_link(tmp_path / "cert.pem", "cert.pem", 123, before, False)
+        assert result["link_text"] == "original.pem"
+        assert "st_atime_ns" not in result["metadata"] and len(calls) == 2
+    else:
+        with pytest.raises(n.NginxInputsError):
+            n._read_leaf_link(tmp_path / "cert.pem", "cert.pem", 123, before, False)
+
+
+def test_regular_metadata_still_includes_atime(monkeypatch):
+    monkeypatch.setattr(n, "_linux", lambda: True)
+    values = {
+        key: 1
+        for key in (
+            "st_dev",
+            "st_ino",
+            "st_mode",
+            "st_uid",
+            "st_gid",
+            "st_size",
+            "st_mtime_ns",
+            "st_ctime_ns",
+            "st_atime_ns",
+        )
+    }
+    info = SimpleNamespace(**values)
+    assert n._metadata(info)["st_atime_ns"] == 1
+    assert "st_atime_ns" not in n._link_metadata(info)
+
+
+def test_private_certificate_symlink_must_be_root_owned(tmp_path, monkeypatch):
+    monkeypatch.setattr(n, "_linux", lambda: True)
+    values = {
+        key: 1
+        for key in (
+            "st_dev",
+            "st_ino",
+            "st_mode",
+            "st_uid",
+            "st_gid",
+            "st_size",
+            "st_mtime_ns",
+            "st_ctime_ns",
+            "st_atime_ns",
+        )
+    }
+    values.update(st_mode=stat.S_IFLNK | 0o777, st_uid=1000, st_gid=1000)
+    with pytest.raises(n.NginxInputsError, match="root ownership"):
+        n._read_leaf_link(tmp_path / "cert.pem", "cert.pem", 123, SimpleNamespace(**values), True)
+
+
+def test_third_exact_certificate_mount_without_links_is_copied_privately(trees):
+    folder, mounts, _, _ = trees
+    certs = folder.parent / "plain-certs"
+    certs.mkdir()
+    (certs / "cert.pem").write_bytes(b"SYNTHETIC CERTIFICATE\n")
+    mounts.append({"Destination": n.CERT_TARGET, "Source": str(certs), "Type": "bind"})
+    record = n.prepare(folder, mounts)
+    result = n.overrides(folder, record)
+    assert set(result) == set(n.TARGETS)
+    assert Path(result[n.CERT_TARGET]) == folder / n.COPY_ROOT / "letsencrypt"
+    assert set(record["trees"][n.CERT_TARGET]["original"]) == {"", "cert.pem"}
+    n.verify(folder, record)
+
+
+@pytest.fixture
+def certificates(trees):
+    folder, mounts, _, _ = trees
+    certs = folder.parent / "cert-original"
+    archive = certs / "archive/example"
+    live = certs / "live/example"
+    archive.mkdir(parents=True)
+    live.mkdir(parents=True)
+    (archive / "fullchain1.pem").write_bytes(b"SYNTHETIC CERTIFICATE ONE\n")
+    (archive / "fullchain2.pem").write_bytes(b"SYNTHETIC CERTIFICATE TWO\n")
+    (archive / "privkey1.pem").write_bytes(b"SYNTHETIC NON-SECRET PRIVATE KEY\n")
+    for file in archive.iterdir():
+        file.chmod(0o600)
+    symlink_or_skip(live / "fullchain.pem", "../../archive/example/fullchain1.pem")
+    symlink_or_skip(live / "privkey.pem", "../../archive/example/privkey1.pem")
+    mount = {"Destination": n.CERT_TARGET, "Source": str(certs), "Type": "bind", "RW": False}
+    return folder, [*mounts, mount], certs
+
+
+def test_certificate_snapshot_preserves_renewal_links_private_modes_and_original_metadata(
+    certificates,
+):
+    folder, mounts, certs = certificates
+    before, _ = n._scan(certs, n._Budget(), allow_links=True)
+    record = n.prepare(folder, mounts)
+    mapping = n.overrides(folder, record)
+    copied = Path(mapping[n.CERT_TARGET])
+    assert set(mapping) == set(n.TARGETS)
+    assert (
+        os.readlink(copied / "live/example/fullchain.pem") == "../../archive/example/fullchain1.pem"
+    )
+    assert os.readlink(copied / "live/example/privkey.pem") == "../../archive/example/privkey1.pem"
+    for _ in range(2):
+        n.verify(folder, record)
+    after, _ = n._scan(certs, n._Budget(), allow_links=True)
+    assert before == after
+    copied_rows, contents = n._scan(
+        copied, n._Budget(), private=True, capture=True, allow_links=True
+    )
+    assert contents["archive/example/fullchain1.pem"] == b"SYNTHETIC CERTIFICATE ONE\n"
+    for relative, row in copied_rows.items():
+        if row["kind"] != "symlink" and os.name == "posix":
+            assert stat.S_IMODE((copied / relative).stat().st_mode) == (
+                0o700 if row["kind"] == "directory" else 0o600
+            )
+
+
+@pytest.mark.parametrize(
+    "change", ["link-text", "target-bytes", "target-missing", "copy-link", "copy-target"]
+)
+def test_certificate_original_or_private_link_and_target_drift_refuses(certificates, change):
+    folder, mounts, certs = certificates
+    record = n.prepare(folder, mounts)
+    copied = folder / n.COPY_ROOT / "letsencrypt"
+    if change in {"link-text", "copy-link"}:
+        link = (certs if change == "link-text" else copied) / "live/example/fullchain.pem"
+        link.unlink()
+        link.symlink_to("../../archive/example/fullchain2.pem")
+    elif change == "target-missing":
+        (certs / "archive/example/fullchain1.pem").unlink()
+    else:
+        root = certs if change == "target-bytes" else copied
+        (root / "archive/example/fullchain1.pem").write_bytes(b"changed certificate")
+    with pytest.raises(n.NginxInputsError):
+        n.overrides(folder, record)
+
+
+@pytest.mark.parametrize(
+    "text", ["../../../outside.pem", "/outside.pem", "../../archive/example", "privkey.pem"]
+)
+def test_actual_certificate_links_reject_escapes_absolute_directory_and_chain(certificates, text):
+    folder, mounts, certs = certificates
+    link = certs / "live/example/fullchain.pem"
+    link.unlink()
+    link.symlink_to(text, target_is_directory=text.endswith("example"))
+    with pytest.raises(n.NginxInputsError):
+        n.prepare(folder, mounts)
+
+
+def test_certificate_support_does_not_enable_symlinks_in_include_mounts(certificates):
+    folder, mounts, _ = certificates
+    source = Path(mounts[0]["Source"])
+    (source / "alias.conf").symlink_to("root.conf")
+    with pytest.raises(n.NginxInputsError, match="forbidden"):
+        n.prepare(folder, mounts)
+
+
+def test_interrupted_private_link_creation_is_retained_and_refuses_reuse(certificates, monkeypatch):
+    folder, mounts, _ = certificates
+    original = n._write_link
+
+    def interrupt(path, text):
+        original(path, text)
+        raise OSError("synthetic interruption after link creation")
+
+    monkeypatch.setattr(n, "_write_link", interrupt)
+    with pytest.raises(n.NginxInputsError):
+        n.prepare(folder, mounts)
+    assert (folder / n.COPY_ROOT / "letsencrypt/live/example/fullchain.pem").is_symlink()
+    with pytest.raises(n.NginxInputsError, match="Existing"):
+        n.prepare(folder, mounts)

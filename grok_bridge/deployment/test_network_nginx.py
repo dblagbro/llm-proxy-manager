@@ -684,6 +684,13 @@ def include_context(context, monkeypatch):
         private_file = source / "private.conf"
         private_file.write_bytes(b"# synthetic private include\n")
         private_file.chmod(0o600)
+        if target == "/etc/letsencrypt":
+            (source / "archive").mkdir(mode=0o700)
+            (source / "live").mkdir(mode=0o700)
+            certificate = source / "archive/cert1.pem"
+            certificate.write_bytes(b"synthetic certificate test input\n")
+            certificate.chmod(0o600)
+            (source / "live/cert.pem").symlink_to("../archive/cert1.pem")
         host.nginx["Mounts"].append(
             {"Destination": target, "Source": str(source), "Type": "bind", "RW": False}
         )
@@ -707,6 +714,18 @@ def test_private_include_sources_are_copied_readonly_and_reused(include_context)
     assert len([c for c in host.calls if c[1] == "create"]) == 1
     assert len([c for c in host.calls if c[1] == "start"]) == 2
     n.verify_validation_inputs(host.folder, original_nginx)
+
+
+def test_certificate_link_resolves_inside_private_snapshot(include_context):
+    host, _, _ = include_context
+    validate(include_context)
+    state = ledger(host)
+    tls = next(m for m in state["mounts"] if m["Destination"] == "/etc/letsencrypt")
+    private = host.folder / n.inputs.COPY_ROOT / "letsencrypt"
+    assert Path(tls["Source"]) == private and tls["RW"] is False
+    link = private / "live/cert.pem"
+    assert link.is_symlink() and link.resolve() == private / "archive/cert1.pem"
+    assert "CapAdd" not in host.fixture["HostConfig"]
 
 
 def test_original_include_changed_after_create_prevents_start(include_context):

@@ -1,9 +1,11 @@
-"""Private, byte-identical copies of the two reviewed Nginx include mounts.
+"""Private, byte-identical copies of three reviewed Nginx configuration mounts.
 
 This module never changes original modes/ownership/ACLs and never runs Docker.
 Linux execution requires root; ancestor descriptors use NOFOLLOW and all
 file/directory reads use NOATIME. Any interrupted copy is retained and
 refuses reuse. The returned record belongs only in private evidence/ledgers.
+Only the certificate tree permits relative leaf links to inventoried regular
+files. Link atime is excluded because readlink can update it; no times are reset.
 """
 
 import functools
@@ -17,7 +19,10 @@ from pathlib import Path, PurePosixPath
 TARGETS = {
     "/etc/nginx/conf.d": "conf.d",
     "/etc/nginx/projects-locations.d": "projects-locations.d",
+    "/etc/letsencrypt": "letsencrypt",
 }
+CERT_TARGET = "/etc/letsencrypt"
+MAX_LINK_BYTES = 4096
 COPY_ROOT = "nginx-include-inputs"
 MANIFEST = "manifest.private.json"
 MAX_BYTES = 8 * 1024 * 1024
@@ -161,6 +166,88 @@ def _relative(value):
     return path
 
 
+def _link_metadata(info):
+    value = _metadata(info)
+    value.pop("st_atime_ns", None)
+    return value
+
+
+def _leaf_target(relative, text, entries):
+    """Resolve lexically while requiring every traversed component to be a directory.
+
+    Checking only normpath would incorrectly accept a symlink/.. intermediate.
+    This never follows a source link or reads an uninventoried target.
+    """
+    _relative(relative)
+    _require(
+        type(text) is str and text and "\\" not in text and "\0" not in text,
+        "Invalid certificate link text",
+    )
+    _require(len(os.fsencode(text)) <= MAX_LINK_BYTES, "Certificate link exceeds reviewed bound")
+    _require(not PurePosixPath(text).is_absolute(), "Absolute certificate links are forbidden")
+    _require(
+        text.split("/")[-1] not in {"", ".", ".."},
+        "Certificate link must end in a regular file name",
+    )
+    stack = list(PurePosixPath(relative).parent.parts)
+    parts = [part for part in text.split("/") if part not in {"", "."}]
+    for index, part in enumerate(parts):
+        if part == "..":
+            _require(bool(stack), "Certificate link escapes its tree")
+            stack.pop()
+        else:
+            stack.append(part)
+            row = entries.get("/".join(stack))
+            kind = "directory" if index < len(parts) - 1 else "file"
+            _require(
+                type(row) is dict and row.get("kind") == kind,
+                "Certificate links must traverse directories to one regular file",
+            )
+    target = "/".join(stack)
+    _relative(target)
+    _require(
+        target and entries.get(target, {}).get("kind") == "file",
+        "Certificate link target is not an inventoried regular file",
+    )
+    return target
+
+
+def _check_links(entries, allow_links):
+    for relative, row in entries.items():
+        if row["kind"] == "symlink":
+            _require(allow_links, "Symlink include entries are forbidden")
+            _require(
+                row.get("target") == _leaf_target(relative, row.get("link_text"), entries),
+                "Certificate link target binding changed",
+            )
+
+
+def _read_leaf_link(path, name, fd, info, private):
+    _require(0 <= info.st_size <= MAX_LINK_BYTES, "Certificate link exceeds reviewed bound")
+    before = _link_metadata(info)
+    if private:
+        _private_owner(info)
+
+    def link_text():
+        return os.readlink(name, dir_fd=fd) if fd is not None else os.readlink(path)
+
+    def link_stat():
+        return os.stat(name, dir_fd=fd, follow_symlinks=False) if fd is not None else path.lstat()
+
+    first = link_text()
+    _require(_link_metadata(link_stat()) == before, "Certificate link changed during read")
+    second = link_text()
+    _require(
+        first == second and _link_metadata(link_stat()) == before,
+        "Certificate link identity or text changed",
+    )
+    _require(
+        type(first) is str and len(os.fsencode(first)) <= MAX_LINK_BYTES,
+        "Certificate link exceeds reviewed bound",
+    )
+    return {"kind": "symlink", "metadata": before, "link_text": first}
+
+
 class _Budget:
     def __init__(self):
         self.entries = 0
@@ -176,7 +263,7 @@ class _Budget:
         _require(self.bytes <= MAX_BYTES, "Include bytes exceed reviewed bound")
 
 
-def _scan(root, budget, *, private=False, capture=False):
+def _scan(root, budget, *, private=False, capture=False, allow_links=False):
     entries, contents = {}, {}
     root = _path(root)
 
@@ -207,7 +294,13 @@ def _scan(root, budget, *, private=False, capture=False):
                 if fd is not None
                 else child_path.lstat()
             )
-            _require(not stat.S_ISLNK(info.st_mode), "Symlink include entries are forbidden")
+            if stat.S_ISLNK(info.st_mode):
+                _require(allow_links, "Symlink include entries are forbidden")
+                budget.entry()
+                row = _read_leaf_link(child_path, name, fd, info, private)
+                budget.file(len(os.fsencode(row["link_text"])))
+                entries[child_rel] = row
+                continue
             if stat.S_ISDIR(info.st_mode):
                 child_fd = os.open(name, _flags(True), dir_fd=fd) if fd is not None else None
                 try:
@@ -258,6 +351,10 @@ def _scan(root, budget, *, private=False, capture=False):
     finally:
         if root_fd is not None:
             os.close(root_fd)
+    for relative, row in entries.items():
+        if row["kind"] == "symlink":
+            row["target"] = _leaf_target(relative, row["link_text"], entries)
+    _check_links(entries, allow_links)
     return entries, contents
 
 
@@ -279,6 +376,22 @@ def _sync_directory(path):
             os.close(fd)
 
 
+def _write_link(path, text):
+    parent_fd = _directory_fd(path.parent)
+    try:
+        if parent_fd is not None:
+            os.symlink(text, path.name, dir_fd=parent_fd)
+            info = os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
+        else:
+            os.symlink(text, path)
+            info = path.lstat()
+        _require(stat.S_ISLNK(info.st_mode), "Private certificate link creation changed")
+        _private_owner(info)
+    finally:
+        if parent_fd is not None:
+            os.close(parent_fd)
+
+
 def _json(value):
     return (
         json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n"
@@ -298,7 +411,7 @@ def _validate_record(record):
         "Unreviewed include target",
     )
     budget = _Budget()
-    for tree in record["trees"].values():
+    for target, tree in record["trees"].items():
         _require(
             type(tree) is dict and set(tree) == {"source", "original", "copy"},
             "Invalid include record",
@@ -311,7 +424,7 @@ def _validate_record(record):
             for relative, row in rows.items():
                 _relative(relative)
                 _require(
-                    type(row) is dict and row.get("kind") in {"directory", "file"},
+                    type(row) is dict and row.get("kind") in {"directory", "file", "symlink"},
                     "Invalid include entry record",
                 )
                 _require(type(row.get("metadata")) is dict, "Invalid include metadata")
@@ -319,7 +432,11 @@ def _validate_record(record):
                     budget.entry()
                     if row["kind"] == "file":
                         budget.file(row["metadata"].get("st_size"))
+                    elif row["kind"] == "symlink":
+                        _require(type(row.get("link_text")) is str, "Invalid certificate link text")
+                        budget.file(len(os.fsencode(row["link_text"])))
             _require(rows[""]["kind"] == "directory", "Include root is not a directory")
+            _check_links(rows, target == CERT_TARGET)
         _require(
             set(tree["original"]) == set(tree["copy"]),
             "Include copy membership differs",
@@ -328,7 +445,9 @@ def _validate_record(record):
             copied = tree["copy"][relative]
             _require(
                 original["kind"] == copied["kind"]
-                and original.get("sha256") == copied.get("sha256"),
+                and original.get("sha256") == copied.get("sha256")
+                and original.get("link_text") == copied.get("link_text")
+                and original.get("target") == copied.get("target"),
                 "Include copy bytes differ",
             )
 
@@ -382,7 +501,9 @@ def prepare(folder, nginx_mounts):
     budget = _Budget()
     originals, contents = {}, {}
     for target, source in sources.items():
-        originals[target], contents[target] = _scan(source, budget, capture=True)
+        originals[target], contents[target] = _scan(
+            source, budget, capture=True, allow_links=target == CERT_TARGET
+        )
     for target, source in sources.items():
         copy_root = root / TARGETS[target]
         copy_root.mkdir(mode=0o700)
@@ -391,10 +512,13 @@ def prepare(folder, nginx_mounts):
                 (copy_root / relative).mkdir(mode=0o700)
         for relative, data in contents[target].items():
             _write_file(copy_root / relative, data)
+        for relative, row in originals[target].items():
+            if row["kind"] == "symlink":
+                _write_link(copy_root / relative, row["link_text"])
         for relative, row in reversed(list(originals[target].items())):
             if row["kind"] == "directory":
                 _sync_directory(copy_root / relative)
-        copied, _ = _scan(copy_root, _Budget(), private=True)
+        copied, _ = _scan(copy_root, _Budget(), private=True, allow_links=target == CERT_TARGET)
         record["trees"][target] = {
             "source": str(source),
             "original": originals[target],
@@ -428,8 +552,10 @@ def verify(folder, record):
             not source.is_relative_to(folder) and not folder.is_relative_to(source),
             "Original and private include paths overlap",
         )
-        original, _ = _scan(source, original_budget)
-        copied, _ = _scan(root / TARGETS[target], copy_budget, private=True)
+        original, _ = _scan(source, original_budget, allow_links=target == CERT_TARGET)
+        copied, _ = _scan(
+            root / TARGETS[target], copy_budget, private=True, allow_links=target == CERT_TARGET
+        )
         _require(
             _json(original) == _json(tree["original"]),
             "Original include inputs changed",

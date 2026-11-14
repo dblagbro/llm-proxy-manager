@@ -632,8 +632,8 @@ def validate_staged_nginx(
             image.get("Id") == original_nginx["Image"] and not image["Config"].get("Volumes"),
             "Validation image has unreviewed volumes",
         )
-        # Validate the full mount inventory before copying only the two bounded
-        # include trees. Private copies avoid granting DAC-bypass capabilities or
+        # Validate the full mount inventory before copying only the three bounded
+        # configuration trees. Private copies avoid granting DAC-bypass capabilities or
         # changing the live source's access modes. Failed partial copies remain.
         _mounts(original_nginx, config, logs)
         config_inputs = (
