@@ -1,0 +1,66 @@
+{
+  "schema": 1,
+  "kind": "synthetic_initial_fixture_inputs_source_tests",
+  "based_on": "41f86742f4fe6f76bc8eff41c2e606fc3b08309b",
+  "scope": "Pure initial synthetic inputs and maintained planner/renderer integration; no runtime admission",
+  "source_sha256": {
+    "Makefile": "079e713f86785c9a1583db8cfbe04d2206a0155051a64a8e1de940c73b8ed24d",
+    "docs/rfc/grok-network-lifecycle-lab.md": "793633e6fbbe891d20568784423c3d56719d85a4828446920fc38ac98f50af68",
+    "grok_bridge/deployment/network_lab_fixtures.py": "701ad31e5fda584537f55ddb73cabb2445ee37bb406b80417184a93837274664",
+    "grok_bridge/deployment/test_network_lab_fixtures.py": "ec0b7a5f2aea339f2c14d53d12e329e81a55db855f3c2c91947e4b968c5fbffc"
+  },
+  "review": {
+    "kind": "Release-engineering preparation and primary source review",
+    "passed": true,
+    "only_new_fixture_modules": true,
+    "production_release_unchanged": true,
+    "original_api_and_novnc_routes_proxy_to_bridge": true,
+    "seed_attributed_to_full_context": true,
+    "consumer_settings_preserved": true,
+    "default_deny_synthetic_gateway": true
+  },
+  "checks": {
+    "linux_release_tests": 100,
+    "linux_network_tests": 1505,
+    "new_fixture_tests": 33,
+    "network_subtests": 201,
+    "linux_skipped": 0,
+    "scoped_lint": "passed",
+    "scoped_format": "passed",
+    "windows_focused_passed": 33,
+    "windows_skipped": 0
+  },
+  "linux_run": {
+    "returncode": 0,
+    "elapsed_seconds": 73.39,
+    "log": "/tmp/codex-grok-fixtures-kvo6qj8f.log",
+    "summaries": [
+      "100 passed, 1 warning in 5.74s",
+      "1505 passed, 1 warning, 201 subtests passed in 66.79s (0:01:06)",
+      "All checks passed!",
+      "3 files already formatted",
+      "All checks passed!",
+      "36 files already formatted"
+    ],
+    "command": "make test-grok-release test-grok-network lint-grok-release lint-grok-network GROK_PYTHON=/var/backups/codex-remediation-20261109/workspace/grok-release-venv/bin/python"
+  },
+  "production_operator_changed": false,
+  "production_cli_and_gate_unchanged": true,
+  "execution_admission": false,
+  "lab_dispatch_available": false,
+  "lab_created": false,
+  "live_collector_invoked": false,
+  "full_harness_implemented": false,
+  "production_modified": false,
+  "deployed": false,
+  "merged": false,
+  "new_vulnerability_scan": false,
+  "accepted_fixture_repeated": false,
+  "limitations": [
+    "Pure byte inputs only; no file materialization, seed installation, Docker Compose CLI or Nginx runtime validation.",
+    "Named original volume lives in separately observed guest Docker storage; configuration/log/candidate binds remain generation-contained.",
+    "Synthetic gateway role responses are not production authentication or browser/provider acceptance.",
+    "Resource limits are declared settings, not observed capacity; a non-internal Docker bridge does not prove VM isolation.",
+    "Frozen-reference/probe fixtures, retained-resource admission, context-aware lifecycle operations and full recovery harness remain unfinished."
+  ]
+}

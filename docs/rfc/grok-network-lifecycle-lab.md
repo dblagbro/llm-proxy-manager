@@ -649,3 +649,42 @@ inventory/socket/session fixtures; no live collector, image scan, container,
 network, VM, backup or permission operation is performed by this preparation.
 Lab allocation, console access, full admission and the shared lifecycle harness
 remain pending. API review: [Docker Engine API v1.51](https://docs.docker.com/reference/api/engine/version/v1.51/).
+
+
+## Initial synthetic fixture inputs (source preparation, 2026-11-14)
+
+`network_lab_fixtures.original_fixture_inputs(context, lab_binding=...)` is a pure
+generator returning five relative-path byte inputs: initial Compose, original
+Nginx configuration, its Grok location fragment, a synthetic gateway configuration,
+and a seed attributed to the full context digest. It validates the exact descriptor
+and retained binding before and after generation. It reads no environment or files
+and performs no process, Docker, socket, journal or admission operation.
+
+The initial model has exactly the original Grok image and two pinned Nginx-image
+services. Physical names and logical aliases come from the descriptor. Pulls and
+automatic restarts are disabled, no ports are published, and no host networking,
+privileged mode, external volume or Docker socket is introduced. Configuration
+and writable log binds stay within the generation with implicit host-path creation
+disabled. The original data is a named local Docker volume in separately observed
+guest storage. The seed is only an input: a future admitted controller must install
+it before startup. Candidate data remains a separate generation-contained bind.
+
+Original routes actually proxy the bridge API on 8443 and noVNC on 6080, including
+prefix stripping and WebSocket headers. Only `/fixture-health` is a synthetic
+positive control. The marked original block can be replaced by the maintained
+candidate renderer without changing the surrounding Nginx configuration. Gateway
+responses accept fixed public synthetic admin/user cookies; other cookies receive
+401. The gateway fixture models the role contract, not production authentication.
+
+Tests exercise the actual network planner, candidate Compose renderer and Nginx
+block renderer, including unchanged consumer settings and seed attribution across
+contexts. They do not execute Compose resolution, nginx -t, containers or browsers.
+Resource limits are recipe settings, not observed runtime capacity. A Docker
+bridge with `internal: false` is not physical isolation. Original browser startup
+can attempt provider traffic, so VM isolation and startup compatibility still need
+independent proof. No TLS/browser/provider acceptance is claimed.
+
+File materialization, seed installation, frozen-reference and probe fixtures,
+retained-resource admission, context-aware Host/capacity/snapshot/recovery and the
+full admitted harness remain unfinished. No existing production operator or lab
+observer changes in this increment; the draft remains unmerged and undeployed.
