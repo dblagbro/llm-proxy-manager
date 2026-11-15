@@ -738,3 +738,67 @@ inspected: an omitted recipe mount is not proof of absent anonymous image volume
 Materialization, seed installation, actual image/runtime compatibility, retained
 resource admission, context-aware lifecycle integration and the full admitted
 harness remain pending, along with VM/console and operator release requirements.
+
+### Auxiliary intent and receipt consistency (source preparation)
+
+`network_lab_auxiliary_state.py` adds two pure APIs:
+`initial_state(context, *, lab_binding, transaction_id)` and
+`validate_state(context, *, lab_binding, state, previous=None)`. They consume an
+exact validated descriptor and caller-supplied full binding, and return detached
+records. The fixed preparation binds the transaction, generated recipe/script/
+seed hashes, separate reference/probe names and projects, and a borrowed default
+network. Working lifecycle resources remain in their existing separate journal.
+
+The bounded record contains at most 32 append-only events. JSON bytes are bounded
+to 64 KiB; duplicate keys, nonfinite numbers, invalid recursive types, unexpected
+fields and excessive structure are refused. Standalone validation checks only
+the supplied history's self-consistency. Supplying `previous` additionally checks
+one appended event, unchanged preparation and prior events, and the canonical
+SHA-256 of that predecessor. The digest is neither a signature nor a successful
+write receipt; neither mode observes disk, proves persistence or establishes
+actual intent-before-effect ordering.
+
+Volume reports progress through create intent, creation report, seed intent and
+seed report. The manifest fixes a single synthetic `reference-generation.txt`
+file at the reference volume root, with its exact generated size/hash. The
+ordinary local volume has no immutable Docker ID; a returned name or successful
+create can refer to an existing object. Its continuity remains explicitly
+`unverified`, including after a seed report. No creation time, label, mountpoint,
+serialized inode tuple or digest establishes fresh creation or durable ownership.
+Live backing-directory/mount continuity, secure seed installation and independent
+reconciliation after continuity loss or controller restart are still absent.
+
+Docker references: [Engine API v1.51 Volume schema](https://docs.docker.com/reference/api/engine/version/v1.51/)
+and [existing-name reuse](https://docs.docker.com/reference/cli/docker/volume/create/).
+
+Container reports require matching full returned/inspected IDs; those IDs cannot
+change within a predecessor-bound history. The reference accepts only a created,
+never-started runtime report. Even its deliberate refusal exit 78 violates that
+invariant. The probe has distinct create/start/stop intents and receipts, one
+retained ID, fixed configuration/mount baselines and the exact borrowed default
+network ID. Collision checks cover represented auxiliary container/network IDs
+only; they do not inspect independent working-resource identities. Network
+ownership, creation or deletion is never granted by the borrowed binding.
+
+Unresolved outcomes and invariant violations can append bounded diagnostic codes,
+evidence hashes and an optional observed container/network ID while retaining all
+prior facts. They permanently close normal progression for that generation; no
+automatic clear, retry, replacement or name/label adoption path exists. A changed
+object can be recorded diagnostically without replacing the retained receipt.
+Closing normal progression is a pure consistency rule, not a new emergency
+recovery or stop-authorization gate. Any eventual recovery controller and volume
+continuity re-establishment need separate review; this unwired module changes no
+production recovery behavior.
+
+All outputs retain `execution_admission=false`. Inspection/configuration hashes
+are supplied reports, not evidence that their contents have been verified. Image
+inheritance (including VOLUME/ENV/defaults), exact live mounts/network endpoints,
+seed permissions and material provenance still require separate collectors and
+checks. No raw inspection/environment/application error text is stored here.
+The module performs no filesystem, daemon, process, network, persistence, cleanup
+or authorization operation and supplies no CLI or mutation dispatcher. Future
+controller code must persist/fsync intent before side effects, save attributable
+receipts through reviewed CAS persistence, and satisfy the independent operator,
+VM/hypervisor, source/image, storage and runtime admission requirements. Existing
+production release, rollback, observer, backup and release-review gates are
+unchanged. This component does not complete the recovery harness.

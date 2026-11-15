@@ -1,0 +1,87 @@
+{
+  "schema": 1,
+  "kind": "pure_auxiliary_intent_receipt_source_preparation",
+  "based_on": "22c4d79f924177d25bafdd39028205070b76725d",
+  "scope": [
+    "Two new pure auxiliary-state module/test files",
+    "Scoped Makefile lint inclusion",
+    "Maintained lifecycle RFC and sanitized evidence"
+  ],
+  "source_sha256": {
+    "Makefile": "57fa7673d4b0ac4e85085f28e681fad18f0ae7bb81590940b5dcbd06e1721156",
+    "docs/rfc/grok-network-lifecycle-lab.md": "ff92ec027eeed82bc36a6c174de2673b9d9c4c40c85c93f986ac1e5cb67b8af9",
+    "grok_bridge/deployment/network_lab_auxiliary_state.py": "30deedffe8a2405a3b59d692b455b690fb92ec6c0a6f5f53e04163f7fe9b86c2",
+    "grok_bridge/deployment/test_network_lab_auxiliary_state.py": "214924c8b31720253f18d980ed649de6e84a836fcb50a0bd3aa1193a422a636b",
+    "grok_bridge/deployment/release.py": "c310715cef0f9d95a9d7ae2402f95c339559b282dd3ebfd434bc7554bd0226f0"
+  },
+  "review": {
+    "kind": "Release-engineering preparation and independent primary source review",
+    "passed": true,
+    "existing_production_journal_observer_and_recipe_sources_unchanged": true,
+    "full_binding_and_material_hashes": true,
+    "predecessor_bound_single_event_progression": true,
+    "retained_diagnostics_without_normal_progress": true,
+    "exact_recorded_container_ids": true,
+    "default_network_borrowed_not_owned": true,
+    "volume_continuity_never_promoted": true,
+    "reference_start_not_normalized_as_success": true,
+    "diagnostic_codes_bounded": true
+  },
+  "checks": {
+    "linux_release_tests": 100,
+    "linux_network_tests": 1636,
+    "new_auxiliary_state_tests": 100,
+    "network_subtests": 201,
+    "linux_skipped": 0,
+    "scoped_lint": "passed",
+    "scoped_format": "passed",
+    "windows_focused_passed": 131,
+    "windows_skipped": 0
+  },
+  "linux_run": {
+    "returncode": 0,
+    "elapsed_seconds": 41.66,
+    "log": "/tmp/codex-grok-aux-state-j_z2ka63.log",
+    "summaries": [
+      "100 passed, 1 warning in 2.38s",
+      "1636 passed, 1 warning, 201 subtests passed in 38.25s",
+      "All checks passed!",
+      "3 files already formatted",
+      "All checks passed!",
+      "40 files already formatted"
+    ],
+    "command": "make test-grok-release test-grok-network lint-grok-release lint-grok-network GROK_PYTHON=/var/backups/codex-remediation-20261109/workspace/grok-release-venv/bin/python"
+  },
+  "production_operator_changed": false,
+  "production_cli_and_gate_unchanged": true,
+  "execution_admission": false,
+  "lab_dispatch_available": false,
+  "lab_created": false,
+  "live_collector_invoked": false,
+  "full_harness_implemented": false,
+  "production_modified": false,
+  "deployed": false,
+  "merged": false,
+  "new_vulnerability_scan": false,
+  "accepted_fixture_repeated": false,
+  "limitations": [
+    "Pure supplied dict/JSON-bytes consistency only; no filesystem, process, Docker, network, persistence or authorization operations.",
+    "Standalone replay does not establish relationship to disk. Optional predecessor checks one canonical append, not signature, durable receipt, provenance or actual intent-before-effect ordering.",
+    "Local-volume create can reuse an existing name; no immutable volume ID or freshness proof is available. Continuity remains explicitly unverified. Live backing-directory/mount identity and restart reconciliation are unimplemented.",
+    "Bounded diagnostics preserve prior facts and close normal progression; this unwired consistency rule adds no emergency recovery or stop-authorization gate.",
+    "Inspection/configuration hashes do not prove their contents or image inheritance, actual mount/network safety, source provenance or seed installation.",
+    "Collision checks cover represented auxiliary container/network identities only; independently observed working resource identities remain outside this module.",
+    "Lab allocation/console, operator replacement scope, physical/material/runtime admission, secure materialization/persistence, context-aware lifecycle and full recovery harness remain pending.",
+    "Global release/lint, H7/W16, Coordinator and private-backup requirements remain unwaived. No candidate deployment or new image scan is claimed."
+  ],
+  "sources": [
+    {
+      "title": "Docker Engine API v1.51",
+      "url": "https://docs.docker.com/reference/api/engine/version/v1.51/"
+    },
+    {
+      "title": "Docker existing-volume reuse semantics",
+      "url": "https://docs.docker.com/reference/cli/docker/volume/create/"
+    }
+  ]
+}
