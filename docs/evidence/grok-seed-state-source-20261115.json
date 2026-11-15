@@ -1,0 +1,100 @@
+{
+  "schema": 1,
+  "kind": "pure_seed_helper_lifecycle_consistency_source_preparation",
+  "based_on": "4ddce7b9e56c32e03520436d56f6f89a58ff13ec",
+  "scope": [
+    "Two new separate seed-state source/test files",
+    "Scoped Makefile lint inclusion",
+    "Maintained lifecycle RFC and sanitized source evidence"
+  ],
+  "source_sha256": {
+    "Makefile": "eeb37dc1f87443ccec7aacb256db08a973f9a0f4b45f143bf210263a8dfcda5a",
+    "docs/rfc/grok-network-lifecycle-lab.md": "7baeba3616ce5a0803fc4e3415303feb08501ad2ccf8463f0d8147d6177fde55",
+    "grok_bridge/deployment/network_lab_seed_state.py": "1e6eaf7032eff5c0dcb135e22f5d4b25b8a1f622a590c77ba6a2034792134990",
+    "grok_bridge/deployment/test_network_lab_seed_state.py": "312c83219c0f8b14909ab9ce1c495eedb478f5b8306068102055971ef919fe94",
+    "grok_bridge/deployment/release.py": "c310715cef0f9d95a9d7ae2402f95c339559b282dd3ebfd434bc7554bd0226f0"
+  },
+  "review": {
+    "kind": "Existing delegated release engineer and primary source/API/failure-boundary review",
+    "passed": true,
+    "auxiliary_v1_store_materializer_session_production_unchanged": true,
+    "exact_seven_phase_two_role_sequence": true,
+    "predecessor_bound_append_only_consistency": true,
+    "no_wait_or_running_interval_requirement": true,
+    "strict_runtime_and_seed_manifest_reports": true,
+    "finite_supplied_continuity_only": true,
+    "diagnostic_closure_not_recovery_authority": true,
+    "python310_fraction_compatibility_reviewed": true
+  },
+  "checks": {
+    "linux_release_tests": 100,
+    "linux_network_tests": 2086,
+    "new_seed_state_tests": 109,
+    "network_subtests": 201,
+    "linux_skipped": 0,
+    "scoped_lint": "passed",
+    "scoped_format": "passed",
+    "windows_focused_passed": 109,
+    "windows_skipped": 0
+  },
+  "linux_run": {
+    "returncode": 0,
+    "elapsed_seconds": 57.99,
+    "log": "/tmp/codex-grok-seed-state-9e2x4usc.log",
+    "summaries": [
+      "100 passed, 1 warning in 4.30s",
+      "2086 passed, 1 warning, 201 subtests passed in 50.24s",
+      "All checks passed!",
+      "3 files already formatted",
+      "All checks passed!",
+      "50 files already formatted"
+    ],
+    "command": "make test-grok-release test-grok-network lint-grok-release lint-grok-network GROK_PYTHON=/var/backups/codex-remediation-20261109/workspace/grok-release-venv/bin/python"
+  },
+  "resolved_validation_failure": {
+    "initial_linux_run": {
+      "returncode": 2,
+      "elapsed_seconds": 48.08,
+      "log": "/tmp/codex-grok-seed-state-gci23sio.log",
+      "summaries": [
+        "100 passed, 1 warning in 3.86s",
+        "12 failed, 2065 passed, 1 warning, 201 subtests passed in 43.51s"
+      ],
+      "command": "make test-grok-release test-grok-network lint-grok-release lint-grok-network GROK_PYTHON=/var/backups/codex-remediation-20261109/workspace/grok-release-venv/bin/python"
+    },
+    "cause": "Python3.10 datetime.fromisoformat rejects nanosecond fractions accepted on Windows Python3.12.",
+    "correction": "Validate full fractional syntax separately and parse only calendar/whole seconds; preserve semantic zero rejection and nonzero nanosecond precision.",
+    "regression_cases_added": 9,
+    "final_linux_passed": true
+  },
+  "production_operator_changed": false,
+  "production_cli_and_gate_unchanged": true,
+  "execution_admission": false,
+  "compatibility_verified": false,
+  "lab_dispatch_available": false,
+  "lab_created": false,
+  "real_seed_helper_invoked": false,
+  "helper_lifecycle_consistency_implemented": true,
+  "helper_lifecycle_persistence_implemented": false,
+  "retained_consumer_allowance_implemented": false,
+  "full_harness_implemented": false,
+  "production_modified": false,
+  "deployed": false,
+  "merged": false,
+  "new_vulnerability_scan": false,
+  "accepted_fixture_repeated": false,
+  "limitations": [
+    "Records validate supplied in-memory history only; no real helper, volume, retained journal or live collector was exercised.",
+    "Pure reports do not establish attribution, durable intent-before-effect ordering, original-image compatibility, runtime acceptance or live continuity.",
+    "Continuity fingerprints are supplied consistency fields; daemon lifetime and held backing-directory/mount identity are not yet established by existing observers. No immutable ordinary local-volume ID exists.",
+    "Script output and exit zero are not seed acceptance. Exact-ID terminal and independent bounded seed inspection remain required by future admitted controller integration.",
+    "Durable persistence for this separate schema and exact inspection-projection semantics remain pending; auxiliary v1/store and existing production journals remain unchanged.",
+    "The retained working helper conflicts with production all-consumer volume exclusivity. Any finite exact helper allowance is future lab-only integration, not a general exemption.",
+    "VM/console/operator scope, physical/material/runtime admission, attributable creation, continuing identity and independent reconciliation/full harness, global release/lint,H7/W16,Coordinator and private-backup gates remain open."
+  ],
+  "sources": [
+    {
+      "url": "https://docs.docker.com/reference/api/engine/version/v1.51/"
+    }
+  ]
+}

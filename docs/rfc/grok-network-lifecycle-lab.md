@@ -1073,3 +1073,65 @@ References: [Engine API v1.51](https://docs.docker.com/reference/api/engine/vers
 [same-name volume reuse](https://docs.docker.com/reference/cli/docker/volume/create/),
 [Docker-managed volumes and NoCopy](https://docs.docker.com/engine/storage/volumes/),
 and [Python isolated invocation](https://docs.python.org/3/using/cmdline.html).
+
+### Seed-helper lifecycle consistency (source preparation)
+
+`network_lab_seed_state` holds a separate, versioned, pure record for the
+working and reference seed helpers. `initial_state` and `validate_state` take
+the full context and explicit lab binding. Preparation is derived from both
+fixed helper recipes: role-specific names, volume names, original image,
+create-body/script hashes and expected seed manifests are frozen. This record
+does not extend auxiliary v1, invoke its store, mutate the materializer or
+change production journals, observations or volume exclusivity.
+
+Each role has a single ordered path: prerequisites reported, create intent,
+creation reported, start intent, start response reported, terminal reported and
+seed reported. The create report must bind HTTP 201, a full returned ID equal
+to the inspected ID, no warnings, the expected name/image and a never-started
+created state. The separate start intent targets that retained ID; its response
+must be HTTP 204. An already-started 304 response cannot establish this attempt's
+first attributable start. IDs and operation IDs cannot collide between the two
+represented roles. This check does not replace whole-engine consumer validation.
+
+A running interval need not be observed. A helper can exit immediately after
+the start response. The terminal report requires the same ID and configuration,
+an exited state, exit/restart/PID values of zero, empty error, and false running,
+paused, restarting, dead and OOM flags. Nonzero start/finish timestamps are
+syntax-checked, not treated as evidence of wall-clock order, freshness or causal
+attribution. There is no wait-response model: a free-floating wait status lacks
+identity, and waiting for the next exit after an already-completed helper is
+unnecessary. Exit zero and the script's output cannot substitute for the
+separate expected-manifest and bounded seed-reinspection report.
+
+Finite supplied continuity fields cover guest/boot, observing controller
+lifetime, daemon process, socket/root peer, operation lock and backing directory/
+mount. Normal progression freezes these reported bindings. Matching hashes are
+consistency conditions only: existing observers do not yet establish every
+live continuity requirement. No ordinary local-volume immutable ID exists.
+Names, successful volume creation, labels, timestamps and stored fingerprints
+cannot establish fresh ownership, physical storage provenance or exclusive
+control against a privileged actor.
+
+Bounded sanitized diagnostics retain previous facts after ambiguous effects,
+observer failure, identity/configuration drift, unclean exit, seed mismatch or
+continuity loss. They close normal progress without retry, adoption, replacement,
+cleanup or promotion of later success. This closure is a record-consistency rule,
+not an emergency recovery authorization gate. A predecessor-bound update permits
+exactly one appended event and preserves all earlier preparation and reports.
+Standalone validation checks a historical supplied record only; neither mode
+proves durable intent-before-effect ordering, live ownership or acceptance.
+
+The implementation accepts bounded, duplicate-rejecting JSON and returns detached
+results. Admission and compatibility remain false. Tests use synthetic in-memory
+histories only. No helper, named volume, retained journal or live observer is
+created or exercised. Durable storage for this schema, attributable resource
+creation, actual image/runtime inspection and continuous daemon/backing identity
+remain unfinished. The future exact lab-only retained-helper allowance needs a
+separate runtime integration; stopped status is not permission to exempt a
+consumer. Auxiliary v1/store and production exclusivity remain unchanged.
+
+The complete lifecycle harness, disconnected VM/console and operator scope,
+physical/material/runtime admission, global release/lint, H7/W16, independent
+Coordinator review and private-backup requirements remain open.
+
+API semantics: [Docker Engine v1.51 start, wait and container state](https://docs.docker.com/reference/api/engine/version/v1.51/).
