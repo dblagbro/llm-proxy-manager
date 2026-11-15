@@ -1,0 +1,71 @@
+{
+  "schema": 1,
+  "kind": "synthetic_auxiliary_fixture_inputs_source_tests",
+  "based_on": "903229747fee55cb0d4224313b4f9c30c0ad58f2",
+  "scope": "Pure separate preservation-reference and idle-probe recipe inputs; no runtime admission or TCP measurement",
+  "source_sha256": {
+    "Makefile": "ecc0423a08df5641d3149153dd6429c7c152fe0a386ab7502f38434b60ed859b",
+    "docs/rfc/grok-network-lifecycle-lab.md": "a771ca762222dc2863cd15a66744cde3b5b2b0e902d61c52cb282821b287916d",
+    "grok_bridge/deployment/network_lab_auxiliary.py": "12c5993bb27eb4be9eaeea79bbe39c945870b92e8b5c86411890b0e0cd60a849",
+    "grok_bridge/deployment/test_network_lab_auxiliary.py": "286e2cf2d732b9a58f793d2a0c1d6b310681536daf832127802090392d9a36cf"
+  },
+  "review": {
+    "kind": "Release-engineering preparation and primary source review",
+    "passed": true,
+    "only_new_auxiliary_modules": true,
+    "existing_production_and_observer_sources_unchanged": true,
+    "initial_fixture_sources_unchanged": true,
+    "reference_separate_ownership_and_volume": true,
+    "reference_never_started_requirement": true,
+    "reference_explicit_refusal_entrypoint": true,
+    "probe_default_only_idle_entrypoint": true,
+    "python_automatic_site_imports_disabled": true,
+    "reference_not_initialized_data_snapshot": true
+  },
+  "checks": {
+    "linux_release_tests": 100,
+    "linux_network_tests": 1536,
+    "new_auxiliary_tests": 31,
+    "network_subtests": 201,
+    "linux_skipped": 0,
+    "scoped_lint": "passed",
+    "scoped_format": "passed",
+    "windows_focused_passed": 64,
+    "windows_skipped": 0
+  },
+  "linux_run": {
+    "returncode": 0,
+    "elapsed_seconds": 32.32,
+    "log": "/tmp/codex-grok-auxiliary-i4gzll55.log",
+    "summaries": [
+      "100 passed, 1 warning in 3.69s",
+      "1536 passed, 1 warning, 201 subtests passed in 27.57s",
+      "All checks passed!",
+      "3 files already formatted",
+      "All checks passed!",
+      "38 files already formatted"
+    ],
+    "command": "make test-grok-release test-grok-network lint-grok-release lint-grok-network GROK_PYTHON=/var/backups/codex-remediation-20261109/workspace/grok-release-venv/bin/python"
+  },
+  "production_operator_changed": false,
+  "production_cli_and_gate_unchanged": true,
+  "execution_admission": false,
+  "lab_dispatch_available": false,
+  "lab_created": false,
+  "live_collector_invoked": false,
+  "full_harness_implemented": false,
+  "production_modified": false,
+  "deployed": false,
+  "merged": false,
+  "new_vulnerability_scan": false,
+  "accepted_fixture_repeated": false,
+  "limitations": [
+    "Pure byte inputs only: no filesystem materialization, resource creation/start/adoption, seed installation, Compose resolution or image execution.",
+    "Reference must remain created and never started; any execution violates its invariant even if the refusal stub exits78.",
+    "Synthetic image/data reference is not an initialized working-data snapshot or original runtime/configuration replica.",
+    "Declared recipe settings do not inspect inherited image VOLUME/ENV metadata or establish absence of anonymous image volumes, pinned-image Python compatibility or resource capacity.",
+    "Probe external network declaration names the planned default network but does not prove its identity or authorize adoption.",
+    "TCP measurements require fresh candidate ID/network/literal IP/ports and same-probe plus authorized-side positive controls; DNS failure is not TCP-denial evidence.",
+    "Ownership ledger, retained-resource admission, context-aware lifecycle operations and full harness remain unfinished."
+  ]
+}

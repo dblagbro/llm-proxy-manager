@@ -1,10 +1,15 @@
 {
-  "candidate_image": "sha256:2d6e56831b6c36dae36e4f775f9397bcf1ffb4a8dc8e9cb533434e85ab56e0c8",
+  "candidate_image": "sha256:587311da177cc015292981a01649226c8b909e8310d74fdbab481175cb2b16e9",
   "source_commit": "REPLACE_WITH_VERIFIED_MERGED_COMMIT",
+  "gate_evidence_reference": "REPLACE_WITH_GROK_SPECIFIC_POLICY_AND_CHECK_EVIDENCE",
   "source_merged": false,
   "required_checks_passed": false,
   "grok_release_gate_satisfied": false,
-  "gate_evidence_reference": "REPLACE_WITH_GROK_SPECIFIC_POLICY_AND_CHECK_EVIDENCE",
   "browser_acceptance_passed": false,
-  "private_recovery_passed": false
+  "private_recovery_passed": false,
+  "network_plan_reviewed": false,
+  "network_recovery_acceptance_passed": false,
+  "network_outsider_denial_passed": false,
+  "multi_network_nginx_validation_passed": false,
+  "operator_deployment_approved": false
 }

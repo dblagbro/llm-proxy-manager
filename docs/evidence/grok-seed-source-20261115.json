@@ -1,0 +1,92 @@
+{
+  "schema": 1,
+  "kind": "pure_fixed_seed_helper_recipe_source_preparation",
+  "based_on": "b5bbb94de64c42e8a8bb3f9c6faae902932d217b",
+  "scope": [
+    "Two new pure working/reference helper recipe and test files",
+    "Scoped Makefile lint inclusion",
+    "Maintained lifecycle RFC and sanitized source evidence"
+  ],
+  "source_sha256": {
+    "Makefile": "e20eb9804448cb835f2f9b029a6c5c1042da7f07138476051cdc8d05676af743",
+    "docs/rfc/grok-network-lifecycle-lab.md": "fb294e1e0d95b51d5242a8530f1c6f91cafc579d6ab78b3f1af28ae9b08b3f3f",
+    "grok_bridge/deployment/network_lab_seed.py": "63c698776962ea3384cd618cad7ee22e9fdd82f8da6b2a92432f03e96bdc583c",
+    "grok_bridge/deployment/test_network_lab_seed.py": "aa8b9ab82cb8135ef78bce281758c69f1af7c1c6ce35dc37ac2a37c229baf1b7",
+    "grok_bridge/deployment/release.py": "c310715cef0f9d95a9d7ae2402f95c339559b282dd3ebfd434bc7554bd0226f0"
+  },
+  "review": {
+    "kind": "Delegated release-engineering preparation and primary implementation/failure-boundary review",
+    "passed": true,
+    "existing_generators_materializer_journals_and_production_unchanged": true,
+    "explicit_role_name_volume_seed_separation": true,
+    "no_caller_path_command_payload_override": true,
+    "temporary_filesystem_mapping_reviewed": true,
+    "empty_directory_and_exclusive_leaf_creation": true,
+    "bounded_write_readback_fsync": true,
+    "attempt_all_cleanup_before_success_report": true,
+    "report_flush_failures_retained_and_unacknowledged": true
+  },
+  "checks": {
+    "linux_release_tests": 100,
+    "linux_network_tests": 1977,
+    "new_seed_tests": 74,
+    "network_subtests": 201,
+    "linux_skipped": 0,
+    "scoped_lint": "passed",
+    "scoped_format": "passed",
+    "windows_focused_passed": 33,
+    "windows_skipped": 41,
+    "windows_skip_scope": "New Linux-only temporary descriptor/filesystem script mechanics"
+  },
+  "linux_run": {
+    "returncode": 0,
+    "elapsed_seconds": 31.57,
+    "log": "/tmp/codex-grok-seed-8tkv2jtx.log",
+    "summaries": [
+      "100 passed, 1 warning in 1.63s",
+      "1977 passed, 1 warning, 201 subtests passed in 28.97s",
+      "All checks passed!",
+      "3 files already formatted",
+      "All checks passed!",
+      "48 files already formatted"
+    ],
+    "command": "make test-grok-release test-grok-network lint-grok-release lint-grok-network GROK_PYTHON=/var/backups/codex-remediation-20261109/workspace/grok-release-venv/bin/python"
+  },
+  "production_operator_changed": false,
+  "production_cli_and_gate_unchanged": true,
+  "execution_admission": false,
+  "compatibility_verified": false,
+  "lab_dispatch_available": false,
+  "lab_created": false,
+  "real_seed_helper_invoked": false,
+  "full_harness_implemented": false,
+  "production_modified": false,
+  "deployed": false,
+  "merged": false,
+  "new_vulnerability_scan": false,
+  "accepted_fixture_repeated": false,
+  "limitations": [
+    "Generated recipes and temporary Linux script tests only; no real container, named volume, original-image interpreter or live seeding was exercised.",
+    "Fixed /usr/bin/python3 requires original-pin compatibility verification. Empty Env/Volumes do not prove inheritance cleared; Python isolation flags do not establish image filesystem or dynamic-loader safety.",
+    "NoCopy controls copy-up, not volume freshness or implicit creation. Ordinary local volumes have no immutable object ID; successful create, names, labels and timestamps do not establish ownership.",
+    "Partial files and all helpers remain retained. The working helper conflicts with existing all-container volume exclusivity; a finite exact-ID/config/mount/seed/stopped-state lab-only allowance is pending. Production exclusivity is unchanged.",
+    "Auxiliary v1 has no helper lifecycle or working-volume record. Versioned create/start/terminal intents/receipts and persistence are not implemented by this recipe.",
+    "Exit zero and report bytes are not controller acceptance. A report can escape before a flush failure; exact terminal status and independent bounded reinspection with continuous control remain required.",
+    "Advisory locks and observed identities do not exclude arbitrary privileged writers. Boot/socket/root-peer/daemon-process and backing-directory/mount continuity must be independently maintained; engine ID alone is insufficient.",
+    "Source preparation grants no execution authority. VM/console/operator scope, image/runtime, attributable creation, continuity/reconciliation, full harness, global release/lint, H7/W16, Coordinator and private-backup gates remain open."
+  ],
+  "sources": [
+    {
+      "url": "https://docs.docker.com/reference/api/engine/version/v1.51/"
+    },
+    {
+      "url": "https://docs.docker.com/reference/cli/docker/volume/create/"
+    },
+    {
+      "url": "https://docs.docker.com/engine/storage/volumes/"
+    },
+    {
+      "url": "https://docs.python.org/3/using/cmdline.html"
+    }
+  ]
+}

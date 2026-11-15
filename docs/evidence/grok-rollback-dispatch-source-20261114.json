@@ -1,0 +1,95 @@
+{
+  "schema": 1,
+  "kind": "production_recovery_factoring_source_tests",
+  "based_on": "95e7646b762c9619fad76d9465faf5fc9f521932",
+  "scope": "Production rollback extraction with unchanged recovery ordering and no deployment-approval prerequisite",
+  "source_sha256": {
+    "Makefile": "bc32f20f3e1533e799977a2345dd3f455e9f7bf86332970842588cf75bbde8be",
+    "docs/rfc/grok-network-lifecycle-lab.md": "3a68238b2513b4ffa8dcf5511d7e7036efb1a24e20e4e7852e2d84d952351a86",
+    "grok_bridge/deployment/release.py": "c310715cef0f9d95a9d7ae2402f95c339559b282dd3ebfd434bc7554bd0226f0",
+    "grok_bridge/deployment/test_network_rollback_dispatch.py": "299e114c79ce01cee798f17f1cd2546c12644e34f13ba27f06f4ad2b4c33344f"
+  },
+  "review": {
+    "added_definitions": [
+      "_rollback_transaction"
+    ],
+    "added_dispatch_methods": [
+      "has_network",
+      "restore_configs",
+      "verify_original"
+    ],
+    "changed_existing_definitions": [
+      "_ProductionDeployment",
+      "_production_deployment_scope",
+      "rollback"
+    ],
+    "delegation_expanded_algorithm_ast_sha256": "a48e24cdec26e00cb92365667c8b9ad85434ac3d00a9da915fac74e4d6d0bd0d",
+    "deployment_transaction_unchanged": true,
+    "existing_top_level_statements_unchanged": true,
+    "lab_dispatch_available": false,
+    "limitation": "Static production recovery equivalence; source tests simulate transaction state and host actions. No runtime admission or execution proof.",
+    "passed": true,
+    "rollback_requires_deployment_gate": false,
+    "unchanged_existing_definitions": 67,
+    "unchanged_existing_dispatch_methods": 10,
+    "used_fixed_methods": [
+      "audit_network",
+      "audit_original",
+      "has_network",
+      "network",
+      "persist",
+      "record_candidate",
+      "restore_configs",
+      "verify_original"
+    ],
+    "python": "3.10",
+    "kind": "Release-engineering preparation plus primary source/boundary review",
+    "explicit_evidence_scope_behavior_preserved": true
+  },
+  "production_operator_changed": true,
+  "production_cli_and_gate_unchanged": true,
+  "production_algorithm_equivalent": true,
+  "rollback_requires_deployment_gate": false,
+  "lab_dispatch_available": false,
+  "checks": {
+    "linux_release_tests": 100,
+    "linux_network_tests": 1322,
+    "new_rollback_dispatch_tests": 46,
+    "network_subtests": 201,
+    "linux_skipped": 0,
+    "scoped_lint": "passed",
+    "scoped_format": "passed",
+    "local_windows_passed": 201
+  },
+  "linux_run": {
+    "returncode": 0,
+    "elapsed_seconds": 49.78,
+    "log": "/tmp/codex-grok-rollback-factoring-7cse62qi.log",
+    "summaries": [
+      "100 passed, 1 warning in 25.28s",
+      "1322 passed, 1 warning, 201 subtests passed in 23.72s",
+      "All checks passed!",
+      "3 files already formatted",
+      "All checks passed!",
+      "32 files already formatted"
+    ],
+    "command": "make test-grok-release test-grok-network lint-grok-release lint-grok-network GROK_PYTHON=/var/backups/codex-remediation-20261109/workspace/grok-release-venv/bin/python"
+  },
+  "execution_admission": false,
+  "lab_created": false,
+  "live_collector_invoked": false,
+  "full_harness_implemented": false,
+  "production_modified": false,
+  "deployed": false,
+  "merged": false,
+  "new_vulnerability_scan": false,
+  "accepted_fixture_repeated": false,
+  "limitations": [
+    "Recovery/refusal tests use synthetic retained transaction fixtures and explicitly prohibit a deployment-gate call; no real host recovery or admission is established.",
+    "Static recovery comparison expands fixed delegation; AST hash is specific to Python 3.10.",
+    "Lab-record recognition does not protect against arbitrary Python execution/module tampering.",
+    "Real lab allocation/access/operator/hypervisor/material/runtime admission and context-aware Host/capacity/snapshot/rollback remain pending.",
+    "Global lint, release review, H7/W16, private backup and independent Coordinator controls remain open."
+  ],
+  "checked_utc": "2026-11-14T21:23:57.668Z"
+}

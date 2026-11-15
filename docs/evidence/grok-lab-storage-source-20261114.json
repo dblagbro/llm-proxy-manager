@@ -1,0 +1,91 @@
+{
+  "schema": "grok-lab-storage-source-evidence-v1",
+  "based_on": "072f4cac5a335d4450e765727a209e03823dc3c6",
+  "scope": "Read-only Linux classic-overlay2 lab storage collector source; no live invocation or execution admission",
+  "source_sha256": {
+    "network_lab_storage.py": "021e4c3d4eed3269fc1578cde5a0e3b503dfd56d02d44ddf534d256f69359879",
+    "test_network_lab_storage.py": "8990efd31dd4b3ad9afbf6cb6853401a2a6d73e74bbb4528e4ebc3a0022f3a81"
+  },
+  "checks": {
+    "linux_release_tests": 100,
+    "linux_network_tests": 696,
+    "collector_tests": 93,
+    "network_subtests": 201,
+    "linux_skipped": 0,
+    "windows_passed": 74,
+    "windows_platform_skipped": 19,
+    "scoped_lint": "passed",
+    "scoped_format": "passed",
+    "warning": "Retained unrelated asyncio_mode warning in synchronous source-test environment"
+  },
+  "review": {
+    "passed": true,
+    "kind": "Release-engineering preparation and primary source/boundary review",
+    "corrections": [
+      "Reject truncated valid JSON when advertised Content-Length is longer",
+      "Refuse unsupported containerd/unknown storage before querying roots, avoiding omission of a separate image/snapshot filesystem",
+      "Run real temporary Linux FD/flock tests without sudo using anchored ownership simulation",
+      "Create both replacement fixture directories with explicit private mode, independent of ambient umask",
+      "Conform long literals to canonical repository lint/format"
+    ],
+    "remaining_component_blockers_identified": false
+  },
+  "production_operator_sha256": "1a9dd48f10fb3e56889af2ce3254760e48d30482867a333f68006d5166ac0960",
+  "production_operator_unchanged": true,
+  "live_collector_invoked": false,
+  "lab_execution_authorized": false,
+  "lab_created": false,
+  "full_harness_implemented": false,
+  "production_deployed": false,
+  "new_image_or_vulnerability_scan": false,
+  "accepted_component_repeated": false,
+  "cleanup_performed": false,
+  "limits": [
+    "No VM eligibility, physical disconnection, source/image admission or operator authority is established",
+    "The snapshot lock is released before return; later lifecycle admission must lock operations and freshly observe storage before allocations",
+    "Available capacity is not reserved and peak-estimate adequacy remains unverified",
+    "Whole-filesystem bind provenance and ext4/xfs over SAN/iSCSI are not proved by filesystem metadata",
+    "Only classic overlay2 is supported; containerd/unknown drivers require a reviewed multi-root collector, not an automatic backend change",
+    "Linux FD/flock tests use real temporary kernel mechanics but simulate ownership and mount observations; Docker HTTP responses are simulated",
+    "Production hostname/NAS/reserve/release guards remain unchanged; global lint/H7-W16/Coordinator/backup gates remain open"
+  ],
+  "references": [
+    "https://www.kernel.org/doc/Documentation/filesystems/proc.txt",
+    "https://man7.org/linux/man-pages/man2/flock.2.html",
+    "https://docs.python.org/3/library/os.html#os.fstatvfs",
+    "https://docs.docker.com/engine/daemon/#daemon-data-directory"
+  ],
+  "production_storage_metadata": {
+    "checked_utc": "2026-11-14T16:19:28.490498+00:00",
+    "driver": "overlay2",
+    "driver_status_keys": [
+      "Backing Filesystem",
+      "Supports d_type",
+      "Using metacopy",
+      "Native Overlay Diff",
+      "userxattr"
+    ],
+    "driver_type_values": [],
+    "docker_root_sha256": "ce73cd33df8e80d10c856e91fd63274e8be73dd50b32e44ad5f30705c5b79704",
+    "read_only": true,
+    "collector_invoked": false
+  },
+  "linux_run": {
+    "returncode": 0,
+    "elapsed_seconds": 112.02,
+    "log": "/tmp/codex-grok-lab-storage-verified-n2h7myp_.log",
+    "summaries": [
+      "100 passed, 1 warning in 2.12s",
+      "696 passed, 1 warning, 201 subtests passed in 109.36s (0:01:49)",
+      "All checks passed!",
+      "3 files already formatted",
+      "All checks passed!",
+      "24 files already formatted"
+    ]
+  },
+  "first_linux_fixture_failure": {
+    "log": "/tmp/codex-grok-lab-storage-checks-t5yqs07s.log",
+    "reason": "Replacement fixture intermediate directory inherited an unsafe ambient mode; private mode set explicitly before identity-drift assertion",
+    "production_bug": false
+  }
+}

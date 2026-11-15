@@ -1,0 +1,91 @@
+{
+  "schema": 1,
+  "kind": "bounded_pinned_image_metadata_observer_source_preparation",
+  "based_on": "a1b3d7e34773808b9f51473c3b89ebc2b2de5a47",
+  "scope": [
+    "Two new pinned-image metadata module/test files",
+    "One guarded session method and added focused tests",
+    "Scoped Makefile lint inclusion",
+    "Maintained lifecycle RFC and sanitized evidence"
+  ],
+  "source_sha256": {
+    "Makefile": "6c0608bc97f12c3aea2cc11cffbb5f7e79a24897209a06fb36a39db1a87a4532",
+    "docs/rfc/grok-network-lifecycle-lab.md": "b0303638165b2aa9df65425e4fe4d5879a583a62f9ac05f780d8e11563211edf",
+    "grok_bridge/deployment/network_lab_image_metadata.py": "52331372d60cf60980fb030ad462ae93184c7fde1870af94b6da1ce486bccc58",
+    "grok_bridge/deployment/network_lab_session.py": "8078f5ae8ea2a6ae3c50c3f96032fd98be08bcd0954b3953afc7f7f9ab3def4c",
+    "grok_bridge/deployment/test_network_lab_image_metadata.py": "43646e477e3a5ebe53dbc315b6832734bd77536a8f71c3a3d016d087a878c095",
+    "grok_bridge/deployment/test_network_lab_session.py": "e9cb05fd7b66aa8c005f607a3f30f6dcb0afaa8d93552d9a7279f3a49ed58a02",
+    "grok_bridge/deployment/release.py": "c310715cef0f9d95a9d7ae2402f95c339559b282dd3ebfd434bc7554bd0226f0"
+  },
+  "review": {
+    "kind": "Release-engineering preparation plus independent primary source/AST review",
+    "passed": true,
+    "existing_session_methods_unchanged_except_new_binding": true,
+    "prior_session_method_count": 8,
+    "existing_session_test_definitions_unchanged": 42,
+    "new_session_test_definitions": 11,
+    "storage_bootstrap_auxiliary_and_production_unchanged": true,
+    "strict_config_fields": 13,
+    "fixed_allowlisted_gets": 10,
+    "total_http_deadline_seconds": 30,
+    "no_raw_configuration_or_errors_output": true,
+    "separate_session_binding": true
+  },
+  "checks": {
+    "linux_release_tests": 100,
+    "linux_network_tests": 1741,
+    "new_metadata_tests": 70,
+    "new_session_cases": 35,
+    "network_subtests": 201,
+    "linux_skipped": 0,
+    "scoped_lint": "passed",
+    "scoped_format": "passed",
+    "windows_focused_passed": 196,
+    "windows_skipped": 23,
+    "windows_skip_scope": "Existing Linux-only descriptor/flock cases"
+  },
+  "linux_run": {
+    "returncode": 0,
+    "elapsed_seconds": 80.57,
+    "log": "/tmp/codex-grok-image-metadata-_79gfz44.log",
+    "summaries": [
+      "100 passed, 1 warning in 48.20s",
+      "1741 passed, 1 warning, 201 subtests passed in 30.93s",
+      "All checks passed!",
+      "3 files already formatted",
+      "All checks passed!",
+      "42 files already formatted"
+    ],
+    "command": "make test-grok-release test-grok-network lint-grok-release lint-grok-network GROK_PYTHON=/var/backups/codex-remediation-20261109/workspace/grok-release-venv/bin/python"
+  },
+  "production_operator_changed": false,
+  "production_cli_and_gate_unchanged": true,
+  "execution_admission": false,
+  "compatibility_verified": false,
+  "material_safety_verified": false,
+  "lab_dispatch_available": false,
+  "lab_created": false,
+  "live_collector_invoked": false,
+  "full_harness_implemented": false,
+  "production_modified": false,
+  "deployed": false,
+  "merged": false,
+  "new_vulnerability_scan": false,
+  "accepted_fixture_repeated": false,
+  "limitations": [
+    "Synthetic metadata, fake framed sockets and guarded-session tests only; no live collector, image execution, guest admission or lifecycle acceptance.",
+    "Only thirteen reviewed Config fields are accepted. Unknown fields refuse; Config is bounded to 64KiB serialized, 256-entry arrays/maps, 4KiB strings, depth8 and 4096 nodes.",
+    "Matching exact pin/platform/Config projections detect sampled drift but cannot exclude transient changes or reserve the engine. Mutable repository tags/digests are not content identity.",
+    "The shared deadline bounds HTTP work, not arbitrary filesystem syscalls. Operation locks remain advisory.",
+    "Image volume/healthcheck/OnBuild declarations are facts, not compatibility approval or absence of anonymous runtime volumes. ArgsEscaped=true has no Linux safety ruling.",
+    "Metadata does not inspect filesystem contents, execute Python, establish supply-chain trust, attribute retained resources or prove volume continuity.",
+    "Secure materialization, durable auxiliary persistence, exact creation-receipt attribution, retained-volume continuity/restart reconciliation, context-aware lifecycle and the full recovery harness remain unfinished.",
+    "Disconnected VM/console, operator working-fixture replacement scope, physical/material/runtime admission, global release/lint, H7/W16, Coordinator and private-backup gates remain open."
+  ],
+  "sources": [
+    {
+      "title": "Docker Engine API v1.51 ImageConfig",
+      "url": "https://docs.docker.com/reference/api/engine/version/v1.51/"
+    }
+  ]
+}

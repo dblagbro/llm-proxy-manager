@@ -1,0 +1,31 @@
+{
+  "checked_utc": "2026-11-14T11:41:14.004216+00:00",
+  "base_commit": "1284b1c64a110a5325f6abf05b7b69999d050a23",
+  "linux": {
+    "release_tests": 100,
+    "network_tests": 311,
+    "network_subtests": 201,
+    "skipped": 0,
+    "scoped_lint": "passed",
+    "scoped_format": "passed"
+  },
+  "source_sha256": {
+    "network_nginx.py": "546b2a05292a2e4dfb41cb9a4891735a19ed94386973620219967c9367c5211e",
+    "test_network_nginx.py": "17ba74edf82649219555f1ba7c60157917ea091cad0d4f74ee71a02f2c96f61c",
+    "rehearse_nginx.py": "6b12e1229cb6502db41e17bebc17a5f5d125fc0ede6aab99d0e75e1ea87fe7a6",
+    "test_network_nginx_harness.py": "98254f2b70eb8daae010ff11f911d331ae7c0c35261b52354d01e8949ce00a8f"
+  },
+  "capabilities": {
+    "drop": [
+      "ALL"
+    ],
+    "add": [
+      "CAP_CHOWN"
+    ]
+  },
+  "independent_review": "No blockers; exact canonical capability and observation-only status. Source review only.",
+  "real_acceptance_passed": false,
+  "production_deployed": false,
+  "global_lint_waived": false,
+  "new_vulnerability_scan": false
+}

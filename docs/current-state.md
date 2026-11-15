@@ -1,3 +1,5 @@
+> November 14 preparation: the Grok dedicated-network planner is tested source, **not deployed or wired into the release operator**. See [the network preparation limits](grok-bridge-security.md#dedicated-network-preparation-2026-11-14-not-deployed).
+
 # ✅ Live now — 2026-11-13 (v5.22.61, both nodes)
 
 **v5.22.61 deployed to tmrwww01 + tmrwww02** (rolling, peer-first; each node
@@ -712,3 +714,31 @@ implemented (`redeem_fable_reset()` raises; the endpoint must be captured from a
 live `/usage` response exposes no "resets available" count, so that input is always None.
 The existing 4-hourly scraper writes `external_usage_snapshot` and IS running (fresh rows);
 the stale 2026-05-06 table is `provider_usage_windows`, a different (proxy-internal) table.
+
+Network preparation update (2026-11-14): a sanitized local Docker adapter now
+accompanies the dedicated-network planner and consumer journal. Read-only is the
+default; explicit transaction/container bindings gate mutations. This is unshipped
+preparation with no release-operator integration or production change. See
+[security preparation](grok-bridge-security.md).
+
+Canonical network rendering update (2026-11-14): a pure, bounded Compose-source
+renderer now accompanies the planner/journal/adapter. Read-only canonical and
+corrected-PR17 chained resolution passed. Runtime lifecycle integration and full
+browser/network/recovery acceptance remain pending; production is unchanged.
+
+
+## November 14: draft Grok network lifecycle integration
+
+Draft PR21 integrates corrected PR17 candidate controls with exact-identity network
+attachment/recovery and a retained staged Nginx validator. This is source preparation,
+not deployed isolation. See grok_bridge/deployment/RUNBOOK.md for tests, gates,
+private NAS storage, topology scope and recovery limits. The old Docker lifecycle
+harness refuses the new operator before mutation; integrated real recovery and
+browser/outsider-denial acceptance remain pending. Coordinator remains separate.
+
+
+November 14: added a source-bound, capacity-guarded retained Nginx acceptance runner.
+It checks the staged full configuration twice without a production reload, audits
+all existing containers/networks and canonical files, and retains its fixture.
+Docker image User omission is normalized only to an empty container User;
+noninteger private journal schemas are refused. Real results are recorded separately.

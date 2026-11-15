@@ -1,0 +1,101 @@
+{
+  "acceptance": "passed",
+  "actual_fixture_state": {
+    "ExitCode": 0,
+    "FinishedAt": "2026-11-14T11:42:00.367510798Z",
+    "OOMKilled": false,
+    "Running": false,
+    "StartedAt": "2026-11-14T11:41:58.862602284Z",
+    "Status": "exited"
+  },
+  "attempt": "/mnt/s/backups/codex-private-security-20261109/nginx-validation/nginx-20261114t1142z",
+  "audit_status": {
+    "include_inputs": "passed",
+    "inputs": "passed",
+    "inventory_capture": "passed",
+    "inventory_evidence": "passed",
+    "ownership": "passed",
+    "preexisting_containers": "passed",
+    "preexisting_networks": "passed",
+    "source": "passed"
+  },
+  "capabilities": {
+    "CapAdd": [
+      "CAP_CHOWN"
+    ],
+    "CapDrop": [
+      "ALL"
+    ]
+  },
+  "cleanup_performed": false,
+  "errors": [],
+  "fixture": {
+    "configuration_verified": true,
+    "exit_code": 0,
+    "id": "910fdcad4666945ee3a04846315336f1213b511b110a548db2688d4c6b8f4385",
+    "name": "codex-grok-nginxcheck-62a9cdfe7ccb4a86b1b452eff50b2d39",
+    "oom_killed": false,
+    "state": "stopped"
+  },
+  "fixture_observation": null,
+  "input_audit": {
+    "changed": 0,
+    "checked": 5,
+    "expected": 5,
+    "status": "passed",
+    "unreadable": 0
+  },
+  "input_sha256": {
+    "canonical_compose": "70c98583ec39f370e28200c26daf3f032702adfc060023da936225a311b9b6a9",
+    "canonical_fragment": "5190abb07bfd94a69fa0dc8d7ce82c9d236cdd6b3db36ae85623632f1a223fc0",
+    "compiled_nginx": "d5a8788e1b10b829c7c7ae67e11ddb112f31e312ffdaedfe0c6274b30b559a55",
+    "maintained_fragment": "034ac4fb159ad31a597aa537bd67187529817fa420eac1c6c99066ce012de5dc",
+    "staged_nginx": "578510cfc6262e823438187a2a4868d976ffe4c31bb1c1fbf0aeeace80fc368d"
+  },
+  "invariants": "passed",
+  "new_vulnerability_scan": false,
+  "preexisting_audit": {
+    "containers": {
+      "checked": 144,
+      "configuration_changed": 0,
+      "endpoints_changed": 0,
+      "expected": 144,
+      "lifecycle_changed": 0,
+      "missing": 0,
+      "status": "passed",
+      "unreadable": 0
+    },
+    "networks": {
+      "added": 0,
+      "changed": 0,
+      "checked": 14,
+      "expected": 14,
+      "missing": 0,
+      "status": "passed",
+      "unreadable": 0
+    }
+  },
+  "preexisting_counts": {
+    "containers": 144,
+    "networks": 14
+  },
+  "production_deployed": false,
+  "recorded_utc": "2026-11-14T11:42:56.231241+00:00",
+  "restart_policy": "no",
+  "reviewed_source": {
+    "commit": "0e77488275984075d68c95a37abba83fc31d12c7",
+    "sha256": {
+      "grok_bridge/deployment/network_compose.py": "da17980d06d91f4a428e2f1e29f192032306829fd8130232d1f9bae81f75f758",
+      "grok_bridge/deployment/network_docker.py": "3e1fc8d015cc3fff090b6b0101575a85c0a4bbfb5f46e5968e8cc3d56a5324b6",
+      "grok_bridge/deployment/network_nginx.py": "546b2a05292a2e4dfb41cb9a4891735a19ed94386973620219967c9367c5211e",
+      "grok_bridge/deployment/network_nginx_inputs.py": "dc675b3e1cea19f1cd89e12fd8586b496b77fa4f6db7e2cb1b05ef61cb4ce347",
+      "grok_bridge/deployment/network_policy.py": "6670535c96107bd0f0517547adfe1d4d432db238481fc435e75476f2b5125407",
+      "grok_bridge/deployment/network_transaction.py": "313dd91bfc07c6675d3f8f813164799d193852de83b27040b54d1f415ebd4006",
+      "grok_bridge/deployment/nginx.grok-bridge.conf": "034ac4fb159ad31a597aa537bd67187529817fa420eac1c6c99066ce012de5dc",
+      "grok_bridge/deployment/rehearse_nginx.py": "6b12e1229cb6502db41e17bebc17a5f5d125fc0ede6aab99d0e75e1ea87fe7a6",
+      "grok_bridge/deployment/release.py": "1a9dd48f10fb3e56889af2ce3254760e48d30482867a333f68006d5166ac0960"
+    }
+  },
+  "runs_returned_same_id": true,
+  "scope": "pre-cutover retained Nginx validator only"
+}

@@ -1,0 +1,45 @@
+{
+  "schema": "grok-lab-capacity-source-evidence-v1",
+  "based_on": "e9011c9b3ed5c03d1de9f751dc50f6675880656e",
+  "scope": "Pure capacity arithmetic over supplied observations and explicit peaks; no collector or admission",
+  "source_sha256": {
+    "network_lab_capacity.py": "3dd5bfa0d9f772d4430ae2fdca6cefa8a3f0862650f9ef24266444015b7e9fc0",
+    "test_network_lab_capacity.py": "f3bcf5edfde90404dfb6a4300c99504bc94174dd1467601922f4a12a28c80316"
+  },
+  "checks": {
+    "linux_release_tests": 100,
+    "linux_network_tests": 603,
+    "lab_capacity_tests": 76,
+    "network_subtests": 201,
+    "scoped_lint": "passed",
+    "scoped_format": "passed",
+    "warning": "Retained unrelated asyncio_mode warning in synchronous source test environment"
+  },
+  "review": {
+    "kind": "Release-engineering preparation and primary source review",
+    "remaining_blockers_identified": false,
+    "reviewed_properties": [
+      "Shared filesystem sums simultaneous peaks and uses one reserve plus conservative available count",
+      "Distinct filesystems each retain the fixed lab reserve",
+      "Strict byte counters and mandatory peaks",
+      "Exact full-context and all-input receipt drift refusal",
+      "No observation, freshness, peak-adequacy or authority claim"
+    ]
+  },
+  "production_operator_sha256": "1a9dd48f10fb3e56889af2ce3254760e48d30482867a333f68006d5166ac0960",
+  "production_operator_unchanged": true,
+  "lab_execution_authorized": false,
+  "lab_created": false,
+  "full_harness_implemented": false,
+  "production_deployed": false,
+  "new_image_or_vulnerability_scan": false,
+  "accepted_component_repeated": false,
+  "cleanup_performed": false,
+  "limits": [
+    "Supplied values are not trusted measurements",
+    "Actual availability, freshness, peak-estimate adequacy, filesystem/mount identity and reserve persistence are unverified",
+    "No filesystem/Docker collector, VM eligibility, isolation proof, permit or execution entrypoint",
+    "Production 64 GiB reserve and hostname/NAS/release guards remain unchanged",
+    "Lab allocation/access, working-fixture lifecycle scope, global lint, H7/W16, Coordinator and backup gates remain open"
+  ]
+}

@@ -1,0 +1,55 @@
+{
+  "acceptance": "failed",
+  "errors": [
+    "NginxValidationError",
+    "InventoryAudit:NginxValidationError",
+    "OwnershipAudit:NginxValidationError"
+  ],
+  "fixture": null,
+  "input_sha256": {
+    "canonical_compose": "70c98583ec39f370e28200c26daf3f032702adfc060023da936225a311b9b6a9",
+    "canonical_fragment": "5190abb07bfd94a69fa0dc8d7ce82c9d236cdd6b3db36ae85623632f1a223fc0",
+    "compiled_nginx": "d5a8788e1b10b829c7c7ae67e11ddb112f31e312ffdaedfe0c6274b30b559a55",
+    "maintained_fragment": "034ac4fb159ad31a597aa537bd67187529817fa420eac1c6c99066ce012de5dc",
+    "staged_nginx": "578510cfc6262e823438187a2a4868d976ffe4c31bb1c1fbf0aeeace80fc368d"
+  },
+  "invariants": "failed",
+  "preexisting_counts": {
+    "containers": 139,
+    "networks": 14
+  },
+  "reviewed_source": {
+    "commit": "913dda18a89ac966f6c3fec9d08decaebaf651ab",
+    "sha256": {
+      "grok_bridge/deployment/network_compose.py": "da17980d06d91f4a428e2f1e29f192032306829fd8130232d1f9bae81f75f758",
+      "grok_bridge/deployment/network_docker.py": "3e1fc8d015cc3fff090b6b0101575a85c0a4bbfb5f46e5968e8cc3d56a5324b6",
+      "grok_bridge/deployment/network_nginx.py": "f9423e0775a29127963b7da3a131ccaee9917d912932cc45fda361f7d176837a",
+      "grok_bridge/deployment/network_policy.py": "6670535c96107bd0f0517547adfe1d4d432db238481fc435e75476f2b5125407",
+      "grok_bridge/deployment/network_transaction.py": "313dd91bfc07c6675d3f8f813164799d193852de83b27040b54d1f415ebd4006",
+      "grok_bridge/deployment/nginx.grok-bridge.conf": "034ac4fb159ad31a597aa537bd67187529817fa420eac1c6c99066ce012de5dc",
+      "grok_bridge/deployment/rehearse_nginx.py": "749580711965c226ef042ed70d9beb08510b02b4282c00241ce8cbd7d767b6b9",
+      "grok_bridge/deployment/release.py": "1a9dd48f10fb3e56889af2ce3254760e48d30482867a333f68006d5166ac0960"
+    }
+  },
+  "scope": "pre-cutover retained Nginx validator only",
+  "attempt": "/mnt/s/backups/codex-private-security-20261109/nginx-validation/nginx-20261114t1018z",
+  "fixture_observation": {
+    "name": "codex-grok-nginxcheck-496a5349324f468eabfce544eea32271",
+    "id": "83e69a57655dcf5c1921cd95dba8ed19bf2e0d0e38d3857649070e13c062e1d2",
+    "state": "exited",
+    "exit_code": 1,
+    "configuration_verified": false
+  },
+  "independent_preexisting_audit": {
+    "containers": 139,
+    "networks": 14,
+    "result": "passed",
+    "performed_after_runner_ownership_audit_refused": true
+  },
+  "diagnosis": [
+    "Docker startup changed HostConfig.OomKillDisable false to null; raw fixture fingerprint refused",
+    "nginx -t could not read an existing uid1000 mode0600 include through a read-only bind with capabilities dropped"
+  ],
+  "production_modified": false,
+  "cleanup_performed": false
+}

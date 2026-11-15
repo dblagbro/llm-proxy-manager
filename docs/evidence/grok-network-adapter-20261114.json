@@ -1,0 +1,134 @@
+{
+  "checks": [
+    {
+      "target": "test-grok-network",
+      "exit_code": 0,
+      "tests": [
+        "61"
+      ]
+    },
+    {
+      "target": "lint-grok-network",
+      "exit_code": 0,
+      "tests": []
+    },
+    {
+      "target": "secret-scan",
+      "exit_code": 0,
+      "tests": []
+    }
+  ],
+  "source_sha256": {
+    "network_policy.py": "6670535c96107bd0f0517547adfe1d4d432db238481fc435e75476f2b5125407",
+    "network_transaction.py": "313dd91bfc07c6675d3f8f813164799d193852de83b27040b54d1f415ebd4006",
+    "network_docker.py": "3e1fc8d015cc3fff090b6b0101575a85c0a4bbfb5f46e5968e8cc3d56a5324b6",
+    "test_network_docker.py": "ede7d10866d57cb5f6c7281cddadcca0e017ff81e61f4559b35326a7adb679e0",
+    "rehearse_network.py": "5f2e4045fe4ae2a4b585f8de974170522c874c15ceae96b41f1fc472aa22a5c2"
+  },
+  "read_only_acceptance": {
+    "observed_utc": "2026-11-14T07:57:00.871062+00:00",
+    "phase": "read_only_live_adapter_passed",
+    "containers": {
+      "llm-proxy2-grok-bridge": {
+        "name": "llm-proxy2-grok-bridge",
+        "id": "93ff62bdb4652dc5ec09cc1e492a520b870da3763a642c3b6c0fa075e74deb43",
+        "config_sha256": "9e2c0113d652ba0ae02f5c7850164837015ceb05410cc11353ab6be1cea5ee61",
+        "default_route_sha256": "602224288a6f676bdb931076e7828ff83320f9f4e604d79dc4b9a13279ac0178",
+        "networks": {
+          "docker_default": {
+            "id": "a46aa6376325c9464c9c743677ef828c8e86ba23def757b5ec38c4affb06e1ce",
+            "attachment_sha256": "968d13cc490a6fac81ba55f5e32b4191e951d0da6301d81a7fe46e90e121f826",
+            "aliases": [
+              "llm-proxy2-grok-bridge"
+            ],
+            "gw_priority": 0
+          }
+        }
+      },
+      "nginx": {
+        "name": "nginx",
+        "id": "aded01a5bee031ceb7359a61c54d74f37c0036bc3eab8ae9041aca086786c450",
+        "config_sha256": "34abb5570eba5a2b64c0f67a97ed2e22b54473409932f11d4bafd723c7c5a38f",
+        "default_route_sha256": "602224288a6f676bdb931076e7828ff83320f9f4e604d79dc4b9a13279ac0178",
+        "networks": {
+          "docker_default": {
+            "id": "a46aa6376325c9464c9c743677ef828c8e86ba23def757b5ec38c4affb06e1ce",
+            "attachment_sha256": "e7a45deb7ca211cb43a50fb9402e7e8a4f21f0caac9d5d0c1ee54854d91ebae8",
+            "aliases": [
+              "nginx"
+            ],
+            "gw_priority": 0
+          }
+        }
+      },
+      "llm-proxy2": {
+        "name": "llm-proxy2",
+        "id": "5f292d68c9cdb79180dbd2e207b2e1eea731c92bf0945f14031ffad4957c8260",
+        "config_sha256": "be44a27f09876c95fe75285df63e3b29119e748d5d8ea67fcda4b047ea727fed",
+        "default_route_sha256": "602224288a6f676bdb931076e7828ff83320f9f4e604d79dc4b9a13279ac0178",
+        "networks": {
+          "docker_default": {
+            "id": "a46aa6376325c9464c9c743677ef828c8e86ba23def757b5ec38c4affb06e1ce",
+            "attachment_sha256": "c3702dab40825b20fa1b4d5db69a1d9d91a9c47d51eb38d1b25797417dd91e2e",
+            "aliases": [
+              "llm-proxy2"
+            ],
+            "gw_priority": 0
+          }
+        }
+      }
+    },
+    "container_count": 136,
+    "all_container_id_image_state_configuration_unchanged": true,
+    "dedicated_network_absent": true,
+    "namespace_sharing_guard_passed": true,
+    "read_commands": 15,
+    "mutation_commands": 0,
+    "source_sha256": "3e1fc8d015cc3fff090b6b0101575a85c0a4bbfb5f46e5968e8cc3d56a5324b6",
+    "production_deployed": false,
+    "real_mutation_acceptance": false
+  },
+  "isolated_adapter_fixture": {
+    "phase": "isolated_adapter_rollback_passed",
+    "started_utc": "2026-11-14T08:00:36.682012+00:00",
+    "project": "codex-grok-nettest-20261114t0801z",
+    "image": "sha256:67a10554437ff2017327a3ebb36c8a779f38a7f67f861980109c1cd81e133c4a",
+    "checks": [
+      "fixture_exact_image_no_mounts_or_published_ports",
+      "fresh_controller_attach",
+      "real_connect_post_effect_timeout_reconciled",
+      "only_exact_consumer_members",
+      "fresh_controller_rollback",
+      "real_disconnect_post_effect_timeout_reconciled",
+      "consumer_ids_config_routes_original_endpoints_preserved",
+      "empty_owned_network_retained"
+    ],
+    "resources": {
+      "default_network": "37de6b08eb80543a6e5fa019b2e817eeb0084c19d417e9b64cd911aa3aa098ba",
+      "consumers": {
+        "nginx": "b040e7a0795d70e541b9bb1f61a98f5faec3b8283c17522cf5f9d3661887838b",
+        "llm-proxy2": "3427888e4abda944a83db8d18bbd75f302a07c9aee7d29682f4a236256bf91f5"
+      },
+      "dedicated_network": "202ae2748b07eb1e8170e321b7b79db53092ffde7f4cf9f03ea5e8f2e13912c6"
+    },
+    "production_deployed": false,
+    "browser_acceptance": false,
+    "deleted_resources": [],
+    "stopped_fixture_ids": [
+      "b040e7a0795d70e541b9bb1f61a98f5faec3b8283c17522cf5f9d3661887838b",
+      "3427888e4abda944a83db8d18bbd75f302a07c9aee7d29682f4a236256bf91f5"
+    ],
+    "preexisting_containers_unchanged": true,
+    "preexisting_container_count": 136,
+    "completed_utc": "2026-11-14T08:01:16.892966+00:00",
+    "retention": "Retain new stopped fixtures/networks pending named operator cleanup review"
+  },
+  "global_lint": {
+    "retained_findings": 3255,
+    "rerun": false,
+    "waiver": false
+  },
+  "production_deployed": false,
+  "release_operator_integrated": false,
+  "browser_isolation_acceptance": false
+}

@@ -1,0 +1,93 @@
+{
+  "schema": 1,
+  "kind": "fresh_generation_materialization_source_preparation",
+  "based_on": "e70fc4aa6d55b7c3474b8f733eea48e625f2241b",
+  "scope": [
+    "Two new synthetic material installer/module test files",
+    "Scoped Makefile lint inclusion",
+    "Maintained lifecycle RFC and sanitized source evidence"
+  ],
+  "source_sha256": {
+    "Makefile": "9709b8fb92aba440280b3b36d205b8d2c7960cfda0e1c690492652583c1e72c3",
+    "docs/rfc/grok-network-lifecycle-lab.md": "d32a3d87d0be3671a6db39b94476207f7094e6358946f871fa7029ecd734b6d7",
+    "grok_bridge/deployment/network_lab_materialize.py": "0d2dd6fa4a53a3626825089c734c1ebbd0b920a94969ad44574ae75d19c94b71",
+    "grok_bridge/deployment/test_network_lab_materialize.py": "7815c1c1cb97d9d0c69f8b08c3432f81a8ae46a420f549a7a03c9bc857b1c54c",
+    "grok_bridge/deployment/release.py": "c310715cef0f9d95a9d7ae2402f95c339559b282dd3ebfd434bc7554bd0226f0"
+  },
+  "review": {
+    "kind": "Delegated release-engineering preparation and primary implementation/failure-boundary review",
+    "passed": true,
+    "existing_production_working_journals_unchanged": true,
+    "existing_storage_bootstrap_session_auxiliary_state_and_store_unchanged": true,
+    "aggregate_bound_before_host_io": true,
+    "standalone_operation_lock": true,
+    "storage_lock_distinct_validated_not_acquired": true,
+    "intent_synced_before_children": true,
+    "preopen_nonregular_rejection": true,
+    "exclusive_creation_and_exact_tree": true,
+    "attempt_all_close_only_cleanup": true,
+    "all_nonempty_generations_refused": true,
+    "no_volume_seed_or_execution_admission": true
+  },
+  "checks": {
+    "linux_release_tests": 100,
+    "linux_network_tests": 1903,
+    "new_materialize_tests": 84,
+    "network_subtests": 201,
+    "linux_skipped": 0,
+    "scoped_lint": "passed",
+    "scoped_format": "passed",
+    "windows_focused_passed": 20,
+    "windows_skipped": 64,
+    "windows_skip_scope": "New Linux-only temporary FD/flock/mkdir/fsync mechanics"
+  },
+  "linux_run": {
+    "returncode": 0,
+    "elapsed_seconds": 33.83,
+    "log": "/tmp/codex-grok-materialize-hc_n2zp8.log",
+    "summaries": [
+      "100 passed, 1 warning in 2.65s",
+      "1903 passed, 1 warning, 201 subtests passed in 30.40s",
+      "All checks passed!",
+      "3 files already formatted",
+      "All checks passed!",
+      "46 files already formatted"
+    ],
+    "command": "make test-grok-release test-grok-network lint-grok-release lint-grok-network GROK_PYTHON=/var/backups/codex-remediation-20261109/workspace/grok-release-venv/bin/python"
+  },
+  "production_operator_changed": false,
+  "production_cli_and_gate_unchanged": true,
+  "execution_admission": false,
+  "lab_dispatch_available": false,
+  "lab_created": false,
+  "real_generation_materialize_invoked": false,
+  "full_harness_implemented": false,
+  "production_modified": false,
+  "deployed": false,
+  "merged": false,
+  "new_vulnerability_scan": false,
+  "accepted_fixture_repeated": false,
+  "limitations": [
+    "Tests use fixed synthetic inputs and temporary Linux filesystems with narrowly simulated ownership/mount/guest observations; no retained generation or actual lab was invoked.",
+    "Root, exact empty generation and both host locks must be provisioned separately. All partial output is retained; every nonempty retry refuses.",
+    "Guest/boot/context and observed local ext4/xfs ancestry establish consistency, not physical VM isolation, storage provenance or operator authority.",
+    "Advisory locks coordinate cooperating writers. The tree is not atomically published against arbitrary privileged writers; arbitrary filesystem syscalls are not wall-clock bounded.",
+    "Completion bytes are a non-self-referential marker, not acknowledgment or execution permission. Only a returned receipt reports completed fsync/readback; cold bytes cannot prove prior acknowledgment or power-loss recovery.",
+    "Seed files stay ordinary inputs. Attributable Docker creation, named-volume backing continuity, seed installation and independent interrupted-state reconciliation remain unfinished.",
+    "Fresh observations, capacity/bootstrap/admission must be re-established after staging. Full lifecycle harness, VM/console/operator scope, global release/lint, H7/W16, Coordinator and private-backup gates remain open."
+  ],
+  "sources": [
+    {
+      "title": "Python directory-relative mkdir",
+      "url": "https://docs.python.org/3.10/library/os.html#os.mkdir"
+    },
+    {
+      "title": "Linux exclusive/no-follow open",
+      "url": "https://man7.org/linux/man-pages/man2/open.2.html"
+    },
+    {
+      "title": "Separate file/directory fsync",
+      "url": "https://man7.org/linux/man-pages/man2/fsync.2.html"
+    }
+  ]
+}

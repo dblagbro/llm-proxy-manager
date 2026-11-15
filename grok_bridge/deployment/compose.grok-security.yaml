@@ -1,4 +1,5 @@
-# Layer over the canonical Compose file after exact-image acceptance.
+# Example application settings only; NOT a network migration artifact.
+# Use the reviewed canonical renderer/operator for candidate data and topology.
 # Existing token, data volume, limits and networks come from the base file.
 # Rollout must use a separate restored candidate volume; retain the original.
 services:

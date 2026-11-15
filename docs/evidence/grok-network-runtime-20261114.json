@@ -1,0 +1,36 @@
+{
+  "recorded_utc": "2026-11-14T09:51:39.222032+00:00",
+  "kind": "synthetic source validation only",
+  "base_head": "076056ae1b9fd56357d663014ec86820e5ab96ed",
+  "python": "3.10",
+  "make_targets": [
+    "test-grok-release",
+    "test-grok-network",
+    "lint-grok-release",
+    "lint-grok-network"
+  ],
+  "release_tests": 100,
+  "network_tests": 123,
+  "network_subtests": 201,
+  "result": "passed",
+  "warnings": [
+    "Isolated environment lacks pytest-asyncio; unrelated asyncio_mode config warning. All selected tests are synchronous."
+  ],
+  "source_sha256": {
+    "release.py": "1a9dd48f10fb3e56889af2ce3254760e48d30482867a333f68006d5166ac0960",
+    "test_release.py": "31c8f7be786934ba293269ec34926cf7a16c9b265c58f268d75fdf23bf4f28d3",
+    "rehearse_release.py": "df27234b8abdc33dec593302fbec05a399f2e8bc041306740bf12228ba9d7d88",
+    "network_nginx.py": "5e00b7160a87eaf8b8bb0f2f5ccc20d407fd98d3af4ad7be4a0adf760a859d7a",
+    "test_network_nginx.py": "5ca47fd5341eaf5cca33ba0e9b55f1426ba5867a6c5e60003cb54fc7371c58f9",
+    "test_network_harness_guard.py": "6c7124cf2d7184b35d2e09c95c345e488b13c20ba5bd96ff699fb15f3d8bcc91"
+  },
+  "local_windows_tests": 223,
+  "production_modified": false,
+  "real_integrated_recovery_passed": false,
+  "real_new_nginx_validator_passed": false,
+  "browser_acceptance_passed": false,
+  "outsider_denial_passed": false,
+  "global_lint_gate": "retained 3255 findings; unchanged; no waiver",
+  "private_backup_coverage": "unverified; new private root outside P1",
+  "old_harness": "refuses NETWORK_RELEASE_SCHEMA before filesystem/Docker mutations"
+}

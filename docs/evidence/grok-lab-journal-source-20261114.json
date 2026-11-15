@@ -1,0 +1,42 @@
+{
+  "schema": "grok-lab-journal-source-evidence-v1",
+  "based_on": "3e3c1a4f6864f3609889bf498bdc89db0afb0645",
+  "scope": "Lab context-bound consumer transaction journal and adapter consistency only; no actual engine observation, admission or CLI",
+  "source_sha256": {
+    "network_transaction.py": "653ff99506fd25b9432d8eb0b7b2fca8996677d856782fec2a001b7d16d0ddb0",
+    "test_network_lab_transaction.py": "aa28345b84427789e9b219cad4ad42a6edc10017f36b6936cce68a9180e6b02d"
+  },
+  "checks": {
+    "linux_release_tests": 100,
+    "linux_network_tests": 527,
+    "lab_journal_tests": 50,
+    "network_subtests": 201,
+    "scoped_lint": "passed",
+    "scoped_format": "passed",
+    "warning": "Retained unrelated asyncio_mode warning in synchronous source test environment"
+  },
+  "review": {
+    "kind": "read-only release-engineering source review",
+    "findings_corrected": [
+      "Initial lab bridge binding now refuses before any host read",
+      "Pinned instance mode prevents lost context from falling back to production"
+    ],
+    "remaining_blockers_identified": false
+  },
+  "production_operator_sha256": "1a9dd48f10fb3e56889af2ce3254760e48d30482867a333f68006d5166ac0960",
+  "production_operator_unchanged": true,
+  "lab_execution_authorized": false,
+  "lab_created": false,
+  "full_harness_implemented": false,
+  "production_deployed": false,
+  "new_image_or_vulnerability_scan": false,
+  "accepted_component_repeated": false,
+  "cleanup_performed": false,
+  "limits": [
+    "FakeRunner command simulations are source tests, not actual runtime acceptance or power-loss recovery",
+    "Journal bindings do not observe VM/engine identity, prove isolation or confer permission",
+    "Distinct admission/storage/capacity and shared release/Nginx context integration remain pending",
+    "VM allocation/access and working-fixture replacement scope remain unanswered",
+    "Production global lint, release, H7/W16, Coordinator and backup gates remain open"
+  ]
+}
