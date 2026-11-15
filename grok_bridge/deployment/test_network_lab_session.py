@@ -27,6 +27,261 @@ _REAL_LOCK = session._OperationLock
 _REAL_PLATFORM = session._platform
 
 
+@pytest.fixture
+def metadata_observer(simulated, monkeypatch):
+    state = SimpleNamespace(calls=0, hook=lambda: None)
+    summary = {
+        "config_sha256": "a" * 64,
+        "environment_entry_count": 8,
+        "declared_volume_count": 0,
+        "healthcheck_present": False,
+        "onbuild_count": 0,
+        "entrypoint_count": 0,
+        "command_count": 1,
+        "args_escaped": True,
+    }
+    state.receipt = {
+        "schema": session.image_metadata.SCHEMA,
+        "scope": session.image_metadata.SCOPE,
+        "context_sha256": simulated.context.digest(),
+        "engine_socket_peer_sha256": "e" * 64,
+        "metadata_before_sha256": "f" * 64,
+        "metadata_after_sha256": "f" * 64,
+        "images": {role: copy.deepcopy(summary) for role, _ in simulated.context.images},
+        "execution_admission": False,
+        "compatibility_verified": False,
+        "material_safety_verified": False,
+    }
+
+    def collect(ctx, *, lab_binding):
+        assert simulated.locks[-1].held
+        ctx.verify_journal_binding(lab_binding)
+        simulated.calls.append("image-metadata")
+        state.calls += 1
+        state.hook()
+        return copy.deepcopy(state.receipt)
+
+    monkeypatch.setattr(session.image_metadata, "collect", collect)
+    return state
+
+
+def test_image_metadata_has_independent_binding_and_guarded_surrounding_storage(
+    simulated, metadata_observer, bootstrap_observer
+):
+    with manager(simulated) as current:
+        current.observe_bootstrap_engine(peaks=peaks())
+        bootstrap_binding = current._bootstrap_binding
+        simulated.calls.clear()
+        result = current.observe_pinned_image_metadata(peaks=peaks())
+        assert [item for item in simulated.calls if item in {"collect", "image-metadata"}] == [
+            "collect",
+            "image-metadata",
+            "collect",
+        ]
+        assert current._bootstrap_binding == bootstrap_binding
+        assert current._metadata_binding != bootstrap_binding
+        assert result["image_metadata_observation"] == metadata_observer.receipt
+        assert result["operation_lock_held_at_observation"] is True
+        assert (
+            result["storage_before"]["bindings_sha256"]
+            == result["storage_after"]["bindings_sha256"]
+        )
+        assert all(
+            result[key] is False
+            for key in (
+                "execution_admission",
+                "compatibility_verified",
+                "material_safety_verified",
+            )
+        )
+        result["image_metadata_observation"]["images"]["original"]["environment_entry_count"] = 99
+        assert current.observe_pinned_image_metadata(peaks=peaks())[
+            "image_metadata_observation"
+        ] == (metadata_observer.receipt)
+    assert not simulated.locks[-1].held
+
+
+@pytest.mark.parametrize(
+    "bad", [None, {"evidence": True, "docker": 1}, {"evidence": 0, "docker": 0}]
+)
+def test_image_metadata_invalid_peaks_precede_all_io(simulated, metadata_observer, bad):
+    with manager(simulated) as current:
+        before = list(simulated.calls)
+        with pytest.raises(session.LabSessionError):
+            current.observe_pinned_image_metadata(peaks=bad)
+        assert simulated.calls == before and metadata_observer.calls == 0
+        assert current._failed is False
+
+
+def test_image_metadata_peaks_are_detached_before_observer_callback(simulated, metadata_observer):
+    upcoming = peaks()
+    expected = dict(upcoming)
+    with manager(simulated) as current:
+        metadata_observer.hook = lambda: upcoming.update(evidence=0, docker=0)
+        current.observe_pinned_image_metadata(peaks=upcoming)
+    assert simulated.collected[-2:] == [expected, expected]
+
+
+@pytest.mark.parametrize("change", ["binding", "guest", "storage", "lock"])
+def test_image_metadata_observed_drift_latches_failure_before_further_collection(
+    simulated, metadata_observer, change
+):
+    with manager(simulated) as current:
+        initial_count = len(simulated.collected)
+
+        def changed():
+            if change == "binding":
+                simulated.binding["context"]["source_commit"] = "f" * 40
+            elif change == "guest":
+                simulated.guest["boot"]["value"] = "99999999-2222-3333-4444-555555555555"
+            elif change == "storage":
+                simulated.storage_binding = "e" * 64
+            else:
+                simulated.locks[-1].binding_sha256 = lambda: "e" * 64
+
+        metadata_observer.hook = changed
+        with pytest.raises(session.LabSessionError):
+            current.observe_pinned_image_metadata(peaks=peaks())
+        assert current._failed and current._metadata_binding is None
+        assert len(simulated.collected) == initial_count + (2 if change == "storage" else 1)
+        previous = len(simulated.collected)
+        with pytest.raises(session.LabSessionError):
+            current.observe_pinned_image_metadata(peaks=peaks())
+        assert len(simulated.collected) == previous and metadata_observer.calls == 1
+
+
+@pytest.mark.parametrize(
+    "operation",
+    ["refresh", "observe_bootstrap_engine", "observe_pinned_image_metadata", "__enter__"],
+)
+def test_image_metadata_refuses_nested_observation_entry(simulated, metadata_observer, operation):
+    with manager(simulated) as current:
+
+        def nested():
+            with pytest.raises(session.LabSessionError):
+                if operation == "__enter__":
+                    current.__enter__()
+                else:
+                    getattr(current, operation)(peaks=peaks())
+
+        metadata_observer.hook = nested
+        assert current.observe_pinned_image_metadata(peaks=peaks())["execution_admission"] is False
+        assert metadata_observer.calls == 1 and len(simulated.collected) == 3
+
+
+@pytest.mark.parametrize("failure", [RuntimeError, KeyboardInterrupt, SystemExit])
+def test_image_metadata_failure_latches_and_owner_always_closes(
+    simulated, metadata_observer, failure
+):
+    def fail():
+        raise failure("private-image-diagnostic")
+
+    metadata_observer.hook = fail
+    expected = session.LabSessionError if failure is RuntimeError else failure
+    with pytest.raises(expected) as caught:
+        with manager(simulated) as current:
+            current.observe_pinned_image_metadata(peaks=peaks())
+    assert current._failed and not simulated.locks[-1].held
+    if failure is RuntimeError:
+        assert "private-image" not in str(caught.value)
+    with pytest.raises(session.LabSessionError):
+        current.observe_pinned_image_metadata(peaks=peaks())
+    assert metadata_observer.calls == 1
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("schema", "other"),
+        ("scope", "admitted"),
+        ("context_sha256", "f" * 64),
+        ("execution_admission", True),
+        ("compatibility_verified", True),
+        ("material_safety_verified", 0),
+        ("metadata_after_sha256", "a" * 64),
+        ("engine_socket_peer_sha256", "bad"),
+        ("images", {}),
+    ],
+)
+def test_image_metadata_malformed_receipt_never_advances_binding(
+    simulated, metadata_observer, field, value
+):
+    with manager(simulated) as current:
+        metadata_observer.receipt[field] = value
+        with pytest.raises(session.LabSessionError):
+            current.observe_pinned_image_metadata(peaks=peaks())
+        assert current._failed and current._metadata_binding is None
+        assert len(simulated.collected) == 2
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("environment_entry_count", False),
+        ("command_count", 1.0),
+        ("onbuild_count", 257),
+        ("healthcheck_present", 1),
+        ("args_escaped", 1),
+        ("config_sha256", "invalid"),
+    ],
+)
+def test_image_metadata_nested_summary_types_refuse(simulated, metadata_observer, field, value):
+    with manager(simulated) as current:
+        metadata_observer.receipt["images"]["original"][field] = value
+        with pytest.raises(session.LabSessionError):
+            current.observe_pinned_image_metadata(peaks=peaks())
+        assert current._failed and current._metadata_binding is None
+
+
+@pytest.mark.parametrize("change", ["engine", "snapshot", "summary"])
+def test_repeated_image_binding_cannot_rebase_or_hide_summary_tampering(
+    simulated, metadata_observer, change
+):
+    with manager(simulated) as current:
+        current.observe_pinned_image_metadata(peaks=peaks())
+        retained = current._metadata_binding
+        if change == "engine":
+            metadata_observer.receipt["engine_socket_peer_sha256"] = "b" * 64
+        elif change == "snapshot":
+            metadata_observer.receipt.update(
+                metadata_before_sha256="b" * 64, metadata_after_sha256="b" * 64
+            )
+        else:
+            metadata_observer.receipt["images"]["original"]["environment_entry_count"] += 1
+        with pytest.raises(session.LabSessionError, match="binding changed"):
+            current.observe_pinned_image_metadata(peaks=peaks())
+        assert current._failed and current._metadata_binding == retained
+
+
+def test_image_metadata_cross_thread_fork_and_use_after_exit_refuse_before_io(
+    simulated, metadata_observer, monkeypatch
+):
+    with manager(simulated) as current:
+        failures = []
+        before = list(simulated.calls)
+
+        def foreign():
+            try:
+                current.observe_pinned_image_metadata(peaks=peaks())
+            except session.LabSessionError:
+                failures.append(True)
+
+        worker = threading.Thread(target=foreign)
+        worker.start()
+        worker.join(timeout=5)
+        assert failures == [True] and simulated.calls == before
+        real_pid = session.os.getpid
+        monkeypatch.setattr(session.os, "getpid", lambda: current._creator_pid + 1)
+        with pytest.raises(session.LabSessionError, match="process"):
+            current.observe_pinned_image_metadata(peaks=peaks())
+        monkeypatch.setattr(session.os, "getpid", real_pid)
+        assert simulated.calls == before and metadata_observer.calls == 0
+    before = list(simulated.calls)
+    with pytest.raises(session.LabSessionError):
+        current.observe_pinned_image_metadata(peaks=peaks())
+    assert simulated.calls == before and metadata_observer.calls == 0
+
+
 def context():
     return lab.from_record(record())
 

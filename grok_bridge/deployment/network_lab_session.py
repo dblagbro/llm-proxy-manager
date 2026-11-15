@@ -20,6 +20,7 @@ from pathlib import PurePosixPath
 
 import network_lab_bootstrap as bootstrap
 import network_lab_capacity as capacity
+import network_lab_image_metadata as image_metadata
 import network_lab_storage as storage
 
 SCHEMA = "grok-network-lab-observation-session-v1"
@@ -215,6 +216,7 @@ class _ObservationSession:
         self._guest_binding = None
         self._storage_binding = None
         self._bootstrap_binding = None
+        self._metadata_binding = None
         self._operation_binding = None
         self._used = self._active = self._failed = False
         self._owner = None
@@ -443,6 +445,59 @@ class _ObservationSession:
                 "operation_lock_held_at_observation": True,
                 "operation_lock_binding_sha256": self._operation_binding,
                 "execution_admission": False,
+            }
+        except BaseException:
+            self._failed = True
+            raise
+        finally:
+            self._refreshing = False
+
+    @_sanitized
+    def observe_pinned_image_metadata(self, *, peaks):
+        """Observe pinned configuration under this lock, independently of bootstrap.
+
+        Existing resources are neither inspected nor adopted. Counts/hashes are
+        metadata observations, not material, compatibility or execution approval.
+        """
+        detached = _peaks(peaks)
+        _require(os.getpid() == self._creator_pid, "Lab observation session cannot cross processes")
+        _require(
+            threading.get_ident() == self._owner,
+            "Lab observation session belongs to another controller",
+        )
+        _require(self._refreshing is False, "Lab observation refresh is already active")
+        self._refreshing = True
+        try:
+            before = self._refresh_observation(detached)
+            self._guard()
+            observed = image_metadata.collect(self._context, lab_binding=self._binding)
+            self._guard()
+            observed = image_metadata._validated_result(observed, self._context)
+            binding = (
+                observed["engine_socket_peer_sha256"],
+                observed["metadata_after_sha256"],
+                capacity._digest(observed["images"]),
+            )
+            _require(
+                self._metadata_binding is None or self._metadata_binding == binding,
+                "Observed image metadata binding changed during session",
+            )
+            after = self._refresh_observation(detached)
+            self._guard()
+            self._metadata_binding = binding
+            return {
+                "schema": SCHEMA,
+                "scope": "read_only_pinned_image_metadata_under_operation_lock",
+                "context_sha256": self._context_digest,
+                "guest_binding_sha256": capacity._digest(self._guest_binding),
+                "storage_before": before["storage_observation"],
+                "storage_after": after["storage_observation"],
+                "image_metadata_observation": observed,
+                "operation_lock_held_at_observation": True,
+                "operation_lock_binding_sha256": self._operation_binding,
+                "execution_admission": False,
+                "compatibility_verified": False,
+                "material_safety_verified": False,
             }
         except BaseException:
             self._failed = True

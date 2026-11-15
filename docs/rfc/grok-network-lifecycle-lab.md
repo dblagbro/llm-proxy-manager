@@ -802,3 +802,50 @@ receipts through reviewed CAS persistence, and satisfy the independent operator,
 VM/hypervisor, source/image, storage and runtime admission requirements. Existing
 production release, rollback, observer, backup and release-review gates are
 unchanged. This component does not complete the recovery harness.
+
+### Pinned image metadata observations (source preparation)
+
+`network_lab_image_metadata.collect(context, *, lab_binding)` observes only the
+three exact descriptor image pins through the existing fixed local Unix-socket
+transport. It validates and detaches the context and full binding before I/O.
+Two samples of engine information, three image inspections and engine information
+use ten allowlisted GETs under one shared 30-second HTTP deadline, with the
+existing shorter per-request, header, body and wire bounds. Root peer, socket,
+engine identity, exact image IDs and Linux/amd64 platform must remain consistent.
+Unlike bootstrap, this observation does not require or claim an empty engine.
+
+The full bounded image Config is hashed, including absent/null distinctions.
+The 13 reviewed ImageConfig fields and environment-entry syntax/types are checked,
+including duplicate environment names. Unknown fields refuse rather than being
+silently discarded. Configuration is bounded to 64 KiB serialized, 256-entry
+arrays/maps, 4 KiB strings, and bounded depth/node counts.
+Stable pin/platform/configuration projections must agree
+between samples; mutable repository tags and last-tag metadata are excluded.
+Receipts expose fixed hashes, counts and booleans rather than environment values,
+commands, labels, private paths or raw daemon errors. Well-formed nonempty volume,
+healthcheck and OnBuild declarations are facts to review, not compatibility
+approval. Empty image declarations do not prove the absence of runtime anonymous
+volumes or other filesystem effects. The Engine API describes ArgsEscaped as
+Windows-only command metadata: boolean true is retained and does not itself
+disqualify a Linux image; malformed types are refused.
+
+`session.observe_pinned_image_metadata(*, peaks)` surrounds collection with fresh
+storage observations while retaining the existing owner-process/thread, reentry,
+guest/boot and operation-lock guards. Failures latch the session closed. Repeated
+metadata observations have their own binding; the bootstrap binding and its
+empty-engine requirements remain separate. Results are detached observations,
+not journal updates or resource adoption. Matching samples and advisory locks do
+not reserve the engine or exclude changes between observations. The HTTP deadline
+does not impose a hard OS deadline on arbitrary filesystem calls.
+
+Every result keeps execution_admission, compatibility_verified and
+material_safety_verified false. Metadata does not inspect image filesystem
+contents, execute the supplied Python, prove supply-chain approval or establish
+resource ownership. Tests use synthetic transport responses and guarded-session
+fixtures; they do not establish actual guest admission or runtime compatibility.
+Production release/rollback, storage transport, bootstrap and auxiliary journal
+contracts remain unchanged. Secure materialization, durable receipt persistence,
+retained-object/volume continuity, context-aware lifecycle operations, the full
+recovery harness and independent VM/operator/release gates remain pending.
+
+Reference: [Docker Engine API v1.51 ImageConfig](https://docs.docker.com/reference/api/engine/version/v1.51/).
