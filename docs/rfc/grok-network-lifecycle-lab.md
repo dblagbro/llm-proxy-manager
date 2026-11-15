@@ -688,3 +688,53 @@ File materialization, seed installation, frozen-reference and probe fixtures,
 retained-resource admission, context-aware Host/capacity/snapshot/recovery and the
 full admitted harness remain unfinished. No existing production operator or lab
 observer changes in this increment; the draft remains unmerged and undeployed.
+
+
+## Auxiliary preservation/probe inputs (source preparation, 2026-11-15)
+
+`network_lab_auxiliary.auxiliary_fixture_inputs(context, lab_binding=...)` returns
+pure relative-path byte inputs for two separately owned Compose recipes, an idle
+probe script and a context-attributed reference seed. Full descriptor/binding
+consistency is required before and after construction. No environment, file,
+process, Docker, socket, journal or admission operation occurs in the generator.
+The initial working-service recipe and existing production/observation code remain
+unchanged. These inputs confer no creation, startup, replacement or cleanup scope.
+
+The preservation reference uses the exact original image pin, a separate Compose
+ownership tuple and an independently seeded local named volume mounted read-only
+with copy-up disabled. It uses network mode none, no published ports, restart no
+and disabled inherited healthchecks. Its explicit isolated Python entrypoint
+refuses execution with exit 78 before browser startup. The controller must still
+never start it: even a successful refusal records a violation of the never-started
+invariant. This is an original-image/synthetic-data preservation reference, not a
+replica of original runtime/configuration or a verified initialized-data snapshot.
+Sharing the working original volume would fail the existing exclusive-volume
+check, which includes stopped and created consumers.
+
+The separate probe recipe reuses the original image's Python with an explicit
+stdlib-only idle entrypoint, bypassing browser startup and disabling inherited
+healthchecks. It attaches only to the exact planned physical default network,
+never the dedicated network, with no published ports or reserved working aliases.
+That network's recipe declaration does not verify its runtime identity or grant
+adoption permission. Script/configuration binds stay inside the exact generation,
+read-only and with implicit host-path creation disabled. Named-volume backing is
+separately observed guest Docker storage. Resource settings are declarative only.
+
+No TCP measurement logic or arbitrary target override is provided. Later checks
+must bind fresh candidate ID, dedicated-network ID, literal candidate IP and
+reviewed ports. They need a positive control from the same probe and successful
+candidate reachability from an authorized member. DNS failure when the candidate
+leaves the default network is not evidence of TCP denial. Immutable container IDs,
+network/volume identities, configuration and seed hashes require a separate
+reviewed ownership ledger; existing strict release journals must not silently
+adopt auxiliary resources.
+
+Tests cover exact pins/names, full-binding refusal, detached deterministic outputs,
+separate ownership/volumes, entrypoint/healthcheck/network constraints and unchanged
+initial inputs. They validate the declared recipe and generated script contract,
+not Docker Compose resolution, image execution, live TCP or browser/provider
+acceptance. Inherited image configuration, including VOLUME/ENV metadata, is not
+inspected: an omitted recipe mount is not proof of absent anonymous image volumes.
+Materialization, seed installation, actual image/runtime compatibility, retained
+resource admission, context-aware lifecycle integration and the full admitted
+harness remain pending, along with VM/console and operator release requirements.
