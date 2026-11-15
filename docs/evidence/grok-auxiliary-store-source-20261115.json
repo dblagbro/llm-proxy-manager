@@ -1,0 +1,90 @@
+{
+  "schema": 1,
+  "kind": "separate_auxiliary_filesystem_store_source_preparation",
+  "based_on": "bd8ff17693bb5352afaff3c29fae6b8388ea5a36",
+  "scope": [
+    "Two new auxiliary file-store/module test files",
+    "Scoped Makefile lint inclusion",
+    "Maintained lifecycle RFC and sanitized source evidence"
+  ],
+  "source_sha256": {
+    "Makefile": "d2d7a113df42fa5d8f2030dbb9362a0956d46077312fd6d5da70985bde1fd2dd",
+    "docs/rfc/grok-network-lifecycle-lab.md": "e3236a78f36e1154e455969e9a326fe356ca5ca433bcc58fd3c77bcc8d39467b",
+    "grok_bridge/deployment/network_lab_auxiliary_store.py": "ca1b8635af074edc347070e813659d5d31c444e07f4139df93bcac87e149a350",
+    "grok_bridge/deployment/test_network_lab_auxiliary_store.py": "38679fb8c69509bbdd7f18de54ea0cc974005f31ad352beb31f35889a8dc692d",
+    "grok_bridge/deployment/release.py": "c310715cef0f9d95a9d7ae2402f95c339559b282dd3ebfd434bc7554bd0226f0"
+  },
+  "review": {
+    "kind": "Delegated release-engineering preparation and primary implementation/failure-boundary review",
+    "passed": true,
+    "existing_production_working_journals_unchanged": true,
+    "existing_storage_bootstrap_session_and_auxiliary_state_unchanged": true,
+    "nonregular_leaves_rejected_before_open": true,
+    "initial_no_clobber": true,
+    "cooperating_writers_only": true,
+    "uncertain_commit_has_no_advanced_receipt": true,
+    "caller_inputs_preserved": true
+  },
+  "checks": {
+    "linux_release_tests": 100,
+    "linux_network_tests": 1819,
+    "new_auxiliary_store_tests": 78,
+    "network_subtests": 201,
+    "linux_skipped": 0,
+    "scoped_lint": "passed",
+    "scoped_format": "passed",
+    "windows_focused_passed": 24,
+    "windows_skipped": 54,
+    "windows_skip_scope": "New Linux-only temporary descriptor/flock/rename mechanics"
+  },
+  "linux_run": {
+    "returncode": 0,
+    "elapsed_seconds": 22.24,
+    "log": "/tmp/codex-grok-auxiliary-store-pdvhs0pu.log",
+    "summaries": [
+      "100 passed, 1 warning in 2.18s",
+      "1819 passed, 1 warning, 201 subtests passed in 19.30s",
+      "All checks passed!",
+      "3 files already formatted",
+      "All checks passed!",
+      "44 files already formatted"
+    ],
+    "command": "make test-grok-release test-grok-network lint-grok-release lint-grok-network GROK_PYTHON=/var/backups/codex-remediation-20261109/workspace/grok-release-venv/bin/python"
+  },
+  "production_operator_changed": false,
+  "production_cli_and_gate_unchanged": true,
+  "execution_admission": false,
+  "lab_dispatch_available": false,
+  "lab_created": false,
+  "real_retained_store_invoked": false,
+  "full_harness_implemented": false,
+  "production_modified": false,
+  "deployed": false,
+  "merged": false,
+  "new_vulnerability_scan": false,
+  "accepted_fixture_repeated": false,
+  "limitations": [
+    "Tests use synthetic state and temporary Linux filesystems with narrowly simulated ownership/mount observations; no retained production generation or live lab was invoked.",
+    "Local ext4/xfs ancestry/mount checks are observed identity restrictions, not physical provenance; arbitrary filesystem syscalls are not wall-clock bounded.",
+    "The separate auxiliary flock coordinates cooperating writers. Compare then replace is not atomic content CAS against uncooperative/root writers.",
+    "Completed file/directory fsync and readback are not power-loss-tested recovery or independent off-site backup.",
+    "An unacknowledged publication yields no advanced receipt, retry, rollback or automatic recovery. Cold load only reports historical record consistency.",
+    "Persisting reported IDs does not establish attributable Docker creation, resource ownership, volume continuity or runtime permission.",
+    "Secure provisioning/materialization, attributable retained resources, interrupted-write and volume reconciliation, lifecycle operations and the complete recovery harness remain unfinished.",
+    "Disconnected VM/console, operator replacement scope, physical/material/runtime admission, global release/lint, H7/W16, Coordinator and private-backup gates remain open."
+  ],
+  "sources": [
+    {
+      "title": "Python descriptor-relative replacement",
+      "url": "https://docs.python.org/3.10/library/os.html#os.replace"
+    },
+    {
+      "title": "Linux rename flags",
+      "url": "https://man7.org/linux/man-pages/man2/rename.2.html"
+    },
+    {
+      "title": "File and directory fsync",
+      "url": "https://man7.org/linux/man-pages/man2/fsync.2.html"
+    }
+  ]
+}

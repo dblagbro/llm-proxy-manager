@@ -849,3 +849,69 @@ retained-object/volume continuity, context-aware lifecycle operations, the full
 recovery harness and independent VM/operator/release gates remain pending.
 
 Reference: [Docker Engine API v1.51 ImageConfig](https://docs.docker.com/reference/api/engine/version/v1.51/).
+
+### Auxiliary filesystem persistence (source preparation)
+
+`network_lab_auxiliary_store.py` implements a separate, bounded `load` / `save`
+API for the existing auxiliary state schema. It has no CLI, controller dispatch,
+Docker calls, provisioning or connection to the read-only observation session.
+The production and working release journals and their recovery gates remain
+unchanged. These are source and temporary-filesystem tests; the API has not been
+invoked on a real retained generation and does not admit a lab or deployment.
+
+The full context derives the one allowed generation below
+`/var/lib/codex-security-lab/grok-network-lifecycle/`. Ancestors and the private
+generation must already exist on writable local ext4/xfs. Held directory
+descriptors pin ancestry and mount observations. The four literal leaves are
+`auxiliary-state.lab.private.json`, `.auxiliary-state.lab.private.pending`,
+`.auxiliary-state.lab.lock`, and the prohibited opposite-mode
+`auxiliary-state.private.json`. The root-owned 0600 auxiliary lock must already
+exist and is acquired with a nonblocking exclusive flock. Future controllers
+must acquire the operation lock before this separate auxiliary lock. No lock is
+reopened inside the existing observation session, and no directory, permission,
+ACL or existing pending artifact is provisioned, changed, adopted or cleaned up.
+
+Initial publication accepts only an empty planned auxiliary state. Existing
+journals, pending leaves and opposite-mode leaves refuse initialization.
+Updates require a detached receipt bound to the actual current raw bytes, file
+identity, full context and transaction, followed by validation of exactly one
+event against the actual stored predecessor. Raw-file SHA-256 and the canonical
+predecessor digest have separate purposes; matching logical JSON does not make
+a stale raw-file receipt current. A receipt is a consistency condition, not a
+capability or proof of an attributable Docker create operation.
+
+Persistence uses a fixed exclusive no-follow pending file, a complete bounded
+write, file fsync, exact readback, directory fsync, repeated context/lock/current
+and pending checks, then descriptor-relative publication. Initial publication
+uses Linux `renameat2(RENAME_NOREPLACE)` and refuses unsupported behavior without
+an overwrite fallback. Updates use atomic replacement while holding the
+auxiliary lock. A further directory fsync and exact final readback precede the
+returned save receipt. Failed staging is retained. Failure once publication may
+have occurred returns an explicit uncertain-commit error without an advanced
+receipt, retry, write-back rollback or inferred success. Caller states and prior
+receipts remain unchanged.
+
+Cold `load` reports a validated historical record and a read receipt. It cannot
+claim that a prior save finished its fsync sequence, resume an external effect,
+attribute resource ownership or restore volume continuity. File and directory
+fsync completion is not a power-loss-tested recovery result or an off-site
+backup. The auxiliary flock coordinates cooperating writers: compare then
+replace is not atomic content CAS against an uncooperative or root writer, and
+observed ancestry/mount identity does not establish physical storage provenance.
+
+Tests use synthetic state and temporary Linux filesystem descriptors, real
+flock and rename operations, with narrowly simulated ownership/mount
+observations. They exercise bounds, no-clobber initialization, raw-byte and
+identity conflicts, one-event updates, retained pending files, and injected
+write/fsync/rename/readback failures. Windows tests explicitly skip Linux
+filesystem mechanics. No retained production path is a test target.
+
+Secure materialization, attributable retained resources, volume continuity and
+restart reconciliation, lifecycle integration and the full recovery harness
+remain unfinished. Disconnected VM/console access, operator scope and
+physical/material/runtime admission are still required. Global release/lint,
+H7/W16, Coordinator and private-backup gates remain open.
+
+Filesystem semantics reviewed against [Python descriptor-relative replacement](https://docs.python.org/3.10/library/os.html#os.replace),
+[Linux rename flags](https://man7.org/linux/man-pages/man2/rename.2.html), and
+[separate file/directory synchronization](https://man7.org/linux/man-pages/man2/fsync.2.html).
