@@ -998,3 +998,78 @@ release/lint, H7/W16, Coordinator and private-backup gates remain open.
 Reviewed API semantics: [Python directory-relative mkdir](https://docs.python.org/3.10/library/os.html#os.mkdir),
 [Linux exclusive/no-follow open](https://man7.org/linux/man-pages/man2/open.2.html),
 and [separate file/directory fsync](https://man7.org/linux/man-pages/man2/fsync.2.html).
+
+### Fixed synthetic seed-helper recipes (source preparation)
+
+`network_lab_seed.seed_helper_recipe(context, lab_binding=..., role=...)`
+prepares a detached Engine create recipe for exactly `working` or `reference`.
+Each role has a distinct helper/container-volume pairing and its own existing
+synthetic seed bytes. This is a pure recipe, not a transport, launcher, journal,
+volume observer or admission decision. Command-carried fixed script/data avoid
+changing the materializer's nine-file tree. Existing fixture generators,
+materializer, production and working journals remain unchanged.
+
+The helper declares a fixed absolute isolated Python entrypoint, explicit UID/GID,
+disabled inherited healthcheck, network `none`, no published ports or host binds,
+read-only root filesystem, all capabilities dropped, no-new-privileges, bounded
+resources/logging, restart `no` and auto-remove disabled. Its only writable mount
+is the role's exact named volume at `/data`, with `NoCopy=true`. It has no socket,
+provider credentials, caller-selected paths, payloads or commands. `/usr/bin/python3`
+is suggested by the maintained Dockerfile; compatibility with the actual original
+image pin remains unverified and required before execution.
+
+The fixed stdlib seed algorithm opens `/data` through a held directory descriptor,
+requires it empty, and exclusively creates the role's single exact 0600 seed leaf.
+It uses no-follow operations, bounded full writes, identity/membership checks,
+exact readback and file/directory synchronization before a bounded success report.
+It changes no existing ownership or modes. Nonempty volumes refuse, including a
+prior matching seed. Partial files remain retained on failure; there is no retry,
+overwrite, repair, adoption or cleanup. The report is a helper observation only.
+Exit zero and matching bytes cannot independently admit an operation or establish
+its creation history, crash durability, original data recovery or off-site backup.
+
+Before any future create/start, the admitted controller must inspect inherited
+image configuration and the resolved container mounts/configuration. Empty request
+fields do not necessarily clear inherited ENV or VOLUME declarations. Isolated
+Python flags do not validate the image filesystem or dynamic-loader environment.
+Unaccounted image-declared volume targets must refuse before creation. Docker's
+`NoCopy` controls copy-up; it does not prove that a named volume is fresh or prevent
+the engine from implicitly creating a missing named volume.
+
+Creation and startup need separately synchronized intents before their respective
+single Engine requests. The controller must bind returned full IDs to current
+same-engine inspections. Ambiguous outcomes retain evidence without retries or
+name-based adoption. Local volume creation may reuse an existing same-name volume;
+there is no ordinary local-volume immutable ID. Names, labels, timestamps and
+stored inspection hashes are insufficient. Independently admitted exclusive lab
+control, guest boot, socket/root peer and daemon-process continuity, plus held
+backing-directory/mount observations, remain necessary. Engine ID alone cannot
+restore lost continuity. Backing inspection is read-only; seeding uses Docker
+mounts, avoiding direct host writes into daemon-managed internal directories.
+
+After a fast helper exit, acceptance still requires the attributable retained ID,
+terminal status and independent bounded seed/directory reinspection with continuous
+control. Observing a running interval is not required. The helper remains retained
+as evidence. This creates an explicit integration dependency: the existing working
+release exclusivity check counts stopped consumers too. A future lab-only finite
+allowance must bind the exact helper ID, image/configuration/mount, accepted seed
+evidence and continuing stopped/restart-no state. Every other consumer still
+refuses; production exclusivity is unchanged. Exited status does not guarantee
+that another privileged actor cannot restart a helper.
+
+Auxiliary state v1 has no helper lifecycle or working-volume record. Its existing
+`seed_recorded` event must not silently acquire that meaning. Versioned intent,
+create/start/terminal evidence, persistence and continuity-loss reconciliation
+remain separate work. The reference uses its independent volume and must never
+start. No blanket stopped-container allowance or evidence deletion is proposed.
+
+Tests cover deterministic detached recipes and temporary Linux filesystem failure
+boundaries with narrow target/ownership simulation; Windows skips Linux mechanics.
+No real helper or retained volume is exercised. VM/console/operator scope,
+image/interpreter/runtime acceptance, full lifecycle integration, global release/
+lint, H7/W16, Coordinator and private-backup requirements remain open.
+
+References: [Engine API v1.51](https://docs.docker.com/reference/api/engine/version/v1.51/),
+[same-name volume reuse](https://docs.docker.com/reference/cli/docker/volume/create/),
+[Docker-managed volumes and NoCopy](https://docs.docker.com/engine/storage/volumes/),
+and [Python isolated invocation](https://docs.python.org/3/using/cmdline.html).
