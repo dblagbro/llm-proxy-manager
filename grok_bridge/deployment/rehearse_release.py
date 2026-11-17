@@ -97,6 +97,8 @@ def run(root, source):
         "original_image": r.ORIGINAL,
         "candidate_image": r.CANDIDATE,
         "nginx_image": NGINX_IMAGE,
+        # Advisory only: shared or temporary snapshot storage never blocks a rehearsal.
+        "storage_warnings": r.warn_snapshot_storage(root),
         "scenarios": [],
     }
 
