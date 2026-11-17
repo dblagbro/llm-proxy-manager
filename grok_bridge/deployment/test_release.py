@@ -1,17 +1,128 @@
 """Pure fixtures and simulated commands. Never invokes Docker, SSH or providers."""
 
+import contextlib
 import copy
 import io
 import json
 import os
 import sys
 import tarfile
+import urllib.error
+import urllib.request
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import rehearse_release as lifecycle
 import release as r
 import yaml
+
+
+class ProbeResponse(io.BytesIO):
+    def __init__(self, status, body):
+        super().__init__(body)
+        self.status = status
+
+
+def probe_host(monkeypatch, override=None):
+    """Execute the maintained in-container probe with synthetic HTTP only."""
+    token = "synthetic-machine-probe-token"
+    monkeypatch.setenv("BRIDGE_TOKEN", token)
+    monkeypatch.setattr(r.socket, "gethostname", lambda: "synthetic-probe-container")
+    monkeypatch.setattr(r.socket, "gethostbyname", lambda _: "192.0.2.9")
+    calls = []
+    responses = {
+        ("GET", "/healthz", None): (200, b'{"status":"ok"}'),
+        ("GET", "/api/status", None): (401, b'{"detail":"login required"}'),
+        ("GET", "/api/status", token): (401, b'{"detail":"login required"}'),
+        ("POST", "/api/chat", None): (401, b'{"detail":"invalid token"}'),
+        ("POST", "/api/chat", token + "-invalid-probe-value"): (401, b'{"detail":"invalid token"}'),
+        ("POST", "/api/chat", token): (400, b'{"detail":"conversation_id is required"}'),
+    }
+    if override:
+        responses.update(override(token))
+
+    class Opener:
+        def open(self, req, timeout):
+            assert timeout == 5
+            assert req.full_url.startswith("http://192.0.2.9:8443/")
+            assert not req.has_header("Cookie") and not req.has_header("Origin")
+            path = req.full_url.removeprefix("http://192.0.2.9:8443")
+            key = (req.get_method(), path, req.get_header("X-bridge-token"))
+            calls.append(key)
+            if req.get_method() == "POST":
+                assert path == "/api/chat" and req.data == b"{}"
+                assert req.get_header("Content-type") == "application/json"
+            else:
+                assert req.data is None
+            status, body = responses[key]
+            if status >= 400:
+                raise urllib.error.HTTPError(
+                    req.full_url, status, "synthetic", None, io.BytesIO(body)
+                )
+            return ProbeResponse(status, body)
+
+    def opener(*handlers):
+        assert len(handlers) == 2 and handlers[0].proxies == {}
+        assert isinstance(handlers[1], urllib.request.HTTPRedirectHandler)
+        assert handlers[1].redirect_request(None, None, None, None, None, None) is None
+        return Opener()
+
+    monkeypatch.setattr(urllib.request, "build_opener", opener)
+
+    class Host:
+        def run(self, args):
+            assert args[:5] == ["docker", "exec", "synthetic-exact-id", "python", "-c"]
+            assert len(args) == 6 and token not in args[5]
+            stream = io.StringIO()
+            with contextlib.redirect_stdout(stream):
+                # Execute our maintained literal with intercepted HTTP and no subprocess.
+                exec(compile(args[5], "<nonprovider-probe>", "exec"), {})  # noqa: S102
+            return stream.getvalue()
+
+    return Host(), calls
+
+
+def test_nonprovider_probe_accepts_final_machine_browser_separation(monkeypatch):
+    host, calls = probe_host(monkeypatch)
+    r.nonprovider_probe(host, {"Id": "synthetic-exact-id"})
+    assert len(calls) == 6
+    assert calls[-1] == ("POST", "/api/chat", "synthetic-machine-probe-token")
+
+
+def test_nonprovider_probe_rejects_old_token_browser_bypass(monkeypatch):
+    host, _ = probe_host(monkeypatch, lambda token: {("GET", "/api/status", token): (200, b"{}")})
+    with pytest.raises(AssertionError):
+        r.nonprovider_probe(host, {"Id": "synthetic-exact-id"})
+
+
+@pytest.mark.parametrize("status", [200, 401, 403, 500])
+def test_nonprovider_probe_rejects_missing_positive_machine_proof(monkeypatch, status):
+    host, _ = probe_host(monkeypatch, lambda token: {("POST", "/api/chat", token): (status, b"{}")})
+    with pytest.raises(AssertionError):
+        r.nonprovider_probe(host, {"Id": "synthetic-exact-id"})
+
+
+@pytest.mark.parametrize("body", [b"{}", b'{"detail":"some other error"}', b"[]", b"x" * 65537])
+def test_nonprovider_probe_requires_exact_early_validation_response(monkeypatch, body):
+    host, _ = probe_host(monkeypatch, lambda token: {("POST", "/api/chat", token): (400, body)})
+    with pytest.raises(AssertionError):
+        r.nonprovider_probe(host, {"Id": "synthetic-exact-id"})
+
+
+@pytest.mark.parametrize("which", ["status", "missing-token", "wrong-token"])
+def test_nonprovider_probe_rejects_anonymous_or_bad_token_success(monkeypatch, which):
+    def override(token):
+        keys = {
+            "status": ("GET", "/api/status", None),
+            "missing-token": ("POST", "/api/chat", None),
+            "wrong-token": ("POST", "/api/chat", token + "-invalid-probe-value"),
+        }
+        return {keys[which]: (200, b"{}")}
+
+    host, _ = probe_host(monkeypatch, override)
+    with pytest.raises(AssertionError):
+        r.nonprovider_probe(host, {"Id": "synthetic-exact-id"})
 
 
 @pytest.fixture(autouse=True)
@@ -528,3 +639,88 @@ def test_frozen_compose_values_prevent_second_secret_interpolation():
     assert frozen["services"]["bridge"]["environment"] == {"TOKEN": "synthetic$$VALUE", "N": 7}
     assert frozen["services"]["bridge"]["command"][1] == "$${SYNTHETIC}"
     assert original["services"]["bridge"]["environment"]["TOKEN"] == "synthetic$VALUE"
+
+
+def test_new_release_default_is_requested_nas_location():
+    assert r.BACKUPS.as_posix() == "/mnt/s/backups/codex-security-20261109/grok-releases"
+    assert r.LEGACY_BACKUPS.as_posix() == "/var/backups/codex-grok-releases"
+
+
+@pytest.mark.parametrize("mode", ["prepare", "deploy", "rollback"])
+def test_nas_release_path_allowed_and_parent_itself_refused(tmp_path, monkeypatch, mode):
+    monkeypatch.setattr(r, "BACKUPS", tmp_path / "nas")
+    r.validate_release_path(r.BACKUPS / "new-generation", mode)
+    with pytest.raises(r.Refused, match="dedicated"):
+        r.validate_release_path(r.BACKUPS, mode)
+
+
+@pytest.mark.parametrize("mode", ["prepare", "deploy"])
+def test_new_root_snapshot_generations_refused(tmp_path, monkeypatch, mode):
+    monkeypatch.setattr(r, "BACKUPS", tmp_path / "nas")
+    monkeypatch.setattr(r, "LEGACY_BACKUPS", tmp_path / "retained-local")
+    with pytest.raises(r.Refused, match="rollback-only"):
+        r.validate_release_path(r.LEGACY_BACKUPS / "retained-generation", mode)
+
+
+def test_legacy_rollback_path_still_allowed_without_relocating(tmp_path, monkeypatch):
+    monkeypatch.setattr(r, "BACKUPS", tmp_path / "nas")
+    monkeypatch.setattr(r, "LEGACY_BACKUPS", tmp_path / "retained-local")
+    r.validate_release_path(r.LEGACY_BACKUPS / "retained-generation", "rollback")
+    assert not r.LEGACY_BACKUPS.exists()
+
+
+def test_unmounted_nas_fails_closed(monkeypatch):
+    monkeypatch.setattr(r.os.path, "ismount", lambda _: False)
+    with pytest.raises(r.Refused, match="not mounted separately"):
+        r.require_nas_storage()
+
+
+@pytest.mark.parametrize("separate", [False, True])
+def test_nas_mount_must_not_resolve_to_root_filesystem(monkeypatch, separate):
+    monkeypatch.setattr(r.os.path, "ismount", lambda _: True)
+    monkeypatch.setattr(
+        Path,
+        "stat",
+        lambda p: SimpleNamespace(st_dev=2 if separate and p.as_posix() == "/mnt/s" else 1),
+    )
+    if separate:
+        r.require_nas_storage()
+    else:
+        with pytest.raises(r.Refused, match="root-filesystem"):
+            r.require_nas_storage()
+
+
+def lifecycle_roots(tmp_path, monkeypatch):
+    monkeypatch.setattr(lifecycle, "LEGACY_TEST_ROOT", tmp_path / "legacy")
+    monkeypatch.setattr(lifecycle, "NAS_TEST_ROOT", tmp_path / "nas")
+
+
+def test_lifecycle_allows_new_named_nas_and_legacy_attempts(tmp_path, monkeypatch):
+    lifecycle_roots(tmp_path, monkeypatch)
+    lifecycle.validate_attempt_root(lifecycle.NAS_TEST_ROOT / "grok-final-lifecycle-20261112t0900")
+    lifecycle.validate_attempt_root(lifecycle.LEGACY_TEST_ROOT / "old-ci-compatible")
+
+
+@pytest.mark.parametrize(
+    "suffix",
+    [
+        "unrelated",
+        "grok-final-lifecycle-",
+        "grok-final-lifecycle-UPPER",
+        "nested/grok-final-lifecycle-valid",
+    ],
+)
+def test_lifecycle_rejects_broad_or_nested_nas_paths(tmp_path, monkeypatch, suffix):
+    lifecycle_roots(tmp_path, monkeypatch)
+    with pytest.raises(AssertionError):
+        lifecycle.validate_attempt_root(lifecycle.NAS_TEST_ROOT / suffix)
+
+
+def test_lifecycle_refuses_existing_attempt_data(tmp_path, monkeypatch):
+    lifecycle_roots(tmp_path, monkeypatch)
+    path = lifecycle.NAS_TEST_ROOT / "grok-final-lifecycle-retained"
+    path.mkdir(parents=True)
+    (path / "keep.txt").write_text("prior evidence")
+    with pytest.raises(AssertionError, match="never reuse"):
+        lifecycle.validate_attempt_root(path)
+    assert (path / "keep.txt").read_text() == "prior evidence"

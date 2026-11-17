@@ -1,5 +1,11 @@
 # Grok release operator — staged, not deployed
 
+November 12 source preparation: the corrected non-provider authorization probe
+and NAS path validation have 64 passing local tests. These are source-only
+results, not a new Docker deployment/rollback acceptance. Final Grok runtime
+source at 8de8cd0 has 67 passing offline tests with the existing test environment.
+The historical real-Docker results below belong to the older recorded artifact.
+
 The maintained operator has 35 passing synthetic failure-path tests on Linux /
 Python 3.10. Guarded prepare also passed against the actual canonical Compose and
 complete Nginx configuration without changing production. The full isolated Docker
@@ -17,13 +23,21 @@ The repository's Grok release/lint policy remains unresolved; the requested gate
 - Only `llm-proxy2-grok-bridge` is stopped/recreated. No build, pull, stack-down,
   volume removal or Nginx restart exists in this operator.
 - Original image: `sha256:be048c4e54812ef811f14520a0fed1bc71486ad7619296b11c189d482846856e`.
-- Primary candidate: `sha256:2d6e56831b6c36dae36e4f775f9397bcf1ffb4a8dc8e9cb533434e85ab56e0c8`.
+- Primary candidate: `sha256:587311da177cc015292981a01649226c8b909e8310d74fdbab481175cb2b16e9`.
 - Original `/data` must be an exclusively consumed, writable Docker named volume.
   The candidate gets a separate, verified bind-directory restoration. The original
   volume, original image, archive, manifests and failed candidate data are retained.
-- Root-only transaction directory under `/var/backups/codex-grok-releases/`.
+- Root-only transaction directory under `/mnt/s/backups/codex-security-20261109/grok-releases/`.
   Inspect/configuration/log/manifest files can contain secrets or application
   filenames. Never copy them to GitHub, public reports or chat output.
+- New prepare/deploy operations require `/mnt/s` to be mounted on a filesystem
+  distinct from `/`; this prevents an unavailable NAS silently writing snapshots
+  onto root. The new directory must actually report root ownership and mode0700
+  before private inputs are written. No recursive permission changes are made.
+- Existing `/var/backups/codex-grok-releases/` generations remain in place and
+  remain valid rollback inputs. New prepare/deploy there is refused; a new NAS
+  generation must be prepared instead. Original configuration and volume paths
+  recorded by existing transactions are not rewritten or relocated.
 - Every non-Grok Compose service and top-level object must resolve identically.
   Bytes outside the Grok service block and its marked Nginx block are preserved.
   Existing environment/token and private.env are retained. Unrecorded changes
@@ -41,12 +55,16 @@ traversal, real restored-file hash checks, stop timeout recovery, missing servic
 after a failed Compose create, rollback after a failed probe, preservation of a
 concurrent edit, immutable ownership checks, and release-policy refusal.
 
-For the real Docker rehearsal, use a fresh directory directly under
-`/tmp/codex-remediate-20261109` on the primary host:
+For new real Docker rehearsals, use a resolved fresh direct child named
+`grok-final-lifecycle-<lowercase-suffix>` under
+`/mnt/s/backups/codex-security-20261109/` on the primary host. The suffix allows
+1–30 lowercase letters/digits/hyphens and starts with a letter or digit.
+The existing direct-child `/tmp/codex-remediate-20261109/` path remains supported
+for prior CI behavior; new operator-selected test snapshots/logs should use NAS.
 
 ```sh
 make test-grok-release-docker \
-  GROK_RELEASE_TEST_DIR=/tmp/codex-remediate-20261109/NEW-UNIQUE-ATTEMPT \
+  GROK_RELEASE_TEST_DIR=/mnt/s/backups/codex-security-20261109/grok-final-lifecycle-20261112t0900 \
   GROK_CAPACITY_GUARD=/absolute/path/to/capacity_guard.py \
   GROK_RELEASE_PYTHON=/absolute/path/to/isolated-venv/bin/python
 ```
@@ -60,6 +78,12 @@ writes cannot reach the original volume, restores all configuration bytes, and
 checks unrelated container IDs, image IDs, configuration hashes and mounts.
 Only newly owned containers/networks are removed. Synthetic volumes, snapshots
 and failed generations remain for inspection. Never reuse an attempt directory.
+NAS attempts also require the separate mount and root-only new directory checks.
+Docker-managed fixture containers/volumes still use Docker storage; only the
+explicit attempt directory, snapshots, restored copies and logs move to NAS.
+Verify NAS ownership, modes, symlinks, locking and profile behavior in the isolated
+rehearsal before treating this new location as compatible. Never widen permissions
+or alter an existing generation to get past a refusal.
 
 Production Docker metadata is read for invariants. Raw operator logs may contain
 private environment values from inspection: keep the entire attempt root-only
@@ -87,7 +111,7 @@ are placeholders and deliberately do not select a release timestamp automaticall
 ```sh
 sudo python3 /path/to/capacity_guard.py --peak-gib 1 -- \
   python3 /path/to/release.py prepare \
-  /var/backups/codex-grok-releases/REVIEWED-TRANSACTION \
+  /mnt/s/backups/codex-security-20261109/grok-releases/REVIEWED-TRANSACTION \
   --fragment /path/to/maintained/nginx.grok-bridge.conf
 ```
 
@@ -103,7 +127,7 @@ a root-only evidence JSON based on `release-evidence.example.json`:
 ```sh
 sudo python3 /path/to/capacity_guard.py --peak-gib 9 -- \
   python3 /path/to/release.py deploy \
-  /var/backups/codex-grok-releases/REVIEWED-TRANSACTION \
+  /mnt/s/backups/codex-security-20261109/grok-releases/REVIEWED-TRANSACTION \
   --release-evidence /root-only/location/grok-release-evidence.json
 ```
 
@@ -123,9 +147,10 @@ earlier preparation snapshot is never silently reused for cutover.
 The staged full Nginx check runs before stopping the original so upstream DNS is
 available. Configuration CAS happens after restore. Compose recreates only Grok,
 the exact candidate image/mount/environment/runtime limits are checked, local
-health and authenticated/anonymous status checks run, and live-mounted Nginx is
+health, anonymous/token-only status denial, and token-authenticated empty-chat
+validation checks run, and live-mounted Nginx is
 tested and reloaded. A30-second local soak checks identity, health and unrelated
-container IDs. These status checks do not send model prompts or create provider
+container IDs. These authorization checks do not send model prompts or create provider
 conversations. A normal production browser startup can still perform its existing
 Grok refresh traffic; this operator does not claim provider-network isolation.
 
@@ -141,7 +166,7 @@ Explicit rollback uses the same transaction directory:
 ```sh
 sudo python3 /path/to/capacity_guard.py --peak-gib 1 -- \
   python3 /path/to/release.py rollback \
-  /var/backups/codex-grok-releases/REVIEWED-TRANSACTION
+  /mnt/s/backups/codex-security-20261109/grok-releases/REVIEWED-TRANSACTION
 ```
 
 Only the recorded candidate ID can be stopped. Failed/unclean candidate shutdown
@@ -175,7 +200,7 @@ transaction. Start a new preparation only after the prior state is understood.
 - The archive validator conservatively refuses dangling, chained or parent-directory
   links rather than weakening restore containment. Unexpected valid profile layouts
   need reviewed handling, not an unchecked extraction fallback.
-- Local authenticated status is read through the container's LAN address. Public
+- Local health and authorization probes use the container's LAN address. Public
   HTTPS/admin browser tests, independent private-network verification, live provider
   readiness and a longer production soak remain separate acceptance tasks.
 - The gateway's inherited session-role demotion limitation and Chromium's existing

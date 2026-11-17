@@ -26,9 +26,10 @@ import yaml
 
 SERVICE = "llm-proxy2-grok-bridge"
 ORIGINAL = "sha256:be048c4e54812ef811f14520a0fed1bc71486ad7619296b11c189d482846856e"
-CANDIDATE = "sha256:2d6e56831b6c36dae36e4f775f9397bcf1ffb4a8dc8e9cb533434e85ab56e0c8"
+CANDIDATE = "sha256:587311da177cc015292981a01649226c8b909e8310d74fdbab481175cb2b16e9"
 ROOT = Path("/home/dblagbro/docker")
-BACKUPS = Path("/var/backups/codex-grok-releases")
+BACKUPS = Path("/mnt/s/backups/codex-security-20261109/grok-releases")
+LEGACY_BACKUPS = Path("/var/backups/codex-grok-releases")
 MARKER = "# ── from projects-locations.d/grok-bridge.conf ──"
 ENV_ADDITIONS = {
     "BRIDGE_PUBLIC_PATH": "/grok-bridge",
@@ -890,16 +891,32 @@ def assert_runtime(old, live, data, image, managed_environment=None):
 
 def nonprovider_probe(host, live):
     # Token is read inside the container, never interpolated in argv or logs.
-    script = """import os,urllib.request,urllib.error,socket
+    # Empty chat input is rejected before any browser/provider action. The exact
+    # detail distinguishes successful machine authentication from a generic 400.
+    script = """import json,os,urllib.request,urllib.error,socket
 base='http://'+socket.gethostbyname(socket.gethostname())+':8443'
-def get(path,token=None):
- r=urllib.request.Request(base+path,headers={'X-Bridge-Token':token} if token else {})
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+ def redirect_request(self,*args,**kwargs):return None
+opener=urllib.request.build_opener(urllib.request.ProxyHandler({}),NoRedirect())
+def request(path,token=None,body=None):
+ headers={'X-Bridge-Token':token} if token is not None else {}
+ if body is not None:headers['Content-Type']='application/json'
+ r=urllib.request.Request(base+path,headers=headers,data=body)
  try:
-  with urllib.request.urlopen(r,timeout=5) as response:return response.status
- except urllib.error.HTTPError as error:return error.code
-assert get('/healthz')==200
-assert get('/api/status')==401
-assert get('/api/status',os.environ['BRIDGE_TOKEN'])==200
+  with opener.open(r,timeout=5) as response:return response.status,response.read(65537)
+ except urllib.error.HTTPError as error:
+  with error:return error.code,error.read(65537)
+token=os.environ['BRIDGE_TOKEN']
+assert token and token.strip()
+assert request('/healthz')[0]==200
+assert request('/api/status')[0]==401
+assert request('/api/status',token)[0]==401
+assert request('/api/chat',body=b'{}')[0]==401
+wrong=token+'-invalid-probe-value'
+assert request('/api/chat',wrong,b'{}')[0]==401
+status,body=request('/api/chat',token,b'{}')
+assert status==400 and len(body)<=65536
+assert json.loads(body)=={'detail':'conversation_id is required'}
 print('nonprovider-probe-passed')
 """
     require(
@@ -1113,6 +1130,24 @@ def deploy(folder, state, host, evidence):
     return state
 
 
+def validate_release_path(folder, mode):
+    # New preparations/deploy snapshots stay on the requested NAS. Existing
+    # local generations remain available for rollback without moving any data.
+    roots = (BACKUPS, LEGACY_BACKUPS) if mode == "rollback" else (BACKUPS,)
+    require(
+        any(folder.is_relative_to(root) and folder != root for root in roots),
+        "Use a dedicated private NAS release directory (legacy paths are rollback-only)",
+    )
+
+
+def require_nas_storage():
+    nas = Path("/mnt/s")
+    require(
+        os.path.ismount(nas) and nas.stat().st_dev != Path("/").stat().st_dev,
+        "NAS is not mounted separately; refusing new root-filesystem snapshots",
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("mode", choices=("prepare", "deploy", "rollback"))
@@ -1122,17 +1157,20 @@ def main():
     args = parser.parse_args()
     os.umask(0o077)
     folder = args.release_dir.resolve()
-    require(
-        folder.is_relative_to(BACKUPS) and folder != BACKUPS,
-        "Use a dedicated private backup directory",
-    )
+    validate_release_path(folder, args.mode)
     with operation_lock():
+        if args.mode != "rollback":
+            require_nas_storage()
         if args.mode == "prepare":
             require(
                 args.fragment is not None and not folder.exists(),
                 "Prepare needs fragment and a new directory",
             )
             folder.mkdir(parents=True, mode=0o700)
+            require(
+                folder.stat().st_uid == 0 and stat.S_IMODE(folder.stat().st_mode) == 0o700,
+                "New release directory must be root-only before private inputs are saved",
+            )
             state = prepare(folder, args.fragment, Host(folder))
         else:
             require(

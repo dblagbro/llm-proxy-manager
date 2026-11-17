@@ -22,7 +22,9 @@ with httpx.Client(base_url=f'http://{HOST}:8443',timeout=10,trust_env=False) as 
         assert c.get(route,headers={'Cookie':'synthetic=user'}).status_code==403
         assert c.get(route,headers={'Cookie':'synthetic=admin'}).status_code==200
     checks['anonymous_denied_nonadmin_denied_admin_http_allowed']=True
-    assert c.get('/api/status',headers={'X-Bridge-Token':TOKEN}).status_code==200
+    assert c.get('/api/status',headers={'X-Bridge-Token':TOKEN}).status_code==401
+    machine=c.post('/api/chat',headers={'X-Bridge-Token':TOKEN},json={})
+    assert machine.status_code==400 and machine.json()=={'detail':'conversation_id is required'}
     assert c.post('/api/chat',headers={'X-Bridge-Token':'wrong'}).status_code==401
     assert c.post('/api/conversation/new',headers={'Cookie':'synthetic=admin','Origin':'https://wrong.example'}).status_code==403
     assert c.post('/api/login/start',headers={'Cookie':'synthetic=admin'}).status_code==403

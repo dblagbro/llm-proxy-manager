@@ -14,19 +14,25 @@ assert b"capacity_guard.py" in Path(f"/proc/{os.getppid()}/cmdline").read_bytes(
 assert not (W / "state.json").exists(), "Inspect the prior rehearsal before retrying"
 BRIDGE = (
     os.environ.get("GROK_TEST_IMAGE")
-    or "sha256:61ed90130f77b07b6ca2141fe65be303e77dd504480a7d967621e975f1c337db"
+    or "sha256:587311da177cc015292981a01649226c8b909e8310d74fdbab481175cb2b16e9"
 )
 GATEWAY = (
     os.environ.get("GROK_TEST_GATEWAY_IMAGE")
-    or "sha256:b800ef8a60893c713a6c5161a7716f4686aed731170c619a3eba6afc8913c961"
+    or "sha256:233b7c197bf012671079d0efe968b6b37b66cfd008c3fd2cdcbfc93c4e493932"
 )
 NGINX = (
     os.environ.get("GROK_TEST_NGINX_IMAGE")
-    or "sha256:997a3ffadcf7a956b6e9e71d3405c382377c2b16aba55ead1ea626000a3902c8"
+    or "sha256:67a10554437ff2017327a3ebb36c8a779f38a7f67f861980109c1cd81e133c4a"
 )
 for image in (BRIDGE, GATEWAY, NGINX):
     assert image.startswith("sha256:") and len(image) == 71
     assert all(c in "0123456789abcdef" for c in image[7:]), "Use verified immutable image IDs"
+    assert (
+        subprocess.check_output(
+            ["docker", "image", "inspect", image, "--format", "{{.Id}}"], text=True
+        ).strip()
+        == image
+    ), "Required immutable image is not present locally"
 NET = "codex-grok-browser-network"
 AUTH = "codex-grok-browser-auth"
 APP = "codex-grok-browser-app"

@@ -6,6 +6,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -14,6 +15,8 @@ import yaml
 OWNER = "com.codex.grok-release-rehearsal"
 NGINX_IMAGE = "sha256:67a10554437ff2017327a3ebb36c8a779f38a7f67f861980109c1cd81e133c4a"
 CREATED_ROOTS = set()
+LEGACY_TEST_ROOT = Path("/tmp/codex-remediate-20261109")
+NAS_TEST_ROOT = Path("/mnt/s/backups/codex-security-20261109")
 
 
 def command(args, timeout=240):
@@ -48,13 +51,31 @@ def sha(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
+def validate_attempt_root(root):
+    assert root == root.resolve(), "Use a resolved attempt directory"
+    assert not root.exists() and not root.is_symlink(), (
+        "Inspect prior rehearsal; never reuse its data"
+    )
+    assert root.parent == LEGACY_TEST_ROOT or (
+        root.parent == NAS_TEST_ROOT
+        and re.fullmatch(r"grok-final-lifecycle-[a-z0-9][a-z0-9-]{0,29}", root.name)
+    ), "Use a direct child of the legacy test root or a named NAS lifecycle attempt"
+
+
 def run(root, source):
     assert os.geteuid() == 0
     assert b"capacity_guard.py" in Path(f"/proc/{os.getppid()}/cmdline").read_bytes()
-    assert not root.exists(), "Inspect prior rehearsal; never reuse its data"
-    assert root.parent == Path("/tmp/codex-remediate-20261109")
+    validate_attempt_root(root)
+    if root.parent == NAS_TEST_ROOT:
+        nas = Path("/mnt/s")
+        assert os.path.ismount(nas) and nas.stat().st_dev != Path("/").stat().st_dev, (
+            "NAS is not mounted separately; refusing new root-filesystem test data"
+        )
     os.umask(0o077)
     root.mkdir(mode=0o700)
+    assert root.stat().st_uid == 0 and root.stat().st_mode & 0o777 == 0o700, (
+        "Attempt directory must be root-only before private inputs are saved"
+    )
     CREATED_ROOTS.add(root)
     operator = source / "grok_bridge/deployment/release.py"
     git = ["git", "-c", "safe.directory=" + str(source), "-C", str(source)]
