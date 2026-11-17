@@ -12,6 +12,7 @@ import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { CircuitBreakerBadge } from '@/components/providers/CircuitBreakerBadge'
 import { useToast } from '@/components/ui/Toast'
 import type { Provider } from '@/types'
+import { AttentionPanel } from '@/components/providers/AttentionPanel'
 import { ProviderModels } from '@/components/providers/ProviderModels'
 import { useAuth } from '@/context/AuthContext'
 import { formatTimeForUser } from '@/utils/time'
@@ -411,6 +412,8 @@ export function ProvidersPage() {
           <Button onClick={openCreate} size="sm"><Plus className="h-4 w-4 mr-1.5" />Add Provider</Button>
         </div>
       </div>
+
+      <AttentionPanel providers={providers} />
 
       <div className="flex items-center gap-3 flex-wrap">
         <div className="relative max-w-sm flex-1 min-w-[14rem]">

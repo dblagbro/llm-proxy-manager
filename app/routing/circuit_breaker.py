@@ -38,6 +38,10 @@ class _LocalState:
 
 _local_states: dict[str, _LocalState] = {}
 _lock = asyncio.Lock()
+# provider_id -> epoch of the last billing-class open. Lets the admin
+# "needs attention" view say WHY a breaker is held (the breaker itself only
+# stores timestamps). Cleared on force_close / genuine recovery.
+_billing_failed: dict[str, float] = {}
 _provider_overrides: dict[str, dict] = {}  # provider_id → {hold_down_sec, failure_threshold}
 
 
@@ -166,6 +170,7 @@ async def record_success(provider_id: str):
                 # streak/hold, so a provider that was auth-tripped and then
                 # succeeds does not carry a stale streak into the next blip.
                 clear_auth_failure(provider_id)
+                _billing_failed.pop(provider_id, None)
                 logger.info("circuit_breaker.closed", extra={"provider": provider_id})
                 _export_gauge(provider_id, s.state)
         elif s.state == CBState.CLOSED:
@@ -190,6 +195,7 @@ async def record_failure(provider_id: str, billing_error: bool = False):
             s.state = CBState.OPEN
             s.opened_at = now
             s.hold_down_until = now + 21600  # 6-hour hold for billing errors
+            _billing_failed[provider_id] = now
             logger.warning("circuit_breaker.billing_error", extra={"provider": provider_id})
             _export_gauge(provider_id, s.state)
             return
@@ -254,7 +260,13 @@ async def force_close(provider_id: str):
         # streak + map, so a reset after re-auth does not leave a latent streak
         # that would re-escalate on the next transient blip.
         clear_auth_failure(provider_id)
+        _billing_failed.pop(provider_id, None)
         _export_gauge(provider_id, s.state)
+
+
+def get_billing_failure(provider_id: str) -> float | None:
+    """Epoch of the last billing-class breaker open, or None."""
+    return _billing_failed.get(provider_id)
 
 
 def get_all_states() -> dict[str, dict]:
