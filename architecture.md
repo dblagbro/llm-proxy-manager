@@ -178,6 +178,10 @@ app/
 │   ├── providers.py             Core provider CRUD (list/get/create/update/delete + usage)
 │   ├── provider_lifecycle.py    Lifecycle ops (v3.9.8): clear-auth-failure, toggle,
 │   │                              release-manual-overrides, test, scan-models
+│   ├── provider_attention.py    Admin "needs attention" panel: GET /api/provider-attention
+│   │                              (classified breaker holds, per node) + POST
+│   │                              /api/provider-attention/{id}/retest (Test; resets this
+│   │                              node's breaker only on success). Logic: routing/attention.py
 │   ├── provider_capabilities.py Capability admin (v3.9.8): list/upsert/infer + _serialize_cap
 │   │                              (v3.1.0: was 1136 lines; OAuth flow endpoints
 │   │                              moved to providers_oauth.py — now 875 lines)

@@ -75,6 +75,7 @@ from app.api.memory_scoped import router as memory_scoped_router
 # Each owns its own APIRouter at the same /api/providers prefix; no path
 # collisions because the endpoints don't overlap.
 from app.api.provider_lifecycle import router as provider_lifecycle_router
+from app.api.provider_attention import router as provider_attention_router
 from app.api.provider_capabilities import router as provider_capabilities_router
 # v4.4.14: 4th sibling for the read-side / stats endpoints
 from app.api.providers_stats import router as providers_stats_router
@@ -804,6 +805,7 @@ app.include_router(blocked_ips_router)
 app.include_router(memory_admin_router)
 app.include_router(memory_scoped_router)
 app.include_router(provider_lifecycle_router)
+app.include_router(provider_attention_router)
 app.include_router(provider_capabilities_router)
 # providers_stats_router moved up to ensure it registers before providers_router (v5.8.4)
 app.include_router(compliance_router)  # v5.0.0 — compliance admin + user endpoints

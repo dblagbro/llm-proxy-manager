@@ -35,6 +35,21 @@ export const authApi = {
 }
 
 // ── Providers ─────────────────────────────────────────────────────────────────
+export interface AttentionItem {
+  provider_id: string
+  name: string
+  provider_type: string
+  reason: 'billing' | 'auth' | 'rate_limit' | 'logged_out' | 'unreachable'
+  breaker_state: string
+  retry_in_sec: number | null
+  billing_url: string | null
+  bridge_login_url: string | null
+  last_error: string | null
+  since: number | null
+  can_replace_key: boolean
+  can_retest: boolean
+}
+
 export const providersApi = {
   list:       ()                         => api.get<Provider[]>('/api/providers'),
   rollingStats: ()                       => api.get<Array<{
@@ -143,6 +158,10 @@ export const providersApi = {
   cursorOauthPollRotate: (id: string, data: { state: string }) =>
     api.post<Provider>(`/api/providers/${id}/cursor-oauth-poll-rotate`, data),
   // v2.8.0: clear the BUG-002 "needs re-auth" flag (admin asserts they fixed it)
+  // "Needs attention" panel (per-node): classified breaker holds + guided retest.
+  attention: () => api.get<{ items: AttentionItem[]; scope: string }>('/api/provider-attention'),
+  attentionRetest: (id: string) =>
+    api.post<{ success: boolean; reset: boolean; error?: string }>(`/api/provider-attention/${id}/retest`),
   clearAuthFailure: (id: string) =>
     api.post<{ ok: boolean }>(`/api/providers/${id}/clear-auth-failure`, {}),
   // v3.7.5 — Anthropic Console billing scrape admin endpoints
