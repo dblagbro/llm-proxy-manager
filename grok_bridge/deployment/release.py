@@ -18,6 +18,7 @@ import shutil
 import socket
 import stat
 import subprocess
+import sys
 import tarfile
 import time
 from pathlib import Path, PurePosixPath
@@ -37,6 +38,13 @@ ENV_ADDITIONS = {
     "BRIDGE_AUTH_URL": "http://llm-proxy2:3000/api/auth/me",
 }
 GIB = 1024**3
+NETWORK_FILESYSTEMS = frozenset({"nfs", "nfs4", "cifs", "smb3", "smbfs", "fuse.sshfs"})
+TEMPORARY_ROOTS = (Path("/tmp"), Path("/var/tmp"))
+STORAGE_RISK = (
+    "Snapshots may contain the bridge token and grok.com session cookies; anyone with "
+    "access to that location can read them. Prefer a local directory with mode 0700. "
+    "This is advisory only; the operation is not blocked."
+)
 
 
 class Refused(RuntimeError):
@@ -1148,6 +1156,102 @@ def require_nas_storage():
     )
 
 
+def _unescape_mount_field(value):
+    # /proc/mounts encodes space, tab, newline and backslash as octal escapes.
+    return re.sub(r"\\([0-7]{3})", lambda m: chr(int(m.group(1), 8)), value)
+
+
+def mount_for(path, mounts_text):
+    """Return (mount point, filesystem type) of the longest matching mount prefix."""
+    best = None
+    for line in mounts_text.splitlines():
+        fields = line.split()
+        if len(fields) < 3:
+            continue
+        point = Path(_unescape_mount_field(fields[1]))
+        if (path == point or path.is_relative_to(point)) and (
+            # Later entries shadow earlier ones mounted at the same point.
+            best is None or len(point.parts) >= len(best[0].parts)
+        ):
+            best = (point, fields[2])
+    return best
+
+
+def storage_warnings(path, mounts_text=None):
+    """Advisory findings about where snapshots live. Never raises, never refuses.
+
+    Returns [{"code": ..., "message": ...}]. Messages name locations and modes
+    only; file names and file contents are never included.
+    """
+    findings = []
+
+    def note(code, message):
+        findings.append({"code": code, "message": message})
+
+    try:
+        path = Path(path)
+        for root in TEMPORARY_ROOTS:
+            if path == root or path.is_relative_to(root):
+                note(
+                    "temporary_storage",
+                    f"snapshot location {path} is under {root}, a shared temporary directory",
+                )
+                break
+    except Exception:  # advisory only
+        pass
+    try:
+        if mounts_text is None:
+            mounts_text = Path("/proc/mounts").read_text()
+        found = mount_for(path, mounts_text)
+        if found and found[1].lower() in NETWORK_FILESYSTEMS:
+            note(
+                "network_filesystem",
+                f"snapshot location {path} is on a network filesystem "
+                f"({found[1]} mounted at {found[0]})",
+            )
+    except Exception:  # advisory only
+        pass
+    try:
+        info = os.lstat(path)
+        if stat.S_ISDIR(info.st_mode):
+            mode = stat.S_IMODE(info.st_mode)
+            if mode & 0o077:
+                note(
+                    "directory_group_or_world_accessible",
+                    f"snapshot directory {path} has mode {mode:04o}, "
+                    "which grants group or world access",
+                )
+            exposed = 0
+            with os.scandir(path) as entries:
+                for entry in entries:
+                    entry_mode = entry.stat(follow_symlinks=False).st_mode
+                    if not stat.S_ISLNK(entry_mode) and entry_mode & 0o044:
+                        exposed += 1
+            if exposed:
+                note(
+                    "files_group_or_world_readable",
+                    f"{exposed} top-level entr{'y' if exposed == 1 else 'ies'} in {path} "
+                    "are group- or world-readable",
+                )
+    except Exception:  # missing or unreadable: nothing to report, advisory only
+        pass
+    return findings
+
+
+def warn_snapshot_storage(path, mounts_text=None, stream=None):
+    """Print advisory warnings to stderr and return their codes. Never fails."""
+    try:
+        findings = storage_warnings(path, mounts_text)
+        for finding in findings:
+            print(
+                f"WARNING: Grok release {finding['message']}. {STORAGE_RISK}",
+                file=stream if stream is not None else sys.stderr,
+            )
+        return [finding["code"] for finding in findings]
+    except Exception:  # a warning must never change the outcome
+        return []
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("mode", choices=("prepare", "deploy", "rollback"))
@@ -1158,6 +1262,7 @@ def main():
     os.umask(0o077)
     folder = args.release_dir.resolve()
     validate_release_path(folder, args.mode)
+    warnings = warn_snapshot_storage(folder)
     with operation_lock():
         if args.mode != "rollback":
             require_nas_storage()
@@ -1198,6 +1303,7 @@ def main():
                     "phase": state["phase"],
                     "deployed": state["deployed"],
                     "provider_acceptance": False,
+                    "storage_warnings": warnings,
                 }
             )
         )

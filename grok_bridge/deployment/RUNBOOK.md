@@ -46,6 +46,30 @@ The repository's Grok release/lint policy remains unresolved; the requested gate
   retain the old inode after an atomic rename. Exact-byte CAS and advisory locks
   detect changes before writing; nginx is tested before reload.
 
+## Snapshot storage warning (advisory, non-blocking)
+
+Snapshots and transaction files may contain the bridge token and grok.com session
+cookies. The default location is an NFS share, and the rehearsal harness still
+accepts a `/tmp` attempt root; both are accepted for current development work.
+`release.py` (every mode) and `rehearse_release.py` therefore print one
+`WARNING:` line per finding on stderr and continue:
+
+- `temporary_storage` — the location is under `/tmp` or `/var/tmp`.
+- `network_filesystem` — the longest matching `/proc/mounts` entry is `nfs`, `nfs4`,
+  `cifs`, `smb3`, `smbfs` or `fuse.sshfs`. Anyone with access to that share (other
+  hosts, the NAS itself, its backups) can read the snapshots; root-only modes on a
+  `sec=sys` export are not a confidentiality boundary.
+- `directory_group_or_world_accessible` / `files_group_or_world_readable` — the
+  release directory, or top-level entries in it, grant group or world access.
+  Only a count is printed, never file names or contents.
+
+The same codes appear as `storage_warnings` in the operator's final JSON line and
+in the rehearsal `result.json`. A warning never changes a refusal, a phase or an
+exit code, and the existing root-only/mode-0700 refusals are unchanged. The fix
+is a local (non-network, non-temporary) directory with mode 0700; do not widen or
+recursively change permissions on an existing generation to silence a warning.
+Expect `network_filesystem` on every run against the default NAS location.
+
 ## Repeatable tests
 
 Install `requirements.txt`, pytest and ruff in an isolated development environment.
