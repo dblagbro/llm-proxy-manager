@@ -1,3 +1,27 @@
+# ✅ Live now — 2026-11-18 (v5.22.62, both nodes)
+
+**v5.22.62 deployed to tmrwww01 + tmrwww02** (rolling, tmrwww01 first; image built
+on tmrwww01 and copied to tmrwww02 with `docker save | docker load`; each node
+verified `/health` 5.22.62, healthy, 7/7 providers right after the recreate).
+Contents: PR #23 provider "Needs attention" panel (`/api/provider-attention`,
+admin-only, per-node) and PR #22 non-blocking Grok release snapshot storage warning.
+Tested: CI green; inside the py3.13 image, focused tests 49 passed, full unit
+suite 4154 passed / 4 failed (environment-only: read-only mount, host backup copy,
+no playwright in the prod image); grok release tests 87 passed.
+Rollback tags per node: `llm-proxy2:rollback-5.22.61-pre62`. Pre-deploy DB backups:
+`/home/dblagbro/backups/llmproxy-www{1,2}-pre62-20261117T171747.db`.
+
+**Also changed 2026-11-17 (ops, not code):**
+- `USAGE_RESET_ADVISOR_ENABLED=true`, `USAGE_RESET_ADVISOR_FABLE_MIN_PP=20` in both
+  nodes' compose (advisor worker reports ok).
+- Grok bridge rebuilt from main (incl. PR #17) on tmrwww01; `.env` BRIDGE_TOKEN aligned
+  to the token already in use (no rotation). Bridge needs an operator grok.com login.
+- nginx (both nodes): off-LAN browsers hard-refreshing `/llm-proxy2/metrics` now get the
+  SPA page instead of 403; Prometheus text stays LAN-only.
+- tmrwww02 compose: dormant `llm-proxy2-smoke` service removed (volumes kept).
+
+---
+
 # ✅ Live now — 2026-11-13 (v5.22.61, both nodes)
 
 **v5.22.61 deployed to tmrwww01 + tmrwww02** (rolling, peer-first; each node
