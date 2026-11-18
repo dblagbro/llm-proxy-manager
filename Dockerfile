@@ -44,7 +44,10 @@ COPY --from=frontend-build /ui/dist ./frontend/dist
 RUN addgroup --gid 1001 appgroup && \
     adduser --uid 1001 --gid 1001 --no-create-home --disabled-password appuser && \
     mkdir -p /app/logs /app/data && \
-    chown -R appuser:appgroup /app/logs /app/data
+    chown -R appuser:appgroup /app/logs /app/data && \
+    # Source copied from the NFS tree can arrive without world r/x (dirs created
+    # with mode 0774); the non-root runtime user must be able to read all code.
+    chmod -R a+rX /app/app /app/alembic /app/tools /app/docs /app/frontend/dist
 
 USER appuser
 
