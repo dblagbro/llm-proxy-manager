@@ -3,6 +3,7 @@
 This is resource telemetry (VRAM/RAM/ollama ps), not MCP
 capability-signalling back-pressure (docs/5.10).
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -140,14 +141,16 @@ def test_snapshot_as_api_shape():
     snap = HostSnapshot(
         enabled=True,
         ts=1.0,
-        gpus=[GpuSnapshot(
-            accelerator_id="local-gpu-0",
-            name="RTX PRO 500",
-            vram_total_mb=6113,
-            vram_used_mb=5500,
-            vram_free_mb=613,
-            source="nvml",
-        )],
+        gpus=[
+            GpuSnapshot(
+                accelerator_id="local-gpu-0",
+                name="RTX PRO 500",
+                vram_total_mb=6113,
+                vram_used_mb=5500,
+                vram_free_mb=613,
+                source="nvml",
+            )
+        ],
         ram_total_mb=32000,
         ram_available_mb=10000,
         ollama_ok=True,
@@ -164,12 +167,14 @@ def test_observe_local_accelerator_never_raises():
     from app.observability.prometheus import observe_local_accelerator
 
     observe_local_accelerator(SimpleNamespace(enabled=False))
-    observe_local_accelerator(HostSnapshot(
-        enabled=True,
-        ts=0,
-        gpus=[GpuSnapshot("local-gpu-0", "x", vram_used_mb=100)],
-        ram_available_mb=8000,
-    ))
+    observe_local_accelerator(
+        HostSnapshot(
+            enabled=True,
+            ts=0,
+            gpus=[GpuSnapshot("local-gpu-0", "x", vram_used_mb=100)],
+            ram_available_mb=8000,
+        )
+    )
 
 
 def test_router_mounted_in_main():

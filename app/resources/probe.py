@@ -11,6 +11,7 @@ poll does not shell out on every request.
 Gated by ``LOCAL_ACCEL_ENABLED``. When false this is a complete no-op
 (G6 in the 5.23 spec): no subprocess, no HTTP, no Prometheus writes.
 """
+
 from __future__ import annotations
 
 import logging
@@ -20,7 +21,7 @@ import sys
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import httpx
 
@@ -29,7 +30,7 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 # Snapshot cache. Tests reset via ``reset_probe_cache()``.
-_CACHE: tuple[float, "HostSnapshot"] | None = None
+_CACHE: tuple[float, HostSnapshot] | None = None
 _LOGGED_MISSING: set[str] = set()
 
 
@@ -37,17 +38,17 @@ _LOGGED_MISSING: set[str] = set()
 class GpuSnapshot:
     accelerator_id: str
     name: str
-    vram_total_mb: Optional[int] = None
-    vram_used_mb: Optional[int] = None
-    vram_free_mb: Optional[int] = None
+    vram_total_mb: int | None = None
+    vram_used_mb: int | None = None
+    vram_free_mb: int | None = None
     source: str = "none"  # nvml | nvidia-smi | configured | none
 
 
 @dataclass
 class OllamaResident:
     name: str
-    size_mb: Optional[int] = None
-    size_vram_mb: Optional[int] = None
+    size_mb: int | None = None
+    size_vram_mb: int | None = None
 
 
 @dataclass
@@ -55,10 +56,10 @@ class HostSnapshot:
     enabled: bool
     ts: float
     gpus: list[GpuSnapshot] = field(default_factory=list)
-    ram_total_mb: Optional[int] = None
-    ram_available_mb: Optional[int] = None
-    swap_total_mb: Optional[int] = None
-    swap_used_mb: Optional[int] = None
+    ram_total_mb: int | None = None
+    ram_available_mb: int | None = None
+    swap_total_mb: int | None = None
+    swap_used_mb: int | None = None
     swap_rate_known: bool = False
     ollama_ok: bool = False
     ollama_models: list[OllamaResident] = field(default_factory=list)
@@ -79,7 +80,10 @@ def _cache_ttl_sec() -> float:
 
 
 def _ollama_url() -> str:
-    return str(getattr(settings, "local_accel_ollama_url", "http://127.0.0.1:11434") or "http://127.0.0.1:11434")
+    return str(
+        getattr(settings, "local_accel_ollama_url", "http://127.0.0.1:11434")
+        or "http://127.0.0.1:11434"
+    )
 
 
 def _configured_vram_total_mb() -> int:
@@ -93,7 +97,7 @@ def _log_missing_once(key: str, msg: str) -> None:
     logger.info(msg)
 
 
-def _bytes_to_mb(n: int | float | None) -> Optional[int]:
+def _bytes_to_mb(n: int | float | None) -> int | None:
     if n is None:
         return None
     return int(n) // (1024 * 1024)
@@ -117,19 +121,25 @@ def _probe_nvml() -> list[GpuSnapshot]:
         for i in range(count):
             handle = pynvml.nvmlDeviceGetHandleByIndex(i)
             raw_name = pynvml.nvmlDeviceGetName(handle)
-            name = raw_name.decode("utf-8", "replace") if isinstance(raw_name, bytes) else str(raw_name)
+            name = (
+                raw_name.decode("utf-8", "replace")
+                if isinstance(raw_name, bytes)
+                else str(raw_name)
+            )
             mem = pynvml.nvmlDeviceGetMemoryInfo(handle)
             total = _bytes_to_mb(mem.total)
             used = _bytes_to_mb(mem.used)
             free = _bytes_to_mb(mem.free)
-            out.append(GpuSnapshot(
-                accelerator_id=f"local-gpu-{i}",
-                name=name,
-                vram_total_mb=total,
-                vram_used_mb=used,
-                vram_free_mb=free,
-                source="nvml",
-            ))
+            out.append(
+                GpuSnapshot(
+                    accelerator_id=f"local-gpu-{i}",
+                    name=name,
+                    vram_total_mb=total,
+                    vram_used_mb=used,
+                    vram_free_mb=free,
+                    source="nvml",
+                )
+            )
     except Exception:
         return []
     finally:
@@ -140,7 +150,7 @@ def _probe_nvml() -> list[GpuSnapshot]:
     return out
 
 
-def _nvidia_smi_path() -> Optional[str]:
+def _nvidia_smi_path() -> str | None:
     found = shutil.which("nvidia-smi")
     if found:
         return found
@@ -183,14 +193,16 @@ def _probe_nvidia_smi() -> list[GpuSnapshot]:
             total, used, free = int(float(parts[1])), int(float(parts[2])), int(float(parts[3]))
         except ValueError:
             continue
-        out.append(GpuSnapshot(
-            accelerator_id=f"local-gpu-{i}",
-            name=parts[0],
-            vram_total_mb=total,
-            vram_used_mb=used,
-            vram_free_mb=free,
-            source="nvidia-smi",
-        ))
+        out.append(
+            GpuSnapshot(
+                accelerator_id=f"local-gpu-{i}",
+                name=parts[0],
+                vram_total_mb=total,
+                vram_used_mb=used,
+                vram_free_mb=free,
+                source="nvidia-smi",
+            )
+        )
     return out
 
 
@@ -205,14 +217,16 @@ def _probe_gpus() -> tuple[list[GpuSnapshot], list[str]]:
     configured = _configured_vram_total_mb()
     if configured > 0:
         _log_missing_once("nvml", "NVML/nvidia-smi unavailable; using LOCAL_ACCEL_VRAM_TOTAL_MB")
-        return [GpuSnapshot(
-            accelerator_id="local-gpu-0",
-            name="configured",
-            vram_total_mb=configured,
-            vram_used_mb=None,
-            vram_free_mb=None,
-            source="configured",
-        )], ["vram_source=configured"]
+        return [
+            GpuSnapshot(
+                accelerator_id="local-gpu-0",
+                name="configured",
+                vram_total_mb=configured,
+                vram_used_mb=None,
+                vram_free_mb=None,
+                source="configured",
+            )
+        ], ["vram_source=configured"]
     _log_missing_once("nvml", "NVML and nvidia-smi unavailable; VRAM fields omitted")
     return [], ["vram_unavailable"]
 
@@ -220,7 +234,7 @@ def _probe_gpus() -> tuple[list[GpuSnapshot], list[str]]:
 # ── RAM / swap ───────────────────────────────────────────────────────────────
 
 
-def _ram_via_psutil() -> Optional[tuple[int, int, Optional[int], Optional[int]]]:
+def _ram_via_psutil() -> tuple[int, int, int | None, int | None] | None:
     try:
         import psutil  # type: ignore
     except Exception:
@@ -238,7 +252,7 @@ def _ram_via_psutil() -> Optional[tuple[int, int, Optional[int], Optional[int]]]
         return None
 
 
-def _ram_via_proc_meminfo() -> Optional[tuple[int, int, Optional[int], Optional[int]]]:
+def _ram_via_proc_meminfo() -> tuple[int, int, int | None, int | None] | None:
     path = Path("/proc/meminfo")
     if not path.is_file():
         return None
@@ -262,11 +276,18 @@ def _ram_via_proc_meminfo() -> Optional[tuple[int, int, Optional[int], Optional[
         return None
     swap_total = kv.get("SwapTotal")
     swap_free = kv.get("SwapFree")
-    swap_used = (swap_total - swap_free) if swap_total is not None and swap_free is not None else None
-    return total_kb // 1024, avail_kb // 1024, (swap_total // 1024 if swap_total is not None else None), swap_used
+    swap_used = (
+        (swap_total - swap_free) if swap_total is not None and swap_free is not None else None
+    )
+    return (
+        total_kb // 1024,
+        avail_kb // 1024,
+        (swap_total // 1024 if swap_total is not None else None),
+        swap_used,
+    )
 
 
-def _ram_via_windows() -> Optional[tuple[int, int, Optional[int], Optional[int]]]:
+def _ram_via_windows() -> tuple[int, int, int | None, int | None] | None:
     if sys.platform != "win32":
         return None
     try:
@@ -302,7 +323,7 @@ def _ram_via_windows() -> Optional[tuple[int, int, Optional[int], Optional[int]]
         return None
 
 
-def _probe_ram() -> tuple[Optional[int], Optional[int], Optional[int], Optional[int], list[str]]:
+def _probe_ram() -> tuple[int | None, int | None, int | None, int | None, list[str]]:
     degraded: list[str] = []
     for fn in (_ram_via_psutil, _ram_via_windows, _ram_via_proc_meminfo):
         got = fn()
@@ -333,11 +354,15 @@ async def _probe_ollama_ps(base_url: str) -> tuple[list[OllamaResident], list[st
             continue
         size = m.get("size")
         size_vram = m.get("size_vram")
-        models.append(OllamaResident(
-            name=name,
-            size_mb=_bytes_to_mb(size) if isinstance(size, (int, float)) else None,
-            size_vram_mb=_bytes_to_mb(size_vram) if isinstance(size_vram, (int, float)) else None,
-        ))
+        models.append(
+            OllamaResident(
+                name=name,
+                size_mb=_bytes_to_mb(size) if isinstance(size, (int, float)) else None,
+                size_vram_mb=_bytes_to_mb(size_vram)
+                if isinstance(size_vram, (int, float))
+                else None,
+            )
+        )
     return models, [], True
 
 
@@ -389,6 +414,7 @@ async def collect_snapshot(*, force: bool = False) -> HostSnapshot:
 def _publish_metrics(snap: HostSnapshot) -> None:
     try:
         from app.observability.prometheus import observe_local_accelerator
+
         observe_local_accelerator(snap)
     except Exception:
         pass
@@ -398,33 +424,37 @@ def snapshot_as_api(snap: HostSnapshot) -> dict[str, Any]:
     """Shape returned by ``GET /api/local/accelerators``."""
     accelerators = []
     for gpu in snap.gpus:
-        accelerators.append({
-            "id": gpu.accelerator_id,
-            "name": gpu.name,
-            "state": "observed",
-            "vram_total_mb": gpu.vram_total_mb,
-            "vram_used_mb": gpu.vram_used_mb,
-            "vram_free_mb": gpu.vram_free_mb,
-            "source": gpu.source,
-            "resident_models": [
-                {"name": m.name, "size_mb": m.size_mb, "size_vram_mb": m.size_vram_mb}
-                for m in snap.ollama_models
-            ],
-        })
+        accelerators.append(
+            {
+                "id": gpu.accelerator_id,
+                "name": gpu.name,
+                "state": "observed",
+                "vram_total_mb": gpu.vram_total_mb,
+                "vram_used_mb": gpu.vram_used_mb,
+                "vram_free_mb": gpu.vram_free_mb,
+                "source": gpu.source,
+                "resident_models": [
+                    {"name": m.name, "size_mb": m.size_mb, "size_vram_mb": m.size_vram_mb}
+                    for m in snap.ollama_models
+                ],
+            }
+        )
     if snap.enabled and not accelerators:
-        accelerators.append({
-            "id": "local-gpu-0",
-            "name": "unknown",
-            "state": "unobserved",
-            "vram_total_mb": None,
-            "vram_used_mb": None,
-            "vram_free_mb": None,
-            "source": "none",
-            "resident_models": [
-                {"name": m.name, "size_mb": m.size_mb, "size_vram_mb": m.size_vram_mb}
-                for m in snap.ollama_models
-            ],
-        })
+        accelerators.append(
+            {
+                "id": "local-gpu-0",
+                "name": "unknown",
+                "state": "unobserved",
+                "vram_total_mb": None,
+                "vram_used_mb": None,
+                "vram_free_mb": None,
+                "source": "none",
+                "resident_models": [
+                    {"name": m.name, "size_mb": m.size_mb, "size_vram_mb": m.size_vram_mb}
+                    for m in snap.ollama_models
+                ],
+            }
+        )
     return {
         "enabled": snap.enabled,
         "ts": snap.ts,

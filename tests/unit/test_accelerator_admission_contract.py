@@ -4,11 +4,12 @@ No residency machine. Pins the wire shape so later slices do not fork
 a second refusal format. This is resource back-pressure, not MCP
 capability-signalling (docs/5.10).
 """
+
 from __future__ import annotations
 
 import pytest
 
-from app.resources.admission import Admit, AdmissionRequest, evaluate
+from app.resources.admission import AdmissionRequest, Admit, evaluate
 from app.resources.errors import ADMISSION_CONTRACT, resource_unavailable
 
 

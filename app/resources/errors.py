@@ -9,10 +9,11 @@ cannot physically serve. It is not MCP capability-signalling
 - **503** means the *host* cannot serve right now. Retry unchanged.
 Both always carry ``Retry-After``.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
 
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse
@@ -38,10 +39,10 @@ class ResourceUnavailable(Exception):
     message: str
     retry_after_sec: int
     accelerator: str = "local-gpu-0"
-    resident_model: Optional[str] = None
-    requested_model: Optional[str] = None
+    resident_model: str | None = None
+    requested_model: str | None = None
     queue_depth: int = 0
-    remedy: Optional[str] = None
+    remedy: str | None = None
     extra: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -90,7 +91,7 @@ def resource_unavailable(
     code: str,
     message: str,
     *,
-    retry_after_sec: Optional[int] = None,
+    retry_after_sec: int | None = None,
     **kwargs: Any,
 ) -> ResourceUnavailable:
     """Build a refusal using the spec table defaults when retry is omitted."""

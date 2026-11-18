@@ -7,10 +7,10 @@ No residency state machine and no request-pipeline hook yet. When
 The refusal *shape* lives in ``errors.py`` so later slices can wire
 ``select_provider_with_503`` without inventing a second 429/503 contract.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional, Union
 
 from app.config import settings
 from app.resources.errors import ResourceUnavailable, resource_unavailable
@@ -21,7 +21,7 @@ class Admit:
     """Serve now. No headers, no wait."""
 
 
-Decision = Union[Admit, ResourceUnavailable]
+Decision = Admit | ResourceUnavailable
 
 
 @dataclass
@@ -29,8 +29,8 @@ class AdmissionRequest:
     model: str
     accelerator_id: str = "local-gpu-0"
     requires_warm: bool = False
-    estimated_ram_mb: Optional[int] = None
-    estimated_vram_mb: Optional[int] = None
+    estimated_ram_mb: int | None = None
+    estimated_vram_mb: int | None = None
 
 
 def admission_enabled() -> bool:

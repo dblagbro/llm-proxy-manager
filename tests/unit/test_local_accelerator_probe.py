@@ -3,6 +3,7 @@
 No admission. Feature-flag off is a complete no-op. Missing NVML /
 nvidia-smi / Ollama degrade the snapshot instead of raising.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -28,6 +29,7 @@ class TestDisabledIsNoop:
     @pytest.mark.asyncio
     async def test_disabled_returns_empty_and_skips_probes(self, monkeypatch):
         from app.config import settings
+
         monkeypatch.setattr(settings, "local_accel_enabled", False)
 
         def _boom(*_a, **_k):
@@ -52,6 +54,7 @@ class TestFailSoft:
     @pytest.mark.asyncio
     async def test_missing_nvidia_smi_degrades_not_raises(self, monkeypatch):
         from app.config import settings
+
         monkeypatch.setattr(settings, "local_accel_enabled", True)
         monkeypatch.setattr(settings, "local_accel_vram_total_mb", 0)
         monkeypatch.setattr("app.resources.probe._probe_nvml", lambda: [])
@@ -78,6 +81,7 @@ class TestFailSoft:
     @pytest.mark.asyncio
     async def test_configured_vram_fallback(self, monkeypatch):
         from app.config import settings
+
         monkeypatch.setattr(settings, "local_accel_enabled", True)
         monkeypatch.setattr(settings, "local_accel_vram_total_mb", 6113)
         monkeypatch.setattr("app.resources.probe._probe_nvml", lambda: [])
@@ -103,17 +107,20 @@ class TestFailSoft:
     @pytest.mark.asyncio
     async def test_nvml_wins_over_nvidia_smi(self, monkeypatch):
         from app.config import settings
+
         monkeypatch.setattr(settings, "local_accel_enabled", True)
         monkeypatch.setattr(
             "app.resources.probe._probe_nvml",
-            lambda: [GpuSnapshot(
-                accelerator_id="local-gpu-0",
-                name="RTX PRO 500",
-                vram_total_mb=6113,
-                vram_used_mb=5500,
-                vram_free_mb=613,
-                source="nvml",
-            )],
+            lambda: [
+                GpuSnapshot(
+                    accelerator_id="local-gpu-0",
+                    name="RTX PRO 500",
+                    vram_total_mb=6113,
+                    vram_used_mb=5500,
+                    vram_free_mb=613,
+                    source="nvml",
+                )
+            ],
         )
 
         def _smi_must_not_run():
@@ -139,6 +146,7 @@ class TestCache:
     @pytest.mark.asyncio
     async def test_second_call_reuses_cache(self, monkeypatch):
         from app.config import settings
+
         monkeypatch.setattr(settings, "local_accel_enabled", True)
         monkeypatch.setattr(settings, "local_accel_probe_cache_sec", 30.0)
         calls = {"n": 0}
@@ -177,4 +185,5 @@ class TestApiShape:
 
     def test_observe_local_accelerator_disabled_is_noop(self):
         from app.observability.prometheus import observe_local_accelerator
+
         observe_local_accelerator(HostSnapshot(enabled=False, ts=1.0))

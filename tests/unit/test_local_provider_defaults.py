@@ -9,6 +9,7 @@ Pins the three traps in docs/5.23-local-accelerator-orchestration-backpressure-d
   provider (that engaged tool emulation instead of Qwen3-Coder native tools).
 - PROVIDER_DEFAULT_MODELS['ollama'] must not be the retired llama3 tag.
 """
+
 from __future__ import annotations
 
 import types
@@ -21,11 +22,17 @@ from app.routing.aliases import (
     effective_timeout_sec,
 )
 from app.routing.capability_inference import infer_capability_profile
-from app.routing.litellm_binding import PROVIDER_DEFAULT_MODELS, build_litellm_kwargs, build_litellm_model
+from app.routing.litellm_binding import (
+    PROVIDER_DEFAULT_MODELS,
+    build_litellm_kwargs,
+    build_litellm_model,
+)
 
 
 class _Prov:
-    def __init__(self, provider_type="ollama", timeout_sec=30, extra_config=None, owner_company=None):
+    def __init__(
+        self, provider_type="ollama", timeout_sec=30, extra_config=None, owner_company=None
+    ):
         self.provider_type = provider_type
         self.timeout_sec = timeout_sec
         self.extra_config = extra_config or {}
