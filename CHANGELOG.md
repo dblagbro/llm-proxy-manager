@@ -2,6 +2,18 @@
 
 All notable changes since v2.7.6. Older history available in `git log`.
 
+### v5.22.65 (2026-11-18)
+
+**Fix: a passing provider Test now clears the breaker.**
+
+- The provider card's Test button reported "Test OK" but left the circuit breaker
+  open, so a provider kept a 6 h billing hold (or auth hold) after the operator had
+  fixed it. Only the Needs-attention "re-test now" button reset it.
+  `POST /api/providers/{id}/test` now clears this node's breaker and auth-failure
+  mark when the test passes (`breaker_reset: true` in the response). Per-node: the
+  peer re-probes on its own.
+- Test: `tests/unit/test_v52265_test_resets_breaker.py`.
+
 ### v5.22.64 (2026-11-18)
 
 **Fix: Grok "Create new" gives a sign-in hint instead of blaming the bridge.**
