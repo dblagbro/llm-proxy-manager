@@ -1,3 +1,19 @@
+# ✅ Live now — 2026-11-18 (v5.22.63, both nodes)
+
+**v5.22.63 deployed to tmrwww01 + tmrwww02** (rolling, tmrwww01 first; image copied
+with `docker save | docker load`; each node healthy, 7/7, `/health` 5.22.63).
+Contents: the August local-provider PRs #2/#3/#4 rebased via PR #26 (Ollama cold-load
+defaults; read-only accelerator probe `GET /api/local/accelerators`, off by default;
+admission 429/503 skeleton, not wired). Fixes found while testing: Dockerfile now
+`chmod -R a+rX` on copied source (NFS-created `app/resources/` was 0774 and unreadable
+by appuser), and `app/api/providers.py` split (schemas -> `_provider_schemas.py`) to stay
+under the 800-LOC guard. Tested: CI green; full unit suite inside the py3.13 image
+4209 passed / 4 environment-only failures (same 4 as v5.22.62).
+Rollback tags: `llm-proxy2:rollback-5.22.62-pre63`. DB backups:
+`/home/dblagbro/backups/llmproxy-www{1,2}-pre63-*.db`.
+
+---
+
 # ✅ Live now — 2026-11-18 (v5.22.62, both nodes)
 
 **v5.22.62 deployed to tmrwww01 + tmrwww02** (rolling, tmrwww01 first; image built
