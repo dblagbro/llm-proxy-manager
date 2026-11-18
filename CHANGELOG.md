@@ -2,6 +2,29 @@
 
 All notable changes since v2.7.6. Older history available in `git log`.
 
+### v5.22.63 (2026-11-18)
+
+Lands the three August local-provider PRs (#2, #3, #4), rebased onto current main.
+None of them changes behaviour for the providers configured today (no Ollama rows;
+the accelerator features are off by default).
+
+**Fix: Ollama/self-hosted defaults that survive a cold load (PR #2).**
+- `timeout_sec` default for self-hosted/Ollama raised to 240 s at create/update and at
+  litellm bind (explicit values are kept), so a 30-90 s GGUF cold load no longer opens
+  the breaker. Ollama no longer forces `native_tools=False`; default model
+  `qwen2.5-coder:7b`. Test: `tests/unit/test_local_provider_defaults.py`.
+
+**Feature: read-only local accelerator telemetry (PR #3).**
+- `app/resources/probe.py` (NVML, nvidia-smi fallback, RAM via psutil//proc/meminfo,
+  Ollama residency), `GET /api/local/accelerators` (admin), Prometheus
+  `llmp_local_vram_used_bytes` / `llmp_local_ram_available_bytes`.
+  `LOCAL_ACCEL_ENABLED=false` (default) is a complete no-op. New dependency: psutil.
+
+**Skeleton: accelerator admission 429/503 contract (PR #4).**
+- `app/resources/admission.py` / `errors.py`: `Admit` vs `ResourceUnavailable`, 429 vs
+  503 + Retry-After mapping. Not wired into routing; with the flag off `evaluate()`
+  always admits.
+
 ### v5.22.62 (2026-11-17)
 
 **Feature: "Needs attention" panel for stuck providers (PR #23).**

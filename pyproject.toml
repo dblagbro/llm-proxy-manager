@@ -36,6 +36,7 @@ dependencies = [
     "anyio>=4.4.0",
     # Runtime security floors; keep requirements.txt aligned.
     "urllib3>=2.8.0,<3",
+    "psutil>=5.9.0",
 ]
 
 [project.optional-dependencies]

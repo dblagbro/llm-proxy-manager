@@ -49,10 +49,13 @@ def infer_capability_profile(
         profile.native_vision = True
 
     # Native tool support
-    # Ollama: most local models don't support function calling — default False
-    # Compatible: unknown endpoint — default False to be safe
+    # Compatible: unknown endpoint — default False to be safe.
+    # Ollama: modern local models (Qwen3-Coder, Llama 3.1+, Mistral) expose
+    # native tools via /api/chat. Default True so we don't force prompt
+    # emulation; the tool prober can flip False if a specific model fails.
     # Everything else (Anthropic, OpenAI, Google, Grok, Vertex): True
-    if provider_type in ("ollama", "compatible"):
+    # (CapabilityProfile.native_tools already defaults True).
+    if provider_type == "compatible":
         profile.native_tools = False
 
     # Provider-specific region defaults
@@ -73,5 +76,10 @@ def infer_capability_profile(
         profile.regions = ["local"]
         profile.cost_tier = "economy"
         profile.latency = "medium"
+        # Local GGUF context is RAM/VRAM-bound. The CapabilityProfile
+        # default of 128k would pass _capability_fit and then OOM a
+        # 6 GB / 32 GB laptop. 32k matches the reference envelope in
+        # docs/5.23-local-accelerator-orchestration-backpressure-design.md §8.
+        profile.context_length = 32768
 
     return profile

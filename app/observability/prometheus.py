@@ -195,6 +195,18 @@ OPENAI_RETRIES_TOTAL = Counter(
     ["endpoint"],  # /chat/completions | /messages | other
 )
 
+# v5.23 — local accelerator telemetry (read-only). Resource gauges, not
+# MCP capability-signalling back-pressure.
+LOCAL_VRAM_USED_BYTES = Gauge(
+    "llmp_local_vram_used_bytes",
+    "Observed VRAM used bytes per local accelerator (0 when unknown).",
+    ["accelerator"],
+)
+LOCAL_RAM_AVAILABLE_BYTES = Gauge(
+    "llmp_local_ram_available_bytes",
+    "Host RAM available bytes from the local accelerator probe.",
+)
+
 SERVICE_INFO = Info("llm_proxy_service", "Service metadata.")
 
 _CB_STATE_MAP = {"closed": 0, "half-open": 1, "open": 2}
@@ -308,6 +320,25 @@ def observe_db_pool_snapshot(size: int, checked_out: int, overflow: int) -> None
     DB_POOL_SIZE.set(size)
     DB_POOL_CHECKED_OUT.set(checked_out)
     DB_POOL_OVERFLOW.set(overflow)
+
+
+def observe_local_accelerator(snap) -> None:
+    """Publish VRAM/RAM gauges from a HostSnapshot. Never raises."""
+    try:
+        if not getattr(snap, "enabled", False):
+            return
+        for gpu in getattr(snap, "gpus", []) or []:
+            used_mb = getattr(gpu, "vram_used_mb", None)
+            if used_mb is None:
+                continue
+            LOCAL_VRAM_USED_BYTES.labels(
+                accelerator=getattr(gpu, "accelerator_id", "local-gpu-0"),
+            ).set(int(used_mb) * 1024 * 1024)
+        avail = getattr(snap, "ram_available_mb", None)
+        if avail is not None:
+            LOCAL_RAM_AVAILABLE_BYTES.set(int(avail) * 1024 * 1024)
+    except Exception:
+        pass
 
 
 def observe_scrape_freshness(provider_id: str, provider_name: str, source: str, age_sec: float) -> None:

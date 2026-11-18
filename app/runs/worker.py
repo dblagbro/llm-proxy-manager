@@ -250,7 +250,10 @@ async def _call_model_once(
         })
         await db.commit()  # flush event so SSE consumers see it before the call
 
-        deadline = _per_call_deadline_sec(route.provider.timeout_sec, run.deadline_ts)
+        from app.routing.aliases import effective_timeout_sec
+        deadline = _per_call_deadline_sec(
+            effective_timeout_sec(route.provider), run.deadline_ts
+        )
         kwargs = dict(route.litellm_kwargs or {})
         # R3: translate Anthropic-format tools to the provider's native shape
         # (or fall back to PBTC emulation if native_tools=false on this
