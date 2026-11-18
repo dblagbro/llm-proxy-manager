@@ -4,23 +4,48 @@ Pointer + quality-gate summary. The full strategy and case detail live in the ro
 and **`qa-notes.md`** — this file does not duplicate them.
 
 ## Layout
-- `tests/unit/` — ~329 files. Fast, hermetic-ish. Run: `make test` (`pytest tests/unit -v`).
-- `tests/integration/` — ~15 files, incl. Playwright UI (`test_playwright_ui.py`, runs against the
-  live `/llm-proxy2/`). Run: `make test-all` (`pytest tests/ -v`).
-- Known-red backlog: **`tests/known_failures.txt`** (64 pre-existing failures as of 2026-08-05).
-  Distinguish NEW regressions from these; do not grow the list.
+- `tests/unit/`: 378 test files (2026-11-18). Hermetic: no outbound connections, asserted in CI.
+  Run: `make test` (`pytest tests/unit -v`).
+- `tests/integration/`: 14 test files, incl. Playwright UI (`test_playwright_ui.py`). They skip
+  unless a target is chosen: `LLMPROXY_TEST_EPHEMERAL=1` boots a private throwaway instance
+  (`tests/_ephemeral.py`, what CI uses); `LLMPROXY_TEST_LIVE=1` + `LLMPROXY_TEST_BASE_URL=<url>`
+  aims at a real deployment on purpose. Nothing targets production by default (`tests/conftest.py`).
+- **`tests/known_failures.txt` is empty** (since v5.22.37) and must stay empty. Its header also
+  records the few tests that fail only inside the production image. Triage lists for the other
+  suites: `tests/known_integration_failures.txt`, `tests/known_ui_failures.txt`.
 
 ## How to run
 - Lint (must be clean): `make lint` (`ruff check` + `ruff format --check`).
 - Import smoke: `python -c "import app.main"`.
 - Focused area: `pytest tests/unit/test_<...>.py -q`.
 
-## CI gates (`.github/workflows/ci.yml`)
-- **Gating (blocks):** import smoke + 4 invariant/watchdog tests only. Narrow by design today.
-- **Non-gating (informational):** full unit suite (`continue-on-error`) — red until
-  `known_failures.txt` reaches zero, then promote to a required check.
-- Weakness tracked in `docs/current-state.md` + the recovery assessment. Strengthening the gate is
-  on the roadmap.
+## CI gates (`.github/workflows/`)
+`ci.yml` runs on every push to `main` and every pull request to `main`. All four jobs block
+(Python 3.13, `ubuntu-24.04`, pinned action versions):
+
+- **`guard`**: builds the frontend (`npm ci` + `npm run build`), import smoke
+  (`python -c "import app.main"`), the **full unit suite** (`pytest tests/unit -q`, blocking since
+  v5.22.38), then `tools/run_unit_suite_hermetic.py`, which fails the build on any connect to a
+  non-loopback address.
+- **`secrets`**: `tools/secret_scan.py` over tracked files, plus a check that no forbidden path
+  (`.env*`, key material, databases, dumps, `data/`, `backups/`) is tracked.
+- **`integration-ephemeral`**: `tests/integration` with `LLMPROXY_TEST_EPHEMERAL=1`, excluding the
+  browser-driven files and deselecting the entries in `tests/known_integration_failures.txt`; then
+  `tools/check_integration_hermetic.py`.
+- **`playwright-ui`**: builds the frontend, installs Chromium, runs
+  `tests/integration/test_playwright_ui.py` against the ephemeral instance (12-minute job cap,
+  120 s per-test timeout), deselecting the entries in `tests/known_ui_failures.txt`.
+
+Path-filtered workflows run only when their area (or the `Makefile`) changes:
+`gateway-offline-recovery.yml` (`make test-gateway-recovery lint-gateway-recovery`),
+`grok-bridge-security.yml` (`make test-grok lint-grok lint-grok-browser test-grok-release
+lint-grok-release`, plus a host-compatibility job), `whisper-runtime.yml` (`make lint-whisper
+build-whisper test-whisper`).
+
+Not in CI: `make lint` for the gateway (`app/`, `tests/`). The inherited lint findings are tracked
+debt (see `AGENTS.md`). Local checks that mirror CI: `make verify-ci` (unit suite on the image's
+Python 3.13), `make secret-scan`, and the `.githooks/` pre-commit and pre-push hooks
+(`make install-hooks`).
 
 ## Definition of done (see `AGENTS.md`)
 `make lint` clean · touched-area `make test` green with no new failures vs `known_failures.txt` ·

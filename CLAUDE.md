@@ -14,19 +14,20 @@
 
 - **MCP endpoint:** `https://www.voipguru.org/kb-mcp/mcp`
 - **Web UI:** `https://www.voipguru.org/gitea/dblagbro/projects-kb` (private — auth via Gitea)
-- **Local vault (on tmrwww01):** `/home/dblagbro/projects-kb/` (git-cloned)
+- **Local vault:** `/home/dblagbro/projects-kb/` is not present on tmrwww01 (checked 2026-11-18). Reach the KB through the MCP endpoint or Gitea only.
 
 **Highest-priority reads** — the `rules/` directory contains locked cross-project rules ("no writes to hub KB when in project role", "strict cluster separation", "no manufactured memos", etc.). Query them via the MCP `search` or `list_documents` tool at start of any non-trivial task.
 
 **Not to be confused with:** the coordinator-hub KB (`coordinator-kb` CLI). That's the hub team's territory for their remote bots. This KB is Devin's cross-project institutional knowledge for the projects he owns.
 
 ## What this is
-Python/FastAPI rewrite of llm-proxy v1. Served at `/llm-proxy2/` on 3 nodes via the main
+Python/FastAPI rewrite of llm-proxy v1. Served at `/llm-proxy2/` on 2 nodes (tmrwww01 primary, tmrwww02 backup) via the main
 nginx + docker-compose stack at `/home/dblagbro/docker/`.
 
 ## Current state
 **Live status is now maintained in `docs/current-state.md`** (version, branch/last-good-commit,
-what works/doesn't, active risks incl. the open DB-connection-hold leak, next actions). The old
+what works/doesn't, known gaps, next actions). The DB-connection-hold leak is resolved
+(v5.22.4; see `docs/current-state.md`). The old
 inline "v5.0.15" snapshot here had drifted badly (actual is v5.22.x) — do not trust a hardcoded
 version in this file; read `docs/current-state.md`.
 
@@ -37,7 +38,7 @@ version in this file; read `docs/current-state.md`.
 - Hub-team memo trail (historical context for v5.0.7): `docs/2026-06-04-reply-{1..5}-to-hub-team-*.md`.
 
 ## Deployment topology
-- **dev cluster (2 nodes):** `tmrwww01`, `tmrwww02`. Operator uses these for development; if proxy work breaks them, only dev users affected.
+- **cluster (2 nodes):** `tmrwww01` (primary), `tmrwww02` (backup). Operator uses these for development; if proxy work breaks them, only dev users affected.
 - **`c1conversations-avaya-01-s23` — DROPPED / OFF LIMITS until the operator explicitly says otherwise.**
   Not part of the cluster. Do not deploy, restart, or diagnose against it.
   ⚠️ **Its hostname does not reach it from tmrwww01.** It resolves to `24.168.14.36`
@@ -47,7 +48,6 @@ version in this file; read `docs/current-state.md`.
   has none.) On 2026-08-10 that cost a production outage and irreversible data loss.
   **Before any destructive action on a "remote" host, compare `hostname` AND
   `/etc/machine-id` against the local values.**
-- **smoke instance:** `llm-proxy2-smoke` container on tmrwww01, served at `/llm-proxy2-smoke/`. `CLUSTER_ENABLED=false`, separate DB, separate volume. Used as the sandbox for downstream teams (e.g., Coordinator Hub) to validate before promotion.
 - **production (downstream):** separate deployments operated by consumer teams (gov-compliance use case lives here). Pull QA'd Docker Hub image (`dblagbro/llm-proxy-manager:<version>`).
 
 ## Sidecars (in compose, isolated from each other)
@@ -64,7 +64,9 @@ version in this file; read `docs/current-state.md`.
   — it is overwritten on every run.** Building without staging first builds stale source.
 - `/home/dblagbro/llm-proxy-v2/` is the **pre-move copy — do not use.** On tmrwww01 its `.git`
   points at a worktree now registered elsewhere; on tmrwww02 that pointer is dangling
-  (orphaned, non-git copy) *and* tmrwww02's compose still builds from it. See `docs/current-state.md`.
+  (orphaned, non-git copy). See `docs/current-state.md`.
+- **tmrwww02 does not build from source.** Current practice: the image is built on tmrwww01
+  and copied to tmrwww02 with `docker save | docker load`, then the container is recreated there.
 - Docker compose: `/home/dblagbro/docker/docker-compose.yml` (container: `llm-proxy2`)
 - nginx location: `/home/dblagbro/docker/config/nginx/projects-locations.d/llm-proxy2.conf`
 - Frontend build output: `frontend/dist/` (built inside Docker image)
@@ -100,8 +102,10 @@ to resolve paths incorrectly.
 - `StaticFiles(html=True)` at root does NOT work for SPA routing — don't use it
 
 ## Testing
-- Integration tests: `python -m pytest tests/integration/test_playwright_ui.py -v`
-- Tests run against live deployment at https://www.voipguru.org/llm-proxy2/
+- Integration tests: `LLMPROXY_TEST_EPHEMERAL=1 python -m pytest tests/integration/test_playwright_ui.py -v`
+- `LLMPROXY_TEST_EPHEMERAL=1` boots a private throwaway instance for the run (`tests/_ephemeral.py`); this is what CI uses.
+  With no env set, every live test skips and `BASE_URL` is an unroutable sentinel (`tests/conftest.py`). Nothing targets
+  production by default. To aim at a real deployment on purpose, set `LLMPROXY_TEST_LIVE=1` and `LLMPROXY_TEST_BASE_URL=<url>`.
 - Install playwright first: `playwright install chromium`
 - Each test gets its own browser context (no shared cookie state between tests)
 

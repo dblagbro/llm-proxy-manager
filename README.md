@@ -32,8 +32,6 @@ Current version: **v5.22.13** (see [CHANGELOG.md](CHANGELOG.md))
 |------|-----|
 | tmrwww01 | https://www.voipguru.org/llm-proxy2/ |
 | tmrwww02 | https://www2.voipguru.org/llm-proxy2/ |
-| c1conversations-avaya-01-s23 | https://c1conversations-avaya-01.avaya.c1cx.com/llm-proxy2/ |
-| Joint-smoke target | https://www.voipguru.org/llm-proxy2-smoke/ (pinned version, hub-team test target) |
 
 **Default login on first boot**: `admin` / `admin` — change immediately after first login via the Users page.
 
@@ -46,7 +44,7 @@ Current version: **v5.22.13** (see [CHANGELOG.md](CHANGELOG.md))
 
 ## Quick Start (Docker)
 
-The service is in the main `docker-compose.yml` on all 3 nodes:
+The service is in the main `docker-compose.yml` on both nodes (tmrwww01, tmrwww02):
 
 ```bash
 sudo docker compose build llm-proxy2
@@ -235,7 +233,7 @@ Add a grok.com web subscription (Lite / Premium) as a provider without an xAI AP
 
 ## Cluster mode
 
-All 3 nodes sync users + API keys + providers + system settings + run state via HMAC-authenticated `/cluster/sync` POST calls. SQLite uses **WAL mode** (v3.0.3) so concurrent writers don't lock the DB. Each node maintains independent provider configurations; spending caps are enforced cluster-wide via per-peer cost tracking.
+Both nodes sync users + API keys + providers + system settings + run state via HMAC-authenticated `/cluster/sync` POST calls. SQLite uses **WAL mode** (v3.0.3) so concurrent writers don't lock the DB. Each node maintains independent provider configurations; spending caps are enforced cluster-wide via per-peer cost tracking.
 
 ```bash
 curl -b cookies.txt https://www.voipguru.org/llm-proxy2/cluster/status

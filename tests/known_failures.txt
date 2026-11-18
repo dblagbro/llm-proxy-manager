@@ -1,23 +1,43 @@
-# Known pre-existing unit-test failures — the #3 "get the suite green" backlog.
+# Known unit-test failures on a normal checkout: NONE. Keep this list empty.
 #
-# Snapshot: 2026-09-27 (after v5.22.29). 40 committed-test failures.
-# REFRESHED 2026-08-12: the previous header claimed 64 and the body listed 48,
-# while the suite actually failed 57 — so the list could neither be trusted as
-# a baseline nor used to detect a regression. Regenerated from an actual run.
+# Current truth (2026-11-18, v5.22.64):
+#   * tests/unit is fully green on a checkout and has been since v5.22.37
+#     (4216 passed, 4 skipped on the host on 2026-11-18).
+#   * The full unit suite is a BLOCKING CI check since v5.22.38
+#     (.github/workflows/ci.yml, job `guard`), together with a hermeticity
+#     guard. An entry added here does not make CI skip a test; CI runs
+#     `pytest tests/unit` without reading this file.
 #
-# These are NOT caused by recent work — they are accumulated drift from a
-# repo that has never had CI. Until this list reaches zero, the full unit
-# suite cannot be a required CI check.
-#
-# Regenerate with:
+# To list failures from a run:
 #   python -m pytest tests/unit -q 2>&1 | grep '^FAILED' \
 #     | sed 's/^FAILED //;s/ - .*//' | sort
-
-# v5.22.37 — EMPTY. The last six entries were the LOC-ceiling pins, cleared by
-# the db_provider / _messages_streaming / messages.py / completions.py splits.
-# tests/unit is fully green: 3972 passed, 0 failed.
 #
-# Keep it empty. An entry here is a test that reports a problem nobody reads;
-# over the v5.22.26-37 arc, clearing 75 of them turned up five real defects
-# (BUG-086 through BUG-091) plus a dozen guards that had silently stopped
-# testing anything. A red test is cheap; a parked one is not.
+# History: this file was the "get the suite green" backlog (57 real failures
+# on 2026-08-12, 40 on 2026-09-27). The last six entries were the LOC-ceiling
+# pins, cleared in v5.22.37 by the db_provider / _messages_streaming /
+# messages.py / completions.py splits. Clearing 75 entries over the
+# v5.22.26-37 arc turned up five real defects (BUG-086 through BUG-091) plus a
+# dozen guards that had silently stopped testing anything. A red test is
+# cheap; a parked one is not.
+#
+# Environment-only results inside the production image (not checkout failures)
+# -----------------------------------------------------------------------------
+# The v5.22.62 and v5.22.63 release runs executed the unit suite inside the
+# py3.13 production image and recorded 4 environment-only failures (read-only
+# mount, host backup copy, no playwright in the image).
+#
+#   * tests/unit/test_v3102_pool_leak_harness.py::test_harness_script_exists_and_compiles
+#     Wrote scripts/__pycache__/ and failed on a read-only tree. Fixed
+#     2026-11-18: it now compiles to a temp path.
+#   * tests/unit/test_v52239_behaviour_gating_deps.py::test_gating_dependency_is_installed[playwright]
+#     playwright is in requirements-dev.txt only and the image installs
+#     requirements.txt. Since 2026-11-18 it skips inside a container when the
+#     package is absent, and still fails everywhere else.
+#   * tests/unit/test_v510_batches_A_C1_B.py (backup-script tests)
+#     These read ops-scripts/tmrwww01-backup/backup-safe-dumps.sh and fall back
+#     to the host copy /home/dblagbro/docker/scripts/backup-safe-dumps.sh. The
+#     host script belongs to the infra session, so the test file is left
+#     unchanged here. Not reproduced on 2026-11-18 with a read-only staged copy
+#     of the tree in the image (the repo copy is present there and the tests
+#     pass or skip). If it fails in an in-image run, check which copy that run
+#     can see before treating it as a regression.

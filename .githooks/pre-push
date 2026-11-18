@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# Block a credential or a forbidden path before it leaves this machine.
+#
+# pre-commit runs the same two checks, but it is skipped by `--no-verify`, by
+# commits made before `make install-hooks`, and by commits created elsewhere
+# and fetched in. A push is the last local point before the content is public.
+#
+# What is checked, per ref being pushed:
+#   * paths: every file added or modified by any commit in the push, so a
+#     forbidden file that was committed and later deleted is still caught
+#     (it stays in history);
+#   * content: tools/secret_scan.py over those files as they are at the pushed
+#     tip. A secret added and then removed inside the same push is not seen
+#     here; CI's `secrets` job and rotation remain the backstop.
+#
+# Install (once per clone):   make install-hooks
+# Bypass in a genuine pinch:  git push --no-verify
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+# shellcheck source=.githooks/_lib.sh
+. "$repo_root/.githooks/_lib.sh"
+
+zero_re='^0+$'
+status=0
+
+while read -r _local_ref local_sha _remote_ref remote_sha; do
+  # Deleting a remote ref pushes no content.
+  if [[ "$local_sha" =~ $zero_re ]]; then
+    continue
+  fi
+
+  if [[ "$remote_sha" =~ $zero_re ]]; then
+    # New ref: everything reachable from it that no remote already has.
+    mapfile -t commits < <(git rev-list "$local_sha" --not --remotes)
+  else
+    mapfile -t commits < <(git rev-list "${remote_sha}..${local_sha}")
+  fi
+  if [ ${#commits[@]} -eq 0 ]; then
+    continue
+  fi
+
+  mapfile -t touched < <(
+    printf '%s\n' "${commits[@]}" \
+      | git diff-tree --stdin --no-commit-id --name-only -r -m --root --diff-filter=ACM \
+      | sort -u
+  )
+  if [ ${#touched[@]} -eq 0 ]; then
+    continue
+  fi
+
+  blocked="$(printf '%s\n' "${touched[@]}" | blocked_paths)"
+  if [ -n "$blocked" ]; then
+    echo "pre-push: BLOCKED: these paths must never be pushed:" >&2
+    printf '  %s\n' $blocked >&2
+    status=1
+  fi
+
+  if ! scan_blobs "$local_sha" "${touched[@]}"; then
+    echo "pre-push: BLOCKED: content at $local_sha looks like it contains a credential." >&2
+    status=1
+  fi
+done
+
+if [ "$status" -ne 0 ]; then
+  cat >&2 <<'MSG'
+
+  * If a credential is real: remove it from the commits being pushed, and
+    rotate it. Deleting it in a later commit does not remove it from history.
+  * If it is a fixture: append 'pragma: allowlist secret' to that line.
+  * To override deliberately: git push --no-verify
+
+MSG
+fi
+exit "$status"

@@ -22,3 +22,10 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Secret-Handling Protocol (../docs/SECRET-HANDLING-PROTOCOL.md). Keep in step
+# with the root .gitignore, .dockerignore, eslint.config.js and
+# BLOCKED_PATH_RE in ../.githooks/_lib.sh.
+secrets-sealed-*
+*credentials-backup*
+*.key

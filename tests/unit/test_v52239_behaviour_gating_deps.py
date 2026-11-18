@@ -73,6 +73,18 @@ BEHAVIOUR_GATING = {
 }
 
 
+# Declared in requirements-dev.txt only. The production image installs
+# requirements.txt alone, so these are absent there by design.
+DEV_ONLY = {"playwright"}
+
+
+def _in_container() -> bool:
+    """True inside a Docker container (the production image). CI runners and
+    developer machines install requirements-dev.txt and are not containers, so
+    the installed-check still fails there when a dev dependency is missing."""
+    return Path("/.dockerenv").exists()
+
+
 def _declared_specifiers() -> dict:
     """name -> specifier, parsed from requirements.txt AND requirements-dev.txt.
 
@@ -124,6 +136,12 @@ def test_gating_dependency_is_installed(package):
     try:
         version(package)
     except PackageNotFoundError:
+        if package in DEV_ONLY and _in_container():
+            pytest.skip(
+                f"{package} is a dev-only dependency (requirements-dev.txt) and "
+                f"this is a container without it, i.e. the production image; "
+                f"the UI suite it gates does not run here"
+            )
         pytest.fail(
             f"{package} is not installed in this environment.\n\n"
             f"Why it matters: {why}\n\n"

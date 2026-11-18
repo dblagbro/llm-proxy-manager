@@ -24,7 +24,7 @@ afternoon — optimize for legibility, not cleverness.**
   - `models/` — SQLAlchemy ORM + DB session (`models/database.py`). `config/` — Pydantic settings.
   - others: `auth/ budget/ cache/ capability_scout/ mcp_server/ memory/ middleware/ observability/ privacy/ proxy_tools/ runs/ airi/ integration/ utils/`.
 - `frontend/` — React/Vite dashboard (built into the image, served under `/llm-proxy2/`).
-- `tests/` — `tests/unit/` (~329 files) + `tests/integration/` (~15, incl. Playwright).
+- `tests/` — `tests/unit/` (378 test files as of 2026-11-18) + `tests/integration/` (14, incl. Playwright).
 - `docs/` — durable memory (see "Documentation map"). Root `architecture.md` + `design.md` are canonical.
 
 ## Approved commands (use the Makefile — do not invent commands)
@@ -36,7 +36,7 @@ afternoon — optimize for legibility, not cleverness.**
 | Full suite | `make test-all` (`pytest tests/ -v`) |
 | Lint | `make lint` (`ruff check` + `ruff format --check`) |
 | Format | `make format` (`ruff format`) |
-| DB migrate / new revision | **none — alembic has no revisions.** Schema comes from `create_all` + in-place `ALTER TABLE` in `init_db()`. `make migrate` refuses and explains. |
+| DB migrate / new revision | `make migrate` / `make migrate-new` **refuse (no alembic revisions; schema via `init_db()`)**. Schema comes from `create_all` + in-place `ALTER TABLE` there. |
 | Build image (local) | `make build` |
 | Import smoke | `python -c "import app.main"` |
 
@@ -95,6 +95,7 @@ for the evidence and operational prerequisites. All other release controls remai
 - Market/viability: `docs/market-review.md` (reviewed 2026-09-26; next 2027-01-15)
 - Ops/recovery: `docs/backup-plan.md`, `docs/remediation-plan.md`, `docs/recovery/`, runbooks in `docs/*runbook*.md`
 - Agent system + model routing: `docs/agent-system.md` · ADR/RFC: `docs/rfc/`
+- Site-wide (outside the repo): `/mnt/s/code/.site-policy.md` for deployment and network-exposure decisions; `/mnt/s/code/.workbench-standing-rules.md` for the owner's standing work rules.
 
 ## Agent skills & specialized agents
 On-demand skills in `.agents/skills/` (mirrored to `.claude/skills/`): `session-start`, `work-item`,
