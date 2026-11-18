@@ -198,6 +198,17 @@ export function GrokWebProviderFields({ form, set, editing }: Props) {
               onClick={async () => {
                 setCreatingConv(true)
                 setCreateConvErr(null)
+                // v5.22.64 — creating a conversation drives grok.com in the
+                // bridge's browser; signed out, it hangs until nginx 504s and
+                // the old message wrongly blamed a dead browser.
+                if (status && !status.logged_in) {
+                  setCreateConvErr(
+                    'The bridge is not signed in to grok.com yet. Click "Connect Grok" ' +
+                    'below and sign in, then try Create new again.',
+                  )
+                  setCreatingConv(false)
+                  return
+                }
                 try {
                   const r = await fetch(`${DEFAULT_BRIDGE_PUBLIC}/api/conversation/new`, {
                     method: 'POST',
@@ -212,6 +223,12 @@ export function GrokWebProviderFields({ form, set, editing }: Props) {
                   try {
                     j = raw ? JSON.parse(raw) : {}
                   } catch {
+                    if (r.status === 504) {
+                      throw new Error(
+                        'The bridge timed out driving grok.com. This usually means it is not ' +
+                        'signed in: click "Connect Grok" and sign in, then retry.',
+                      )
+                    }
                     throw new Error(
                       `Bridge returned HTTP ${r.status}: ${raw.slice(0, 120) || 'empty response'}. ` +
                       `Check the grok-bridge sidecar (its browser may have died — ` +

@@ -2,6 +2,15 @@
 
 All notable changes since v2.7.6. Older history available in `git log`.
 
+### v5.22.64 (2026-11-18)
+
+**Fix: Grok "Create new" gives a sign-in hint instead of blaming the bridge.**
+
+- Signed out of grok.com, Create new hung until nginx returned 504, and the UI told the
+  operator to restart the bridge. `GrokWebProviderFields.tsx` now checks the bridge's
+  `logged_in` status first and maps a 504 to "not signed in: click Connect Grok".
+- Test: `tests/unit/test_v52264_grok_create_new_needs_login.py`.
+
 ### v5.22.63 (2026-11-18)
 
 Lands the three August local-provider PRs (#2, #3, #4), rebased onto current main.
