@@ -519,6 +519,44 @@ SCHEMA: dict[str, dict] = {
         "label": "Compliance: caller_memory.source_company backfill flag (set automatically on first policy enable; do NOT toggle manually).",
         "group": "Compliance",
     },
+
+    # v5.23 — Local accelerator telemetry (read-only until admission lands).
+    "local_accel_enabled": {
+        "type": "bool",
+        "default": getattr(settings, "local_accel_enabled", False),
+        "label": "Local accelerator: master switch. OFF = no probe, no admission (complete no-op). Resource telemetry, not MCP capability back-pressure.",
+        "group": "Local accelerator",
+    },
+    "local_accel_backend": {
+        "type": "str",
+        "default": getattr(settings, "local_accel_backend", "ollama"),
+        "label": "Local accelerator backend (ollama).",
+        "group": "Local accelerator",
+    },
+    "local_accel_ollama_url": {
+        "type": "str",
+        "default": getattr(settings, "local_accel_ollama_url", "http://127.0.0.1:11434"),
+        "label": "Ollama base URL used by the residency probe (GET /api/ps).",
+        "group": "Local accelerator",
+    },
+    "local_accel_vram_total_mb": {
+        "type": "int",
+        "default": getattr(settings, "local_accel_vram_total_mb", 0),
+        "label": "VRAM total (MiB). 0 = autodetect via NVML/nvidia-smi. Reference laptop is 6113.",
+        "group": "Local accelerator",
+    },
+    "local_accel_probe_cache_sec": {
+        "type": "float",
+        "default": getattr(settings, "local_accel_probe_cache_sec", 2.0),
+        "label": "Accelerator probe snapshot cache TTL (seconds).",
+        "group": "Local accelerator",
+    },
+    "local_accel_probe_interval_sec": {
+        "type": "int",
+        "default": getattr(settings, "local_accel_probe_interval_sec", 5),
+        "label": "Background probe interval (seconds). Reserved; slice 1 is on-demand only.",
+        "group": "Local accelerator",
+    },
 }
 
 
