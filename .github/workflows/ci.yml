@@ -114,7 +114,7 @@ jobs:
         # Belt-and-braces for .gitignore: an already-tracked file keeps being
         # tracked no matter what .gitignore says later, so assert on the index.
         run: |
-          if git ls-files | grep -Ei '(^|/)\.env($|\.)|\.(pem|p12|pfx|jks|db|sqlite3?|bak|dump)$|(^|/)(data|backups)/|id_rsa|id_ed25519|credentials\.json' | grep -v '\.env\.example$'; then
+          if git ls-files | grep -Ei '(^|/)\.env($|\.)|\.(pem|p12|pfx|jks|db|sqlite3?|bak|dump)$|(^|/)(data|backups)/|id_rsa|id_ed25519|credentials\.json|(^|/)secrets-sealed-|credentials-backup|\.key$' | grep -v '\.env\.example$'; then
             echo "::error::credential-bearing paths are tracked in git"
             exit 1
           fi
