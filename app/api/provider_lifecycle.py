@@ -156,6 +156,19 @@ async def test_provider_endpoint(
 ):
     p = await _get_or_404(db, provider_id)
     result = await test_provider(p)
+    # v5.22.65 — a passing Test now clears THIS node's breaker (same as the
+    # Needs-attention "re-test now" button). Before, the card said "Test OK"
+    # while a 6 h billing hold kept the provider out of rotation.
+    if _test_result_ok(result):
+        try:
+            from app.routing.circuit_breaker import clear_auth_failure, force_close
+
+            clear_auth_failure(p.id)
+            await force_close(p.id)
+            result = dict(result)
+            result["breaker_reset"] = True
+        except Exception:
+            pass
     # v3.0.9: surface model-deprecation warning so operators see the
     # actionable fix BEFORE the upstream 404s on real traffic.
     from app.providers.deprecations import check_model_deprecation
