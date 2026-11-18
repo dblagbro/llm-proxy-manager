@@ -167,3 +167,26 @@ async def resolve_alias(db: AsyncSession, model: Optional[str]) -> Optional[Mode
         return None
     result = await db.execute(select(ModelAlias).where(ModelAlias.alias == model))
     return result.scalar_one_or_none()
+
+
+def apply_local_create_defaults(data: dict, provider_type: str) -> None:
+    """Create-time defaults for self-hosted rows (v5.23 cold-load fix), in place.
+
+    Lifts the historical 30/60 s timeout to the cold-load default and gives an
+    Ollama row without a model a sensible default model.
+    """
+    from app.routing.litellm_binding import PROVIDER_DEFAULT_MODELS
+
+    data["timeout_sec"] = coerce_self_hosted_timeout(provider_type, data.get("timeout_sec"))
+    if provider_type == "ollama" and not data.get("default_model"):
+        data["default_model"] = PROVIDER_DEFAULT_MODELS.get("ollama", "qwen2.5-coder:7b")
+
+
+def apply_local_update_defaults(
+    data: dict, provider_type: str, current_timeout: int | None
+) -> None:
+    """Update-time twin of :func:`apply_local_create_defaults` (timeout only), in place."""
+    if "timeout_sec" in data or provider_type in SELF_HOSTED_PROVIDER_TYPES:
+        data["timeout_sec"] = coerce_self_hosted_timeout(
+            provider_type, data.get("timeout_sec", current_timeout)
+        )

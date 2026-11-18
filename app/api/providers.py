@@ -4,11 +4,9 @@ import time
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Body
-from pydantic import BaseModel, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete
 
-from app.api._provider_type_policy import ProviderFieldGuards
 from app.models.database import get_db
 from app.models.db import Provider, ModelCapability
 from app.auth.admin import require_admin, AdminUser
@@ -28,60 +26,7 @@ def _stamp_user_edit(p: Provider) -> None:
     p.last_user_edit_at = time.time()
 
 
-class ProviderCreate(ProviderFieldGuards, BaseModel):
-    name: str
-    provider_type: str
-    api_key: Optional[str] = None
-    base_url: Optional[str] = None
-
-    default_model: Optional[str] = None
-    priority: int = 10
-    enabled: bool = True
-    timeout_sec: int = 30
-    exclude_from_tool_requests: bool = False
-    # v3.9.5 (#267 Phase 8) — opt-out from the caller-memory system
-    memory_disabled: bool = False
-    hold_down_sec: Optional[int] = None       # None = use global setting
-    failure_threshold: Optional[int] = None   # None = use global setting
-    daily_budget_usd: Optional[float] = None  # None = unlimited
-    extra_config: dict = {}
-    # v3.0.45: tenant scoping. Null = shared across all keys (default).
-    # Set to an api_keys.id to restrict this provider to a single key.
-    owned_by_key_id: Optional[str] = None
-    # v2.7.0: claude-oauth credential paste. The frontend sends either:
-    #   - bare ``sk-ant-oat...`` access token, OR
-    #   - the JSON contents of ``~/.claude/credentials.json``.
-    # Server parses, extracts access/refresh/expires_at, and stores them in
-    # the existing api_key column + new oauth_* columns. The raw blob is
-    # never persisted.
-    oauth_credentials_blob: Optional[str] = None
-    # v3.0.64: per-provider usage-based rotation config (Phase 2). All
-    # optional — providers default to "no tracking" until operator opts in.
-    usage_tracking_enabled: Optional[bool] = None
-    usage_session_window_sec: Optional[int] = None
-    usage_weekly_reset_dow: Optional[int] = None
-    usage_weekly_reset_hour: Optional[int] = None
-    usage_session_limit_tokens: Optional[int] = None
-    usage_weekly_limit_tokens: Optional[int] = None
-    usage_rotation_threshold_pct: Optional[int] = None
-
-
-class ProviderUpdate(ProviderCreate):
-    # Row-relative gate (v5.22.44): neutralize inherited create-time type check;
-    # update_provider() gates a CHANGE into a closed type instead.
-    @field_validator("provider_type")
-    @classmethod
-    def _check_provider_type(cls, v):
-        return v
-
-
-
-
-# v4.4.14 — list_providers + rolling_stats + rolling_stats_by_node + provider_usage
-# extracted to app/api/providers_stats.py to keep this file under the 1000-LOC
-# ceiling. main.py mounts both routers at the same /api/providers prefix; no
-# path collisions.
-
+from app.api._provider_schemas import ProviderCreate, ProviderUpdate  # noqa: E402,F401
 
 
 _TYPES_REQUIRING_API_KEY = {
@@ -364,16 +309,10 @@ async def create_provider(
             f"or 'ChatGPT-oauth-plan' (got {body.provider_type!r})",
         )
 
-    # v5.23.0 — self-hosted rows that still carry the historical 30/60s
-    # default would trip the circuit breaker on a 30–90s GGUF cold load.
-    from app.routing.aliases import coerce_self_hosted_timeout
-    from app.routing.litellm_binding import PROVIDER_DEFAULT_MODELS
-    data["timeout_sec"] = coerce_self_hosted_timeout(
-        data.get("provider_type") or body.provider_type,
-        data.get("timeout_sec"),
-    )
-    if (data.get("provider_type") or body.provider_type) == "ollama" and not data.get("default_model"):
-        data["default_model"] = PROVIDER_DEFAULT_MODELS.get("ollama", "qwen2.5-coder:7b")
+    # v5.23.0 — cold-load timeout lift + Ollama default model (routing/aliases).
+    from app.routing.aliases import apply_local_create_defaults
+
+    apply_local_create_defaults(data, data.get("provider_type") or body.provider_type)
 
     # v2.8.2: bump any existing provider already at this priority +1 (chained)
     # BEFORE inserting so the new row gets the requested slot cleanly.
@@ -596,10 +535,9 @@ async def update_provider(
             )
 
     # v5.23.0 — same cold-load timeout lift as create_provider.
-    from app.routing.aliases import coerce_self_hosted_timeout
-    ptype = data.get("provider_type") or p.provider_type
-    if "timeout_sec" in data or ptype in ("ollama", "vllm", "llamacpp", "lmstudio", "localai"):
-        data["timeout_sec"] = coerce_self_hosted_timeout(ptype, data.get("timeout_sec", p.timeout_sec))
+    from app.routing.aliases import apply_local_update_defaults
+
+    apply_local_update_defaults(data, data.get("provider_type") or p.provider_type, p.timeout_sec)
 
     for field, value in data.items():
         setattr(p, field, value)
