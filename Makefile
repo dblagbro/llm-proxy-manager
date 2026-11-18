@@ -1,4 +1,5 @@
-.PHONY: install dev test lint build up down logs shell secret-scan install-hooks verify-ci
+.PHONY: install dev test test-all lint format build up down-container logs shell \
+	migrate migrate-new secret-scan install-hooks verify-ci
 
 install:
 	pip install -e ".[dev]"
@@ -80,7 +81,7 @@ secret-scan:  ## Scan every tracked file for credential shapes
 install-hooks:  ## Point git at .githooks/ (run once per clone)
 	git config core.hooksPath .githooks
 	@echo "hooks installed: $$(git config core.hooksPath)"
-	@echo "pre-commit now blocks credentials and forbidden paths."
+	@echo "pre-commit and pre-push now block credentials and forbidden paths."
 
 verify-ci:
 	# Run the unit suite on CI's interpreter (Python 3.13, project image).

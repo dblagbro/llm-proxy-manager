@@ -86,11 +86,14 @@ def test_health_snapshot_includes_trace_summary():
 # ── harness script ─────────────────────────────────────────────────
 
 
-def test_harness_script_exists_and_compiles():
+def test_harness_script_exists_and_compiles(tmp_path):
     import py_compile
     p = Path("scripts/archa_pool_leak_harness.py")
     assert p.exists(), "harness script missing"
-    py_compile.compile(str(p), doraise=True)
+    # Compile to a temp path: the default writes scripts/__pycache__/, which
+    # fails when the source tree is mounted read-only or owned by another
+    # user (the suite run inside the production image).
+    py_compile.compile(str(p), cfile=str(tmp_path / "harness.pyc"), doraise=True)
 
 
 def test_harness_isolates_three_request_paths():

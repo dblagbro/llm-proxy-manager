@@ -18,7 +18,7 @@ that can block configured companies (10 built-in + operator-defined customs) at 
 provider-routing, model-family, and client-product layers — with audit-grade event
 logging, daily integrity hash chain, and cluster-quorum policy push.
 
-**Current version: 5.22.43 (2026-10-11) — not yet deployed; live nodes trail (see `docs/current-state.md`)**
+**Current version: 5.22.64 (2026-11-18), live on both nodes (see `docs/current-state.md`)**
 
 ### Ship history since v5.0.7 (arc-end summary, doc-drift refresh)
 

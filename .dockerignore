@@ -74,3 +74,13 @@ id_rsa*
 id_ed25519*
 credentials.json
 service-account*.json
+
+# Secret-Handling Protocol (docs/SECRET-HANDLING-PROTOCOL.md). Keep in step
+# with .gitignore, frontend/.gitignore, frontend/eslint.config.js and
+# BLOCKED_PATH_RE in .githooks/_lib.sh.
+secrets-sealed-*
+**/secrets-sealed-*
+*credentials-backup*
+**/*credentials-backup*
+*.key
+**/*.key

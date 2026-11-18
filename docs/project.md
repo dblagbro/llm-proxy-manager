@@ -8,7 +8,7 @@ expected wire format. It maintains provider OAuth sessions, syncs config across 
 and enforces per-key + system-wide compliance with audit-grade logging.
 
 ## Stage
-**Production** (used by internal TMR tooling) currently **in active rescue** — see
+**Production, stable maintenance** (used by internal TMR tooling). See
 `docs/current-state.md`.
 
 ## Primary users

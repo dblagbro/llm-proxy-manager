@@ -6,7 +6,14 @@ import tseslint from 'typescript-eslint'
 import { defineConfig, globalIgnores } from 'eslint/config'
 
 export default defineConfig([
-  globalIgnores(['dist']),
+  // The secret patterns mirror the root .gitignore (see
+  // ../docs/SECRET-HANDLING-PROTOCOL.md); keep the two in step.
+  globalIgnores([
+    'dist',
+    '**/secrets-sealed-*',
+    '**/*credentials-backup*',
+    '**/*.key',
+  ]),
   {
     files: ['**/*.{ts,tsx}'],
     extends: [

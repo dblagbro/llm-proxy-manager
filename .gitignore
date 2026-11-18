@@ -55,6 +55,14 @@ id_ed25519*
 credentials.json
 service-account*.json
 
+# Secret-Handling Protocol (docs/SECRET-HANDLING-PROTOCOL.md): sealed backups
+# and credential backups never enter the repo. Keep in step with
+# .dockerignore, frontend/.gitignore, frontend/eslint.config.js and
+# BLOCKED_PATH_RE in .githooks/_lib.sh.
+secrets-sealed-*
+*credentials-backup*
+*.key
+
 # Databases and dumps — llmproxy.db carries key hashes, encrypted_key
 # blobs and OAuth refresh tokens. Never commit one.
 data/
