@@ -2,6 +2,28 @@
 
 All notable changes since v2.7.6. Older history available in `git log`.
 
+### v5.22.62 (2026-11-17)
+
+**Feature: "Needs attention" panel for stuck providers (PR #23).**
+
+- Providers page now lists providers whose breaker is open/half-open, classified as
+  billing/spend cap, invalid key, logged out (grok-web), rate-limited or unreachable.
+- Invalid key: paste a replacement, which saves, runs the provider Test and resets the
+  breaker. Spend cap: vendor billing link (OpenAI, OpenRouter, Anthropic) plus a
+  "re-test now" button that resets the breaker only after a passing Test.
+- New admin-only endpoints `GET /api/provider-attention` and
+  `POST /api/provider-attention/{id}/retest` (per-node; the peer re-probes on its own).
+  The circuit breaker now remembers that an open was billing-class
+  (`get_billing_failure()`).
+- Test: `tests/unit/test_provider_attention.py`.
+
+**Grok release tooling: non-blocking snapshot storage warning (PR #22).**
+
+- `grok_bridge/deployment/release.py` and `rehearse_release.py` warn when release
+  snapshots (which can hold the bridge token and grok.com cookies) sit on NFS/CIFS,
+  under /tmp, or in a group/world-readable directory. Advisory only; exit codes
+  are unchanged. Runbook updated.
+
 ### v5.22.61 (2026-11-13)
 
 **Fix: billing failures absorbed by a successful fallback now open the breaker.**
