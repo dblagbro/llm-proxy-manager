@@ -66,6 +66,54 @@ SELF_HOSTED_PROVIDER_TYPES = {
     "ollama", "vllm", "llamacpp", "lmstudio", "localai",
 }
 
+# v5.23.0 — self-hosted cold-load timeout. Provider.timeout_sec and the
+# create-provider API historically defaulted to 30s (ProviderForm empty
+# form: 60s). A 30–90s GGUF load of a local 30B trips that deadline,
+# litellm raises, and the circuit breaker opens the only local route.
+# See docs/5.23-local-accelerator-orchestration-backpressure-design.md §1.2.
+HOSTED_DEFAULT_TIMEOUT_SEC = 30
+SELF_HOSTED_DEFAULT_TIMEOUT_SEC = 240
+# Values that mean "operator never thought about this" — the SQLAlchemy
+# column / API schema default (30) and the ProviderForm empty-form default (60).
+_UNSET_SELF_HOSTED_TIMEOUTS = frozenset({None, 30, 60})
+
+
+def default_timeout_sec_for_type(provider_type: str) -> int:
+    """Create-time default: 240s for inherent self-hosted runtimes, 30s otherwise."""
+    if provider_type in SELF_HOSTED_PROVIDER_TYPES:
+        return SELF_HOSTED_DEFAULT_TIMEOUT_SEC
+    return HOSTED_DEFAULT_TIMEOUT_SEC
+
+
+def coerce_self_hosted_timeout(provider_type: str, timeout_sec: int | None) -> int:
+    """Persist an honest default when creating/updating a self-hosted row.
+
+    Legacy 30/60 values are treated as unset for self-hosted types so a
+    form that still ships the historical default does not write a trap.
+    Explicit values outside that set (including a deliberate tight
+    timeout such as 15, or a longer 300) are kept.
+    """
+    if provider_type in SELF_HOSTED_PROVIDER_TYPES and timeout_sec in _UNSET_SELF_HOSTED_TIMEOUTS:
+        return SELF_HOSTED_DEFAULT_TIMEOUT_SEC
+    if timeout_sec is None or int(timeout_sec) <= 0:
+        return default_timeout_sec_for_type(provider_type)
+    return int(timeout_sec)
+
+
+def effective_timeout_sec(provider: Any) -> int:
+    """Timeout handed to litellm / the runs worker.
+
+    Existing Ollama rows in the DB still carry timeout_sec=30. Lifting
+    only those unset/legacy values keeps an operator-chosen 90 or 300
+    intact while unblocking a cold 30B load on a default row.
+    """
+    raw = getattr(provider, "timeout_sec", None)
+    if is_self_hosted_provider(provider) and raw in _UNSET_SELF_HOSTED_TIMEOUTS:
+        return SELF_HOSTED_DEFAULT_TIMEOUT_SEC
+    if raw is None or int(raw) <= 0:
+        return HOSTED_DEFAULT_TIMEOUT_SEC
+    return int(raw)
+
 
 def is_self_hosted_provider(p: Any) -> bool:
     """Hard filter for ``coordinator-local`` (decision 29 correction
