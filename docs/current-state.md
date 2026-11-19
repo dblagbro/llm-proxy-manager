@@ -1,7 +1,18 @@
-> **v5.22.66 (PR pending, not deployed):** frontend-only "Duplicate" on provider
-> cards (pre-filled Add form, credentials stripped, OAuth sign-in note; models/aliases not copied).
+# ✅ Live now — 2026-11-18 (v5.22.67, both nodes)
 
-# ✅ Live now — 2026-11-18 (v5.22.64, both nodes)
+- **v5.22.67:** breaker resets (passing Test, Needs-attention re-test, admin reset) now
+  reach every node via HMAC `POST /cluster/circuit-breaker-reset` (`app/cluster/breaker_reset.py`).
+- **v5.22.66:** frontend-only "Duplicate" on provider cards (pre-filled Add form,
+  credentials stripped, OAuth sign-in note; models/aliases not copied).
+- **v5.22.65:** a passing card Test clears the breaker (was: "Test OK" with a 6 h hold left in place).
+- **nginx (ops, 2026-11-18):** the `nginx` container had been reading a stale
+  `nginx.conf` inode (single-file bind mount; a host-side rename on Nov 17 replaced the
+  file). Edits since then were never live, which caused the Grok VNC 502 / black screen.
+  Host config validated inside the container, then `docker restart nginx`. After any
+  nginx.conf edit, check `docker exec nginx grep <marker> /etc/nginx/nginx.conf`.
+- Grok-Web-Devin stays down until the bridge is signed in to grok.com (operator action).
+
+# Previously — 2026-11-18 (v5.22.64, both nodes)
 
 **v5.22.64 deployed to tmrwww01 + tmrwww02.** Contents: PR #28 (merge `14322d0`), Grok
 "Create new" shows a sign-in hint when the bridge is signed out. Rollback tag:

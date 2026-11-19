@@ -2,6 +2,20 @@
 
 All notable changes since v2.7.6. Older history available in `git log`.
 
+### v5.22.67 (2026-11-18)
+
+**Fix: breaker resets now reach every node.**
+
+- Breaker state is in-memory per node, so a passing Test (card button or the
+  Needs-attention "re-test now") and the admin breaker reset cleared only the node
+  that served the click; the other node kept the provider out of rotation until its
+  own hold-down expired (up to 6 h for a billing hold).
+- New `app/cluster/breaker_reset.py`: `reset_everywhere()` clears this node, then
+  pushes an HMAC-signed reset to every reachable peer's new
+  `POST /cluster/circuit-breaker-reset` (verifies the signature, resets locally, never
+  re-fans-out). Best-effort with a 3 s timeout; tombstoned/unreachable peers are skipped.
+  Responses carry per-peer outcomes (`breaker_reset_peers` / `peers`).
+
 ### v5.22.66 (2026-11-18)
 
 **Feature: Duplicate action on provider cards.**

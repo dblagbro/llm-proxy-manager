@@ -158,7 +158,7 @@ def test_retest_resets_only_on_success(monkeypatch):
 
     monkeypatch.setattr("app.providers.scanner.test_provider", good)
     res = _run(att.retest_and_reset(prov))
-    assert res == {"success": True, "reset": True}
+    assert res == {"success": True, "reset": True, "peers": []}
     assert cb.get_all_states()["p1"]["state"] == "closed"
     assert "sk-secret" not in repr(res)
 

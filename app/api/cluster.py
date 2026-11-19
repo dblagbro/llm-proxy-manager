@@ -350,9 +350,28 @@ async def reset_circuit_breaker(
     provider_id: str,
     _: AdminUser = Depends(require_admin),
 ):
-    from app.routing.circuit_breaker import force_close
-    await force_close(provider_id)
-    return {"ok": True, "provider_id": provider_id}
+    # v5.22.67 — reset every node, not just the one serving the click.
+    from app.cluster.breaker_reset import reset_everywhere
+    peers_result = await reset_everywhere(provider_id)
+    return {"ok": True, "provider_id": provider_id, "peers": peers_result}
+
+
+@router.post("/cluster/circuit-breaker-reset")
+async def peer_circuit_breaker_reset(request: Request):
+    """v5.22.67 — peer-to-peer breaker reset. HMAC-authenticated; resets
+    this node only and does NOT re-fan-out (would loop)."""
+    from app.cluster.breaker_reset import reset_local, valid_provider_id
+    raw = await request.body()
+    if not verify_cluster_request(raw, request.headers.get("X-Cluster-Sig", "")):
+        raise HTTPException(401, "invalid HMAC signature")
+    try:
+        provider_id = json.loads(raw or b"{}").get("provider_id")
+    except Exception:
+        raise HTTPException(400, "invalid JSON body")
+    if not valid_provider_id(provider_id):
+        raise HTTPException(400, "invalid provider_id")
+    await reset_local(provider_id)
+    return {"ok": True}
 
 
 @router.post("/cluster/circuit-breaker/{provider_id}/open")

@@ -160,13 +160,14 @@ async def test_provider_endpoint(
     # Needs-attention "re-test now" button). Before, the card said "Test OK"
     # while a 6 h billing hold kept the provider out of rotation.
     if _test_result_ok(result):
+        # v5.22.67 — and on every peer node too.
         try:
-            from app.routing.circuit_breaker import clear_auth_failure, force_close
+            from app.cluster.breaker_reset import reset_everywhere
 
-            clear_auth_failure(p.id)
-            await force_close(p.id)
+            peers = await reset_everywhere(p.id)
             result = dict(result)
             result["breaker_reset"] = True
+            result["breaker_reset_peers"] = peers
         except Exception:
             pass
     # v3.0.9: surface model-deprecation warning so operators see the
