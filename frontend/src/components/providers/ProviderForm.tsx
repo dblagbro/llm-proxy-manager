@@ -186,6 +186,25 @@ export function providerToForm(p: Provider): ProviderFormState {
   }
 }
 
+// v5.22.66 — Duplicate. extra_config keys that hold credentials or
+// session-bound state; stripped from a duplicated provider's form.
+const SECRET_EXTRA_KEY = /token|secret|cookie|password|credential|session|api_?key|statsig|userid|conversation/i
+
+export const OAUTH_PROVIDER_TYPES: ProviderType[] = [
+  'claude-oauth', 'ChatGPT-oauth-plan', 'cursor-oauth', 'grok-web', 'cohere',
+]
+
+/** Pre-filled create-form state for "Duplicate": everything except the
+ *  name suffix and all credentials. Nothing is saved until Create. */
+export function providerToDuplicateForm(p: Provider): ProviderFormState {
+  const f = providerToForm(p)
+  const extra: Record<string, unknown> = {}
+  for (const [k, v] of Object.entries(f.extra_config ?? {})) {
+    if (!SECRET_EXTRA_KEY.test(k)) extra[k] = v
+  }
+  return { ...f, name: `${p.name} (copy)`, api_key: '', extra_config: extra }
+}
+
 interface Props {
   form: ProviderFormState
   onChange: (f: ProviderFormState) => void

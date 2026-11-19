@@ -2,6 +2,18 @@
 
 All notable changes since v2.7.6. Older history available in `git log`.
 
+### v5.22.66 (2026-11-18)
+
+**Feature: Duplicate action on provider cards.**
+
+- New "Duplicate" button opens the Add Provider form pre-filled from the source
+  provider (type, base URL, default model, priority, timeouts, thresholds, usage
+  settings, non-secret extra_config). Name becomes "<name> (copy)"; the API key and any
+  credential/session-style extra_config keys (token, cookie, secret, password,
+  session, statsig, userid, conversation) are NOT copied. Nothing is saved until
+  Create. OAuth/session types show a note that the copy needs its own sign-in.
+- Frontend only; no new endpoint. Manual model rows and aliases are not copied.
+
 ### v5.22.65 (2026-11-18)
 
 **Fix: a passing provider Test now clears the breaker.**
