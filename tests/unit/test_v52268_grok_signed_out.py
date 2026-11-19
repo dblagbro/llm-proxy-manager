@@ -40,7 +40,7 @@ def test_reset_local_clears_gate(monkeypatch):
 def _patch(monkeypatch, status):
     calls = []
 
-    async def fake_status(ec, timeout=5.0):
+    async def fake_status(ec, cookie="", timeout=5.0):
         calls.append(ec["bridge_url"])
         return status
 
@@ -104,3 +104,31 @@ def test_no_auth_failure_stays_unreachable():
 def test_non_grok_unchanged():
     row = _classify(provider_type="openai", auth_failure={"last_error": "bad", "since": 1.0})
     assert row["reason"] == "auth" and "message" not in row
+
+
+def test_bridge_status_forwards_admin_cookie(monkeypatch):
+    """/api/status on the bridge needs an admin session (token alone is 401),
+    so the caller's cookie must ride along."""
+    from types import SimpleNamespace as NS
+
+    seen = {}
+
+    class FakeClient:
+        def __init__(self, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, url, headers):
+            seen["url"], seen["headers"] = url, headers
+            return NS(status_code=200, json=lambda: {"logged_in": True})
+
+    monkeypatch.setattr(gwb.httpx, "AsyncClient", FakeClient)
+    ec = {"bridge_url": "http://bridge:8443/", "bridge_token": "t"}
+    assert asyncio.run(gwb.bridge_logged_in(ec, cookie="session=abc")) is True
+    assert seen["url"] == "http://bridge:8443/api/status"
+    assert seen["headers"]["cookie"] == "session=abc"

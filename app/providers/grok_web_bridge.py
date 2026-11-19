@@ -95,11 +95,16 @@ async def _bridge_chat(
     return r.json()
 
 
-async def bridge_logged_in(extra_config: dict, timeout: float = 5.0) -> bool | None:
+async def bridge_logged_in(
+    extra_config: dict, cookie: str = "", timeout: float = 5.0
+) -> bool | None:
     """v5.22.68 -- ask the bridge whether its grok.com session is signed in.
 
-    One on-demand GET /api/status (never called per card render). Returns None
-    when the bridge is unreachable or answers something unparseable.
+    One on-demand GET /api/status (never called per card render). The bridge
+    honours the machine token only on inference paths; /api/status requires an
+    llm-proxy2 admin session, so the calling admin's own Cookie is forwarded
+    (the bridge verifies it against /api/auth/me). Returns None when the bridge
+    is unreachable, refuses, or answers something unparseable.
     """
     base = (extra_config or {}).get("bridge_url")
     if not isinstance(base, str) or not base.startswith(("http://", "https://")):
@@ -108,6 +113,8 @@ async def bridge_logged_in(extra_config: dict, timeout: float = 5.0) -> bool | N
     token = (extra_config or {}).get("bridge_token") or ""
     if token:
         headers["x-bridge-token"] = token
+    if cookie:
+        headers["cookie"] = cookie
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
             r = await client.get(f"{base.rstrip('/')}/api/status", headers=headers)

@@ -158,7 +158,7 @@ async def retest_and_reset(provider: Any) -> dict:
     }
 
 
-async def grok_bridge_signed_in(providers: list) -> dict:
+async def grok_bridge_signed_in(providers: list, cookie: str = "") -> dict:
     """The operator finished Connect Grok: for each enabled grok-web provider
     whose bridge now reports logged_in, reset the breaker on every node and
     clear the keepalive chronic gate so it re-enters rotation immediately.
@@ -178,7 +178,7 @@ async def grok_bridge_signed_in(providers: list) -> dict:
         ec = ec if isinstance(ec, dict) else {}
         key = str(ec.get("bridge_url"))
         if key not in seen:
-            seen[key] = await bridge_logged_in(ec)
+            seen[key] = await bridge_logged_in(ec, cookie=cookie)
         if seen[key] is True:
             peers = await reset_everywhere(p.id)
             out.append(

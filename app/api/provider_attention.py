@@ -4,7 +4,7 @@ HTTP shape only; logic lives in ``app.routing.attention``. Per-node: the
 breaker reset affects this node only (the peer re-probes on its own).
 """
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -38,8 +38,9 @@ async def retest(
 
 @router.post("/grok-bridge-signed-in")
 async def grok_signed_in(
+    request: Request,
     db: AsyncSession = Depends(get_db),
     _: AdminUser = Depends(require_admin),
 ):
     providers = (await db.execute(select(Provider))).scalars().all()
-    return await grok_bridge_signed_in(list(providers))
+    return await grok_bridge_signed_in(list(providers), cookie=request.headers.get("cookie", ""))
