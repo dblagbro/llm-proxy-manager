@@ -37,10 +37,12 @@ def valid_provider_id(provider_id: object) -> bool:
 
 async def reset_local(provider_id: str) -> None:
     """Clear auth-failure + billing marks and close this node's breaker."""
+    from app.monitoring.keepalive import clear_chronic_gate
     from app.routing.circuit_breaker import clear_auth_failure, force_close
 
     clear_auth_failure(provider_id)
     await force_close(provider_id)
+    clear_chronic_gate(provider_id)  # v5.22.68: probes resume at once
 
 
 async def _post_peer(peer, body: bytes, sig: str) -> dict:
