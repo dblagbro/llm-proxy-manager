@@ -132,21 +132,21 @@ def _test_ok(result: dict) -> bool:
 
 
 async def retest_and_reset(provider: Any) -> dict:
-    """Run the provider Test; reset THIS node's breaker only if it passed.
+    """Run the provider Test; if it passed, reset the breaker on every node
+    (v5.22.67; before, only the node serving the click was reset).
 
     Returns ``{success, reset, error?}`` -- never the key or raw test payload.
     """
     from app.providers.scanner import test_provider
-    from app.routing.circuit_breaker import clear_auth_failure, force_close
+    from app.cluster.breaker_reset import reset_everywhere
 
     try:
         result = await test_provider(provider)
     except Exception as exc:  # test must not 500 the admin UI
         return {"success": False, "reset": False, "error": str(exc)[:300]}
     if _test_ok(result):
-        clear_auth_failure(provider.id)
-        await force_close(provider.id)
-        return {"success": True, "reset": True}
+        peers = await reset_everywhere(provider.id)
+        return {"success": True, "reset": True, "peers": peers}
     return {
         "success": False,
         "reset": False,
