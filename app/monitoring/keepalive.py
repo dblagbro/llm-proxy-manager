@@ -76,6 +76,17 @@ def _probe_interval_sec() -> int:
 _probe_backoff_until: dict[str, float] = {}
 # v5.17.1 — separate cache for chronic-CB-open gating (see sweep).
 _chronic_backoff_until: dict[str, float] = {}
+
+
+def clear_chronic_gate(provider_id: str) -> bool:
+    """v5.22.68 — drop the chronic-CB probe gate (and any rate-limit backoff) for
+    a provider so keepalive probes resume immediately. Returns True if a gate
+    was set. Called after the operator fixes the root cause (e.g. signs the
+    grok bridge back in) so a 6 h backoff does not outlive the fix."""
+    had = _chronic_backoff_until.pop(f"chronic_cb_{provider_id}", None) is not None
+    had = (_probe_backoff_until.pop(provider_id, None) is not None) or had
+    _consecutive_rate_limits.pop(provider_id, None)
+    return had
 _consecutive_rate_limits: dict[str, int] = {}
 
 

@@ -2,6 +2,18 @@
 
 All notable changes since v2.7.6. Older history available in `git log`.
 
+### v5.22.68 (2026-11-18)
+
+**Fix: grok-web comes back as soon as the bridge is signed in again.**
+
+- New `POST /api/provider-attention/grok-bridge-signed-in`: verifies against each
+  grok-web bridge (`GET /api/status`, on demand only) and, for those logged in, calls
+  `reset_everywhere()` and clears the keepalive chronic-CB gate (6 h backoff) via the new
+  `keepalive.clear_chronic_gate()`. The Grok provider form calls it when the bridge status
+  flips signed-out -> signed-in. `reset_local()` (every node) now clears the gate too.
+- Needs-attention rows for signed-out grok-web carry `message`: "Grok bridge not signed in
+  to grok.com: click Connect Grok" (shown by AttentionPanel).
+
 ### v5.22.67 (2026-11-18)
 
 **Fix: breaker resets now reach every node.**

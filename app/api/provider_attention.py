@@ -12,7 +12,7 @@ from app.api.providers import _get_or_404
 from app.auth.admin import AdminUser, require_admin
 from app.models.database import get_db
 from app.models.db import Provider
-from app.routing.attention import build_attention_list, retest_and_reset
+from app.routing.attention import build_attention_list, grok_bridge_signed_in, retest_and_reset
 
 router = APIRouter(prefix="/api/provider-attention", tags=["providers"])
 
@@ -34,3 +34,12 @@ async def retest(
 ):
     p = await _get_or_404(db, provider_id)
     return await retest_and_reset(p)
+
+
+@router.post("/grok-bridge-signed-in")
+async def grok_signed_in(
+    db: AsyncSession = Depends(get_db),
+    _: AdminUser = Depends(require_admin),
+):
+    providers = (await db.execute(select(Provider))).scalars().all()
+    return await grok_bridge_signed_in(list(providers))

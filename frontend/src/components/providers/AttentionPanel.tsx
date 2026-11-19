@@ -141,7 +141,7 @@ function Row({ item, provider }: { item: AttentionItem; provider?: Provider }) {
 
       {item.reason === 'logged_out' && (
         <p className="text-sm text-gray-600 dark:text-gray-300">
-          The grok.com session behind the bridge is logged out.{' '}
+          {item.message || 'The grok.com session behind the bridge is logged out.'}{' '}
           {item.bridge_login_url ? (
             <a href={item.bridge_login_url} target="_blank" rel="noopener noreferrer"
                className="inline-flex items-center text-indigo-500 hover:underline">

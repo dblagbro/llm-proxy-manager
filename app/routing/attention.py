@@ -27,6 +27,9 @@ BILLING_URLS: dict[str, str] = {
 }
 
 
+GROK_SIGNED_OUT_MESSAGE = "Grok bridge not signed in to grok.com: click Connect Grok"
+
+
 def _bridge_login_url(provider_type: str, extra_config: Any) -> str | None:
     if provider_type != "grok-web" or not isinstance(extra_config, dict):
         return None
@@ -80,6 +83,7 @@ def classify_provider(
         if provider_type == "grok-web":
             reason = REASON_LOGGED_OUT
             row["bridge_login_url"] = _bridge_login_url(provider_type, extra_config)
+            row["message"] = GROK_SIGNED_OUT_MESSAGE
         else:
             reason = REASON_AUTH
     elif backoff_remaining > 0:
@@ -152,3 +156,39 @@ async def retest_and_reset(provider: Any) -> dict:
         "reset": False,
         "error": str(result.get("error") or "test failed")[:300],
     }
+
+
+async def grok_bridge_signed_in(providers: list) -> dict:
+    """The operator finished Connect Grok: for each enabled grok-web provider
+    whose bridge now reports logged_in, reset the breaker on every node and
+    clear the keepalive chronic gate so it re-enters rotation immediately.
+
+    Verifies against the bridge itself (the caller's claim is not trusted).
+    """
+    from app.cluster.breaker_reset import reset_everywhere
+    from app.monitoring.keepalive import clear_chronic_gate
+    from app.providers.grok_web_bridge import bridge_logged_in
+
+    out: list[dict] = []
+    seen: dict[str, bool | None] = {}
+    for p in providers:
+        if not getattr(p, "enabled", True) or p.provider_type != "grok-web":
+            continue
+        ec = getattr(p, "extra_config", None)
+        ec = ec if isinstance(ec, dict) else {}
+        key = str(ec.get("bridge_url"))
+        if key not in seen:
+            seen[key] = await bridge_logged_in(ec)
+        if seen[key] is True:
+            peers = await reset_everywhere(p.id)
+            out.append(
+                {
+                    "provider_id": p.id,
+                    "reset": True,
+                    "gate_cleared": clear_chronic_gate(p.id),
+                    "peers": peers,
+                }
+            )
+        else:
+            out.append({"provider_id": p.id, "reset": False, "logged_in": seen[key]})
+    return {"providers": out}

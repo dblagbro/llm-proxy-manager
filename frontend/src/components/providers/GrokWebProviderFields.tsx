@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { providersApi } from '@/api'
 import { Input } from '@/components/ui/Input'
 import { Button } from '@/components/ui/Button'
 import type { ProviderFormState } from './ProviderForm'
@@ -68,6 +69,18 @@ export function GrokWebProviderFields({ form, set, editing }: Props) {
     if (changed) set({ extra_config: next })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode])
+
+  // v5.22.68 — on a signed-out -> signed-in transition, tell the backend to
+  // reset the breaker on every node and clear the keepalive gate.
+  const wasSignedOut = useRef(false)
+  useEffect(() => {
+    if (!status) return
+    if (!status.logged_in) { wasSignedOut.current = true; return }
+    if (wasSignedOut.current) {
+      wasSignedOut.current = false
+      providersApi.grokBridgeSignedIn().catch(() => undefined)
+    }
+  }, [status?.logged_in]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Live-poll bridge status when in bridge mode so operator sees login
   // state update immediately after they sign in.

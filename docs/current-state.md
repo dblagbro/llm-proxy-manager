@@ -1,5 +1,7 @@
 # ✅ Live now — 2026-11-18 (v5.22.67, both nodes)
 
+- **v5.22.68:** (PR, not deployed) grok bridge sign-in resets the breaker on all nodes and clears
+  the keepalive chronic gate; attention row says "click Connect Grok".
 - **v5.22.67:** breaker resets (passing Test, Needs-attention re-test, admin reset) now
   reach every node via HMAC `POST /cluster/circuit-breaker-reset` (`app/cluster/breaker_reset.py`).
 - **v5.22.66:** frontend-only "Duplicate" on provider cards (pre-filled Add form,
