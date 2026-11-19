@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import { Plus, RefreshCw, Search, ChevronDown, ChevronUp, Trash2, Edit2, ToggleLeft, ToggleRight, Play, FileText } from 'lucide-react'
+import { Plus, RefreshCw, Search, ChevronDown, ChevronUp, Trash2, Edit2, Copy, ToggleLeft, ToggleRight, Play, FileText } from 'lucide-react'
 import { providersApi, clusterApi, monitoringApi } from '@/api'
 import { Card, CardContent } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
@@ -17,7 +17,7 @@ import { ProviderModels } from '@/components/providers/ProviderModels'
 import { useAuth } from '@/context/AuthContext'
 import { formatTimeForUser } from '@/utils/time'
 import { ordinal } from '@/utils/ordinal'
-import { ProviderForm, type ProviderFormState, emptyProviderForm, providerToForm } from '@/components/providers/ProviderForm'
+import { ProviderForm, type ProviderFormState, emptyProviderForm, providerToForm, providerToDuplicateForm, OAUTH_PROVIDER_TYPES } from '@/components/providers/ProviderForm'
 import { clsx } from 'clsx'
 
 
@@ -30,6 +30,7 @@ export function ProvidersPage() {
   const [expanded, setExpanded] = useState<string | null>(null)
   const [showModal, setShowModal] = useState(false)
   const [editing, setEditing] = useState<Provider | null>(null)
+  const [duplicateOf, setDuplicateOf] = useState<string | null>(null)
   const [form, setForm] = useState<ProviderFormState>(emptyProviderForm())
   const [deleteId, setDeleteId] = useState<string | null>(null)
   const [testResults, setTestResults] = useState<Record<string, { success: boolean; response?: string; error?: string }>>({})
@@ -269,6 +270,7 @@ export function ProvidersPage() {
   })
 
   function openCreate() {
+    setDuplicateOf(null)
     setEditing(null)
     setForm(emptyProviderForm())
     setShowModal(true)
@@ -280,9 +282,17 @@ export function ProvidersPage() {
     setShowModal(true)
   }
 
+  function openDuplicate(p: Provider) {
+    setEditing(null)
+    setForm(providerToDuplicateForm(p))
+    setDuplicateOf(p.name)
+    setShowModal(true)
+  }
+
   function closeModal() {
     setShowModal(false)
     setEditing(null)
+    setDuplicateOf(null)
   }
 
   async function handleTest(id: string) {
@@ -802,6 +812,9 @@ export function ProvidersPage() {
                       <Button size="sm" variant="outline" onClick={() => openEdit(p)}>
                         <Edit2 className="h-3.5 w-3.5 mr-1" />Edit
                       </Button>
+                      <Button size="sm" variant="outline" onClick={() => openDuplicate(p)}>
+                        <Copy className="h-3.5 w-3.5 mr-1" />Duplicate
+                      </Button>
                       <Button size="sm" variant="outline" onClick={() => navigate(`/activity?provider=${p.id}`)}>
                         <FileText className="h-3.5 w-3.5 mr-1" />Logs
                       </Button>
@@ -821,6 +834,14 @@ export function ProvidersPage() {
       <Modal open={showModal} onClose={closeModal} size="lg">
         <ModalHeader onClose={closeModal}>{editing ? 'Edit Provider' : 'Add Provider'}</ModalHeader>
         <ModalBody>
+          {duplicateOf && !editing && (
+            <div className="mb-3 rounded border border-border bg-muted/40 p-2 text-xs text-muted-foreground">
+              Duplicating &quot;{duplicateOf}&quot;. Credentials are not copied; nothing is saved until you press Create.
+              {OAUTH_PROVIDER_TYPES.includes(form.provider_type) && (
+                <> This copy needs its own sign-in (OAuth / session) after it is created.</>
+              )}
+            </div>
+          )}
           <ProviderForm
             form={form}
             onChange={setForm}

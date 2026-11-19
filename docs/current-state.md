@@ -1,3 +1,6 @@
+> **v5.22.66 (PR pending, not deployed):** frontend-only "Duplicate" on provider
+> cards (pre-filled Add form, credentials stripped, OAuth sign-in note; models/aliases not copied).
+
 # ✅ Live now — 2026-11-18 (v5.22.64, both nodes)
 
 **v5.22.64 deployed to tmrwww01 + tmrwww02.** Contents: PR #28 (merge `14322d0`), Grok
