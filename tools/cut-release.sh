@@ -232,7 +232,8 @@ echo "All configured endpoints healthy."
 if [[ $DRY_RUN -eq 0 ]]; then
   BUILD_CTX=$(mktemp -d "${TMPDIR:-/tmp}/llm-proxy-release.XXXXXXXX")
   trap 'rm -rf -- "$BUILD_CTX"' EXIT
-  git archive --format=tar "$RELEASE_COMMIT" | tar -xf - -C "$BUILD_CTX"
+  # The staging directory is private. Keep tracked modes independent of the operator umask.
+  git archive --format=tar "$RELEASE_COMMIT" | tar -xpf - -C "$BUILD_CTX"
 else
   BUILD_CTX="<temporary archive of $RELEASE_COMMIT>"
 fi
