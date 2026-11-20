@@ -115,7 +115,7 @@ def _model_family_provider_types(model: str) -> Optional[set[str]]:
     families) return None and skip the family filter entirely so we don't
     over-restrict legitimate routes.
 
-    DevinGPT report 2026-05-01: claude-sonnet-4-6 was being routed to
+    integration client report 2026-05-01: claude-sonnet-4-6 was being routed to
     codex-oauth via a v3.0.22 fall-through. This filter is the hard backstop.
 
     v4.4.40 BUG-086 fix: ``cursor-oauth`` was missing from both the Claude
@@ -355,7 +355,7 @@ def _native_thinking_params(provider_type: str, model_id: str) -> dict:
 # toward maxOutputTokens on Gemini 2.5, so a fixed budget_tokens (default
 # 8192) >= the caller's max_tokens lets the model burn the ENTIRE output
 # cap on internal reasoning and return HTTP 200 with empty content + zero
-# completion text. Observed fleet-wide on coordinator-hub callers
+# completion text. Observed fleet-wide on integration client callers
 # 2026-06-10..12 (10-30% empty-completion rate at max_tokens=1024..4096;
 # 0% at max_tokens=32768). 128 is the floor because Gemini 2.5 Pro's
 # thinkingBudget minimum is 128 (Flash accepts 0 but Pro 400s below 128).

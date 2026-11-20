@@ -1013,7 +1013,7 @@ async def select_provider(
         )
 
     # v3.0.30: was INFO; demoted to DEBUG. This fired on every routing
-    # decision — 2728 lines in a 3h sample on www01, ~99% redundant with
+    # decision — 2728 lines in a 3h sample on the first gateway, ~99% redundant with
     # the structlog "request" line + the activity_log llm_request entry.
     # Operators who need it can flip the app.routing.router level to DEBUG
     # via /api/settings.

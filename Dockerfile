@@ -35,16 +35,15 @@ COPY alembic/ ./alembic/
 # Shipped inside the image so the operator can run them via
 # ``docker exec llm-proxy2 python3 -m tools.<name>`` without needing
 # a host Python env with the proxy stack installed.
-COPY tools/ ./tools/
-# v3.0.23: docs/ ships with the image so /lmrh.md (public, no-auth) can serve
-# the LMRH RFC draft for cross-app integration. Single source of truth.
-COPY docs/ ./docs/
+COPY tools/__init__.py tools/cleanup_alias_collisions.py ./tools/
+# The public LMRH endpoints serve only these reviewed specifications.
+COPY docs/draft-blagbrough-lmrh-00.md docs/lmrh-2.0-bidirectional.md ./docs/
 COPY --from=frontend-build /ui/dist ./frontend/dist
 
 # Source copied from the NFS tree can arrive without world r/x (dirs created with
 # mode 0774); the chmod below lets the non-root runtime user read all code.
-RUN addgroup --gid 1001 appgroup && \
-    adduser --uid 1001 --gid 1001 --no-create-home --disabled-password appuser && \
+RUN addgroup --gid 640 appgroup && \
+    adduser --uid 640 --gid 640 --no-create-home --disabled-password --gecos "" appuser && \
     mkdir -p /app/logs /app/data && \
     chown -R appuser:appgroup /app/logs /app/data && \
     chmod -R a+rX /app/app /app/alembic /app/tools /app/docs /app/frontend/dist

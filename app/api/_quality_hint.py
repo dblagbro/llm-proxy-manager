@@ -6,10 +6,7 @@ that the model correctly refuses. The model's polite refusal still
 costs tokens, and the caller usually doesn't notice — they store the
 "response" thinking it's useful KB content.
 
-Endorsed by the coordinator-hub team in their 2026-05-09 reply (after
-the operator-forwarded 2-memo round on the Avaya KB cookie-banner
-issue): "the X-Quality-Hint header is still useful as a second-layer
-detector for sites we haven't pre-emptively guarded."
+This header provides a second signal for sources that need a better fetch.
 
 This module emits a single response header:
 

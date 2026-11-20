@@ -7,7 +7,7 @@ used by other channels (Claude Code CLI, mobile app, etc.) —
 rotation/cascade logic was triggering on a wrong signal.
 
 Discovery (2026-05-10 capture by browser-bridge agent on the VG
-account ``dblagbro@voipguru.org``):
+account ``user@example.invalid``):
 
 - **Endpoint**: ``GET https://claude.ai/api/organizations/{uuid}/usage``
 - **Auth**: cookie-only. The browser session's ``sessionKey`` /

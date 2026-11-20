@@ -1,6 +1,6 @@
 """Read-only admin endpoints reachable via cluster HMAC auth (v4.3.5).
 
-Built for the coordinator-hub team's 2026-05-20 request: surface
+Built for the integration team's 2026-05-20 request: surface
 per-Anthropic-account weekly utilization on the hub UI without holding
 an admin session cookie on the proxy side.
 

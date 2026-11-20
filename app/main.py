@@ -112,7 +112,7 @@ install_infra_error_tap()
 # v5.3.4 — tap openai-python's transparent-retry INFO line into a
 # Prometheus counter + stop it from spamming stdout. Pre-tap, the
 # openai-python http layer would absorb 14 retries during a 13-min
-# burst (c1conv 2026-06-09 04:22-04:35 UTC) with no signal anywhere.
+# burst (integration 2026-06-09 04:22-04:35 UTC) with no signal anywhere.
 from app.observability.openai_retry_tap import install_openai_retry_tap
 install_openai_retry_tap()
 
@@ -128,7 +128,7 @@ try:
     # banner and the "If you need to debug this error" line. Both go
     # straight to stderr via print(), so the existing logger-level knob
     # didn't catch them. Discovered during the v3.0.30 log-mining audit:
-    # 35 "Give Feedback" prints in 3h on www01 — exactly matching the 35
+    # 35 "Give Feedback" prints in 3h on the first gateway — exactly matching the 35
     # CB openings on the cohere-keepalive bug being fixed in this same
     # version. Belt-and-suspenders: even after the keepalive fix, real
     # upstream errors during normal traffic shouldn't decorate stderr.
@@ -484,7 +484,7 @@ async def lifespan(app: FastAPI):
 
     # v5.7.15 — burst-trigger force-open. Fast DB-only sweep (every 60s
     # by default) that closes the 30-min gap between AI-supervisor LLM
-    # classifications. Catches the case the 2026-06-17 c1conv incident
+    # classifications. Catches the case the 2026-06-17 integration incident
     # sat in: a degrading upstream throws empty-success bursts faster
     # than the LLM supervisor sweeps. Default ON.
     try:
@@ -496,7 +496,7 @@ async def lifespan(app: FastAPI):
     # v5.14.2 (#492) — cluster-sync 403-rate escalation trigger. Watches
     # the v5.14.2 in-process ``cluster_sync_metrics`` ring buffer and
     # emits an activity_log warning when ``recent_403_pct`` crosses the
-    # configured threshold. Quiet at the known tmrwww02-peer 50% baseline;
+    # configured threshold. Quiet at the known peer 50% baseline;
     # catches any regression above. Default ON.
     try:
         from app.monitoring import cluster_sync_403_monitor as _cs403m
@@ -737,7 +737,7 @@ app.include_router(completions_router)
 app.include_router(responses_router)
 app.include_router(embeddings_router)
 app.include_router(models_router)
-# v5.9.0 — OpenAI-compatible audio + images endpoints (DevinGPT memo 2026-06-21).
+# v5.9.0 — OpenAI-compatible audio and image endpoints.
 from app.api.audio import router as audio_router  # noqa: E402
 from app.api.images import router as images_router  # noqa: E402
 app.include_router(audio_router)
@@ -883,7 +883,7 @@ async def _lmrh_warning_middleware(request: _LmrhRequest, call_next):
     # actual route handlers. Starlette normalizes header lookups to
     # lowercase, so "llm-hint" catches every case-variant. v3.0.25 was
     # checking "x-llm-hint" only and silently missed every real LMRH
-    # request — DevinGPT verification turned this up on 2026-05-01.
+    # request — integration client verification turned this up on 2026-05-01.
     hint_header = (
         request.headers.get("llm-hint")
         or request.headers.get("x-llm-hint")
@@ -976,7 +976,7 @@ if os.path.isdir(_static_dir):
 
     # v3.0.23 (Q12): public no-auth route for the LMRH RFC draft so other
     # apps and humans can link to it as documentation. Cross-app integration
-    # docs (DevinGPT, coordinator-hub, future LMRH adopters) reference this URL.
+    # documentation can link to this URL.
     _docs_dir = os.path.join(os.path.dirname(__file__), "..", "docs")
 
     @app.get("/lmrh", include_in_schema=False)

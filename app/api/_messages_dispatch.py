@@ -148,7 +148,7 @@ async def dispatch_claude_oauth_chain(
         access_token = route.provider.api_key or ""
         t0 = time.monotonic()
         upstream_body = dict(body)
-        # v3.0.42: auto-cache injection. Coordinator-hub bot daemons send
+        # v3.0.42: auto-cache injection. Integration client bot daemons send
         # large stable system prompts repeatedly; the v3.0.39 audit showed
         # cache_control adoption at exactly 0% across 3,005 claude-oauth
         # events in 24h. Wrap the last system block with cache_control:

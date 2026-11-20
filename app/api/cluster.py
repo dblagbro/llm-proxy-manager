@@ -80,7 +80,7 @@ async def health():
         "circuitBreakers": get_all_states(),
         # v3.9.8 — pool diagnostics. Surfaces SQLAlchemy QueuePool state
         # so operators can spot leaks without having to exec into the
-        # container. Surfaced after the 2026-05-14 www01 pool-exhaustion
+        # container. Surfaced after the 2026-05-14 gateway pool-exhaustion
         # incident, which took 13h to manifest and was diagnosed by
         # running ``engine.pool.checkedout()`` inside the container —
         # making this visible at the health endpoint eliminates that step.

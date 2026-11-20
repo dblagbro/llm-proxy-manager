@@ -49,7 +49,7 @@ def normalize_messages_for_bridge(messages: list) -> list:
         at generateCursorBody (src/utils/utils.js:79)
 
     Real OpenAI accepts either ``string`` OR ``list[part]``. To keep
-    callers (claude-cli, opencode-bin, our own coordinator-hub bot)
+    callers (claude-cli, opencode-bin, our own integration client bot)
     working against cursor-oauth providers without forcing every caller
     to know about the bridge's stricter shape, this helper coerces
     every ``role:*`` message's ``content`` list to a single joined

@@ -1,0 +1,15 @@
+{
+  "host": "example-host",
+  "container": "example-gateway",
+  "service": "example-gateway",
+  "project": "example-project",
+  "volumes": [
+    {"name": "example-data", "root": "/var/lib/docker/volumes/example-data/_data", "destination": "/app/data"},
+    {"name": "example-logs", "root": "/var/lib/docker/volumes/example-logs/_data", "destination": "/app/logs"}
+  ],
+  "old": [1001, 1001],
+  "new": [640, 640],
+  "backup_parent": "/root/gateway-backups",
+  "manifest_parent": "/root/gateway-manifests",
+  "db_name": "gateway.db"
+}

@@ -394,7 +394,7 @@ async def emit_substitution_disclosure_for_route(
     """
     if not getattr(route, "compliance_substituted", False):
         # v5.9.3 — always emit X-Compliance-Substitution so hub-side
-        # defense-in-depth scanners (coordinator-hub
+        # defense-in-depth scanners (integration client
         # `_scan_anthropic_response_model`) can treat absence as a hard
         # error instead of a heuristic. Pre-v5.9.3 the header was only
         # set when substitution actually fired — absence meant either

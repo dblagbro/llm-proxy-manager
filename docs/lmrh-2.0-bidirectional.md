@@ -335,7 +335,7 @@ each node tracks its own dispatch metrics independently). As a
 consequence:
 
 - **ETags differ across cluster nodes** for the same logical
-  configuration. www01's snapshot ETag will not match www02's even
+  configuration. one node's snapshot ETag will not match another's even
   when the underlying `Provider` + `ModelCapability` rows are
   identical, because traffic distribution differs and so the
   aggregated latency / success rate / sample counts diverge.
@@ -436,10 +436,8 @@ a valid LMRH 1.x hint string — your inference calls keep working.
 
 ## Change log
 
-- **v3.10.6** (2026-05-15): Phase 4 begins — v2 endpoints enabled on
-  www01 via `LMRH_V2_NODE_OVERRIDE=on`; `/.well-known/lmrh-config`,
-  `/lmrh/providers`, `/lmrh/health`, `/lmrh/quotes` + the reference SDK
-  validated live; coordinator-hub adoption outreach sent.
+- **v3.10.6** (2026-05-15): v2 endpoints and the reference SDK were
+  validated in a staged rollout.
 - **v3.3.0** (2026-05-09): Phase 1 ships — `/.well-known/lmrh-config`,
   `/lmrh/providers`, `/lmrh/providers/{id}`, `/lmrh/health`. Snapshot
   module, ETag round-trip, per-key rate limits, `Link` header,
@@ -500,26 +498,9 @@ a valid LMRH 1.x hint string — your inference calls keep working.
 
 ## Future work (deferred)
 
-**Status note (2026-05-10)**: the items previously listed here as
-"Phase 3 future work" have all shipped between v3.3.0 and v3.4.0
-(subscription-quota disclosure, per-direction cost split, SSE
-stream endpoint). The remaining real-world gap is **adoption**:
-the spec is complete, the SDK is in `sdk/python/`, but zero
-downstream callers polled `/lmrh/providers` in 24 h as of
-2026-05-10 22:00 EDT. Updating this section to reflect that.
-
-- **Phase 4 — downstream adoption** (in progress, 2026-05-15):
-  - v2 endpoints **enabled on www01** via `LMRH_V2_NODE_OVERRIDE=on`
-    — the v3.7.18 per-node staged-rollout mechanism. `/.well-known/
-    lmrh-config`, `/lmrh/providers`, `/lmrh/health`, `/lmrh/quotes`
-    all verified live; the reference SDK validated end-to-end against
-    www01 (`is_supported()` → True, hints synthesized for cheapest /
-    fastest / most_reliable).
-  - Coordinator-hub is the heaviest LMRH 1.x consumer (524 req/24h)
-    and the adoption target — outreach sent 2026-05-15.
-  - Once the hub is live on the v2 SDK and stable for 7 days: flip the
-    cluster-wide `lmrh_v2_enabled` flag (only the www01 node-override
-    is on today) and publish the SDK to PyPI under a stable name.
+Subscription-quota disclosure, directional cost splits, and streaming
+endpoints shipped between v3.3.0 and v3.4.0. Adoption and downstream
+client integration remain ongoing work.
 
 - **Phase 5 — proxy→caller bidirectional metrics feedback**
   (caller-side AI rate limiter design from the 2026-05-10

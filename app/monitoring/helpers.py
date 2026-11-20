@@ -313,7 +313,7 @@ def _build_event_meta_base(
         # v3.9.16 (P3b) — which node served this request. Without this,
         # provider_metrics is cluster-aggregate-only (LWW-replicated)
         # and operators can't tell whether the load is balanced across
-        # www01 / www02 / GCP. Stored in event_meta (not a column) so
+        # multiple gateways. Stored in event_meta (not a column) so
         # we don't need a schema migration; per-node rollups query via
         # `json_extract(event_meta, '$.node_id')`.
         "node_id": getattr(settings, "cluster_node_id", None) or "unknown",

@@ -1,59 +1,11 @@
 #!/bin/bash
 # tools/cut-release.sh — one-shot release ceremony for llm-proxy v2.
 #
-# Operator-locked rule: every version bump = git tag + GitHub release +
-# Docker Hub push, all in the same session (see
-# ~/.claude/projects/-home-dblagbro/memory/feedback_release_every_version.md).
-#
-# Usage:
-#   tools/cut-release.sh                     # picks up version from app/__version__.py
-#   tools/cut-release.sh --version 3.9.8     # explicit override
-#   tools/cut-release.sh --dry-run           # print steps without executing
-#
-# Prerequisites:
-#   - Working tree clean OR the only uncommitted change is the version bump
-#   - gh CLI authenticated (gh auth status)
-#   - Docker logged in to docker.io as dblagbro (docker login)
-#   - Branch is main (or pass --target <branch>)
-#
-# Steps:
-#   1. Parse version, validate not already released
-#   2. git tag vX.Y.Z (annotated, with subject from latest commit)
-#   3. git push origin main (if commits ahead) + git push origin vX.Y.Z
-#   4. gh release create vX.Y.Z --notes-from-tag --target <branch>
-#   5. sudo docker build -t dblagbro/llm-proxy2:X.Y.Z .
-#   6. sudo docker push dblagbro/llm-proxy2:X.Y.Z
-#   7. sudo docker tag dblagbro/llm-proxy2:X.Y.Z dblagbro/llm-proxy2:latest
-#   8. sudo docker push dblagbro/llm-proxy2:latest
-#   9. sudo docker tag dblagbro/llm-proxy2:X.Y.Z llm-proxy2:latest
-#       — local-name retag so the on-host compose pickup is correct on
-#         tmrwww01 (its compose uses the unqualified `llm-proxy2:latest`).
-#         Was the v4.3.3 release-deploy footgun: without this step the
-#         first `docker compose up -d --force-recreate` on tmrwww01
-#         silently kept the prior container's image.
-#  10. Backup tarball to /mnt/s/tmrwww01-home-backups/backups/
-#  11. Print verification + per-node redeploy commands
-#
-# Fleet compose-image-reference inconsistency (read once and remember):
-#   - tmrwww01 + tmrwww02 compose : `image: llm-proxy2:latest`        (local tag)
-#   The redeploy hints printed at the end use the pull+retag form on tmrwww02.
-#
-# 2026-08-15 repairs (this script had not cut a release since v5.21.16, and
-# 12 versions shipped untagged/unpublished behind it — these were why):
-#   1. Pre-cut live-verify curled a THIRD canonical URL, the GCP node
-#      c1conversations-avaya-01.avaya.c1cx.com. That node is dropped and
-#      off-limits, so the check failed and `exit 1`-ed EVERY cut. Removed —
-#      the two TMR nodes are the whole cluster now. (Not worked around with
-#      --skip-live-verify, which would also disable the checks we want.)
-#   2. Backup tarball tar'd `-C /home/dblagbro llm-proxy-v2` — the pre-move
-#      copy. Source of truth moved to /mnt/s/code/llm-proxy-v2 on 2026-08-13.
-#   3. Docker build read its context from the NFS source dir (~305M over
-#      NFS). Now stages to local disk via stage-build.sh first, matching the
-#      documented build path.
-#   4. Closing hints printed `gcloud compute ssh` redeploy commands for the
-#      GCP node. Removed — GCP is out of scope until the operator says so.
-#   5. Added a README version-drift guard (the operator-locked rule's step 1;
-#      README had rotted to v4.4.18 while v5.22.11 shipped).
+# Requires explicit destination, tested image, backup directory, and the health
+# endpoints for every running gateway. A clean committed tree is required.
+# The image is built and matched against the tested ID before publication.
+# Example: --docker-repo namespace/repository --tested-image-id sha256:...
+#          --backup-dir /secure/backups --health-url https://host/health
 
 set -euo pipefail
 
@@ -61,19 +13,72 @@ REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 VERSION=""
 BRANCH="main"
 DRY_RUN=0
-DOCKER_REPO="dblagbro/llm-proxy2"
+DOCKER_REPO=""
+TESTED_IMAGE_ID=""
+BACKUP_DIR=""
+HEALTH_URLS=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --version) VERSION="$2"; shift 2 ;;
     --target)  BRANCH="$2"; shift 2 ;;
+    --docker-repo) DOCKER_REPO="$2"; shift 2 ;;
+    --tested-image-id) TESTED_IMAGE_ID="$2"; shift 2 ;;
+    --backup-dir) BACKUP_DIR="$2"; shift 2 ;;
+    --health-url) HEALTH_URLS+=("$2"); shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
 
+if [[ ! "$DOCKER_REPO" =~ ^[a-z0-9]+([._-][a-z0-9]+)*/[a-z0-9]+([._-][a-z0-9]+)*$ ]]; then
+  echo "ERROR: specify the reviewed Docker Hub destination with --docker-repo namespace/repository." >&2
+  exit 2
+fi
+
+if [[ ! "$TESTED_IMAGE_ID" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+  echo "ERROR: specify the exact tested image ID using --tested-image-id sha256:..." >&2
+  exit 2
+fi
+
+# Fail closed if the operator omits a backup location or health endpoints.
+if [[ "$BACKUP_DIR" != /* || "$BACKUP_DIR" == / || "$BACKUP_DIR" == *"/../"* || "$BACKUP_DIR" == */.. || -L "$BACKUP_DIR" || ! -d "$BACKUP_DIR" || ! -w "$BACKUP_DIR" ]]; then
+  echo "ERROR: --backup-dir must be an existing, writable absolute directory without traversal or a final symlink." >&2
+  exit 2
+fi
+if (( ${#HEALTH_URLS[@]} == 0 )); then
+  echo "ERROR: provide --health-url for each gateway." >&2
+  exit 2
+fi
+if ! python3 - "${HEALTH_URLS[@]}" <<'PYURL'
+import sys
+from urllib.parse import urlsplit
+
+for url in sys.argv[1:]:
+    try:
+        parsed = urlsplit(url)
+        if (
+            parsed.scheme != "https" or not parsed.hostname
+            or parsed.username is not None or parsed.password is not None
+            or parsed.query or parsed.fragment
+            or any(ord(c) <= 32 or ord(c) == 127 for c in url)
+        ):
+            raise ValueError
+        _ = parsed.port
+    except ValueError:
+        sys.exit(1)
+PYURL
+then
+  echo "ERROR: health URLs must be HTTPS with a host, without credentials, query, or fragment." >&2
+  exit 2
+fi
+
+SOURCE_VERSION=$(python3 -c "import re; print(re.search(r'__version__ = \"([^\"]+)\"', open('$REPO_DIR/app/__version__.py').read()).group(1))")
 if [[ -z "$VERSION" ]]; then
-  VERSION=$(python3 -c "import re; print(re.search(r'__version__ = \"([^\"]+)\"', open('$REPO_DIR/app/__version__.py').read()).group(1))")
+  VERSION="$SOURCE_VERSION"
+elif [[ "$VERSION" != "$SOURCE_VERSION" ]]; then
+  echo "ERROR: requested version differs from app/__version__.py ($SOURCE_VERSION)." >&2
+  exit 1
 fi
 TAG="v${VERSION}"
 
@@ -133,23 +138,34 @@ if [[ -n "$LAST_TAG" ]]; then
   echo ""
 fi
 
-# Sanity: working tree (allow staged version bump; reject unstaged changes
-# in tracked files other than .pyc bytecode)
-if ! git diff --quiet -- ':(exclude)*.pyc'; then
-  echo "ERROR: unstaged changes present. Commit/stash before releasing." >&2
-  git diff --stat -- ':(exclude)*.pyc' >&2
+# A release must describe exactly one committed source tree. Staged changes and
+# untracked files cannot be represented by the release commit either.
+if [[ -n "$(git status --porcelain --untracked-files=normal)" ]]; then
+  echo "ERROR: release requires a clean working tree, including untracked files." >&2
+  git status --short >&2
   exit 1
 fi
+if [[ "$(git branch --show-current)" != "$BRANCH" ]]; then
+  echo "ERROR: checked-out branch does not match release target $BRANCH." >&2
+  exit 1
+fi
+RELEASE_COMMIT=$(git rev-parse --verify HEAD)
+echo "Release commit: $RELEASE_COMMIT"
 
 if git rev-parse "$TAG" >/dev/null 2>&1; then
   echo "ERROR: tag $TAG already exists locally. Pick a new version." >&2
   exit 1
 fi
+if ! REMOTE_TAG=$(GIT_TERMINAL_PROMPT=0 git ls-remote --tags origin "refs/tags/$TAG"); then
+  echo "ERROR: could not check remote tags." >&2
+  exit 1
+fi
+if [[ -n "$REMOTE_TAG" ]]; then
+  echo "ERROR: tag $TAG already exists remotely." >&2
+  exit 1
+fi
 
-# README version-drift guard. Step 1 of the operator-locked release rule is
-# "README bump" — and it is the step that rots silently, because nothing here
-# checked it: on 2026-08-15 the README still read v4.4.18 while v5.22.11 was
-# live. Fatal on purpose; the fix is one line.
+# Require the documented version to match the release version.
 README_VER=$(grep -oE 'Current version: \*\*v[0-9]+\.[0-9]+\.[0-9]+\*\*' "$REPO_DIR/README.md" 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "")
 if [[ -z "$README_VER" ]]; then
   echo "ERROR: could not find the 'Current version: **vX.Y.Z**' line in README.md." >&2
@@ -163,124 +179,98 @@ if [[ "$README_VER" != "$VERSION" ]]; then
 fi
 echo "✓ README version matches ($README_VER)"
 
-if gh release view "$TAG" >/dev/null 2>&1; then
-  echo "ERROR: GitHub release $TAG already exists." >&2
+# A public registry lookup must succeed before absence of the version tag can
+# be trusted. Do not overwrite a versioned tag during an ordinary release.
+REPO_STATUS=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 "https://hub.docker.com/v2/repositories/$DOCKER_REPO/")
+if [[ "$REPO_STATUS" != 200 ]]; then
+  echo "ERROR: Docker Hub repository lookup failed; status $REPO_STATUS." >&2
+  exit 1
+fi
+TAG_STATUS=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 "https://hub.docker.com/v2/repositories/$DOCKER_REPO/tags/$VERSION/")
+if [[ "$TAG_STATUS" != 404 ]]; then
+  echo "ERROR: Docker Hub version tag exists or lookup failed; status $TAG_STATUS." >&2
   exit 1
 fi
 
-# 0. Pre-cut live-verify (L3 / Batch E — added 2026-05-20).
-# Hits the 3 canonical health URLs before tagging. The point is to
-# catch a fleet that's silently broken at deploy time — if any node
-# is unreachable / unhealthy / on the wrong version, tagging a new
-# release would compound the problem (downstream consumers chase
-# the new image while the current one is already misbehaving).
-# Aborts the cut if any check fails; ``--skip-live-verify`` flag
-# is the explicit bypass for legitimate cases (e.g. cutting a
-# release whose deploy ITSELF fixes the broken state).
-SKIP_LIVE_VERIFY="${SKIP_LIVE_VERIFY:-0}"
-for arg in "$@"; do
-  if [ "$arg" = "--skip-live-verify" ]; then
-    SKIP_LIVE_VERIFY=1
+# Authentication failures and API errors are not evidence of an absent release.
+gh auth status >/dev/null
+RELEASE_REPO=$(gh repo view --json nameWithOwner --jq .nameWithOwner)
+if RELEASE_LOOKUP=$(gh api "repos/$RELEASE_REPO/releases/tags/$TAG" 2>&1); then
+  echo "ERROR: GitHub release $TAG already exists." >&2
+  exit 1
+elif [[ "$RELEASE_LOOKUP" != *"HTTP 404"* ]]; then
+  echo "ERROR: could not verify whether GitHub release $TAG exists." >&2
+  exit 1
+fi
+
+# Every explicitly specified health endpoint must be reachable and healthy.
+echo "=== Pre-cut live-verify ==="
+VERIFY_FAILED=0
+for url in "${HEALTH_URLS[@]}"; do
+  resp=$(curl -sf --max-time 10 "$url" 2>&1) || {
+    echo "  $url: FAIL (curl exit $?)"
+    VERIFY_FAILED=1
+    continue
+  }
+  status=$(echo "$resp" | python3 -c "import sys,json; print(json.load(sys.stdin).get('status','MISSING'))" 2>/dev/null) || status="PARSE_FAIL"
+  version=$(echo "$resp" | python3 -c "import sys,json; print(json.load(sys.stdin).get('version','MISSING'))" 2>/dev/null) || version="PARSE_FAIL"
+  if [ "$status" != "healthy" ]; then
+    echo "  $url: FAIL (status=$status)"
+    VERIFY_FAILED=1
+  else
+    echo "  $url: OK (status=$status version=$version)"
   fi
 done
-
-if [ "$SKIP_LIVE_VERIFY" != "1" ]; then
-  echo "=== Pre-cut live-verify ==="
-  # The cluster is exactly these two nodes. Do NOT re-add a GCP URL here:
-  # doing so aborted every release cut from v5.21.16 (2026-08-06) onward.
-  CANONICAL_URLS=(
-    "https://www.voipguru.org/llm-proxy2/health"
-    "https://www2.voipguru.org/llm-proxy2/health"
-  )
-  VERIFY_FAILED=0
-  for url in "${CANONICAL_URLS[@]}"; do
-    # Allow up to 10s per node. Look for `"status":"healthy"` AND
-    # `"version":"..."` (any value — we don't pin to current since
-    # the new tag is about to ship the new version).
-    resp=$(curl -sf --max-time 10 "$url" 2>&1) || {
-      echo "  $url: FAIL (curl exit $?)"
-      VERIFY_FAILED=1
-      continue
-    }
-    status=$(echo "$resp" | python3 -c "import sys,json; print(json.load(sys.stdin).get('status','MISSING'))" 2>/dev/null) || status="PARSE_FAIL"
-    version=$(echo "$resp" | python3 -c "import sys,json; print(json.load(sys.stdin).get('version','MISSING'))" 2>/dev/null) || version="PARSE_FAIL"
-    if [ "$status" != "healthy" ]; then
-      echo "  $url: FAIL (status=$status)"
-      VERIFY_FAILED=1
-    else
-      echo "  $url: OK (status=$status version=$version)"
-    fi
-  done
-  if [ "$VERIFY_FAILED" = "1" ]; then
-    echo ""
-    echo "ERROR: pre-cut live-verify failed on one or more canonical URLs." >&2
-    echo "  Fix the unhealthy node(s) before cutting $TAG, OR re-run with --skip-live-verify" >&2
-    echo "  if the new release ITSELF is the fix for the broken state." >&2
-    exit 1
-  fi
-  echo "All canonical URLs healthy — proceeding with cut."
-  echo ""
+if [ "$VERIFY_FAILED" = "1" ]; then
+  echo "ERROR: pre-cut live verification failed." >&2
+  exit 1
 fi
+echo "All configured endpoints healthy."
 
-# 1. Tag
-SUBJECT=$(git log -1 --format='%s')
-BODY=$(git log -1 --format='%b')
-run git tag -a "$TAG" -m "$SUBJECT"
-
-# 2. Push branch + tag
-run git push origin "$BRANCH"
-run git push origin "$TAG"
-
-# 3. GitHub release (notes = commit body; falls back to subject if empty)
-NOTES="${BODY:-See [CHANGELOG.md](CHANGELOG.md) entry for $TAG.}"
-run gh release create "$TAG" --title "$TAG — ${SUBJECT#*: }" --notes "$NOTES" --target "$BRANCH"
-
-# 4. Docker build + push (versioned tag).
-#    Build from the LOCAL staging tree, not $REPO_DIR: the source of truth is
-#    on the /mnt/s NFS share and docker reads the entire ~305M context on
-#    every build. stage-build.sh rsyncs SAN -> local disk; building the SAN
-#    path directly is slow and puts a hard NFS mount in the build's critical
-#    path. Staging is a no-op refresh when nothing changed.
-STAGE_SCRIPT=/home/dblagbro/docker/scripts/stage-build.sh
-BUILD_CTX=/home/dblagbro/docker/build/llm-proxy-v2
-if [[ -x "$STAGE_SCRIPT" ]]; then
-  run "$STAGE_SCRIPT" llm-proxy-v2
+# Build an archive of the exact commit, not an independently refreshed staging
+# directory. Build before publishing so build failure cannot create a release.
+if [[ $DRY_RUN -eq 0 ]]; then
+  BUILD_CTX=$(mktemp -d "${TMPDIR:-/tmp}/llm-proxy-release.XXXXXXXX")
+  trap 'rm -rf -- "$BUILD_CTX"' EXIT
+  git archive --format=tar "$RELEASE_COMMIT" | tar -xf - -C "$BUILD_CTX"
 else
-  echo "WARNING: $STAGE_SCRIPT not found — building from $REPO_DIR (slow, NFS)." >&2
-  BUILD_CTX="$REPO_DIR"
+  BUILD_CTX="<temporary archive of $RELEASE_COMMIT>"
 fi
 run sudo docker build -t "${DOCKER_REPO}:${VERSION}" "$BUILD_CTX"
-run sudo docker push "${DOCKER_REPO}:${VERSION}"
+if [[ $DRY_RUN -eq 0 ]]; then
+  BUILT_IMAGE_ID=$(sudo docker image inspect --format '{{.Id}}' "${DOCKER_REPO}:${VERSION}")
+  if [[ "$BUILT_IMAGE_ID" != "$TESTED_IMAGE_ID" ]]; then
+    echo "ERROR: rebuilt image differs from the tested image; no release was published." >&2
+    exit 1
+  fi
+fi
 
-# 5. Retag + push :latest (Hub-qualified)
-run sudo docker tag "${DOCKER_REPO}:${VERSION}" "${DOCKER_REPO}:latest"
-run sudo docker push "${DOCKER_REPO}:latest"
-
-# 5b. Local-name retag for the on-host compose pickup.
-#     Without this step, tmrwww01's `docker compose up -d
-#     --force-recreate llm-proxy2` keeps the OLD container's image —
-#     because tmrwww01's compose references `image: llm-proxy2:latest`
-#     (unqualified) and that local tag wasn't updated by the Hub push
-#     above. Silently re-runs the previous version. (Was the v4.3.3
-#     release-deploy footgun on 2026-05-19.)
-run sudo docker tag "${DOCKER_REPO}:${VERSION}" "llm-proxy2:latest"
-
-# 6. Backup tarball — write directly to NFS to avoid local-disk fill-up.
+# Archive and verify the exact source before publishing anything.
 TS=$(date -u +%Y%m%dT%H%M%SZ)
-BACKUP_DIR="/mnt/s/tmrwww01-home-backups/backups"
-mkdir -p "$BACKUP_DIR"
 TARBALL="$BACKUP_DIR/llm-proxy-v2-${TAG}-${TS}.tar.gz"
-# Tar the SOURCE OF TRUTH (/mnt/s/code), not /home/dblagbro — the latter is
-# the pre-move copy as of 2026-08-13 and would archive stale source.
-run tar \
-  --exclude='llm-proxy-v2/.git' \
-  --exclude='llm-proxy-v2/__pycache__' \
-  --exclude='llm-proxy-v2/.pytest_cache' \
-  --exclude='llm-proxy-v2/.ruff_cache' \
-  --exclude='llm-proxy-v2/frontend/node_modules' \
-  --exclude='llm-proxy-v2/frontend/dist' \
-  --exclude='*.pyc' \
-  -czf "$TARBALL" -C /mnt/s/code llm-proxy-v2
+if [[ $DRY_RUN -eq 0 ]]; then
+  if ! (set -o noclobber; : > "$TARBALL"); then
+    echo "ERROR: source backup already exists or cannot be created." >&2
+    exit 1
+  fi
+fi
+run git archive --format=tar.gz --prefix="llm-proxy-v2/" --output="$TARBALL" "$RELEASE_COMMIT"
+if [[ $DRY_RUN -eq 0 ]]; then
+  tar -tzf "$TARBALL" >/dev/null
+  sha256sum "$TARBALL"
+fi
+
+# Tag and publish only after image build and backup succeed. Publication is
+# multi-step; if a remote step fails, inspect its state before retrying.
+SUBJECT=$(git log -1 --format='%s')
+BODY=$(git log -1 --format='%b')
+run git tag -a "$TAG" -m "$SUBJECT" "$RELEASE_COMMIT"
+run git push origin "$RELEASE_COMMIT:refs/heads/$BRANCH"
+run git push origin "$TAG"
+NOTES="${BODY:-See [CHANGELOG.md](CHANGELOG.md) entry for $TAG.}"
+run gh release create "$TAG" --title "$TAG — ${SUBJECT#*: }" --notes "$NOTES" --target "$BRANCH"
+run sudo docker push "${DOCKER_REPO}:${VERSION}"
+# Promotion to :latest is a separate step after the registry pull test.
 
 echo ""
 echo "=== Done. Verification commands: ==="
@@ -288,24 +278,7 @@ echo "  gh release view $TAG"
 echo "  curl -s https://hub.docker.com/v2/repositories/${DOCKER_REPO}/tags?page_size=5 | python3 -m json.tool | grep -A1 \\\"name\\\""
 echo "  ls -lh $TARBALL"
 echo ""
-echo "To redeploy on fleet (rolling, one node at a time):"
-echo ""
-echo "  # Node 1 — tmrwww01 (this host): local llm-proxy2:latest tag was"
-echo "  # already updated in step 5b above. Plain compose recreate is enough."
-echo "  sudo docker compose --project-directory /home/dblagbro/docker \\"
-echo "    up -d --force-recreate --no-deps llm-proxy2"
-echo ""
-echo "  # Verify before proceeding:"
-echo "  curl -s https://www.voipguru.org/llm-proxy2/health | python3 -m json.tool | head -6"
-echo ""
-echo "  # Node 2 — tmrwww02: same compose pattern as tmrwww01 (local-tag"
-echo "  # reference), so the recreate must be preceded by a pull + local retag."
-echo "  ssh tmrwww02 \"sudo docker pull ${DOCKER_REPO}:${VERSION} && \\"
-echo "    sudo docker tag ${DOCKER_REPO}:${VERSION} llm-proxy2:latest && \\"
-echo "    sudo docker compose --project-directory /home/dblagbro/docker \\"
-echo "    up -d --force-recreate --no-deps llm-proxy2\""
-echo ""
-echo "  # Verify:"
-echo "  curl -s https://www2.voipguru.org/llm-proxy2/health | python3 -m json.tool | head -6"
-echo ""
-echo "  # That is the whole fleet — two nodes. GCP is out of scope."
+echo "Before deployment: record the registry digest and follow the reviewed"
+echo "per-node migration and rollback plan in docs/service-uid-migration.md."
+echo "Neither :latest nor the local Compose image tag was changed."
+echo "Promote :latest only after the versioned registry image passes its pull test."

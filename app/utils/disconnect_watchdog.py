@@ -1,6 +1,6 @@
 """v5.7.17 — client-disconnect watchdog dependency.
 
-The root-cause for the 2026-06-16 tmrwww01 DB pool leak: when a client
+The root-cause for the 2026-06-16 gateway DB pool leak: when a client
 (e.g. the AI supervisor probe) disconnected mid-request — usually due
 to httpx timeout — FastAPI/Starlette did NOT auto-cancel the handler.
 The handler kept running, kept holding its ``async with db: ...``

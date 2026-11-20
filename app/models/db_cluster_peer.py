@@ -40,7 +40,7 @@ class ClusterPeer(Base):
         id              CLUSTER_NODE_ID of the remote node
                         (e.g. "llm-proxy2-www2"). Primary key.
         url             Base URL of the remote node
-                        (e.g. "https://www2.voipguru.org/llm-proxy2").
+                        (e.g. "https://host.example.invalid/llm-proxy2").
                         ``/cluster/sync`` is appended at push time.
         name            Optional human-readable name (defaults to id).
         added_at        Row creation timestamp (UTC, naive).

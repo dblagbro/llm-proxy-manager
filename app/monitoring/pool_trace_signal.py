@@ -1,6 +1,6 @@
 """v5.21.6 — SIGUSR2 handler dumps the DB-pool trace to container logs.
 
-Chronic outage since 2026-07-09: tmrwww01 and tmrwww02 llm-proxy2 pool
+Chronic outage since 2026-07-09: the first gateway and the second gateway llm-proxy2 pool
 exhausts every 24-48h and login stops working. Root cause unknown
 because forensics require admin session cookies — which requires
 login — which requires the pool — which is exhausted. Chicken/egg.

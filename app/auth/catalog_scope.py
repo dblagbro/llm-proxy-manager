@@ -1,10 +1,7 @@
 """v3.7.2 — narrower admin scope for the model-identity catalog API.
 
-Committed to the coordinator-hub team in the #230 contract reply on
-2026-05-09: their hub-side `proxy_admin_key_enc` should be swappable
-in-place for a narrower-scoped key that can only edit the catalog,
-without giving the hub access to the full admin surface (provider
-secrets, billing scrapes, user management, etc.).
+A narrower-scoped key can edit the catalog without access to the full
+admin surface (provider secrets, billing scrapes, user management, etc.).
 
 This module adds two things:
 

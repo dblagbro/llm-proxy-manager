@@ -57,7 +57,7 @@ class _OpenAIRetryTap(logging.Handler):
             observe_openai_retry(endpoint or "other")
             # v5.4.0 (BUG-072): also write to activity_log so the retry
             # is visible from SQL probes. Pre-v5.4.0 the QA sweep found
-            # zero ``%retry%`` event_type rows in 24h on tmrwww01 because
+            # zero ``%retry%`` event_type rows in 24h on the first gateway because
             # we only incremented Prometheus. Now the row exists too.
             # Best-effort: a Postgres pool exhaustion on this hot path
             # MUST NOT crash the logging handler.

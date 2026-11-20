@@ -2,7 +2,7 @@
 
 24h activity-log audit on v3.0.39 found cache_control adoption at exactly
 0% across 16k events — including 3,005 Anthropic Pro Max OAuth calls with
-50–80k-token contexts. Coordinator-hub bot daemons send the same large
+50–80k-token contexts. Integration client bot daemons send the same large
 system prompt repeatedly without `cache_control` blocks because their
 callers don't know about Anthropic's prompt caching feature.
 

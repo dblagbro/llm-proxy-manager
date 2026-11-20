@@ -1,4 +1,4 @@
-"""Run runtime ORM models (v3.0 — coordinator-hub spec, R1).
+"""Run runtime ORM models (v3.0 — integration client spec, R1).
 
 Split out from ``db.py`` in v4.4.11. Owns the 4 tables that back the
 server-mediated agent loop:

@@ -2,8 +2,7 @@
 
 Per-canonical-model GET + PUT for ``aliases`` / ``family`` / ``variant``.
 Designed against the OpenAPI spec at
-``docs/rfc/2026-05-model-identity-put-spec.md`` (locked with the
-coordinator-hub team 2026-05-09).
+``docs/rfc/2026-05-model-identity-put-spec.md``.
 
 Path: ``/api/llm/models/{model_id:path}``. The slash in ``model_id``
 is allowed (canonical names like ``x-ai/grok-3`` carry a vendor

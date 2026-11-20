@@ -49,7 +49,7 @@ async def normalize_priority_ties(db: AsyncSession) -> int:
 
     v3.0.24 (#136): scope changed to ``deleted_at IS NULL AND enabled=True``.
     Tombstoned and disabled rows don't participate in routing — letting them
-    contribute to tie detection caused observed ping-pong on www01 (45 fires
+    contribute to tie detection caused observed ping-pong on the first gateway (45 fires
     in 3h with count=2 each, while peers fired 0). Logs the bumped row IDs
     so future debugging knows what moved.
 

@@ -115,7 +115,7 @@ if "sqlite" in settings.database_url:
             logger.warning(f"SQLite PRAGMA setup failed: {e}")
 
 # v3.10.2 (ARCH-A) — DB connection-pool checkout tracer. The latent
-# pool leak (www01 + GCP saturated QueuePool 13-20h post-deploy,
+# pool leak (multiple gateways saturated QueuePool 13-20h post-deploy,
 # returning /health 500s) has an unknown root cause: every
 # ``AsyncSessionLocal()`` is ``async with``-wrapped, so it is not naive
 # session leakage. This tracer records the acquisition stack of every
@@ -241,7 +241,7 @@ if settings.db_pool_trace:
         # is what we want for leak hunting — exactly the part the slice
         # was discarding. (Both v3.10.13's bump 18→45 and the original
         # ``[-18:]`` had this direction wrong; the 2026-05-26 ARCH-A
-        # trace on www01 returned an all-SQLA stack despite a 59h
+        # trace on the first gateway returned an all-SQLA stack despite a 59h
         # leaked checkout, which is what surfaced it.) Drop the
         # trailing ``format_stack`` frame only.
         # v4.4.22 NOTE: the greenlet boundary defeats this whichever

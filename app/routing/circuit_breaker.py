@@ -330,7 +330,7 @@ def is_billing_error(error_text: str) -> bool:
 # failures on ANY error class, which means a malformed body from a
 # caller (the bot sent an orphan tool_call_id, a list-content where
 # the upstream wanted string, etc.) trips OUR provider's CB as if the
-# UPSTREAM had failed. 2026-06-12 c1conv audit: ~62% of CB trips that
+# UPSTREAM had failed. 2026-06-12 integration audit: ~62% of CB trips that
 # day were caused by caller bugs, not by the providers themselves.
 # Punishing the provider for the bot's mistake forces operator
 # intervention (manual re-test) when nothing is actually wrong with the
@@ -563,7 +563,7 @@ _BAD_REQUEST_PATTERNS = [
     "contextwindowexceeded",
     "contentpolicyviolation",
     "unsupportedparams",
-    # v3.8.2 (#260): coordinator-hub sent ~370 requests in 24h that
+    # v3.8.2 (#260): integration client sent ~370 requests in 24h that
     # litellm rejects with "Invalid user message at index N" (malformed
     # messages[] array — e.g. message with role but no content). These
     # are caller-side bugs; do not retry on fallback providers.

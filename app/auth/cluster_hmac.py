@@ -1,11 +1,9 @@
 """HMAC verification for cross-cluster admin reads (v4.3.5).
 
-Coordinator-hub team request 2026-05-20: hub UI needs to surface
-per-Anthropic-account weekly utilization from ``external_usage_snapshot``
-without holding an admin session cookie. They already share a
-``COORDINATOR_HMAC_KEY`` secret with their other peers; the proxy
-accepts HMAC-signed admin reads using that same secret so no new
-inter-service credential needs to be provisioned.
+A client can read per-account weekly utilization from
+``external_usage_snapshot`` without holding an admin session cookie.
+The proxy accepts HMAC-signed admin reads using the shared
+``COORDINATOR_HMAC_KEY`` secret.
 
 Auth contract (caller must compute matching HMAC):
 

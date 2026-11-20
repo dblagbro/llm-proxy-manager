@@ -30,7 +30,7 @@ v3.6.3 — LAN-egress IP rewrite via DNS lookup.
 
 Hairpin NAT problem: when a LAN host calls the proxy via the public
 URL, the LAN router NATs the TCP source to the LAN gateway IP
-(e.g. ``192.168.18.1``), and that's what nginx sees. The actual public
+(e.g. ``192.0.2.1``), and that's what nginx sees. The actual public
 egress IP is invisible to the HTTP layer — IP NAT happens below it.
 
 Workaround: operator declares a mapping from internal IPs to
@@ -40,13 +40,13 @@ hot path) and substitute the public IP in the log.
 
 Settings:
 
-    client_ip_lan_resolve_map = {"192.168.18.1": "ip.voipguru.org"}
+    client_ip_lan_resolve_map = {"192.0.2.1": "host.example.invalid"}
 
-When a request arrives with ``client_ip = 192.168.18.1``, we look up
-``ip.voipguru.org``, get e.g. ``24.168.14.36``, and:
+When a request arrives with ``client_ip = 192.0.2.1``, we look up
+``host.example.invalid``, get e.g. ``198.51.100.2``, and:
 
-- ``client_ip`` → ``"24.168.14.36"`` (the public egress)
-- ``client_ip_inside`` → ``"192.168.18.1"`` (the raw inside)
+- ``client_ip`` → ``"198.51.100.2"`` (the public egress)
+- ``client_ip_inside`` → ``"192.0.2.1"`` (the raw inside)
 
 Both go into the activity log meta, so dashboards can use either.
 """
@@ -170,7 +170,7 @@ def _maybe_rewrite_lan_ip(ip: str) -> Optional[str]:
     DNS-resolved public IP for that LAN. Else return ``None``.
 
     Settings example:
-        client_ip_lan_resolve_map = {"192.168.18.1": "ip.voipguru.org"}
+        client_ip_lan_resolve_map = {"192.0.2.1": "host.example.invalid"}
     """
     try:
         from app.config import settings

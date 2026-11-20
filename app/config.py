@@ -234,7 +234,7 @@ class Settings(BaseSettings):
     empty_success_burst_threshold: int = Field(3, alias="EMPTY_SUCCESS_BURST_THRESHOLD")
 
     # v5.14.2 (#492) — cluster-sync 403-rate escalation trigger. The
-    # tmrwww02-peer misconfig produces a known ~50% baseline; this monitor
+    # peer misconfiguration produces a known ~50% baseline; this monitor
     # fires an activity_log warning ONLY when the rolling-1h rate climbs
     # above ``cluster_sync_403_alert_threshold_pct`` (default 70%), staying
     # quiet at the baseline but catching any regression. ``min_attempts``
@@ -536,7 +536,7 @@ class Settings(BaseSettings):
 
     # v3.6.3 — LAN-egress IP rewrite map.
     # When the proxy is hairpin-NAT'd from inside a LAN, nginx sees the
-    # LAN gateway IP (e.g. 192.168.18.1) as the source — the actual
+    # LAN gateway IP (e.g. 192.0.2.1) as the source — the actual
     # public egress IP is invisible at the HTTP layer. For each known
     # internal gateway, declare a hostname whose A record reflects the
     # LAN's current public IP; the proxy resolves it (TTL-cached at
@@ -545,7 +545,7 @@ class Settings(BaseSettings):
     # ``client_ip_inside`` for diagnostics.
     #
     # Example:
-    #   client_ip_lan_resolve_map = {"192.168.18.1": "ip.voipguru.org"}
+    #   client_ip_lan_resolve_map = {"192.0.2.1": "host.example.invalid"}
     #
     # Empty (default) → no rewriting; ``client_ip`` is whatever XFF
     # reported. See ``app/observability/request_context.py`` for the

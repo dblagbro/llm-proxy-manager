@@ -2,6 +2,17 @@
 
 All notable changes since v2.7.6. Older history available in `git log`.
 
+### v5.22.69 (unreleased)
+
+**Gateway runtime identity:** the image uses UID/GID 640:640 for `appuser`
+and `appgroup`, keeping the service outside the engineer UID range. Existing
+mounted data and log volumes retain their previous owners and require a
+separately verified per-node migration and rollback before deployment.
+The image includes only the two public LMRH specifications and the documented
+cleanup utility. Host migration tools use a private configuration and are not
+shipped inside the gateway image. The release script builds from a committed
+tree, verifies the tested image, and leaves image promotion to a later step.
+
 ### v5.22.68 (2026-11-18)
 
 **Fix: grok-web comes back as soon as the bridge is signed in again.**

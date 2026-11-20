@@ -366,7 +366,7 @@ async def _build_sync_payload(db) -> dict:
          # so flipping ``semantic_cache_enabled`` (or any of the budget /
          # LMRH / retention overrides) on one node never reached peers.
          # Surfaced 2026-05-22 when F3 from the routing-cost research
-         # asked us to enable semantic cache on the coordinator-hub key
+         # asked us to enable semantic cache on the integration client key
          # and only www1 picked it up.
          "semantic_cache_enabled": bool(getattr(k, "semantic_cache_enabled", False)),
          "daily_soft_cap_usd": getattr(k, "daily_soft_cap_usd", None),
@@ -495,8 +495,7 @@ async def _build_sync_payload(db) -> dict:
     # pre-v3.0.96). With 30s push interval, that meant ~50% of every
     # minute the DB was busy applying sync — real /v1/messages calls
     # queued waiting for DB connections and timed out at the 60s nginx
-    # upstream limit. coordinator-hub team observed 60s hangs from
-    # llmp-CwLU on 2026-05-07.
+    # upstream limit. Callers observed 60s hangs.
     #
     # Restore by setting cluster_sync_catalog_tables=True. Proper
     # implementation (delta-only sync + batched apply) is queued for
@@ -518,7 +517,7 @@ async def _build_sync_payload(db) -> dict:
              # Hub model-identity edit endpoint produces cluster-wide
              # consistent results. Pre-v3.6.0 these were silently dropped
              # by the sync apply pass (model_capabilities entries didn't
-             # include them) so a PUT on www01 wouldn't reach www02/GCP.
+             # include them) so a PUT on the first gateway wouldn't reach other gateways.
              "aliases": c.aliases or [],
              "model_family": c.model_family,
              "model_variant": c.model_variant,
@@ -791,7 +790,7 @@ async def push_sync(peer: PeerNode, db_factory):
     try:
         # v4.4.13: timeout raised 15→45s. The 15s ceiling held while the
         # sync payload was ~500 KB but with unbounded ai-review tables it
-        # grew to ~2.8 MB; live measurement 2026-05-21 showed c1conv at
+        # grew to ~2.8 MB; live measurement 2026-05-21 showed integration at
         # 10.7s and www2 timing out at 15s. v4.4.13 also adds the
         # ai_review prune to bound the table, but the timeout bump is a
         # belt-and-braces hedge — a transiently slow peer shouldn't get

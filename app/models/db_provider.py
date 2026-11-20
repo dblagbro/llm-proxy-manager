@@ -294,7 +294,7 @@ class ProviderNodeAuthState(Base):
     to cover any future per-node-session provider type).
 
     Why this table exists: pre-v4.4 grok-web ran on a shared bridge
-    on tmrwww01 only, and the CB state cluster-synced like every
+    on the first gateway only, and the CB state cluster-synced like every
     other provider. When the shared bridge crashed (BUG-025), grok-
     web went down fleet-wide. The v4.4 per-node-bridge design
     (`docs/4.4-per-node-bridge-design.md` Path A) gives each proxy

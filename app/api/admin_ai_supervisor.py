@@ -1,7 +1,7 @@
 """v5.4.0 — Admin diagnostic endpoint for the AI provider supervisor.
 
 Closes BUG-070 (post-refactor sweep 2026-06-12). Discovered on
-tmrwww01: ``ai_provider_supervisor_enabled = True`` but zero
+the first gateway: ``ai_provider_supervisor_enabled = True`` but zero
 ``supervisor_*`` activity events in 7 days. Three hypotheses
 (silent crash / interval defaulting / event-write broken) cannot be
 disambiguated from a snapshot probe. This endpoint forces one tick

@@ -7,7 +7,7 @@ rolling-1h ``recent_403_pct`` crosses ``cluster_sync_403_alert_threshold_pct``
 ``event_type=cluster_sync.403_rate_elevated``.
 
 The baseline-aware ceiling (70%) is set above the historical known-bad
-baseline of ~50% on tmrwww02 peer so the worker does not fire on the
+baseline of ~50% on the second gateway peer so the worker does not fire on the
 status-quo noise. When operator fixes the misconfig and the baseline drops
 to ~0%, the same threshold catches any future regression. If the baseline
 ever climbs above 70% as a "new normal" the operator just bumps

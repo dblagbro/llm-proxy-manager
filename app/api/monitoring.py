@@ -385,7 +385,7 @@ async def prune_status(_: AdminUser = Depends(require_admin)):
 
 # v3.0.72 — Cache-effectiveness rollup. Surfaces the cache_read /
 # cache_creation token counts that v3.0.71 started writing to
-# event_meta. Fleet currently reads ~650K cache_read tokens/hr on www01
+# event_meta. Fleet currently reads ~650K cache_read tokens/hr on the first gateway
 # alone (43.9% hit rate verified 2026-05-06); operator dashboards need
 # a stable endpoint to chart against rather than ad-hoc Python in a
 # docker exec.

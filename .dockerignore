@@ -84,3 +84,17 @@ secrets-sealed-*
 **/*credentials-backup*
 *.key
 **/*.key
+
+# Host-side migration tools run from a verified root-owned installation.
+tools/uid640_backup.py
+tools/uid640_config.py
+tools/uid640_ownership.py
+Dockerfile.uid640
+
+# Restrict build context to public runtime documentation and operator utility.
+docs/**
+!docs/draft-blagbrough-lmrh-00.md
+!docs/lmrh-2.0-bidirectional.md
+tools/**
+!tools/__init__.py
+!tools/cleanup_alias_collisions.py

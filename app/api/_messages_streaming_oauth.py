@@ -121,7 +121,7 @@ def _inject_claude_code_system(body: dict) -> dict:
     # cache_control when the count is already 4+), so >4 means the
     # CALLER sent the excess. Without this log, an operator only sees
     # "Found 5" in the upstream error text and has to body-sample to
-    # diagnose. Surfaced 2026-05-29 on coordinator-hub (14 such errors
+    # diagnose. Surfaced 2026-05-29 on an integration client (14 such errors
     # in 24h).
     cc_count = _count_cache_control_markers(body)
     if cc_count > 4:

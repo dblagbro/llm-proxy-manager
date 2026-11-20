@@ -2,9 +2,9 @@
 
 Pre-5.7.15 the AI provider supervisor only ran every 30 min. Between sweeps,
 a degrading upstream could throw bursts of empty-success streams that v5.7.13
-failover wrote to activity_log (via v5.7.14) but nothing acted on. The c1conv
+failover wrote to activity_log (via v5.7.14) but nothing acted on. The integration
 Gemini incident on 2026-06-17 sat in this gap: ~10 empty-successes in 14 min,
-no CB open, no supervisor action, just 502s back to coordinator-hub bots.
+no CB open, no supervisor action, just 502s back to integration client bots.
 
 This worker closes that gap. Cheap DB sweep every 60s:
 
