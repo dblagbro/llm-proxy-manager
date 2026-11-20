@@ -22,10 +22,11 @@ These tests exercise the captured-stack shape (NOT the live pool —
 that would require flipping ``DB_POOL_TRACE`` on for the test suite,
 which has overhead and global-state issues).
 """
+
 from __future__ import annotations
 
-from pathlib import Path
 import traceback
+from pathlib import Path
 
 
 def test_source_no_longer_slices_innermost():
@@ -84,16 +85,35 @@ def test_slice_keeps_outer_frames():
         # `await db.execute(...)`. Under the BUG this frame was lost.
         return _level_a()
 
-    def _level_a(): return _level_b()
-    def _level_b(): return _level_c()
-    def _level_c(): return _level_d()
-    def _level_d(): return _level_e()
-    def _level_e(): return _level_f()
-    def _level_f(): return _level_g()
-    def _level_g(): return _level_h()
-    def _level_h(): return _level_i()
-    def _level_i(): return _level_j()
-    def _level_j(): return _capture()
+    def _level_a():
+        return _level_b()
+
+    def _level_b():
+        return _level_c()
+
+    def _level_c():
+        return _level_d()
+
+    def _level_d():
+        return _level_e()
+
+    def _level_e():
+        return _level_f()
+
+    def _level_f():
+        return _level_g()
+
+    def _level_g():
+        return _level_h()
+
+    def _level_h():
+        return _level_i()
+
+    def _level_i():
+        return _level_j()
+
+    def _level_j():
+        return _capture()
 
     def _capture():
         # Mimics the hook: keep all frames except the trivial last one.
@@ -101,9 +121,9 @@ def test_slice_keeps_outer_frames():
 
     stack = app_caller_marker()
     assert "app_caller_marker" in stack, (
-        "v4.4.19 slice lost the outermost (app-caller) frame — "
-        "the leak-hunt regression is back"
+        "v4.4.19 slice lost the outermost (app-caller) frame — the leak-hunt regression is back"
     )
+
     # The OLD bug would discard this; the FIX keeps it. Sanity-check
     # the old behavior on the same synthetic stack to make the
     # regression risk concrete:
@@ -113,8 +133,11 @@ def test_slice_keeps_outer_frames():
     def _re_app():
         return _re_a()
 
-    def _re_a(): return _re_b()
-    def _re_b(): return _capture_bug()
+    def _re_a():
+        return _re_b()
+
+    def _re_b():
+        return _capture_bug()
 
     bug_stack = _re_app()
     assert "_re_app" not in bug_stack, (

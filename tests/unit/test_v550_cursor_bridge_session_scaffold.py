@@ -13,13 +13,10 @@ Pin contracts:
    locked from the start; later ships fill in behavior).
 6. Design doc exists at the documented path.
 """
+
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
-
-import pytest
-
 
 SCAFFOLD_ROOT = Path("cursor_bridge_session")
 SCAFFOLD_FILES = [
@@ -32,9 +29,7 @@ SCAFFOLD_FILES = [
 
 
 def test_scaffold_directory_exists():
-    assert SCAFFOLD_ROOT.is_dir(), (
-        f"v5.5.0 scaffold dir missing: {SCAFFOLD_ROOT.resolve()}"
-    )
+    assert SCAFFOLD_ROOT.is_dir(), f"v5.5.0 scaffold dir missing: {SCAFFOLD_ROOT.resolve()}"
 
 
 def test_all_scaffold_files_present():
@@ -65,10 +60,10 @@ def test_supervisord_names_four_program_stack():
 def test_app_py_exposes_required_endpoints():
     src = (SCAFFOLD_ROOT / "app.py").read_text()
     # Live in v5.5.0
-    assert "@app.get(\"/healthz\")" in src
+    assert '@app.get("/healthz")' in src
     # Stubs locking the API surface for v5.5.1-v5.5.3
-    assert "@app.get(\"/api/status\")" in src
-    assert "@app.post(\"/api/rotate\")" in src
+    assert '@app.get("/api/status")' in src
+    assert '@app.post("/api/rotate")' in src
 
 
 def test_app_py_version_matches_v550():
@@ -117,9 +112,9 @@ def test_healthz_reports_liveness_and_playwright_readiness_in_source():
     import ast
 
     fn = next(
-        n for n in ast.walk(ast.parse(src))
-        if isinstance(n, (ast.AsyncFunctionDef, ast.FunctionDef))
-        and n.name == "healthz"
+        n
+        for n in ast.walk(ast.parse(src))
+        if isinstance(n, (ast.AsyncFunctionDef, ast.FunctionDef)) and n.name == "healthz"
     )
     healthz = "\n".join(src.splitlines()[fn.lineno - 1 : fn.end_lineno])
 
@@ -153,9 +148,7 @@ def test_rotate_endpoint_drives_pkce_under_a_lock_in_source():
         "rotation has been implemented since v5.5.1; the not-implemented stub "
         "must not come back without this test being revisited"
     )
-    assert "_drive_pkce_once()" in src, (
-        "/api/rotate must drive the real PKCE flow"
-    )
+    assert "_drive_pkce_once()" in src, "/api/rotate must drive the real PKCE flow"
     assert "async with _rotate_lock:" in src, (
         "rotation must be serialized — concurrent callers would stampede the "
         "single Playwright context"

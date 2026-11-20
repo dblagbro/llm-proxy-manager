@@ -12,13 +12,12 @@ existing settings-sync loop within one round (~60s). The audit row in
 Cache invalidation on peer arrival is via TTL (30s), matching the
 logging-controls pattern.
 """
-from __future__ import annotations
 
-from typing import Optional
+from __future__ import annotations
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
-from sqlalchemy import select, desc
+from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.admin import AdminUser, require_admin
@@ -34,8 +33,9 @@ router = APIRouter(prefix="/api/admin/llm-emergency-stop", tags=["admin", "compl
 
 class ToggleBody(BaseModel):
     enabled: bool
-    reason: Optional[str] = Field(
-        None, max_length=2000,
+    reason: str | None = Field(
+        None,
+        max_length=2000,
         description=(
             "Free-text justification captured in the audit row. "
             "Strongly encouraged for ENGAGE flips so auditors can "
@@ -53,6 +53,7 @@ async def llm_emergency_status(
     enabled = await is_llm_stopped(db)
 
     from app.models.db import CompliancePolicyChange
+
     rs = await db.execute(
         select(CompliancePolicyChange)
         .where(CompliancePolicyChange.scope == "system")
@@ -88,6 +89,8 @@ async def llm_emergency_toggle(
     writes an audit row so the operator's intent is recorded.
     """
     return await set_llm_stopped(
-        db, enabled=body.enabled,
-        actor=admin.username, reason=body.reason,
+        db,
+        enabled=body.enabled,
+        actor=admin.username,
+        reason=body.reason,
     )

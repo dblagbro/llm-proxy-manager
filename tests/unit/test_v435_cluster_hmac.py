@@ -5,21 +5,19 @@ Closes the coordinator-hub team's 2026-05-20 request for an
 HMAC-authenticated path so they can surface ``external_usage_snapshot``
 data on the hub UI without holding an admin session cookie.
 """
+
 from __future__ import annotations
 
 import asyncio
 import hashlib
 import hmac
-import os
 import time
-from unittest.mock import patch
 
 import pytest
 from fastapi import HTTPException
 from starlette.requests import Request
 
 from app.auth.cluster_hmac import require_cluster_hmac
-
 
 _SECRET = "test-shared-secret-for-cluster-hmac"
 
@@ -42,7 +40,7 @@ def _make_request(path: str, body: bytes = b"") -> Request:
 
 
 def _sign(ts: int, path: str, body: bytes, secret: str = _SECRET) -> str:
-    signed = f"{ts}{path}".encode("utf-8") + body
+    signed = f"{ts}{path}".encode() + body
     return hmac.new(secret.encode("utf-8"), signed, hashlib.sha256).hexdigest()
 
 

@@ -1,6 +1,8 @@
 """Unit tests for the shared request-pipeline helpers."""
+
 import sys
 import types
+
 import pytest
 
 _stub = types.ModuleType("litellm")
@@ -9,15 +11,14 @@ sys.modules.setdefault("litellm", _stub)
 if not hasattr(sys.modules["litellm"], "RateLimitError"):
     sys.modules["litellm"].RateLimitError = type("RateLimitError", (Exception,), {})
 
-from fastapi import HTTPException
+from fastapi import HTTPException  # noqa: E402
 
-from app.api._request_pipeline import (
-    apply_privacy_filters,
-    build_hint_with_auto_task,
-    build_base_response_headers,
+from app.api._request_pipeline import (  # noqa: E402
     _extract_last_user_text,
+    apply_privacy_filters,
+    build_base_response_headers,
+    build_hint_with_auto_task,
 )
-
 
 # ── _extract_last_user_text ──────────────────────────────────────────────────
 
@@ -39,14 +40,16 @@ class TestExtractLastUserText:
         assert _extract_last_user_text(msgs) == "second"
 
     def test_list_content_text_blocks_joined(self):
-        msgs = [{
-            "role": "user",
-            "content": [
-                {"type": "text", "text": "line1"},
-                {"type": "image", "source": {"data": "..."}},
-                {"type": "text", "text": "line2"},
-            ],
-        }]
+        msgs = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "line1"},
+                    {"type": "image", "source": {"data": "..."}},
+                    {"type": "text", "text": "line2"},
+                ],
+            }
+        ]
         assert _extract_last_user_text(msgs) == "line1\nline2"
 
     def test_scans_backward_to_most_recent_user(self):
@@ -63,8 +66,9 @@ class TestExtractLastUserText:
 
 class TestApplyPrivacyFilters:
     def test_both_disabled_is_pass_through(self, monkeypatch):
-        import app.privacy.prompt_guard as g
         import app.privacy.pii as p
+        import app.privacy.prompt_guard as g
+
         monkeypatch.setattr(g, "is_enabled", lambda: False)
         monkeypatch.setattr(p, "is_enabled", lambda: False)
 
@@ -74,8 +78,9 @@ class TestApplyPrivacyFilters:
         assert out_msgs == [{"role": "user", "content": "hello"}]
 
     def test_guard_match_raises_400(self, monkeypatch):
-        import app.privacy.prompt_guard as g
         import app.privacy.pii as p
+        import app.privacy.prompt_guard as g
+
         monkeypatch.setattr(g, "is_enabled", lambda: True)
         monkeypatch.setattr(g, "check_messages", lambda m, denylist=None: "banned")
         monkeypatch.setattr(p, "is_enabled", lambda: False)
@@ -87,11 +92,14 @@ class TestApplyPrivacyFilters:
         assert "banned" in exc_info.value.detail
 
     def test_pii_rewrites_body_messages(self, monkeypatch):
-        import app.privacy.prompt_guard as g
         import app.privacy.pii as p
+        import app.privacy.prompt_guard as g
+
         monkeypatch.setattr(g, "is_enabled", lambda: False)
         monkeypatch.setattr(p, "is_enabled", lambda: True)
-        monkeypatch.setattr(p, "mask_messages", lambda m: ([{"role": "user", "content": "[masked]"}], 3))
+        monkeypatch.setattr(
+            p, "mask_messages", lambda m: ([{"role": "user", "content": "[masked]"}], 3)
+        )
 
         body = {"messages": [{"role": "user", "content": "email@x.com"}]}
         out_msgs, count = apply_privacy_filters(body["messages"], body)
@@ -101,8 +109,8 @@ class TestApplyPrivacyFilters:
 
     def test_guard_runs_before_pii(self, monkeypatch):
         """Guard must match original text, not the PII-redacted version."""
-        import app.privacy.prompt_guard as g
         import app.privacy.pii as p
+        import app.privacy.prompt_guard as g
 
         calls = []
 
@@ -130,6 +138,7 @@ class TestBuildHintWithAutoTask:
     @pytest.mark.asyncio
     async def test_passthrough_when_classifier_disabled(self, monkeypatch):
         from app.config import settings
+
         monkeypatch.setattr(settings, "task_auto_detect_enabled", False)
         hint, auto_task = await build_hint_with_auto_task("cost=economy", [])
         assert auto_task is None
@@ -139,14 +148,16 @@ class TestBuildHintWithAutoTask:
     @pytest.mark.asyncio
     async def test_no_override_when_task_already_set(self, monkeypatch):
         from app.config import settings
+
         monkeypatch.setattr(settings, "task_auto_detect_enabled", True)
         hint, auto_task = await build_hint_with_auto_task("task=code", [])
         assert auto_task is None
 
     @pytest.mark.asyncio
     async def test_classifier_appends_task_dim(self, monkeypatch):
-        from app.config import settings
         import app.routing.classifier as cls_mod
+        from app.config import settings
+
         monkeypatch.setattr(settings, "task_auto_detect_enabled", True)
 
         async def _classify(text, model, dims):
@@ -163,6 +174,7 @@ class TestBuildHintWithAutoTask:
     @pytest.mark.asyncio
     async def test_classifier_noop_when_no_user_text(self, monkeypatch):
         from app.config import settings
+
         monkeypatch.setattr(settings, "task_auto_detect_enabled", True)
         hint, auto_task = await build_hint_with_auto_task(None, [])
         assert auto_task is None
@@ -196,8 +208,12 @@ class TestBuildBaseResponseHeaders:
     def test_minimal_emulation_level(self):
         r = _FakeRoute()
         h = build_base_response_headers(
-            route=r, auto_task=None, vision_routed_count=0,
-            context_strategy_applied=None, pii_masked_count=0, hint=None,
+            route=r,
+            auto_task=None,
+            vision_routed_count=0,
+            context_strategy_applied=None,
+            pii_masked_count=0,
+            hint=None,
         )
         assert h["X-Emulation-Level"] == "minimal"
         assert h["X-Provider"] == "MyProv"
@@ -208,24 +224,36 @@ class TestBuildBaseResponseHeaders:
     def test_standard_emulation_on_tool_emu(self):
         r = _FakeRoute(tool_emu=True)
         h = build_base_response_headers(
-            route=r, auto_task=None, vision_routed_count=0,
-            context_strategy_applied=None, pii_masked_count=0, hint=None,
+            route=r,
+            auto_task=None,
+            vision_routed_count=0,
+            context_strategy_applied=None,
+            pii_masked_count=0,
+            hint=None,
         )
         assert h["X-Emulation-Level"] == "standard"
 
     def test_enhanced_emulation_on_cot(self):
         r = _FakeRoute(cot=True)
         h = build_base_response_headers(
-            route=r, auto_task=None, vision_routed_count=0,
-            context_strategy_applied=None, pii_masked_count=0, hint=None,
+            route=r,
+            auto_task=None,
+            vision_routed_count=0,
+            context_strategy_applied=None,
+            pii_masked_count=0,
+            hint=None,
         )
         assert h["X-Emulation-Level"] == "enhanced"
 
     def test_optional_headers_omitted_when_zero(self):
         r = _FakeRoute()
         h = build_base_response_headers(
-            route=r, auto_task=None, vision_routed_count=0,
-            context_strategy_applied=None, pii_masked_count=0, hint=None,
+            route=r,
+            auto_task=None,
+            vision_routed_count=0,
+            context_strategy_applied=None,
+            pii_masked_count=0,
+            hint=None,
         )
         assert "X-Task-Auto-Detected" not in h
         assert "X-Vision-Routed" not in h
@@ -236,9 +264,12 @@ class TestBuildBaseResponseHeaders:
     def test_optional_headers_set_when_provided(self):
         r = _FakeRoute()
         h = build_base_response_headers(
-            route=r, auto_task="code",
-            vision_routed_count=2, context_strategy_applied="truncate:4dropped",
-            pii_masked_count=5, hint=None,
+            route=r,
+            auto_task="code",
+            vision_routed_count=2,
+            context_strategy_applied="truncate:4dropped",
+            pii_masked_count=5,
+            hint=None,
         )
         assert h["X-Task-Auto-Detected"] == "code"
         assert h["X-Vision-Routed"] == "2"
@@ -248,8 +279,12 @@ class TestBuildBaseResponseHeaders:
     def test_max_tokens_emits_budget_header(self):
         r = _FakeRoute()
         h = build_base_response_headers(
-            route=r, auto_task=None, vision_routed_count=0,
-            context_strategy_applied=None, pii_masked_count=0, hint=None,
+            route=r,
+            auto_task=None,
+            vision_routed_count=0,
+            context_strategy_applied=None,
+            pii_masked_count=0,
+            hint=None,
             max_tokens=1024,
         )
         assert h["X-Token-Budget-Remaining"] == "1024"

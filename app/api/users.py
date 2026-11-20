@@ -1,20 +1,20 @@
 """User management endpoints."""
+
 import logging
 import secrets
 import time
 from datetime import datetime
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
 
+from app.auth.admin import AdminUser, hash_password, require_admin
 from app.models.database import get_db
 from app.models.db import User
-from app.auth.admin import require_admin, AdminUser, hash_password
-from app.utils.timefmt import utc_iso
 from app.models.db_user import PasswordResetToken
+from app.utils.timefmt import utc_iso
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/users", tags=["users"])
@@ -45,13 +45,13 @@ class UserCreate(BaseModel):
     username: str = Field(..., min_length=1)
     password: str = Field(..., min_length=8)
     role: str = "user"
-    email: Optional[str] = None
+    email: str | None = None
 
 
 class UserUpdate(BaseModel):
-    password: Optional[str] = None
-    role: Optional[str] = None
-    email: Optional[str] = None
+    password: str | None = None
+    role: str | None = None
+    email: str | None = None
 
 
 class BulkDeleteBody(BaseModel):
@@ -140,7 +140,8 @@ class AdminResetBody(BaseModel):
     ``password`` optional: omit it and the server generates a strong temporary
     one and returns it ONCE in the response, for the admin to hand over.
     """
-    password: Optional[str] = Field(None, min_length=8)
+
+    password: str | None = Field(None, min_length=8)
 
 
 @router.post("/{user_id}/reset-password")
@@ -174,7 +175,9 @@ async def admin_reset_password(
 
     logger.info(
         "users.admin_password_reset target=%s by=%s generated=%s",
-        user.id, getattr(admin, "username", "?"), generated is not None,
+        user.id,
+        getattr(admin, "username", "?"),
+        generated is not None,
     )
     out = {"ok": True, "user_id": user.id, "username": user.username}
     if generated:
@@ -239,9 +242,9 @@ async def bulk_delete_users(
     now_dt = datetime.utcnow()
     now_ts = time.time()
     for uid in body.ids:
-        u = (await db.execute(
-            select(User).where(User.id == uid, User.deleted_at.is_(None))
-        )).scalar_one_or_none()
+        u = (
+            await db.execute(select(User).where(User.id == uid, User.deleted_at.is_(None)))
+        ).scalar_one_or_none()
         if u is None:
             errors.append({"id": uid, "reason": "not_found"})
             continue
@@ -264,9 +267,7 @@ async def _get_or_404(db: AsyncSession, user_id: str) -> User:
     # v5.0.22 — refuse to look up tombstoned rows. PATCH / DELETE on
     # an already-deleted user should 404, not silently mutate a
     # soft-deleted row.
-    result = await db.execute(
-        select(User).where(User.id == user_id, User.deleted_at.is_(None))
-    )
+    result = await db.execute(select(User).where(User.id == user_id, User.deleted_at.is_(None)))
     u = result.scalar_one_or_none()
     if not u:
         raise HTTPException(404, "User not found")

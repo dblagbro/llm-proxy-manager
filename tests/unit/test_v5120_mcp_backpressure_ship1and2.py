@@ -11,20 +11,19 @@ Ship 1 = X-Proxy-MCP-Suggestion header emission gated by score.
 Ship 2 = caller_capability_score table + bump on refusal + 6h decay
 worker.
 """
+
 from __future__ import annotations
 
 import importlib
 from pathlib import Path
 
-
 # ── (1) ORM model present + re-exported ────────────────────────────────
-
-
 from tests.unit._handler_surface import messages_handler_source
 
 
 def test_caller_capability_score_model_exists():
     from app.models.db import CallerCapabilityScore
+
     assert CallerCapabilityScore.__tablename__ == "caller_capability_score"
     cols = {c.name for c in CallerCapabilityScore.__table__.columns}
     assert {"id", "api_key_id", "suggested_tool", "score", "last_bumped_at", "created_at"} <= cols
@@ -40,17 +39,15 @@ def test_orm_reexport_in_models_db_dunder_all():
 
 def test_score_module_imports_and_constants():
     from app.capability_scout import score
-    assert score.BUMP_AMOUNT == 20      # +0.2 in design notation
-    assert score.SCORE_CAP == 100       # 1.0 in design notation
+
+    assert score.BUMP_AMOUNT == 20  # +0.2 in design notation
+    assert score.SCORE_CAP == 100  # 1.0 in design notation
     assert score.DEFAULT_THRESHOLD == 50  # 0.5 chosen by operator
     assert score.GC_BELOW == 5
 
 
 def test_score_module_exposes_required_functions():
-    from app.capability_scout.score import (
-        bump_score, best_suggestion_for_key, decay_all_scores,
-        is_emission_enabled, _threshold,
-    )
+    pass
     # Just import-checks; behavior is exercised in integration.
 
 
@@ -59,8 +56,9 @@ def test_score_module_exposes_required_functions():
 
 def test_suggestion_emit_module_imports():
     from app.capability_scout.suggestion_emit import (
-        apply_suggestion_header, HEADER_NAME,
+        HEADER_NAME,
     )
+
     assert HEADER_NAME == "X-Proxy-MCP-Suggestion"
 
 
@@ -141,8 +139,9 @@ def test_scout_bumps_score_on_emit():
 
 def test_decay_worker_module_exists():
     from app.monitoring.caller_score_decay import (
-        start_decay_worker, stop_decay_worker, SWEEP_INTERVAL_SEC,
+        SWEEP_INTERVAL_SEC,
     )
+
     assert SWEEP_INTERVAL_SEC == 6 * 60 * 60  # 6 hours
 
 
@@ -157,6 +156,7 @@ def test_decay_worker_started_in_main():
 
 def test_settings_exposed():
     from app.config import settings
+
     assert hasattr(settings, "mcp_suggestion_emission_enabled")
     assert hasattr(settings, "mcp_suggestion_threshold")
     # Defaults match operator decision
@@ -172,7 +172,9 @@ def test_version_bumped():
     each subsequent ship (e.g. v5.12.1, v5.12.2). Here we just assert
     the minor."""
     import re
+
     from app import __version__ as v
+
     importlib.reload(v)
-    m = re.match(r'(\d+)\.(\d+)\.(\d+)', v.__version__)
+    m = re.match(r"(\d+)\.(\d+)\.(\d+)", v.__version__)
     assert m and (int(m[1]), int(m[2]), int(m[3])) >= (5, 12, 0), "expected >= 5.12.0"

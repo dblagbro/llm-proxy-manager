@@ -24,12 +24,13 @@ All admin-gated:
   N snapshots for a provider so the dashboard / operator can see
   what's been collected.
 """
+
 from __future__ import annotations
 
 import time
-from typing import Optional
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import Body as Body
 from pydantic import BaseModel, Field
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -42,8 +43,16 @@ router = APIRouter(prefix="/api/providers", tags=["anthropic-billing"])
 
 
 class CredentialsBody(BaseModel):
-    org_uuid: str = Field(min_length=1, description="Anthropic organization UUID — visible in the captured /usage URL or in the lastActiveOrg cookie value")
-    cookies: str = Field(min_length=1, description="Cookie blob — JSON dict, or 'name=val; name=val' header style")
+    org_uuid: str = Field(
+        min_length=1,
+        description=(
+            "Anthropic organization UUID — visible in the captured /usage URL "
+            "or in the lastActiveOrg cookie value"
+        ),
+    )
+    cookies: str = Field(
+        min_length=1, description="Cookie blob — JSON dict, or 'name=val; name=val' header style"
+    )
 
 
 @router.post("/{provider_id}/anthropic-billing-credentials")
@@ -68,7 +77,9 @@ async def store_credentials(
         raise HTTPException(404, "Provider not found")
     if provider.provider_type != "claude-oauth":
         raise HTTPException(
-            400, f"billing scraper only applies to claude-oauth providers (got {provider.provider_type!r})",
+            400,
+            f"billing scraper only applies to claude-oauth providers "
+            f"(got {provider.provider_type!r})",
         )
     try:
         cookies = parse_cookie_jar(body.cookies)
@@ -80,6 +91,7 @@ async def store_credentials(
     # Store the normalized JSON form so the worker doesn't have to
     # re-parse a different shape on every call.
     import json
+
     provider.anthropic_org_uuid = body.org_uuid.strip()
     provider.anthropic_session_cookies = json.dumps(cookies)
     provider.anthropic_session_captured_at = time.time()
@@ -147,24 +159,28 @@ async def refresh_all_billing(
         try:
             r = await scrape_provider_into_snapshot(db, provider)
         except Exception as exc:  # noqa: BLE001 — one bad provider must not abort the sweep
-            results.append({
-                "provider_id": provider.id,
-                "provider_name": provider.name,
-                "ok": False,
-                "error": str(exc),
-            })
+            results.append(
+                {
+                    "provider_id": provider.id,
+                    "provider_name": provider.name,
+                    "ok": False,
+                    "error": str(exc),
+                }
+            )
             continue
         decision = (r.get("rotation_decision") or {}).get("decision")
-        results.append({
-            "provider_id": provider.id,
-            "provider_name": provider.name,
-            "ok": r.get("ok", False),
-            "auth_state": r.get("auth_state"),
-            "seven_day_utilization": r.get("seven_day_utilization"),
-            "five_hour_utilization": r.get("five_hour_utilization"),
-            "rotation_decision": decision,
-            "returned_to_service": decision == "skip_cleared",
-        })
+        results.append(
+            {
+                "provider_id": provider.id,
+                "provider_name": provider.name,
+                "ok": r.get("ok", False),
+                "auth_state": r.get("auth_state"),
+                "seven_day_utilization": r.get("seven_day_utilization"),
+                "five_hour_utilization": r.get("five_hour_utilization"),
+                "rotation_decision": decision,
+                "returned_to_service": decision == "skip_cleared",
+            }
+        )
 
     return {
         "providers": len(providers),
@@ -189,6 +205,7 @@ async def evaluate_rotation_now(
     see exactly what changed (or didn't).
     """
     from app.routing.external_rotation import evaluate_rules_for_all_providers
+
     decisions = await evaluate_rules_for_all_providers(db)
     return {
         "evaluated": len(decisions),
@@ -232,9 +249,13 @@ async def list_snapshots(
             "auth_state": r.auth_state,
             "error": r.error,
             "five_hour_utilization": r.five_hour_utilization,
-            "five_hour_resets_at": r.five_hour_resets_at.isoformat() if r.five_hour_resets_at else None,
+            "five_hour_resets_at": r.five_hour_resets_at.isoformat()
+            if r.five_hour_resets_at
+            else None,
             "seven_day_utilization": r.seven_day_utilization,
-            "seven_day_resets_at": r.seven_day_resets_at.isoformat() if r.seven_day_resets_at else None,
+            "seven_day_resets_at": r.seven_day_resets_at.isoformat()
+            if r.seven_day_resets_at
+            else None,
             "seven_day_sonnet_utilization": r.seven_day_sonnet_utilization,
             "seven_day_opus_utilization": r.seven_day_opus_utilization,
             "extra_usage_is_enabled": r.extra_usage_is_enabled,

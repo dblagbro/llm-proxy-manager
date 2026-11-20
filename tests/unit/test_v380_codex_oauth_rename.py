@@ -4,10 +4,10 @@ Operator-locked rename 2026-05-13. Breaking change (signals the v3.8 major).
 Backward-compat alias at the API entry preserves callers that still POST
 the old name; existing DB rows are renamed by the migration.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
-
 
 # ── No string literal "codex-oauth" remaining in code ─────────────
 
@@ -18,6 +18,7 @@ def _strip_comments_and_strings(src: str, lang: str) -> str:
     inside a comment is fine; we only fail on actual identifier-position
     literals that would execute."""
     import re
+
     if lang == "py":
         # Strip # line comments + triple-quoted docstrings
         src = re.sub(r'""".*?"""', "", src, flags=re.DOTALL)
@@ -72,6 +73,22 @@ def test_no_codex_oauth_string_literal_in_backend():
         src = _strip_comments_and_strings(p.read_text(), "py")
         for allow in _BACKEND_ALLOWLIST_FRAGMENTS:
             src = src.replace(allow, "")
+        # Permit the same legacy references after formatting, only in their
+        # documented locations. The SQL literals still assemble exactly.
+        import re
+
+        if p.as_posix() in {
+            "app/providers/oauth_account_seeder.py",
+            "app/providers/oauth_account_selector.py",
+        }:
+            src = re.sub(r'"codex-oauth",\s*"ChatGPT-oauth-plan",', "", src)
+        if p.as_posix() == "app/models/database.py":
+            src = re.sub(
+                r'"UPDATE providers SET provider_type=\'ChatGPT-oauth-plan\' WHERE "'
+                r'\s*"provider_type=\'codex-oauth\'"',
+                "",
+                src,
+            )
         for needle in ('"codex-oauth"', "'codex-oauth'"):
             if needle in src:
                 bad.append(f"{p}: {needle}")
@@ -99,9 +116,16 @@ def test_no_codex_oauth_string_literal_in_frontend():
 
 
 def test_migration_renames_existing_rows():
-    src = Path("app/models/database.py").read_text()
-    assert "UPDATE providers SET provider_type='ChatGPT-oauth-plan'" in src
-    assert "WHERE provider_type='codex-oauth'" in src
+    import ast
+
+    tree = ast.parse(Path("app/models/database.py").read_text())
+    constants = {
+        n.value for n in ast.walk(tree) if isinstance(n, ast.Constant) and isinstance(n.value, str)
+    }
+    assert (
+        "UPDATE providers SET provider_type='ChatGPT-oauth-plan' WHERE provider_type='codex-oauth'"
+        in constants
+    )
 
 
 # ── Backward-compat alias at API entry ────────────────────────────
@@ -115,7 +139,7 @@ def test_create_provider_normalizes_legacy_name():
     # The shim must be inside create_provider, before the type-specific
     # validation branches.
     idx = src.index("async def create_provider")
-    body = src[idx:idx + 3000]
+    body = src[idx : idx + 3000]
     assert 'body.provider_type == "codex-oauth"' in body
     assert 'body.provider_type = "ChatGPT-oauth-plan"' in body
 
@@ -176,6 +200,7 @@ def test_codex_billing_panel_renders_for_new_name():
 
 def test_version_bumped_to_v380():
     from app.__version__ import __version__
+
     parts = tuple(int(p) for p in __version__.split("."))
     # The major bump signals the breaking-rename
     assert parts >= (3, 8, 0)

@@ -27,24 +27,24 @@ The companion alert worker
 ``cluster_sync_403_monitor_interval_sec`` and emits an activity_log warning
 when ``recent_403_pct`` crosses ``cluster_sync_403_alert_threshold_pct``.
 """
+
 from __future__ import annotations
 
 import threading
 import time
 from collections import deque
-from typing import Deque, Optional, Tuple
 
 # (timestamp, peer_id, status_code)
-_AttemptRow = Tuple[float, str, int]
+_AttemptRow = tuple[float, str, int]
 
 _MAX_ATTEMPTS = 2048
 _WINDOW_SEC = 3600  # 1h rolling window
 
 _lock = threading.Lock()
-_attempts: Deque[_AttemptRow] = deque(maxlen=_MAX_ATTEMPTS)
-_last_success_ts: Optional[float] = None
-_last_attempt_ts: Optional[float] = None
-_last_attempt_status: Optional[int] = None
+_attempts: deque[_AttemptRow] = deque(maxlen=_MAX_ATTEMPTS)
+_last_success_ts: float | None = None
+_last_attempt_ts: float | None = None
+_last_attempt_status: int | None = None
 
 
 def record_attempt(peer_id: str, status_code: int) -> None:
@@ -91,10 +91,7 @@ def snapshot() -> dict:
     # cluster_sync_fresh: a successful sync occurred within the last 600s.
     # 600s chosen to be 2x the typical sync interval (~5min) so a single
     # missed sync doesn't flip fresh→stale.
-    cluster_sync_fresh = (
-        last_success_ts is not None
-        and (now - last_success_ts) <= 600.0
-    )
+    cluster_sync_fresh = last_success_ts is not None and (now - last_success_ts) <= 600.0
 
     return {
         "attempts_1h": total,
@@ -103,12 +100,8 @@ def snapshot() -> dict:
         "status_other_1h": status_other,
         "status_transport_err_1h": status_transport,
         "recent_403_pct": round(pct_403, 2),
-        "last_attempt_at": (
-            int(last_attempt_ts) if last_attempt_ts is not None else None
-        ),
+        "last_attempt_at": (int(last_attempt_ts) if last_attempt_ts is not None else None),
         "last_attempt_status": last_attempt_status,
-        "last_success_at": (
-            int(last_success_ts) if last_success_ts is not None else None
-        ),
+        "last_success_at": (int(last_success_ts) if last_success_ts is not None else None),
         "cluster_sync_fresh": cluster_sync_fresh,
     }

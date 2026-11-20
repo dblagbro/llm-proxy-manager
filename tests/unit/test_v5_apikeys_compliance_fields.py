@@ -7,6 +7,7 @@ Verifies:
 - PATCH without ``reason`` when ``blocked_companies`` changes returns 422.
 - ``invalidate_blocklist_cache`` is invoked after a successful policy edit.
 """
+
 from __future__ import annotations
 
 import sys
@@ -25,7 +26,10 @@ if not hasattr(sys.modules["litellm"], "RateLimitError"):
 
 
 from app.api.apikeys import (  # noqa: E402
-    KeyCreate, KeyUpdate, create_key, update_key,
+    KeyCreate,
+    KeyUpdate,
+    create_key,
+    update_key,
 )
 from app.models.db import ApiKey, Base, CompliancePolicyChange  # noqa: E402
 
@@ -49,11 +53,10 @@ def _admin():
 async def test_post_persists_compliance_fields_and_emits_policy_row():
     Session = await _fresh_db()
     async with Session() as db:
-        with patch(
-            "app.api.apikeys.invalidate_blocklist_cache"
-        ) as inv, patch(
-            "app.api.apikeys._push_compliance_sync"
-        ) as push:
+        with (
+            patch("app.api.apikeys.invalidate_blocklist_cache") as inv,
+            patch("app.api.apikeys._push_compliance_sync") as push,
+        ):
             push.return_value = None
             body = KeyCreate(
                 name="prod-key",
@@ -83,6 +86,7 @@ async def test_post_rejects_unknown_company_id():
     Session = await _fresh_db()
     async with Session() as db:
         from fastapi import HTTPException
+
         body = KeyCreate(
             name="bad-key",
             blocked_companies=["unknown-co"],
@@ -99,6 +103,7 @@ async def test_post_requires_reason_when_blocked_companies_set():
     Session = await _fresh_db()
     async with Session() as db:
         from fastapi import HTTPException
+
         body = KeyCreate(
             name="no-reason",
             blocked_companies=["anthropic"],
@@ -117,23 +122,30 @@ async def test_patch_emits_policy_change_and_invalidates_cache():
     Session = await _fresh_db()
     # Seed a key with no compliance policy
     async with Session() as db:
-        db.add(ApiKey(
-            id="k-1", name="t", key_hash="h", key_prefix="p",
-        ))
+        db.add(
+            ApiKey(
+                id="k-1",
+                name="t",
+                key_hash="h",
+                key_prefix="p",
+            )
+        )
         await db.commit()
 
     async with Session() as db:
-        with patch(
-            "app.api.apikeys.invalidate_blocklist_cache"
-        ) as inv, patch(
-            "app.api.apikeys._push_compliance_sync"
+        with (
+            patch("app.api.apikeys.invalidate_blocklist_cache") as inv,
+            patch("app.api.apikeys._push_compliance_sync"),
         ):
             body = KeyUpdate(
                 blocked_companies=["openai"],
                 reason="block openai for sandbox A",
             )
             result = await update_key(
-                key_id="k-1", body=body, db=db, user=_admin(),
+                key_id="k-1",
+                body=body,
+                db=db,
+                user=_admin(),
             )
     assert result["blocked_companies"] == ["openai"]
     inv.assert_called_once_with("k-1")
@@ -155,13 +167,17 @@ async def test_patch_requires_reason_when_policy_changes():
 
     async with Session() as db:
         from fastapi import HTTPException
+
         body = KeyUpdate(
             blocked_companies=["openai"],
             # missing reason
         )
         with pytest.raises(HTTPException) as ex:
             await update_key(
-                key_id="k-1", body=body, db=db, user=_admin(),
+                key_id="k-1",
+                body=body,
+                db=db,
+                user=_admin(),
             )
     assert ex.value.status_code == 422
 
@@ -175,13 +191,17 @@ async def test_patch_rejects_unknown_company_id():
 
     async with Session() as db:
         from fastapi import HTTPException
+
         body = KeyUpdate(
             blocked_companies=["bogus-co"],
             reason="x",
         )
         with pytest.raises(HTTPException) as ex:
             await update_key(
-                key_id="k-1", body=body, db=db, user=_admin(),
+                key_id="k-1",
+                body=body,
+                db=db,
+                user=_admin(),
             )
     assert ex.value.status_code == 400
 
@@ -198,7 +218,10 @@ async def test_patch_no_policy_change_skips_audit_row():
     async with Session() as db:
         body = KeyUpdate(name="new-name")
         result = await update_key(
-            key_id="k-1", body=body, db=db, user=_admin(),
+            key_id="k-1",
+            body=body,
+            db=db,
+            user=_admin(),
         )
     assert result["name"] == "new-name"
 

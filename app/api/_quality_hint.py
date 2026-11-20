@@ -22,10 +22,11 @@ recall — false positives would cause callers to discard real refusals
 that they SHOULD have seen. If the regex doesn't fire, the caller
 gets exactly the response they would have pre-v3.6.1.
 """
+
 from __future__ import annotations
 
 import re
-from typing import Any, Optional
+from typing import Any
 
 # Phrases that strongly indicate the model is refusing because the
 # input it received is thin / corrupted / banner-only. All matched
@@ -34,10 +35,27 @@ from typing import Any, Optional
 # in long real responses by anchoring on the lead-in.
 _THIN_PHRASES = (
     # Cookie / consent / footer scraping garbage
-    ("cookie_banner", re.compile(r"\b(only the (cookie|footer)|cookie (consent|banner)|cookie consent section)\b", re.I)),
-    ("incomplete", re.compile(r"\b(incomplete or corrupted|appears to be incomplete|appears to be corrupted)\b", re.I)),
+    (
+        "cookie_banner",
+        re.compile(
+            r"\b(only the (cookie|footer)|cookie (consent|banner)|cookie consent section)\b", re.I
+        ),
+    ),
+    (
+        "incomplete",
+        re.compile(
+            r"\b(incomplete or corrupted|appears to be incomplete|appears to be corrupted)\b", re.I
+        ),
+    ),
     # Generic "the content you sent is empty/garbage" refusal patterns
-    ("empty_content", re.compile(r"\bcontent (you|provided) (sent|provided|appears) (?:to be |is )?(empty|incomplete|garbage|truncated)\b", re.I)),
+    (
+        "empty_content",
+        re.compile(
+            r"\bcontent (you|provided) (sent|provided|appears) (?:to be |is )?"
+            r"(empty|incomplete|garbage|truncated)\b",
+            re.I,
+        ),
+    ),
     # Polite-refusal lead-in COMBINED with a length signal — see is_thin()
 )
 
@@ -57,7 +75,7 @@ _REFUSAL_LEAD_INS = re.compile(
 _REFUSAL_SHORT_THRESHOLD_CHARS = 800
 
 
-def detect_thin_content(response_text: str) -> Optional[str]:
+def detect_thin_content(response_text: str) -> str | None:
     """If the response text matches a thin-content pattern, return a
     short reason string for the ``X-Quality-Hint`` header. Else None.
 
@@ -127,7 +145,7 @@ def extract_response_text_openai(body: Any) -> str:
         return ""
 
 
-def quality_hint_header(reason: Optional[str]) -> dict:
+def quality_hint_header(reason: str | None) -> dict:
     """Build the header dict to merge into the response. Empty dict
     when the response looks normal (no header emitted).
     """

@@ -15,6 +15,7 @@ BUG-081: `push_sync` fire-and-forgot the POST — a peer 500-ing on
 apply was invisible to the originator, which is why BUG-079 went
 undetected.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -22,7 +23,6 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 from sqlalchemy import delete, select
-
 
 # ── Source guards: every handler must now have .limit(1) ─────────────
 
@@ -38,7 +38,7 @@ def test_all_apply_handlers_have_limit_guard():
     offenders = []
     for i, line in enumerate(lines):
         if "scalar_one_or_none()" in line:
-            window = "\n".join(lines[max(0, i - 10):i + 1])
+            window = "\n".join(lines[max(0, i - 10) : i + 1])
             if ".limit(1)" not in window:
                 offenders.append(i + 1)
     assert not offenders, (
@@ -59,9 +59,9 @@ def test_push_sync_inspects_response_status():
 
     src = Path("app/cluster/manager.py").read_text()
     fn = next(
-        n for n in ast.walk(ast.parse(src))
-        if isinstance(n, (ast.AsyncFunctionDef, ast.FunctionDef))
-        and n.name == "push_sync"
+        n
+        for n in ast.walk(ast.parse(src))
+        if isinstance(n, (ast.AsyncFunctionDef, ast.FunctionDef)) and n.name == "push_sync"
     )
     block = "\n".join(src.splitlines()[fn.lineno - 1 : fn.end_lineno])
     # Must assign the response and check status_code
@@ -71,9 +71,7 @@ def test_push_sync_inspects_response_status():
     assert "status_code != 200" in block, (
         "push_sync must check for non-200 peer responses (BUG-081)"
     )
-    assert "logger.warning" in block, (
-        "push_sync must log a warning on peer rejection (BUG-081)"
-    )
+    assert "logger.warning" in block, "push_sync must log a warning on peer rejection (BUG-081)"
 
 
 def test_hours_query_has_lower_bound():
@@ -83,9 +81,7 @@ def test_hours_query_has_lower_bound():
     assert "Query(24, le=720)" not in src, (
         "found Query(24, le=720) without ge= lower bound — BUG-083"
     )
-    assert "Query(24, ge=1, le=720)" in src, (
-        "expected the ge=1 lower bound (BUG-083 fix)"
-    )
+    assert "Query(24, ge=1, le=720)" in src, "expected the ge=1 lower bound (BUG-083 fix)"
 
 
 # ── Behavioral: apply_sync survives duplicate provider_ai_review ─────
@@ -93,8 +89,9 @@ def test_hours_query_has_lower_bound():
 
 @pytest_asyncio.fixture
 async def fresh_db():
-    from app.models.database import engine, AsyncSessionLocal
+    from app.models.database import AsyncSessionLocal, engine
     from app.models.db import Base, ProviderAiReview
+
     async with engine.begin() as conn:
         await conn.run_sync(ProviderAiReview.__table__.drop, checkfirst=True)
         await conn.run_sync(Base.metadata.create_all)
@@ -110,6 +107,7 @@ async def test_apply_provider_ai_reviews_survives_duplicate(fresh_db):
     captured_at) row, then apply a sync payload referencing it. Pre-fix
     this raised MultipleResultsFound; post-fix it must succeed."""
     from datetime import datetime
+
     from app.cluster.sync_handlers import _apply_provider_ai_reviews
     from app.models.db import ProviderAiReview
 
@@ -117,51 +115,80 @@ async def test_apply_provider_ai_reviews_survives_duplicate(fresh_db):
     async with fresh_db() as db:
         # Seed TWO rows with the same (provider_id, captured_at)
         for _ in range(2):
-            db.add(ProviderAiReview(
-                provider_id="dup-prov", captured_at=cap,
-                llm_verdict="watch",
-            ))
+            db.add(
+                ProviderAiReview(
+                    provider_id="dup-prov",
+                    captured_at=cap,
+                    llm_verdict="watch",
+                )
+            )
         await db.commit()
 
         # Apply a sync payload referencing the duplicate pair — must NOT raise
-        await _apply_provider_ai_reviews(db, [{
-            "provider_id": "dup-prov",
-            "captured_at": cap.isoformat(),
-            "llm_verdict": "promote",
-            "applied_at": "2026-05-22T00:00:00",
-        }])
+        await _apply_provider_ai_reviews(
+            db,
+            [
+                {
+                    "provider_id": "dup-prov",
+                    "captured_at": cap.isoformat(),
+                    "llm_verdict": "promote",
+                    "applied_at": "2026-05-22T00:00:00",
+                }
+            ],
+        )
         await db.commit()
 
         # The lifecycle field should have been applied to one of the rows
-        rows = (await db.execute(
-            select(ProviderAiReview).where(ProviderAiReview.provider_id == "dup-prov")
-        )).scalars().all()
+        rows = (
+            (
+                await db.execute(
+                    select(ProviderAiReview).where(ProviderAiReview.provider_id == "dup-prov")
+                )
+            )
+            .scalars()
+            .all()
+        )
         assert len(rows) == 2, "apply must not delete/duplicate further"
 
 
 @pytest.mark.asyncio
 async def test_apply_caller_memory_survives_duplicate(fresh_db):
     """BUG-080: caller_memory handler must also tolerate a duplicate."""
-    from app.models.database import engine, AsyncSessionLocal
+    from app.models.database import AsyncSessionLocal, engine
     from app.models.db import Base, CallerMemory
+
     async with engine.begin() as conn:
         await conn.run_sync(CallerMemory.__table__.drop, checkfirst=True)
         await conn.run_sync(Base.metadata.create_all)
 
     from app.cluster.sync_handlers import _apply_caller_memory
+
     async with AsyncSessionLocal() as db:
         for _ in range(2):
-            db.add(CallerMemory(
-                api_key_id="k1", conversation_id="c1",
-                memory_tag="default", content="x", updated_at=1.0,
-            ))
+            db.add(
+                CallerMemory(
+                    api_key_id="k1",
+                    conversation_id="c1",
+                    memory_tag="default",
+                    content="x",
+                    updated_at=1.0,
+                )
+            )
         await db.commit()
 
         # Must not raise MultipleResultsFound
-        await _apply_caller_memory(db, [{
-            "api_key_id": "k1", "conversation_id": "c1",
-            "memory_tag": "default", "content": "y", "updated_at": 2.0,
-        }])
+        await _apply_caller_memory(
+            db,
+            [
+                {
+                    "api_key_id": "k1",
+                    "conversation_id": "c1",
+                    "memory_tag": "default",
+                    "content": "y",
+                    "updated_at": 2.0,
+                }
+            ],
+        )
         await db.commit()
     async with AsyncSessionLocal() as cleanup:
         await cleanup.execute(delete(CallerMemory))

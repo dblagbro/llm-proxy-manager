@@ -7,19 +7,19 @@ Integration tests for features added in the recent sprint:
 
 All tests use the mock server to avoid real API costs.
 """
-import uuid
-import time
+
 import json
-import pytest
+import uuid
+
 import requests
 import urllib3
 
 urllib3.disable_warnings()
 
-from tests.conftest import BASE_URL, ADMIN_USER, ADMIN_PASS
-from tests.integration.conftest import collect_sse
+from tests.conftest import BASE_URL  # noqa: E402
 
 # ── helpers ───────────────────────────────────────────────────────────────────
+
 
 def _msg(content, *, stream=False):
     return {
@@ -42,6 +42,7 @@ def _post(headers, body, stream=False):
 
 
 # ── Vision stripping ──────────────────────────────────────────────────────────
+
 
 class TestVisionStripping:
     """
@@ -66,22 +67,25 @@ class TestVisionStripping:
     # refusing). The mock provider has no native vision, so that branch is not
     # reachable here; testing it needs a vision-capable provider.
 
-    def test_image_request_refused_when_no_vision_provider(self, only_mock_routing, mock_ctl, llm_headers):
+    def test_image_request_refused_when_no_vision_provider(
+        self, only_mock_routing, mock_ctl, llm_headers
+    ):
         mock_ctl.queue(type="text", content="OK")
         content = [
             {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "x"}},
         ]
         r = _post(llm_headers, _msg(content))
-        assert r.status_code == 422, (
-            f"expected a refusal, got {r.status_code}: {r.text[:200]}"
-        )
+        assert r.status_code == 422, f"expected a refusal, got {r.status_code}: {r.text[:200]}"
         assert "vision-capable" in r.text, r.text[:200]
 
     def test_refusal_names_the_skipped_candidates(self, only_mock_routing, mock_ctl, llm_headers):
         """The operator has to be able to see WHY it refused."""
         mock_ctl.queue(type="text", content="OK")
         content = [
-            {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": "data"}},
+            {
+                "type": "image",
+                "source": {"type": "base64", "media_type": "image/jpeg", "data": "data"},
+            },
         ]
         r = _post(llm_headers, _msg(content))
         assert r.status_code == 422
@@ -90,7 +94,9 @@ class TestVisionStripping:
         )
         assert "no native vision" in r.text, r.text[:200]
 
-    def test_upstream_is_never_called_for_a_refused_image_request(self, only_mock_routing, mock_ctl, llm_headers):
+    def test_upstream_is_never_called_for_a_refused_image_request(
+        self, only_mock_routing, mock_ctl, llm_headers
+    ):
         """The whole point: no call, so no fabricated answer can exist.
 
         This is the assertion the old tests were missing. They checked that the
@@ -99,7 +105,10 @@ class TestVisionStripping:
         """
         mock_ctl.queue(type="text", content="OK")
         content = [
-            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "abc"}},
+            {
+                "type": "image",
+                "source": {"type": "base64", "media_type": "image/png", "data": "abc"},
+            },
         ]
         _post(llm_headers, _msg(content))
         assert mock_ctl.received() == [], (
@@ -116,13 +125,18 @@ class TestVisionStripping:
         mock_ctl.queue(type="text", content="I see the placeholder")
         content = [
             {"type": "text", "text": "This is the question"},
-            {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "abc"}},
+            {
+                "type": "image",
+                "source": {"type": "base64", "media_type": "image/png", "data": "abc"},
+            },
         ]
         r = _post(llm_headers, _msg(content))
         assert r.status_code == 422, r.text[:200]
         assert mock_ctl.received() == []
 
-    def test_text_only_request_passes_through_unchanged(self, only_mock_routing, mock_ctl, llm_headers):
+    def test_text_only_request_passes_through_unchanged(
+        self, only_mock_routing, mock_ctl, llm_headers
+    ):
         mock_ctl.queue(type="text", content="hello")
         r = _post(llm_headers, _msg("hello world"))
         assert r.status_code == 200
@@ -167,7 +181,11 @@ class TestMultiTagToolEmulation:
         """Mock returns function_name instead of name — proxy must normalise it."""
         mock_ctl.queue(
             type="raw_text",
-            content='<tool_call>\n{"function_name": "read_file", "input": {"path": "/tmp"}}\n</tool_call>',
+            content=(
+                '<tool_call>\n{"function_name": '
+                '"read_file", "input": {"path": '
+                '"/tmp"}}\n</tool_call>'
+            ),
         )
         r = _post(llm_headers, {**_msg("read /tmp"), "tools": [self.TOOL_DEF]})
         assert r.status_code == 200
@@ -180,7 +198,9 @@ class TestMultiTagToolEmulation:
         """Mock returns parameters instead of input — proxy must normalise it."""
         mock_ctl.queue(
             type="raw_text",
-            content='<tool_call>\n{"name": "read_file", "parameters": {"path": "/etc"}}\n</tool_call>',
+            content=(
+                '<tool_call>\n{"name": "read_file", "parameters": {"path": "/etc"}}\n</tool_call>'
+            ),
         )
         r = _post(llm_headers, {**_msg("read /etc"), "tools": [self.TOOL_DEF]})
         assert r.status_code == 200
@@ -192,6 +212,7 @@ class TestMultiTagToolEmulation:
 
 # ── Per-key rate limiting ─────────────────────────────────────────────────────
 
+
 class TestRateLimiting:
     """
     Create keys with rate_limit_rpm set and verify the proxy enforces the limit.
@@ -200,8 +221,9 @@ class TestRateLimiting:
     def test_rate_limit_enforced(self, admin_session, only_mock_routing, mock_ctl):
         name = f"rl-test-{uuid.uuid4().hex[:6]}"
         # rate_limit_rpm=1: per-node limit = max(1, 1//N) = 1 regardless of node count
-        r = admin_session.post(f"{BASE_URL}/api/keys",
-                               json={"name": name, "key_type": "standard", "rate_limit_rpm": 1})
+        r = admin_session.post(
+            f"{BASE_URL}/api/keys", json={"name": name, "key_type": "standard", "rate_limit_rpm": 1}
+        )
         assert r.status_code == 200, r.text
         raw_key = r.json()["raw_key"]
         key_id = r.json()["id"]
@@ -221,8 +243,9 @@ class TestRateLimiting:
 
     def test_rate_limit_error_message(self, admin_session, only_mock_routing, mock_ctl):
         name = f"rl-msg-{uuid.uuid4().hex[:6]}"
-        r = admin_session.post(f"{BASE_URL}/api/keys",
-                               json={"name": name, "key_type": "standard", "rate_limit_rpm": 1})
+        r = admin_session.post(
+            f"{BASE_URL}/api/keys", json={"name": name, "key_type": "standard", "rate_limit_rpm": 1}
+        )
         assert r.status_code == 200
         raw_key = r.json()["raw_key"]
         key_id = r.json()["id"]
@@ -250,15 +273,16 @@ class TestRateLimiting:
     def test_rate_limit_update_via_api(self, admin_session):
         """Verify spending_cap_usd and rate_limit_rpm appear in key list after update."""
         name = f"rl-update-{uuid.uuid4().hex[:6]}"
-        r = admin_session.post(f"{BASE_URL}/api/keys",
-                               json={"name": name, "key_type": "standard"})
+        r = admin_session.post(f"{BASE_URL}/api/keys", json={"name": name, "key_type": "standard"})
         assert r.status_code == 200
         key_id = r.json()["id"]
 
         try:
             # Update rate limit and spending cap
-            r2 = admin_session.patch(f"{BASE_URL}/api/keys/{key_id}",
-                                     json={"rate_limit_rpm": 60, "spending_cap_usd": 5.0})
+            r2 = admin_session.patch(
+                f"{BASE_URL}/api/keys/{key_id}",
+                json={"rate_limit_rpm": 60, "spending_cap_usd": 5.0},
+            )
             assert r2.status_code == 200
 
             # Verify values returned
@@ -271,14 +295,15 @@ class TestRateLimiting:
     def test_clear_rate_limit_via_negative_value(self, admin_session):
         """Sending rate_limit_rpm=-1 should clear the limit (set to null)."""
         name = f"rl-clear-{uuid.uuid4().hex[:6]}"
-        r = admin_session.post(f"{BASE_URL}/api/keys",
-                               json={"name": name, "key_type": "standard", "rate_limit_rpm": 30})
+        r = admin_session.post(
+            f"{BASE_URL}/api/keys",
+            json={"name": name, "key_type": "standard", "rate_limit_rpm": 30},
+        )
         assert r.status_code == 200
         key_id = r.json()["id"]
 
         try:
-            r2 = admin_session.patch(f"{BASE_URL}/api/keys/{key_id}",
-                                     json={"rate_limit_rpm": -1})
+            r2 = admin_session.patch(f"{BASE_URL}/api/keys/{key_id}", json={"rate_limit_rpm": -1})
             assert r2.status_code == 200
             data = r2.json()
             assert data["rate_limit_rpm"] is None
@@ -288,6 +313,7 @@ class TestRateLimiting:
 
 # ── Per-key spending cap ──────────────────────────────────────────────────────
 
+
 class TestSpendingCap:
     """
     Verify that keys with spending_cap_usd=0.0 are immediately blocked
@@ -296,8 +322,10 @@ class TestSpendingCap:
 
     def test_zero_cap_blocks_immediately(self, admin_session):
         name = f"cap-test-{uuid.uuid4().hex[:6]}"
-        r = admin_session.post(f"{BASE_URL}/api/keys",
-                               json={"name": name, "key_type": "standard", "spending_cap_usd": 0.0})
+        r = admin_session.post(
+            f"{BASE_URL}/api/keys",
+            json={"name": name, "key_type": "standard", "spending_cap_usd": 0.0},
+        )
         assert r.status_code == 200
         raw_key = r.json()["raw_key"]
         key_id = r.json()["id"]
@@ -305,14 +333,18 @@ class TestSpendingCap:
 
         try:
             r2 = _post(headers, _msg("hi"))
-            assert r2.status_code == 429, f"Expected 429 (cap exceeded), got {r2.status_code}: {r2.text[:200]}"
+            assert r2.status_code == 429, (
+                f"Expected 429 (cap exceeded), got {r2.status_code}: {r2.text[:200]}"
+            )
         finally:
             admin_session.delete(f"{BASE_URL}/api/keys/{key_id}")
 
     def test_spending_cap_error_message(self, admin_session):
         name = f"cap-msg-{uuid.uuid4().hex[:6]}"
-        r = admin_session.post(f"{BASE_URL}/api/keys",
-                               json={"name": name, "key_type": "standard", "spending_cap_usd": 0.0})
+        r = admin_session.post(
+            f"{BASE_URL}/api/keys",
+            json={"name": name, "key_type": "standard", "spending_cap_usd": 0.0},
+        )
         assert r.status_code == 200
         raw_key = r.json()["raw_key"]
         key_id = r.json()["id"]
@@ -335,24 +367,29 @@ class TestSpendingCap:
     def test_spending_cap_clear_via_negative(self, admin_session):
         """spending_cap_usd=-1 should clear the cap."""
         name = f"cap-clear-{uuid.uuid4().hex[:6]}"
-        r = admin_session.post(f"{BASE_URL}/api/keys",
-                               json={"name": name, "key_type": "standard", "spending_cap_usd": 10.0})
+        r = admin_session.post(
+            f"{BASE_URL}/api/keys",
+            json={"name": name, "key_type": "standard", "spending_cap_usd": 10.0},
+        )
         assert r.status_code == 200
         key_id = r.json()["id"]
 
         try:
-            r2 = admin_session.patch(f"{BASE_URL}/api/keys/{key_id}",
-                                     json={"spending_cap_usd": -1})
+            r2 = admin_session.patch(f"{BASE_URL}/api/keys/{key_id}", json={"spending_cap_usd": -1})
             assert r2.status_code == 200
             assert r2.json()["spending_cap_usd"] is None
         finally:
             admin_session.delete(f"{BASE_URL}/api/keys/{key_id}")
 
-    def test_key_with_generous_cap_allows_requests(self, admin_session, only_mock_routing, mock_ctl):
+    def test_key_with_generous_cap_allows_requests(
+        self, admin_session, only_mock_routing, mock_ctl
+    ):
         """A key with cap $1000 should not be blocked on first request."""
         name = f"cap-generous-{uuid.uuid4().hex[:6]}"
-        r = admin_session.post(f"{BASE_URL}/api/keys",
-                               json={"name": name, "key_type": "standard", "spending_cap_usd": 1000.0})
+        r = admin_session.post(
+            f"{BASE_URL}/api/keys",
+            json={"name": name, "key_type": "standard", "spending_cap_usd": 1000.0},
+        )
         assert r.status_code == 200
         raw_key = r.json()["raw_key"]
         key_id = r.json()["id"]

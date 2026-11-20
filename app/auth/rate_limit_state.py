@@ -16,6 +16,7 @@ Public API preserved via re-exports in ``app.auth.keys``:
     _check_rate_limit, _check_rpd, _check_burst
     begin_in_flight, end_in_flight
 """
+
 from __future__ import annotations
 
 import collections

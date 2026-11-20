@@ -11,10 +11,10 @@
   surfaces auth errors as 401 before stream-start (so callers don't
   see SSE-error-then-200).
 """
+
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import AsyncIterator
 
 import pytest
 from fastapi import HTTPException
@@ -27,8 +27,7 @@ from app.api._grok_web_dispatch import (
 )
 
 
-def _route(provider_extra_config: dict | None = None,
-           default_model: str = "grok-3"):
+def _route(provider_extra_config: dict | None = None, default_model: str = "grok-3"):
     """Build a minimal RouteResult-shaped object for the dispatchers."""
     return SimpleNamespace(
         provider=SimpleNamespace(extra_config=provider_extra_config or {}),
@@ -105,8 +104,7 @@ async def test_openai_dispatch_uses_route_default_when_body_lacks_model(monkeypa
     monkeypatch.setattr("app.providers.grok_web.complete_grok_web", fake_complete)
 
     await dispatch_grok_web_openai(
-        route=_route({"bridge_url": "http://b", "conversation_id": "c"},
-                     default_model="grok-4"),
+        route=_route({"bridge_url": "http://b", "conversation_id": "c"}, default_model="grok-4"),
         body={"messages": [{"role": "user", "content": "x"}]},  # no "model"
         stream=False,
         resp_headers={},
@@ -141,6 +139,7 @@ async def test_openai_dispatch_streaming_returns_streaming_response(monkeypatch)
     """Streaming preflight: dispatcher must consume the first chunk
     before returning so authentication errors raise as HTTPException
     instead of SSE-error-then-HTTP-200 (the v2.7.6 BUG-018 pattern)."""
+
     async def fake_stream(extra_config, *, messages, model, **kw):
         yield b"data: chunk-1\n\n"
         yield b"data: chunk-2\n\n"
@@ -150,8 +149,7 @@ async def test_openai_dispatch_streaming_returns_streaming_response(monkeypatch)
 
     out = await dispatch_grok_web_openai(
         route=_route({"bridge_url": "http://b", "conversation_id": "c"}),
-        body={"model": "grok-3", "messages": [{"role": "user", "content": "x"}],
-              "stream": True},
+        body={"model": "grok-3", "messages": [{"role": "user", "content": "x"}], "stream": True},
         stream=True,
         resp_headers={},
     )
@@ -190,6 +188,7 @@ async def test_anthropic_dispatch_translates_to_message_shape(monkeypatch):
     """Caller posted /v1/messages; we still ran complete_grok_web (which
     returns OpenAI shape), then translated to Anthropic /v1/messages
     shape. Verify the translation lands."""
+
     async def fake_complete(extra_config, *, messages, model, **kw):
         return {
             "id": "chatcmpl-y",
@@ -222,8 +221,7 @@ async def test_anthropic_dispatch_passes_system_block_to_messages(monkeypatch):
 
     async def fake_complete(extra_config, *, messages, model, **kw):
         captured["messages"] = messages
-        return {"id": "x", "model": "grok-3",
-                "choices": [{"index": 0, "message": {"content": ""}}]}
+        return {"id": "x", "model": "grok-3", "choices": [{"index": 0, "message": {"content": ""}}]}
 
     monkeypatch.setattr("app.providers.grok_web.complete_grok_web", fake_complete)
 
@@ -249,8 +247,7 @@ async def test_anthropic_dispatch_no_system_block_no_prepend(monkeypatch):
 
     async def fake_complete(extra_config, *, messages, model, **kw):
         captured["messages"] = messages
-        return {"id": "x", "model": "grok-3",
-                "choices": [{"index": 0, "message": {"content": ""}}]}
+        return {"id": "x", "model": "grok-3", "choices": [{"index": 0, "message": {"content": ""}}]}
 
     monkeypatch.setattr("app.providers.grok_web.complete_grok_web", fake_complete)
 
@@ -313,6 +310,7 @@ async def test_openai_dispatch_records_success(monkeypatch):
     route.provider.name = "Test-Grok-Web"
 
     import time
+
     t0 = time.monotonic()
     await dispatch_grok_web_openai(
         route=route,
@@ -339,6 +337,7 @@ async def test_openai_dispatch_records_failure_on_error(monkeypatch):
     circuit breaker hears about them. Pre-v3.2.10, grok-web errors
     silently bypassed the breaker."""
     from app.providers.grok_web import GrokWebError
+
     captured = {}
 
     async def fake_complete(*a, **kw):
@@ -355,6 +354,7 @@ async def test_openai_dispatch_records_failure_on_error(monkeypatch):
     route.provider.name = "P"
 
     import time
+
     # v5.0.23 / Batch 2.5 — contract changed: failover-eligible
     # GrokWebError no longer raises HTTPException; the dispatcher
     # returns None so the caller (messages.py / completions.py) can
@@ -364,15 +364,16 @@ async def test_openai_dispatch_records_failure_on_error(monkeypatch):
     # touch the real provider registry.
     async def fake_trip(*a, **kw):
         pass
-    monkeypatch.setattr(
-        "app.routing.circuit_breaker.record_failure", fake_trip
-    )
+
+    monkeypatch.setattr("app.routing.circuit_breaker.record_failure", fake_trip)
     result = await dispatch_grok_web_openai(
         route=route,
         body={"model": "grok-3", "messages": [{"role": "user", "content": "x"}]},
         stream=False,
         resp_headers={},
-        db="fake", key_record_id="k", t0=time.monotonic(),
+        db="fake",
+        key_record_id="k",
+        t0=time.monotonic(),
     )
     assert result is None, (
         "v5.0.23: failover-eligible GrokWebError must return None "
@@ -390,8 +391,7 @@ async def test_dispatch_no_recording_when_db_omitted(monkeypatch):
     record_calls = []
 
     async def fake_complete(*a, **kw):
-        return {"id": "x", "model": "grok-3",
-                "choices": [{"index": 0, "message": {"content": ""}}]}
+        return {"id": "x", "model": "grok-3", "choices": [{"index": 0, "message": {"content": ""}}]}
 
     async def fake_record(*args, **kwargs):
         record_calls.append(kwargs)

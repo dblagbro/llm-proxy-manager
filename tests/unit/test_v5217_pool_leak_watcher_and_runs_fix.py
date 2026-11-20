@@ -15,11 +15,13 @@ Two coupled ships closing the recurring outage since 2026-07-09:
    to the v5.21.6 SIGUSR2 dumper — that one is manual, this one
    catches accumulation before exhaustion.
 """
+
 from __future__ import annotations
+
 from pathlib import Path
 
-
 # ── Runs endpoint fix ────────────────────────────────────────────────
+
 
 def test_get_events_no_longer_uses_depends_get_db():
     """The primary leak fix. A request-scoped Depends(get_db) held
@@ -63,12 +65,11 @@ def test_generator_does_not_reference_request_scoped_db():
     gen_start = body.find("async def gen():")
     gen_end = body.find("return StreamingResponse(gen()", gen_start)
     gen_body = body[gen_start:gen_end] if gen_end > 0 else body[gen_start:]
-    assert "await db.execute" not in gen_body, (
-        "gen() must not use the outer request-scoped `db`"
-    )
+    assert "await db.execute" not in gen_body, "gen() must not use the outer request-scoped `db`"
 
 
 # ── Pool leak watcher ────────────────────────────────────────────────
+
 
 def test_watcher_module_present():
     p = Path("app/monitoring/pool_leak_watcher.py")
@@ -120,10 +121,9 @@ def test_watcher_dump_has_same_shape_as_sigusr2():
 
 def test_version_bumped():
     import re
+
     src = Path("app/__version__.py").read_text()
     m = re.search(r'"(\d+)\.(\d+)\.(\d+)"', src)
     assert m
     major, minor, patch = int(m.group(1)), int(m.group(2)), int(m.group(3))
-    assert (major, minor, patch) >= (5, 21, 7), (
-        f"expected >= 5.21.7, got {major}.{minor}.{patch}"
-    )
+    assert (major, minor, patch) >= (5, 21, 7), f"expected >= 5.21.7, got {major}.{minor}.{patch}"

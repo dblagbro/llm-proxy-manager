@@ -10,13 +10,15 @@ Run with:
     playwright install chromium
     python -m pytest tests/integration/test_v5210_self_edit_ui_pin.py -v -s
 """
+
 from __future__ import annotations
 
 import pytest
 from playwright.sync_api import Page, expect, sync_playwright
 
 # v5.22.38 — target and credentials come from tests/conftest.py, the single
-# source of truth. This file used to carry its own hardcoded smoke URL and admin password, which meant:
+# source of truth. This file used to carry its own hardcoded smoke URL and admin
+# password, which meant:
 #   - it could not be pointed at the ephemeral instance (LLMPROXY_TEST_EPHEMERAL=1),
 #     so it could only run where that URL resolves;
 #   - it sat outside the live gate, so a bare `pytest tests/integration` sent it
@@ -84,7 +86,7 @@ def test_self_edit_ui_pin(page):
     # default_refuse_tolerance (renders unconditionally, unlike the
     # self-edit checkbox grid which is gated on the master toggle).
     html = page.content()
-    for opt in ('none — no default', 'strict', 'default', 'lenient'):
+    for opt in ("none — no default", "strict", "default", "lenient"):
         assert opt in html, f"missing default_refuse_tolerance option: {opt}"
 
     # The eligible-fields grid is behind a Switch. Verify it toggles on

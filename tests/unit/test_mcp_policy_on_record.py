@@ -6,6 +6,7 @@ never copied them onto the record, so every enforcement site read
 getattr(record, "mcp_tools_allow", None) == None → allow-all. That voided both
 the allow/deny lists and the documented allow=[] "disable MCP" opt-out.
 """
+
 from __future__ import annotations
 
 from app.auth.keys import ApiKeyRecord

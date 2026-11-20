@@ -5,6 +5,7 @@ A key with metered_allowed=False may only route to subscription
 "no providers" RuntimeError (503) instead of failing over to a metered
 provider (tax-ai-analyzer incident: failover to a metered OpenAI account).
 """
+
 from __future__ import annotations
 
 import sys
@@ -39,8 +40,13 @@ def _admin():
 
 def _provider(pid, ptype, cost_class=None, priority=1):
     return Provider(
-        id=pid, name=pid, provider_type=ptype, enabled=True,
-        priority=priority, default_model="m", cost_class=cost_class,
+        id=pid,
+        name=pid,
+        provider_type=ptype,
+        enabled=True,
+        priority=priority,
+        default_model="m",
+        cost_class=cost_class,
     )
 
 
@@ -78,9 +84,7 @@ async def test_patch_sets_and_reads_metered_allowed():
         k = (await db.execute(select(ApiKey))).scalar_one()
         assert k.metered_allowed is False
         # omitted field leaves it untouched
-        res = await update_key(
-            key_id="k-1", body=KeyUpdate(name="x"), db=db, user=_admin()
-        )
+        res = await update_key(key_id="k-1", body=KeyUpdate(name="x"), db=db, user=_admin())
     assert res["metered_allowed"] is False
 
 
@@ -90,10 +94,14 @@ async def test_patch_sets_and_reads_metered_allowed():
 @pytest.mark.asyncio
 async def test_false_excludes_metered_providers():
     Session = await _fresh_db()
-    await _seed(Session, metered_allowed=False, providers=[
-        _provider("metered", "openai", priority=1),                 # per_call
-        _provider("sub", "claude-oauth", priority=5),               # derived subscription
-    ])
+    await _seed(
+        Session,
+        metered_allowed=False,
+        providers=[
+            _provider("metered", "openai", priority=1),  # per_call
+            _provider("sub", "claude-oauth", priority=5),  # derived subscription
+        ],
+    )
     async with Session() as db:
         r = await select_provider(db, None, api_key_id="k-1")
     assert r.provider.id == "sub"
@@ -102,10 +110,14 @@ async def test_false_excludes_metered_providers():
 @pytest.mark.asyncio
 async def test_explicit_cost_class_overrides_type():
     Session = await _fresh_db()
-    await _seed(Session, metered_allowed=False, providers=[
-        _provider("flat", "openai", cost_class="subscription", priority=9),
-        _provider("oauth-metered", "claude-oauth", cost_class="per_call", priority=1),
-    ])
+    await _seed(
+        Session,
+        metered_allowed=False,
+        providers=[
+            _provider("flat", "openai", cost_class="subscription", priority=9),
+            _provider("oauth-metered", "claude-oauth", cost_class="per_call", priority=1),
+        ],
+    )
     async with Session() as db:
         r = await select_provider(db, None, api_key_id="k-1")
     assert r.provider.id == "flat"
@@ -114,9 +126,13 @@ async def test_explicit_cost_class_overrides_type():
 @pytest.mark.asyncio
 async def test_false_with_only_metered_raises_no_provider():
     Session = await _fresh_db()
-    await _seed(Session, metered_allowed=False, providers=[
-        _provider("metered", "openai"),
-    ])
+    await _seed(
+        Session,
+        metered_allowed=False,
+        providers=[
+            _provider("metered", "openai"),
+        ],
+    )
     async with Session() as db:
         with pytest.raises(RuntimeError, match="No unmetered providers"):
             await select_provider(db, None, api_key_id="k-1")
@@ -126,10 +142,14 @@ async def test_false_with_only_metered_raises_no_provider():
 async def test_unmetered_down_does_not_fail_over_to_metered():
     """Subscription provider's breaker is open: must NOT fall to metered."""
     Session = await _fresh_db()
-    await _seed(Session, metered_allowed=False, providers=[
-        _provider("metered", "openai", priority=1),
-        _provider("sub", "claude-oauth", priority=5),
-    ])
+    await _seed(
+        Session,
+        metered_allowed=False,
+        providers=[
+            _provider("metered", "openai", priority=1),
+            _provider("sub", "claude-oauth", priority=5),
+        ],
+    )
 
     async def _avail(pid):
         return pid != "sub"
@@ -150,10 +170,14 @@ async def test_unmetered_down_does_not_fail_over_to_metered():
 @pytest.mark.asyncio
 async def test_default_true_leaves_metered_routable():
     Session = await _fresh_db()
-    await _seed(Session, metered_allowed=True, providers=[
-        _provider("metered", "openai", priority=1),
-        _provider("sub", "claude-oauth", priority=5),
-    ])
+    await _seed(
+        Session,
+        metered_allowed=True,
+        providers=[
+            _provider("metered", "openai", priority=1),
+            _provider("sub", "claude-oauth", priority=5),
+        ],
+    )
     async with Session() as db:
         r = await select_provider(db, None, api_key_id="k-1")
     assert r.provider.id == "metered"
@@ -164,13 +188,15 @@ async def test_default_true_leaves_metered_routable():
 
 def test_push_payload_includes_metered_allowed():
     from pathlib import Path
+
     src = Path("app/cluster/manager.py").read_text()
-    assert '"metered_allowed"' in src[src.index("keys = ["):]
+    assert '"metered_allowed"' in src[src.index("keys = [") :]
 
 
 @pytest.mark.asyncio
 async def test_sync_round_trips_metered_allowed():
     from app.cluster.sync import apply_sync
+
     Session = await _fresh_db()
     await _seed(Session, metered_allowed=None, providers=[])
     base = {"id": "k-1", "name": "t", "key_hash": "h", "key_prefix": "p"}
@@ -185,9 +211,20 @@ async def test_sync_round_trips_metered_allowed():
         await db.refresh(k)
         assert k.metered_allowed is False
         # insert path
-        await apply_sync(db, {"api_keys": [
-            {"id": "k-2", "name": "n", "key_hash": "h2", "key_prefix": "p2",
-             "metered_allowed": False}]})
+        await apply_sync(
+            db,
+            {
+                "api_keys": [
+                    {
+                        "id": "k-2",
+                        "name": "n",
+                        "key_hash": "h2",
+                        "key_prefix": "p2",
+                        "metered_allowed": False,
+                    }
+                ]
+            },
+        )
         await db.commit()
         k2 = (await db.execute(select(ApiKey).where(ApiKey.id == "k-2"))).scalar_one()
         assert k2.metered_allowed is False

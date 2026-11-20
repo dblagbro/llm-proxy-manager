@@ -1,5 +1,12 @@
 # Gateway runtime UID migration
 
+The gateway runtime account lives inside the image. Docker needs numeric ownership
+on persistent storage; deployment does not create a corresponding user on the Docker
+host. A site-operated emergency SSH bastion has a separate lifecycle. If a future
+deployment needs an SSH anchor, package it as an optional companion such as
+`llm-proxy-ssh-tunnel-anchor`, with its own image-local identity and explicitly
+provisioned keys. The standard gateway starts and serves requests independently.
+
 The gateway image runs as UID/GID 640:640. Existing persistent volumes retain
 their original numeric ownership when an image is replaced; operators must
 migrate the data and log volumes explicitly before starting the new image.
@@ -28,6 +35,15 @@ identical when base images or dependencies are not pinned.
 The host-specific migration tools contain environment assumptions. Review and
 adapt their guards to the actual inventory before use; they do not allocate host
 accounts or make a fleet-wide UID reservation.
+
+## Portable image check
+
+Run `make test-gateway-container GATEWAY_IMAGE=<local-release-image>` on a Docker test
+host. The check starts the image with its default user, isolated networking and fresh
+anonymous data and log volumes. It verifies the gateway's health endpoint and effective
+UID/GID, then replaces the container and checks that its original SQLite admin row
+and a non-root log marker persist. It removes its disposable containers and volumes.
+No host account, SSH key, forwarding service or model-provider credentials are involved.
 
 ## Release source and image
 

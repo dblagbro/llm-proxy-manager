@@ -7,18 +7,17 @@ Embed key: the LAST user turn's text only. Prior-turn context is bucketed
 into the namespace hash; semantic similarity measures what the user is
 asking NOW, not the whole transcript.
 """
+
 import hashlib
 import json
 import re
-from typing import Optional
-
 
 # PII heuristics — deliberately conservative; false positives are cheaper
 # than leaking a cached PII response to another tenant.
 _PII_PATTERNS = [
-    re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b"),            # email
-    re.compile(r"\b\d{3}[-. ]?\d{2}[-. ]?\d{4}\b"),         # SSN-shaped
-    re.compile(r"\b(?:\d[ -]*?){13,19}\b"),                  # credit-card-shaped
+    re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b"),  # email
+    re.compile(r"\b\d{3}[-. ]?\d{2}[-. ]?\d{4}\b"),  # SSN-shaped
+    re.compile(r"\b(?:\d[ -]*?){13,19}\b"),  # credit-card-shaped
     re.compile(r"\+?\d{1,3}?[-. ]?\(?\d{3}\)?[-. ]?\d{3}[-. ]?\d{4}"),  # phone
 ]
 
@@ -32,14 +31,15 @@ def contains_pii(text: str) -> bool:
     return False
 
 
-def is_cacheable_temperature(temperature: Optional[float]) -> bool:
+def is_cacheable_temperature(temperature: float | None) -> bool:
     """Only cache when output is effectively deterministic.
 
     T=0 → safe, T≤0.3 → low-variance, T>0.3 → skip to preserve
     statistical independence per arXiv:2511.22118.
     """
     if temperature is None:
-        return True  # default T=1.0 for most providers, but absence typically = they want a single answer
+        # Most providers default to T=1, but an omitted value usually requests one answer.
+        return True
     return temperature <= 0.3
 
 
@@ -52,9 +52,9 @@ def build_namespace(
     *,
     tenant_id: str,
     model: str,
-    system: Optional[object],
-    tools: Optional[list],
-    temperature: Optional[float],
+    system: object | None,
+    tools: list | None,
+    temperature: float | None,
     prior_messages: list[dict],
 ) -> str:
     """Build the Redis namespace key. Semantic search runs only within it.
@@ -63,15 +63,17 @@ def build_namespace(
     prior_messages excludes the last user turn (which becomes the embed key).
     """
     temp_bucket = "0" if (temperature or 0) == 0 else "low" if (temperature or 0) <= 0.3 else "high"
-    return ":".join([
-        "smc",  # semantic-cache prefix
-        tenant_id,
-        model,
-        temp_bucket,
-        _hash(system or ""),
-        _hash(tools or []),
-        _hash(prior_messages or []),
-    ])
+    return ":".join(
+        [
+            "smc",  # semantic-cache prefix
+            tenant_id,
+            model,
+            temp_bucket,
+            _hash(system or ""),
+            _hash(tools or []),
+            _hash(prior_messages or []),
+        ]
+    )
 
 
 def extract_query_text(messages: list[dict]) -> str:
@@ -111,7 +113,6 @@ def split_prior_messages(messages: list[dict]) -> tuple[list[dict], str]:
         text = content
     else:
         text = "\n".join(
-            b.get("text", "") for b in content
-            if isinstance(b, dict) and b.get("type") == "text"
+            b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"
         )
     return prior, text.strip()

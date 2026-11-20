@@ -4,11 +4,10 @@ Split out from the monolithic ``routing/lmrh.py`` in the 2026-04-23
 refactor. Consumers import from the package (``from app.routing.lmrh
 import ...``) which re-exports everything here.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional
-
 
 # ── Dimension weights (higher = more influence on score) ─────────────────────
 
@@ -47,10 +46,16 @@ COST_RANK: dict[str, int] = {"economy": 0, "standard": 1, "premium": 2}
 #   permissive → prefer low safety (willing to answer anything reasonable)
 #   maximum    → prefer high safety (strict refusals)
 _REFUSAL_RATE_TO_SAFETY_CEIL: dict[str, int] = {
-    "permissive": 2, "standard": 3, "strict": 4, "maximum": 5,
+    "permissive": 2,
+    "standard": 3,
+    "strict": 4,
+    "maximum": 5,
 }
 _REFUSAL_RATE_TO_SAFETY_FLOOR: dict[str, int] = {
-    "permissive": 1, "standard": 2, "strict": 3, "maximum": 4,
+    "permissive": 1,
+    "standard": 2,
+    "strict": 3,
+    "maximum": 4,
 }
 
 # v5.21.0 — refuse-tolerance dim: per-request routing hint for how
@@ -78,12 +83,12 @@ _REFUSAL_RATE_TO_SAFETY_FLOOR: dict[str, int] = {
 # Taxonomy is v1 — after the 2026-07-12 rollup, we may add
 # ``ambivalent`` / ``domain-specific`` if the data warrants it.
 _REFUSE_TOLERANCE_TO_SAFETY_FLOOR: dict[str, int] = {
-    "strict":  4,
+    "strict": 4,
     "default": 2,
     "lenient": 1,
 }
 _REFUSE_TOLERANCE_TO_SAFETY_CEIL: dict[str, int] = {
-    "strict":  5,
+    "strict": 5,
     "default": 4,
     "lenient": 2,
 }
@@ -111,7 +116,7 @@ class LMRHHint:
     raw: str
     dimensions: list[HintDimension] = field(default_factory=list)
 
-    def get(self, key: str) -> Optional[HintDimension]:
+    def get(self, key: str) -> HintDimension | None:
         for d in self.dimensions:
             if d.key == key:
                 return d
@@ -121,6 +126,7 @@ class LMRHHint:
 @dataclass
 class CapabilityProfile:
     """Capability profile for a provider+model pair (from DB or inferred)."""
+
     provider_id: str
     provider_type: str
     model_id: str

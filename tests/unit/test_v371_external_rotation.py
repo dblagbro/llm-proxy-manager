@@ -1,16 +1,16 @@
 """v3.7.1 — auto-rotation rule evaluator tests."""
+
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock
 
 import pytest
 
 from app.routing.external_rotation import (
-    is_currently_at_capacity,
     evaluate_rules_for_provider,
+    is_currently_at_capacity,
 )
-
 
 # ── is_currently_at_capacity ───────────────────────────────────────
 
@@ -30,7 +30,7 @@ def test_no_skip_set_returns_false():
 
 
 def test_skip_in_future_returns_true():
-    future = datetime.now(timezone.utc) + timedelta(hours=2)
+    future = datetime.now(UTC) + timedelta(hours=2)
     p = _provider(auto_skip_until=future)
     assert is_currently_at_capacity(p) is True
 
@@ -38,14 +38,14 @@ def test_skip_in_future_returns_true():
 def test_skip_in_past_returns_false():
     """Once the skip window passes, provider becomes available even
     before the rule evaluator clears the field."""
-    past = datetime.now(timezone.utc) - timedelta(minutes=1)
+    past = datetime.now(UTC) - timedelta(minutes=1)
     p = _provider(auto_skip_until=past)
     assert is_currently_at_capacity(p) is False
 
 
 def test_naive_datetime_treated_as_utc():
     """SQLite stores naive datetimes. Ensure we don't crash."""
-    future_naive = (datetime.now(timezone.utc) + timedelta(hours=1)).replace(tzinfo=None)
+    future_naive = (datetime.now(UTC) + timedelta(hours=1)).replace(tzinfo=None)
     p = _provider(auto_skip_until=future_naive)
     assert is_currently_at_capacity(p) is True
 
@@ -57,7 +57,7 @@ def _snapshot(util, resets_in_hours=2):
     s = MagicMock()
     s.id = 1
     s.seven_day_utilization = util
-    s.seven_day_resets_at = datetime.now(timezone.utc) + timedelta(hours=resets_in_hours)
+    s.seven_day_resets_at = datetime.now(UTC) + timedelta(hours=resets_in_hours)
     # v5.0.15 — the rotation logic now also reads ``five_hour_*``.
     # Default both to None so these weekly-only tests exercise the
     # weekly branch exclusively (preserves pre-v5.0.15 semantics).
@@ -95,7 +95,7 @@ async def test_rule_no_change_in_hysteresis_band():
     """94% — below capacity threshold but above clear-below.
     Don't change state."""
     snap = _snapshot(util=94.0)
-    prior_skip = datetime.now(timezone.utc) + timedelta(hours=2)
+    prior_skip = datetime.now(UTC) + timedelta(hours=2)
     p = _provider(auto_skip_until=prior_skip)
     out = await evaluate_rules_for_provider(MagicMock(), p, snapshot=snap)
     assert out["decision"] == "no_change"
@@ -106,7 +106,7 @@ async def test_rule_no_change_in_hysteresis_band():
 async def test_rule_clears_skip_when_below_clear_threshold():
     """89% — below clear-below (90%). Clear the skip even if still set."""
     snap = _snapshot(util=89.0)
-    prior_skip = datetime.now(timezone.utc) + timedelta(hours=2)
+    prior_skip = datetime.now(UTC) + timedelta(hours=2)
     p = _provider(auto_skip_until=prior_skip)
     out = await evaluate_rules_for_provider(MagicMock(), p, snapshot=snap)
     assert out["decision"] == "skip_cleared"
@@ -131,7 +131,10 @@ async def test_rule_handles_missing_snapshot():
     # Make the SELECT return nothing
     rs = MagicMock()
     rs.scalar_one_or_none.return_value = None
-    async def execute_mock(*a, **kw): return rs
+
+    async def execute_mock(*a, **kw):
+        return rs
+
     db.execute = execute_mock
     out = await evaluate_rules_for_provider(db, p)
     assert out["decision"] == "no_snapshot"
@@ -141,7 +144,7 @@ async def test_rule_handles_missing_snapshot():
 async def test_rule_handles_null_utilization():
     snap = MagicMock()
     snap.seven_day_utilization = None
-    snap.seven_day_resets_at = datetime.now(timezone.utc) + timedelta(hours=2)
+    snap.seven_day_resets_at = datetime.now(UTC) + timedelta(hours=2)
     # v5.0.15: rotation also reads five_hour_*; "no data" means BOTH
     # are None. Explicit set preserves the test's "no_utilization"
     # semantic against the new dual-bucket logic.
@@ -159,6 +162,7 @@ def test_router_filters_at_capacity_providers():
     """Source-level check that select_provider applies the auto-skip
     filter from external_rotation."""
     from pathlib import Path
+
     src = Path("app/routing/router.py").read_text()
     assert "is_currently_at_capacity" in src
     assert "external_rotation" in src
@@ -170,6 +174,7 @@ def test_scraper_invokes_rotation_evaluator():
     """After a successful scrape, the evaluator must run on the fresh
     snapshot before commit."""
     from pathlib import Path
+
     src = Path("app/providers/anthropic_billing.py").read_text()
     assert "evaluate_rules_for_provider" in src
     # Must call db.flush() before evaluator (so snapshot.id is populated)
@@ -180,6 +185,7 @@ def test_scraper_invokes_rotation_evaluator():
 
 def test_settings_have_threshold_fields():
     from app.config import settings
+
     assert hasattr(settings, "external_rotation_capacity_pct")
     assert hasattr(settings, "external_rotation_hysteresis_pct")
     assert 0 < settings.external_rotation_capacity_pct <= 100
@@ -188,6 +194,7 @@ def test_settings_have_threshold_fields():
 
 def test_provider_model_has_auto_skip_columns():
     from app.models.db import Provider
+
     cols = {c.name for c in Provider.__table__.columns}
     assert "auto_skip_until" in cols
     assert "auto_skip_reason" in cols
@@ -195,6 +202,7 @@ def test_provider_model_has_auto_skip_columns():
 
 def test_admin_endpoint_for_manual_evaluate_exists():
     from pathlib import Path
+
     src = Path("app/api/anthropic_billing.py").read_text()
     assert "_evaluate-rotation-rules" in src
     assert "evaluate_rules_for_all_providers" in src

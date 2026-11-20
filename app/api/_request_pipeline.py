@@ -18,10 +18,11 @@ Each helper is intentionally small and has no hidden state. The wire
 format differences (Anthropic message shape vs OpenAI message shape) are
 passed in explicitly.
 """
+
 from __future__ import annotations
 
 import logging
-from typing import Optional, Any
+from typing import Any
 
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -31,7 +32,7 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 
-def _estimate_input_tokens(messages) -> Optional[int]:
+def _estimate_input_tokens(messages) -> int | None:
     """Cheap, shape-tolerant input-size estimate (≈ chars / 4) for the
     router's context-window gate. Precision is not needed — the gate only
     fires on gross overflow. Returns None when there is nothing to measure."""
@@ -67,14 +68,18 @@ def apply_privacy_filters(messages_list: list[dict], body: dict) -> tuple[list[d
     Raises HTTPException(400) when guard blocks the request.
     """
     # Prompt guard first
-    from app.privacy.prompt_guard import check_messages as _guard_check, is_enabled as _guard_enabled
+    from app.privacy.prompt_guard import check_messages as _guard_check
+    from app.privacy.prompt_guard import is_enabled as _guard_enabled
+
     if _guard_enabled():
         match = _guard_check(messages_list)
         if match:
             raise HTTPException(400, f"Request blocked by prompt guard (pattern: {match!r})")
 
     # PII masking
-    from app.privacy.pii import mask_messages as _pii_mask, is_enabled as _pii_enabled
+    from app.privacy.pii import is_enabled as _pii_enabled
+    from app.privacy.pii import mask_messages as _pii_mask
+
     pii_count = 0
     if _pii_enabled():
         messages_list, pii_count = _pii_mask(messages_list)
@@ -96,22 +101,23 @@ def _extract_last_user_text(messages_list: list[dict]) -> str:
             return content
         if isinstance(content, list):
             return "\n".join(
-                b.get("text", "") for b in content
+                b.get("text", "")
+                for b in content
                 if isinstance(b, dict) and b.get("type") == "text"
             )
     return ""
 
 
-async def build_hint_with_auto_task(llm_hint: Optional[str], messages_list: list[dict]):
+async def build_hint_with_auto_task(llm_hint: str | None, messages_list: list[dict]):
     """Parse the LLM-Hint header and, when enabled + no explicit task, auto-classify
     the last user message into a task dimension.
 
     Returns (hint, auto_task_name_or_None).
     """
-    from app.routing.lmrh import parse_hint, LMRHHint, HintDimension
+    from app.routing.lmrh import HintDimension, LMRHHint, parse_hint
 
     hint = parse_hint(llm_hint)
-    auto_task: Optional[str] = None
+    auto_task: str | None = None
 
     if not settings.task_auto_detect_enabled:
         return hint, auto_task
@@ -123,6 +129,7 @@ async def build_hint_with_auto_task(llm_hint: Optional[str], messages_list: list
         return hint, auto_task
 
     from app.routing.classifier import classify
+
     cls = await classify(
         user_text[:800],
         settings.semantic_cache_embedding_model,
@@ -145,10 +152,10 @@ async def apply_context_compression(
     messages_list: list[dict],
     *,
     route,
-    x_context_strategy: Optional[str],
+    x_context_strategy: str | None,
     extra: dict,
     system: str = "",
-) -> tuple[list[dict], Optional[str]]:
+) -> tuple[list[dict], str | None]:
     """Wave 5 #26 — truncate, map-reduce, or reject when messages exceed the
     selected provider's context window.
 
@@ -156,7 +163,10 @@ async def apply_context_compression(
     Raises HTTPException(413) on strategy=error.
     """
     from app.api.long_context import (
-        needs_compression, resolve_strategy, truncate_to_window, mapreduce_compress,
+        mapreduce_compress,
+        needs_compression,
+        resolve_strategy,
+        truncate_to_window,
     )
 
     if not needs_compression(messages_list, route.profile.context_length, system):
@@ -184,7 +194,9 @@ async def apply_context_compression(
 
     # truncate (default)
     messages_list, dropped = truncate_to_window(
-        messages_list, route.profile.context_length, system,
+        messages_list,
+        route.profile.context_length,
+        system,
     )
     return messages_list, f"truncate:{dropped}dropped"
 
@@ -195,12 +207,12 @@ async def apply_context_compression(
 def build_base_response_headers(
     *,
     route,
-    auto_task: Optional[str],
+    auto_task: str | None,
     vision_routed_count: int,
-    context_strategy_applied: Optional[str],
+    context_strategy_applied: str | None,
     pii_masked_count: int,
-    hint: Optional[Any],
-    max_tokens: Optional[int] = None,
+    hint: Any | None,
+    max_tokens: int | None = None,
 ) -> dict[str, str]:
     """Build the common set of response headers shared by both endpoints.
 
@@ -246,7 +258,8 @@ def build_base_response_headers(
     # routed to one that can actually serve it).
     if getattr(route, "capability_skipped", None):
         headers["X-Capability-Skipped"] = "; ".join(
-            f"{n} ({r})" for n, r in route.capability_skipped)[:400]
+            f"{n} ({r})" for n, r in route.capability_skipped
+        )[:400]
 
     if auto_task:
         headers["X-Task-Auto-Detected"] = auto_task
@@ -259,6 +272,7 @@ def build_base_response_headers(
 
     if hint is not None:
         from app.routing.lmrh import build_hint_set_header
+
         hint_set = build_hint_set_header(hint, route.unmet_hints)
         if hint_set:
             headers["LLM-Hint-Set"] = hint_set
@@ -280,8 +294,8 @@ def _layer_logical_alias_hint(hint, alias_name: str):
     the caller didn't set, so an explicit ``LLM-Hint: task=reasoning``
     still overrides coordinator-code's ``task=code``.
     """
-    from app.routing.lmrh.parse import parse_hint
     from app.routing.aliases import logical_alias_hint
+    from app.routing.lmrh.parse import parse_hint
 
     alias_hint = parse_hint(logical_alias_hint(alias_name))
     if alias_hint is None:
@@ -305,7 +319,7 @@ async def select_provider_with_503(
     parsed_slug,
     alias,
     detailed_503: bool = True,
-    messages: Optional[list] = None,
+    messages: list | None = None,
     # v5.22.13 — requested output length, for the output-cap capability gate.
     # Optional so callers that do not know it keep prior behaviour.
     requested_max_tokens: int | None = None,
@@ -353,6 +367,7 @@ async def select_provider_with_503(
     # (logical aliases now substitute like ``auto``). An operator-created
     # ModelAlias DB row with the same name still wins (alias pin above).
     from app.routing.aliases import is_logical_alias
+
     _logical = alias is None and is_logical_alias(requested_model)
     if _logical:
         hint = _layer_logical_alias_hint(hint, requested_model)
@@ -368,9 +383,11 @@ async def select_provider_with_503(
     # when no self-hosted provider exists at all.
     if requested_model == "coordinator-local":
         from sqlalchemy import select as _select
+
+        from app.compliance import ComplianceNoLocalProviderError
         from app.models.db import Provider as _Provider
         from app.routing.aliases import is_self_hosted_provider
-        from app.compliance import ComplianceNoLocalProviderError
+
         rs = await db.execute(
             _select(_Provider).where(
                 _Provider.enabled == True,  # noqa: E712
@@ -403,6 +420,7 @@ async def select_provider_with_503(
         # row (decision 4). Re-raise so the wire-format handler owns the
         # body shape; we don't translate to HTTPException here.
         from app.compliance import ComplianceNoSubstituteError
+
         if isinstance(e, ComplianceNoSubstituteError):
             raise
         if not isinstance(e, RuntimeError):
@@ -442,6 +460,7 @@ def resolve_auto_model_into_body(body: dict, route, is_auto: bool) -> dict:
     """
     if not is_auto:
         from app.routing.aliases import is_logical_alias
+
         if not is_logical_alias(body.get("model")):
             return body
     resolved_model = route.profile.model_id or route.provider.default_model
@@ -460,22 +479,22 @@ def resolve_auto_model_into_body(body: dict, route, is_auto: bool) -> dict:
 async def maybe_serve_from_cache(
     *,
     # Decision inputs (cache.middleware.decide_cacheable signature)
-    x_cache_header: Optional[str],
+    x_cache_header: str | None,
     api_key_opt_in: bool,
     key_type: str,
     route,
     has_tools: bool,
-    webhook_url: Optional[str],
+    webhook_url: str | None,
     body: dict,
     messages_list: list[dict],
-    system: Any,                  # Anthropic-only; pass None for OpenAI
+    system: Any,  # Anthropic-only; pass None for OpenAI
     tools: Any,
-    x_cache_ttl_header: Optional[str],
+    x_cache_ttl_header: str | None,
     tenant_id: str,
     # Response shape — caller passes the wire-format builders
-    endpoint: str,                # "messages" | "completions"
-    text_sse_fn,                  # callable(text) -> async generator
-    text_response_fn,             # callable(text, model) -> dict
+    endpoint: str,  # "messages" | "completions"
+    text_sse_fn,  # callable(text) -> async generator
+    text_response_fn,  # callable(text, model) -> dict
     # Side outputs
     resp_headers: dict,
     stream: bool,
@@ -505,7 +524,8 @@ async def maybe_serve_from_cache(
     ``bypass`` / ``miss`` / ``hit``, plus ``X-Cache-Similarity`` on
     hit. Does not mutate any other input.
     """
-    from fastapi.responses import StreamingResponse, JSONResponse
+    from fastapi.responses import JSONResponse, StreamingResponse
+
     from app.cache.middleware import decide_cacheable, maybe_check
 
     cache_decision = decide_cacheable(
@@ -557,15 +577,15 @@ async def maybe_engage_cot(
     body: dict,
     messages_list: list[dict],
     extra: dict,
-    x_cot_iterations: Optional[str],
-    x_cot_verify: Optional[str],
-    x_cot_samples: Optional[str],
-    x_cot_mode: Optional[str],
-    x_session_id: Optional[str],
+    x_cot_iterations: str | None,
+    x_cot_verify: str | None,
+    x_cot_samples: str | None,
+    x_cot_mode: str | None,
+    x_session_id: str | None,
     resp_headers: dict,
-    stream_cot_fn,                # callable returning an async generator
-    extra_kwargs_for_stream: Optional[dict] = None,
-    llm_hint: Optional[str] = None,  # only consumed by stream_cot_anthropic
+    stream_cot_fn,  # callable returning an async generator
+    extra_kwargs_for_stream: dict | None = None,
+    llm_hint: str | None = None,  # only consumed by stream_cot_anthropic
 ):
     """Run the Chain-of-Thought-Emulation engagement pipeline.
 
@@ -596,12 +616,16 @@ async def maybe_engage_cot(
         raise HTTPException(422, "CoT-E requires stream=true")
 
     from fastapi.responses import StreamingResponse
+
     from app.cot.pipeline import parse_cot_request_headers
     from app.cot.task_adaptive import select_task_branch
     from app.routing.router import select_provider as _select_provider
 
     cot_max, force_verify, samples = parse_cot_request_headers(
-        x_cot_iterations, x_cot_verify, x_cot_samples, x_cot_mode,
+        x_cot_iterations,
+        x_cot_verify,
+        x_cot_samples,
+        x_cot_mode,
     )
     if samples > 1:
         resp_headers["X-Cot-Samples"] = str(samples)
@@ -613,12 +637,15 @@ async def maybe_engage_cot(
 
     # Cross-provider critique (Wave 2 #8): pick a different provider for
     # the critique pass when settings.cot_cross_provider_critique is on.
-    critique_model: Optional[str] = None
-    critique_kwargs: Optional[dict] = None
+    critique_model: str | None = None
+    critique_kwargs: dict | None = None
     if settings.cot_cross_provider_critique:
         try:
             critique_route = await _select_provider(
-                db, hint, has_tools=False, has_images=False,
+                db,
+                hint,
+                has_tools=False,
+                has_images=False,
                 key_type=key_record.key_type,
                 exclude_provider_id=route.provider.id,
                 excluded_provider_types={"claude-oauth"},
@@ -638,10 +665,19 @@ async def maybe_engage_cot(
     extra_kwargs = dict(extra_kwargs_for_stream or {})
     return StreamingResponse(
         stream_cot_fn(
-            route.litellm_model, messages_list, x_session_id, extra,
-            cot_max, route.provider.id, db, key_record.id, force_verify,
-            critique_model=critique_model, critique_kwargs=critique_kwargs,
-            samples=samples, task_branch=task_branch,
+            route.litellm_model,
+            messages_list,
+            x_session_id,
+            extra,
+            cot_max,
+            route.provider.id,
+            db,
+            key_record.id,
+            force_verify,
+            critique_model=critique_model,
+            critique_kwargs=critique_kwargs,
+            samples=samples,
+            task_branch=task_branch,
             **extra_kwargs,
         ),
         media_type="text/event-stream",

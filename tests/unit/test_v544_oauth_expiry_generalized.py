@@ -4,11 +4,10 @@ Operator ask 2026-06-12: "we need 15 day warnings on all expiry issues
 like this in the ui". Pre-v5.4.4 the cursor_oauth_expiry_monitor was
 cursor-specific, 14-day threshold, and only logged to stderr.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
-
-import pytest
 
 
 def test_default_threshold_is_15_days():
@@ -16,6 +15,7 @@ def test_default_threshold_is_15_days():
     from app.monitoring.cursor_oauth_expiry_monitor import (
         _DEFAULT_WARN_THRESHOLD_DAYS,
     )
+
     assert _DEFAULT_WARN_THRESHOLD_DAYS == 15
 
 
@@ -26,8 +26,7 @@ def test_scan_widens_beyond_cursor_oauth():
     # Old narrow filter would be ``Provider.provider_type == "cursor-oauth"``
     # alone. v5.4.4 OR-s with ``oauth_expires_at.is_not(None)``.
     assert "Provider.oauth_expires_at.is_not(None)" in src, (
-        "v5.4.4 must widen the scan to cover all providers carrying "
-        "oauth_expires_at"
+        "v5.4.4 must widen the scan to cover all providers carrying oauth_expires_at"
     )
 
 
@@ -38,7 +37,10 @@ def test_scan_writes_activity_log_row_on_warn():
     assert 'event_type="oauth_expiry_warning"' in src
     assert "ActivityLog(" in src
     # The 24h dedup check must precede the add()
-    add_idx = src.find('db.add(ActivityLog(')
+    import re
+
+    match = re.search(r"db\.add\(\s*ActivityLog\(", src)
+    add_idx = match.start() if match else -1
     dedup_idx = src.find('"oauth_expiry_warning"')
     assert dedup_idx != -1 and add_idx != -1
     assert dedup_idx < add_idx, "24h dedup check must run before the add()"

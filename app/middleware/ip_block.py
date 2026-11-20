@@ -27,11 +27,11 @@ Defensive: if the cache load fails (DB timeout, etc.) we fail OPEN
 — better to let traffic through than to 403 every request because
 of an unrelated DB hiccup.
 """
+
 from __future__ import annotations
 
 import logging
 import time
-from typing import Optional
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
@@ -62,14 +62,14 @@ async def _load_blocked_set() -> frozenset[str]:
     so we fail-open rather than 403-everything."""
     try:
         from sqlalchemy import select
+
         from app.models.database import AsyncSessionLocal
         from app.models.db import BlockedIp
+
         async with AsyncSessionLocal() as db:
             # v3.7.15 — filter tombstoned rows so cluster-replicated
             # deletions don't keep blocking traffic.
-            rs = await db.execute(
-                select(BlockedIp.ip).where(BlockedIp.deleted_at.is_(None))
-            )
+            rs = await db.execute(select(BlockedIp.ip).where(BlockedIp.deleted_at.is_(None)))
             return frozenset(r[0] for r in rs.all() if r[0])
     except Exception as exc:
         logger.warning("ip_block.cache_load_failed err=%s", exc)
@@ -92,7 +92,7 @@ def _clear_cache_for_tests() -> None:
     _loaded_at = 0.0
 
 
-async def is_blocked(ip: Optional[str]) -> bool:
+async def is_blocked(ip: str | None) -> bool:
     if not ip:
         return False
     return ip in (await _get_blocked_set())
@@ -114,16 +114,19 @@ async def ip_block_middleware(request: Request, call_next):
         return await call_next(request)
     try:
         from app.observability.request_context import (
-            extract_client_ip_from_request,
             _maybe_rewrite_lan_ip,
+            extract_client_ip_from_request,
         )
+
         raw_ip = extract_client_ip_from_request(request)
         rewritten = _maybe_rewrite_lan_ip(raw_ip) if raw_ip else None
         # Check both forms — operator may block either
         if await is_blocked(raw_ip) or (rewritten and await is_blocked(rewritten)):
             logger.info(
                 "ip_block.rejected raw=%s rewritten=%s path=%s",
-                raw_ip, rewritten, request.url.path,
+                raw_ip,
+                rewritten,
+                request.url.path,
             )
             return JSONResponse(
                 status_code=403,

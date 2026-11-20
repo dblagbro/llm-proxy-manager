@@ -7,19 +7,20 @@ Wave 1 #1. Two layers:
 Both are always importable; exporting is gated on env vars so dev/tests
 work without any collector infrastructure.
 """
-from app.observability.prometheus import (
-    metrics_response,
-    observe_request,
-    observe_ttft,
-    observe_circuit_breaker_state,
-    observe_cot_iterations,
-    observe_cache_lookup,
-    observe_cache_tokens,
-)
+
 from app.observability.otel import (
+    NOOP_SPAN,
     init_tracer,
     llm_span,
-    NOOP_SPAN,
+)
+from app.observability.prometheus import (
+    metrics_response,
+    observe_cache_lookup,
+    observe_cache_tokens,
+    observe_circuit_breaker_state,
+    observe_cot_iterations,
+    observe_request,
+    observe_ttft,
 )
 
 __all__ = [

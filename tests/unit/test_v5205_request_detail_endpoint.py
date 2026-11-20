@@ -8,7 +8,9 @@ activity_log events within ±30s of the same api_key+provider.
 Ported from ccflare's /api/requests/detail (2026-06-30 peer-comparison
 roadmap).
 """
+
 from __future__ import annotations
+
 from pathlib import Path
 
 
@@ -30,16 +32,15 @@ def test_endpoint_admin_gated():
     # require_admin dependency present in the function signature
     assert "_admin: AdminUser = Depends(require_admin)" in src
     # And on the detail endpoint specifically
-    tail = src[src.find("async def request_detail"):]
+    tail = src[src.find("async def request_detail") :]
     assert "require_admin" in tail[:400]
 
 
 def test_response_shape_documented():
     src = Path("app/api/admin_requests_stream.py").read_text()
     # Docstring specifies the 5 top-level keys
-    tail = src[src.find("async def request_detail"):]
-    for key in ("row", "provider", "api_key", "correlated_events",
-                "correlation_window_sec"):
+    tail = src[src.find("async def request_detail") :]
+    for key in ("row", "provider", "api_key", "correlated_events", "correlation_window_sec"):
         assert f'"{key}"' in tail, f"detail endpoint missing key: {key}"
 
 
@@ -61,7 +62,7 @@ def test_correlation_window_is_bounded():
     assert "_CORRELATION_WINDOW_SEC = 30" in src
     assert "_CORRELATED_MAX_ROWS = 50" in src
     # And the query actually uses both:
-    tail = src[src.find("async def _correlated_events"):]
+    tail = src[src.find("async def _correlated_events") :]
     assert ".limit(_CORRELATED_MAX_ROWS)" in tail
 
 
@@ -71,7 +72,7 @@ def test_correlation_scopes_to_same_key_and_provider():
     events). Without this scope every activity_log row within 30s
     would return, defeating the point."""
     src = Path("app/api/admin_requests_stream.py").read_text()
-    tail = src[src.find("async def _correlated_events"):]
+    tail = src[src.find("async def _correlated_events") :]
     assert "ActivityLog.api_key_id == row.api_key_id" in tail
     assert "ActivityLog.provider_id == row.provider_id" in tail
 
@@ -101,9 +102,14 @@ def test_provider_summary_doesnt_leak_credentials():
         assert f'"{f}"' in body
     # Negative pins: dict-KEY strings that must NOT appear in this
     # function's body.
-    for danger in ('"api_key"', '"oauth_refresh_token"',
-                   '"oauth_expires_at"', '"codex_session_cookies"',
-                   '"anthropic_session_cookies"', '"encrypted_key"'):
+    for danger in (
+        '"api_key"',
+        '"oauth_refresh_token"',
+        '"oauth_expires_at"',
+        '"codex_session_cookies"',
+        '"anthropic_session_cookies"',
+        '"encrypted_key"',
+    ):
         assert danger not in body, f"provider summary leaks {danger}"
 
 
@@ -127,16 +133,15 @@ def test_row_dict_helper_reused_from_stream_endpoint():
     parse both with the same code."""
     src = Path("app/api/admin_requests_stream.py").read_text()
     # _row_to_dict exists (from v5.11.0) and is called from request_detail
-    tail = src[src.find("async def request_detail"):]
+    tail = src[src.find("async def request_detail") :]
     assert "_row_to_dict(row)" in tail
 
 
 def test_version_bumped():
     import re
+
     src = Path("app/__version__.py").read_text()
     m = re.search(r'"(\d+)\.(\d+)\.(\d+)"', src)
     assert m
     major, minor, patch = int(m.group(1)), int(m.group(2)), int(m.group(3))
-    assert (major, minor, patch) >= (5, 20, 5), (
-        f"expected >= 5.20.5, got {major}.{minor}.{patch}"
-    )
+    assert (major, minor, patch) >= (5, 20, 5), f"expected >= 5.20.5, got {major}.{minor}.{patch}"

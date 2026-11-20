@@ -35,10 +35,17 @@ Architecture:
 - ``build_tool_result_message(tool_use_id, output)`` returns a
   ``user``-role message dict carrying the tool_result block.
 """
+
 from __future__ import annotations
 
+import typing as _typing
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, List, Optional, Tuple
+
+Any = _typing.Any
+List = list
+Optional = _typing.Optional
+Tuple = tuple
 
 
 @dataclass
@@ -51,25 +58,26 @@ class ProxyTool:
     run: Callable[[dict], Awaitable[str]]
 
 
-def _build_registry() -> List[ProxyTool]:
+def _build_registry() -> list[ProxyTool]:
     """Lazy-build the registry so importing this module doesn't pull
     in heavy deps (openpyxl) for unrelated code paths."""
     from app.proxy_tools.excel import EXCEL_TOOL
+
     return [EXCEL_TOOL]
 
 
 # Module-level lazy cache so callers don't rebuild on every request.
-_REGISTRY_CACHE: Optional[List[ProxyTool]] = None
+_REGISTRY_CACHE: list[ProxyTool] | None = None
 
 
-def get_registry() -> List[ProxyTool]:
+def get_registry() -> list[ProxyTool]:
     global _REGISTRY_CACHE
     if _REGISTRY_CACHE is None:
         _REGISTRY_CACHE = _build_registry()
     return _REGISTRY_CACHE
 
 
-async def get_registry_async() -> List[ProxyTool]:
+async def get_registry_async() -> list[ProxyTool]:
     """v5.7.1 — async variant that ALSO sources from the FastMCP
     aggregator (via the bridge). Use this from the /v1/messages
     handler. Sync ``get_registry()`` remains for any test/diagnostic
@@ -84,6 +92,7 @@ async def get_registry_async() -> List[ProxyTool]:
     names = {t.name for t in static}
     try:
         from app.proxy_tools.mcp_bridge import get_bridge_proxy_tools
+
         bridge = await get_bridge_proxy_tools()
     except Exception:
         bridge = []
@@ -138,6 +147,7 @@ def _log_dedupe_skips(skipped: list[str]) -> None:
         try:
             from app.models.database import AsyncSessionLocal
             from app.monitoring.activity import log_event
+
             async with AsyncSessionLocal() as db:
                 await log_event(
                     db,
@@ -161,7 +171,7 @@ def _log_dedupe_skips(skipped: list[str]) -> None:
         pass
 
 
-def inject_anthropic(body: dict) -> List[dict]:
+def inject_anthropic(body: dict) -> list[dict]:
     """Append every registered tool's Anthropic schema to
     ``body["tools"]``. Idempotent — if a tool with the same ``name``
     is already in the list (e.g. the caller passed their own
@@ -188,7 +198,7 @@ def inject_anthropic(body: dict) -> List[dict]:
     return existing
 
 
-async def inject_anthropic_async(body: dict) -> List[dict]:
+async def inject_anthropic_async(body: dict) -> list[dict]:
     """v5.7.1 — async injection that sources from BOTH the static
     registry AND the FastMCP aggregator bridge. The /v1/messages
     handler should use this so every MCP-registered tool (markitdown,
@@ -232,12 +242,13 @@ async def inject_anthropic_async(body: dict) -> List[dict]:
     return existing
 
 
-def _get_current_mcp_policy() -> Optional[dict]:
+def _get_current_mcp_policy() -> dict | None:
     """Read the per-key MCP policy ContextVar set by the request
     handler. Returns ``None`` when no context is set (admin / test
     paths) so legacy callers behave as before."""
     try:
         from app.mcp_server.server import current_mcp_policy
+
         return current_mcp_policy.get()
     except Exception:
         return None
@@ -250,6 +261,7 @@ def _is_tool_allowed_by_policy(tool_name: str, policy: dict) -> bool:
     import between ``proxy_tools`` and ``mcp_server``."""
     try:
         from app.mcp_server.policy import is_tool_allowed_for_key
+
         return is_tool_allowed_for_key(
             tool_name,
             policy.get("mcp_tools_allow"),
@@ -275,6 +287,7 @@ def _log_policy_blocked(blocked: list[str]) -> None:
         try:
             from app.models.database import AsyncSessionLocal
             from app.monitoring.activity import log_event
+
             async with AsyncSessionLocal() as db:
                 await log_event(
                     db,
@@ -297,8 +310,8 @@ def _log_policy_blocked(blocked: list[str]) -> None:
 
 
 async def find_proxy_tool_use_async(
-    content_blocks: List[dict],
-) -> Optional[Tuple[ProxyTool, dict, str]]:
+    content_blocks: list[dict],
+) -> tuple[ProxyTool, dict, str] | None:
     """v5.7.1 — async variant of ``find_proxy_tool_use`` that ALSO
     matches against the FastMCP aggregator bridge tools. Returns the
     first ``(tool, input_obj, tool_use_id)`` whose tool name matches
@@ -319,8 +332,8 @@ async def find_proxy_tool_use_async(
 
 
 def find_proxy_tool_use(
-    content_blocks: List[dict],
-) -> Optional[Tuple[ProxyTool, dict, str]]:
+    content_blocks: list[dict],
+) -> tuple[ProxyTool, dict, str] | None:
     """Scan an assistant turn's content for a ``tool_use`` referencing
     a registered proxy tool.
 
@@ -362,11 +375,13 @@ def build_tool_result_message(tool_use_id: str, output: str) -> dict:
     """
     return {
         "role": "user",
-        "content": [{
-            "type": "tool_result",
-            "tool_use_id": tool_use_id,
-            "content": output,
-        }],
+        "content": [
+            {
+                "type": "tool_result",
+                "tool_use_id": tool_use_id,
+                "content": output,
+            }
+        ],
     }
 
 
@@ -440,8 +455,17 @@ async def patch_inbound_tool_results(messages_list: list) -> int:
                 continue
             existing = block.get("content")
             # Idempotency heuristic: only patch placeholders.
-            if isinstance(existing, str) and existing.strip() and existing.strip() not in (
-                "PLACEHOLDER", "pending", "TODO", "...", "n/a",
+            if (
+                isinstance(existing, str)
+                and existing.strip()
+                and existing.strip()
+                not in (
+                    "PLACEHOLDER",
+                    "pending",
+                    "TODO",
+                    "...",
+                    "n/a",
+                )
             ):
                 # Already has a real result — caller executed the tool.
                 continue

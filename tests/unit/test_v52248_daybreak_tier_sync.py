@@ -16,6 +16,7 @@ v5.22.48 adds ``daybreak_tier`` to the push payload and to both the
 update (membership-test) and INSERT (full-field) branches of the apply
 handler, under the same discipline as the other policy columns.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -29,6 +30,7 @@ from sqlalchemy import delete, select
 async def fresh_db():
     from app.models.database import AsyncSessionLocal, engine
     from app.models.db import ApiKey, Base
+
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     async with AsyncSessionLocal() as cleanup:
@@ -48,7 +50,7 @@ def test_push_payload_includes_daybreak_tier():
     ``daybreak_tier`` so authorizations propagate cluster-wide."""
     src = Path("app/cluster/manager.py").read_text()
     idx = src.index("keys = [")
-    block = src[idx:idx + 3000]
+    block = src[idx : idx + 3000]
     assert "daybreak_tier" in block, "push payload missing daybreak_tier"
 
 
@@ -63,27 +65,37 @@ async def test_daybreak_tier_propagates_on_update(fresh_db):
     from app.models.db import ApiKey
 
     async with fresh_db() as db:
-        db.add(ApiKey(
-            id="key-db-1", name="cursor-ws2",
-            key_hash="hash-db-1", key_prefix="llmp-db1",
-            enabled=True, daybreak_tier=None,
-        ))
-        await db.commit()
-
-        await apply_sync(db, {"api_keys": [{
-            "id": "key-db-1", "name": "cursor-ws2",
-            "key_hash": "hash-db-1", "key_prefix": "llmp-db1",
-            "daybreak_tier": "blue",
-            "last_user_edit_at": 1_900_000_000.0,
-        }]})
-        await db.commit()
-
-        row = (await db.execute(
-            select(ApiKey).where(ApiKey.key_hash == "hash-db-1")
-        )).scalar_one()
-        assert row.daybreak_tier == "blue", (
-            "daybreak_tier='blue' from peer did not propagate"
+        db.add(
+            ApiKey(
+                id="key-db-1",
+                name="cursor-ws2",
+                key_hash="hash-db-1",
+                key_prefix="llmp-db1",
+                enabled=True,
+                daybreak_tier=None,
+            )
         )
+        await db.commit()
+
+        await apply_sync(
+            db,
+            {
+                "api_keys": [
+                    {
+                        "id": "key-db-1",
+                        "name": "cursor-ws2",
+                        "key_hash": "hash-db-1",
+                        "key_prefix": "llmp-db1",
+                        "daybreak_tier": "blue",
+                        "last_user_edit_at": 1_900_000_000.0,
+                    }
+                ]
+            },
+        )
+        await db.commit()
+
+        row = (await db.execute(select(ApiKey).where(ApiKey.key_hash == "hash-db-1"))).scalar_one()
+        assert row.daybreak_tier == "blue", "daybreak_tier='blue' from peer did not propagate"
 
 
 @pytest.mark.asyncio
@@ -94,17 +106,24 @@ async def test_daybreak_tier_set_on_insert(fresh_db):
     from app.models.db import ApiKey
 
     async with fresh_db() as db:
-        await apply_sync(db, {"api_keys": [{
-            "id": "key-db-2", "name": "new-authorized",
-            "key_hash": "hash-db-2", "key_prefix": "llmp-db2",
-            "enabled": True,
-            "daybreak_tier": "blue",
-        }]})
+        await apply_sync(
+            db,
+            {
+                "api_keys": [
+                    {
+                        "id": "key-db-2",
+                        "name": "new-authorized",
+                        "key_hash": "hash-db-2",
+                        "key_prefix": "llmp-db2",
+                        "enabled": True,
+                        "daybreak_tier": "blue",
+                    }
+                ]
+            },
+        )
         await db.commit()
 
-        row = (await db.execute(
-            select(ApiKey).where(ApiKey.key_hash == "hash-db-2")
-        )).scalar_one()
+        row = (await db.execute(select(ApiKey).where(ApiKey.key_hash == "hash-db-2"))).scalar_one()
         assert row.daybreak_tier == "blue"
 
 
@@ -116,24 +135,36 @@ async def test_missing_daybreak_tier_doesnt_clobber(fresh_db):
     from app.models.db import ApiKey
 
     async with fresh_db() as db:
-        db.add(ApiKey(
-            id="key-db-3", name="authorized-local",
-            key_hash="hash-db-3", key_prefix="llmp-db3",
-            enabled=True, daybreak_tier="blue",
-        ))
+        db.add(
+            ApiKey(
+                id="key-db-3",
+                name="authorized-local",
+                key_hash="hash-db-3",
+                key_prefix="llmp-db3",
+                enabled=True,
+                daybreak_tier="blue",
+            )
+        )
         await db.commit()
 
         # Legacy peer payload: no daybreak_tier key at all
-        await apply_sync(db, {"api_keys": [{
-            "id": "key-db-3", "name": "authorized-local",
-            "key_hash": "hash-db-3", "key_prefix": "llmp-db3",
-            "spending_cap_usd": 10.0,
-        }]})
+        await apply_sync(
+            db,
+            {
+                "api_keys": [
+                    {
+                        "id": "key-db-3",
+                        "name": "authorized-local",
+                        "key_hash": "hash-db-3",
+                        "key_prefix": "llmp-db3",
+                        "spending_cap_usd": 10.0,
+                    }
+                ]
+            },
+        )
         await db.commit()
 
-        row = (await db.execute(
-            select(ApiKey).where(ApiKey.key_hash == "hash-db-3")
-        )).scalar_one()
+        row = (await db.execute(select(ApiKey).where(ApiKey.key_hash == "hash-db-3"))).scalar_one()
         assert row.daybreak_tier == "blue", (
             "legacy peer omitting daybreak_tier clobbered local auth"
         )

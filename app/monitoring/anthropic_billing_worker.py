@@ -19,25 +19,25 @@ AND both cluster nodes scraped independently on each cycle, producing
 2-4+ visible rows per provider in deploy-heavy windows. Operator saw
 "snapshots every few minutes" during back-to-back deploys 2026-05-12.
 """
+
 from __future__ import annotations
 
 import asyncio
 import logging
 import random
-import time
-from typing import Optional
+import time as time
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_INTERVAL_SEC = 14400  # 4 hours
-WARMUP_DELAY_SEC = 60         # let cluster sync + providers settle
+WARMUP_DELAY_SEC = 60  # let cluster sync + providers settle
 # v3.7.24: cap per-node startup jitter at 60s so cluster nodes don't all
 # fire their first cycle in lockstep after a coordinated deploy. Combined
 # with the freshness guard, this means the first node to wake writes the
 # canonical snapshot; the rest see it via cluster sync (60s convergence)
 # and defer until next cycle.
 _STARTUP_JITTER_MAX_SEC = 60.0
-_TASK: Optional[asyncio.Task] = None
+_TASK: asyncio.Task | None = None
 
 
 def _interval_sec() -> int:
@@ -45,6 +45,7 @@ def _interval_sec() -> int:
     disables the worker (useful for short-term operator pauses)."""
     try:
         from app.config import settings
+
         return int(getattr(settings, "anthropic_billing_scrape_interval_sec", DEFAULT_INTERVAL_SEC))
     except Exception:
         return DEFAULT_INTERVAL_SEC
@@ -61,6 +62,7 @@ def _freshness_floor_sec(interval_sec: int) -> int:
     """
     try:
         from app.config import settings
+
         override = int(getattr(settings, "anthropic_billing_min_scrape_gap_sec", 0))
         if override > 0:
             return override
@@ -69,7 +71,7 @@ def _freshness_floor_sec(interval_sec: int) -> int:
     return max(60, interval_sec // 2)
 
 
-async def _latest_snapshot_age_sec(db, provider_id: str) -> Optional[float]:
+async def _latest_snapshot_age_sec(db, provider_id: str) -> float | None:
     """v3.7.24 (#258) — return the age in seconds of the freshest
     ``external_usage_snapshot`` row for this provider (across the whole
     cluster — cluster sync replicates rows, so this works even if the
@@ -79,12 +81,17 @@ async def _latest_snapshot_age_sec(db, provider_id: str) -> Optional[float]:
     non-deterministic row when the originator and a replica tie on
     timestamp (docs/qa-notes.md "Querying cluster-replicated tables").
     """
+    from sqlalchemy import func, select
+
     from app.models.db import ExternalUsageSnapshot
-    from sqlalchemy import select, func
-    row = (await db.execute(
-        select(func.max(ExternalUsageSnapshot.captured_at))
-        .where(ExternalUsageSnapshot.provider_id == provider_id)
-    )).scalar()
+
+    row = (
+        await db.execute(
+            select(func.max(ExternalUsageSnapshot.captured_at)).where(
+                ExternalUsageSnapshot.provider_id == provider_id
+            )
+        )
+    ).scalar()
     if row is None:
         return None
     # ``captured_at`` is a DATETIME column; SQLA returns either a
@@ -92,13 +99,15 @@ async def _latest_snapshot_age_sec(db, provider_id: str) -> Optional[float]:
     if isinstance(row, str):
         # SQLite returns "YYYY-MM-DD HH:MM:SS[.fff]"
         from datetime import datetime as _dt
+
         try:
             cap = _dt.fromisoformat(row.replace("Z", "+00:00"))
         except Exception:
             return None
     else:
         cap = row
-    from datetime import datetime as _dt, timezone as _tz
+    from datetime import datetime as _dt
+
     now_naive = _dt.utcnow()
     # Strip any tz on cap so we can subtract naive-from-naive.
     try:
@@ -118,10 +127,11 @@ async def _scrape_all_once() -> int:
     than the freshness floor. Returns the count of providers actually
     scraped (excludes providers without cookies AND providers skipped
     by the freshness guard)."""
+    from sqlalchemy import select
+
     from app.models.database import AsyncSessionLocal
     from app.models.db import Provider
     from app.providers.anthropic_billing import scrape_provider_into_snapshot
-    from sqlalchemy import select
 
     interval = _interval_sec()
     fresh_floor = _freshness_floor_sec(interval)
@@ -160,7 +170,9 @@ async def _scrape_all_once() -> int:
     if skipped:
         logger.info(
             "anthropic_billing.swept scraped=%d skipped_fresh=%d fresh_floor_sec=%d",
-            count, skipped, fresh_floor,
+            count,
+            skipped,
+            fresh_floor,
         )
     return count
 
@@ -175,6 +187,7 @@ async def _scrape_loop() -> None:
     # window, which combined with the freshness guard prevents all
     # peers from scraping the same cycle.
     from app.monitoring.worker_heartbeat import WorkerHeartbeat, register_expected_interval
+
     hb = WorkerHeartbeat(name="anthropic_billing")
     jitter = random.uniform(0.0, _STARTUP_JITTER_MAX_SEC)
     await asyncio.sleep(WARMUP_DELAY_SEC + jitter)

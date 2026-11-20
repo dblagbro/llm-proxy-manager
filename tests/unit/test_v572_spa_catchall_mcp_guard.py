@@ -15,6 +15,7 @@ Fix: extend the API-namespace skip list in the SPA catch-all to
 include ``mcp``. Bare ``/mcp`` now returns JSON 404; ``/mcp/`` still
 hits the FastMCP Streamable HTTP endpoint with bearer-key auth.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -39,9 +40,11 @@ def test_spa_catchall_skips_mcp_namespace():
 
     src = Path("app/main.py").read_text()
     fn = next(
-        (n for n in ast.walk(ast.parse(src))
-         if isinstance(n, (ast.AsyncFunctionDef, ast.FunctionDef))
-         and n.name == "spa_catch_all"),
+        (
+            n
+            for n in ast.walk(ast.parse(src))
+            if isinstance(n, (ast.AsyncFunctionDef, ast.FunctionDef)) and n.name == "spa_catch_all"
+        ),
         None,
     )
     assert fn is not None, "SPA catch-all handler missing"
@@ -56,10 +59,13 @@ def test_spa_catchall_skips_mcp_namespace():
                 continue
             rhs = sub.comparators[0]
             if isinstance(rhs, (ast.Tuple, ast.List, ast.Set)):
-                found.append({
-                    e.value for e in rhs.elts
-                    if isinstance(e, ast.Constant) and isinstance(e.value, str)
-                })
+                found.append(
+                    {
+                        e.value
+                        for e in rhs.elts
+                        if isinstance(e, ast.Constant) and isinstance(e.value, str)
+                    }
+                )
         return found
 
     tuples = _in_tuples(fn)
@@ -74,8 +80,7 @@ def test_spa_catchall_skips_mcp_namespace():
     # Belt-and-braces: every prior namespace must still be there
     for ns in ("v1", "api", "cluster", "lmrh", "metrics", "health", "version"):
         assert ns in skipped, (
-            f"SPA catch-all skip list missing prior namespace {ns!r}; "
-            f"found {sorted(skipped)}"
+            f"SPA catch-all skip list missing prior namespace {ns!r}; found {sorted(skipped)}"
         )
     # v1/api/mcp are refused unconditionally, not only when a sub-path is
     # present — keep them together in one tuple so that stays true.

@@ -9,24 +9,29 @@ Verifies the prober's behavior:
   window success rate
 - Surface admin endpoints for manual trigger + history
 """
+
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
-
-import pytest
-
 
 # ── Schema ─────────────────────────────────────────────────────────
 
 
 def test_model_tool_probe_table_exists():
     from app.models.db import ModelToolProbe
+
     cols = {c.name for c in ModelToolProbe.__table__.columns}
     expected = {
-        "id", "provider_id", "model_id", "captured_at",
-        "called", "parseable", "correct_args",
-        "error", "raw_excerpt", "response_format",
+        "id",
+        "provider_id",
+        "model_id",
+        "captured_at",
+        "called",
+        "parseable",
+        "correct_args",
+        "error",
+        "raw_excerpt",
+        "response_format",
     }
     missing = expected - cols
     assert not missing, f"ModelToolProbe missing columns: {missing}"
@@ -37,6 +42,7 @@ def test_model_tool_probe_indexed_for_rolling_query():
     ordered by captured_at DESC. provider_id + captured_at must be
     indexed."""
     from app.models.db import ModelToolProbe
+
     cols = {c.name: c for c in ModelToolProbe.__table__.columns}
     assert cols["provider_id"].index is True
     assert cols["captured_at"].index is True
@@ -48,6 +54,7 @@ def test_model_tool_probe_indexed_for_rolling_query():
 
 def test_prober_settings_present():
     from app.config import settings
+
     for key in (
         "ai_tool_prober_enabled",
         "ai_tool_prober_interval_sec",
@@ -68,6 +75,7 @@ def test_prober_settings_present():
 
 def test_prober_settings_exposed_in_ui_schema():
     from app.config_runtime import SCHEMA
+
     keys = [k for k in SCHEMA if k.startswith("ai_tool_prober_")]
     assert len(keys) >= 6
     groups = {SCHEMA[k].get("group") for k in keys}
@@ -79,10 +87,14 @@ def test_prober_settings_exposed_in_ui_schema():
 
 def test_prober_module_exists():
     import importlib
+
     mod = importlib.import_module("app.monitoring.tool_capability_prober")
     for fn in (
-        "start", "_scan_loop", "_probe_loop_once",
-        "probe_one_model", "evaluate_probe_response",
+        "start",
+        "_scan_loop",
+        "_probe_loop_once",
+        "probe_one_model",
+        "evaluate_probe_response",
         "update_native_tools_from_rolling",
     ):
         assert hasattr(mod, fn), f"missing {fn}"
@@ -113,6 +125,7 @@ def test_prober_pins_routing_via_llm_hint():
 
 def test_evaluate_recognizes_correct_response():
     from app.monitoring.tool_capability_prober import evaluate_probe_response
+
     body = {
         "content": [
             {"type": "tool_use", "name": "get_weather", "input": {"city": "San Francisco"}},
@@ -126,6 +139,7 @@ def test_evaluate_recognizes_correct_response():
 
 def test_evaluate_wrong_tool_name():
     from app.monitoring.tool_capability_prober import evaluate_probe_response
+
     body = {
         "content": [
             {"type": "tool_use", "name": "weather_lookup", "input": {"city": "SF"}},
@@ -139,6 +153,7 @@ def test_evaluate_wrong_tool_name():
 
 def test_evaluate_missing_city_arg():
     from app.monitoring.tool_capability_prober import evaluate_probe_response
+
     body = {
         "content": [
             {"type": "tool_use", "name": "get_weather", "input": {"location": "SF"}},
@@ -152,6 +167,7 @@ def test_evaluate_missing_city_arg():
 
 def test_evaluate_no_tool_call():
     from app.monitoring.tool_capability_prober import evaluate_probe_response
+
     body = {"content": [{"type": "text", "text": "Sunny and 72°F."}]}
     called, parseable, correct_args = evaluate_probe_response(body)
     assert called is False
@@ -161,6 +177,7 @@ def test_evaluate_no_tool_call():
 
 def test_evaluate_handles_garbage_input():
     from app.monitoring.tool_capability_prober import evaluate_probe_response
+
     assert evaluate_probe_response(None) == (False, False, False)
     assert evaluate_probe_response("not a dict") == (False, False, False)
     assert evaluate_probe_response({}) == (False, False, False)
@@ -171,6 +188,7 @@ def test_evaluate_handles_garbage_input():
 
 def test_prober_admin_endpoints_registered():
     from app.api.tool_prober import router
+
     paths = {r.path for r in router.routes}
     assert "/api/providers/{provider_id}/tool-prober-trigger" in paths
     assert "/api/providers/{provider_id}/tool-probe-history" in paths
@@ -188,7 +206,7 @@ def test_trigger_respects_manual_override():
     provider (consistent with the v3.7.32 supervisor endpoints)."""
     src = Path("app/api/tool_prober.py").read_text()
     idx = src.index("async def trigger_probe_now")
-    body = src[idx:idx + 2000]
+    body = src[idx : idx + 2000]
     assert "manual_override_until" in body
     assert "409" in body
 
@@ -205,7 +223,7 @@ def test_hysteresis_gap_documented_in_source():
     assert "_native_threshold" in src
     assert "_emulate_threshold" in src
     idx = src.index("def update_native_tools_from_rolling")
-    body = src[idx:idx + 3000]
+    body = src[idx : idx + 3000]
     # Must check rate >= native first, then rate < emulate
     assert "rate >= native_thr" in body
     assert "rate < emul_thr" in body
@@ -213,5 +231,6 @@ def test_hysteresis_gap_documented_in_source():
 
 def test_version_bumped():
     from app.__version__ import __version__
+
     parts = tuple(int(p) for p in __version__.split("."))
     assert parts >= (3, 8, 4)

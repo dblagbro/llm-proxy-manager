@@ -9,8 +9,8 @@ tenants, model version, tool set, system prompt hash — see `keys.py`.
 All cache ops are graceful: if Redis-Stack isn't available or embedding
 call fails, we log once and return miss/no-op (never break the request).
 """
+
 import logging
-from typing import Any, Optional
 
 from app.config import settings
 
@@ -125,7 +125,7 @@ class SemanticCache:
         except Exception as e:
             logger.warning("semantic_cache.schema_migration_inspect_failed %s", e)
 
-    async def _embed(self, text: str) -> Optional[list[float]]:
+    async def _embed(self, text: str) -> list[float] | None:
         # v3.0.67: when ``semantic_cache_provider_id`` is set, route the
         # embedding call through that specific proxy provider's api_key +
         # base_url + litellm prefix, so the operator's preferred provider
@@ -135,6 +135,7 @@ class SemanticCache:
         # selects provider implicitly" behavior for backwards compat.
         try:
             import litellm
+
             provider_id = (settings.semantic_cache_provider_id or "").strip()
             kwargs: dict = {
                 "model": settings.semantic_cache_embedding_model,
@@ -144,13 +145,17 @@ class SemanticCache:
             if provider_id:
                 from app.models.database import AsyncSessionLocal
                 from app.models.db import Provider
+
                 async with AsyncSessionLocal() as db:
                     p = await db.get(Provider, provider_id)
                 if p is not None and p.enabled and p.deleted_at is None:
-                    from app.routing.router import build_litellm_model, build_litellm_kwargs
+                    from app.routing.router import build_litellm_kwargs, build_litellm_model
+
                     # Caller-pinned model lives on settings.semantic_cache_embedding_model;
                     # build_litellm_model prefixes it with the provider's family tag.
-                    kwargs["model"] = build_litellm_model(p, model_override=settings.semantic_cache_embedding_model)
+                    kwargs["model"] = build_litellm_model(
+                        p, model_override=settings.semantic_cache_embedding_model
+                    )
                     pkw = build_litellm_kwargs(p)
                     # Don't override max_tokens etc. on an embed call — only auth + endpoint.
                     for k in ("api_key", "api_base", "api_version"):
@@ -170,8 +175,8 @@ class SemanticCache:
         query: str,
         threshold: float,
         *,
-        blocked_companies: Optional[set[str]] = None,
-    ) -> Optional[tuple[str, float]]:
+        blocked_companies: set[str] | None = None,
+    ) -> tuple[str, float] | None:
         """Return (cached_response, similarity) on hit, else None.
 
         ``blocked_companies`` (v5.0.0 compliance) filters cache rows whose
@@ -187,6 +192,7 @@ class SemanticCache:
         try:
             from redisvl.query import VectorQuery
             from redisvl.query.filter import Tag
+
             # Pull more candidates than 1 when filtering so a single banned
             # row at the top doesn't starve a legitimate runner-up. The
             # similarity gate still applies after the company filter.
@@ -206,7 +212,8 @@ class SemanticCache:
                 # any non-empty blocklist. We can't trust pre-v5 cache rows
                 # (or any row that lost provenance) to be safe to serve.
                 filtered = [
-                    r for r in results
+                    r
+                    for r in results
                     if r.get("source_company") is not None
                     and r.get("source_company") not in blocked_companies
                 ]
@@ -232,7 +239,7 @@ class SemanticCache:
         response: str,
         ttl_sec: int,
         *,
-        source_company: Optional[str] = None,
+        source_company: str | None = None,
     ) -> None:
         if not query or not response or not await self._ensure_init():
             return
@@ -241,6 +248,7 @@ class SemanticCache:
             return
         try:
             import struct
+
             packed = struct.pack(f"{len(vec)}f", *vec)
             payload = {
                 "namespace": namespace,
@@ -258,7 +266,7 @@ class SemanticCache:
             logger.warning("semantic_cache.store_failed %s", exc)
 
 
-_instance: Optional[SemanticCache] = None
+_instance: SemanticCache | None = None
 
 
 def get_cache() -> SemanticCache:

@@ -11,10 +11,10 @@ This is the safety-net for direct DB writes; the v3.2.7 cluster-sync
 fix made the LWW comparison correct, this stops the bug from being
 generated in the first place.
 """
+
 from __future__ import annotations
 
 import time
-from datetime import datetime, timezone
 
 import pytest
 import pytest_asyncio
@@ -25,7 +25,7 @@ from sqlalchemy import delete, select
 async def fresh_provider():
     """Insert a Provider row with a known last_user_edit_at; yield the
     AsyncSessionLocal so tests can run their own transactions."""
-    from app.models.database import engine, AsyncSessionLocal
+    from app.models.database import AsyncSessionLocal, engine
     from app.models.db import Base, Provider
 
     async with engine.begin() as conn:
@@ -61,6 +61,7 @@ async def fresh_provider():
 async def test_rename_bumps_stamp(fresh_provider):
     """Renaming a Provider is the canonical user-meaningful change."""
     from app.models.db import Provider
+
     AsyncSessionLocal = fresh_provider
     before = time.time()
     async with AsyncSessionLocal() as db:
@@ -78,6 +79,7 @@ async def test_rename_bumps_stamp(fresh_provider):
 async def test_priority_change_bumps_stamp(fresh_provider):
     """Priority shuffles are admin actions; must bump."""
     from app.models.db import Provider
+
     AsyncSessionLocal = fresh_provider
     before = time.time()
     async with AsyncSessionLocal() as db:
@@ -94,6 +96,7 @@ async def test_extra_config_change_bumps_stamp(fresh_provider):
     """The v3.2.7 trigger case: extra_config edit (e.g. bridge_url) is
     a real admin change and must propagate via the user-edit LWW path."""
     from app.models.db import Provider
+
     AsyncSessionLocal = fresh_provider
     before = time.time()
     async with AsyncSessionLocal() as db:
@@ -114,6 +117,7 @@ async def test_api_key_rotation_does_not_bump(fresh_provider):
     bumps via _stamp_user_edit; a bare api_key write is treated as a
     background rotation and must NOT bump last_user_edit_at."""
     from app.models.db import Provider
+
     AsyncSessionLocal = fresh_provider
     async with AsyncSessionLocal() as db:
         p = (await db.execute(select(Provider).where(Provider.id == "stamp-test"))).scalar_one()
@@ -130,6 +134,7 @@ async def test_oauth_refresh_fields_do_not_bump(fresh_provider):
     they're pure background machinery and the whole point of the
     user-edit timestamp is to ignore them."""
     from app.models.db import Provider
+
     AsyncSessionLocal = fresh_provider
     async with AsyncSessionLocal() as db:
         p = (await db.execute(select(Provider).where(Provider.id == "stamp-test"))).scalar_one()
@@ -147,6 +152,7 @@ async def test_explicit_stamp_is_respected(fresh_provider):
     preserving historical timestamps), the listener must NOT clobber
     that with the current wall-clock value."""
     from app.models.db import Provider
+
     AsyncSessionLocal = fresh_provider
     historic = 12345.0
     async with AsyncSessionLocal() as db:
@@ -165,6 +171,7 @@ async def test_no_change_no_bump(fresh_provider):
     listener at all (SQLAlchemy skips the UPDATE, but defensively
     verify the stamp is preserved)."""
     from app.models.db import Provider
+
     AsyncSessionLocal = fresh_provider
     async with AsyncSessionLocal() as db:
         p = (await db.execute(select(Provider).where(Provider.id == "stamp-test"))).scalar_one()

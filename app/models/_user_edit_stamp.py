@@ -51,6 +51,7 @@ manually pastes a new api_key), the dedicated handler in
 explicit stamp from handler beats this listener; this listener is
 strictly the safety net.
 """
+
 from __future__ import annotations
 
 import logging
@@ -58,7 +59,6 @@ import time
 
 from sqlalchemy import event, inspect
 from sqlalchemy.orm.attributes import History
-from sqlalchemy.orm.session import Session
 
 from app.models.db import Provider
 
@@ -69,15 +69,17 @@ logger = logging.getLogger(__name__)
 # api_base, default_model, priority, enabled, timeout, hold_down_sec,
 # failure_threshold, daily_budget_usd, extra_config, owned_by_key_id,
 # cost_class, usage_*).
-_BACKGROUND_COLUMNS = frozenset({
-    "updated_at",
-    "created_at",
-    "last_user_edit_at",
-    "api_key",
-    "oauth_refresh_token",
-    "oauth_expires_at",
-    "deleted_at",
-})
+_BACKGROUND_COLUMNS = frozenset(
+    {
+        "updated_at",
+        "created_at",
+        "last_user_edit_at",
+        "api_key",
+        "oauth_refresh_token",
+        "oauth_expires_at",
+        "deleted_at",
+    }
+)
 
 
 def _has_user_edit(target: Provider) -> bool:
@@ -110,5 +112,6 @@ def _bump_user_edit_at_on_meaningful_change(mapper, connection, target):
     target.last_user_edit_at = new_ts
     logger.debug(
         "auto-bumped Provider.last_user_edit_at id=%s ts=%s reason=column_change",
-        target.id, new_ts,
+        target.id,
+        new_ts,
     )

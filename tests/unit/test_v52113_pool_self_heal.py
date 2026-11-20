@@ -11,6 +11,7 @@ This pins the fix: the watcher recycles the pool in-process
 stats, so a leak degrades to a periodic self-recycle instead of a
 user-visible outage — no manual restart required.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -19,8 +20,8 @@ from unittest.mock import AsyncMock, patch
 
 import app.monitoring.pool_leak_watcher as plw
 
-
 # ── Static pins ──────────────────────────────────────────────────────
+
 
 def test_self_heal_calls_engine_dispose():
     """Remediation MUST be engine.dispose() — the DB-free, no-restart
@@ -54,6 +55,7 @@ def test_detection_and_heal_are_db_free():
 
 def test_version_bumped():
     import re
+
     src = Path("app/__version__.py").read_text()
     m = re.search(r'"(\d+)\.(\d+)\.(\d+)"', src)
     assert m
@@ -62,17 +64,21 @@ def test_version_bumped():
 
 # ── Behavioural ──────────────────────────────────────────────────────
 
+
 def test_recycle_invokes_dispose(monkeypatch=None):
     """_self_heal_recycle awaits engine.dispose() and reports success."""
+
     async def _run():
         fake_engine = type("E", (), {})()
         fake_engine.pool = type(
-            "P", (), {"size": lambda s: 50, "checkedout": lambda s: 150,
-                      "overflow": lambda s: 100},
+            "P",
+            (),
+            {"size": lambda s: 50, "checkedout": lambda s: 150, "overflow": lambda s: 100},
         )()
         fake_engine.dispose = AsyncMock()
         with patch.dict("sys.modules"):
             import app.models.database as dbmod
+
             with patch.object(dbmod, "engine", fake_engine, create=True):
                 ok = await plw._self_heal_recycle(0.99)
         fake_engine.dispose.assert_awaited_once()
@@ -84,14 +90,17 @@ def test_recycle_invokes_dispose(monkeypatch=None):
 def test_recycle_failure_is_swallowed():
     """A dispose() that raises must NOT propagate — a failed heal can't
     be allowed to kill the watcher loop."""
+
     async def _run():
         fake_engine = type("E", (), {})()
         fake_engine.pool = type(
-            "P", (), {"size": lambda s: 50, "checkedout": lambda s: 150,
-                      "overflow": lambda s: 100},
+            "P",
+            (),
+            {"size": lambda s: 50, "checkedout": lambda s: 150, "overflow": lambda s: 100},
         )()
         fake_engine.dispose = AsyncMock(side_effect=RuntimeError("boom"))
         import app.models.database as dbmod
+
         with patch.object(dbmod, "engine", fake_engine, create=True):
             ok = await plw._self_heal_recycle(0.99)
         assert ok is False

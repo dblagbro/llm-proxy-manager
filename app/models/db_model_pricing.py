@@ -9,7 +9,8 @@ Split into its own module (rather than the mega-``db.py``) so the
 schema is easy to find + avoids growing the import surface of
 callers who only need pricing.
 """
-from sqlalchemy import Column, String, Float, Integer, DateTime
+
+from sqlalchemy import Column, DateTime, Float, Integer, String
 
 from app.models.db_base import Base
 

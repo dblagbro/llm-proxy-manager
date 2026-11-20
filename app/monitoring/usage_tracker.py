@@ -19,14 +19,14 @@ Phase 1 (this version): measurement + read API only. No rotation logic — that
 ships in Phase 3 once operator has visibility into the numbers and tunes the
 limits/thresholds via the Phase 2 UI.
 """
+
 from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timedelta, timezone
-from typing import Optional
+from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select, func
+from sqlalchemy import func, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from app.config import settings
@@ -65,7 +65,7 @@ def _last_weekly_reset_at(now: datetime, dow: int, hour: int) -> datetime:
     return candidate
 
 
-async def _compute_one(provider: Provider) -> Optional[dict]:
+async def _compute_one(provider: Provider) -> dict | None:
     """Compute one provider's session + weekly totals. Returns the dict to
     upsert, or None if tracking is disabled / not configured enough."""
     if not provider.usage_tracking_enabled:
@@ -75,10 +75,12 @@ async def _compute_one(provider: Provider) -> Optional[dict]:
     now = datetime.now()  # local-naive; matches activity_log timestamps
     session_start = now - timedelta(seconds=session_window_sec)
 
-    weekly_start: Optional[datetime] = None
+    weekly_start: datetime | None = None
     if provider.usage_weekly_reset_dow is not None and provider.usage_weekly_reset_hour is not None:
         weekly_start = _last_weekly_reset_at(
-            now, provider.usage_weekly_reset_dow, provider.usage_weekly_reset_hour,
+            now,
+            provider.usage_weekly_reset_dow,
+            provider.usage_weekly_reset_hour,
         )
     weekly_reset_at = weekly_start + timedelta(days=7) if weekly_start else None
 
@@ -91,15 +93,18 @@ async def _compute_one(provider: Provider) -> Optional[dict]:
                 func.coalesce(
                     func.sum(
                         func.cast(
-                            func.json_extract(_event_meta_col(), "$.in_tok"), Integer  # type: ignore[arg-type]
+                            func.json_extract(_event_meta_col(), "$.in_tok"),
+                            Integer,  # type: ignore[arg-type]
                         )
                         + func.cast(
-                            func.json_extract(_event_meta_col(), "$.out_tok"), Integer  # type: ignore[arg-type]
+                            func.json_extract(_event_meta_col(), "$.out_tok"),
+                            Integer,  # type: ignore[arg-type]
                         )
                     ),
                     0,
                 ),
-            ).select_from(_activity_log_tbl())
+            )
+            .select_from(_activity_log_tbl())
             .where(_activity_log_tbl().c.provider_id == provider.id)
             .where(_activity_log_tbl().c.event_type == "llm_request")
             .where(_activity_log_tbl().c.severity == "info")
@@ -114,15 +119,18 @@ async def _compute_one(provider: Provider) -> Optional[dict]:
                     func.coalesce(
                         func.sum(
                             func.cast(
-                                func.json_extract(_event_meta_col(), "$.in_tok"), Integer  # type: ignore[arg-type]
+                                func.json_extract(_event_meta_col(), "$.in_tok"),
+                                Integer,  # type: ignore[arg-type]
                             )
                             + func.cast(
-                                func.json_extract(_event_meta_col(), "$.out_tok"), Integer  # type: ignore[arg-type]
+                                func.json_extract(_event_meta_col(), "$.out_tok"),
+                                Integer,  # type: ignore[arg-type]
                             )
                         ),
                         0,
                     ),
-                ).select_from(_activity_log_tbl())
+                )
+                .select_from(_activity_log_tbl())
                 .where(_activity_log_tbl().c.provider_id == provider.id)
                 .where(_activity_log_tbl().c.event_type == "llm_request")
                 .where(_activity_log_tbl().c.severity == "info")
@@ -153,6 +161,7 @@ async def _compute_one(provider: Provider) -> Optional[dict]:
 # heavyweight model imports until the task actually runs.
 def _activity_log_tbl():
     from app.models.db import ActivityLog  # type: ignore
+
     return ActivityLog.__table__
 
 
@@ -174,7 +183,8 @@ async def _sweep_once() -> int:
     providers without snapshots OR with stale snapshots (so the rotation
     fallback still has something to work with).
     """
-    from datetime import datetime, timezone, timedelta
+    from datetime import datetime, timedelta
+
     from app.models.db import ExternalUsageSnapshot
 
     async with AsyncSessionLocal() as db:
@@ -191,12 +201,18 @@ async def _sweep_once() -> int:
         # them in the compute loop. Freshness threshold: 2h (matches the
         # default ``anthropic_billing_freshness_floor_sec`` so we don't
         # second-guess the scraper's idea of "fresh enough").
-        fresh_cutoff = datetime.now(timezone.utc) - timedelta(hours=2)
-        snap_rows = (await db.execute(
-            select(ExternalUsageSnapshot.provider_id)
-            .where(ExternalUsageSnapshot.captured_at >= fresh_cutoff.replace(tzinfo=None))
-            .where(ExternalUsageSnapshot.seven_day_utilization.is_not(None))
-        )).scalars().all()
+        fresh_cutoff = datetime.now(UTC) - timedelta(hours=2)
+        snap_rows = (
+            (
+                await db.execute(
+                    select(ExternalUsageSnapshot.provider_id)
+                    .where(ExternalUsageSnapshot.captured_at >= fresh_cutoff.replace(tzinfo=None))
+                    .where(ExternalUsageSnapshot.seven_day_utilization.is_not(None))
+                )
+            )
+            .scalars()
+            .all()
+        )
         fresh_scraped_ids = set(snap_rows)
 
     count = 0
@@ -244,7 +260,7 @@ async def _loop() -> None:
         await asyncio.sleep(interval)
 
 
-_TASK: Optional[asyncio.Task] = None
+_TASK: asyncio.Task | None = None
 
 
 def start() -> None:

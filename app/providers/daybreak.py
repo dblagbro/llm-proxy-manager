@@ -30,9 +30,8 @@ the existing ``ModelAlias`` path (``daybreak`` → the approved provider,
 model_id ``codex-auto-review``), and the Codex dispatch layer injects the
 returned ``access_programs`` dict into the Responses body.
 """
-from __future__ import annotations
 
-from typing import Optional
+from __future__ import annotations
 
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -46,15 +45,15 @@ DAYBREAK_RED_ALIASES = {"daybreak-red", "daybreak_red", "daybreak-gpt-red"}
 CYBER_BLUE = "daybreak_blue"
 
 
-def is_daybreak_blue_request(model: Optional[str]) -> bool:
+def is_daybreak_blue_request(model: str | None) -> bool:
     return bool(model) and model.strip().lower() in DAYBREAK_BLUE_ALIASES
 
 
-def is_daybreak_red_request(model: Optional[str]) -> bool:
+def is_daybreak_red_request(model: str | None) -> bool:
     return bool(model) and model.strip().lower() in DAYBREAK_RED_ALIASES
 
 
-def key_daybreak_tier(key_record) -> Optional[str]:
+def key_daybreak_tier(key_record) -> str | None:
     """Return the key's authorized Daybreak tier ("blue") or None."""
     tier = getattr(key_record, "daybreak_tier", None)
     return tier.strip().lower() if isinstance(tier, str) and tier.strip() else None
@@ -63,11 +62,11 @@ def key_daybreak_tier(key_record) -> Optional[str]:
 async def daybreak_gate(
     db: AsyncSession,
     *,
-    requested_model: Optional[str],
+    requested_model: str | None,
     key_record,
     alias,
-    client_user_agent: Optional[str] = None,
-) -> Optional[dict]:
+    client_user_agent: str | None = None,
+) -> dict | None:
     """Enforce Daybreak policy; return the ``access_programs`` dict to inject
     upstream, or ``None`` when the request is not a Daybreak request.
 
@@ -108,6 +107,7 @@ async def daybreak_gate(
     # still logs the call to activity_log regardless).
     try:
         from app.compliance.audit import emit_event, generate_audit_id
+
         await emit_event(
             db,
             audit_id=generate_audit_id(),

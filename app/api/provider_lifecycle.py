@@ -12,17 +12,19 @@ The router uses the same ``/api/providers`` prefix as providers.py;
 registered separately in main.py. ``_get_or_404`` and ``_serialize``
 are imported from providers.py to avoid duplication.
 """
+
 import time
 
-from fastapi import APIRouter, Depends, HTTPException, Body
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi import Body as Body
+from sqlalchemy import select as select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
 
+from app.auth.admin import AdminUser, require_admin
 from app.models.database import get_db
 from app.models.db import Provider
-from app.auth.admin import require_admin, AdminUser
+from app.monitoring.status import register_provider as register_provider
 from app.providers.scanner import scan_provider_models, test_provider
-from app.monitoring.status import register_provider
 
 router = APIRouter(prefix="/api/providers", tags=["providers"])
 
@@ -45,6 +47,7 @@ async def clear_provider_auth_failure(
     next successful call will close it via record_outcome.
     """
     from app.routing.circuit_breaker import clear_auth_failure
+
     await _get_or_404(db, provider_id)
     clear_auth_failure(provider_id)
     return {"ok": True}
@@ -69,6 +72,7 @@ async def toggle_provider(
     POST /api/providers/_release-manual-overrides.
     """
     from datetime import datetime as _dt
+
     INDEFINITE_LOCK = _dt(9999, 12, 31, 23, 59, 59)
 
     p = await _get_or_404(db, provider_id)
@@ -121,7 +125,9 @@ async def release_manual_overrides(
     AI supervisor without immediately re-enabling).
     """
     from sqlalchemy import update
+
     from app.models.db import Provider
+
     values = {
         "manual_override_until": None,
         "manual_override_set_by": None,
@@ -173,6 +179,7 @@ async def test_provider_endpoint(
     # v3.0.9: surface model-deprecation warning so operators see the
     # actionable fix BEFORE the upstream 404s on real traffic.
     from app.providers.deprecations import check_model_deprecation
+
     replacement = check_model_deprecation(p.default_model)
     if replacement:
         result = dict(result)
@@ -186,6 +193,7 @@ async def test_provider_endpoint(
     # Was previously invisible: no activity_log entry on test/scan/etc.
     try:
         from app.monitoring.activity import log_event
+
         # v5.22.60: test_provider() results use ``success`` (not ``ok``); the
         # old ``result.get("ok", True)`` therefore logged every failed test as
         # ok. An ``error`` payload with no explicit flag also counts as failed.
@@ -200,10 +208,20 @@ async def test_provider_endpoint(
                 "provider_name": p.name,
                 "provider_type": p.provider_type,
                 "ok": ok,
-                "result_summary": {k: v for k, v in result.items()
-                                   if k in ("ok", "success", "error", "model", "latency_ms",
-                                            "deprecation_warning",
-                                            "recommended_default_model")},
+                "result_summary": {
+                    k: v
+                    for k, v in result.items()
+                    if k
+                    in (
+                        "ok",
+                        "success",
+                        "error",
+                        "model",
+                        "latency_ms",
+                        "deprecation_warning",
+                        "recommended_default_model",
+                    )
+                },
             },
         )
     except Exception:
@@ -227,6 +245,7 @@ async def scan_models(
         # was treating each dict as a key, which raised "unhashable type:
         # 'dict'" the first time a non-empty scan landed.
         from app.providers.deprecations import MODEL_DEPRECATIONS
+
         deprecated_models = [
             {"id": m["model_id"], "replacement": MODEL_DEPRECATIONS[m["model_id"]]}
             for m in (models or [])
@@ -240,6 +259,7 @@ async def scan_models(
         # v3.0.97 — log admin-action so operators have an audit trail.
         try:
             from app.monitoring.activity import log_event
+
             await log_event(
                 db,
                 event_type="provider_scan_models",
@@ -250,8 +270,9 @@ async def scan_models(
                     "provider_name": p.name,
                     "provider_type": p.provider_type,
                     "scanned_count": len(models),
-                    "model_ids": [m.get("model_id") for m in (models or [])
-                                  if isinstance(m, dict)][:50],  # cap to keep meta lean
+                    "model_ids": [m.get("model_id") for m in (models or []) if isinstance(m, dict)][
+                        :50
+                    ],  # cap to keep meta lean
                     "deprecated_count": len(deprecated_models),
                 },
             )
@@ -262,6 +283,7 @@ async def scan_models(
         # v3.0.97 — also log scan failures so operators see them.
         try:
             from app.monitoring.activity import log_event
+
             await log_event(
                 db,
                 event_type="provider_scan_models",
@@ -280,6 +302,5 @@ async def scan_models(
         raise HTTPException(500, f"Model scan failed: {e}")
 
 
-
-
-from app.api.providers import _get_or_404, _serialize  # noqa: E402
+from app.api.providers import _get_or_404  # noqa: E402
+from app.api.providers import _serialize as _serialize  # noqa: E402

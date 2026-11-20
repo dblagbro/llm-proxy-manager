@@ -17,6 +17,7 @@ holds the two /v1/messages dispatch arms, and the non-streaming one is roughly
 twice the streaming one; if this file needs to grow, split that arm out rather
 than raising the number here.
 """
+
 from __future__ import annotations
 
 from pathlib import Path

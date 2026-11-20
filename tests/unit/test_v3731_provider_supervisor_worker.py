@@ -10,24 +10,29 @@ Phase 4 adds the actual supervisor that:
   AND provider isn't manually overridden
 - Cluster syncs reviews via existing BUG-016 pattern
 """
+
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
-
 
 # ── Worker module structure ────────────────────────────────────────
 
 
 def test_worker_module_exists():
     import importlib
+
     mod = importlib.import_module("app.monitoring.ai_provider_supervisor")
     for fn in (
-        "start", "_scan_loop", "_scan_all_once",
-        "review_one_provider", "classify_with_llm",
-        "build_prompt", "parse_llm_response",
+        "start",
+        "_scan_loop",
+        "_scan_all_once",
+        "review_one_provider",
+        "classify_with_llm",
+        "build_prompt",
+        "parse_llm_response",
         "_apply_suggestion",
     ):
         assert hasattr(mod, fn), f"missing {fn} in ai_provider_supervisor"
@@ -67,7 +72,7 @@ def test_worker_no_op_when_disabled():
 def test_review_one_provider_skips_when_manual_override_set():
     src = Path("app/monitoring/ai_provider_supervisor.py").read_text()
     idx = src.index("async def review_one_provider")
-    body = src[idx:idx + 3000]
+    body = src[idx : idx + 3000]
     assert "manual_override_until" in body
     assert "skip_manual_override" in body
 
@@ -77,7 +82,7 @@ def test_apply_suggestion_double_checks_manual_override():
     where the lock was set between stats compute and apply."""
     src = Path("app/monitoring/ai_provider_supervisor.py").read_text()
     idx = src.index("async def _apply_suggestion")
-    body = src[idx:idx + 2000]
+    body = src[idx : idx + 2000]
     assert "manual_override_until" in body
     assert "apply_skipped_manual_override" in body
 
@@ -87,6 +92,7 @@ def test_apply_suggestion_double_checks_manual_override():
 
 def test_build_prompt_includes_provider_context():
     from app.monitoring.ai_provider_supervisor import build_prompt
+
     p = build_prompt("test-provider", "claude-oauth", {"short_window": {"requests": 100}})
     assert "test-provider" in p
     assert "claude-oauth" in p
@@ -100,6 +106,7 @@ def test_build_prompt_includes_provider_context():
 
 def test_parse_llm_response_validates_verdict():
     from app.monitoring.ai_provider_supervisor import parse_llm_response
+
     assert parse_llm_response('{"verdict": "normal", "reasoning": "ok"}') == {
         "verdict": "normal",
         "reasoning": "ok",
@@ -118,6 +125,7 @@ def test_parse_llm_response_strips_code_fences():
     """LLMs sometimes wrap JSON in ```json fences despite explicit
     instructions not to. Strip them."""
     from app.monitoring.ai_provider_supervisor import parse_llm_response
+
     raw = '```json\n{"verdict": "watch", "reasoning": "monitor"}\n```'
     out = parse_llm_response(raw)
     assert out is not None
@@ -126,6 +134,7 @@ def test_parse_llm_response_strips_code_fences():
 
 def test_parse_llm_response_extracts_suggestion_fields():
     from app.monitoring.ai_provider_supervisor import parse_llm_response
+
     out = parse_llm_response(
         '{"verdict": "deprioritize", "reasoning": "high error rate", '
         '"suggested_priority_delta": 2, "suggested_auto_skip_hours": null}'
@@ -141,8 +150,9 @@ def test_parse_llm_response_extracts_suggestion_fields():
 async def test_apply_caps_priority_delta_to_setting():
     """suggested_priority_delta is capped by
     ai_provider_supervisor_max_priority_delta to prevent runaway."""
-    from app.monitoring.ai_provider_supervisor import _apply_suggestion
     from app.config import settings
+    from app.monitoring.ai_provider_supervisor import _apply_suggestion
+
     fake_provider = MagicMock()
     fake_provider.id = "p1"
     fake_provider.priority = 5
@@ -150,8 +160,12 @@ async def test_apply_caps_priority_delta_to_setting():
     fake_review = MagicMock()
     fake_review.applied_action = None
     with patch.object(settings, "ai_provider_supervisor_max_priority_delta", 2):
-        await _apply_suggestion(None, fake_provider, fake_review,
-                                {"verdict": "deprioritize", "suggested_priority_delta": 10})
+        await _apply_suggestion(
+            None,
+            fake_provider,
+            fake_review,
+            {"verdict": "deprioritize", "suggested_priority_delta": 10},
+        )
     # Capped at 2 → priority went from 5 to 7
     assert fake_provider.priority == 7
     assert "priority+=2" in fake_review.applied_action
@@ -159,8 +173,9 @@ async def test_apply_caps_priority_delta_to_setting():
 
 @pytest.mark.asyncio
 async def test_apply_caps_auto_skip_hours_to_setting():
-    from app.monitoring.ai_provider_supervisor import _apply_suggestion
     from app.config import settings
+    from app.monitoring.ai_provider_supervisor import _apply_suggestion
+
     fake_provider = MagicMock()
     fake_provider.id = "p1"
     fake_provider.auto_skip_until = None
@@ -168,9 +183,16 @@ async def test_apply_caps_auto_skip_hours_to_setting():
     fake_review = MagicMock()
     fake_review.applied_action = None
     with patch.object(settings, "ai_provider_supervisor_max_auto_skip_hours", 24):
-        await _apply_suggestion(None, fake_provider, fake_review,
-                                {"verdict": "disable", "suggested_auto_skip_hours": 168,
-                                 "reasoning": "outage detected"})
+        await _apply_suggestion(
+            None,
+            fake_provider,
+            fake_review,
+            {
+                "verdict": "disable",
+                "suggested_auto_skip_hours": 168,
+                "reasoning": "outage detected",
+            },
+        )
     # Capped at 24h
     assert "auto_skip+=24h" in fake_review.applied_action
 
@@ -198,12 +220,13 @@ def test_apply_provider_ai_reviews_handles_lifecycle_monotone():
     The merge code must respect this same as the api_key_ai_review path."""
     src = Path("app/cluster/sync_handlers.py").read_text()
     idx = src.index("async def _apply_provider_ai_reviews")
-    body = src[idx:idx + 3000]
+    body = src[idx : idx + 3000]
     for field in ('"applied_at"', '"reverted_at"', '"dismissed_at"'):
         assert field in body
 
 
 def test_version_bumped():
     from app.__version__ import __version__
+
     parts = tuple(int(p) for p in __version__.split("."))
     assert parts >= (3, 7, 31)

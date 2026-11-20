@@ -1,4 +1,5 @@
 """v3.7.11 — IP block middleware tests."""
+
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -8,8 +9,8 @@ import pytest
 from app.middleware.ip_block import (
     _clear_cache_for_tests,
     _load_blocked_set,
-    is_blocked,
     ip_block_middleware,
+    is_blocked,
 )
 
 
@@ -63,14 +64,20 @@ async def test_is_blocked_none_returns_false():
 
 @pytest.mark.asyncio
 async def test_is_blocked_unknown_ip_returns_false():
-    with patch("app.middleware.ip_block._load_blocked_set", new=AsyncMock(return_value=frozenset(["1.2.3.4"]))):
+    with patch(
+        "app.middleware.ip_block._load_blocked_set",
+        new=AsyncMock(return_value=frozenset(["1.2.3.4"])),
+    ):
         result = await is_blocked("5.6.7.8")
     assert result is False
 
 
 @pytest.mark.asyncio
 async def test_is_blocked_known_ip_returns_true():
-    with patch("app.middleware.ip_block._load_blocked_set", new=AsyncMock(return_value=frozenset(["1.2.3.4"]))):
+    with patch(
+        "app.middleware.ip_block._load_blocked_set",
+        new=AsyncMock(return_value=frozenset(["1.2.3.4"])),
+    ):
         result = await is_blocked("1.2.3.4")
     assert result is True
 
@@ -94,9 +101,9 @@ async def test_middleware_allows_unknown_ip():
     req = _stub_request(headers={"x-forwarded-for": "203.0.113.42"})
     call_next = AsyncMock(return_value=MagicMock(status_code=200))
     with patch("app.middleware.ip_block.is_blocked", new=AsyncMock(return_value=False)):
-        result = await ip_block_middleware(req, call_next)
+        _result = await ip_block_middleware(req, call_next)
     call_next.assert_awaited_once()
-    assert result is not None
+    assert _result is not None
 
 
 @pytest.mark.asyncio
@@ -105,9 +112,9 @@ async def test_middleware_rejects_blocked_ip_with_403():
     req = _stub_request(headers={"x-forwarded-for": "203.0.113.42"})
     call_next = AsyncMock()
     with patch("app.middleware.ip_block.is_blocked", new=AsyncMock(return_value=True)):
-        result = await ip_block_middleware(req, call_next)
+        _result = await ip_block_middleware(req, call_next)
     call_next.assert_not_awaited()
-    assert result.status_code == 403
+    assert _result.status_code == 403
 
 
 @pytest.mark.asyncio
@@ -115,14 +122,20 @@ async def test_middleware_checks_rewritten_ip():
     """LAN-NAT'd traffic: raw IP not blocked, but rewritten public IP is."""
     req = _stub_request(headers={"x-forwarded-for": "192.168.18.1"})
     call_next = AsyncMock()
+
     # is_blocked returns False for "192.168.18.1", True for "203.0.113.99"
     async def fake_blocked(ip):
         return ip == "203.0.113.99"
-    with patch("app.middleware.ip_block.is_blocked", new=fake_blocked), \
-         patch("app.observability.request_context._maybe_rewrite_lan_ip", return_value="203.0.113.99"):
-        result = await ip_block_middleware(req, call_next)
+
+    with (
+        patch("app.middleware.ip_block.is_blocked", new=fake_blocked),
+        patch(
+            "app.observability.request_context._maybe_rewrite_lan_ip", return_value="203.0.113.99"
+        ),
+    ):
+        _result = await ip_block_middleware(req, call_next)
     call_next.assert_not_awaited()
-    assert result.status_code == 403
+    assert _result.status_code == 403
 
 
 @pytest.mark.asyncio
@@ -131,7 +144,7 @@ async def test_middleware_fails_open_on_check_error():
     req = _stub_request(headers={"x-forwarded-for": "203.0.113.42"})
     call_next = AsyncMock(return_value=MagicMock(status_code=200))
     with patch("app.middleware.ip_block.is_blocked", side_effect=Exception("oops")):
-        result = await ip_block_middleware(req, call_next)
+        _result = await ip_block_middleware(req, call_next)
     call_next.assert_awaited_once()
 
 
@@ -140,12 +153,14 @@ async def test_middleware_fails_open_on_check_error():
 
 def test_blocked_ip_model_exists():
     from app.models.db import BlockedIp
+
     cols = {c.name for c in BlockedIp.__table__.columns}
     assert {"ip", "reason", "added_at", "added_by"}.issubset(cols)
 
 
 def test_admin_router_registered():
     from pathlib import Path
+
     src = Path("app/main.py").read_text()
     assert "blocked_ips_router" in src
     assert "include_router(blocked_ips_router)" in src
@@ -156,6 +171,7 @@ def test_middleware_registered_first_for_outermost_position():
     so it wraps everything else (outermost in the ASGI stack = first
     to see incoming request)."""
     from pathlib import Path
+
     src = Path("app/main.py").read_text()
     # The middleware registration line must appear BEFORE the
     # log_requests decorator.
@@ -167,6 +183,7 @@ def test_middleware_registered_first_for_outermost_position():
 def test_admin_endpoints_use_require_admin():
     """All blocked-ip admin endpoints must be admin-gated."""
     from pathlib import Path
+
     src = Path("app/api/blocked_ips.py").read_text()
     assert "require_admin" in src
     # All three endpoint handlers should depend on require_admin
@@ -185,7 +202,7 @@ async def test_middleware_exempts_admin_login_for_blocked_ip():
     )
     call_next = AsyncMock(return_value=MagicMock(status_code=200))
     with patch("app.middleware.ip_block.is_blocked", new=AsyncMock(return_value=True)):
-        result = await ip_block_middleware(req, call_next)
+        _result = await ip_block_middleware(req, call_next)
     call_next.assert_awaited_once()
 
 
@@ -202,7 +219,7 @@ async def test_middleware_exempts_blocked_ips_admin_for_blocked_ip():
         )
         call_next = AsyncMock(return_value=MagicMock(status_code=200))
         with patch("app.middleware.ip_block.is_blocked", new=AsyncMock(return_value=True)):
-            result = await ip_block_middleware(req, call_next)
+            _result = await ip_block_middleware(req, call_next)
         call_next.assert_awaited_once(), f"path {path} should be exempt"
 
 
@@ -216,14 +233,15 @@ async def test_middleware_does_not_exempt_other_admin_paths():
         )
         call_next = AsyncMock()
         with patch("app.middleware.ip_block.is_blocked", new=AsyncMock(return_value=True)):
-            result = await ip_block_middleware(req, call_next)
+            _result = await ip_block_middleware(req, call_next)
         call_next.assert_not_awaited()
-        assert result.status_code == 403
+        assert _result.status_code == 403
 
 
 def test_admin_recovery_path_helper():
     """_is_admin_recovery_path matches the two recovery prefixes."""
     from app.middleware.ip_block import _is_admin_recovery_path
+
     assert _is_admin_recovery_path("/api/auth/login") is True
     assert _is_admin_recovery_path("/api/auth/login/whatever") is True
     assert _is_admin_recovery_path("/api/admin/blocked-ips") is True
@@ -236,6 +254,7 @@ def test_admin_recovery_path_helper():
 def test_admin_endpoint_paths():
     """Endpoint paths must match the documented contract."""
     from pathlib import Path
+
     src = Path("app/api/blocked_ips.py").read_text()
     assert '@router.get("/blocked-ips")' in src
     assert '@router.post("/blocked-ips")' in src

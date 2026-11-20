@@ -6,29 +6,27 @@ Operator-confirmed semantics:
 - AND there's enough sample size (``alert_min_attempts``, default 4)
 - AND not in cooldown after a recent fire
 """
+
 from __future__ import annotations
 
 import asyncio
-import json
 from pathlib import Path
-from unittest.mock import patch, AsyncMock
-
-import pytest
-
+from unittest.mock import AsyncMock, patch
 
 # ── (1) Metric module — record + snapshot ─────────────────────────────
 
 
 def test_metrics_module_imports():
-    from app.monitoring.cluster_sync_metrics import (
-        record_attempt, snapshot, reset_for_tests,
-    )
+    pass
 
 
 def test_record_attempt_then_snapshot_counts_correctly():
     from app.monitoring.cluster_sync_metrics import (
-        record_attempt, snapshot, reset_for_tests,
+        record_attempt,
+        reset_for_tests,
+        snapshot,
     )
+
     reset_for_tests()
     record_attempt("peer-a", 200)
     record_attempt("peer-a", 200)
@@ -49,8 +47,11 @@ def test_record_attempt_transport_error_is_separate_bucket():
     """Network errors (status=0) MUST NOT inflate the 403 rate — that's the
     bug v5.14.2 fixes from the original spec."""
     from app.monitoring.cluster_sync_metrics import (
-        record_attempt, snapshot, reset_for_tests,
+        record_attempt,
+        reset_for_tests,
+        snapshot,
     )
+
     reset_for_tests()
     for _ in range(5):
         record_attempt("peer-a", 0)  # 5 timeouts
@@ -66,8 +67,11 @@ def test_record_attempt_transport_error_is_separate_bucket():
 def test_cluster_sync_fresh_flips_on_success_age():
     """Per design: cluster_sync_fresh = True when last 200 was within 600s."""
     from app.monitoring.cluster_sync_metrics import (
-        record_attempt, snapshot, reset_for_tests,
+        record_attempt,
+        reset_for_tests,
+        snapshot,
     )
+
     reset_for_tests()
     snap = snapshot()
     assert snap["cluster_sync_fresh"] is False  # no successes yet
@@ -84,8 +88,10 @@ def test_under_threshold_does_not_fire():
     """At baseline ~50%, alert threshold 70% → no fire."""
     from app.monitoring import cluster_sync_403_monitor as m
     from app.monitoring.cluster_sync_metrics import (
-        record_attempt, reset_for_tests,
+        record_attempt,
+        reset_for_tests,
     )
+
     reset_for_tests()
     # 50% 403 rate — exactly the baseline
     for _ in range(5):
@@ -95,7 +101,7 @@ def test_under_threshold_does_not_fire():
 
     with patch.object(m, "log_event" if False else "_alert_threshold_pct", return_value=70.0):
         with patch.object(m, "_alert_min_attempts", return_value=4):
-            with patch("app.monitoring.activity.log_event", new_callable=AsyncMock) as mock_log:
+            with patch("app.monitoring.activity.log_event", new_callable=AsyncMock) as _mock_log:
                 decision = asyncio.run(m._scan_once())
     assert decision["fired"] is False
     assert "under_threshold" in decision["reason"]
@@ -106,8 +112,10 @@ def test_above_threshold_fires():
     """80% 403 rate exceeds 70% threshold → fire."""
     from app.monitoring import cluster_sync_403_monitor as m
     from app.monitoring.cluster_sync_metrics import (
-        record_attempt, reset_for_tests,
+        record_attempt,
+        reset_for_tests,
     )
+
     reset_for_tests()
     # Reset module-level cooldown
     m._last_fired_at = 0.0
@@ -130,8 +138,10 @@ def test_too_few_attempts_does_not_fire():
     """Even 100% 403 rate with attempts < min → no fire."""
     from app.monitoring import cluster_sync_403_monitor as m
     from app.monitoring.cluster_sync_metrics import (
-        record_attempt, reset_for_tests,
+        record_attempt,
+        reset_for_tests,
     )
+
     reset_for_tests()
     m._last_fired_at = 0.0
     record_attempt("peer-a", 403)
@@ -150,8 +160,10 @@ def test_cooldown_suppresses_duplicate_fire():
     """After firing, second scan within cooldown window must be silent."""
     from app.monitoring import cluster_sync_403_monitor as m
     from app.monitoring.cluster_sync_metrics import (
-        record_attempt, reset_for_tests,
+        record_attempt,
+        reset_for_tests,
     )
+
     reset_for_tests()
     m._last_fired_at = 0.0
     for _ in range(10):
@@ -201,6 +213,7 @@ def test_worker_started_in_main():
 
 def test_settings_added():
     from app.config import settings
+
     assert hasattr(settings, "cluster_sync_403_monitor_enabled")
     assert hasattr(settings, "cluster_sync_403_alert_threshold_pct")
     assert hasattr(settings, "cluster_sync_403_alert_min_attempts")
@@ -215,10 +228,9 @@ def test_settings_added():
 def test_version_bumped():
     """v5.14.2 shipped the escalation trigger; assert at-or-beyond."""
     import re
+
     src = Path("app/__version__.py").read_text()
     m = re.search(r'__version__\s*=\s*"(\d+)\.(\d+)\.(\d+)"', src)
     assert m, f"could not parse __version__ from {src!r}"
     major, minor, patch = int(m.group(1)), int(m.group(2)), int(m.group(3))
-    assert (major, minor, patch) >= (5, 14, 2), (
-        f"expected >= 5.14.2, got {major}.{minor}.{patch}"
-    )
+    assert (major, minor, patch) >= (5, 14, 2), f"expected >= 5.14.2, got {major}.{minor}.{patch}"

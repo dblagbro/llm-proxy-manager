@@ -19,10 +19,10 @@ same dict shapes, fires the same telemetry. Source-grep pins in
 ``test_v5718_messages_extract.py`` confirm the call sites moved to
 this module.
 """
+
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 from fastapi import Request
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -33,10 +33,10 @@ logger = logging.getLogger(__name__)
 async def prepare_request_context(
     request: Request,
     db: AsyncSession,
-    x_api_key: Optional[str],
+    x_api_key: str | None,
     *,
-    x_conversation_id: Optional[str],
-    x_memory_tag: Optional[str],
+    x_conversation_id: str | None,
+    x_memory_tag: str | None,
 ):
     """v5.7.18 — pre-body-parse setup for /v1/messages.
 
@@ -56,11 +56,13 @@ async def prepare_request_context(
     uses this for routing key_type, policy, and downstream audit.
     """
     from app.auth.keys import verify_api_key
+
     key_record = await verify_api_key(db, x_api_key)
 
     # v3.0.45: set tenant context for select_provider's ownership filter
     # so cascade/critique/hedge/grader paths inherit it without plumbing.
     from app.routing.tenant import current_api_key_id
+
     current_api_key_id.set(key_record.id)
 
     # v5.0.0 — compliance UA pre-check (decision 16 + 22). Fires BEFORE
@@ -68,6 +70,7 @@ async def prepare_request_context(
     # when the requested model is allowed. v5.0.9 — single mirror in
     # ``_compliance_handler.raise_if_banned_client_ua``.
     from app.api._compliance_handler import raise_if_banned_client_ua
+
     await raise_if_banned_client_ua(request, db, key_record)
 
     # v5.2.0 / Batch V1 — LLM emergency stop. Fires BEFORE provider
@@ -75,6 +78,7 @@ async def prepare_request_context(
     # Separate from the v5.1.0 ``activity_logging_enabled`` toggle:
     # that one suppresses log WRITES; this one refuses LLM CALLS.
     from app.api._compliance_handler import raise_if_llm_emergency_stopped
+
     await raise_if_llm_emergency_stopped(db, key_record, endpoint="messages")
 
     # v4.4.15 (F-OBS-003) — telemetry counter for caller-memory header
@@ -83,6 +87,7 @@ async def prepare_request_context(
     # being ON since 2026-05-15).
     try:
         from app.observability.prometheus import CONVERSATION_ID_REQUESTS_TOTAL
+
         CONVERSATION_ID_REQUESTS_TOTAL.labels(
             endpoint="messages",
             has_conversation_id="true" if x_conversation_id else "false",
@@ -95,6 +100,7 @@ async def prepare_request_context(
     # on restart; the contextvar bridges to per-row).
     try:
         from app.observability.request_context import set_caller_memory_headers
+
         set_caller_memory_headers(
             has_conversation_id=bool(x_conversation_id),
             has_memory_tag=bool(x_memory_tag),
@@ -107,7 +113,7 @@ async def prepare_request_context(
 
 async def normalize_request_body(
     body: dict,
-    x_webhook_url: Optional[str],
+    x_webhook_url: str | None,
     db: AsyncSession,
 ):
     """v5.7.19 — Phase 1 sub-block 2: input validation + model
@@ -139,21 +145,25 @@ async def normalize_request_body(
         validate_completion_request,
         validate_webhook_url,
     )
+
     validate_completion_request(body, endpoint="messages")
     validate_webhook_url(x_webhook_url)
 
     # v2.8.0: parse :floor / :nitro / :exacto suffix off the requested
     # model. The suffix never reaches upstream — Anthropic / OpenAI
     # would 4xx on it.
-    from app.routing.model_slug import parse_model_slug, is_auto_model
+    from app.routing.model_slug import is_auto_model, parse_model_slug
+
     parsed_slug = parse_model_slug(body.get("model"))
     if parsed_slug.sort_mode is not None:
         body = {**body, "model": parsed_slug.bare_model}
 
     # v3.0.27: same embedding-on-chat guard as completions.py —
     # embedding models can't dispatch through /v1/messages either.
-    from app.routing.router import _is_embedding_model
     from fastapi import HTTPException
+
+    from app.routing.router import _is_embedding_model
+
     if _is_embedding_model(parsed_slug.bare_model):
         raise HTTPException(
             400,
@@ -167,6 +177,7 @@ async def normalize_request_body(
     # signal even without an explicit hint header.
     is_auto = is_auto_model(parsed_slug.bare_model)
     from app.routing.aliases import resolve_alias
+
     alias = await resolve_alias(db, body.get("model")) if not is_auto else None
 
     return body, _orig_request_model, parsed_slug, is_auto, alias
@@ -213,8 +224,9 @@ def translate_to_openai_if_needed(
     Returns ``(body, system, messages_list, tools, translated)``. When
     ``translated`` is False, the inputs pass through unchanged.
     """
-    from app.routing.tool_content import has_anthropic_tool_defs
     from app.api._oauth_chat_translate import anthropic_to_openai_body
+    from app.routing.tool_content import has_anthropic_tool_defs
+
     has_anthropic_tool_defs_flag = has_anthropic_tool_defs(body.get("tools"))
     needs_translation = (
         route.profile.provider_type != "claude-oauth"
@@ -229,12 +241,14 @@ def translate_to_openai_if_needed(
     if not needs_translation:
         return body, system, messages_list, tools, False
 
-    translated = anthropic_to_openai_body({
-        **body,
-        "messages": messages_list,
-        "system": system,
-        "tools": tools,
-    })
+    translated = anthropic_to_openai_body(
+        {
+            **body,
+            "messages": messages_list,
+            "system": system,
+            "tools": tools,
+        }
+    )
     messages_list = translated.get("messages") or []
     # Folded into messages_list as the leading role:system
     system = None

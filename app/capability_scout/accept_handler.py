@@ -25,12 +25,12 @@ not enforcement. If the audit row fails to write or the policy mutation
 fails to commit, the response goes out unchanged. The bot will see no
 ``X-Proxy-MCP-Accept-Status: ok`` on the response and can retry.
 """
+
 from __future__ import annotations
 
 import json
 import logging
 from datetime import datetime
-from typing import Optional
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -80,11 +80,13 @@ async def _known_tool_names() -> set[str]:
     """
     try:
         from app.mcp_server.server import build_mcp_app
+
         # build_mcp_app() returns the FastMCP instance via state. We
         # only need the inner ``mcp`` reference. Memoize after first
         # build (FastMCP is idempotent + we only need the tool names).
         global _CACHED_TOOLS, _CACHED_TS
         import time
+
         now = time.time()
         if _CACHED_TOOLS is not None and (now - _CACHED_TS) < 5.0:
             return _CACHED_TOOLS
@@ -103,7 +105,7 @@ async def _known_tool_names() -> set[str]:
         return set()
 
 
-_CACHED_TOOLS: Optional[set[str]] = None
+_CACHED_TOOLS: set[str] | None = None
 _CACHED_TS: float = 0.0
 
 
@@ -121,6 +123,7 @@ async def _append_to_allow_list(
     If it's an empty list, same behavior.
     """
     from app.models.db import ApiKey
+
     rs = await db.execute(select(ApiKey).where(ApiKey.id == api_key_id).limit(1))
     key = rs.scalar_one_or_none()
     if key is None:
@@ -150,28 +153,32 @@ async def _record_adoption_audit(
     adoption purely from the audit trail."""
     try:
         from app.models.db import CompliancePolicyChange
+
         now = datetime.utcnow()
         before_state = json.dumps({"mcp_tools_allow": before})
-        after_state = json.dumps({
-            "mcp_tools_allow": after,
-            "accepted_tools": accepted,
-            "rejected_unknown_tools": rejected,
-        })
-        db.add(CompliancePolicyChange(
-            policy_change_id=(
-                f"mcp-accept:{api_key_id}:{','.join(sorted(accepted))}:"
-                f"{int(now.timestamp())}"
-            ),
-            changed_at=now,
-            changed_by_user_id="system:capability_scout_accept",
-            scope="per_key",
-            target_id=api_key_id,
-            before_state=before_state,
-            after_state=after_state,
-            reason="mcp_tool_adopted_via_accept_header",
-            applied_to_peers="[]",
-            cluster_sync_status="local-only",
-        ))
+        after_state = json.dumps(
+            {
+                "mcp_tools_allow": after,
+                "accepted_tools": accepted,
+                "rejected_unknown_tools": rejected,
+            }
+        )
+        db.add(
+            CompliancePolicyChange(
+                policy_change_id=(
+                    f"mcp-accept:{api_key_id}:{','.join(sorted(accepted))}:{int(now.timestamp())}"
+                ),
+                changed_at=now,
+                changed_by_user_id="system:capability_scout_accept",
+                scope="per_key",
+                target_id=api_key_id,
+                before_state=before_state,
+                after_state=after_state,
+                reason="mcp_tool_adopted_via_accept_header",
+                applied_to_peers="[]",
+                cluster_sync_status="local-only",
+            )
+        )
         await db.commit()
     except Exception as exc:
         logger.debug("accept_handler audit row failed: %s", exc)
@@ -183,8 +190,8 @@ async def _record_adoption_audit(
 
 async def process_accept_header(
     db: AsyncSession,
-    api_key_id: Optional[str],
-    header_value: Optional[str],
+    api_key_id: str | None,
+    header_value: str | None,
     resp_headers: dict,
 ) -> dict:
     """Top-level entry point. Called from messages.py / completions.py
@@ -219,25 +226,29 @@ async def process_accept_header(
             before, after = await _append_to_allow_list(db, api_key_id, accepted)
             if before != after:
                 await _record_adoption_audit(
-                    db, api_key_id, accepted, rejected, before, after,
+                    db,
+                    api_key_id,
+                    accepted,
+                    rejected,
+                    before,
+                    after,
                 )
 
         if accepted or rejected:
             resp_headers[RESPONSE_STATUS_HEADER] = (
-                "ok" if accepted and not rejected
-                else "partial" if accepted and rejected
+                "ok"
+                if accepted and not rejected
+                else "partial"
+                if accepted and rejected
                 else "rejected"
             )
 
         if rejected:
             warn = ", ".join(
-                f'299 - "Tool {t!r} not in proxy MCP catalog; ignored"'
-                for t in rejected
+                f'299 - "Tool {t!r} not in proxy MCP catalog; ignored"' for t in rejected
             )
             existing = resp_headers.get(WARNING_HEADER)
-            resp_headers[WARNING_HEADER] = (
-                f"{existing}, {warn}" if existing else warn
-            )
+            resp_headers[WARNING_HEADER] = f"{existing}, {warn}" if existing else warn
 
         return out
     except Exception as exc:

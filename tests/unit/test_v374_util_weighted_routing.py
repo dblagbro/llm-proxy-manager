@@ -1,15 +1,13 @@
 """v3.7.4 — utilization-weighted reorder for claude-oauth providers."""
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock
-
-import pytest
 
 from app.routing.external_rotation import (
     _utilization_bucket,
     reorder_claude_oauth_by_utilization,
 )
-
 
 # ── _utilization_bucket ────────────────────────────────────────────
 
@@ -160,7 +158,9 @@ def test_bucket_size_pct_param_threads_through():
     util_map = {"gmail": 30.0, "vg": 25.0}
     default_order = reorder_claude_oauth_by_utilization([gmail, vg], util_map)
     fine_order = reorder_claude_oauth_by_utilization(
-        [gmail, vg], util_map, bucket_size_pct=5.0,
+        [gmail, vg],
+        util_map,
+        bucket_size_pct=5.0,
     )
     assert [p.name for p in default_order] == ["Gmail", "VG"]
     assert [p.name for p in fine_order] == ["VG", "Gmail"]
@@ -174,6 +174,7 @@ def test_router_calls_reorder_after_skip_filter():
     is_currently_at_capacity filter — so providers that are entirely
     skipped don't even enter the reorder."""
     from pathlib import Path
+
     src = Path("app/routing/router.py").read_text()
     # Both functions referenced
     assert "is_currently_at_capacity" in src
@@ -186,5 +187,6 @@ def test_router_calls_reorder_after_skip_filter():
 
 def test_setting_for_bucket_size_exists():
     from app.config import settings
+
     assert hasattr(settings, "external_rotation_util_bucket_pct")
     assert 0 < settings.external_rotation_util_bucket_pct <= 100

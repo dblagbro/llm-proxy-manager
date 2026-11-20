@@ -1,6 +1,6 @@
 """API key management and LLM endpoint auth tests."""
+
 import uuid
-import pytest
 
 from tests.conftest import BASE_URL
 
@@ -37,7 +37,9 @@ class TestApiKeyCRUD:
         key_id = data["id"]
 
         # LLM call with the key — must reach the proxy (regardless of provider outcome)
-        import requests, urllib3
+        import requests
+        import urllib3
+
         urllib3.disable_warnings()
         # claude-haiku-4-5-20251001 is a model registered on this cluster.
         # An unregistered model id can route to a substitute provider whose
@@ -46,7 +48,11 @@ class TestApiKeyCRUD:
         resp = requests.post(
             f"{BASE_URL}/v1/messages",
             headers={"x-api-key": raw_key, "Content-Type": "application/json"},
-            json={"model": "claude-haiku-4-5-20251001", "max_tokens": 10, "messages": [{"role": "user", "content": "ping"}]},
+            json={
+                "model": "claude-haiku-4-5-20251001",
+                "max_tokens": 10,
+                "messages": [{"role": "user", "content": "ping"}],
+            },
             verify=False,
             timeout=30,
         )
@@ -60,31 +66,47 @@ class TestApiKeyCRUD:
         resp2 = requests.post(
             f"{BASE_URL}/v1/messages",
             headers={"x-api-key": raw_key, "Content-Type": "application/json"},
-            json={"model": "claude-haiku-4-5-20251001", "max_tokens": 10, "messages": [{"role": "user", "content": "ping"}]},
+            json={
+                "model": "claude-haiku-4-5-20251001",
+                "max_tokens": 10,
+                "messages": [{"role": "user", "content": "ping"}],
+            },
             verify=False,
             timeout=10,
         )
         assert resp2.status_code == 401
 
     def test_missing_key_returns_401(self):
-        import requests, urllib3
+        import requests
+        import urllib3
+
         urllib3.disable_warnings()
         r = requests.post(
             f"{BASE_URL}/v1/messages",
             headers={"Content-Type": "application/json"},
-            json={"model": "claude-3-5-sonnet-20241022", "max_tokens": 5, "messages": [{"role": "user", "content": "hi"}]},
+            json={
+                "model": "claude-3-5-sonnet-20241022",
+                "max_tokens": 5,
+                "messages": [{"role": "user", "content": "hi"}],
+            },
             verify=False,
             timeout=10,
         )
         assert r.status_code == 401
 
     def test_invalid_key_returns_401(self):
-        import requests, urllib3
+        import requests
+        import urllib3
+
         urllib3.disable_warnings()
         r = requests.post(
             f"{BASE_URL}/v1/messages",
             headers={"x-api-key": "llmp-invalid-key-xyz", "Content-Type": "application/json"},
-            json={"model": "claude-3-5-sonnet-20241022", "max_tokens": 5, "messages": [{"role": "user", "content": "hi"}]},
+            json={
+                "model": "claude-3-5-sonnet-20241022",
+                "max_tokens": 5,
+                "messages": [{"role": "user", "content": "hi"}],
+            },
             verify=False,
             timeout=10,
         )

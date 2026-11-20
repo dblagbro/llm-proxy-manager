@@ -4,16 +4,16 @@ Closes BUG-004 (completions missing model/messages), BUG-005 (messages
 empty body), BUG-007 (role stack-trace leak), BUG-008 (max_tokens
 stack-trace leak).
 """
+
 from __future__ import annotations
 
 import pytest
 from fastapi import HTTPException
 
 from app.api._input_validation import (
-    validate_completion_request,
     sanitize_upstream_error,
+    validate_completion_request,
 )
-
 
 # ── validate_completion_request ─────────────────────────────────────
 
@@ -274,6 +274,7 @@ def test_validate_also_caps_openai_stop_field():
 def test_webhook_url_rejects_file_scheme():
     """BUG-013: file:///etc/passwd accepted pre-fix → SSRF risk."""
     from app.api._input_validation import validate_webhook_url
+
     with pytest.raises(HTTPException) as ex:
         validate_webhook_url("file:///etc/passwd")
     assert ex.value.status_code == 400
@@ -282,6 +283,7 @@ def test_webhook_url_rejects_file_scheme():
 
 def test_webhook_url_rejects_gopher_scheme():
     from app.api._input_validation import validate_webhook_url
+
     with pytest.raises(HTTPException) as ex:
         validate_webhook_url("gopher://example.com/")
     assert ex.value.status_code == 400
@@ -289,6 +291,7 @@ def test_webhook_url_rejects_gopher_scheme():
 
 def test_webhook_url_rejects_data_scheme():
     from app.api._input_validation import validate_webhook_url
+
     with pytest.raises(HTTPException) as ex:
         validate_webhook_url("data:text/plain,hello")
     assert ex.value.status_code == 400
@@ -296,24 +299,28 @@ def test_webhook_url_rejects_data_scheme():
 
 def test_webhook_url_accepts_https():
     from app.api._input_validation import validate_webhook_url
+
     validate_webhook_url("https://example.com/hook")  # no raise
 
 
 def test_webhook_url_accepts_http():
     """Allow http:// — internal hub webhooks are common."""
     from app.api._input_validation import validate_webhook_url
+
     validate_webhook_url("http://hub.internal:8080/api/webhook")  # no raise
 
 
 def test_webhook_url_accepts_none():
     """No header → no validation."""
     from app.api._input_validation import validate_webhook_url
+
     validate_webhook_url(None)  # no raise
     validate_webhook_url("")  # no raise
 
 
 def test_webhook_url_rejects_missing_host():
     from app.api._input_validation import validate_webhook_url
+
     with pytest.raises(HTTPException) as ex:
         validate_webhook_url("https:///")
     assert ex.value.status_code == 400
@@ -323,6 +330,7 @@ def test_webhook_url_rejects_missing_host():
 def test_webhook_url_rejects_loopback():
     """v5.22.43: 127.0.0.1 is this proxy's own admin API — never a webhook."""
     from app.api._input_validation import validate_webhook_url
+
     for u in ("http://127.0.0.1:3000/cluster/sync", "http://localhost/x", "http://[::1]/x"):
         with pytest.raises(HTTPException) as ex:
             validate_webhook_url(u)
@@ -332,6 +340,7 @@ def test_webhook_url_rejects_loopback():
 def test_webhook_url_rejects_cloud_metadata():
     """v5.22.43: 169.254.169.254 is the cloud instance-metadata endpoint."""
     from app.api._input_validation import validate_webhook_url
+
     with pytest.raises(HTTPException) as ex:
         validate_webhook_url("http://169.254.169.254/latest/meta-data/")
     assert ex.value.status_code == 400
@@ -340,5 +349,6 @@ def test_webhook_url_rejects_cloud_metadata():
 def test_webhook_url_still_allows_rfc1918():
     """The documented decision stands: internal LAN hubs remain allowed."""
     from app.api._input_validation import validate_webhook_url
+
     validate_webhook_url("http://192.168.18.5:8080/api/webhook")  # no raise
     validate_webhook_url("http://10.0.0.5/hook")  # no raise

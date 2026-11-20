@@ -18,10 +18,8 @@ These tests pin the contract:
   hash regardless of input order)
 - Admin-gated (401 without admin auth)
 """
-import json
 
 import pytest
-
 
 pytestmark = pytest.mark.asyncio
 
@@ -29,6 +27,7 @@ pytestmark = pytest.mark.asyncio
 async def _call_snapshot(monkeypatch=None):
     """Invoke the endpoint handler directly with admin auth mocked."""
     from app.api.compliance import admin_policy_snapshot
+
     # The endpoint takes a Depends(require_admin) param — calling the
     # raw function bypasses that, so we just pass a sentinel for ``_``.
     return await admin_policy_snapshot(_=None)
@@ -37,8 +36,12 @@ async def _call_snapshot(monkeypatch=None):
 async def test_snapshot_has_required_top_level_fields():
     snap = await _call_snapshot()
     for field in (
-        "policy_version", "computed_at", "proxy_version",
-        "snapshot_kind", "taxonomy", "custom_companies",
+        "policy_version",
+        "computed_at",
+        "proxy_version",
+        "snapshot_kind",
+        "taxonomy",
+        "custom_companies",
         "system_blocked_companies",
     ):
         assert field in snap, f"missing field: {field}"
@@ -48,10 +51,9 @@ async def test_snapshot_has_required_top_level_fields():
 async def test_snapshot_includes_all_known_companies():
     snap = await _call_snapshot()
     from app.compliance.company_map import KNOWN_COMPANIES
+
     for company_id in KNOWN_COMPANIES:
-        assert company_id in snap["taxonomy"], (
-            f"taxonomy missing {company_id!r}"
-        )
+        assert company_id in snap["taxonomy"], f"taxonomy missing {company_id!r}"
 
 
 async def test_snapshot_anthropic_entry_shape():
@@ -98,6 +100,7 @@ async def test_policy_version_stable_across_repeat_calls():
 async def test_proxy_version_reflects_current_ship():
     snap = await _call_snapshot()
     from app.__version__ import __version__
+
     assert snap["proxy_version"] == __version__
 
 

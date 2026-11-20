@@ -16,6 +16,7 @@ Three things had to be true for CI to gate on the suite, and none of them were:
 
 These pins are cheap and the properties are easy to lose one commit at a time.
 """
+
 from __future__ import annotations
 
 import ast
@@ -43,6 +44,7 @@ def test_base_url_does_not_default_to_production():
     assert ".invalid" in src, "the fallback host must be unresolvable"
 
     import tests.conftest as ct
+
     # Whatever this run is configured for, the sentinel itself must be unroutable.
     assert ct._UNROUTABLE.endswith("/llm-proxy2")
     assert ".invalid" in ct._UNROUTABLE
@@ -68,7 +70,8 @@ def test_no_module_level_production_default_anywhere_in_tests():
             if not names & {"BASE_URL", "BASE"}:
                 continue
             literals = [
-                n.value for n in ast.walk(node)
+                n.value
+                for n in ast.walk(node)
                 if isinstance(n, ast.Constant) and isinstance(n.value, str)
             ]
             if any("voipguru" in s for s in literals):
@@ -152,8 +155,25 @@ def test_ephemeral_harness_exists_and_is_self_contained():
     assert 'env["CLUSTER_ENABLED"] = "false"' in src
     # Temp DB, not the developer's or the container's.
     assert "tempfile.mkdtemp" in src and "DATABASE_URL" in src
-    # Bound to loopback only.
-    assert '"--host", "127.0.0.1"' in src
+    # The actual subprocess argument list must bind to loopback only,
+    # regardless of how the list is formatted in source.
+    calls = (node for node in ast.walk(ast.parse(src)) if isinstance(node, ast.Call))
+    assert any(
+        isinstance(call.func, ast.Attribute)
+        and isinstance(call.func.value, ast.Name)
+        and call.func.value.id == "subprocess"
+        and call.func.attr == "Popen"
+        and call.args
+        and isinstance(call.args[0], ast.List)
+        and any(
+            isinstance(left, ast.Constant)
+            and left.value == "--host"
+            and isinstance(right, ast.Constant)
+            and right.value == "127.0.0.1"
+            for left, right in zip(call.args[0].elts, call.args[0].elts[1:])
+        )
+        for call in calls
+    )
     # Cleaned up even if the run dies.
     assert "atexit.register" in src and "shutil.rmtree" in src
 
@@ -170,6 +190,7 @@ def test_ephemeral_relaxes_the_cookie_only_for_itself():
     import os
 
     from app.auth.admin import SESSION_COOKIE_SECURE
+
     if os.environ.get("SESSION_COOKIE_SECURE") is None:
         assert SESSION_COOKIE_SECURE is True, (
             "the session cookie must be Secure by default — every real "

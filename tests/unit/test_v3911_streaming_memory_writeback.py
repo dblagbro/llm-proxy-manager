@@ -15,6 +15,7 @@ A live integration test against the real SSE stream is impractical in
 unit tests; the assembled_response logic is exercised by the existing
 test_v390_memory_extract suite.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -34,13 +35,16 @@ def _read_streaming_src() -> str:
 
 
 def test_stream_claude_oauth_accepts_conversation_id_kwarg():
-    src = _read_streaming_src()
-    # The new kwargs land in the _stream_claude_oauth signature
-    idx = src.index("async def _stream_claude_oauth")
-    sig_window = src[idx:idx + 2000]
-    assert "api_key_id: Optional[str] = None" in sig_window
-    assert "conversation_id: Optional[str] = None" in sig_window
-    assert "memory_tag: Optional[str] = None" in sig_window
+    from inspect import signature
+    from typing import get_type_hints
+
+    from app.api._messages_streaming_oauth import _stream_claude_oauth
+
+    params = signature(_stream_claude_oauth).parameters
+    hints = get_type_hints(_stream_claude_oauth)
+    for name in ("api_key_id", "conversation_id", "memory_tag"):
+        assert params[name].default is None
+        assert hints[name] == str | None
 
 
 def test_stream_claude_oauth_invokes_extractor_on_success():
@@ -70,10 +74,12 @@ def test_stream_extractor_call_uses_silent_degrade():
         if idx < 0:
             break
         occurrences += 1
-        body = src[idx - 1800:idx + 1000]
+        body = src[idx - 1800 : idx + 1000]
         assert "try:" in body, f"extract call #{occurrences} missing try wrapper"
         assert "except Exception:" in body, f"extract call #{occurrences} missing except"
-        assert "Silent degrade" in body, f"extract call #{occurrences} missing 'Silent degrade' comment"
+        assert "Silent degrade" in body, (
+            f"extract call #{occurrences} missing 'Silent degrade' comment"
+        )
         start = idx + len(needle)
     assert occurrences >= 1, "no extract calls found in streaming source"
 
@@ -84,7 +90,7 @@ def test_messages_endpoint_passes_conv_id_to_stream():
     # moved with it (params are named conversation_id / memory_tag there).
     src = Path("app/api/_messages_dispatch.py").read_text()
     idx = src.index("stream_gen = _stream_claude_oauth(")
-    call = src[idx:idx + 1000]
+    call = src[idx : idx + 1000]
     assert "conversation_id=conversation_id" in call
     assert "memory_tag=memory_tag" in call
     assert "api_key_id=key_record.id" in call
@@ -98,7 +104,7 @@ def test_completions_endpoint_passes_conv_id_to_stream():
     # completions.py was split to meet its 900-LOC pin.
     src = completions_handler_source()
     idx = src.index("anthropic_sse = _stream_claude_oauth(")
-    call = src[idx:idx + 1000]
+    call = src[idx : idx + 1000]
     assert "conversation_id=x_conversation_id" in call
     assert "memory_tag=x_memory_tag" in call
     assert "api_key_id=key_record.id" in call
@@ -111,19 +117,35 @@ def test_assembled_response_shape_matches_extractor_contract():
     must build a {"type": "tool_use", "id", "name", "input"} block.
     Contract check by key presence — not by exact variable names, which
     differ per site and are an implementation detail."""
-    import re
+    import ast
+
     src = _read_streaming_src()
     idx = src.index("assembled_response = {")
-    body = src[idx:idx + 700]
+    body = src[idx : idx + 700]
     # The assembled dict carries the content list the extractor walks.
     assert '"content": content_list' in body
-    # Every tool_use assembly site must carry the name + input keys.
-    sites = [m.start() for m in re.finditer(r'"type": "tool_use", "id":', src)]
+    # Inspect every matching tool-use dict independent of line wrapping.
+    sites = []
+    for path in ("app/api/_messages_streaming.py", "app/api/_messages_streaming_oauth.py"):
+        for node in ast.walk(ast.parse(Path(path).read_text())):
+            if not isinstance(node, ast.Dict):
+                continue
+            fields = {
+                key.value: value
+                for key, value in zip(node.keys, node.values)
+                if isinstance(key, ast.Constant) and isinstance(key.value, str)
+            }
+            type_value = fields.get("type")
+            if (
+                isinstance(type_value, ast.Constant)
+                and type_value.value == "tool_use"
+                and "id" in fields
+            ):
+                sites.append(fields)
     assert sites, "no tool_use assembly site found in streaming source"
-    for s in sites:
-        walk = src[s:s + 400]
-        assert '"name":' in walk, "a tool_use assembly block is missing the name key"
-        assert '"input":' in walk, "a tool_use assembly block is missing the input key"
+    for fields in sites:
+        assert "name" in fields, "a tool_use assembly block is missing the name key"
+        assert "input" in fields, "a tool_use assembly block is missing the input key"
 
 
 def test_extractor_called_after_record_outcome():

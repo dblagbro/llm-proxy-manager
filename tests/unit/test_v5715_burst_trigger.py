@@ -4,13 +4,13 @@ This closes the 30-min gap between AI-supervisor sweeps that the
 2026-06-17 c1conv Gemini incident sat in. The supervisor's LLM-classify
 path stays; this is a separate cheap DB sweep that fires every 60s.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-
 
 # ── structural pins ────────────────────────────────────────────────────
 
@@ -23,6 +23,7 @@ def test_module_exists():
 def test_start_function_exists():
     """``start()`` is the worker entry point — main.py imports + calls it."""
     from app.monitoring.empty_success_burst_trigger import start
+
     assert callable(start)
 
 
@@ -37,6 +38,7 @@ def test_wired_into_main():
 def test_settings_exposed():
     """The 4 burst-trigger settings are on the Settings model."""
     from app.config import settings
+
     assert hasattr(settings, "empty_success_burst_trigger_enabled")
     assert hasattr(settings, "empty_success_burst_interval_sec")
     assert hasattr(settings, "empty_success_burst_window_sec")
@@ -49,6 +51,7 @@ def test_defaults_match_design():
     these without updating the changelog is a regression — the
     operator-locked tuning is in v5.7.15 notes."""
     from app.config import settings
+
     assert settings.empty_success_burst_trigger_enabled is True
     assert settings.empty_success_burst_interval_sec == 60
     assert settings.empty_success_burst_window_sec == 300
@@ -58,6 +61,7 @@ def test_defaults_match_design():
 def test_version_bumped():
     """v5.7.15 minimum — later patches keep this passing."""
     from app.__version__ import __version__
+
     parts = tuple(int(p) for p in __version__.split("."))
     assert parts >= (5, 7, 15), f"v5.7.15 must be reachable; got {__version__}"
 
@@ -82,14 +86,18 @@ async def test_scan_once_no_rows_is_noop():
     class FakeDB:
         async def execute(self, *a, **kw):
             return FakeResult()
+
         async def __aenter__(self):
             return self
+
         async def __aexit__(self, *a):
             return None
 
-    with patch("app.models.database.AsyncSessionLocal", FakeDB), \
-         patch("app.routing.circuit_breaker.force_open", fake_force_open), \
-         patch("app.routing.circuit_breaker.get_all_states", lambda: {}):
+    with (
+        patch("app.models.database.AsyncSessionLocal", FakeDB),
+        patch("app.routing.circuit_breaker.force_open", fake_force_open),
+        patch("app.routing.circuit_breaker.get_all_states", lambda: {}),
+    ):
         result = await esbt._scan_once()
 
     assert result == {"detected": 0, "opened": 0, "already_open": 0}
@@ -118,16 +126,22 @@ async def test_scan_once_burst_force_opens_closed_provider():
     class FakeDB:
         async def execute(self, *a, **kw):
             return FakeResult()
+
         async def __aenter__(self):
             return self
+
         async def __aexit__(self, *a):
             return None
 
-    with patch("app.models.database.AsyncSessionLocal", FakeDB), \
-         patch("app.routing.circuit_breaker.force_open", fake_force_open), \
-         patch("app.routing.circuit_breaker.get_all_states",
-               lambda: {"provider-A": {"state": "closed", "failures": 7}}), \
-         patch("app.monitoring.activity.log_event", fake_log_event):
+    with (
+        patch("app.models.database.AsyncSessionLocal", FakeDB),
+        patch("app.routing.circuit_breaker.force_open", fake_force_open),
+        patch(
+            "app.routing.circuit_breaker.get_all_states",
+            lambda: {"provider-A": {"state": "closed", "failures": 7}},
+        ),
+        patch("app.monitoring.activity.log_event", fake_log_event),
+    ):
         result = await esbt._scan_once()
 
     assert result["detected"] == 1
@@ -163,16 +177,22 @@ async def test_scan_once_skips_already_open_provider():
     class FakeDB:
         async def execute(self, *a, **kw):
             return FakeResult()
+
         async def __aenter__(self):
             return self
+
         async def __aexit__(self, *a):
             return None
 
-    with patch("app.models.database.AsyncSessionLocal", FakeDB), \
-         patch("app.routing.circuit_breaker.force_open", fake_force_open), \
-         patch("app.routing.circuit_breaker.get_all_states",
-               lambda: {"provider-B": {"state": "open", "failures": 12}}), \
-         patch("app.monitoring.activity.log_event", fake_log_event):
+    with (
+        patch("app.models.database.AsyncSessionLocal", FakeDB),
+        patch("app.routing.circuit_breaker.force_open", fake_force_open),
+        patch(
+            "app.routing.circuit_breaker.get_all_states",
+            lambda: {"provider-B": {"state": "open", "failures": 12}},
+        ),
+        patch("app.monitoring.activity.log_event", fake_log_event),
+    ):
         result = await esbt._scan_once()
 
     assert result["detected"] == 1

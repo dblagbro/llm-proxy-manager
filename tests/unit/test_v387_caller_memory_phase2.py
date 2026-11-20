@@ -13,24 +13,29 @@ Verifies:
 - _apply_caller_memory_markers uses monotone-extending rules
 - Settings exposed in Settings UI
 """
+
 from __future__ import annotations
 
 from pathlib import Path
-
-import pytest
-
 
 # ── Schema ─────────────────────────────────────────────────────────
 
 
 def test_caller_memory_table_exists():
     from app.models.db import CallerMemory
+
     cols = {c.name for c in CallerMemory.__table__.columns}
     expected = {
-        "id", "api_key_id", "conversation_id", "memory_tag",
-        "content", "content_format",
-        "updated_at", "updated_by_node",
-        "source_provider_id", "source_request_id",
+        "id",
+        "api_key_id",
+        "conversation_id",
+        "memory_tag",
+        "content",
+        "content_format",
+        "updated_at",
+        "updated_by_node",
+        "source_provider_id",
+        "source_request_id",
         # v5.0.0 compliance — decision 18
         "source_company",
         "deleted_at",
@@ -41,14 +46,20 @@ def test_caller_memory_table_exists():
 
 def test_caller_memory_marker_table_exists():
     from app.models.db import CallerMemoryMarker
+
     cols = {c.name for c in CallerMemoryMarker.__table__.columns}
     expected = {
-        "id", "api_key_id", "conversation_id", "memory_tag",
+        "id",
+        "api_key_id",
+        "conversation_id",
+        "memory_tag",
         "first_seen_at",
-        "last_known_provider_id", "last_known_external_ref",
+        "last_known_provider_id",
+        "last_known_external_ref",
         # v5.0.0 compliance — decision 18
         "source_company",
-        "recovered_at", "deleted_at",
+        "recovered_at",
+        "deleted_at",
     }
     missing = expected - cols
     assert not missing, f"CallerMemoryMarker missing columns: {missing}"
@@ -58,6 +69,7 @@ def test_caller_memory_indexed_for_keyed_lookup():
     """Memory keyed lookup is by (api_key_id, conversation_id,
     memory_tag) — those columns must be indexed for hot-path reads."""
     from app.models.db import CallerMemory
+
     cols = {c.name: c for c in CallerMemory.__table__.columns}
     assert cols["api_key_id"].index is True
     assert cols["conversation_id"].index is True
@@ -68,6 +80,7 @@ def test_caller_memory_indexed_for_keyed_lookup():
 
 def test_memory_settings_present():
     from app.config import settings
+
     assert hasattr(settings, "caller_memory_enabled")
     assert hasattr(settings, "caller_memory_active_flush_enabled")
     # Default OFF — ship is data-layer only
@@ -78,6 +91,7 @@ def test_memory_settings_present():
 
 def test_memory_settings_exposed_in_ui_schema():
     from app.config_runtime import SCHEMA
+
     keys = [k for k in SCHEMA if k.startswith("caller_memory_")]
     assert len(keys) >= 2
     groups = {SCHEMA[k].get("group") for k in keys}
@@ -110,7 +124,7 @@ def test_caller_memory_apply_uses_lww():
     on identical timestamps)."""
     src = Path("app/cluster/sync_handlers.py").read_text()
     idx = src.index("async def _apply_caller_memory(")
-    body = src[idx:idx + 3500]
+    body = src[idx : idx + 3500]
     # LWW comparison
     assert "peer_ts > (existing.updated_at or 0)" in body
     # Tombstone propagation
@@ -123,7 +137,7 @@ def test_marker_apply_uses_min_first_seen():
     the original first-seen timestamp."""
     src = Path("app/cluster/sync_handlers.py").read_text()
     idx = src.index("async def _apply_caller_memory_markers")
-    body = src[idx:idx + 3000]
+    body = src[idx : idx + 3000]
     assert "peer_first < existing.first_seen_at" in body
 
 
@@ -131,7 +145,7 @@ def test_marker_apply_recovered_at_monotone():
     """recovered_at is monotone (None → set, never reverts)."""
     src = Path("app/cluster/sync_handlers.py").read_text()
     idx = src.index("async def _apply_caller_memory_markers")
-    body = src[idx:idx + 3000]
+    body = src[idx : idx + 3000]
     assert "peer_rec and not existing.recovered_at" in body
 
 
@@ -142,5 +156,6 @@ def test_marker_apply_recovered_at_monotone():
 
 def test_version_bumped():
     from app.__version__ import __version__
+
     parts = tuple(int(p) for p in __version__.split("."))
     assert parts >= (3, 8, 7)

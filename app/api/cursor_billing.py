@@ -17,6 +17,7 @@ Authentication: existing OAuth access_token in ``Provider.api_key``,
 populated by the cursor-oauth login flow. No cookie paste required
 (parallel to codex_billing v3.8.1 design).
 """
+
 from __future__ import annotations
 
 import logging
@@ -58,8 +59,7 @@ async def cursor_refresh_now(
     if not provider.api_key:
         raise HTTPException(
             400,
-            "provider has no OAuth access_token — complete the cursor-oauth "
-            "login flow first",
+            "provider has no OAuth access_token — complete the cursor-oauth login flow first",
         )
     return await scrape_provider_into_snapshot(db, provider)
 
@@ -99,12 +99,14 @@ async def refresh_all_cursor_billing(
         try:
             r = await scrape_provider_into_snapshot(db, provider)
         except Exception as exc:  # noqa: BLE001 — one bad provider must not abort the sweep
-            results.append({
-                "provider_id": provider.id,
-                "provider_name": provider.name,
-                "ok": False,
-                "error": str(exc),
-            })
+            results.append(
+                {
+                    "provider_id": provider.id,
+                    "provider_name": provider.name,
+                    "ok": False,
+                    "error": str(exc),
+                }
+            )
             continue
         decision = (r.get("rotation_decision") or {}).get("decision")
         ok = bool(r.get("ok", False))
@@ -112,14 +114,16 @@ async def refresh_all_cursor_billing(
             scraped_ok += 1
         if decision == "returned_to_service":
             returned_to_service += 1
-        results.append({
-            "provider_id": provider.id,
-            "provider_name": provider.name,
-            "ok": ok,
-            "auth_state": r.get("auth_state"),
-            "seven_day_utilization": r.get("seven_day_utilization"),
-            "rotation_decision": decision,
-        })
+        results.append(
+            {
+                "provider_id": provider.id,
+                "provider_name": provider.name,
+                "ok": ok,
+                "auth_state": r.get("auth_state"),
+                "seven_day_utilization": r.get("seven_day_utilization"),
+                "rotation_decision": decision,
+            }
+        )
     return {
         "providers": len(providers),
         "scraped_ok": scraped_ok,

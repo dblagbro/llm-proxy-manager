@@ -14,6 +14,7 @@ The claude-oauth path does its own Anthropic->OpenAI conversion, so the
 normalizer must be idempotent or that path would be double-converted into
 empty-named tools.
 """
+
 import sys
 import types
 
@@ -107,6 +108,7 @@ class TestHandlerWiring:
         total across the surface, so it reads both files.
         """
         from tests.unit._handler_surface import messages_handler_source
+
         return messages_handler_source()
 
     def test_normalized_variable_is_built(self):
@@ -114,10 +116,12 @@ class TestHandlerWiring:
 
     def test_no_litellm_extra_still_uses_raw_tools(self):
         src = self._src()
-        for bad in ('extra["tools"] = tools',
-                    'b_extra["tools"] = tools',
-                    '_e["tools"] = tools',
-                    'local_extra["tools"] = tools'):
+        for bad in (
+            'extra["tools"] = tools',
+            'b_extra["tools"] = tools',
+            '_e["tools"] = tools',
+            'local_extra["tools"] = tools',
+        ):
             assert bad not in src, f"{bad} still passes Anthropic-shaped tools to litellm"
 
     def test_all_four_handoffs_use_the_normalized_list(self):

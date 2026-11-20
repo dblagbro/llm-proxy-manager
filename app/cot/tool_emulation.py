@@ -9,6 +9,7 @@ this module:
   4. Formats synthetic tool_use SSE / JSON blocks for the client in both
      Anthropic and OpenAI wire formats
 """
+
 from __future__ import annotations
 
 import json
@@ -60,6 +61,7 @@ If no tool call is needed, respond normally without the <tool_call> tags.
 
 
 # ── Schema → system prompt ────────────────────────────────────────────────────
+
 
 def _render_tool_description(name: str, desc: str, props: dict, required: set) -> str:
     lines = [f"### {name}", desc]
@@ -118,16 +120,18 @@ def strip_thinking(text: str) -> str:
     return _THINKING_RE.sub("", text or "").strip()
 
 
-def build_anthropic_tool_prompt(tools: list[dict], allow_parallel: bool = True,
-                                with_reasoning: bool = False) -> str:
+def build_anthropic_tool_prompt(
+    tools: list[dict], allow_parallel: bool = True, with_reasoning: bool = False
+) -> str:
     descriptions = "\n\n".join(_describe_anthropic(t) for t in tools)
     template = _TOOL_PROMPT if allow_parallel else _TOOL_PROMPT_SERIAL
     prompt = template.format(descriptions=descriptions)
     return (_COEMULATION_PREAMBLE + prompt) if with_reasoning else prompt
 
 
-def build_openai_tool_prompt(tools: list[dict], allow_parallel: bool = True,
-                             with_reasoning: bool = False) -> str:
+def build_openai_tool_prompt(
+    tools: list[dict], allow_parallel: bool = True, with_reasoning: bool = False
+) -> str:
     descriptions = "\n\n".join(_describe_openai(t) for t in tools)
     template = _TOOL_PROMPT if allow_parallel else _TOOL_PROMPT_SERIAL
     prompt = template.format(descriptions=descriptions)
@@ -135,6 +139,7 @@ def build_openai_tool_prompt(tools: list[dict], allow_parallel: bool = True,
 
 
 # ── Message normalisation (for multi-turn tool use) ───────────────────────────
+
 
 def normalize_anthropic_messages(messages: list[dict]) -> list[dict]:
     """
@@ -156,7 +161,9 @@ def normalize_anthropic_messages(messages: list[dict]) -> list[dict]:
             elif btype == "tool_use":
                 name = block.get("name", "")
                 inp = block.get("input", {})
-                parts.append(f"<tool_call>\n{json.dumps({'name': name, 'input': inp})}\n</tool_call>")
+                parts.append(
+                    f"<tool_call>\n{json.dumps({'name': name, 'input': inp})}\n</tool_call>"
+                )
             elif btype == "tool_result":
                 tid = block.get("tool_use_id", "")
                 result = block.get("content", "")
@@ -180,10 +187,12 @@ def normalize_openai_messages(messages: list[dict]) -> list[dict]:
         content = msg.get("content") or ""
         if role == "tool":
             tid = msg.get("tool_call_id", "")
-            out.append({
-                "role": "user",
-                "content": f'<tool_result tool_call_id="{tid}">\n{content}\n</tool_result>',
-            })
+            out.append(
+                {
+                    "role": "user",
+                    "content": f'<tool_result tool_call_id="{tid}">\n{content}\n</tool_result>',
+                }
+            )
             continue
         tool_calls = msg.get("tool_calls")
         if tool_calls:
@@ -195,7 +204,9 @@ def normalize_openai_messages(messages: list[dict]) -> list[dict]:
                     args = json.loads(func.get("arguments", "{}"))
                 except (json.JSONDecodeError, ValueError):
                     args = {}
-                parts.append(f"<tool_call>\n{json.dumps({'name': name, 'input': args})}\n</tool_call>")
+                parts.append(
+                    f"<tool_call>\n{json.dumps({'name': name, 'input': args})}\n</tool_call>"
+                )
             out.append({"role": "assistant", "content": "\n".join(parts).strip()})
             continue
         out.append({"role": role, "content": content})
@@ -203,6 +214,7 @@ def normalize_openai_messages(messages: list[dict]) -> list[dict]:
 
 
 # ── Response parser ───────────────────────────────────────────────────────────
+
 
 def _normalize_tool_payload(payload: dict) -> dict | None:
     for alt_name in ("function_name", "tool_name"):
@@ -245,6 +257,7 @@ def parse_tool_call(text: str) -> dict | None:
 
 # ── Internal LLM call ─────────────────────────────────────────────────────────
 
+
 async def call_with_tool_prompt(
     model: str,
     messages: list[dict],
@@ -274,7 +287,9 @@ async def call_with_tool_prompt(
     it matches the ``resp_headers`` mutate-in-place idiom already used around
     them.
     """
-    kwargs = {k: v for k, v in extra.items() if k not in ("max_tokens", "system", "tools", "stream")}
+    kwargs = {
+        k: v for k, v in extra.items() if k not in ("max_tokens", "system", "tools", "stream")
+    }
     msgs = list(messages)
     if system:
         msgs = [{"role": "system", "content": system}] + msgs
@@ -295,5 +310,3 @@ async def call_with_tool_prompt(
         )
     choice = resp.choices[0]
     return choice.message.content or ""
-
-

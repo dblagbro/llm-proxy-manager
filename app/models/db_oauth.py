@@ -6,7 +6,8 @@ Split out from ``db.py`` in v4.4.11. Owns:
 - ``OAuthCaptureLog`` — recorded req/resp pairs from the
   ``/api/oauth-capture/`` passthrough endpoint.
 """
-from sqlalchemy import Column, String, Integer, Boolean, Float, DateTime, Text, JSON
+
+from sqlalchemy import JSON, Boolean, Column, DateTime, Float, Integer, String, Text
 from sqlalchemy.sql import func
 
 from app.models.db_base import Base
@@ -19,12 +20,13 @@ class OAuthCaptureProfile(Base):
 
     Added in v2.5.0 — replaces the former single-upstream settings model.
     """
+
     __tablename__ = "oauth_capture_profiles"
 
     name = Column(String, primary_key=True)  # "claude-code", "codex", "gh-copilot", etc.
-    preset = Column(String, nullable=True)   # matches PRESETS key in oauth_capture.py
+    preset = Column(String, nullable=True)  # matches PRESETS key in oauth_capture.py
     upstream_urls = Column(JSON, default=list)  # list[str], typically 1-2 hosts
-    secret = Column(String, nullable=True)   # per-profile capture secret
+    secret = Column(String, nullable=True)  # per-profile capture secret
     enabled = Column(Boolean, default=False)
     notes = Column(Text, nullable=True)
     created_at = Column(DateTime, server_default=func.now())
@@ -37,16 +39,17 @@ class OAuthCaptureLog(Base):
     Used to reverse-engineer vendor OAuth flows (claude-code, codex, gh copilot,
     etc.) before implementing a direct `*-oauth` provider.
     """
+
     __tablename__ = "oauth_capture_log"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     profile_name = Column(String, nullable=True, index=True)  # v2.5.0: which capture profile
     capture_session = Column(String, nullable=True, index=True)  # optional client-tag
     method = Column(String, nullable=False)
-    path = Column(String, nullable=False)          # the subpath of /api/oauth-capture/<profile>/
+    path = Column(String, nullable=False)  # the subpath of /api/oauth-capture/<profile>/
     upstream_url = Column(String, nullable=False)  # where we actually sent it
     req_headers = Column(JSON, default=dict)
-    req_body = Column(Text, nullable=True)         # raw body; may be JSON or form-urlencoded
+    req_body = Column(Text, nullable=True)  # raw body; may be JSON or form-urlencoded
     req_query = Column(String, nullable=True)
     resp_status = Column(Integer, nullable=True)
     resp_headers = Column(JSON, default=dict)

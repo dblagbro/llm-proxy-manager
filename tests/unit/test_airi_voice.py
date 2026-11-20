@@ -5,6 +5,7 @@ sidecar, and the sidecar pulls in faster-whisper (not a main-app dep), so —
 as with the other AIRI endpoints — behaviour is verified by the live smoke;
 these tests lock the config flags and the wiring.
 """
+
 from __future__ import annotations
 
 import json
@@ -14,8 +15,8 @@ from app.config import settings
 
 
 def test_voice_flags_default_off_and_configured():
-    assert settings.airi_voice_enabled is False           # off until v4.2.0 ships
-    assert settings.airi_whisper_bridge_url                # has a default URL
+    assert settings.airi_voice_enabled is False  # off until v4.2.0 ships
+    assert settings.airi_whisper_bridge_url  # has a default URL
     assert isinstance(settings.airi_whisper_bridge_token, str)
 
 
@@ -60,13 +61,14 @@ def test_whisper_bridge_dockerfile_self_hosted_offline():
 
 # --- v4.2.1 milestone 3: hands-free "Airy" wake word -----------------------
 
+
 def test_voice_model_endpoint_exists_and_gated():
     """The proxy serves the Vosk model to the browser, double-gated like
     /transcribe and sourced from the whisper-bridge sidecar."""
     src = Path("app/api/airi.py").read_text()
     assert '@router.get("/voice-model")' in src
     assert "settings.airi_enabled" in src and "settings.airi_voice_enabled" in src
-    assert "/vosk-model" in src                 # proxied from the sidecar
+    assert "/vosk-model" in src  # proxied from the sidecar
     assert "airi_whisper_bridge_url" in src
 
 
@@ -111,7 +113,7 @@ def test_handsfree_uses_grammar_and_whisper_for_command():
     src = Path("frontend/src/components/airi/AiriHandsFree.tsx").read_text()
     # grammar-constrained wake recognizer — only emits "airy" or "[unk]"
     assert "WAKE_GRAMMAR" in src
-    assert '[unk]' in src
+    assert "[unk]" in src
     # the command is recorded and sent to Whisper via the transcribe endpoint
     assert "MediaRecorder" in src
     assert "/api/airi/transcribe" in src
@@ -124,8 +126,9 @@ def test_vosk_browser_dependency_declared():
 
 # --- v4.3 milestone 1: text-to-speech (Piper) ------------------------------
 
+
 def test_tts_flag_default_off():
-    assert settings.airi_tts_enabled is False           # off until v4.3.0 ships
+    assert settings.airi_tts_enabled is False  # off until v4.3.0 ships
 
 
 def test_status_exposes_tts_enabled():
@@ -164,6 +167,7 @@ def test_whisper_bridge_dockerfile_bakes_piper():
 
 
 # --- v4.3 milestone 2: speaker-toggle UI -----------------------------------
+
 
 def test_speaker_component_present_and_wired():
     base = Path("frontend/src/components/airi")

@@ -8,43 +8,50 @@ State machine: app/runs/state.py (pure FSM, fully unit-tested).
 Schema: see app/models/db.py (Run, RunMessage, RunEvent, RunIdempotency).
 Wire spec: see runs.openapi.json at the repo root.
 """
+
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
 import time
-from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.keys import verify_api_key, resolve_api_key_dep, ApiKeyRecord
+from app.auth.keys import ApiKeyRecord, resolve_api_key_dep
+from app.auth.keys import verify_api_key as verify_api_key
+from app.config import settings
+from app.models.database import get_db
+from app.models.db import Run, RunEvent, RunIdempotency, RunMessage
+from app.runs import worker as run_worker
+from app.runs.ids import new_run_id
+from app.runs.state import (
+    EventKind,
+    RunCtx,
+    RunStatus,
+    advance,
+    clamp_max_turns,
+)
+from app.runs.state import (
+    InvalidTransition as InvalidTransition,
+)
 
 # v3.0.8 (item 5): single dependency for the 5 sites that previously
 # reproduced the x-api-key OR Bearer block. Closure captured at module
 # load so each handler reuses the same resolver.
 _AUTH = resolve_api_key_dep()
-from app.config import settings
-from app.models.database import get_db
-from app.models.db import Run, RunEvent, RunIdempotency, RunMessage
-from app.runs.ids import new_run_id
-from app.runs.state import (
-    EventKind, InvalidTransition, RunCtx, RunStatus,
-    advance, clamp_max_turns,
-)
-from app.runs import worker as run_worker
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-_IDEMPOTENCY_TTL_SEC = 24 * 60 * 60          # Q1 lock-in
-_IDEMPOTENCY_KEY_MAX_LEN = 256               # locked with hub team
-_DEFAULT_TURNS_CEILING = 50                  # Q6 lock-in
-_HARD_TURNS_CEILING = 200                    # Q6 lock-in
-_RING_BUFFER_SIZE = 1000                     # SSE Last-Event-ID resume window
+_IDEMPOTENCY_TTL_SEC = 24 * 60 * 60  # Q1 lock-in
+_IDEMPOTENCY_KEY_MAX_LEN = 256  # locked with hub team
+_DEFAULT_TURNS_CEILING = 50  # Q6 lock-in
+_HARD_TURNS_CEILING = 200  # Q6 lock-in
+_RING_BUFFER_SIZE = 1000  # SSE Last-Event-ID resume window
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -60,7 +67,7 @@ def _runs_max_turns_ceiling() -> int:
     return max(1, min(v, _HARD_TURNS_CEILING))
 
 
-def _peer_url(node_id: str) -> Optional[str]:
+def _peer_url(node_id: str) -> str | None:
     """Look up a peer's external URL by node_id from the cluster manager.
 
     Returns ``None`` if we don't know about that node — the caller should
@@ -72,6 +79,7 @@ def _peer_url(node_id: str) -> Optional[str]:
         return None  # we ARE the owner
     try:
         from app.cluster.manager import peers as _peer_registry
+
         peer = _peer_registry.get(node_id)
         if peer is not None and peer.url:
             return peer.url.rstrip("/")
@@ -80,7 +88,7 @@ def _peer_url(node_id: str) -> Optional[str]:
     return None
 
 
-def _maybe_redirect_to_owner(run: Run, request: Request) -> Optional[JSONResponse]:
+def _maybe_redirect_to_owner(run: Run, request: Request) -> JSONResponse | None:
     """R5: if this node isn't the run's owner, return a 307 + Location to
     the owner. Same-key auth was already verified above; the redirect
     preserves method + body + headers (HTTP 307 semantics).
@@ -105,8 +113,9 @@ def _maybe_redirect_to_owner(run: Run, request: Request) -> Optional[JSONRespons
     if request.url.query:
         target = f"{target}?{request.url.query}"
     headers = {"Location": target, "X-Run-Owner": owner}
-    return JSONResponse({"redirect": target, "owner_node_id": owner},
-                        status_code=307, headers=headers)
+    return JSONResponse(
+        {"redirect": target, "owner_node_id": owner}, status_code=307, headers=headers
+    )
 
 
 def _ctx_from_row(r: Run) -> RunCtx:
@@ -133,10 +142,7 @@ def _serialize_run(r: Run) -> dict:
         "deadline_ts": r.deadline_ts,
         "owner_node_id": r.owner_node_id,
         "result": r.result_text,
-        "error": (
-            None if not r.error_kind
-            else {"kind": r.error_kind, "message": r.error_message}
-        ),
+        "error": (None if not r.error_kind else {"kind": r.error_kind, "message": r.error_message}),
         "current_tool_use": None,
     }
     if r.status == RunStatus.REQUIRES_TOOL.value and r.current_tool_use_id:
@@ -151,19 +157,23 @@ def _serialize_run(r: Run) -> dict:
 async def _next_event_seq(db: AsyncSession, run_id: str) -> int:
     """Monotonic event seq per run. Linear scan is fine — tests, low volume."""
     from sqlalchemy import func
-    res = await db.execute(
-        select(func.max(RunEvent.seq)).where(RunEvent.run_id == run_id)
-    )
+
+    res = await db.execute(select(func.max(RunEvent.seq)).where(RunEvent.run_id == run_id))
     cur = res.scalar()
     return (cur or 0) + 1
 
 
 async def _emit_event(db: AsyncSession, run_id: str, kind: str, payload: dict) -> int:
     seq = await _next_event_seq(db, run_id)
-    db.add(RunEvent(
-        run_id=run_id, seq=seq, kind=kind,
-        payload=payload or {}, ts=time.time(),
-    ))
+    db.add(
+        RunEvent(
+            run_id=run_id,
+            seq=seq,
+            kind=kind,
+            payload=payload or {},
+            ts=time.time(),
+        )
+    )
     return seq
 
 
@@ -208,22 +218,27 @@ async def create_run(
 
     requested_turns = int(body.get("max_turns") or _DEFAULT_TURNS_CEILING)
     max_turns, was_clamped = clamp_max_turns(
-        requested_turns, _runs_max_turns_ceiling(), _HARD_TURNS_CEILING,
+        requested_turns,
+        _runs_max_turns_ceiling(),
+        _HARD_TURNS_CEILING,
     )
 
     # Idempotency replay — R4: in-memory cache hot path, DB fallback
     if idempotency_key is not None:
         from app.runs import idempotency
+
         cached_run_id = idempotency.get(key_record.id, idempotency_key)
         if cached_run_id is not None:
             run_res = await db.execute(select(Run).where(Run.id == cached_run_id))
             run = run_res.scalar_one_or_none()
             if run is not None:
-                return JSONResponse({
-                    "run_id": run.id,
-                    "status": run.status,
-                    "idempotent": True,
-                })
+                return JSONResponse(
+                    {
+                        "run_id": run.id,
+                        "status": run.status,
+                        "idempotent": True,
+                    }
+                )
             # Cache hit but DB row gone (eviction race / manual delete) —
             # fall through to DB lookup which will also miss + create fresh.
             idempotency.invalidate(key_record.id, idempotency_key)
@@ -241,14 +256,18 @@ async def create_run(
             if run is not None:
                 # Warm the cache for next time
                 idempotency.put(
-                    key_record.id, idempotency_key,
-                    run.id, existing.created_at,
+                    key_record.id,
+                    idempotency_key,
+                    run.id,
+                    existing.created_at,
                 )
-                return JSONResponse({
-                    "run_id": run.id,
-                    "status": run.status,
-                    "idempotent": True,
-                })
+                return JSONResponse(
+                    {
+                        "run_id": run.id,
+                        "status": run.status,
+                        "idempotent": True,
+                    }
+                )
 
     # Fresh run
     now = time.time()
@@ -266,9 +285,12 @@ async def create_run(
         tools_spec=body.get("tools") or [],
         metadata_json=body.get("metadata") or {},
         trace_id=body.get("trace_id"),
-        model_calls=0, tool_calls=0,
-        tokens_in=0, tokens_out=0,
-        created_at=now, updated_at=now,
+        model_calls=0,
+        tool_calls=0,
+        tokens_in=0,
+        tokens_out=0,
+        created_at=now,
+        updated_at=now,
     )
     db.add(run)
 
@@ -276,34 +298,55 @@ async def create_run(
     seq = 0
     if run.system_prompt:
         seq += 1
-        db.add(RunMessage(
-            run_id=run.id, seq=seq, role="system",
-            content=run.system_prompt, tokens=0, created_at=now,
-        ))
-    for msg in (body.get("messages") or []):
+        db.add(
+            RunMessage(
+                run_id=run.id,
+                seq=seq,
+                role="system",
+                content=run.system_prompt,
+                tokens=0,
+                created_at=now,
+            )
+        )
+    for msg in body.get("messages") or []:
         seq += 1
-        db.add(RunMessage(
-            run_id=run.id, seq=seq, role=msg.get("role", "user"),
-            content=msg.get("content", ""), tokens=0, created_at=now,
-        ))
+        db.add(
+            RunMessage(
+                run_id=run.id,
+                seq=seq,
+                role=msg.get("role", "user"),
+                content=msg.get("content", ""),
+                tokens=0,
+                created_at=now,
+            )
+        )
 
     if idempotency_key is not None:
-        db.add(RunIdempotency(
-            api_key_id=key_record.id,
-            idempotency_key=idempotency_key,
-            run_id=run.id,
-            created_at=now,
-        ))
+        db.add(
+            RunIdempotency(
+                api_key_id=key_record.id,
+                idempotency_key=idempotency_key,
+                run_id=run.id,
+                created_at=now,
+            )
+        )
         # Warm the in-process cache so the next duplicate-POST skips the DB
         from app.runs import idempotency as idempotency_cache
+
         idempotency_cache.put(key_record.id, idempotency_key, run.id, now)
 
     if was_clamped:
-        await _emit_event(db, run.id, "max_turns_clamped", {
-            "requested": requested_turns, "clamped_to": max_turns,
-            "ceiling": _runs_max_turns_ceiling(),
-            "hard_ceiling": _HARD_TURNS_CEILING,
-        })
+        await _emit_event(
+            db,
+            run.id,
+            "max_turns_clamped",
+            {
+                "requested": requested_turns,
+                "clamped_to": max_turns,
+                "ceiling": _runs_max_turns_ceiling(),
+                "hard_ceiling": _HARD_TURNS_CEILING,
+            },
+        )
 
     await db.commit()
     # R2: spawn worker so the run actually progresses.
@@ -416,30 +459,44 @@ async def post_tool_result(
 
     # Append the tool_result message to the conversation; FSM transitions to RUNNING.
     seq_res = await db.execute(
-        select(RunMessage.seq).where(RunMessage.run_id == run.id)
-        .order_by(RunMessage.seq.desc()).limit(1)
+        select(RunMessage.seq)
+        .where(RunMessage.run_id == run.id)
+        .order_by(RunMessage.seq.desc())
+        .limit(1)
     )
     last_seq = (seq_res.scalar() or 0) + 1
-    db.add(RunMessage(
-        run_id=run.id, seq=last_seq, role="user",
-        content=[{
-            "type": "tool_result",
-            "tool_use_id": tool_use_id,
-            "content": body.get("output_text") or "",
-            "is_error": bool(body.get("is_error", False)),
-        }],
-        tokens=0, created_at=time.time(),
-    ))
+    db.add(
+        RunMessage(
+            run_id=run.id,
+            seq=last_seq,
+            role="user",
+            content=[
+                {
+                    "type": "tool_result",
+                    "tool_use_id": tool_use_id,
+                    "content": body.get("output_text") or "",
+                    "is_error": bool(body.get("is_error", False)),
+                }
+            ],
+            tokens=0,
+            created_at=time.time(),
+        )
+    )
     transition = advance(_ctx_from_row(run), EventKind.TOOL_RESULT, time.time())
     await _persist_transition(db, run, transition)
     run.tool_calls = (run.tool_calls or 0) + 1
     run.current_tool_use_id = None
     run.current_tool_name = None
     run.current_tool_input = None
-    await _emit_event(db, run.id, "tool_use_received", {
-        "tool_use_id": tool_use_id,
-        "exec_ms": body.get("exec_ms"),
-    })
+    await _emit_event(
+        db,
+        run.id,
+        "tool_use_received",
+        {
+            "tool_use_id": tool_use_id,
+            "exec_ms": body.get("exec_ms"),
+        },
+    )
     await db.commit()
     # R2: worker is parked waiting for tool_result. Poke it via the per-run
     # wakeup Event so it picks up the new conversation tail without polling.
@@ -462,8 +519,8 @@ async def get_events(
     request: Request,
     since_ms: int = 0,
     limit: int = 100,
-    last_event_id: Optional[str] = Header(None, alias="last-event-id"),
-    accept: Optional[str] = Header(None, alias="accept"),
+    last_event_id: str | None = Header(None, alias="last-event-id"),
+    accept: str | None = Header(None, alias="accept"),
     key_record: ApiKeyRecord = Depends(_AUTH),
 ):
     """Spec B.6. Two modes:
@@ -485,6 +542,7 @@ async def get_events(
     catch-up replay in the generator, the polling query).
     """
     from app.models.database import AsyncSessionLocal
+
     async with AsyncSessionLocal() as _lookup_db:
         res = await _lookup_db.execute(select(Run).where(Run.id == run_id))
         run = res.scalar_one_or_none()
@@ -526,18 +584,20 @@ async def get_events(
             Phase 1 - catch-up replay from DB (own short-lived session).
             Phase 2 - live subscribe to broker (NO DB session held).
             """
-            from app.runs import event_bus
             from app.models.database import AsyncSessionLocal
+            from app.runs import event_bus
 
             # Phase 1: catch-up from DB - own short-lived session so we
             # don't hold the request-scoped one across the broker loop.
             last_seen = resume_seq
             async with AsyncSessionLocal() as local_db:
                 ev_res = await local_db.execute(
-                    select(RunEvent).where(
+                    select(RunEvent)
+                    .where(
                         RunEvent.run_id == _run_id_captured,
                         RunEvent.seq > resume_seq,
-                    ).order_by(RunEvent.seq.asc())
+                    )
+                    .order_by(RunEvent.seq.asc())
                 )
                 for ev in ev_res.scalars().all():
                     yield (
@@ -550,15 +610,18 @@ async def get_events(
 
             # If the run is already terminal, we're done - no live stream.
             if _run_status_captured in (
-                RunStatus.COMPLETED.value, RunStatus.FAILED.value,
-                RunStatus.EXPIRED.value, RunStatus.CANCELLED.value,
+                RunStatus.COMPLETED.value,
+                RunStatus.FAILED.value,
+                RunStatus.EXPIRED.value,
+                RunStatus.CANCELLED.value,
             ):
                 return
 
             # Phase 2: subscribe to broker. NO DB session held here.
             try:
                 async for ev in event_bus.stream_events(
-                    _run_id_captured, last_event_id=last_seen,
+                    _run_id_captured,
+                    last_event_id=last_seen,
                     keepalive_sec=15.0,
                 ):
                     if await request.is_disconnected():
@@ -573,17 +636,20 @@ async def get_events(
                     ).encode()
             except asyncio.CancelledError:
                 return
+
         return StreamingResponse(gen(), media_type="text/event-stream")
 
     # Polling JSON path — own short-lived session (v5.21.7).
     since_ts = (since_ms / 1000.0) if since_ms else 0.0
     async with AsyncSessionLocal() as _poll_db:
         ev_res = await _poll_db.execute(
-            select(RunEvent).where(
-                RunEvent.run_id == run.id, RunEvent.ts > since_ts,
-            ).order_by(RunEvent.seq.asc()).limit(
-                max(1, min(limit, _RING_BUFFER_SIZE))
+            select(RunEvent)
+            .where(
+                RunEvent.run_id == run.id,
+                RunEvent.ts > since_ts,
             )
+            .order_by(RunEvent.seq.asc())
+            .limit(max(1, min(limit, _RING_BUFFER_SIZE)))
         )
         events = [
             {"seq": ev.seq, "kind": ev.kind, "payload": ev.payload, "ts_ms": int(ev.ts * 1000)}
@@ -595,7 +661,7 @@ async def get_events(
 # ── POST /v1/runs/{run_id}/adopt — peer takeover after owner failure ────────
 
 
-_ADOPT_OWNER_GRACE_SEC = 30.0   # don't adopt unless owner unreachable >30s
+_ADOPT_OWNER_GRACE_SEC = 30.0  # don't adopt unless owner unreachable >30s
 
 
 @router.post("/v1/runs/{run_id}/adopt")
@@ -631,11 +697,14 @@ async def adopt_run(
         return JSONResponse(_serialize_run(run))
 
     if run.status in (
-        RunStatus.COMPLETED.value, RunStatus.FAILED.value,
-        RunStatus.EXPIRED.value, RunStatus.CANCELLED.value,
+        RunStatus.COMPLETED.value,
+        RunStatus.FAILED.value,
+        RunStatus.EXPIRED.value,
+        RunStatus.CANCELLED.value,
     ):
         raise HTTPException(
-            409, f"run already terminal ({run.status}); nothing to adopt",
+            409,
+            f"run already terminal ({run.status}); nothing to adopt",
         )
 
     # Owner-grace check: only allow adopt if peer registry shows the
@@ -644,6 +713,7 @@ async def adopt_run(
     # but the periodic /cluster/sync push reconciles within ~30s.
     try:
         from app.cluster.manager import peers as _peer_registry
+
         owner_peer = _peer_registry.get(run.owner_node_id)
     except Exception:
         owner_peer = None
@@ -667,12 +737,17 @@ async def adopt_run(
     prior_owner = run.owner_node_id
     run.owner_node_id = self_id
     run.updated_at = time.time()
-    await _emit_event(db, run.id, "run_recovered", {
-        "prior_status": run.status,
-        "recovered_from_node_id": prior_owner,
-        "downtime_ms": 0,    # we don't have a precise downtime here
-        "via": "adopt",
-    })
+    await _emit_event(
+        db,
+        run.id,
+        "run_recovered",
+        {
+            "prior_status": run.status,
+            "recovered_from_node_id": prior_owner,
+            "downtime_ms": 0,  # we don't have a precise downtime here
+            "via": "adopt",
+        },
+    )
     await db.commit()
     # Spawn a worker locally to drive the run from the replicated state.
     run_worker.spawn(run.id)

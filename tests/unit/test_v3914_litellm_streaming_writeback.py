@@ -13,11 +13,11 @@ Two changes:
 These are source-level guards confirming the wiring is in place + the
 pin is tight.
 """
+
 from __future__ import annotations
 
 import inspect
 from pathlib import Path
-
 
 # ── Pin ────────────────────────────────────────────────────────────
 
@@ -32,16 +32,15 @@ def test_litellm_pin_is_tight():
     # Look at the pin line specifically (comments may mention old
     # ceilings for historical context).
     pin_lines = [
-        l for l in req.splitlines()
-        if l.strip().startswith("litellm") and not l.strip().startswith("#")
+        line
+        for line in req.splitlines()
+        if line.strip().startswith("litellm") and not line.strip().startswith("#")
     ]
     assert pin_lines, "no litellm pin found"
     pin = pin_lines[0]
     # v4.4.30: bumped past <1.85.0 to address 3 critical CVEs
     # (SSTI in /completions, RCE via eval, OIDC auth bypass).
-    assert pin == "litellm>=1.85.2,<1.87.0", (
-        f"expected canonical v4.4.30 pin; got {pin!r}"
-    )
+    assert pin == "litellm>=1.85.2,<1.87.0", f"expected canonical v4.4.30 pin; got {pin!r}"
     # The old loose pin must be gone (otherwise pip resolves to >=1.40)
     assert "litellm>=1.40.0" not in req
 
@@ -51,6 +50,7 @@ def test_litellm_pin_is_tight():
 
 def test_stream_anthropic_accepts_memory_kwargs():
     from app.api._messages_streaming import _stream_anthropic
+
     params = inspect.signature(_stream_anthropic).parameters
     for kw in ("api_key_id", "conversation_id", "memory_tag"):
         assert kw in params, f"missing kwarg {kw}"
@@ -68,16 +68,18 @@ def test_tool_calls_accumulator_seeded_on_content_block_start():
     src = Path("app/api/_messages_streaming.py").read_text()
     # Find the _stream_anthropic function body
     idx = src.index("async def _stream_anthropic(")
-    fn = src[idx:idx + 12000]
+    fn = src[idx : idx + 12000]
     assert "tool_calls_acc:" in fn
-    assert 'tool_calls_acc.setdefault(tool_id,' in fn
+    import re
+
+    assert re.search(r"tool_calls_acc\.setdefault\(\s*tool_id\s*,", fn)
     assert '"input_str": ""' in fn
 
 
 def test_partial_json_appended_to_accumulator():
     src = Path("app/api/_messages_streaming.py").read_text()
     idx = src.index("async def _stream_anthropic(")
-    fn = src[idx:idx + 12000]
+    fn = src[idx : idx + 12000]
     assert 'tool_calls_acc[tool_id]["input_str"] += args_fragment' in fn
 
 
@@ -86,9 +88,11 @@ def test_assembled_response_built_at_stream_end():
     build content[] of tool_use blocks, feed through extractor."""
     src = Path("app/api/_messages_streaming.py").read_text()
     idx = src.index("async def _stream_anthropic(")
-    fn = src[idx:idx + 12000]
+    fn = src[idx : idx + 12000]
     # Builds content_list of tool_use blocks
-    assert 'content_list.append({' in fn
+    import re
+
+    assert re.search(r"content_list\.append\(\s*\{", fn)
     assert '"type": "tool_use"' in fn
     # Assembled dict has the keys the extractor expects
     assert '"content": content_list' in fn
@@ -98,17 +102,17 @@ def test_assembled_response_built_at_stream_end():
 def test_extract_invoked_only_when_conversation_id_set():
     src = Path("app/api/_messages_streaming.py").read_text()
     idx = src.index("async def _stream_anthropic(")
-    fn = src[idx:idx + 12000]
+    fn = src[idx : idx + 12000]
     assert "if conversation_id and api_key_id and tool_calls_acc:" in fn
 
 
 def test_extract_invocation_silent_degrade():
     src = Path("app/api/_messages_streaming.py").read_text()
     idx = src.index("async def _stream_anthropic(")
-    fn = src[idx:idx + 12000]
+    fn = src[idx : idx + 12000]
     # The extract block is wrapped in try/except — never breaks stream success
     extract_idx = fn.index("from app.memory.extract import maybe_extract_memory_writes")
-    surrounding = fn[extract_idx - 1800:extract_idx + 1000]
+    surrounding = fn[extract_idx - 1800 : extract_idx + 1000]
     assert "try:" in surrounding
     assert "except Exception:" in surrounding
 
@@ -118,7 +122,7 @@ def test_malformed_json_skipped_not_crashed():
     skip that block rather than corrupt the extractor's view."""
     src = Path("app/api/_messages_streaming.py").read_text()
     idx = src.index("async def _stream_anthropic(")
-    fn = src[idx:idx + 12000]
+    fn = src[idx : idx + 12000]
     # The json.loads is wrapped — malformed JSON → continue, not crash
     assert "except ValueError:" in fn
     assert "# malformed JSON" in fn
@@ -144,7 +148,7 @@ def test_no_litellm_version_change_required():
     assembly logic — litellm passes tool_calls through verbatim."""
     src = Path("app/api/_messages_streaming.py").read_text()
     idx = src.index("async def _stream_anthropic(")
-    fn = src[idx:idx + 12000]
+    fn = src[idx : idx + 12000]
     # We read tc_delta.function.name and .arguments from litellm's
     # existing streaming shape — no new API surface needed
     assert "getattr(tc_delta," in fn

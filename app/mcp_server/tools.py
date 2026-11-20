@@ -13,11 +13,10 @@ No filesystem read, no command execution, no databases. v5.7.2 will
 add the FastMCP-mounted official sub-servers (server-git via uvx,
 server-filesystem) which have their own sandboxing.
 """
+
 from __future__ import annotations
 
 import time
-from typing import Any
-
 
 _DEFAULT_MAX_ROWS = 200
 _DEFAULT_MAX_COLS = 30
@@ -47,6 +46,7 @@ async def read_xlsx_to_markdown(
     # Reuse the v5.6.0 renderer end-to-end. Audit the call in our own
     # table before returning.
     from app.proxy_tools.excel import _fetch_bytes, _render_workbook
+
     t0 = time.time()
     try:
         data = await _fetch_bytes({"file_b64": file_b64, "url": url})
@@ -90,18 +90,17 @@ async def fetch_url(url: str, max_bytes: int = _FETCH_MAX_BYTES) -> str:
     are best-effort decoded with replacement characters.
     """
     import httpx
+
     t0 = time.time()
     try:
         if not isinstance(url, str) or not url:
             raise ValueError("url is required and must be a string")
         if not (url.startswith("http://") or url.startswith("https://")):
-            raise ValueError(
-                "url must use http:// or https://; got "
-                f"{url.split(':', 1)[0]}://"
-            )
+            raise ValueError(f"url must use http:// or https://; got {url.split(':', 1)[0]}://")
         cap = min(int(max_bytes or _FETCH_MAX_BYTES), _FETCH_MAX_BYTES)
         async with httpx.AsyncClient(
-            timeout=_FETCH_TIMEOUT_SEC, follow_redirects=True,
+            timeout=_FETCH_TIMEOUT_SEC,
+            follow_redirects=True,
         ) as client:
             resp = await client.get(url)
         body = resp.content[:cap]
@@ -149,9 +148,11 @@ async def convert_document_to_markdown(
     Cap: 5 MB. Returns ``error: <reason>`` on failure (does NOT raise
     to keep the tool loop alive for the model).
     """
-    from app.proxy_tools.excel import _fetch_bytes
     import io
     import time as _time
+
+    from app.proxy_tools.excel import _fetch_bytes
+
     t0 = _time.time()
     try:
         data = await _fetch_bytes({"file_b64": file_b64, "url": url})
@@ -163,8 +164,8 @@ async def convert_document_to_markdown(
             tail = url.rsplit(".", 1)
             if len(tail) == 2 and 1 <= len(tail[1]) <= 6 and tail[1].isalnum():
                 ext = tail[1].lower()
-        fname = f"input.{ext}" if ext else "input.bin"
         from markitdown import MarkItDown
+
         md = MarkItDown()
         # markitdown's convert_stream API takes a binary stream
         result = md.convert_stream(io.BytesIO(data), file_extension=("." + ext) if ext else None)
@@ -207,23 +208,28 @@ async def _audit_tool_call(
     audit shape is locked from day one.
     """
     from app.mcp_server import current_api_key_id, current_parent_request_id
+
     try:
+        from datetime import datetime
+
         from app.models.database import AsyncSessionLocal
         from app.models.db import McpToolCall
-        from datetime import datetime
+
         async with AsyncSessionLocal() as db:
-            db.add(McpToolCall(
-                created_at=datetime.utcnow(),
-                api_key_id=current_api_key_id.get(),
-                parent_request_id=current_parent_request_id.get(),
-                tool_name=tool_name,
-                mcp_server_id="in-process",
-                input_summary=input_summary[:480],
-                output_bytes=output_bytes,
-                latency_ms=latency_ms,
-                ok=ok,
-                error_msg=(error_msg or "")[:480] if error_msg else None,
-            ))
+            db.add(
+                McpToolCall(
+                    created_at=datetime.utcnow(),
+                    api_key_id=current_api_key_id.get(),
+                    parent_request_id=current_parent_request_id.get(),
+                    tool_name=tool_name,
+                    mcp_server_id="in-process",
+                    input_summary=input_summary[:480],
+                    output_bytes=output_bytes,
+                    latency_ms=latency_ms,
+                    ok=ok,
+                    error_msg=(error_msg or "")[:480] if error_msg else None,
+                )
+            )
             await db.commit()
     except Exception:
         pass  # audit writes must NEVER break the tool path

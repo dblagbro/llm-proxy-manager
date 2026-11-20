@@ -1,5 +1,6 @@
 """v3.7.5 — UI wiring regression checks (source-level — no React/TS unit tests
 in this codebase; we verify the source file structure instead)."""
+
 from __future__ import annotations
 
 from pathlib import Path

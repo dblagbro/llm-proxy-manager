@@ -16,6 +16,7 @@ unless the operator PATCHed a second time.
 
 v4.4.25 adds all 8 extended fields to the INSERT path.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -31,8 +32,21 @@ def test_insert_path_includes_extended_fields():
     v5.0.10 — extracted to sync_handlers._apply_api_keys."""
     src = Path("app/cluster/sync_handlers.py").read_text()
     # Find the db.add(ApiKey(...)) insert block
-    idx = src.index("db.add(ApiKey(")
-    block = src[idx:idx + 1600]
+    import ast
+
+    calls = [
+        n
+        for n in ast.walk(ast.parse(src))
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Attribute)
+        and n.func.attr == "add"
+        and len(n.args) == 1
+        and isinstance(n.args[0], ast.Call)
+        and isinstance(n.args[0].func, ast.Name)
+        and n.args[0].func.id == "ApiKey"
+    ]
+    assert len(calls) == 1
+    block = {kw.arg for kw in calls[0].args[0].keywords}
     for field in (
         "semantic_cache_enabled",
         "daily_soft_cap_usd",
@@ -53,8 +67,9 @@ def test_insert_path_includes_extended_fields():
 
 @pytest_asyncio.fixture
 async def fresh_db():
-    from app.models.database import engine, AsyncSessionLocal
-    from app.models.db import Base, ApiKey
+    from app.models.database import AsyncSessionLocal, engine
+    from app.models.db import ApiKey, Base
+
     async with engine.begin() as conn:
         await conn.run_sync(ApiKey.__table__.drop, checkfirst=True)
         await conn.run_sync(Base.metadata.create_all)
@@ -76,22 +91,30 @@ async def test_new_key_materializes_extended_fields(fresh_db):
     from app.models.db import ApiKey
 
     async with fresh_db() as db:
-        await apply_sync(db, {"api_keys": [{
-            "id": "k-bug084", "name": "bug084",
-            "key_hash": "h-bug084", "key_prefix": "llmp-84",
-            "key_type": "standard", "enabled": True,
-            "semantic_cache_enabled": True,
-            "daily_hard_cap_usd": 3.33,
-            "hourly_cap_usd": 1.10,
-            "rate_limit_tier": "premium",
-            "caller_memory_ttl_days": 30,
-            "last_user_edit_at": 1779949351.14,
-        }]})
+        await apply_sync(
+            db,
+            {
+                "api_keys": [
+                    {
+                        "id": "k-bug084",
+                        "name": "bug084",
+                        "key_hash": "h-bug084",
+                        "key_prefix": "llmp-84",
+                        "key_type": "standard",
+                        "enabled": True,
+                        "semantic_cache_enabled": True,
+                        "daily_hard_cap_usd": 3.33,
+                        "hourly_cap_usd": 1.10,
+                        "rate_limit_tier": "premium",
+                        "caller_memory_ttl_days": 30,
+                        "last_user_edit_at": 1779949351.14,
+                    }
+                ]
+            },
+        )
         await db.commit()
 
-        row = (await db.execute(
-            select(ApiKey).where(ApiKey.key_hash == "h-bug084")
-        )).scalar_one()
+        row = (await db.execute(select(ApiKey).where(ApiKey.key_hash == "h-bug084"))).scalar_one()
         # Every operator-set field must have survived the insert
         assert row.semantic_cache_enabled is True, "semantic_cache lost on insert (BUG-084)"
         assert row.daily_hard_cap_usd == 3.33, "daily_hard_cap lost on insert"
@@ -111,9 +134,12 @@ async def test_insert_then_tie_update_is_consistent(fresh_db):
     from app.models.db import ApiKey
 
     payload_key = {
-        "id": "k-tie84", "name": "tie84",
-        "key_hash": "h-tie84", "key_prefix": "llmp-t84",
-        "key_type": "standard", "enabled": True,
+        "id": "k-tie84",
+        "name": "tie84",
+        "key_hash": "h-tie84",
+        "key_prefix": "llmp-t84",
+        "key_type": "standard",
+        "enabled": True,
         "semantic_cache_enabled": True,
         "daily_hard_cap_usd": 9.99,
         "last_user_edit_at": 2000.0,
@@ -126,8 +152,6 @@ async def test_insert_then_tie_update_is_consistent(fresh_db):
         await apply_sync(db, {"api_keys": [payload_key]})
         await db.commit()
 
-        row = (await db.execute(
-            select(ApiKey).where(ApiKey.key_hash == "h-tie84")
-        )).scalar_one()
+        row = (await db.execute(select(ApiKey).where(ApiKey.key_hash == "h-tie84"))).scalar_one()
         assert row.semantic_cache_enabled is True
         assert row.daily_hard_cap_usd == 9.99

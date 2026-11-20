@@ -1,24 +1,25 @@
 """Log listing, SSE live tail, NDJSON export, clear — for the OAuth
 capture package."""
+
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select, delete as sql_delete
+from sqlalchemy import delete as sql_delete
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.admin import require_admin, AdminUser
+from app.api.oauth_capture.serializers import (
+    _serialize_log_full,
+    _serialize_log_summary,
+)
+from app.auth.admin import AdminUser, require_admin
 from app.models.database import AsyncSessionLocal, get_db
 from app.models.db import OAuthCaptureLog
-
-from app.api.oauth_capture.serializers import (
-    _serialize_log_summary, _serialize_log_full,
-)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/oauth-capture", tags=["oauth-capture"])
@@ -26,7 +27,7 @@ router = APIRouter(prefix="/api/oauth-capture", tags=["oauth-capture"])
 
 @router.get("/_log")
 async def list_captures(
-    profile: Optional[str] = None,
+    profile: str | None = None,
     limit: int = 100,
     db: AsyncSession = Depends(get_db),
     _: AdminUser = Depends(require_admin),
@@ -63,6 +64,7 @@ async def stream_captures(
     Not fancy (no LISTEN/NOTIFY since we're on SQLite), but it's enough
     for the interactive capture wizard.
     """
+
     async def _tail():
         seen_max_id = 0
         yield f'event: ready\ndata: {{"profile":{json.dumps(profile_name)}}}\n\n'
@@ -117,7 +119,7 @@ async def export_captures(
 
 @router.delete("/_log")
 async def clear_captures(
-    profile: Optional[str] = None,
+    profile: str | None = None,
     db: AsyncSession = Depends(get_db),
     _: AdminUser = Depends(require_admin),
 ):

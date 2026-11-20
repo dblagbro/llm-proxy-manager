@@ -1,4 +1,5 @@
 """Unit tests for SSE stop-reason normalization audit (Wave 5 #27)."""
+
 import sys
 import types
 
@@ -6,7 +7,7 @@ _stub = types.ModuleType("litellm")
 _stub.RateLimitError = type("RateLimitError", (Exception,), {})
 sys.modules.setdefault("litellm", _stub)
 
-from app.cot.sse import FINISH_TO_STOP
+from app.cot.sse import FINISH_TO_STOP  # noqa: E402
 
 
 class TestFinishToStop:

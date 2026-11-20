@@ -11,10 +11,11 @@ Covers ``app.memory.inject.maybe_inject_memory`` in isolation:
 - OpenAI shape: no leading system → synthesizes system at index 0
 - Silent degrade on store exception
 """
+
 from __future__ import annotations
 
 import pytest
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.models.db import Base
 
@@ -34,6 +35,7 @@ async def db():
 def enabled(monkeypatch):
     """Flip the feature on for the duration of one test."""
     from app.config import settings
+
     monkeypatch.setattr(settings, "caller_memory_enabled", True, raising=False)
 
 
@@ -42,16 +44,21 @@ def enabled(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_no_op_when_disabled(db, monkeypatch):
+    from app.config import settings
     from app.memory.inject import maybe_inject_memory
     from app.memory.store import put
-    from app.config import settings
+
     monkeypatch.setattr(settings, "caller_memory_enabled", False, raising=False)
     await put(db, api_key_id="k1", content="hello", conversation_id="c1")
 
     body = {"model": "x", "messages": [{"role": "user", "content": "hi"}]}
     out, injected = await maybe_inject_memory(
-        db, body=body, api_key_id="k1",
-        conversation_id="c1", memory_tag=None, endpoint="messages",
+        db,
+        body=body,
+        api_key_id="k1",
+        conversation_id="c1",
+        memory_tag=None,
+        endpoint="messages",
     )
     assert injected is False
     assert out == body
@@ -64,12 +71,17 @@ async def test_no_op_when_disabled(db, monkeypatch):
 async def test_no_op_without_conversation_id(db, enabled):
     from app.memory.inject import maybe_inject_memory
     from app.memory.store import put
+
     await put(db, api_key_id="k1", content="hello")
 
     body = {"model": "x"}
     out, injected = await maybe_inject_memory(
-        db, body=body, api_key_id="k1",
-        conversation_id=None, memory_tag=None, endpoint="messages",
+        db,
+        body=body,
+        api_key_id="k1",
+        conversation_id=None,
+        memory_tag=None,
+        endpoint="messages",
     )
     assert injected is False
     assert out == body
@@ -81,10 +93,14 @@ async def test_no_op_without_conversation_id(db, enabled):
 @pytest.mark.asyncio
 async def test_no_op_when_entry_missing(db, enabled):
     from app.memory.inject import maybe_inject_memory
+
     body = {"model": "x", "system": "be helpful"}
     out, injected = await maybe_inject_memory(
-        db, body=body, api_key_id="k1",
-        conversation_id="c-doesnt-exist", memory_tag=None,
+        db,
+        body=body,
+        api_key_id="k1",
+        conversation_id="c-doesnt-exist",
+        memory_tag=None,
         endpoint="messages",
     )
     assert injected is False
@@ -96,15 +112,19 @@ async def test_no_op_when_entry_missing(db, enabled):
 
 @pytest.mark.asyncio
 async def test_anthropic_string_system_gets_prefix(db, enabled):
-    from app.memory.inject import maybe_inject_memory, MEMORY_HEADER_PREFIX
+    from app.memory.inject import MEMORY_HEADER_PREFIX, maybe_inject_memory
     from app.memory.store import put
-    await put(db, api_key_id="k1", content="user prefers brief replies",
-              conversation_id="c1")
+
+    await put(db, api_key_id="k1", content="user prefers brief replies", conversation_id="c1")
 
     body = {"model": "x", "system": "be polite"}
     out, injected = await maybe_inject_memory(
-        db, body=body, api_key_id="k1",
-        conversation_id="c1", memory_tag=None, endpoint="messages",
+        db,
+        body=body,
+        api_key_id="k1",
+        conversation_id="c1",
+        memory_tag=None,
+        endpoint="messages",
     )
     assert injected is True
     assert isinstance(out["system"], str)
@@ -117,12 +137,17 @@ async def test_anthropic_string_system_gets_prefix(db, enabled):
 async def test_anthropic_list_system_gets_prepended_block(db, enabled):
     from app.memory.inject import maybe_inject_memory
     from app.memory.store import put
+
     await put(db, api_key_id="k1", content="MEM", conversation_id="c1")
 
     body = {"model": "x", "system": [{"type": "text", "text": "ORIG"}]}
     out, injected = await maybe_inject_memory(
-        db, body=body, api_key_id="k1",
-        conversation_id="c1", memory_tag=None, endpoint="messages",
+        db,
+        body=body,
+        api_key_id="k1",
+        conversation_id="c1",
+        memory_tag=None,
+        endpoint="messages",
     )
     assert injected is True
     assert isinstance(out["system"], list)
@@ -136,12 +161,17 @@ async def test_anthropic_list_system_gets_prepended_block(db, enabled):
 async def test_anthropic_no_system_creates_one(db, enabled):
     from app.memory.inject import maybe_inject_memory
     from app.memory.store import put
+
     await put(db, api_key_id="k1", content="MEM", conversation_id="c1")
 
     body = {"model": "x"}
     out, injected = await maybe_inject_memory(
-        db, body=body, api_key_id="k1",
-        conversation_id="c1", memory_tag=None, endpoint="messages",
+        db,
+        body=body,
+        api_key_id="k1",
+        conversation_id="c1",
+        memory_tag=None,
+        endpoint="messages",
     )
     assert injected is True
     assert "MEM" in out["system"]
@@ -154,6 +184,7 @@ async def test_anthropic_no_system_creates_one(db, enabled):
 async def test_openai_existing_system_gets_prefix(db, enabled):
     from app.memory.inject import maybe_inject_memory
     from app.memory.store import put
+
     await put(db, api_key_id="k1", content="MEM", conversation_id="c1")
 
     body = {
@@ -164,8 +195,12 @@ async def test_openai_existing_system_gets_prefix(db, enabled):
         ],
     }
     out, injected = await maybe_inject_memory(
-        db, body=body, api_key_id="k1",
-        conversation_id="c1", memory_tag=None, endpoint="completions",
+        db,
+        body=body,
+        api_key_id="k1",
+        conversation_id="c1",
+        memory_tag=None,
+        endpoint="completions",
     )
     assert injected is True
     assert out["messages"][0]["role"] == "system"
@@ -179,6 +214,7 @@ async def test_openai_existing_system_gets_prefix(db, enabled):
 async def test_openai_no_system_synthesizes_one(db, enabled):
     from app.memory.inject import maybe_inject_memory
     from app.memory.store import put
+
     await put(db, api_key_id="k1", content="MEM", conversation_id="c1")
 
     body = {
@@ -186,8 +222,12 @@ async def test_openai_no_system_synthesizes_one(db, enabled):
         "messages": [{"role": "user", "content": "hi"}],
     }
     out, injected = await maybe_inject_memory(
-        db, body=body, api_key_id="k1",
-        conversation_id="c1", memory_tag=None, endpoint="completions",
+        db,
+        body=body,
+        api_key_id="k1",
+        conversation_id="c1",
+        memory_tag=None,
+        endpoint="completions",
     )
     assert injected is True
     assert out["messages"][0]["role"] == "system"
@@ -210,12 +250,17 @@ async def test_silent_degrade_on_store_error(db, enabled, monkeypatch):
     # Patch the resolved binding inside maybe_inject_memory by replacing
     # the get function in app.memory.store as well (import is local).
     import app.memory.store as store_mod
+
     monkeypatch.setattr(store_mod, "get", boom)
 
     body = {"model": "x", "system": "be polite"}
     out, injected = await inject_mod.maybe_inject_memory(
-        db, body=body, api_key_id="k1",
-        conversation_id="c1", memory_tag=None, endpoint="messages",
+        db,
+        body=body,
+        api_key_id="k1",
+        conversation_id="c1",
+        memory_tag=None,
+        endpoint="messages",
     )
     assert injected is False
     assert out == body
@@ -226,6 +271,7 @@ async def test_silent_degrade_on_store_error(db, enabled, monkeypatch):
 
 def test_messages_endpoint_wires_memory_header():
     from pathlib import Path
+
     src = Path("app/api/messages.py").read_text()
     assert "x_conversation_id" in src
     assert "x-conversation-id" in src
@@ -235,6 +281,7 @@ def test_messages_endpoint_wires_memory_header():
 
 def test_completions_endpoint_wires_memory_header():
     from pathlib import Path
+
     src = Path("app/api/completions.py").read_text()
     assert "x_conversation_id" in src
     assert "x-conversation-id" in src
@@ -244,5 +291,6 @@ def test_completions_endpoint_wires_memory_header():
 
 def test_version_bumped():
     from app.__version__ import __version__
+
     parts = tuple(int(p) for p in __version__.split("."))
     assert parts >= (3, 8, 9)

@@ -6,8 +6,11 @@ Run with:
     playwright install chromium
     python -m pytest tests/integration/test_playwright_ui.py -v
 """
+
 import re
 import time
+
+import pytest
 
 # v5.22.42 — needed by the transport-reset retry in TestCacheHeaderLive.
 # It was absent, so that `except requests.exceptions.ConnectionError`
@@ -15,8 +18,6 @@ import time
 # turning a clear ConnectionError into a confusing one. The branch is
 # rare by nature, so nothing would have caught this until it fired.
 import requests
-
-import pytest
 from playwright.sync_api import Page, expect, sync_playwright
 
 # v5.22.38 — target and credentials come from tests/conftest.py, the single
@@ -77,6 +78,7 @@ def login(page: Page):
 
 # ── Existing services sanity checks ──────────────────────────────────────────
 
+
 # v5.22.38 — these three check OTHER applications on the shared nginx (the v1
 # proxy, the coordinator hub, paperless), not llm-proxy2. An ephemeral instance
 # cannot serve them, so they are marked rather than repointed: satisfying them
@@ -111,6 +113,7 @@ class TestExistingServices:
 
 # ── llm-proxy2 API checks ─────────────────────────────────────────────────────
 
+
 class TestLLMProxy2API:
     def test_health_endpoint(self, page: Page):
         resp = page.request.get(f"{BASE_URL}/health")
@@ -121,9 +124,7 @@ class TestLLMProxy2API:
         # the live deployment too — nobody saw it because this file had never
         # run in CI. Assert the shape, not a frozen major.
         assert re.match(r"^\d+\.\d+", data["version"]), data["version"]
-        assert int(data["version"].split(".")[0]) >= 5, (
-            f"version went backwards: {data['version']}"
-        )
+        assert int(data["version"].split(".")[0]) >= 5, f"version went backwards: {data['version']}"
         assert "status" in data
         assert "circuitBreakers" in data
 
@@ -139,6 +140,7 @@ class TestLLMProxy2API:
 
     def test_login_api(self, page: Page):
         import json
+
         resp = page.request.post(
             f"{BASE_URL}/api/auth/login",
             data=json.dumps({"username": ADMIN_USER, "password": ADMIN_PASS}),
@@ -158,6 +160,7 @@ class TestLLMProxy2API:
 
 
 # ── llm-proxy2 UI tests ───────────────────────────────────────────────────────
+
 
 class TestLLMProxy2UI:
     def test_root_redirects_to_login(self, page: Page):
@@ -248,7 +251,7 @@ class TestLLMProxy2UI:
 
     def test_theme_toggle_works(self, page: Page):
         login(page)
-        html = page.locator("html")
+        _html = page.locator("html")
         # Toggle dark/light
         page.locator('[title*="mode"]').click()
         time.sleep(0.3)
@@ -271,8 +274,11 @@ class TestLLMProxy2UI:
         page.click("text=Add Provider")
         # Modal should appear
         expect(page.locator("text=Add Provider").nth(1)).to_be_visible(timeout=3_000)
-        expect(page.locator('input[placeholder*="Name"]', has_text="")\
-            .or_(page.locator('label:has-text("Name") + input'))).to_be_visible()
+        expect(
+            page.locator('input[placeholder*="Name"]', has_text="").or_(
+                page.locator('label:has-text("Name") + input')
+            )
+        ).to_be_visible()
         # Close modal
         page.keyboard.press("Escape")
 
@@ -283,6 +289,7 @@ class TestLLMProxy2UI:
         # tombstone retention this can accumulate enough rows to slow
         # apply_sync (root cause of the 2026-05-07 sync-latency incident).
         import uuid
+
         key_name = f"test-playwright-{uuid.uuid4().hex[:8]}"
         login(page)
         try:
@@ -318,7 +325,9 @@ class TestLLMProxy2UI:
         header = page.locator("header")
         expect(header).to_be_visible()
         # Badge text is either "X/Y providers" or "Connecting…"
-        expect(header.locator("text=providers").or_(header.locator("text=Connecting"))).to_be_visible(timeout=8_000)
+        expect(
+            header.locator("text=providers").or_(header.locator("text=Connecting"))
+        ).to_be_visible(timeout=8_000)
 
     def test_navigate_to_cluster_page(self, page: Page):
         login(page)
@@ -338,7 +347,12 @@ class TestLLMProxy2UI:
         )
         # At least one circuit breaker badge or empty state should be visible
         page.wait_for_function(
-            "() => document.querySelector('.divide-y') !== null || document.body.innerText.includes('No providers')",
+            (
+                "() => document.querySelector('.divi"
+                "de-y') !== null || "
+                "document.body.innerText.includes('N"
+                "o providers')"
+            ),
             timeout=8_000,
         )
 
@@ -359,6 +373,7 @@ class TestLLMProxy2UI:
 
 # ── Provider Action Tests ─────────────────────────────────────────────────────
 
+
 class TestProviderActions:
     def test_provider_test_button_shows_result(self, page: Page):
         """Test button on a provider returns OK or Error badge."""
@@ -375,7 +390,12 @@ class TestProviderActions:
         # Wait for test to complete (button re-enables)
         page.wait_for_timeout(2_000)
         page.wait_for_function(
-            "() => !Array.from(document.querySelectorAll('button')).some(b => b.disabled && b.textContent.includes('Test'))",
+            (
+                "() => !Array.from(document.querySel"
+                "ectorAll('button')).some(b => "
+                "b.disabled && "
+                "b.textContent.includes('Test'))"
+            ),
             timeout=30_000,
         )
         # Result badge in the card header. The actual copy is
@@ -425,10 +445,12 @@ class TestProviderActions:
 
 # ── User Management Tests ─────────────────────────────────────────────────────
 
+
 class TestUserManagement:
     def test_create_and_delete_user(self, page: Page):
         """Create a new user then delete it."""
         import time as _time
+
         unique_name = f"pw-test-{int(_time.time()) % 100000}"
         login(page)
         page.goto(f"{BASE_URL}/users")
@@ -438,7 +460,7 @@ class TestUserManagement:
         # Wait for modal — form has a label "Username" then an input
         expect(page.locator("text=Add User").nth(1)).to_be_visible(timeout=5_000)
         # Fill username and password
-        page.locator('.fixed.inset-0 input').first.fill(unique_name)
+        page.locator(".fixed.inset-0 input").first.fill(unique_name)
         page.locator('.fixed.inset-0 input[type="password"]').fill("TestPass!123")
         # Submit
         page.locator('.fixed.inset-0 button:has-text("Create")').click()
@@ -447,7 +469,9 @@ class TestUserManagement:
         # Delete it — find the row containing the username
         user_row = page.locator(f".px-5.py-4:has-text('{unique_name}')").first
         # The delete button has the red danger style (Trash2 icon)
-        user_row.locator("button[class*='bg-red'], button[class*='danger'], button:last-child").last.click()
+        user_row.locator(
+            "button[class*='bg-red'], button[class*='danger'], button:last-child"
+        ).last.click()
         # Confirm deletion via ConfirmDialog
         page.wait_for_timeout(300)
         confirm = page.locator(".fixed.inset-0 button:has-text('Delete')").first
@@ -459,6 +483,7 @@ class TestUserManagement:
 
 
 # ── Session & UX Tests ────────────────────────────────────────────────────────
+
 
 class TestSessionBehavior:
     def test_session_persists_across_page_reload(self, page: Page):
@@ -487,17 +512,30 @@ class TestSessionBehavior:
         scan_btn.click()
         # Wait for scan to complete (spinner goes away)
         page.wait_for_function(
-            "() => !Array.from(document.querySelectorAll('button')).some(b => b.disabled && b.textContent.includes('Scan'))",
+            (
+                "() => !Array.from(document.querySel"
+                "ectorAll('button')).some(b => "
+                "b.disabled && "
+                "b.textContent.includes('Scan'))"
+            ),
             timeout=30_000,
         )
         # Either a model table or the "no models indexed" message should appear
         page.wait_for_function(
-            "() => document.body.innerText.includes('models indexed') || document.body.innerText.includes('No models indexed') || document.body.innerText.includes('model indexed')",
+            (
+                "() => document.body.innerText.inclu"
+                "des('models indexed') || "
+                "document.body.innerText.includes('N"
+                "o models indexed') || "
+                "document.body.innerText.includes('m"
+                "odel indexed')"
+            ),
             timeout=10_000,
         )
 
 
 # ── API Key Limits UI Tests ───────────────────────────────────────────────────
+
 
 class TestAPIKeyLimitsUI:
     """Tests for the spending cap and rate-limit edit modal added in the recent sprint."""
@@ -508,7 +546,9 @@ class TestAPIKeyLimitsUI:
         page.wait_for_load_state("networkidle")
         body_text = page.locator("body").inner_text()
         assert "Cap" in body_text or "Spending" in body_text, "Expected spending cap column"
-        assert "Rate" in body_text or "RPM" in body_text or "Limit" in body_text, "Expected rate limit column"
+        assert "Rate" in body_text or "RPM" in body_text or "Limit" in body_text, (
+            "Expected rate limit column"
+        )
 
     def test_edit_limits_modal_opens_via_pencil(self, page: Page):
         """Clicking the pencil icon on a key row opens the limits edit modal."""
@@ -521,8 +561,10 @@ class TestAPIKeyLimitsUI:
         pencil_btn.click()
         page.wait_for_timeout(500)
         # Modal should appear — look for spending cap or rate limit input
-        modal_visible = page.locator(
-            "text=Spending Cap, text=Rate Limit, input[placeholder*='cap'], input[placeholder*='RPM']"
+        _modal_visible = page.locator(
+            "text=Spending Cap, text=Rate Limit, "
+            "input[placeholder*='cap'], "
+            "input[placeholder*='RPM']"
         ).first
         # Use a broader check: a modal overlay appears
         expect(page.locator(".fixed.inset-0")).to_be_visible(timeout=5_000)
@@ -608,7 +650,12 @@ class TestAPIKeyLimitsUI:
 
         # Raw key shown or key appears in table
         page.wait_for_function(
-            "() => document.body.innerText.includes('NOT be shown') || document.body.innerText.includes('test-limits-key')",
+            (
+                "() => document.body.innerText.inclu"
+                "des('NOT be shown') || "
+                "document.body.innerText.includes('t"
+                "est-limits-key')"
+            ),
             timeout=10_000,
         )
         # Close if the raw key modal appeared
@@ -618,6 +665,7 @@ class TestAPIKeyLimitsUI:
 
 
 # ── Provider Capability Edit UI Tests ─────────────────────────────────────────
+
 
 class TestProviderCapabilityEditUI:
     """Tests for the model capability edit modal (pencil icon per model row)."""
@@ -631,7 +679,12 @@ class TestProviderCapabilityEditUI:
         expect(scan_btn).to_be_visible(timeout=5_000)
         scan_btn.click()
         page.wait_for_function(
-            "() => !Array.from(document.querySelectorAll('button')).some(b => b.disabled && b.textContent.includes('Scan'))",
+            (
+                "() => !Array.from(document.querySel"
+                "ectorAll('button')).some(b => "
+                "b.disabled && "
+                "b.textContent.includes('Scan'))"
+            ),
             timeout=30_000,
         )
         page.wait_for_timeout(1_000)
@@ -640,7 +693,12 @@ class TestProviderCapabilityEditUI:
         login(page)
         self._expand_first_provider_and_scan(page)
         page.wait_for_function(
-            "() => document.body.innerText.includes('indexed') || document.body.innerText.includes('No models')",
+            (
+                "() => document.body.innerText.inclu"
+                "des('indexed') || "
+                "document.body.innerText.includes('N"
+                "o models')"
+            ),
             timeout=10_000,
         )
         # Either a model count or an empty state is visible
@@ -658,7 +716,9 @@ class TestProviderCapabilityEditUI:
             pytest.skip("No models indexed — cannot test capability edit")
 
         # Click first pencil (edit capability) button inside the provider card
-        pencil = page.locator("table button[title*='capabilit'], table button svg.lucide-pencil").first
+        pencil = page.locator(
+            "table button[title*='capabilit'], table button svg.lucide-pencil"
+        ).first
         if not pencil.is_visible(timeout=3_000):
             # Broader selector: any small pencil button in the model table
             pencil = page.locator("td button").first
@@ -670,8 +730,9 @@ class TestProviderCapabilityEditUI:
         # Modal should show capability fields
         expect(page.locator(".fixed.inset-0")).to_be_visible(timeout=5_000)
         modal_text = page.locator(".fixed.inset-0").inner_text()
-        assert any(kw in modal_text for kw in ("Latency", "Cost tier", "Tasks", "Modalities", "Context")), \
-            f"Capability modal content not found. Got: {modal_text[:300]}"
+        assert any(
+            kw in modal_text for kw in ("Latency", "Cost tier", "Tasks", "Modalities", "Context")
+        ), f"Capability modal content not found. Got: {modal_text[:300]}"
 
     def test_capability_edit_modal_has_task_checkboxes(self, page: Page):
         login(page)
@@ -755,12 +816,21 @@ class TestAiriTTS:
     Requires the deployment to have airi_tts_enabled on (v4.3.0+)."""
 
     # a valid, empty 16-bit PCM WAV (44-byte header, zero data)
-    _WAV = (b"RIFF" + (36).to_bytes(4, "little") + b"WAVE"
-            + b"fmt " + (16).to_bytes(4, "little")
-            + (1).to_bytes(2, "little") + (1).to_bytes(2, "little")
-            + (22050).to_bytes(4, "little") + (44100).to_bytes(4, "little")
-            + (2).to_bytes(2, "little") + (16).to_bytes(2, "little")
-            + b"data" + (0).to_bytes(4, "little"))
+    _WAV = (
+        b"RIFF"
+        + (36).to_bytes(4, "little")
+        + b"WAVE"
+        + b"fmt "
+        + (16).to_bytes(4, "little")
+        + (1).to_bytes(2, "little")
+        + (1).to_bytes(2, "little")
+        + (22050).to_bytes(4, "little")
+        + (44100).to_bytes(4, "little")
+        + (2).to_bytes(2, "little")
+        + (16).to_bytes(2, "little")
+        + b"data"
+        + (0).to_bytes(4, "little")
+    )
 
     def test_completed_message_triggers_speak(self, page: Page):
         login(page)
@@ -770,12 +840,17 @@ class TestAiriTTS:
             'event: conversation\ndata: {"conversation_id":"qa-tts-wiring"}\n\n'
             'event: message\ndata: {"text":"Yes, the supervisor is enabled."}\n\n'
         )
-        page.route("**/api/airi/chat", lambda route: route.fulfill(
-            status=200, content_type="text/event-stream", body=canned_sse))
+        page.route(
+            "**/api/airi/chat",
+            lambda route: route.fulfill(
+                status=200, content_type="text/event-stream", body=canned_sse
+            ),
+        )
 
         def speak_handler(route):
             speak_calls.append(route.request.url)
             route.fulfill(status=200, content_type="audio/wav", body=self._WAV)
+
         page.route("**/api/airi/speak", speak_handler)
 
         page.goto(f"{BASE_URL}/routing")
@@ -786,11 +861,9 @@ class TestAiriTTS:
         assert spk.count() == 1, "speaker toggle should render when TTS is enabled"
         spk.first.click()
         page.wait_for_timeout(300)
-        assert spk.first.get_attribute("aria-pressed") == "true", \
-            "speaker toggle should switch on"
+        assert spk.first.get_attribute("aria-pressed") == "true", "speaker toggle should switch on"
 
-        page.get_by_placeholder(re.compile("Ask AIRI", re.I)).fill(
-            "Is the supervisor enabled?")
+        page.get_by_placeholder(re.compile("Ask AIRI", re.I)).fill("Is the supervisor enabled?")
         page.get_by_role("button", name="Send").first.click()
 
         # the completed assistant message must trigger POST /api/airi/speak
@@ -798,11 +871,13 @@ class TestAiriTTS:
             if speak_calls:
                 break
             page.wait_for_timeout(500)
-        assert len(speak_calls) >= 1, \
+        assert len(speak_calls) >= 1, (
             "a completed AIRI message must trigger /api/airi/speak (the v4.3 wiring)"
+        )
 
 
 # ── F2 coverage: BUG-027 Activity Log deep filters ────────────────────────────
+
 
 class TestActivityLogFilters:
     """BUG-027 part 1 — exercise the Activity Log filter surfaces beyond the
@@ -814,9 +889,7 @@ class TestActivityLogFilters:
         # `load` not `networkidle` — Activity Log has continuous polling
         # so networkidle never fires.
         page.wait_for_load_state("load")
-        search = page.locator(
-            "input[placeholder*='Search messages']"
-        )
+        search = page.locator("input[placeholder*='Search messages']")
         expect(search).to_be_visible(timeout=8_000)
         # Record any activity-API request that carries the search term
         # (either in URL params or POST body).
@@ -876,6 +949,7 @@ class TestActivityLogFilters:
 
 # ── F2 coverage: BUG-027 Metrics page render ──────────────────────────────────
 
+
 class TestMetricsPageRender:
     """BUG-027 part 2 — Metrics page renders without console errors and
     surfaces its primary stat cards. Console-error capture is the same
@@ -900,8 +974,9 @@ class TestMetricsPageRender:
         # Match the same pattern as TestLLMProxy2UI.test_navigate_to_metrics_page
         expect(page.locator("h1").first).to_contain_text("Metrics")
         body = page.locator("body").inner_text()
-        assert "Provider performance" in body or "Hit Rate" in body, \
+        assert "Provider performance" in body or "Hit Rate" in body, (
             "Metrics page should render its primary content"
+        )
         assert not errors, f"Metrics page produced console errors: {errors}"
 
     def test_metrics_window_selector_buttons_clickable(self, page: Page):
@@ -917,6 +992,7 @@ class TestMetricsPageRender:
 
 
 # ── F2 coverage: BUG-027 + BUG-029 — Settings panel save/reload ───────────────
+
 
 class TestSettingsPagePersistence:
     """BUG-027 part 3 + BUG-029 — Settings page renders and a representative
@@ -934,9 +1010,7 @@ class TestSettingsPagePersistence:
         assert "Circuit Breaker" in body, "Circuit-breaker section should be visible"
         assert "Email" in body, "Email-alerts section should be visible"
 
-    def test_circuit_breaker_threshold_round_trips_through_reload(
-        self, page: Page, admin_session
-    ):
+    def test_circuit_breaker_threshold_round_trips_through_reload(self, page: Page, admin_session):
         """Edit -> save -> reload -> verify persisted -> restore."""
         # Snapshot original value via API (the safe-restore path)
         r = admin_session.get(f"{BASE_URL}/api/settings")
@@ -946,9 +1020,11 @@ class TestSettingsPagePersistence:
             login(page)
             page.goto(f"{BASE_URL}/settings")
             page.wait_for_load_state("networkidle")
-            field = page.locator(
-                "input[type='number']"
-            ).filter(has=page.locator("xpath=./preceding::label[1]")).first
+            _field = (
+                page.locator("input[type='number']")
+                .filter(has=page.locator("xpath=./preceding::label[1]"))
+                .first
+            )
             # Fallback: target the input whose accessible label contains
             # "Failure threshold". Use the input below that label.
             label = page.get_by_text(re.compile("Failure threshold", re.I)).first
@@ -966,8 +1042,9 @@ class TestSettingsPagePersistence:
             page.wait_for_load_state("networkidle")
             label2 = page.get_by_text(re.compile("Failure threshold", re.I)).first
             target2 = label2.locator("xpath=./following::input[1]")
-            assert target2.input_value() == str(new_value), \
+            assert target2.input_value() == str(new_value), (
                 "circuit_breaker_threshold should persist across reload"
+            )
         finally:
             # Restore via API regardless of test outcome
             if original is not None:
@@ -978,6 +1055,7 @@ class TestSettingsPagePersistence:
 
 
 # ── F2 coverage: BUG-028 — Form validation negative tests ─────────────────────
+
 
 class TestFormValidationNegatives:
     """BUG-028 — empty / malformed inputs are rejected.
@@ -996,6 +1074,7 @@ class TestFormValidationNegatives:
         modal open. Verify a user is NOT created via the API as a side
         effect of an empty submit."""
         import uuid
+
         marker = f"pw-validation-{uuid.uuid4().hex[:8]}"
         # Snapshot user list pre-submit
         r0 = admin_session.get(f"{BASE_URL}/api/users")
@@ -1007,7 +1086,7 @@ class TestFormValidationNegatives:
         page.click("text=Add User")
         page.wait_for_timeout(400)
         # Fill username only; leave password empty (required)
-        page.locator('.fixed.inset-0 input').first.fill(marker)
+        page.locator(".fixed.inset-0 input").first.fill(marker)
         submit = page.locator(".fixed.inset-0 button:has-text('Create')")
         expect(submit).to_be_visible(timeout=5_000)
         submit.click()
@@ -1019,8 +1098,7 @@ class TestFormValidationNegatives:
         after = {u.get("username") for u in r1.json()}
         new_users = after - before
         assert marker not in new_users, (
-            f"add-user form persisted a user with empty password; "
-            f"unexpected new users: {new_users}"
+            f"add-user form persisted a user with empty password; unexpected new users: {new_users}"
         )
         # Cleanup if any user did get through
         if marker in new_users:
@@ -1028,22 +1106,19 @@ class TestFormValidationNegatives:
                 if u.get("username") == marker:
                     admin_session.delete(f"{BASE_URL}/api/users/{u['id']}")
 
-    def test_create_api_key_rejects_malformed_rate_limit(
-        self, page: Page, admin_session
-    ):
+    def test_create_api_key_rejects_malformed_rate_limit(self, page: Page, admin_session):
         """Rate-limit field is type='number'. The form should not allow a
         negative value to be persisted. Verify via API that no key with
         a negative rate_limit_rpm ends up created."""
         import uuid
+
         marker = f"pw-ratelimit-{uuid.uuid4().hex[:8]}"
         login(page)
         page.goto(f"{BASE_URL}/keys")
         page.click("text=Create Key")
         page.wait_for_timeout(400)
         # Fill name + bad rate limit
-        name_input = page.locator(
-            "input[placeholder*='production']"
-        ).first
+        name_input = page.locator("input[placeholder*='production']").first
         expect(name_input).to_be_visible(timeout=5_000)
         name_input.fill(marker)
         # The second number input is the rate limit (first is none on this form
@@ -1057,15 +1132,9 @@ class TestFormValidationNegatives:
         r = admin_session.get(f"{BASE_URL}/api/keys")
         assert r.status_code == 200
         keys = r.json()
-        bad = [
-            k for k in keys
-            if k.get("name") == marker
-            and (k.get("rate_limit_rpm") or 0) < 0
-        ]
+        bad = [k for k in keys if k.get("name") == marker and (k.get("rate_limit_rpm") or 0) < 0]
         try:
-            assert not bad, (
-                f"API-key form persisted a negative rate_limit_rpm: {bad}"
-            )
+            assert not bad, f"API-key form persisted a negative rate_limit_rpm: {bad}"
         finally:
             # Cleanup: delete any key with our marker name
             for k in keys:
@@ -1074,6 +1143,7 @@ class TestFormValidationNegatives:
 
 
 # ── F2 coverage: BUG-029 — Persistence + reload extras ────────────────────────
+
 
 class TestProviderPersistence:
     """BUG-029 — non-AIRI persistence example. The existing
@@ -1084,6 +1154,7 @@ class TestProviderPersistence:
         """Create a stub provider via API, confirm it appears on the page,
         reload, confirm still there, then delete via API (cleanup)."""
         import uuid
+
         name = f"pw-persist-{uuid.uuid4().hex[:8]}"
         # Create via API to keep the test fast + deterministic
         r = admin_session.post(
@@ -1114,6 +1185,7 @@ class TestProviderPersistence:
 
 # ── F2 coverage: BUG-030 — Cache header live ──────────────────────────────────
 
+
 class TestCacheHeaderLive:
     """BUG-030 — the cache layer's X-Cache-Status header is set on every
     response. The only reliable live signal is the header itself; whether
@@ -1129,6 +1201,7 @@ class TestCacheHeaderLive:
         is in the request path."""
         # Use a dedicated key so the spending-cap counter is clean
         import uuid
+
         keyname = f"pw-cache-{uuid.uuid4().hex[:8]}"
         kr = admin_session.post(
             f"{BASE_URL}/api/keys",
@@ -1165,6 +1238,7 @@ class TestCacheHeaderLive:
                 "X-Cache-Status header missing on first request — cache layer "
                 "is not wired into the response pipeline"
             )
+
             # Second identical call — header must still be present (independent
             # of hit/miss outcome, since live cache TTL/config may vary).
             #
@@ -1212,6 +1286,7 @@ class TestCacheHeaderLive:
 
 # ── F2 coverage: BUG-032 — Mobile / responsive sweep ──────────────────────────
 
+
 class TestResponsiveLayout:
     """BUG-032 — render the main pages at mobile + tablet widths; verify
     the heading is on screen and the page doesn't horizontally overflow.
@@ -1258,18 +1333,17 @@ class TestResponsiveLayout:
             # No body-level horizontal overflow (tables may scroll
             # internally but the document shouldn't).
             overflow = pg.evaluate(
-                "() => document.documentElement.scrollWidth - "
-                "document.documentElement.clientWidth"
+                "() => document.documentElement.scrollWidth - document.documentElement.clientWidth"
             )
             assert overflow <= 4, (
-                f"{path} at {vp_name} ({width}x{height}) overflows by "
-                f"{overflow}px horizontally"
+                f"{path} at {vp_name} ({width}x{height}) overflows by {overflow}px horizontally"
             )
         finally:
             ctx.close()
 
 
 # ── F2 coverage: BUG-033 — Keyboard accessibility ─────────────────────────────
+
 
 class TestKeyboardAccessibility:
     """BUG-033 — keyboard-only flow: the login form is reachable + submittable

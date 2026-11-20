@@ -9,49 +9,60 @@ Replays the exact failing-traffic shape from activity_log id=169903
 (bare ``[tool_result] PackageKit...``) to prove the translator produces
 a valid OpenAI body.
 """
+
 from __future__ import annotations
 
 import json
-
 
 # ── A: has_anthropic_tool_content ─────────────────────────────────
 
 
 def test_has_tool_content_plain_text_false():
     from app.routing.tool_content import has_anthropic_tool_content
+
     msgs = [{"role": "user", "content": "hello"}]
     assert has_anthropic_tool_content(msgs) is False
 
 
 def test_has_tool_content_detects_tool_result():
     from app.routing.tool_content import has_anthropic_tool_content
+
     msgs = [
-        {"role": "user", "content": [
-            {"type": "tool_result", "tool_use_id": "t1", "content": "x"},
-        ]},
+        {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "t1", "content": "x"},
+            ],
+        },
     ]
     assert has_anthropic_tool_content(msgs) is True
 
 
 def test_has_tool_content_detects_tool_use_in_assistant():
     from app.routing.tool_content import has_anthropic_tool_content
+
     msgs = [
-        {"role": "assistant", "content": [
-            {"type": "text", "text": "I'll call a tool"},
-            {"type": "tool_use", "id": "t1", "name": "f", "input": {}},
-        ]},
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "I'll call a tool"},
+                {"type": "tool_use", "id": "t1", "name": "f", "input": {}},
+            ],
+        },
     ]
     assert has_anthropic_tool_content(msgs) is True
 
 
 def test_has_tool_content_text_blocks_only_false():
     from app.routing.tool_content import has_anthropic_tool_content
+
     msgs = [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]
     assert has_anthropic_tool_content(msgs) is False
 
 
 def test_has_tool_content_empty_messages_false():
     from app.routing.tool_content import has_anthropic_tool_content
+
     assert has_anthropic_tool_content([]) is False
 
 
@@ -60,6 +71,7 @@ def test_has_tool_content_empty_messages_false():
 
 def test_pure_text_passthrough():
     from app.api._oauth_chat_translate import anthropic_messages_to_openai
+
     out = anthropic_messages_to_openai(
         [{"role": "user", "content": "hello"}],
     )
@@ -68,6 +80,7 @@ def test_pure_text_passthrough():
 
 def test_system_field_string_prepended():
     from app.api._oauth_chat_translate import anthropic_messages_to_openai
+
     out = anthropic_messages_to_openai(
         [{"role": "user", "content": "hi"}],
         body_system="be polite",
@@ -78,10 +91,10 @@ def test_system_field_string_prepended():
 
 def test_system_field_list_prepended():
     from app.api._oauth_chat_translate import anthropic_messages_to_openai
+
     out = anthropic_messages_to_openai(
         [{"role": "user", "content": "hi"}],
-        body_system=[{"type": "text", "text": "rule one"},
-                     {"type": "text", "text": "rule two"}],
+        body_system=[{"type": "text", "text": "rule one"}, {"type": "text", "text": "rule two"}],
     )
     assert out[0]["role"] == "system"
     assert "rule one" in out[0]["content"]
@@ -90,12 +103,20 @@ def test_system_field_list_prepended():
 
 def test_tool_use_block_in_assistant_becomes_tool_calls():
     from app.api._oauth_chat_translate import anthropic_messages_to_openai
+
     msgs = [
-        {"role": "assistant", "content": [
-            {"type": "text", "text": "calling tool"},
-            {"type": "tool_use", "id": "toolu_1", "name": "get_weather",
-             "input": {"city": "Seattle"}},
-        ]}
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "calling tool"},
+                {
+                    "type": "tool_use",
+                    "id": "toolu_1",
+                    "name": "get_weather",
+                    "input": {"city": "Seattle"},
+                },
+            ],
+        }
     ]
     out = anthropic_messages_to_openai(msgs)
     assert len(out) == 1
@@ -116,10 +137,14 @@ def test_assistant_with_only_tool_use_has_null_content():
     """OpenAI: when an assistant has tool_calls and no text, content
     must be null (not empty string)."""
     from app.api._oauth_chat_translate import anthropic_messages_to_openai
+
     msgs = [
-        {"role": "assistant", "content": [
-            {"type": "tool_use", "id": "t1", "name": "f", "input": {}},
-        ]}
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "tool_use", "id": "t1", "name": "f", "input": {}},
+            ],
+        }
     ]
     out = anthropic_messages_to_openai(msgs)
     assert out[0]["content"] is None
@@ -132,22 +157,30 @@ def test_tool_result_block_in_user_becomes_role_tool():
     # well-formed: a dangling role:tool with no preceding assistant
     # tool_call is itself invalid OpenAI (see orphan test in v3.10.0).
     from app.api._oauth_chat_translate import anthropic_messages_to_openai
+
     msgs = [
-        {"role": "assistant", "content": [
-            {"type": "tool_use", "id": "toolu_1", "name": "weather", "input": {}},
-        ]},
-        {"role": "user", "content": [
-            {"type": "tool_result", "tool_use_id": "toolu_1",
-             "content": "72F sunny"},
-        ]},
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "tool_use", "id": "toolu_1", "name": "weather", "input": {}},
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "toolu_1", "content": "72F sunny"},
+            ],
+        },
     ]
     out = anthropic_messages_to_openai(msgs)
     tool_msgs = [m for m in out if m.get("role") == "tool"]
-    assert tool_msgs == [{
-        "role": "tool",
-        "tool_call_id": "toolu_1",
-        "content": "72F sunny",
-    }]
+    assert tool_msgs == [
+        {
+            "role": "tool",
+            "tool_call_id": "toolu_1",
+            "content": "72F sunny",
+        }
+    ]
 
 
 def test_empty_tool_result_content_gets_placeholder():
@@ -155,14 +188,21 @@ def test_empty_tool_result_content_gets_placeholder():
     substitute a placeholder. This is the exact bug from
     activity_log id=169903 (empty `[tool_result]` block)."""
     from app.api._oauth_chat_translate import anthropic_messages_to_openai
+
     for empty in ("", None):
         msgs = [
-            {"role": "assistant", "content": [
-                {"type": "tool_use", "id": "t1", "name": "f", "input": {}},
-            ]},
-            {"role": "user", "content": [
-                {"type": "tool_result", "tool_use_id": "t1", "content": empty},
-            ]},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "tool_use", "id": "t1", "name": "f", "input": {}},
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "t1", "content": empty},
+                ],
+            },
         ]
         out = anthropic_messages_to_openai(msgs)
         tool_msg = [m for m in out if m.get("role") == "tool"][0]
@@ -173,13 +213,21 @@ def test_tool_result_content_list_collapses_to_string():
     """Anthropic tool_result.content can be a list of blocks; OpenAI
     needs a single string."""
     from app.api._oauth_chat_translate import anthropic_messages_to_openai
+
     msgs = [
-        {"role": "user", "content": [
-            {"type": "tool_result", "tool_use_id": "t1", "content": [
-                {"type": "text", "text": "part 1"},
-                {"type": "text", "text": "part 2"},
-            ]},
-        ]}
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "t1",
+                    "content": [
+                        {"type": "text", "text": "part 1"},
+                        {"type": "text", "text": "part 2"},
+                    ],
+                },
+            ],
+        }
     ]
     out = anthropic_messages_to_openai(msgs)
     assert "part 1" in out[0]["content"]
@@ -190,16 +238,23 @@ def test_user_message_mixed_tool_result_and_text_splits():
     """Per OpenAI convention: tool_result becomes role:tool first,
     then any remaining user text becomes a separate role:user message."""
     from app.api._oauth_chat_translate import anthropic_messages_to_openai
+
     msgs = [
-        {"role": "assistant", "content": [
-            {"type": "tool_use", "id": "t1", "name": "f", "input": {}},
-            {"type": "tool_use", "id": "t2", "name": "g", "input": {}},
-        ]},
-        {"role": "user", "content": [
-            {"type": "tool_result", "tool_use_id": "t1", "content": "X"},
-            {"type": "tool_result", "tool_use_id": "t2", "content": "Y"},
-            {"type": "text", "text": "now please continue"},
-        ]},
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "tool_use", "id": "t1", "name": "f", "input": {}},
+                {"type": "tool_use", "id": "t2", "name": "g", "input": {}},
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "t1", "content": "X"},
+                {"type": "tool_result", "tool_use_id": "t2", "content": "Y"},
+                {"type": "text", "text": "now please continue"},
+            ],
+        },
     ]
     out = anthropic_messages_to_openai(msgs)
     tool_msgs = [m for m in out if m.get("role") == "tool"]
@@ -211,15 +266,21 @@ def test_five_tool_results_in_one_user_message():
     """Spec test: 5+ matched tool_result blocks → 5+ role:tool messages
     in order, after the assistant turn that declared their ids."""
     from app.api._oauth_chat_translate import anthropic_messages_to_openai
+
     msgs = [
-        {"role": "assistant", "content": [
-            {"type": "tool_use", "id": f"t{i}", "name": "f", "input": {}}
-            for i in range(5)
-        ]},
-        {"role": "user", "content": [
-            {"type": "tool_result", "tool_use_id": f"t{i}", "content": f"r{i}"}
-            for i in range(5)
-        ]},
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "tool_use", "id": f"t{i}", "name": "f", "input": {}} for i in range(5)
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": f"t{i}", "content": f"r{i}"}
+                for i in range(5)
+            ],
+        },
     ]
     out = anthropic_messages_to_openai(msgs)
     tool_msgs = [m for m in out if m.get("role") == "tool"]
@@ -232,15 +293,21 @@ def test_five_tool_results_in_one_user_message():
 def test_assistant_text_then_user_tool_result_round_trip():
     """Full assistant tool_calls → user tool_result conversation."""
     from app.api._oauth_chat_translate import anthropic_messages_to_openai
+
     msgs = [
         {"role": "user", "content": "what's the weather?"},
-        {"role": "assistant", "content": [
-            {"type": "tool_use", "id": "t1", "name": "weather",
-             "input": {"city": "SEA"}},
-        ]},
-        {"role": "user", "content": [
-            {"type": "tool_result", "tool_use_id": "t1", "content": "72F"},
-        ]},
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "tool_use", "id": "t1", "name": "weather", "input": {"city": "SEA"}},
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "t1", "content": "72F"},
+            ],
+        },
     ]
     out = anthropic_messages_to_openai(msgs)
     assert out[0] == {"role": "user", "content": "what's the weather?"}
@@ -254,22 +321,31 @@ def test_assistant_text_then_user_tool_result_round_trip():
 
 def test_tools_translate_to_openai_shape():
     from app.api._oauth_chat_translate import anthropic_tools_to_openai
-    out = anthropic_tools_to_openai([
-        {"name": "get_weather", "description": "Get the weather",
-         "input_schema": {"type": "object", "properties": {"city": {"type": "string"}}}},
-    ])
-    assert out == [{
-        "type": "function",
-        "function": {
-            "name": "get_weather",
-            "description": "Get the weather",
-            "parameters": {"type": "object", "properties": {"city": {"type": "string"}}},
-        },
-    }]
+
+    out = anthropic_tools_to_openai(
+        [
+            {
+                "name": "get_weather",
+                "description": "Get the weather",
+                "input_schema": {"type": "object", "properties": {"city": {"type": "string"}}},
+            },
+        ]
+    )
+    assert out == [
+        {
+            "type": "function",
+            "function": {
+                "name": "get_weather",
+                "description": "Get the weather",
+                "parameters": {"type": "object", "properties": {"city": {"type": "string"}}},
+            },
+        }
+    ]
 
 
 def test_tools_none_returns_none():
     from app.api._oauth_chat_translate import anthropic_tools_to_openai
+
     assert anthropic_tools_to_openai(None) is None
     assert anthropic_tools_to_openai([]) is None
 
@@ -279,6 +355,7 @@ def test_tools_none_returns_none():
 
 def test_full_body_translation():
     from app.api._oauth_chat_translate import anthropic_to_openai_body
+
     body = {
         "model": "claude-3-5-sonnet",
         "max_tokens": 1024,
@@ -287,8 +364,7 @@ def test_full_body_translation():
             {"role": "user", "content": "hi"},
         ],
         "tools": [
-            {"name": "f", "description": "d",
-             "input_schema": {"type": "object"}},
+            {"name": "f", "description": "d", "input_schema": {"type": "object"}},
         ],
         "tool_choice": {"type": "auto"},
         "thinking": {"type": "enabled", "budget_tokens": 1024},  # should be dropped
@@ -306,8 +382,10 @@ def test_full_body_translation():
 
 def test_tool_choice_any_becomes_required():
     from app.api._oauth_chat_translate import anthropic_to_openai_body
+
     body = {
-        "model": "x", "max_tokens": 10,
+        "model": "x",
+        "max_tokens": 10,
         "messages": [{"role": "user", "content": "x"}],
         "tools": [{"name": "f", "description": "", "input_schema": {}}],
         "tool_choice": {"type": "any"},
@@ -318,8 +396,10 @@ def test_tool_choice_any_becomes_required():
 
 def test_tool_choice_specific_tool():
     from app.api._oauth_chat_translate import anthropic_to_openai_body
+
     body = {
-        "model": "x", "max_tokens": 10,
+        "model": "x",
+        "max_tokens": 10,
         "messages": [{"role": "user", "content": "x"}],
         "tools": [{"name": "weather", "description": "", "input_schema": {}}],
         "tool_choice": {"type": "tool", "name": "weather"},
@@ -333,8 +413,10 @@ def test_tool_choice_specific_tool():
 
 def test_stop_sequences_become_stop():
     from app.api._oauth_chat_translate import anthropic_to_openai_body
+
     body = {
-        "model": "x", "max_tokens": 10,
+        "model": "x",
+        "max_tokens": 10,
         "messages": [{"role": "user", "content": "x"}],
         "stop_sequences": ["END", "STOP"],
     }
@@ -351,29 +433,45 @@ def test_failing_traffic_shape_from_id_169903_translates_cleanly():
     after the [tool_result] marker. The translator MUST emit a valid
     OpenAI body where every role:tool message has non-empty content."""
     from app.api._oauth_chat_translate import anthropic_to_openai_body
+
     body = {
         "model": "claude-haiku-4-5-20251001",
         "max_tokens": 1024,
-        "system": "You are the coordinator daemon",
+        "system": "You are the example service daemon",
         "messages": [
             {"role": "user", "content": "Investigate this issue"},
-            {"role": "assistant", "content": [
-                {"type": "text", "text": "Checking logs..."},
-                {"type": "tool_use", "id": "toolu_a", "name": "Bash",
-                 "input": {"cmd": "ls /var/lib/coordinator-hub/"}},
-            ]},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "Checking logs..."},
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_a",
+                        "name": "Bash",
+                        "input": {"cmd": "ls /var/lib/example-service/"},
+                    },
+                ],
+            },
             # The empty-content tool_result that broke the upstream:
-            {"role": "user", "content": [
-                {"type": "tool_result", "tool_use_id": "toolu_a", "content": ""},
-            ]},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "toolu_a", "content": ""},
+                ],
+            },
             # Bare tool_result (none/None-content variant):
-            {"role": "assistant", "content": [
-                {"type": "tool_use", "id": "toolu_b", "name": "Bash",
-                 "input": {"cmd": "ls"}},
-            ]},
-            {"role": "user", "content": [
-                {"type": "tool_result", "tool_use_id": "toolu_b"},  # no content key
-            ]},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "tool_use", "id": "toolu_b", "name": "Bash", "input": {"cmd": "ls"}},
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "toolu_b"},  # no content key
+                ],
+            },
         ],
     }
     out = anthropic_to_openai_body(body)
@@ -400,6 +498,7 @@ def test_failing_traffic_shape_from_id_169903_translates_cleanly():
 
 def test_messages_endpoint_wires_safety_net():
     from pathlib import Path
+
     src = Path("app/api/messages.py").read_text()
     assert "has_anthropic_tool_content" in src
     assert "_cross_family_skipped" in src
@@ -411,6 +510,7 @@ def test_messages_endpoint_wires_translator():
     # (translate_to_openai_if_needed), which messages.py calls at entry;
     # the X-Cross-Family-Translated header is still set in the handler.
     from tests._entry_surface import entry_surface
+
     src = entry_surface("app/api/messages.py")
     assert "anthropic_to_openai_body" in src
     assert "X-Cross-Family-Translated" in src
@@ -418,5 +518,6 @@ def test_messages_endpoint_wires_translator():
 
 def test_version_bumped():
     from app.__version__ import __version__
+
     parts = tuple(int(p) for p in __version__.split("."))
     assert parts >= (3, 9, 1)

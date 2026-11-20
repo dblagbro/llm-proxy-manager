@@ -1,4 +1,5 @@
 """Unit tests for long-context compression helpers (Wave 5 #26)."""
+
 import sys
 import types
 
@@ -7,13 +8,13 @@ _stub.RateLimitError = type("RateLimitError", (Exception,), {})
 sys.modules.setdefault("litellm", _stub)
 sys.modules.setdefault("litellm.exceptions", _stub)
 
-from app.api.long_context import (
-    estimate_tokens,
+from app.api.long_context import (  # noqa: E402
+    _content_to_text,
     effective_window,
+    estimate_tokens,
     needs_compression,
     resolve_strategy,
     truncate_to_window,
-    _content_to_text,
 )
 
 

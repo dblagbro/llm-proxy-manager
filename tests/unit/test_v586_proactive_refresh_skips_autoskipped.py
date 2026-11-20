@@ -13,17 +13,18 @@ This test verifies that an auto_skip_until in the future suppresses the
 proactive-refresh attempt, while an auto_skip_until in the past does
 NOT (a real expiry might have lapsed; let it try again).
 """
+
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
-from types import SimpleNamespace
 import inspect
+from datetime import UTC, datetime, timedelta
 
 
 def _read_gate_logic():
     """Return the source of the sweep() method so we can assert the
     auto_skipped_now flag participates in the conditional."""
     from app.monitoring import cursor_oauth_expiry_monitor as mod
+
     return inspect.getsource(mod)
 
 
@@ -44,24 +45,24 @@ def test_future_auto_skip_until_string_parses_to_truthy():
     """Verify the parse logic — a future ISO timestamp string (the
     storage shape from SQLite NaiveDateTime) MUST resolve to a truthy
     auto_skipped_now."""
-    from datetime import datetime, timezone, timedelta
-    future = datetime.now(timezone.utc) + timedelta(hours=12)
+
+    future = datetime.now(UTC) + timedelta(hours=12)
     # The check in the monitor does fromisoformat + tzinfo=utc fallback.
     # Mirror that here so the test asserts the same parser.
     s = future.isoformat().replace("Z", "+00:00")
     parsed = datetime.fromisoformat(s)
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    assert parsed > datetime.now(timezone.utc)
+        parsed = parsed.replace(tzinfo=UTC)
+    assert parsed > datetime.now(UTC)
 
 
 def test_past_auto_skip_until_string_parses_to_falsy():
     """A past timestamp must resolve to falsy auto_skipped_now — the
     skip window expired and another attempt is warranted."""
-    from datetime import datetime, timezone, timedelta
-    past = datetime.now(timezone.utc) - timedelta(hours=12)
+
+    past = datetime.now(UTC) - timedelta(hours=12)
     s = past.isoformat().replace("Z", "+00:00")
     parsed = datetime.fromisoformat(s)
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    assert parsed < datetime.now(timezone.utc)
+        parsed = parsed.replace(tzinfo=UTC)
+    assert parsed < datetime.now(UTC)

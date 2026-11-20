@@ -32,22 +32,23 @@ Public API
 The snapshot ships with all providers; per-key scope filtering happens
 at endpoint render time so a single shared snapshot serves all callers.
 """
+
 from __future__ import annotations
 
 import asyncio
 import hashlib
 import json
 import logging
-import time
+import time as time
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
-from typing import Optional
+from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select, func
+from sqlalchemy import func as func
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.database import AsyncSessionLocal
-from app.models.db import Provider, ProviderMetric, ModelCapability, ActivityLog
+from app.models.db import ActivityLog, ModelCapability, Provider, ProviderMetric
 
 logger = logging.getLogger(__name__)
 
@@ -66,20 +67,20 @@ DEFAULT_WINDOW_SEC = 3600
 class _ModelSnap:
     model_id: str
     kind: str
-    context_length: Optional[int]
+    context_length: int | None
     native_tools: bool
     native_reasoning: bool
     # Aggregated metrics (over DEFAULT_WINDOW_SEC ago → now). All None
     # when there's no data — distinguish "no samples" from "0 latency"
     # at the endpoint layer.
-    cost_per_1m_input_usd: Optional[float]
-    cost_per_1m_output_usd: Optional[float]
-    rated_quota_per_1m_input_usd: Optional[float]
-    latency_p50_ms: Optional[float]
-    latency_p95_ms: Optional[float]
-    ttft_p50_ms: Optional[float]
-    ttft_p95_ms: Optional[float]
-    success_rate: Optional[float]
+    cost_per_1m_input_usd: float | None
+    cost_per_1m_output_usd: float | None
+    rated_quota_per_1m_input_usd: float | None
+    latency_p50_ms: float | None
+    latency_p95_ms: float | None
+    ttft_p50_ms: float | None
+    ttft_p95_ms: float | None
+    success_rate: float | None
     samples: int
     # v3.3.4: synthetic keep-alive probe stats. Surfaced separately
     # from `success_rate` so SDK callers can read both:
@@ -91,7 +92,7 @@ class _ModelSnap:
     # succeeds is a leading indicator that real traffic may degrade
     # if the operator's auth/cookie rotation is failing. None when
     # no probes ran in the window.
-    probe_success_rate: Optional[float] = None
+    probe_success_rate: float | None = None
     probe_samples: int = 0
     # v3.5.0 (LMRHv2.1) — model identity model. ``aliases`` lists
     # alternate spellings the proxy will accept (caller can send
@@ -104,16 +105,16 @@ class _ModelSnap:
     # means the operator hasn't classified — readers should fall
     # back to deriving family from canonical model_id.
     aliases: list[str] = field(default_factory=list)
-    family: Optional[str] = None
-    variant: Optional[str] = None
+    family: str | None = None
+    variant: str | None = None
 
 
 @dataclass(frozen=True)
 class _SubQuota:
-    session_used_pct: Optional[float]
-    weekly_used_pct: Optional[float]
-    session_resets_at: Optional[str]
-    weekly_resets_at: Optional[str]
+    session_used_pct: float | None
+    weekly_used_pct: float | None
+    session_resets_at: str | None
+    weekly_resets_at: str | None
 
 
 @dataclass(frozen=True)
@@ -129,9 +130,9 @@ class _ProviderSnap:
     # unscoped (any authenticated caller). Used by endpoint render to
     # filter the response per the operator-locked scope policy
     # (decision #1: key-scoped).
-    owned_by_key_id: Optional[str]
+    owned_by_key_id: str | None
     models: list[_ModelSnap]
-    subscription_quota: Optional[_SubQuota]
+    subscription_quota: _SubQuota | None
 
 
 @dataclass(frozen=True)
@@ -173,27 +174,30 @@ class LmrhSnapshot:
         """
         # Aggregate by (family, model_id) — same model exposed via
         # multiple routes coalesces into one entry with variants list.
-        by_model: dict[tuple[Optional[str], str], dict] = {}
+        by_model: dict[tuple[str | None, str], dict] = {}
         for prov in self.providers:
             # Skip providers in OPEN circuit — they're not currently
             # reachable, but ONLY skip if every provider for the model
             # is open. Track per-model availability below.
             for m in prov.models:
                 key = (m.family, m.model_id)
-                entry = by_model.setdefault(key, {
-                    "model_id": m.model_id,
-                    "family": m.family,
-                    "aliases": set(),
-                    "variants": set(),
-                    "context_length": m.context_length,
-                    "native_tools": m.native_tools,
-                    "native_reasoning": m.native_reasoning,
-                    "regions": set(),
-                    "cost_tiers": set(),
-                    "available_routes": 0,
-                    "total_routes": 0,
-                    "subscription_routes": 0,
-                })
+                entry = by_model.setdefault(
+                    key,
+                    {
+                        "model_id": m.model_id,
+                        "family": m.family,
+                        "aliases": set(),
+                        "variants": set(),
+                        "context_length": m.context_length,
+                        "native_tools": m.native_tools,
+                        "native_reasoning": m.native_reasoning,
+                        "regions": set(),
+                        "cost_tiers": set(),
+                        "available_routes": 0,
+                        "total_routes": 0,
+                        "subscription_routes": 0,
+                    },
+                )
                 entry["aliases"].update(m.aliases or [])
                 if m.variant:
                     entry["variants"].add(m.variant)
@@ -217,28 +221,33 @@ class LmrhSnapshot:
 
         models_out: list[dict] = []
         for entry in by_model.values():
-            models_out.append({
-                "model_id": entry["model_id"],
-                "family": entry["family"],
-                "aliases": sorted(entry["aliases"]),
-                "variants": sorted(entry["variants"]),
-                "capabilities": {
-                    "context_length": entry["context_length"],
-                    "native_tools": entry["native_tools"],
-                    "native_reasoning": entry["native_reasoning"],
-                },
-                "regions": sorted(entry["regions"]),
-                "cost_tiers": sorted(entry["cost_tiers"]),
-                "available": entry["available_routes"] > 0,
-                # Public callers see only a coarse signal — buckets are
-                # 0 / "few" / "many" to obscure exact route count.
-                "redundancy": (
-                    "many" if entry["available_routes"] >= 3
-                    else "few" if entry["available_routes"] >= 2
-                    else "single" if entry["available_routes"] == 1
-                    else "none"
-                ),
-            })
+            models_out.append(
+                {
+                    "model_id": entry["model_id"],
+                    "family": entry["family"],
+                    "aliases": sorted(entry["aliases"]),
+                    "variants": sorted(entry["variants"]),
+                    "capabilities": {
+                        "context_length": entry["context_length"],
+                        "native_tools": entry["native_tools"],
+                        "native_reasoning": entry["native_reasoning"],
+                    },
+                    "regions": sorted(entry["regions"]),
+                    "cost_tiers": sorted(entry["cost_tiers"]),
+                    "available": entry["available_routes"] > 0,
+                    # Public callers see only a coarse signal — buckets are
+                    # 0 / "few" / "many" to obscure exact route count.
+                    "redundancy": (
+                        "many"
+                        if entry["available_routes"] >= 3
+                        else "few"
+                        if entry["available_routes"] >= 2
+                        else "single"
+                        if entry["available_routes"] == 1
+                        else "none"
+                    ),
+                }
+            )
         models_out.sort(key=lambda x: (x["family"] or "", x["model_id"]))
         return {
             "version": "2.0",
@@ -258,15 +267,14 @@ class LmrhSnapshot:
         key. Operator-named providers stay private to their owners.
         """
         return [
-            p for p in self.providers
-            if p.owned_by_key_id is None or p.owned_by_key_id == key_id
+            p for p in self.providers if p.owned_by_key_id is None or p.owned_by_key_id == key_id
         ]
 
 
 # ── Snapshot building ───────────────────────────────────────────────────
 
 
-def _percentile(sorted_vals: list[float], pct: float) -> Optional[float]:
+def _percentile(sorted_vals: list[float], pct: float) -> float | None:
     """Linear-interpolation percentile. ``sorted_vals`` must be sorted
     ascending. Returns None on empty input."""
     if not sorted_vals:
@@ -280,7 +288,7 @@ def _percentile(sorted_vals: list[float], pct: float) -> Optional[float]:
     return sorted_vals[lo] * (1 - frac) + sorted_vals[hi] * frac
 
 
-def _circuit_state_label(state: Optional[str]) -> str:
+def _circuit_state_label(state: str | None) -> str:
     """Normalize circuit_state to one of {open, closed, half-open}."""
     if not state:
         return "closed"
@@ -298,15 +306,17 @@ async def _build_snapshot(
     """Build a fresh snapshot from current Provider + ModelCapability +
     ProviderMetric state. Pure read; no writes.
     """
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     cutoff = now - timedelta(seconds=window_sec)
 
     # 1. Pull all enabled, non-deleted providers
     res = await db.execute(
-        select(Provider).where(
-            Provider.enabled == True,
+        select(Provider)
+        .where(
+            Provider.enabled.is_(True),
             Provider.deleted_at.is_(None),
-        ).order_by(Provider.priority.asc())
+        )
+        .order_by(Provider.priority.asc())
     )
     providers = list(res.scalars().all())
 
@@ -347,6 +357,7 @@ async def _build_snapshot(
     probe_stats: dict[str, dict[str, int]] = {}
     if provider_ids:
         from sqlalchemy import func as _sqlfunc
+
         probe_q = await db.execute(
             select(
                 ActivityLog.provider_id,
@@ -376,9 +387,9 @@ async def _build_snapshot(
         metrics = metrics_by_provider.get(p.id, [])
         # Subscription cost-class derivation matches monitoring.helpers
         from app.monitoring.helpers import SUBSCRIPTION_TIER_PROVIDER_TYPES
-        is_subscription = (
-            p.cost_class == "subscription"
-            or (p.cost_class is None and p.provider_type in SUBSCRIPTION_TIER_PROVIDER_TYPES)
+
+        is_subscription = p.cost_class == "subscription" or (
+            p.cost_class is None and p.provider_type in SUBSCRIPTION_TIER_PROVIDER_TYPES
         )
         cost_class = "subscription" if is_subscription else "per_call"
 
@@ -387,13 +398,8 @@ async def _build_snapshot(
         # provider's aggregate metrics. v3.3.x can split if upstream
         # reports per-model, but most cost / latency variation is at the
         # provider level (single endpoint, single billing).
-        latencies = sorted(
-            [float(m.avg_latency_ms) for m in metrics if m.avg_latency_ms]
-        )
-        ttfts = sorted(
-            [float(m.avg_ttft_ms) for m in metrics
-             if m.avg_ttft_ms and m.ttft_requests]
-        )
+        latencies = sorted([float(m.avg_latency_ms) for m in metrics if m.avg_latency_ms])
+        ttfts = sorted([float(m.avg_ttft_ms) for m in metrics if m.avg_ttft_ms and m.ttft_requests])
         total_reqs = sum(int(m.requests or 0) for m in metrics)
         total_succ = sum(int(m.successes or 0) for m in metrics)
         total_fail = sum(int(m.failures or 0) for m in metrics)
@@ -408,7 +414,7 @@ async def _build_snapshot(
         total_in_tok = sum(int(m.input_tokens or 0) for m in metrics)
         total_out_tok = sum(int(m.output_tokens or 0) for m in metrics)
 
-        success_rate: Optional[float] = None
+        success_rate: float | None = None
         if total_succ + total_fail > 0:
             success_rate = total_succ / (total_succ + total_fail)
 
@@ -417,7 +423,7 @@ async def _build_snapshot(
         probe_succ = ps["successes"]
         probe_fail = ps["failures"]
         probe_samples = probe_succ + probe_fail
-        probe_success_rate: Optional[float] = None
+        probe_success_rate: float | None = None
         if probe_samples > 0:
             probe_success_rate = probe_succ / probe_samples
 
@@ -425,8 +431,8 @@ async def _build_snapshot(
         # token totals are non-zero (post-migration data), report
         # input + output rates independently. Fall back to the combined
         # "same rate for both" placeholder when only legacy data exists.
-        cost_per_1m_input: Optional[float] = None
-        cost_per_1m_output: Optional[float] = None
+        cost_per_1m_input: float | None = None
+        cost_per_1m_output: float | None = None
         if not is_subscription:
             if total_in_tok > 0:
                 cost_per_1m_input = (total_in_cost / total_in_tok) * 1_000_000
@@ -443,7 +449,7 @@ async def _build_snapshot(
         # per-call billing). For v3.3.0 we only have the aggregate
         # ``cost_usd`` — pricing.py would need the in/out split per
         # model to compute properly. Surface as None until that lands.
-        rated_quota: Optional[float] = None
+        rated_quota: float | None = None
 
         p50 = _percentile(latencies, 50.0)
         p95 = _percentile(latencies, 95.0)
@@ -455,51 +461,58 @@ async def _build_snapshot(
         if not caps and p.default_model:
             from app.api.models import _infer_kind
             from app.routing.canonical import derive_family
-            model_snaps = [_ModelSnap(
-                model_id=p.default_model,
-                kind=_infer_kind(p.default_model),
-                context_length=None,
-                native_tools=False,
-                native_reasoning=False,
-                cost_per_1m_input_usd=cost_per_1m_input,
-                cost_per_1m_output_usd=cost_per_1m_output,
-                rated_quota_per_1m_input_usd=rated_quota,
-                latency_p50_ms=p50,
-                latency_p95_ms=p95,
-                ttft_p50_ms=ttft_p50,
-                ttft_p95_ms=ttft_p95,
-                success_rate=success_rate,
-                samples=total_reqs,
-                probe_success_rate=probe_success_rate,
-                probe_samples=probe_samples,
-                aliases=[],
-                family=derive_family(p.default_model),
-                variant=None,
-            )]
+
+            model_snaps = [
+                _ModelSnap(
+                    model_id=p.default_model,
+                    kind=_infer_kind(p.default_model),
+                    context_length=None,
+                    native_tools=False,
+                    native_reasoning=False,
+                    cost_per_1m_input_usd=cost_per_1m_input,
+                    cost_per_1m_output_usd=cost_per_1m_output,
+                    rated_quota_per_1m_input_usd=rated_quota,
+                    latency_p50_ms=p50,
+                    latency_p95_ms=p95,
+                    ttft_p50_ms=ttft_p50,
+                    ttft_p95_ms=ttft_p95,
+                    success_rate=success_rate,
+                    samples=total_reqs,
+                    probe_success_rate=probe_success_rate,
+                    probe_samples=probe_samples,
+                    aliases=[],
+                    family=derive_family(p.default_model),
+                    variant=None,
+                )
+            ]
         else:
             from app.api.models import _infer_kind
             from app.routing.canonical import derive_family
-            model_snaps = [_ModelSnap(
-                model_id=c.model_id,
-                kind=(c.tasks[0] if c.tasks else _infer_kind(c.model_id)),
-                context_length=c.context_length,
-                native_tools=bool(c.native_tools),
-                native_reasoning=bool(c.native_reasoning),
-                cost_per_1m_input_usd=cost_per_1m_input,
-                cost_per_1m_output_usd=cost_per_1m_output,
-                rated_quota_per_1m_input_usd=rated_quota,
-                latency_p50_ms=p50,
-                latency_p95_ms=p95,
-                ttft_p50_ms=ttft_p50,
-                ttft_p95_ms=ttft_p95,
-                success_rate=success_rate,
-                samples=total_reqs,
-                probe_success_rate=probe_success_rate,
-                probe_samples=probe_samples,
-                aliases=list(c.aliases or []),
-                family=(c.model_family or derive_family(c.model_id)),
-                variant=c.model_variant,
-            ) for c in caps]
+
+            model_snaps = [
+                _ModelSnap(
+                    model_id=c.model_id,
+                    kind=(c.tasks[0] if c.tasks else _infer_kind(c.model_id)),
+                    context_length=c.context_length,
+                    native_tools=bool(c.native_tools),
+                    native_reasoning=bool(c.native_reasoning),
+                    cost_per_1m_input_usd=cost_per_1m_input,
+                    cost_per_1m_output_usd=cost_per_1m_output,
+                    rated_quota_per_1m_input_usd=rated_quota,
+                    latency_p50_ms=p50,
+                    latency_p95_ms=p95,
+                    ttft_p50_ms=ttft_p50,
+                    ttft_p95_ms=ttft_p95,
+                    success_rate=success_rate,
+                    samples=total_reqs,
+                    probe_success_rate=probe_success_rate,
+                    probe_samples=probe_samples,
+                    aliases=list(c.aliases or []),
+                    family=(c.model_family or derive_family(c.model_id)),
+                    variant=c.model_variant,
+                )
+                for c in caps
+            ]
 
         # Subscription quota — only for subscription providers; only when
         # ProviderUsageWindow has a row for this provider.
@@ -512,8 +525,11 @@ async def _build_snapshot(
         external_snap_resets = None
         if is_subscription and p.provider_type == "claude-oauth":
             try:
+                from datetime import datetime as _dt
+                from datetime import timedelta as _td
+
                 from app.models.db import ExternalUsageSnapshot
-                from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+
                 snap_res = await db.execute(
                     select(ExternalUsageSnapshot)
                     .where(ExternalUsageSnapshot.provider_id == p.id)
@@ -523,9 +539,10 @@ async def _build_snapshot(
                 )
                 latest = snap_res.scalar_one_or_none()
                 if latest and latest.captured_at:
-                    age = _dt.now(_tz.utc) - (
-                        latest.captured_at if latest.captured_at.tzinfo
-                        else latest.captured_at.replace(tzinfo=_tz.utc)
+                    age = _dt.now(UTC) - (
+                        latest.captured_at
+                        if latest.captured_at.tzinfo
+                        else latest.captured_at.replace(tzinfo=UTC)
                     )
                     if age < _td(hours=8):
                         external_snap_used = float(latest.seven_day_utilization)
@@ -533,17 +550,16 @@ async def _build_snapshot(
                             external_snap_resets = (
                                 latest.seven_day_resets_at.isoformat()
                                 if latest.seven_day_resets_at.tzinfo
-                                else latest.seven_day_resets_at.replace(tzinfo=_tz.utc).isoformat()
+                                else latest.seven_day_resets_at.replace(tzinfo=UTC).isoformat()
                             )
             except Exception as e:
                 logger.debug("external-snapshot lookup failed for %s: %s", p.id, e)
         if is_subscription and getattr(p, "usage_tracking_enabled", False):
             try:
                 from app.models.db import ProviderUsageWindow
+
                 w_res = await db.execute(
-                    select(ProviderUsageWindow).where(
-                        ProviderUsageWindow.provider_id == p.id
-                    )
+                    select(ProviderUsageWindow).where(ProviderUsageWindow.provider_id == p.id)
                 )
                 w = w_res.scalar_one_or_none()
                 if w:
@@ -552,17 +568,27 @@ async def _build_snapshot(
                     # carry the proxy-slice session_used_pct because the
                     # external snapshot has its own 5-hour window which
                     # we map to session.
-                    weekly_used = external_snap_used if external_snap_used is not None else getattr(w, "weekly_pct", None)
-                    weekly_resets = external_snap_resets if external_snap_resets is not None else (
-                        w.weekly_reset_at.isoformat()
-                        if getattr(w, "weekly_reset_at", None) else None
+                    weekly_used = (
+                        external_snap_used
+                        if external_snap_used is not None
+                        else getattr(w, "weekly_pct", None)
+                    )
+                    weekly_resets = (
+                        external_snap_resets
+                        if external_snap_resets is not None
+                        else (
+                            w.weekly_reset_at.isoformat()
+                            if getattr(w, "weekly_reset_at", None)
+                            else None
+                        )
                     )
                     sub_quota = _SubQuota(
                         session_used_pct=getattr(w, "session_pct", None),
                         weekly_used_pct=weekly_used,
                         session_resets_at=(
                             w.session_reset_at.isoformat()
-                            if getattr(w, "session_reset_at", None) else None
+                            if getattr(w, "session_reset_at", None)
+                            else None
                         ),
                         weekly_resets_at=weekly_resets,
                     )
@@ -583,6 +609,7 @@ async def _build_snapshot(
         # Circuit state from in-process register
         try:
             from app.routing.circuit_breaker import get_state
+
             cb_state_enum = await get_state(p.id)
             cb_state = cb_state_enum.value if cb_state_enum else None
         except Exception:
@@ -593,18 +620,20 @@ async def _build_snapshot(
         if caps and caps[0].regions:
             regions = list(caps[0].regions)
 
-        snap_providers.append(_ProviderSnap(
-            id=p.id,
-            name=p.name,
-            type=p.provider_type,
-            priority=p.priority,
-            cost_class=cost_class,
-            circuit=_circuit_state_label(cb_state),
-            regions=regions,
-            owned_by_key_id=p.owned_by_key_id,
-            models=model_snaps,
-            subscription_quota=sub_quota,
-        ))
+        snap_providers.append(
+            _ProviderSnap(
+                id=p.id,
+                name=p.name,
+                type=p.provider_type,
+                priority=p.priority,
+                cost_class=cost_class,
+                circuit=_circuit_state_label(cb_state),
+                regions=regions,
+                owned_by_key_id=p.owned_by_key_id,
+                models=model_snaps,
+                subscription_quota=sub_quota,
+            )
+        )
 
     # ETag: stable hash over identity-affecting fields. Excludes
     # ``as_of`` so equal-content snapshots produce equal ETags
@@ -612,13 +641,18 @@ async def _build_snapshot(
     digest_input = json.dumps(
         [
             {
-                "id": p.id, "name": p.name, "type": p.type,
-                "priority": p.priority, "cost_class": p.cost_class,
-                "circuit": p.circuit, "regions": p.regions,
+                "id": p.id,
+                "name": p.name,
+                "type": p.type,
+                "priority": p.priority,
+                "cost_class": p.cost_class,
+                "circuit": p.circuit,
+                "regions": p.regions,
                 "owned_by_key_id": p.owned_by_key_id,
                 "models": [
                     {
-                        "model_id": m.model_id, "kind": m.kind,
+                        "model_id": m.model_id,
+                        "kind": m.kind,
                         "context_length": m.context_length,
                         "native_tools": m.native_tools,
                         "native_reasoning": m.native_reasoning,
@@ -631,9 +665,7 @@ async def _build_snapshot(
                             round(m.latency_p95_ms, 0) if m.latency_p95_ms else None
                         ),
                         "samples": m.samples,
-                        "success_rate": (
-                            round(m.success_rate, 3) if m.success_rate else None
-                        ),
+                        "success_rate": (round(m.success_rate, 3) if m.success_rate else None),
                         # v3.3.4: include probe stats in etag input so
                         # snapshot identity reflects probe-channel state
                         # changes (a flaky upstream visible only via probes
@@ -648,7 +680,8 @@ async def _build_snapshot(
             }
             for p in snap_providers
         ],
-        sort_keys=True, default=str,
+        sort_keys=True,
+        default=str,
     )
     etag = '"' + hashlib.sha1(digest_input.encode()).hexdigest()[:16] + '"'
 
@@ -663,19 +696,19 @@ async def _build_snapshot(
 # ── Refresh loop + global accessor ─────────────────────────────────────
 
 
-_current: Optional[LmrhSnapshot] = None
-_task: Optional[asyncio.Task] = None
+_current: LmrhSnapshot | None = None
+_task: asyncio.Task | None = None
 _lock = asyncio.Lock()
 
 
-def get_current() -> Optional[LmrhSnapshot]:
+def get_current() -> LmrhSnapshot | None:
     """Return the latest snapshot, or None if the refresh loop hasn't
     completed its first build yet. Endpoints should treat None as
     ``503 Service Unavailable`` with a short Retry-After."""
     return _current
 
 
-async def rebuild_now(db: Optional[AsyncSession] = None) -> LmrhSnapshot:
+async def rebuild_now(db: AsyncSession | None = None) -> LmrhSnapshot:
     """Force a fresh build. Used at startup (so the snapshot is ready
     before the refresh loop's first tick) and by tests / admin tools.
 

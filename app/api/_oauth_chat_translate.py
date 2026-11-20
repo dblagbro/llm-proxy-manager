@@ -21,15 +21,19 @@ Streaming: OpenAI emits delta chunks with finish_reason; Anthropic emits
 content_block_start/delta/stop events. Translator subscribes to Anthropic
 SSE and emits OpenAI-shape deltas.
 """
+
 from __future__ import annotations
 
 import json
 import secrets
 import time
-from typing import Any, AsyncIterator, Optional
+from collections.abc import AsyncIterator
+from typing import Any
 
 
-def openai_messages_to_anthropic(messages: list[dict]) -> tuple[list[dict] | str | None, list[dict]]:
+def openai_messages_to_anthropic(
+    messages: list[dict],
+) -> tuple[list[dict] | str | None, list[dict]]:
     """Split OpenAI ``messages`` into Anthropic ``(system, messages)``.
     System messages collapse into the top-level ``system`` field.
     Tool messages collapse into tool_result content blocks on the next user
@@ -72,11 +76,13 @@ def openai_messages_to_anthropic(messages: list[dict]) -> tuple[list[dict] | str
                 tc_content = content
             else:
                 tc_content = json.dumps(content) if content is not None else ""
-            pending_tool_results.append({
-                "type": "tool_result",
-                "tool_use_id": tcid,
-                "content": tc_content,
-            })
+            pending_tool_results.append(
+                {
+                    "type": "tool_result",
+                    "tool_use_id": tcid,
+                    "content": tc_content,
+                }
+            )
             continue
 
         if role == "user":
@@ -100,15 +106,23 @@ def openai_messages_to_anthropic(messages: list[dict]) -> tuple[list[dict] | str
                                     media_type = media_part.split(";")[0].split(":", 1)[1]
                                 except Exception:
                                     media_type, b64 = "image/png", ""
-                                user_blocks.append({
-                                    "type": "image",
-                                    "source": {"type": "base64", "media_type": media_type, "data": b64},
-                                })
+                                user_blocks.append(
+                                    {
+                                        "type": "image",
+                                        "source": {
+                                            "type": "base64",
+                                            "media_type": media_type,
+                                            "data": b64,
+                                        },
+                                    }
+                                )
                             else:
-                                user_blocks.append({
-                                    "type": "image",
-                                    "source": {"type": "url", "url": url},
-                                })
+                                user_blocks.append(
+                                    {
+                                        "type": "image",
+                                        "source": {"type": "url", "url": url},
+                                    }
+                                )
                         else:
                             # Already Anthropic-shape, pass through
                             user_blocks.append(blk)
@@ -133,12 +147,14 @@ def openai_messages_to_anthropic(messages: list[dict]) -> tuple[list[dict] | str
                     tc_input = json.loads(args_raw) if isinstance(args_raw, str) else args_raw
                 except (ValueError, TypeError):
                     tc_input = {}
-                asst_blocks.append({
-                    "type": "tool_use",
-                    "id": tc.get("id") or f"toolu_{secrets.token_hex(8)}",
-                    "name": fn.get("name") or "",
-                    "input": tc_input,
-                })
+                asst_blocks.append(
+                    {
+                        "type": "tool_use",
+                        "id": tc.get("id") or f"toolu_{secrets.token_hex(8)}",
+                        "name": fn.get("name") or "",
+                        "input": tc_input,
+                    }
+                )
             if asst_blocks:
                 out_messages.append({"role": "assistant", "content": asst_blocks})
             continue
@@ -167,11 +183,13 @@ def openai_tools_to_anthropic(tools: list[dict] | None) -> list[dict] | None:
             # Anthropic only knows function-style tools today
             continue
         fn = t.get("function") or {}
-        out.append({
-            "name": fn.get("name") or "",
-            "description": fn.get("description") or "",
-            "input_schema": fn.get("parameters") or {"type": "object", "properties": {}},
-        })
+        out.append(
+            {
+                "name": fn.get("name") or "",
+                "description": fn.get("description") or "",
+                "input_schema": fn.get("parameters") or {"type": "object", "properties": {}},
+            }
+        )
     return out or None
 
 
@@ -184,9 +202,12 @@ def openai_request_to_anthropic(body: dict) -> dict:
     # default is correct; the hardcoded asymmetry was just an audit
     # cleanup, not a behavior change.
     from app.routing.litellm_binding import PROVIDER_DEFAULT_MODELS
+
     out: dict[str, Any] = {
-        "model": body.get("model") or PROVIDER_DEFAULT_MODELS.get(
-            "claude-oauth", "claude-sonnet-4-6",
+        "model": body.get("model")
+        or PROVIDER_DEFAULT_MODELS.get(
+            "claude-oauth",
+            "claude-sonnet-4-6",
         ),
         "max_tokens": body.get("max_tokens") or 4096,
         "messages": messages,
@@ -212,10 +233,15 @@ def openai_request_to_anthropic(body: dict) -> dict:
         elif oc == "required":
             out["tool_choice"] = {"type": "any"}
         elif oc == "none":
-            out["tool_choice"] = {"type": "auto"}  # Anthropic has no "none"; we emulate by not sending tools
+            out["tool_choice"] = {
+                "type": "auto"
+            }  # Anthropic has no "none"; we emulate by not sending tools
             out.pop("tools", None)
         elif isinstance(oc, dict) and oc.get("type") == "function":
-            out["tool_choice"] = {"type": "tool", "name": (oc.get("function") or {}).get("name", "")}
+            out["tool_choice"] = {
+                "type": "tool",
+                "name": (oc.get("function") or {}).get("name", ""),
+            }
     return out
 
 
@@ -240,14 +266,16 @@ def anthropic_response_to_openai(data: dict, requested_model: str = "") -> dict:
         if blk.get("type") == "text":
             text_parts.append(blk.get("text", ""))
         elif blk.get("type") == "tool_use":
-            tool_calls.append({
-                "id": blk.get("id") or f"call_{secrets.token_hex(8)}",
-                "type": "function",
-                "function": {
-                    "name": blk.get("name") or "",
-                    "arguments": json.dumps(blk.get("input") or {}),
-                },
-            })
+            tool_calls.append(
+                {
+                    "id": blk.get("id") or f"call_{secrets.token_hex(8)}",
+                    "type": "function",
+                    "function": {
+                        "name": blk.get("name") or "",
+                        "arguments": json.dumps(blk.get("input") or {}),
+                    },
+                }
+            )
     text = "".join(text_parts)
     finish = _STOP_REASON_TO_FINISH.get(data.get("stop_reason") or "end_turn", "stop")
     if tool_calls and finish == "stop":
@@ -261,15 +289,18 @@ def anthropic_response_to_openai(data: dict, requested_model: str = "") -> dict:
         "object": "chat.completion",
         "created": int(time.time()),
         "model": requested_model or data.get("model") or "unknown",
-        "choices": [{
-            "index": 0,
-            "message": msg,
-            "finish_reason": finish,
-        }],
+        "choices": [
+            {
+                "index": 0,
+                "message": msg,
+                "finish_reason": finish,
+            }
+        ],
         "usage": {
             "prompt_tokens": int(usage.get("input_tokens") or 0),
             "completion_tokens": int(usage.get("output_tokens") or 0),
-            "total_tokens": int(usage.get("input_tokens") or 0) + int(usage.get("output_tokens") or 0),
+            "total_tokens": int(usage.get("input_tokens") or 0)
+            + int(usage.get("output_tokens") or 0),
         },
     }
 
@@ -283,7 +314,8 @@ async def stream_anthropic_to_openai_sse(
     Anthropic events we care about:
       message_start          → emit OpenAI chunk with role=assistant + initial usage
       content_block_start    → if text, nothing; if tool_use, emit tool_calls with id+name
-      content_block_delta    → text_delta → content delta; input_json_delta → tool_calls.arguments delta
+      content_block_delta → text_delta → content delta;
+                           input_json_delta → tool_calls.arguments delta
       content_block_stop     → no-op
       message_delta          → carries stop_reason + final usage
       message_stop           → emit final chunk with finish_reason + [DONE]
@@ -297,16 +329,21 @@ async def stream_anthropic_to_openai_sse(
         "model": requested_model,
     }
 
-    finish_reason: Optional[str] = None
+    finish_reason: str | None = None
     tool_index_by_block: dict[int, int] = {}  # Anthropic block index → OpenAI tool_calls index
     next_tool_index = 0
 
-    def emit_chunk(delta: dict, finish: Optional[str] = None) -> bytes:
-        c = {**base_chunk, "choices": [{
-            "index": 0,
-            "delta": delta,
-            "finish_reason": finish,
-        }]}
+    def emit_chunk(delta: dict, finish: str | None = None) -> bytes:
+        c = {
+            **base_chunk,
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": delta,
+                    "finish_reason": finish,
+                }
+            ],
+        }
         return f"data: {json.dumps(c)}\n\n".encode()
 
     # Initial role=assistant chunk
@@ -337,12 +374,18 @@ async def stream_anthropic_to_openai_sse(
                     tool_idx = next_tool_index
                     tool_index_by_block[idx] = tool_idx
                     next_tool_index += 1
-                    yield emit_chunk({"tool_calls": [{
-                        "index": tool_idx,
-                        "id": blk.get("id") or f"call_{secrets.token_hex(8)}",
-                        "type": "function",
-                        "function": {"name": blk.get("name") or "", "arguments": ""},
-                    }]})
+                    yield emit_chunk(
+                        {
+                            "tool_calls": [
+                                {
+                                    "index": tool_idx,
+                                    "id": blk.get("id") or f"call_{secrets.token_hex(8)}",
+                                    "type": "function",
+                                    "function": {"name": blk.get("name") or "", "arguments": ""},
+                                }
+                            ]
+                        }
+                    )
             elif etype == "content_block_delta":
                 idx = evt.get("index", 0)
                 d = evt.get("delta") or {}
@@ -351,10 +394,16 @@ async def stream_anthropic_to_openai_sse(
                 elif d.get("type") == "input_json_delta":
                     tool_idx = tool_index_by_block.get(idx)
                     if tool_idx is not None:
-                        yield emit_chunk({"tool_calls": [{
-                            "index": tool_idx,
-                            "function": {"arguments": d.get("partial_json") or ""},
-                        }]})
+                        yield emit_chunk(
+                            {
+                                "tool_calls": [
+                                    {
+                                        "index": tool_idx,
+                                        "function": {"arguments": d.get("partial_json") or ""},
+                                    }
+                                ]
+                            }
+                        )
             elif etype == "message_delta":
                 stop = (evt.get("delta") or {}).get("stop_reason")
                 if stop:
@@ -440,8 +489,9 @@ def _tool_result_content_to_str(content: Any) -> str:
 
 
 def _anthropic_blocks_to_openai_message_parts(
-    role: str, blocks: list,
-    known_tool_use_ids: Optional[set] = None,
+    role: str,
+    blocks: list,
+    known_tool_use_ids: set | None = None,
 ) -> list[dict]:
     """Convert one Anthropic message's content blocks (when the message
     is list-shaped) into one or more OpenAI messages, preserving order.
@@ -470,14 +520,16 @@ def _anthropic_blocks_to_openai_message_parts(
                 if txt:
                     text_parts.append(txt)
             elif t == "tool_use":
-                tool_calls.append({
-                    "id": blk.get("id") or "",
-                    "type": "function",
-                    "function": {
-                        "name": blk.get("name") or "",
-                        "arguments": json.dumps(blk.get("input") or {}),
-                    },
-                })
+                tool_calls.append(
+                    {
+                        "id": blk.get("id") or "",
+                        "type": "function",
+                        "function": {
+                            "name": blk.get("name") or "",
+                            "arguments": json.dumps(blk.get("input") or {}),
+                        },
+                    }
+                )
             # Other block types (thinking, etc.) are dropped for cross-
             # family; OpenAI has no equivalent.
         msg: dict[str, Any] = {"role": "assistant"}
@@ -516,15 +568,16 @@ def _anthropic_blocks_to_openai_message_parts(
                 # N"), so emit the orphan as plain user text instead.
                 if known_tool_use_ids is not None and tcid not in known_tool_use_ids:
                     text_parts.append(
-                        "[tool result] "
-                        + _tool_result_content_to_str(blk.get("content"))
+                        "[tool result] " + _tool_result_content_to_str(blk.get("content"))
                     )
                 else:
-                    tool_msgs.append({
-                        "role": "tool",
-                        "tool_call_id": tcid,
-                        "content": _tool_result_content_to_str(blk.get("content")),
-                    })
+                    tool_msgs.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tcid,
+                            "content": _tool_result_content_to_str(blk.get("content")),
+                        }
+                    )
             elif t == "text":
                 txt = blk.get("text") or ""
                 if txt:
@@ -550,17 +603,18 @@ def _anthropic_blocks_to_openai_message_parts(
         # shift downstream message indices and confuse OpenAI's
         # "Invalid user message at index N" diagnostic.
         if not out:
-            out.append({
-                "role": "user",
-                "content": _EMPTY_USER_CONTENT_PLACEHOLDER,
-            })
+            out.append(
+                {
+                    "role": "user",
+                    "content": _EMPTY_USER_CONTENT_PLACEHOLDER,
+                }
+            )
         return out
 
     # Other roles (system handled separately above): pass through with
     # best-effort string coercion.
     coerced = "\n".join(
-        (b.get("text") or "") for b in blocks
-        if isinstance(b, dict) and b.get("type") == "text"
+        (b.get("text") or "") for b in blocks if isinstance(b, dict) and b.get("type") == "text"
     )
     out.append({"role": role, "content": coerced})
     return out
@@ -587,7 +641,8 @@ def anthropic_messages_to_openai(
             out.append({"role": "system", "content": body_system})
         elif isinstance(body_system, list):
             parts = [
-                (b.get("text") or "") for b in body_system
+                (b.get("text") or "")
+                for b in body_system
                 if isinstance(b, dict) and b.get("type") == "text"
             ]
             joined = "\n".join(p for p in parts if p)
@@ -613,8 +668,7 @@ def anthropic_messages_to_openai(
         this_assistant_ids: set = set()
         if role == "assistant" and isinstance(content, list):
             for blk in content:
-                if (isinstance(blk, dict) and blk.get("type") == "tool_use"
-                        and blk.get("id")):
+                if isinstance(blk, dict) and blk.get("type") == "tool_use" and blk.get("id"):
                     this_assistant_ids.add(blk["id"])
 
         if isinstance(content, str):
@@ -628,10 +682,13 @@ def anthropic_messages_to_openai(
             else:
                 out.append({"role": role, "content": content})
         elif isinstance(content, list):
-            out.extend(_anthropic_blocks_to_openai_message_parts(
-                role, content,
-                prev_assistant_tool_ids if role == "user" else None,
-            ))
+            out.extend(
+                _anthropic_blocks_to_openai_message_parts(
+                    role,
+                    content,
+                    prev_assistant_tool_ids if role == "user" else None,
+                )
+            )
         else:
             # v3.9.16 — unknown content shape: placeholder for user role
             # (empty string would 400 on OpenAI); empty string for other
@@ -656,14 +713,16 @@ def anthropic_tools_to_openai(tools: list[dict] | None) -> list[dict] | None:
     for t in tools:
         if not isinstance(t, dict):
             continue
-        out.append({
-            "type": "function",
-            "function": {
-                "name": t.get("name") or "",
-                "description": t.get("description") or "",
-                "parameters": t.get("input_schema") or {"type": "object", "properties": {}},
-            },
-        })
+        out.append(
+            {
+                "type": "function",
+                "function": {
+                    "name": t.get("name") or "",
+                    "description": t.get("description") or "",
+                    "parameters": t.get("input_schema") or {"type": "object", "properties": {}},
+                },
+            }
+        )
     return out or None
 
 
@@ -690,7 +749,7 @@ def normalize_tools_for_litellm(tools: list[dict] | None) -> list[dict] | None:
         if not isinstance(t, dict):
             continue
         if t.get("type") == "function" and isinstance(t.get("function"), dict):
-            out.append(t)          # already OpenAI shape — leave alone
+            out.append(t)  # already OpenAI shape — leave alone
             continue
         converted = anthropic_tools_to_openai([t])
         if converted:

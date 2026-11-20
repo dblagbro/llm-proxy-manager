@@ -8,27 +8,34 @@ shared circuit-breaker and rate-limit state automatically. This module handles:
   - Cluster health endpoint
   - Node registration on startup
 """
+
 import asyncio
 import json
 import logging
 import time
-from dataclasses import dataclass, field
-from datetime import datetime
-from typing import Optional
+from dataclasses import dataclass
+from datetime import UTC, datetime
 
 import httpx
 from sqlalchemy import select
 
-from app.config import settings
-from app.models.db import User, ApiKey, Provider, SystemSetting
 from app.cluster.auth import (
-    sign_payload,
-    verify_payload,
-    verify_cluster_request,
-    auth_headers_for,
-    cluster_auth_configured,
+    auth_headers_for as auth_headers_for,
 )
-from app.cluster.sync import apply_sync, get_peer_total_cost
+from app.cluster.auth import (
+    cluster_auth_configured,
+    sign_payload,
+)
+from app.cluster.auth import (
+    verify_cluster_request as verify_cluster_request,
+)
+from app.cluster.auth import (
+    verify_payload as verify_payload,
+)
+from app.cluster.sync import apply_sync as apply_sync
+from app.cluster.sync import get_peer_total_cost as get_peer_total_cost
+from app.config import settings
+from app.models.db import ApiKey, Provider, SystemSetting, User
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +46,7 @@ class PeerNode:
     name: str
     url: str
     priority: int = 10
-    status: str = "unknown"       # healthy|degraded|unreachable
+    status: str = "unknown"  # healthy|degraded|unreachable
     last_heartbeat: float = 0.0
     latency_ms: float = 0.0
     healthy_providers: int = 0
@@ -48,12 +55,12 @@ class PeerNode:
     # None on first contact or when peer is unreachable; populated
     # opportunistically by the heartbeat loop. Used by the Settings →
     # Cluster UI to surface version skew at a glance.
-    version: Optional[str] = None
+    version: str | None = None
 
 
 peers: dict[str, PeerNode] = {}
-_heartbeat_task: Optional[asyncio.Task] = None
-_sync_task: Optional[asyncio.Task] = None
+_heartbeat_task: asyncio.Task | None = None
+_sync_task: asyncio.Task | None = None
 
 # Private alias for internal use within this module
 _peers = peers
@@ -102,12 +109,16 @@ async def _reload_peers_from_db(db_factory) -> int:
     a consistent snapshot.
     """
     from sqlalchemy import select
+
     from app.models.db import ClusterPeer
+
     try:
         async with db_factory() as db:
-            rows = (await db.execute(
-                select(ClusterPeer).where(ClusterPeer.removed_at.is_(None))
-            )).scalars().all()
+            rows = (
+                (await db.execute(select(ClusterPeer).where(ClusterPeer.removed_at.is_(None))))
+                .scalars()
+                .all()
+            )
     except Exception as exc:
         logger.warning("_reload_peers_from_db.failed err=%s — keeping current in-memory peers", exc)
         return len(_peers)
@@ -152,12 +163,12 @@ async def _prune_self_row_from_db(db_factory) -> int:
     if not self_id:
         return 0
     from sqlalchemy import delete
+
     from app.models.db import ClusterPeer
+
     try:
         async with db_factory() as db:
-            result = await db.execute(
-                delete(ClusterPeer).where(ClusterPeer.id == self_id)
-            )
+            result = await db.execute(delete(ClusterPeer).where(ClusterPeer.id == self_id))
             await db.commit()
             n = int(result.rowcount or 0)
             if n > 0:
@@ -165,7 +176,8 @@ async def _prune_self_row_from_db(db_factory) -> int:
                     "cluster_peers: pruned %d self-row(s) matching "
                     "current cluster_node_id=%s (operator changed "
                     "CLUSTER_NODE_ID since last boot?)",
-                    n, self_id,
+                    n,
+                    self_id,
                 )
             return n
     except Exception as exc:
@@ -179,8 +191,11 @@ async def _seed_peers_from_env_if_empty(db_factory) -> int:
     second call with the table already populated is a no-op.
     """
     import time as _t
-    from sqlalchemy import select, func
+
+    from sqlalchemy import func, select
+
     from app.models.db import ClusterPeer
+
     try:
         async with db_factory() as db:
             existing = (await db.execute(select(func.count(ClusterPeer.id)))).scalar_one()
@@ -197,7 +212,8 @@ async def _seed_peers_from_env_if_empty(db_factory) -> int:
                         "authoritative after first boot. Edit via "
                         "Settings → Cluster Peers UI or "
                         "POST /cluster/peers.",
-                        existing, len(env_peers),
+                        existing,
+                        len(env_peers),
                     )
                 return 0
             env_peers = _parse_peers()
@@ -206,11 +222,15 @@ async def _seed_peers_from_env_if_empty(db_factory) -> int:
             now = datetime.utcnow()
             now_ts = _t.time()
             for p in env_peers:
-                db.add(ClusterPeer(
-                    id=p.id, url=p.url, name=p.name,
-                    added_at=now,
-                    last_user_edit_at=now_ts,
-                ))
+                db.add(
+                    ClusterPeer(
+                        id=p.id,
+                        url=p.url,
+                        name=p.name,
+                        added_at=now,
+                        last_user_edit_at=now_ts,
+                    )
+                )
             await db.commit()
             logger.info("cluster_peers: seeded %d peers from CLUSTER_PEERS env", len(env_peers))
             return len(env_peers)
@@ -219,9 +239,9 @@ async def _seed_peers_from_env_if_empty(db_factory) -> int:
         return 0
 
 
-
 async def _heartbeat_loop(notify_fn=None):
     from app.monitoring.worker_heartbeat import WorkerHeartbeat, register_expected_interval
+
     hb = WorkerHeartbeat(name="cluster_heartbeat")
     register_expected_interval("cluster_heartbeat", settings.cluster_heartbeat_sec)
     while True:
@@ -261,7 +281,8 @@ async def _ping_peer(peer: PeerNode, notify_fn=None):
             if was != "degraded":
                 logger.info(
                     "Cluster peer %s degraded: HTTP %s (likely restarting)",
-                    peer.id, resp.status_code,
+                    peer.id,
+                    resp.status_code,
                 )
             return
         try:
@@ -274,7 +295,8 @@ async def _ping_peer(peer: PeerNode, notify_fn=None):
                 logger.info(
                     "Cluster peer %s degraded: 200 but non-JSON body (%s) "
                     "— likely restarting / behind an error page",
-                    peer.id, type(je).__name__,
+                    peer.id,
+                    type(je).__name__,
                 )
             return
 
@@ -313,6 +335,7 @@ async def _ping_peer(peer: PeerNode, notify_fn=None):
 async def _sync_loop(db_factory):
     """Push local users/keys to all peers every 60 seconds."""
     from app.monitoring.worker_heartbeat import WorkerHeartbeat, register_expected_interval
+
     hb = WorkerHeartbeat(name="cluster_sync_push")
     register_expected_interval("cluster_sync_push", 60)
     while True:
@@ -340,152 +363,197 @@ async def _build_sync_payload(db) -> dict:
     # merge resurrected deleted users.
     users_result = await db.execute(select(User))
     users = [
-        {"id": u.id, "username": u.username, "password_hash": u.password_hash,
-         "role": u.role, "created_at": str(u.created_at),
-         # v5.22.11 — email was added in v5.22.7 but never added HERE, so the
-         # column replicated as NULL: self-service reset, SSO matching and
-         # email login only worked on whichever node the address was set on.
-         "email": u.email,
-         "deleted_at": (u.deleted_at.isoformat() if u.deleted_at else None),
-         "last_user_edit_at": u.last_user_edit_at}
+        {
+            "id": u.id,
+            "username": u.username,
+            "password_hash": u.password_hash,
+            "role": u.role,
+            "created_at": str(u.created_at),
+            # v5.22.11 — email was added in v5.22.7 but never added HERE, so the
+            # column replicated as NULL: self-service reset, SSO matching and
+            # email login only worked on whichever node the address was set on.
+            "email": u.email,
+            "deleted_at": (u.deleted_at.isoformat() if u.deleted_at else None),
+            "last_user_edit_at": u.last_user_edit_at,
+        }
         for u in users_result.scalars().all()
     ]
     # v3.0.20: include tombstoned (soft-deleted) keys so peers learn about
     # deletes; mirrors the v2.8.2 provider-tombstone replication path.
     keys_result = await db.execute(select(ApiKey))
     keys = [
-        {"id": k.id, "name": k.name, "key_hash": k.key_hash, "key_prefix": k.key_prefix,
-         "key_type": k.key_type, "enabled": k.enabled,
-         "spending_cap_usd": k.spending_cap_usd,
-         "rate_limit_rpm": k.rate_limit_rpm,
-         "total_cost_usd": k.total_cost_usd or 0.0,
-         "deleted_at": k.deleted_at.isoformat() if k.deleted_at else None,
-         # v4.4.18 — broader field coverage. Pre-fix the apply handler
-         # only wrote ``spending_cap_usd`` + ``rate_limit_rpm`` on update,
-         # and the push omitted all the other operator-settable fields,
-         # so flipping ``semantic_cache_enabled`` (or any of the budget /
-         # LMRH / retention overrides) on one node never reached peers.
-         # Surfaced 2026-05-22 when F3 from the routing-cost research
-         # asked us to enable semantic cache on the integration client key
-         # and only www1 picked it up.
-         "semantic_cache_enabled": bool(getattr(k, "semantic_cache_enabled", False)),
-         "daily_soft_cap_usd": getattr(k, "daily_soft_cap_usd", None),
-         "daily_hard_cap_usd": getattr(k, "daily_hard_cap_usd", None),
-         "hourly_cap_usd": getattr(k, "hourly_cap_usd", None),
-         "rate_limit_tier": getattr(k, "rate_limit_tier", None),
-         "caller_memory_ttl_days": getattr(k, "caller_memory_ttl_days", None),
-         "lmrh_polling_rpm": getattr(k, "lmrh_polling_rpm", None),
-         "lmrh_quotes_rpm": getattr(k, "lmrh_quotes_rpm", None),
-         # v5.0.0 — compliance per-key policy fields. Same field-coverage
-         # discipline as v4.4.18/v4.4.25: every operator-settable column
-         # must round-trip via the sync payload, otherwise a PATCH on
-         # one node never reaches peers.
-         "blocked_companies": getattr(k, "blocked_companies", None),
-         "allowed_paths": getattr(k, "allowed_paths", None),
-         # v5.2.0 / Batch V2 — fine-grained vendor-neutrality policy
-         # field coverage. Mirrors blocked_companies' discipline. The
-         # apply handler uses membership-test pattern so pre-v5.2.0
-         # peers omitting these keys don't clobber receiver state.
-         "allowed_companies": getattr(k, "allowed_companies", None),
-         "blocked_models": getattr(k, "blocked_models", None),
-         "allowed_models": getattr(k, "allowed_models", None),
-         "debug_echo_enabled": bool(getattr(k, "debug_echo_enabled", False)),
-         # v5.22.47 — OpenAI Daybreak Blue authorization tier. Operator-
-         # settable (NULL = not authorized, "blue" = authorized); must
-         # round-trip via sync like every other per-key policy column,
-         # otherwise authorizing a key on one node never reaches peers.
-         "daybreak_tier": getattr(k, "daybreak_tier", None),
-         # v5.22.56 — per-key metered-provider guard; must round-trip so a
-         # restriction set on one node is not bypassed on a peer.
-         "metered_allowed": bool(getattr(k, "metered_allowed", True)),
-         # v4.4.20 — LWW gate, mirrors providers. Pre-v4.4.20 peers
-         # omit this; apply handler treats absence as "legacy peer"
-         # and falls through to last-sync-wins, same as today.
-         "last_user_edit_at": getattr(k, "last_user_edit_at", None)}
+        {
+            "id": k.id,
+            "name": k.name,
+            "key_hash": k.key_hash,
+            "key_prefix": k.key_prefix,
+            "key_type": k.key_type,
+            "enabled": k.enabled,
+            "spending_cap_usd": k.spending_cap_usd,
+            "rate_limit_rpm": k.rate_limit_rpm,
+            "total_cost_usd": k.total_cost_usd or 0.0,
+            "deleted_at": k.deleted_at.isoformat() if k.deleted_at else None,
+            # v4.4.18 — broader field coverage. Pre-fix the apply handler
+            # only wrote ``spending_cap_usd`` + ``rate_limit_rpm`` on update,
+            # and the push omitted all the other operator-settable fields,
+            # so flipping ``semantic_cache_enabled`` (or any of the budget /
+            # LMRH / retention overrides) on one node never reached peers.
+            # Surfaced 2026-05-22 when F3 from the routing-cost research
+            # asked us to enable semantic cache on the integration client key
+            # and only www1 picked it up.
+            "semantic_cache_enabled": bool(getattr(k, "semantic_cache_enabled", False)),
+            "daily_soft_cap_usd": getattr(k, "daily_soft_cap_usd", None),
+            "daily_hard_cap_usd": getattr(k, "daily_hard_cap_usd", None),
+            "hourly_cap_usd": getattr(k, "hourly_cap_usd", None),
+            "rate_limit_tier": getattr(k, "rate_limit_tier", None),
+            "caller_memory_ttl_days": getattr(k, "caller_memory_ttl_days", None),
+            "lmrh_polling_rpm": getattr(k, "lmrh_polling_rpm", None),
+            "lmrh_quotes_rpm": getattr(k, "lmrh_quotes_rpm", None),
+            # v5.0.0 — compliance per-key policy fields. Same field-coverage
+            # discipline as v4.4.18/v4.4.25: every operator-settable column
+            # must round-trip via the sync payload, otherwise a PATCH on
+            # one node never reaches peers.
+            "blocked_companies": getattr(k, "blocked_companies", None),
+            "allowed_paths": getattr(k, "allowed_paths", None),
+            # v5.2.0 / Batch V2 — fine-grained vendor-neutrality policy
+            # field coverage. Mirrors blocked_companies' discipline. The
+            # apply handler uses membership-test pattern so pre-v5.2.0
+            # peers omitting these keys don't clobber receiver state.
+            "allowed_companies": getattr(k, "allowed_companies", None),
+            "blocked_models": getattr(k, "blocked_models", None),
+            "allowed_models": getattr(k, "allowed_models", None),
+            "debug_echo_enabled": bool(getattr(k, "debug_echo_enabled", False)),
+            # v5.22.47 — OpenAI Daybreak Blue authorization tier. Operator-
+            # settable (NULL = not authorized, "blue" = authorized); must
+            # round-trip via sync like every other per-key policy column,
+            # otherwise authorizing a key on one node never reaches peers.
+            "daybreak_tier": getattr(k, "daybreak_tier", None),
+            # v5.22.56 — per-key metered-provider guard; must round-trip so a
+            # restriction set on one node is not bypassed on a peer.
+            "metered_allowed": bool(getattr(k, "metered_allowed", True)),
+            # v4.4.20 — LWW gate, mirrors providers. Pre-v4.4.20 peers
+            # omit this; apply handler treats absence as "legacy peer"
+            # and falls through to last-sync-wins, same as today.
+            "last_user_edit_at": getattr(k, "last_user_edit_at", None),
+        }
         for k in keys_result.scalars().all()
     ]
     # v2.8.2: include tombstoned (soft-deleted) rows so peers learn about deletes.
     providers_result = await db.execute(select(Provider))
     providers = [
-        {"id": p.id, "name": p.name, "provider_type": p.provider_type, "api_key": p.api_key,
-         "base_url": p.base_url, "default_model": p.default_model, "priority": p.priority,
-         "enabled": p.enabled, "timeout_sec": p.timeout_sec,
-         "exclude_from_tool_requests": p.exclude_from_tool_requests,
-         "hold_down_sec": p.hold_down_sec, "failure_threshold": p.failure_threshold,
-         "extra_config": p.extra_config or {},
-         # v3.0.10: previously-missing fields. Without these, daily-budget /
-         # OAuth-token rotations on one node never reach peers. User-flagged
-         # symptom: provider edits on www1 don't show up on www2.
-         "daily_budget_usd": p.daily_budget_usd,
-         "oauth_refresh_token": p.oauth_refresh_token,
-         "oauth_expires_at": p.oauth_expires_at,
-         "deleted_at": p.deleted_at.isoformat() if p.deleted_at else None,
-         "updated_at": p.updated_at.isoformat() if p.updated_at else None,
-         # v3.0.11: per-row "last admin-edit" timestamp. Cluster sync LWW
-         # prefers this over updated_at so OAuth auto-refresh and other
-         # background mutations can't revert a real config edit.
-         "last_user_edit_at": p.last_user_edit_at,
-         # v3.0.45 — provider tenant scoping
-         "owned_by_key_id": p.owned_by_key_id,
-         # v3.7.0/v3.7.1/v3.7.3 — Anthropic billing scrape + auto-rotation.
-         # We sync the org_uuid (identifier, not sensitive), the
-         # cookie-captured-at timestamp (so the "cookies are N days
-         # old" UI works cluster-wide), and the auto-skip decision
-         # (auto_skip_until / auto_skip_reason). We INTENTIONALLY do
-         # NOT sync the cookies themselves — they stay on the node
-         # where the operator pasted them, limiting auth-material
-         # spread. The worker on peer nodes filters
-         # ``Provider.anthropic_session_cookies.is_not(None)``, so
-         # peers won't try to scrape without credentials.
-         "anthropic_org_uuid": p.anthropic_org_uuid,
-         "anthropic_session_captured_at": p.anthropic_session_captured_at,
-         # v3.7.27 (#245) — Codex billing scrape state. Same posture as
-         # Anthropic: replicate the endpoint URL + captured-at so peers
-         # can render UI badges, but NOT the cookies (auth material
-         # stays on the node where the operator pasted them).
-         "codex_usage_endpoint_url": getattr(p, "codex_usage_endpoint_url", None),
-         "codex_session_captured_at": getattr(p, "codex_session_captured_at", None),
-         # v3.7.28 (#252 phase 1) — manual override lock. ALL fields
-         # sync so any node can render the banner + 🔒 badge identically.
-         "manual_override_until": p.manual_override_until.isoformat() if getattr(p, "manual_override_until", None) else None,
-         "manual_override_set_by": getattr(p, "manual_override_set_by", None),
-         "manual_override_set_at": p.manual_override_set_at.isoformat() if getattr(p, "manual_override_set_at", None) else None,
-         "manual_override_reason": getattr(p, "manual_override_reason", None),
-         "auto_skip_until": p.auto_skip_until.isoformat() if p.auto_skip_until else None,
-         "auto_skip_reason": p.auto_skip_reason,
-         # v5.0.0 — compliance: owner_company is used by the router
-         # pre-filter to drop providers belonging to a banned company.
-         # Auto-derived at create/update time from provider_type, with
-         # per-row override allowed.
-         "owner_company": getattr(p, "owner_company", None)}
+        {
+            "id": p.id,
+            "name": p.name,
+            "provider_type": p.provider_type,
+            "api_key": p.api_key,
+            "base_url": p.base_url,
+            "default_model": p.default_model,
+            "priority": p.priority,
+            "enabled": p.enabled,
+            "timeout_sec": p.timeout_sec,
+            "exclude_from_tool_requests": p.exclude_from_tool_requests,
+            "hold_down_sec": p.hold_down_sec,
+            "failure_threshold": p.failure_threshold,
+            "extra_config": p.extra_config or {},
+            # v3.0.10: previously-missing fields. Without these, daily-budget /
+            # OAuth-token rotations on one node never reach peers. User-flagged
+            # symptom: provider edits on www1 don't show up on www2.
+            "daily_budget_usd": p.daily_budget_usd,
+            "oauth_refresh_token": p.oauth_refresh_token,
+            "oauth_expires_at": p.oauth_expires_at,
+            "deleted_at": p.deleted_at.isoformat() if p.deleted_at else None,
+            "updated_at": p.updated_at.isoformat() if p.updated_at else None,
+            # v3.0.11: per-row "last admin-edit" timestamp. Cluster sync LWW
+            # prefers this over updated_at so OAuth auto-refresh and other
+            # background mutations can't revert a real config edit.
+            "last_user_edit_at": p.last_user_edit_at,
+            # v3.0.45 — provider tenant scoping
+            "owned_by_key_id": p.owned_by_key_id,
+            # v3.7.0/v3.7.1/v3.7.3 — Anthropic billing scrape + auto-rotation.
+            # We sync the org_uuid (identifier, not sensitive), the
+            # cookie-captured-at timestamp (so the "cookies are N days
+            # old" UI works cluster-wide), and the auto-skip decision
+            # (auto_skip_until / auto_skip_reason). We INTENTIONALLY do
+            # NOT sync the cookies themselves — they stay on the node
+            # where the operator pasted them, limiting auth-material
+            # spread. The worker on peer nodes filters
+            # ``Provider.anthropic_session_cookies.is_not(None)``, so
+            # peers won't try to scrape without credentials.
+            "anthropic_org_uuid": p.anthropic_org_uuid,
+            "anthropic_session_captured_at": p.anthropic_session_captured_at,
+            # v3.7.27 (#245) — Codex billing scrape state. Same posture as
+            # Anthropic: replicate the endpoint URL + captured-at so peers
+            # can render UI badges, but NOT the cookies (auth material
+            # stays on the node where the operator pasted them).
+            "codex_usage_endpoint_url": getattr(p, "codex_usage_endpoint_url", None),
+            "codex_session_captured_at": getattr(p, "codex_session_captured_at", None),
+            # v3.7.28 (#252 phase 1) — manual override lock. ALL fields
+            # sync so any node can render the banner + 🔒 badge identically.
+            "manual_override_until": p.manual_override_until.isoformat()
+            if getattr(p, "manual_override_until", None)
+            else None,
+            "manual_override_set_by": getattr(p, "manual_override_set_by", None),
+            "manual_override_set_at": p.manual_override_set_at.isoformat()
+            if getattr(p, "manual_override_set_at", None)
+            else None,
+            "manual_override_reason": getattr(p, "manual_override_reason", None),
+            "auto_skip_until": p.auto_skip_until.isoformat() if p.auto_skip_until else None,
+            "auto_skip_reason": p.auto_skip_reason,
+            # v5.0.0 — compliance: owner_company is used by the router
+            # pre-filter to drop providers belonging to a banned company.
+            # Auto-derived at create/update time from provider_type, with
+            # per-row override allowed.
+            "owner_company": getattr(p, "owner_company", None),
+        }
         for p in providers_result.scalars().all()
     ]
     # Only push settings that were explicitly saved (have a DB row) — not env-var defaults
     settings_result = await db.execute(select(SystemSetting))
     node_settings = [
-        {"key": s.key, "value": s.value, "value_type": s.value_type, "updated_at": s.updated_at or 0.0}
+        {
+            "key": s.key,
+            "value": s.value,
+            "value_type": s.value_type,
+            "updated_at": s.updated_at or 0.0,
+        }
         for s in settings_result.scalars().all()
     ]
     # v3.0.25: replicate the LMRH dim registry + proposals queue so all
     # nodes see the same canonical name space. Last-write-wins by
     # registered_at / proposed_at.
     from app.models.db import LmrhDim, LmrhProposal
+
     dims_result = await db.execute(select(LmrhDim))
     lmrh_dims = [
-        {"name": d.name, "owner_app": d.owner_app, "owner_key_id": d.owner_key_id,
-         "semantics": d.semantics, "value_type": d.value_type, "kind": d.kind,
-         "examples": d.examples or [], "requested_name": d.requested_name,
-         "registered_at": d.registered_at, "registered_by_node": d.registered_by_node,
-         # v3.0.29: tombstone replication so soft-deletes propagate.
-         "deleted_at": d.deleted_at}
+        {
+            "name": d.name,
+            "owner_app": d.owner_app,
+            "owner_key_id": d.owner_key_id,
+            "semantics": d.semantics,
+            "value_type": d.value_type,
+            "kind": d.kind,
+            "examples": d.examples or [],
+            "requested_name": d.requested_name,
+            "registered_at": d.registered_at,
+            "registered_by_node": d.registered_by_node,
+            # v3.0.29: tombstone replication so soft-deletes propagate.
+            "deleted_at": d.deleted_at,
+        }
         for d in dims_result.scalars().all()
     ]
     proposals_result = await db.execute(select(LmrhProposal))
     lmrh_proposals = [
-        {"id": p.id, "proposed_name": p.proposed_name, "rationale": p.rationale,
-         "proposer_app": p.proposer_app, "proposer_key_id": p.proposer_key_id,
-         "proposed_at": p.proposed_at, "status": p.status, "review_note": p.review_note,
-         "deleted_at": p.deleted_at}
+        {
+            "id": p.id,
+            "proposed_name": p.proposed_name,
+            "rationale": p.rationale,
+            "proposer_app": p.proposer_app,
+            "proposer_key_id": p.proposer_key_id,
+            "proposed_at": p.proposed_at,
+            "status": p.status,
+            "review_note": p.review_note,
+            "deleted_at": p.deleted_at,
+        }
         for p in proposals_result.scalars().all()
     ]
     # v3.0.96: replicate operator-configured catalog tables.
@@ -500,44 +568,59 @@ async def _build_sync_payload(db) -> dict:
     # Restore by setting cluster_sync_catalog_tables=True. Proper
     # implementation (delta-only sync + batched apply) is queued for
     # v3.0.99.
-    from app.models.db import ModelCapability, ModelAlias, OAuthCaptureProfile
+    from app.models.db import ModelAlias, ModelCapability, OAuthCaptureProfile
+
     if getattr(settings, "cluster_sync_catalog_tables", False):
         caps_result = await db.execute(select(ModelCapability))
         model_capabilities = [
-            {"provider_id": c.provider_id, "model_id": c.model_id,
-             "tasks": c.tasks or [], "latency": c.latency or "medium",
-             "cost_tier": c.cost_tier or "standard", "safety": c.safety or 3,
-             "context_length": c.context_length or 128000,
-             "regions": c.regions or [], "modalities": c.modalities or [],
-             "native_reasoning": bool(c.native_reasoning),
-             "native_tools": bool(c.native_tools) if c.native_tools is not None else True,
-             "native_vision": bool(c.native_vision) if c.native_vision is not None else False,
-             "source": c.source or "inferred",
-             # v3.6.0 — aliases / family / variant must replicate so the
-             # Hub model-identity edit endpoint produces cluster-wide
-             # consistent results. Pre-v3.6.0 these were silently dropped
-             # by the sync apply pass (model_capabilities entries didn't
-             # include them) so a PUT on the first gateway wouldn't reach other gateways.
-             "aliases": c.aliases or [],
-             "model_family": c.model_family,
-             "model_variant": c.model_variant,
-             "updated_at": c.updated_at.isoformat() if c.updated_at else None}
+            {
+                "provider_id": c.provider_id,
+                "model_id": c.model_id,
+                "tasks": c.tasks or [],
+                "latency": c.latency or "medium",
+                "cost_tier": c.cost_tier or "standard",
+                "safety": c.safety or 3,
+                "context_length": c.context_length or 128000,
+                "regions": c.regions or [],
+                "modalities": c.modalities or [],
+                "native_reasoning": bool(c.native_reasoning),
+                "native_tools": bool(c.native_tools) if c.native_tools is not None else True,
+                "native_vision": bool(c.native_vision) if c.native_vision is not None else False,
+                "source": c.source or "inferred",
+                # v3.6.0 — aliases / family / variant must replicate so the
+                # Hub model-identity edit endpoint produces cluster-wide
+                # consistent results. Pre-v3.6.0 these were silently dropped
+                # by the sync apply pass (model_capabilities entries didn't
+                # include them) so a PUT on the first gateway wouldn't reach other gateways.
+                "aliases": c.aliases or [],
+                "model_family": c.model_family,
+                "model_variant": c.model_variant,
+                "updated_at": c.updated_at.isoformat() if c.updated_at else None,
+            }
             for c in caps_result.scalars().all()
         ]
         aliases_result = await db.execute(select(ModelAlias))
         model_aliases = [
-            {"alias": a.alias, "provider_id": a.provider_id,
-             "model_id": a.model_id, "description": a.description,
-             "created_at": a.created_at.isoformat() if a.created_at else None}
+            {
+                "alias": a.alias,
+                "provider_id": a.provider_id,
+                "model_id": a.model_id,
+                "description": a.description,
+                "created_at": a.created_at.isoformat() if a.created_at else None,
+            }
             for a in aliases_result.scalars().all()
         ]
         profiles_result = await db.execute(select(OAuthCaptureProfile))
         oauth_capture_profiles = [
-            {"name": p.name, "preset": p.preset,
-             "upstream_urls": p.upstream_urls or [],
-             "secret": p.secret, "enabled": bool(p.enabled),
-             "notes": p.notes,
-             "created_at": p.created_at.isoformat() if p.created_at else None}
+            {
+                "name": p.name,
+                "preset": p.preset,
+                "upstream_urls": p.upstream_urls or [],
+                "secret": p.secret,
+                "enabled": bool(p.enabled),
+                "notes": p.notes,
+                "created_at": p.created_at.isoformat() if p.created_at else None,
+            }
             for p in profiles_result.scalars().all()
         ]
     else:
@@ -547,32 +630,54 @@ async def _build_sync_payload(db) -> dict:
     # v3.7.15 — BUG-016: replicate the three v3.7.x tables that landed
     # in a hurry without sync entries. LWW conflict resolution: latest
     # added_at / captured_at wins.
-    from app.models.db import BlockedIp, ApiKeyAiReview, ExternalUsageSnapshot, ProviderAiReview, CallerMemory, CallerMemoryMarker, ProviderNodeAuthState
+    from app.models.db import (
+        ApiKeyAiReview,
+        BlockedIp,
+        CallerMemory,
+        CallerMemoryMarker,
+        ExternalUsageSnapshot,
+        ProviderAiReview,
+        ProviderNodeAuthState,
+    )
+
     # Include tombstoned rows so peers learn about deletions.
     blocked_rs = await db.execute(select(BlockedIp))
     blocked_ips_payload = [
-        {"ip": b.ip, "reason": b.reason, "added_by": b.added_by,
-         "added_at": b.added_at.isoformat() if b.added_at else None,
-         "deleted_at": b.deleted_at.isoformat() if b.deleted_at else None}
+        {
+            "ip": b.ip,
+            "reason": b.reason,
+            "added_by": b.added_by,
+            "added_at": b.added_at.isoformat() if b.added_at else None,
+            "deleted_at": b.deleted_at.isoformat() if b.deleted_at else None,
+        }
         for b in blocked_rs.scalars().all()
     ]
     # Reviews — last 7 days is plenty for cross-node visibility; older
     # rows are operator-audit-only and don't need to be on every node.
-    from datetime import timedelta as _td, datetime as _dtnow, timezone as _tz
-    cutoff = _dtnow.now(_tz.utc) - _td(days=7)
-    reviews_rs = await db.execute(select(ApiKeyAiReview).where(ApiKeyAiReview.captured_at >= cutoff))
+    from datetime import datetime as _dtnow
+    from datetime import timedelta as _td
+
+    cutoff = _dtnow.now(UTC) - _td(days=7)
+    reviews_rs = await db.execute(
+        select(ApiKeyAiReview).where(ApiKeyAiReview.captured_at >= cutoff)
+    )
     ai_reviews_payload = [
-        {"id": r.id, "api_key_id": r.api_key_id,
-         "captured_at": r.captured_at.isoformat() if r.captured_at else None,
-         "llm_model": r.llm_model, "llm_verdict": r.llm_verdict,
-         "llm_reasoning": r.llm_reasoning, "suggested_action": r.suggested_action,
-         "stats_summary": r.stats_summary,
-         "applied_at": r.applied_at.isoformat() if r.applied_at else None,
-         "applied_action": r.applied_action,
-         "prior_rate_limit_rpm": r.prior_rate_limit_rpm,
-         "reverted_at": r.reverted_at.isoformat() if r.reverted_at else None,
-         "dismissed_at": r.dismissed_at.isoformat() if r.dismissed_at else None,
-         "suggested_block_ip": r.suggested_block_ip}
+        {
+            "id": r.id,
+            "api_key_id": r.api_key_id,
+            "captured_at": r.captured_at.isoformat() if r.captured_at else None,
+            "llm_model": r.llm_model,
+            "llm_verdict": r.llm_verdict,
+            "llm_reasoning": r.llm_reasoning,
+            "suggested_action": r.suggested_action,
+            "stats_summary": r.stats_summary,
+            "applied_at": r.applied_at.isoformat() if r.applied_at else None,
+            "applied_action": r.applied_action,
+            "prior_rate_limit_rpm": r.prior_rate_limit_rpm,
+            "reverted_at": r.reverted_at.isoformat() if r.reverted_at else None,
+            "dismissed_at": r.dismissed_at.isoformat() if r.dismissed_at else None,
+            "suggested_block_ip": r.suggested_block_ip,
+        }
         for r in reviews_rs.scalars().all()
     ]
     # External usage snapshots: only keep the LATEST per (provider_id)
@@ -580,9 +685,12 @@ async def _build_sync_payload(db) -> dict:
     # only consults the latest row. Each node also has its own scrape
     # in case the leader's last scrape was stale.
     from sqlalchemy import func as _sqlfunc
+
     latest_per_provider = (
-        select(ExternalUsageSnapshot.provider_id,
-               _sqlfunc.max(ExternalUsageSnapshot.captured_at).label("last_at"))
+        select(
+            ExternalUsageSnapshot.provider_id,
+            _sqlfunc.max(ExternalUsageSnapshot.captured_at).label("last_at"),
+        )
         .group_by(ExternalUsageSnapshot.provider_id)
         .subquery()
     )
@@ -590,27 +698,39 @@ async def _build_sync_payload(db) -> dict:
         select(ExternalUsageSnapshot).join(
             latest_per_provider,
             (ExternalUsageSnapshot.provider_id == latest_per_provider.c.provider_id)
-            & (ExternalUsageSnapshot.captured_at == latest_per_provider.c.last_at)
+            & (ExternalUsageSnapshot.captured_at == latest_per_provider.c.last_at),
         )
     )
     external_usage_payload = [
-        {"provider_id": s.provider_id,
-         "captured_at": s.captured_at.isoformat() if s.captured_at else None,
-         "source": s.source, "http_status": s.http_status,
-         "error": s.error, "auth_state": s.auth_state,
-         "five_hour_utilization": s.five_hour_utilization,
-         "five_hour_resets_at": s.five_hour_resets_at.isoformat() if s.five_hour_resets_at else None,
-         "seven_day_utilization": s.seven_day_utilization,
-         "seven_day_resets_at": s.seven_day_resets_at.isoformat() if s.seven_day_resets_at else None,
-         "seven_day_sonnet_utilization": s.seven_day_sonnet_utilization,
-         "seven_day_sonnet_resets_at": s.seven_day_sonnet_resets_at.isoformat() if s.seven_day_sonnet_resets_at else None,
-         "seven_day_opus_utilization": s.seven_day_opus_utilization,
-         "seven_day_opus_resets_at": s.seven_day_opus_resets_at.isoformat() if s.seven_day_opus_resets_at else None,
-         "extra_usage_is_enabled": s.extra_usage_is_enabled,
-         "extra_usage_monthly_limit": s.extra_usage_monthly_limit,
-         "extra_usage_used_credits": s.extra_usage_used_credits,
-         "extra_usage_utilization": s.extra_usage_utilization,
-         "extra_usage_currency": s.extra_usage_currency}
+        {
+            "provider_id": s.provider_id,
+            "captured_at": s.captured_at.isoformat() if s.captured_at else None,
+            "source": s.source,
+            "http_status": s.http_status,
+            "error": s.error,
+            "auth_state": s.auth_state,
+            "five_hour_utilization": s.five_hour_utilization,
+            "five_hour_resets_at": s.five_hour_resets_at.isoformat()
+            if s.five_hour_resets_at
+            else None,
+            "seven_day_utilization": s.seven_day_utilization,
+            "seven_day_resets_at": s.seven_day_resets_at.isoformat()
+            if s.seven_day_resets_at
+            else None,
+            "seven_day_sonnet_utilization": s.seven_day_sonnet_utilization,
+            "seven_day_sonnet_resets_at": s.seven_day_sonnet_resets_at.isoformat()
+            if s.seven_day_sonnet_resets_at
+            else None,
+            "seven_day_opus_utilization": s.seven_day_opus_utilization,
+            "seven_day_opus_resets_at": s.seven_day_opus_resets_at.isoformat()
+            if s.seven_day_opus_resets_at
+            else None,
+            "extra_usage_is_enabled": s.extra_usage_is_enabled,
+            "extra_usage_monthly_limit": s.extra_usage_monthly_limit,
+            "extra_usage_used_credits": s.extra_usage_used_credits,
+            "extra_usage_utilization": s.extra_usage_utilization,
+            "extra_usage_currency": s.extra_usage_currency,
+        }
         for s in snap_rs.scalars().all()
     ]
     # v3.7.31 (#252 phase 4) — provider AI reviews (last 7d).
@@ -618,19 +738,25 @@ async def _build_sync_payload(db) -> dict:
         select(ProviderAiReview).where(ProviderAiReview.captured_at >= cutoff)
     )
     provider_ai_reviews_payload = [
-        {"id": r.id, "provider_id": r.provider_id,
-         "captured_at": r.captured_at.isoformat() if r.captured_at else None,
-         "llm_model": r.llm_model, "llm_verdict": r.llm_verdict,
-         "llm_reasoning": r.llm_reasoning,
-         "suggested_priority_delta": r.suggested_priority_delta,
-         "suggested_auto_skip_hours": r.suggested_auto_skip_hours,
-         "stats_summary": r.stats_summary,
-         "applied_at": r.applied_at.isoformat() if r.applied_at else None,
-         "applied_action": r.applied_action,
-         "prior_priority": r.prior_priority,
-         "prior_auto_skip_until": r.prior_auto_skip_until.isoformat() if r.prior_auto_skip_until else None,
-         "reverted_at": r.reverted_at.isoformat() if r.reverted_at else None,
-         "dismissed_at": r.dismissed_at.isoformat() if r.dismissed_at else None}
+        {
+            "id": r.id,
+            "provider_id": r.provider_id,
+            "captured_at": r.captured_at.isoformat() if r.captured_at else None,
+            "llm_model": r.llm_model,
+            "llm_verdict": r.llm_verdict,
+            "llm_reasoning": r.llm_reasoning,
+            "suggested_priority_delta": r.suggested_priority_delta,
+            "suggested_auto_skip_hours": r.suggested_auto_skip_hours,
+            "stats_summary": r.stats_summary,
+            "applied_at": r.applied_at.isoformat() if r.applied_at else None,
+            "applied_action": r.applied_action,
+            "prior_priority": r.prior_priority,
+            "prior_auto_skip_until": r.prior_auto_skip_until.isoformat()
+            if r.prior_auto_skip_until
+            else None,
+            "reverted_at": r.reverted_at.isoformat() if r.reverted_at else None,
+            "dismissed_at": r.dismissed_at.isoformat() if r.dismissed_at else None,
+        }
         for r in provider_reviews_rs.scalars().all()
     ]
 
@@ -642,16 +768,18 @@ async def _build_sync_payload(db) -> dict:
         select(CallerMemory).where(CallerMemory.updated_at >= time.time() - 7 * 86400)
     )
     caller_memory_payload = [
-        {"api_key_id": r.api_key_id,
-         "conversation_id": r.conversation_id,
-         "memory_tag": r.memory_tag,
-         "content": r.content,
-         "content_format": r.content_format,
-         "updated_at": r.updated_at,
-         "updated_by_node": r.updated_by_node,
-         "source_provider_id": r.source_provider_id,
-         "source_request_id": r.source_request_id,
-         "deleted_at": r.deleted_at}
+        {
+            "api_key_id": r.api_key_id,
+            "conversation_id": r.conversation_id,
+            "memory_tag": r.memory_tag,
+            "content": r.content,
+            "content_format": r.content_format,
+            "updated_at": r.updated_at,
+            "updated_by_node": r.updated_by_node,
+            "source_provider_id": r.source_provider_id,
+            "source_request_id": r.source_request_id,
+            "deleted_at": r.deleted_at,
+        }
         for r in memory_rs.scalars().all()
     ]
     # v4.4 M-2 — per-node bridge auth state (Path A foundation).
@@ -661,13 +789,15 @@ async def _build_sync_payload(db) -> dict:
     # to immediately see the full per-node-state picture.
     pnas_rs = await db.execute(select(ProviderNodeAuthState))
     provider_node_auth_states_payload = [
-        {"provider_id": r.provider_id,
-         "node_id": r.node_id,
-         "auth_state": r.auth_state,
-         "last_ok_at": r.last_ok_at.isoformat() if r.last_ok_at else None,
-         "last_check_at": r.last_check_at.isoformat() if r.last_check_at else None,
-         "reauth_url": r.reauth_url,
-         "last_error": r.last_error}
+        {
+            "provider_id": r.provider_id,
+            "node_id": r.node_id,
+            "auth_state": r.auth_state,
+            "last_ok_at": r.last_ok_at.isoformat() if r.last_ok_at else None,
+            "last_check_at": r.last_check_at.isoformat() if r.last_check_at else None,
+            "reauth_url": r.reauth_url,
+            "last_error": r.last_error,
+        }
         for r in pnas_rs.scalars().all()
     ]
 
@@ -677,14 +807,16 @@ async def _build_sync_payload(db) -> dict:
         select(CallerMemoryMarker).where(CallerMemoryMarker.deleted_at.is_(None))
     )
     caller_memory_markers_payload = [
-        {"api_key_id": r.api_key_id,
-         "conversation_id": r.conversation_id,
-         "memory_tag": r.memory_tag,
-         "first_seen_at": r.first_seen_at,
-         "last_known_provider_id": r.last_known_provider_id,
-         "last_known_external_ref": r.last_known_external_ref,
-         "recovered_at": r.recovered_at,
-         "deleted_at": r.deleted_at}
+        {
+            "api_key_id": r.api_key_id,
+            "conversation_id": r.conversation_id,
+            "memory_tag": r.memory_tag,
+            "first_seen_at": r.first_seen_at,
+            "last_known_provider_id": r.last_known_provider_id,
+            "last_known_external_ref": r.last_known_external_ref,
+            "recovered_at": r.recovered_at,
+            "deleted_at": r.deleted_at,
+        }
         for r in marker_rs.scalars().all()
     ]
 
@@ -695,23 +827,18 @@ async def _build_sync_payload(db) -> dict:
     # so we push the last 1000 rows by created_at — idempotent on the
     # receiver thanks to the dedup, and 1000 is well above the per-sync
     # event rate for the foreseeable future.
-    from app.models.db import ComplianceEvent, CompliancePolicyChange
     from app.cluster.sync_handlers import (
         serialize_compliance_event,
         serialize_policy_change,
     )
+    from app.models.db import ComplianceEvent, CompliancePolicyChange
+
     events_rs = await db.execute(
-        select(ComplianceEvent)
-        .order_by(ComplianceEvent.id.desc())
-        .limit(1000)
+        select(ComplianceEvent).order_by(ComplianceEvent.id.desc()).limit(1000)
     )
-    compliance_events_payload = [
-        serialize_compliance_event(r) for r in events_rs.scalars().all()
-    ]
+    compliance_events_payload = [serialize_compliance_event(r) for r in events_rs.scalars().all()]
     policy_changes_rs = await db.execute(
-        select(CompliancePolicyChange)
-        .order_by(CompliancePolicyChange.id.desc())
-        .limit(1000)
+        select(CompliancePolicyChange).order_by(CompliancePolicyChange.id.desc()).limit(1000)
     )
     compliance_policy_changes_payload = [
         serialize_policy_change(r) for r in policy_changes_rs.scalars().all()
@@ -721,6 +848,7 @@ async def _build_sync_payload(db) -> dict:
     # cluster_peers table (including tombstones — receiver's apply
     # handler honours removed_at) so add/remove operations propagate.
     from app.models.db import ClusterPeer as _CP
+
     cp_rs = await db.execute(select(_CP))
     cluster_peers_payload = [
         {
@@ -799,8 +927,11 @@ async def push_sync(peer: PeerNode, db_factory):
             resp = await client.post(
                 f"{peer.url.rstrip('/')}/cluster/sync",
                 content=body,
-                headers={"X-Cluster-Node": settings.cluster_node_id or "", "X-Cluster-Sig": sig,
-                         "Content-Type": "application/json"},
+                headers={
+                    "X-Cluster-Node": settings.cluster_node_id or "",
+                    "X-Cluster-Sig": sig,
+                    "Content-Type": "application/json",
+                },
             )
         # v4.4.24 (BUG-081) — inspect the peer response. Pre-fix this was a
         # fire-and-forget POST: a peer 500-ing on apply_sync (e.g. BUG-079's
@@ -814,6 +945,7 @@ async def push_sync(peer: PeerNode, db_factory):
         # non-blocking; failures are swallowed (best-effort metric).
         try:
             from app.monitoring.cluster_sync_metrics import record_attempt
+
             record_attempt(peer.id, resp.status_code)
         except Exception:
             pass
@@ -821,13 +953,16 @@ async def push_sync(peer: PeerNode, db_factory):
             body_preview = resp.text[:300] if resp.text else "(empty body)"
             logger.warning(
                 "Sync to %s REJECTED: HTTP %s — %s",
-                peer.id, resp.status_code, body_preview,
+                peer.id,
+                resp.status_code,
+                body_preview,
             )
     except Exception as e:
         # v5.14.2: transport-level failures get status=0 so the 403-rate
         # stat isn't conflated with network outages. Same swallow policy.
         try:
             from app.monitoring.cluster_sync_metrics import record_attempt
+
             record_attempt(peer.id, 0)
         except Exception:
             pass
@@ -862,9 +997,7 @@ class ClusterSyncQuorumNotReached(Exception):
     def __init__(self, acks, pending):
         self.acks = acks
         self.pending = pending
-        super().__init__(
-            f"quorum not reached: {len(acks)} acks, {len(pending)} pending"
-        )
+        super().__init__(f"quorum not reached: {len(acks)} acks, {len(pending)} pending")
 
 
 def _active_peers() -> list[PeerNode]:
@@ -878,7 +1011,8 @@ async def _push_to_peer(peer: PeerNode, payload: dict, timeout_sec: float):
     """POST one signed payload to a peer's /cluster/sync. Returns the
     peer + ack timestamp on success. Raises on any failure (HTTP non-200,
     network error, timeout) — the caller categorises it as ``pending``."""
-    from datetime import datetime as _dt, timezone as _tz
+    from datetime import datetime as _dt
+
     body = json.dumps(payload, sort_keys=True).encode()
     sig = sign_payload(body)
     async with httpx.AsyncClient(timeout=timeout_sec, verify=False) as client:
@@ -893,7 +1027,7 @@ async def _push_to_peer(peer: PeerNode, payload: dict, timeout_sec: float):
         )
     if resp.status_code != 200:
         raise RuntimeError(f"HTTP {resp.status_code}: {resp.text[:200]}")
-    return peer, _dt.now(_tz.utc)
+    return peer, _dt.now(UTC)
 
 
 async def push_policy_change_with_quorum(
@@ -971,11 +1105,7 @@ async def push_policy_change_with_quorum(
     if len(acks) < required_acks:
         raise ClusterSyncQuorumNotReached(acks, pending)
 
-    status = (
-        "fully-acked"
-        if not pending
-        else f"quorum-reached-{len(pending)}-pending"
-    )
+    status = "fully-acked" if not pending else f"quorum-reached-{len(pending)}-pending"
     return {
         "applied_to_peers": acks,
         "pending_peers": pending,
@@ -989,6 +1119,7 @@ def get_cluster_status() -> dict:
     # source (from __version__); peer versions come from their /health
     # responses as captured by _ping_peer.
     from app.__version__ import __version__ as _local_version
+
     return {
         "cluster_enabled": settings.cluster_enabled,
         "local_node": {
@@ -1022,6 +1153,7 @@ async def _peer_refresh_loop(db_factory):
     table so UI-driven add/remove ops on this or any peer node take
     effect within one cycle without a container restart."""
     from app.monitoring.worker_heartbeat import WorkerHeartbeat, register_expected_interval
+
     hb = WorkerHeartbeat(name="cluster_peer_refresh")
     register_expected_interval("cluster_peer_refresh", 30)
     while True:
@@ -1034,7 +1166,7 @@ async def _peer_refresh_loop(db_factory):
             await hb.tick(status="error", note=str(exc)[:200])
 
 
-_peer_refresh_task: Optional[asyncio.Task] = None
+_peer_refresh_task: asyncio.Task | None = None
 
 
 def start_cluster(db_factory, notify_fn=None):

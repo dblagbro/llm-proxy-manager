@@ -26,12 +26,13 @@ Operator-visible fields returned by GET/POST include the raw
 "copy token" button. If we ever wire tenant-scoped RBAC (v5.15+ #511),
 this endpoint gets a scope check.
 """
+
 from __future__ import annotations
 
 import json
 import secrets
 import time
-from typing import Optional
+from datetime import UTC
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -41,7 +42,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth.admin import AdminUser, require_admin
 from app.models.database import get_db
 from app.models.db import (
-    Provider, ProviderOAuthAccount, CompliancePolicyChange,
+    CompliancePolicyChange,
+    Provider,
+    ProviderOAuthAccount,
 )
 
 router = APIRouter(
@@ -58,31 +61,31 @@ class OAuthAccountOut(BaseModel):
     provider_id: str
     label: str
     access_token: str
-    refresh_token: Optional[str] = None
-    oauth_expires_at: Optional[float] = None
+    refresh_token: str | None = None
+    oauth_expires_at: float | None = None
     enabled: bool
-    last_used_at: Optional[float] = None
-    utilization_pct: Optional[float] = 0.0
-    captured_via: Optional[str] = None
-    created_at: Optional[str] = None
-    updated_at: Optional[str] = None
+    last_used_at: float | None = None
+    utilization_pct: float | None = 0.0
+    captured_via: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
 
 
 class OAuthAccountCreate(BaseModel):
     label: str = Field(..., min_length=1, max_length=255)
     access_token: str = Field(..., min_length=1)
-    refresh_token: Optional[str] = None
-    oauth_expires_at: Optional[float] = None
+    refresh_token: str | None = None
+    oauth_expires_at: float | None = None
     enabled: bool = True
-    captured_via: Optional[str] = "manual_paste"
+    captured_via: str | None = "manual_paste"
 
 
 class OAuthAccountPatch(BaseModel):
-    label: Optional[str] = Field(None, min_length=1, max_length=255)
-    access_token: Optional[str] = None
-    refresh_token: Optional[str] = None
-    oauth_expires_at: Optional[float] = None
-    enabled: Optional[bool] = None
+    label: str | None = Field(None, min_length=1, max_length=255)
+    access_token: str | None = None
+    refresh_token: str | None = None
+    oauth_expires_at: float | None = None
+    enabled: bool | None = None
 
 
 # ── Helpers ───────────────────────────────────────────────────────────
@@ -106,11 +109,10 @@ def _serialize(acc: ProviderOAuthAccount) -> OAuthAccountOut:
 
 
 async def _get_provider_or_404(
-    db: AsyncSession, provider_id: str,
+    db: AsyncSession,
+    provider_id: str,
 ) -> Provider:
-    result = await db.execute(
-        select(Provider).where(Provider.id == provider_id)
-    )
+    result = await db.execute(select(Provider).where(Provider.id == provider_id))
     prov = result.scalar_one_or_none()
     if prov is None:
         raise HTTPException(status_code=404, detail=f"Provider {provider_id} not found")
@@ -118,7 +120,9 @@ async def _get_provider_or_404(
 
 
 async def _get_account_or_404(
-    db: AsyncSession, provider_id: str, account_id: str,
+    db: AsyncSession,
+    provider_id: str,
+    account_id: str,
 ) -> ProviderOAuthAccount:
     result = await db.execute(
         select(ProviderOAuthAccount).where(
@@ -173,9 +177,7 @@ async def list_accounts(
     admin: AdminUser = Depends(require_admin),
 ):
     await _get_provider_or_404(db, provider_id)
-    q = select(ProviderOAuthAccount).where(
-        ProviderOAuthAccount.provider_id == provider_id
-    )
+    q = select(ProviderOAuthAccount).where(ProviderOAuthAccount.provider_id == provider_id)
     if not include_deleted:
         q = q.where(ProviderOAuthAccount.deleted_at.is_(None))
     q = q.order_by(ProviderOAuthAccount.created_at)
@@ -205,12 +207,15 @@ async def create_account(
     )
     db.add(acc)
     await _write_audit(
-        db, provider_id,
+        db,
+        provider_id,
         reason="oauth_account_created",
         before={},
         after={
-            "id": acc.id, "label": acc.label,
-            "enabled": acc.enabled, "captured_via": acc.captured_via,
+            "id": acc.id,
+            "label": acc.label,
+            "enabled": acc.enabled,
+            "captured_via": acc.captured_via,
         },
         admin_user=admin,
     )
@@ -248,9 +253,11 @@ async def patch_account(
         "oauth_expires_at": acc.oauth_expires_at,
     }
     await _write_audit(
-        db, provider_id,
+        db,
+        provider_id,
         reason="oauth_account_edited",
-        before=before, after=after,
+        before=before,
+        after=after,
         admin_user=admin,
     )
     await db.commit()
@@ -269,12 +276,14 @@ async def delete_account(
     if acc.deleted_at is not None:
         # Idempotent — already soft-deleted.
         return None
-    from datetime import datetime, timezone
-    acc.deleted_at = datetime.now(timezone.utc)
+    from datetime import datetime
+
+    acc.deleted_at = datetime.now(UTC)
     acc.enabled = False
     acc.last_user_edit_at = time.time()
     await _write_audit(
-        db, provider_id,
+        db,
+        provider_id,
         reason="oauth_account_soft_deleted",
         before={"enabled": True, "deleted_at": None},
         after={"enabled": False, "deleted_at": acc.deleted_at.isoformat()},

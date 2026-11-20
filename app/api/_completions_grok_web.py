@@ -30,6 +30,7 @@ Original rationale, preserved verbatim:
     # v5.0.23 / Batch 2.5 — failover wiring (see messages.py for the
     # symmetric comment + decision rationale).
 """
+
 from __future__ import annotations
 
 import logging
@@ -49,8 +50,6 @@ router = APIRouter()
 # (~60s max) so the session isn't held for the multi-hour class of
 # leak that v5.21.7 fixed in runs.py.
 @router.post("/v1/chat/completions")
-
-
 async def dispatch_grok_web_with_failover(
     *,
     route,
@@ -70,9 +69,15 @@ async def dispatch_grok_web_with_failover(
     can serve the requested model.
     """
     from app.api._grok_web_dispatch import dispatch_grok_web_openai
+
     gw_resp = await dispatch_grok_web_openai(
-        route=route, body=body, stream=stream, resp_headers=resp_headers,
-        db=db, key_record_id=key_record.id, t0=time.monotonic(),
+        route=route,
+        body=body,
+        stream=stream,
+        resp_headers=resp_headers,
+        db=db,
+        key_record_id=key_record.id,
+        t0=time.monotonic(),
         llm_hint=llm_hint,
     )
     if gw_resp is not None:
@@ -81,10 +86,13 @@ async def dispatch_grok_web_with_failover(
         return gw_resp, route
     # Failover — re-resolve excluding the failed grok-web provider.
     from app.routing.router import select_provider
+
     failed_id = route.provider.id
     new_route = await select_provider(
-        db=db, hint=hint,
-        has_tools=False, has_images=False,
+        db=db,
+        hint=hint,
+        has_tools=False,
+        has_images=False,
         key_type=key_record.key_type or "standard",
         model_override=body.get("model"),
         exclude_provider_id=failed_id,
@@ -101,7 +109,9 @@ async def dispatch_grok_web_with_failover(
         )
     logger.info(
         "grok_web.failover_to provider=%s (was=%s, model=%s)",
-        new_route.provider.name, failed_id, body.get("model"),
+        new_route.provider.name,
+        failed_id,
+        body.get("model"),
     )
     # v5.0.23 — preserve the caller's model intent through the
     # failover. select_provider sets cross_family_fallback +
@@ -122,16 +132,19 @@ async def dispatch_grok_web_with_failover(
         new_route.cross_family_fallback = False
         new_route.served_model_native = None
         from app.routing.litellm_binding import build_litellm_model as _bld
+
         new_route.litellm_model = _bld(new_route.provider, body.get("model"))
     else:
         from app.routing.litellm_binding import build_litellm_model as _bld
+
         new_route.cross_family_fallback = True
         new_route.litellm_model = _bld(new_route.provider, None)
         logger.info(
-            "grok_web.failover_model_substituted provider=%s type=%s "
-            "requested=%s served=%s",
-            new_route.provider.name, new_route.provider.provider_type,
-            body.get("model"), new_route.litellm_model,
+            "grok_web.failover_model_substituted provider=%s type=%s requested=%s served=%s",
+            new_route.provider.name,
+            new_route.provider.provider_type,
+            body.get("model"),
+            new_route.litellm_model,
         )
     # v5.1.0 / Batch A4 — swap ``extra`` (litellm_kwargs) to the
     # new provider's. Pre-fix, the existing ``extra`` was built

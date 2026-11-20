@@ -11,10 +11,10 @@ Pinned bugs:
   - BUG-065 lifespan teardown removes the context-level listener
             before closing the BrowserContext
 """
+
 from __future__ import annotations
 
 from pathlib import Path
-
 
 _SRC = Path("grok_bridge/app.py")
 
@@ -32,7 +32,7 @@ def test_chat_endpoint_acquires_lock():
     # Look for the next async with _lock: within ~5000 chars of the
     # endpoint definition (chat body is large, but the lock should be
     # acquired BEFORE _post_to_grok / _capture_statsig_id calls).
-    chat_body = src[chat_start:chat_start + 6000]
+    chat_body = src[chat_start : chat_start + 6000]
     assert "async with _lock:" in chat_body, (
         "BUG-052 regression: chat() no longer wraps its SPA-driven "
         "flow in `async with _lock:`. Concurrent chats will race on "
@@ -52,7 +52,7 @@ def test_cookie_refresh_loop_holds_lock_on_goto():
     # Find the next function header so we don't run into the next
     # function's body.
     next_def = src.find("async def ", fn_start + 1)
-    fn_body = src[fn_start:next_def if next_def != -1 else fn_start + 4000]
+    fn_body = src[fn_start : next_def if next_def != -1 else fn_start + 4000]
     assert "async with _lock:" in fn_body, (
         "BUG-055 regression: _cookie_refresh_loop no longer acquires "
         "_lock around its _page.goto. A refresh tick during a chat() "
@@ -70,7 +70,7 @@ def test_lifespan_removes_context_listener_before_close():
     teardown_idx = src.find("await _context.close()")
     assert teardown_idx != -1
     # Look in the ~600 chars immediately preceding the close call
-    teardown_window = src[max(0, teardown_idx - 800):teardown_idx]
+    teardown_window = src[max(0, teardown_idx - 800) : teardown_idx]
     assert "_context.remove_listener(" in teardown_window, (
         "BUG-065 regression: lifespan teardown no longer removes the "
         "context-level listener before closing the BrowserContext."
@@ -85,7 +85,7 @@ def test_create_new_conversation_still_holds_lock():
     fn_start = src.find("async def create_new_conversation")
     assert fn_start != -1
     next_def = src.find("@app.", fn_start + 1)
-    body = src[fn_start:next_def if next_def != -1 else fn_start + 5000]
+    body = src[fn_start : next_def if next_def != -1 else fn_start + 5000]
     assert "async with _lock:" in body, (
         "create_new_conversation no longer acquires _lock — Batch 2 "
         "regression on a pre-existing safety invariant."

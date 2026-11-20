@@ -4,16 +4,17 @@ Source-level guards confirming the metric primitives are defined, the
 helpers are wired into the memory modules, and the background sampler
 exists with sensible defaults.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
-
 
 # ── Prometheus primitives exist ────────────────────────────────────
 
 
 def test_memory_operations_counter_defined():
     from app.observability.prometheus import MEMORY_OPERATIONS_TOTAL
+
     # Counter with labels (operation, outcome) — call .labels() to confirm shape
     sample = MEMORY_OPERATIONS_TOTAL.labels(operation="inject", outcome="applied")
     assert sample is not None
@@ -21,8 +22,11 @@ def test_memory_operations_counter_defined():
 
 def test_db_pool_gauges_defined():
     from app.observability.prometheus import (
-        DB_POOL_CHECKED_OUT, DB_POOL_OVERFLOW, DB_POOL_SIZE,
+        DB_POOL_CHECKED_OUT,
+        DB_POOL_OVERFLOW,
+        DB_POOL_SIZE,
     )
+
     assert DB_POOL_CHECKED_OUT is not None
     assert DB_POOL_OVERFLOW is not None
     assert DB_POOL_SIZE is not None
@@ -30,18 +34,22 @@ def test_db_pool_gauges_defined():
 
 def test_scrape_freshness_gauge_defined():
     from app.observability.prometheus import SCRAPE_FRESHNESS_SECONDS
+
     sample = SCRAPE_FRESHNESS_SECONDS.labels(
-        provider_id="p1", provider_name="Test", source="anthropic_console_v1",
+        provider_id="p1",
+        provider_name="Test",
+        source="anthropic_console_v1",
     )
     assert sample is not None
 
 
 def test_observer_helpers_callable():
     from app.observability.prometheus import (
-        observe_memory_operation,
         observe_db_pool_snapshot,
+        observe_memory_operation,
         observe_scrape_freshness,
     )
+
     # Smoke — should not raise
     observe_memory_operation("inject", "applied")
     observe_db_pool_snapshot(50, 0, 0)
@@ -85,6 +93,7 @@ def test_recover_emits_metrics():
 
 def test_observability_sampler_module_exists():
     import importlib
+
     mod = importlib.import_module("app.monitoring.observability_sampler")
     assert hasattr(mod, "start")
     assert hasattr(mod, "_sample_pool")

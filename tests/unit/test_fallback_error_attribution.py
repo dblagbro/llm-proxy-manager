@@ -13,6 +13,7 @@ raised exception as ``_llmproxy_attributed_route``; the messages/completions
 handlers resolve ``failed_route = getattr(e, "_llmproxy_attributed_route",
 None) or route`` and pass THAT to ``record_outcome``.
 """
+
 import sys
 import types
 
@@ -68,10 +69,15 @@ async def test_final_exception_attributed_to_failing_route(monkeypatch):
 
     with pytest.raises(Exception) as excinfo:
         await try_ranked_non_streaming(
-            db=None, hint=None,
-            has_tools=False, has_images=False,
-            key_type="metered", pinned_provider_id=None, model_override=None,
-            primary_route=ROUTE_A, call_fn=call_fn,
+            db=None,
+            hint=None,
+            has_tools=False,
+            has_images=False,
+            key_type="metered",
+            pinned_provider_id=None,
+            model_override=None,
+            primary_route=ROUTE_A,
+            call_fn=call_fn,
         )
 
     exc = excinfo.value
@@ -112,17 +118,25 @@ async def test_handler_resolution_record_outcome_agrees(monkeypatch):
 
     try:
         await try_ranked_non_streaming(
-            db=None, hint=None,
-            has_tools=False, has_images=False,
-            key_type="metered", pinned_provider_id=None, model_override=None,
-            primary_route=route, call_fn=call_fn,
+            db=None,
+            hint=None,
+            has_tools=False,
+            has_images=False,
+            key_type="metered",
+            pinned_provider_id=None,
+            model_override=None,
+            primary_route=route,
+            call_fn=call_fn,
         )
     except Exception as e:
         # Exactly what messages.py / completions.py now do.
         failed_route = getattr(e, "_llmproxy_attributed_route", None) or route
         await fake_record_outcome(
-            None, failed_route.provider.id, failed_route.litellm_model,
-            error_str=str(e), provider_name=failed_route.provider.name,
+            None,
+            failed_route.provider.id,
+            failed_route.litellm_model,
+            error_str=str(e),
+            provider_name=failed_route.provider.name,
         )
 
     # provider_id and error agree — both B's.

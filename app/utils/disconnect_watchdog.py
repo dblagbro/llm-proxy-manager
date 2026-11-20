@@ -22,6 +22,7 @@ Defaults: enabled, 2s poll interval. Disable via
 flag exists so we can pin the watchdog OFF and confirm the pool leak
 returns — a clean A/B repro).
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -36,6 +37,7 @@ logger = logging.getLogger(__name__)
 def _enabled() -> bool:
     try:
         from app.config import settings
+
         return bool(getattr(settings, "disconnect_watchdog_enabled", True))
     except Exception:
         return True
@@ -44,6 +46,7 @@ def _enabled() -> bool:
 def _poll_interval_sec() -> float:
     try:
         from app.config import settings
+
         return float(getattr(settings, "disconnect_watchdog_interval_sec", 2.0))
     except Exception:
         return 2.0
@@ -159,8 +162,8 @@ async def watch_for_disconnect(request: Request) -> AsyncIterator[None]:
                 return
             if disconnected:
                 logger.info(
-                    "disconnect_watchdog.client_gone cancelling handler "
-                    "path=%s", request.url.path,
+                    "disconnect_watchdog.client_gone cancelling handler path=%s",
+                    request.url.path,
                 )
                 main_task.cancel()
                 return
@@ -169,9 +172,7 @@ async def watch_for_disconnect(request: Request) -> AsyncIterator[None]:
             except asyncio.CancelledError:
                 return
 
-    watcher_task = asyncio.create_task(
-        _watcher(), name="disconnect-watchdog"
-    )
+    watcher_task = asyncio.create_task(_watcher(), name="disconnect-watchdog")
     try:
         yield
     finally:

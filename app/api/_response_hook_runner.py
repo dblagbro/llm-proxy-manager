@@ -44,13 +44,18 @@ Footgun mitigations from the 2026-06-30 hub-team memo:
   hook runs inside ``asyncio.wait_for`` with the timeout; timeout
   treated as failure.
 """
+
 from __future__ import annotations
 
 import asyncio
 import logging
 import time
+import typing as _typing
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Optional, Protocol
+from typing import Any, Protocol
+
+Awaitable = _typing.Awaitable
+Callable = _typing.Callable
 
 logger = logging.getLogger(__name__)
 
@@ -73,8 +78,8 @@ class ResponseHookFn(Protocol):
         *,
         handler_id: str,
         resp_headers: dict,
-        context: "HookContext",
-    ) -> Optional[dict]: ...
+        context: HookContext,
+    ) -> dict | None: ...
 
 
 @dataclass
@@ -89,14 +94,15 @@ class HookContext:
     substitution hook needs it to decide between the three emission
     values (true / false / pass-through).
     """
-    requested_model: Optional[str] = None
-    served_model: Optional[str] = None
-    api_key_id: Optional[str] = None
-    provider_id: Optional[str] = None
-    compliance_event_id: Optional[str] = None
+
+    requested_model: str | None = None
+    served_model: str | None = None
+    api_key_id: str | None = None
+    provider_id: str | None = None
+    compliance_event_id: str | None = None
     substituted: bool = False
     key_record: Any = None  # ORM Provider/ApiKey for hooks that need it
-    request: Any = None     # Starlette Request for hooks that need raw headers
+    request: Any = None  # Starlette Request for hooks that need raw headers
     extra: dict = field(default_factory=dict)
 
 
@@ -129,14 +135,21 @@ def register_hook(
     for i, existing in enumerate(_REGISTRY):
         if existing.name == name:
             _REGISTRY[i] = _RegisteredHook(
-                name=name, fn=fn, priority=priority,
+                name=name,
+                fn=fn,
+                priority=priority,
                 timeout_sec=timeout_sec,
             )
             _REGISTRY.sort(key=lambda h: h.priority)
             return
-    _REGISTRY.append(_RegisteredHook(
-        name=name, fn=fn, priority=priority, timeout_sec=timeout_sec,
-    ))
+    _REGISTRY.append(
+        _RegisteredHook(
+            name=name,
+            fn=fn,
+            priority=priority,
+            timeout_sec=timeout_sec,
+        )
+    )
     _REGISTRY.sort(key=lambda h: h.priority)
 
 
@@ -151,13 +164,16 @@ def unregister_hook(name: str) -> bool:
 def registered_hooks() -> list[dict]:
     """Read-only snapshot for tests + admin UI. Doesn't expose ``fn``
     because Callable objects aren't useful in JSON."""
-    return [{
-        "name": h.name,
-        "priority": h.priority,
-        "timeout_sec": h.timeout_sec,
-        "degraded": h.degraded,
-        "consecutive_failures": h.consecutive_failures,
-    } for h in _REGISTRY]
+    return [
+        {
+            "name": h.name,
+            "priority": h.priority,
+            "timeout_sec": h.timeout_sec,
+            "degraded": h.degraded,
+            "consecutive_failures": h.consecutive_failures,
+        }
+        for h in _REGISTRY
+    ]
 
 
 def reset_registry_for_tests() -> None:
@@ -168,7 +184,7 @@ def reset_registry_for_tests() -> None:
 
 
 def _parse_hooks_override_header(
-    value: Optional[str],
+    value: str | None,
 ) -> tuple[set[str], set[str]]:
     """Parse the ``X-Hooks-Override`` request header.
 
@@ -205,7 +221,7 @@ def _parse_hooks_override_header(
     return force_enabled, force_disabled
 
 
-def _extract_hooks_override(context: "HookContext") -> tuple[set[str], set[str]]:
+def _extract_hooks_override(context: HookContext) -> tuple[set[str], set[str]]:
     """Pull the override header off the request and gate on the key's
     ``debug_echo_enabled`` flag. Returns empty sets when:
 
@@ -222,9 +238,7 @@ def _extract_hooks_override(context: "HookContext") -> tuple[set[str], set[str]]
     if request is None:
         return set(), set()
     try:
-        raw = request.headers.get("x-hooks-override") or request.headers.get(
-            "X-Hooks-Override"
-        )
+        raw = request.headers.get("x-hooks-override") or request.headers.get("X-Hooks-Override")
     except Exception:
         return set(), set()
     if not raw:
@@ -295,15 +309,14 @@ async def apply_response_hooks(
                 resp_headers.update(result)
             hook.consecutive_failures = 0
             _applied.append(hook.name)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             hook.consecutive_failures += 1
             elapsed_ms = int((time.time() - t0) * 1000)
-            resp_headers["X-Hook-Failure"] = (
-                f"{hook.name}:timeout:{elapsed_ms}ms"
-            )
+            resp_headers["X-Hook-Failure"] = f"{hook.name}:timeout:{elapsed_ms}ms"
             logger.warning(
                 "response_hook.timeout name=%s elapsed_ms=%d",
-                hook.name, elapsed_ms,
+                hook.name,
+                elapsed_ms,
             )
             if hook.consecutive_failures >= _DEGRADE_AFTER_N_FAILURES:
                 hook.degraded = True
@@ -313,12 +326,11 @@ async def apply_response_hooks(
                 )
         except Exception as exc:
             hook.consecutive_failures += 1
-            resp_headers["X-Hook-Failure"] = (
-                f"{hook.name}:exception:{type(exc).__name__}"
-            )
+            resp_headers["X-Hook-Failure"] = f"{hook.name}:exception:{type(exc).__name__}"
             logger.warning(
                 "response_hook.exception name=%s err=%s",
-                hook.name, exc,
+                hook.name,
+                exc,
             )
             if hook.consecutive_failures >= _DEGRADE_AFTER_N_FAILURES:
                 hook.degraded = True
@@ -349,6 +361,7 @@ def register_builtin_hooks() -> None:
     from app.compliance.substitution_hook import (
         compliance_substitution_header_hook,
     )
+
     register_hook(
         "compliance_substitution_header_hook",
         compliance_substitution_header_hook,
@@ -363,6 +376,7 @@ def register_builtin_hooks() -> None:
     from app.compliance.substitution_callback_hook import (
         compliance_substitution_callback_hook,
     )
+
     register_hook(
         "compliance_substitution_callback_hook",
         compliance_substitution_callback_hook,

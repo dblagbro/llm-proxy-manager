@@ -20,11 +20,11 @@ Branch matrix tested:
 The "stamp peer's value on accept" behavior is also exercised so that
 subsequent sync cycles converge instead of ping-ponging.
 """
+
 from __future__ import annotations
 
 import re
 from pathlib import Path
-import time
 
 import pytest
 import pytest_asyncio
@@ -38,8 +38,9 @@ async def fresh_db():
     existed; v4.4.20 adds ``last_user_edit_at``, so we must rebuild
     the api_keys table — ``create_all`` alone is a no-op when the
     table already exists with the old schema."""
-    from app.models.database import engine, AsyncSessionLocal
-    from app.models.db import Base, ApiKey
+    from app.models.database import AsyncSessionLocal, engine
+    from app.models.db import ApiKey, Base
+
     async with engine.begin() as conn:
         await conn.run_sync(ApiKey.__table__.drop, checkfirst=True)
         await conn.run_sync(Base.metadata.create_all)
@@ -55,7 +56,6 @@ async def fresh_db():
 # ── Model + push-payload surface guards ──────────────────────────────
 
 
-
 def _function_body(src: str, signature: str) -> str:
     """Return a function's actual body, from its signature to the next
     top-level ``def`` / ``async def`` / decorator.
@@ -68,9 +68,9 @@ def _function_body(src: str, signature: str) -> str:
     boundary cannot go stale as the function grows.
     """
     start = src.index(signature)
-    rest = src[start + len(signature):]
+    rest = src[start + len(signature) :]
     m = re.search(r"\n(?:@|async def |def )", rest)
-    return src[start:start + len(signature) + (m.start() if m else len(rest))]
+    return src[start : start + len(signature) + (m.start() if m else len(rest))]
 
 
 def test_model_has_last_user_edit_at():
@@ -83,7 +83,7 @@ def test_push_payload_includes_last_user_edit_at():
     """Manager push payload must carry the LWW stamp."""
     src = Path("app/cluster/manager.py").read_text()
     idx = src.index("keys = [")
-    block = src[idx:idx + 3500]
+    block = src[idx : idx + 3500]
     assert "last_user_edit_at" in block, (
         "push payload missing last_user_edit_at — peers will never get the "
         "LWW stamp and stay on legacy last-sync-wins forever"
@@ -120,9 +120,7 @@ def test_patch_uses_walltime_for_stamp():
     block = _function_body(src, "async def update_key")
     # Heuristic: the bump line uses ``time.time()``; reject monotonic.
     assert "time.time()" in block, "expected wall-clock stamp"
-    assert "time.monotonic()" not in block, (
-        "monotonic clock would break cross-node LWW comparisons"
-    )
+    assert "time.monotonic()" not in block, "monotonic clock would break cross-node LWW comparisons"
 
 
 # ── Apply-handler LWW branch matrix ──────────────────────────────────
@@ -134,24 +132,37 @@ async def test_lww_accepts_strictly_newer_peer(fresh_db):
     from app.models.db import ApiKey
 
     async with fresh_db() as db:
-        db.add(ApiKey(
-            id="k-newer", name="newer", key_hash="h-newer", key_prefix="lp-nw",
-            enabled=True, daily_hard_cap_usd=10.0,
-            last_user_edit_at=1000.0,
-        ))
+        db.add(
+            ApiKey(
+                id="k-newer",
+                name="newer",
+                key_hash="h-newer",
+                key_prefix="lp-nw",
+                enabled=True,
+                daily_hard_cap_usd=10.0,
+                last_user_edit_at=1000.0,
+            )
+        )
         await db.commit()
 
-        await apply_sync(db, {"api_keys": [{
-            "id": "k-newer", "name": "newer", "key_hash": "h-newer",
-            "key_prefix": "lp-nw",
-            "daily_hard_cap_usd": 50.0,
-            "last_user_edit_at": 2000.0,  # peer stamp newer
-        }]})
+        await apply_sync(
+            db,
+            {
+                "api_keys": [
+                    {
+                        "id": "k-newer",
+                        "name": "newer",
+                        "key_hash": "h-newer",
+                        "key_prefix": "lp-nw",
+                        "daily_hard_cap_usd": 50.0,
+                        "last_user_edit_at": 2000.0,  # peer stamp newer
+                    }
+                ]
+            },
+        )
         await db.commit()
 
-        row = (await db.execute(
-            select(ApiKey).where(ApiKey.key_hash == "h-newer")
-        )).scalar_one()
+        row = (await db.execute(select(ApiKey).where(ApiKey.key_hash == "h-newer"))).scalar_one()
         assert row.daily_hard_cap_usd == 50.0, "newer peer edit should win"
         assert row.last_user_edit_at == 2000.0, "stamp must mirror peer's"
 
@@ -162,30 +173,39 @@ async def test_lww_rejects_strictly_older_peer(fresh_db):
     from app.models.db import ApiKey
 
     async with fresh_db() as db:
-        db.add(ApiKey(
-            id="k-older", name="older", key_hash="h-older", key_prefix="lp-ol",
-            enabled=True, daily_hard_cap_usd=99.0,
-            last_user_edit_at=5000.0,
-        ))
+        db.add(
+            ApiKey(
+                id="k-older",
+                name="older",
+                key_hash="h-older",
+                key_prefix="lp-ol",
+                enabled=True,
+                daily_hard_cap_usd=99.0,
+                last_user_edit_at=5000.0,
+            )
+        )
         await db.commit()
 
-        await apply_sync(db, {"api_keys": [{
-            "id": "k-older", "name": "older", "key_hash": "h-older",
-            "key_prefix": "lp-ol",
-            "daily_hard_cap_usd": 1.0,
-            "last_user_edit_at": 3000.0,  # peer stamp older
-        }]})
+        await apply_sync(
+            db,
+            {
+                "api_keys": [
+                    {
+                        "id": "k-older",
+                        "name": "older",
+                        "key_hash": "h-older",
+                        "key_prefix": "lp-ol",
+                        "daily_hard_cap_usd": 1.0,
+                        "last_user_edit_at": 3000.0,  # peer stamp older
+                    }
+                ]
+            },
+        )
         await db.commit()
 
-        row = (await db.execute(
-            select(ApiKey).where(ApiKey.key_hash == "h-older")
-        )).scalar_one()
-        assert row.daily_hard_cap_usd == 99.0, (
-            "older peer edit must NOT clobber newer local"
-        )
-        assert row.last_user_edit_at == 5000.0, (
-            "local stamp must not regress when peer is rejected"
-        )
+        row = (await db.execute(select(ApiKey).where(ApiKey.key_hash == "h-older"))).scalar_one()
+        assert row.daily_hard_cap_usd == 99.0, "older peer edit must NOT clobber newer local"
+        assert row.last_user_edit_at == 5000.0, "local stamp must not regress when peer is rejected"
 
 
 @pytest.mark.asyncio
@@ -196,24 +216,37 @@ async def test_lww_tie_keeps_local(fresh_db):
     from app.models.db import ApiKey
 
     async with fresh_db() as db:
-        db.add(ApiKey(
-            id="k-tie", name="tie", key_hash="h-tie", key_prefix="lp-ti",
-            enabled=True, daily_hard_cap_usd=7.0,
-            last_user_edit_at=4000.0,
-        ))
+        db.add(
+            ApiKey(
+                id="k-tie",
+                name="tie",
+                key_hash="h-tie",
+                key_prefix="lp-ti",
+                enabled=True,
+                daily_hard_cap_usd=7.0,
+                last_user_edit_at=4000.0,
+            )
+        )
         await db.commit()
 
-        await apply_sync(db, {"api_keys": [{
-            "id": "k-tie", "name": "tie", "key_hash": "h-tie",
-            "key_prefix": "lp-ti",
-            "daily_hard_cap_usd": 999.0,
-            "last_user_edit_at": 4000.0,  # exact tie
-        }]})
+        await apply_sync(
+            db,
+            {
+                "api_keys": [
+                    {
+                        "id": "k-tie",
+                        "name": "tie",
+                        "key_hash": "h-tie",
+                        "key_prefix": "lp-ti",
+                        "daily_hard_cap_usd": 999.0,
+                        "last_user_edit_at": 4000.0,  # exact tie
+                    }
+                ]
+            },
+        )
         await db.commit()
 
-        row = (await db.execute(
-            select(ApiKey).where(ApiKey.key_hash == "h-tie")
-        )).scalar_one()
+        row = (await db.execute(select(ApiKey).where(ApiKey.key_hash == "h-tie"))).scalar_one()
         assert row.daily_hard_cap_usd == 7.0, (
             "tie must NOT accept peer — that's the v3.0.63 ping-pong shape"
         )
@@ -227,24 +260,37 @@ async def test_lww_local_stamped_peer_unstamped_keeps_local(fresh_db):
     from app.models.db import ApiKey
 
     async with fresh_db() as db:
-        db.add(ApiKey(
-            id="k-lhs", name="lhs", key_hash="h-lhs", key_prefix="lp-lh",
-            enabled=True, daily_hard_cap_usd=42.0,
-            last_user_edit_at=1500.0,
-        ))
+        db.add(
+            ApiKey(
+                id="k-lhs",
+                name="lhs",
+                key_hash="h-lhs",
+                key_prefix="lp-lh",
+                enabled=True,
+                daily_hard_cap_usd=42.0,
+                last_user_edit_at=1500.0,
+            )
+        )
         await db.commit()
 
         # Payload omits last_user_edit_at entirely
-        await apply_sync(db, {"api_keys": [{
-            "id": "k-lhs", "name": "lhs", "key_hash": "h-lhs",
-            "key_prefix": "lp-lh",
-            "daily_hard_cap_usd": 1.0,
-        }]})
+        await apply_sync(
+            db,
+            {
+                "api_keys": [
+                    {
+                        "id": "k-lhs",
+                        "name": "lhs",
+                        "key_hash": "h-lhs",
+                        "key_prefix": "lp-lh",
+                        "daily_hard_cap_usd": 1.0,
+                    }
+                ]
+            },
+        )
         await db.commit()
 
-        row = (await db.execute(
-            select(ApiKey).where(ApiKey.key_hash == "h-lhs")
-        )).scalar_one()
+        row = (await db.execute(select(ApiKey).where(ApiKey.key_hash == "h-lhs"))).scalar_one()
         assert row.daily_hard_cap_usd == 42.0, (
             "unstamped peer payload must not clobber a real local edit"
         )
@@ -259,24 +305,37 @@ async def test_lww_peer_stamped_local_unstamped_accepts(fresh_db):
     from app.models.db import ApiKey
 
     async with fresh_db() as db:
-        db.add(ApiKey(
-            id="k-rhs", name="rhs", key_hash="h-rhs", key_prefix="lp-rh",
-            enabled=True, daily_hard_cap_usd=10.0,
-            last_user_edit_at=None,  # legacy row
-        ))
+        db.add(
+            ApiKey(
+                id="k-rhs",
+                name="rhs",
+                key_hash="h-rhs",
+                key_prefix="lp-rh",
+                enabled=True,
+                daily_hard_cap_usd=10.0,
+                last_user_edit_at=None,  # legacy row
+            )
+        )
         await db.commit()
 
-        await apply_sync(db, {"api_keys": [{
-            "id": "k-rhs", "name": "rhs", "key_hash": "h-rhs",
-            "key_prefix": "lp-rh",
-            "daily_hard_cap_usd": 25.0,
-            "last_user_edit_at": 9999.0,
-        }]})
+        await apply_sync(
+            db,
+            {
+                "api_keys": [
+                    {
+                        "id": "k-rhs",
+                        "name": "rhs",
+                        "key_hash": "h-rhs",
+                        "key_prefix": "lp-rh",
+                        "daily_hard_cap_usd": 25.0,
+                        "last_user_edit_at": 9999.0,
+                    }
+                ]
+            },
+        )
         await db.commit()
 
-        row = (await db.execute(
-            select(ApiKey).where(ApiKey.key_hash == "h-rhs")
-        )).scalar_one()
+        row = (await db.execute(select(ApiKey).where(ApiKey.key_hash == "h-rhs"))).scalar_one()
         assert row.daily_hard_cap_usd == 25.0, "fresh peer edit should win on legacy local"
         assert row.last_user_edit_at == 9999.0, "stamp must be adopted"
 
@@ -289,23 +348,35 @@ async def test_lww_neither_stamped_legacy_last_sync_wins(fresh_db):
     from app.models.db import ApiKey
 
     async with fresh_db() as db:
-        db.add(ApiKey(
-            id="k-neither", name="neither", key_hash="h-neither",
-            key_prefix="lp-ne",
-            enabled=True, daily_hard_cap_usd=11.0,
-        ))
+        db.add(
+            ApiKey(
+                id="k-neither",
+                name="neither",
+                key_hash="h-neither",
+                key_prefix="lp-ne",
+                enabled=True,
+                daily_hard_cap_usd=11.0,
+            )
+        )
         await db.commit()
 
-        await apply_sync(db, {"api_keys": [{
-            "id": "k-neither", "name": "neither", "key_hash": "h-neither",
-            "key_prefix": "lp-ne",
-            "daily_hard_cap_usd": 22.0,
-        }]})
+        await apply_sync(
+            db,
+            {
+                "api_keys": [
+                    {
+                        "id": "k-neither",
+                        "name": "neither",
+                        "key_hash": "h-neither",
+                        "key_prefix": "lp-ne",
+                        "daily_hard_cap_usd": 22.0,
+                    }
+                ]
+            },
+        )
         await db.commit()
 
-        row = (await db.execute(
-            select(ApiKey).where(ApiKey.key_hash == "h-neither")
-        )).scalar_one()
+        row = (await db.execute(select(ApiKey).where(ApiKey.key_hash == "h-neither"))).scalar_one()
         assert row.daily_hard_cap_usd == 22.0, (
             "legacy-both path must remain last-sync-wins for v4.4.18/19 compatibility"
         )
@@ -320,15 +391,23 @@ async def test_insert_path_carries_peer_stamp(fresh_db):
     from app.models.db import ApiKey
 
     async with fresh_db() as db:
-        await apply_sync(db, {"api_keys": [{
-            "id": "k-fresh", "name": "fresh", "key_hash": "h-fresh",
-            "key_prefix": "lp-fr",
-            "key_type": "standard", "enabled": True,
-            "last_user_edit_at": 1234.5,
-        }]})
+        await apply_sync(
+            db,
+            {
+                "api_keys": [
+                    {
+                        "id": "k-fresh",
+                        "name": "fresh",
+                        "key_hash": "h-fresh",
+                        "key_prefix": "lp-fr",
+                        "key_type": "standard",
+                        "enabled": True,
+                        "last_user_edit_at": 1234.5,
+                    }
+                ]
+            },
+        )
         await db.commit()
 
-        row = (await db.execute(
-            select(ApiKey).where(ApiKey.key_hash == "h-fresh")
-        )).scalar_one()
+        row = (await db.execute(select(ApiKey).where(ApiKey.key_hash == "h-fresh"))).scalar_one()
         assert row.last_user_edit_at == 1234.5

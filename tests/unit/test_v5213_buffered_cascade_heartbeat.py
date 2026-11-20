@@ -12,6 +12,7 @@ LLM call + optional cascade only. No tool hops, no memory extraction,
 no MCP injection, no response tail. Full-feature dispatch stays on
 the v5.21.0 no-heartbeat path.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -70,11 +71,15 @@ def test_heartbeat_flag_gates_on_retry_enabled():
     assert detect_buffered_cascade_mode(True, _Key(False, True)) == (False, False, None)
     # both on, streaming -> heartbeat mode
     assert detect_buffered_cascade_mode(True, _Key(True, True)) == (
-        True, True, "buffered-heartbeat",
+        True,
+        True,
+        "buffered-heartbeat",
     )
     # retry on, heartbeat off -> plain buffered
     assert detect_buffered_cascade_mode(True, _Key(True, False)) == (
-        True, False, "buffered",
+        True,
+        False,
+        "buffered",
     )
     # not streaming -> nothing, regardless of flags
     assert detect_buffered_cascade_mode(False, _Key(True, True)) == (False, False, None)
@@ -95,7 +100,7 @@ def test_helper_emits_periodic_heartbeat_frames():
     assert "_HEARTBEAT_FRAME" in src
     # And the loop that yields them:
     assert "asyncio.wait_for" in src
-    assert "asyncio.TimeoutError" in src
+    assert "except asyncio.TimeoutError:" in src or "except TimeoutError:" in src
 
 
 def test_helper_uses_asyncio_shield():
@@ -163,6 +168,7 @@ def test_helper_produces_valid_sse_via_short_dispatch():
             from app.api._buffered_cascade_stream import (
                 run_buffered_cascade_stream_with_heartbeat,
             )
+
             frames: list[bytes] = []
             async for chunk in run_buffered_cascade_stream_with_heartbeat(
                 route=_Route(),
@@ -191,10 +197,9 @@ def test_helper_produces_valid_sse_via_short_dispatch():
 
 def test_version_bumped():
     import re
+
     src = Path("app/__version__.py").read_text()
     m = re.search(r'"(\d+)\.(\d+)\.(\d+)"', src)
     assert m
     major, minor, patch = int(m.group(1)), int(m.group(2)), int(m.group(3))
-    assert (major, minor, patch) >= (5, 21, 3), (
-        f"expected >= 5.21.3, got {major}.{minor}.{patch}"
-    )
+    assert (major, minor, patch) >= (5, 21, 3), f"expected >= 5.21.3, got {major}.{minor}.{patch}"

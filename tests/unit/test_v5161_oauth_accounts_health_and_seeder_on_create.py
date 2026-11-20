@@ -11,14 +11,12 @@ Fix: seeder runs again inside the provider CREATE handler for OAuth-
 flavored types. Plus /health gets a new ``oauthAccounts`` block so
 operators can see how many providers are single vs multi-account.
 """
+
 from __future__ import annotations
 
 import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
-
-import pytest
-
 
 # ── (1) Seeder-on-create wiring ──────────────────────────────────────
 
@@ -62,8 +60,9 @@ def test_oauth_accounts_snapshot_owns_its_session():
 
 def test_snapshot_module_importable():
     from app.api._oauth_accounts_health import (
-        snapshot_oauth_accounts, reset_cache_for_tests, _OAUTH_TYPES,
+        _OAUTH_TYPES,
     )
+
     assert "cursor-oauth" in _OAUTH_TYPES
     assert "codex-oauth" in _OAUTH_TYPES
     assert "claude-oauth" in _OAUTH_TYPES
@@ -74,7 +73,7 @@ def test_snapshot_module_importable():
 def test_snapshot_empty_db_returns_zeros():
     """With no OAuth providers, snapshot has the shape but all zeros —
     doesn't error, doesn't return partial keys."""
-    from app.api._oauth_accounts_health import snapshot_oauth_accounts, reset_cache_for_tests
+    from app.api._oauth_accounts_health import reset_cache_for_tests, snapshot_oauth_accounts
 
     reset_cache_for_tests()
 
@@ -105,7 +104,7 @@ def test_snapshot_empty_db_returns_zeros():
 def test_snapshot_caches_result():
     """Second call within 15s returns the same object (cache hit) —
     protects /health from hitting the DB on every request."""
-    from app.api._oauth_accounts_health import snapshot_oauth_accounts, reset_cache_for_tests
+    from app.api._oauth_accounts_health import reset_cache_for_tests, snapshot_oauth_accounts
 
     reset_cache_for_tests()
 
@@ -135,7 +134,8 @@ def test_snapshot_caches_result():
 def test_snapshot_normalizes_chatgpt_alias_to_codex():
     """Internal ``ChatGPT-oauth-plan`` type is exposed as ``codex-oauth`` in
     the health surface (v3.8.0 rename shim)."""
-    from app.api._oauth_accounts_health import snapshot_oauth_accounts, reset_cache_for_tests
+    from app.api._oauth_accounts_health import reset_cache_for_tests, snapshot_oauth_accounts
+
     reset_cache_for_tests()
 
     call_seq = []
@@ -179,10 +179,9 @@ def test_snapshot_normalizes_chatgpt_alias_to_codex():
 
 def test_version_bumped():
     import re
+
     src = Path("app/__version__.py").read_text()
     m = re.search(r'"(\d+)\.(\d+)\.(\d+)"', src)
     assert m
     major, minor, patch = int(m.group(1)), int(m.group(2)), int(m.group(3))
-    assert (major, minor, patch) >= (5, 16, 1), (
-        f"expected >= 5.16.1, got {major}.{minor}.{patch}"
-    )
+    assert (major, minor, patch) >= (5, 16, 1), f"expected >= 5.16.1, got {major}.{minor}.{patch}"

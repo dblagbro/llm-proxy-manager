@@ -1,7 +1,9 @@
 """Unit tests for CoT session store (Redis with in-memory fallback)."""
+
 import sys
-import types
 import time
+import types
+
 import pytest
 
 _stub = types.ModuleType("litellm")
@@ -13,7 +15,8 @@ if not hasattr(sys.modules["litellm"], "RateLimitError"):
 # A sibling test (test_cot_pipeline) stubs app.cot.session in sys.modules to
 # stop heavy imports. Force a fresh import here so we exercise the real module.
 sys.modules.pop("app.cot.session", None)
-import importlib
+import importlib  # noqa: E402
+
 session_mod = importlib.import_module("app.cot.session")
 get_session_analyses = session_mod.get_session_analyses
 save_session_analysis = session_mod.save_session_analysis
@@ -26,9 +29,11 @@ def reset_module_state(monkeypatch):
     session_mod._fallback.clear()
     session_mod._redis_client = None
     session_mod._redis_ok = False
+
     # Force the redis path to return None (fallback used)
     async def _no_redis():
         return None
+
     monkeypatch.setattr(session_mod, "_get_redis", _no_redis)
     yield
     session_mod._fallback.clear()
@@ -77,6 +82,7 @@ class TestSaveSessionAnalysis:
     async def test_caps_at_max_analyses(self, monkeypatch):
         """When max is 3, the 4th save should drop the oldest entry."""
         from app.config import settings
+
         monkeypatch.setattr(settings, "cot_session_max_analyses", 3)
 
         for a in ["one", "two", "three", "four"]:
@@ -98,6 +104,7 @@ class TestTTLFallback:
     @pytest.mark.asyncio
     async def test_expired_session_returns_empty(self, monkeypatch):
         from app.config import settings
+
         monkeypatch.setattr(settings, "cot_session_ttl_sec", 60)
         await save_session_analysis("sess-ttl", "stale")
         # Manually backdate the timestamp
@@ -107,6 +114,7 @@ class TestTTLFallback:
 
     def test_clean_fallback_removes_expired(self, monkeypatch):
         from app.config import settings
+
         monkeypatch.setattr(settings, "cot_session_ttl_sec", 60)
         now = time.time()
         session_mod._fallback["fresh"] = {"analyses": ["a"], "ts": now - 10}

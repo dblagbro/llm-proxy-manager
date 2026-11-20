@@ -6,10 +6,11 @@ when the caller's max_tokens <= that budget the model burns the entire
 output cap on internal reasoning and returns HTTP 200 with empty content.
 clamp_thinking_budget() shrinks the budget so content always has headroom.
 """
+
 from app.routing.litellm_binding import (
-    clamp_thinking_budget,
     _THINKING_BUDGET_MIN,
     _THINKING_CONTENT_HEADROOM,
+    clamp_thinking_budget,
 )
 
 

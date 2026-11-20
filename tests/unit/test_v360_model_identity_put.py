@@ -11,23 +11,23 @@ Coverage:
 - Auth: admin-required (403 without)
 - 404 on unknown model_id
 """
+
 from __future__ import annotations
 
 import pytest
 from fastapi import HTTPException
 
+from app.api._etag import (
+    etag_for_canonical_model,
+    etag_for_capability,
+    parse_if_match,
+)
 from app.api.llm_models import (
     ModelIdentityUpdate,
     _merged_identity,
     _validate_aliases,
 )
-from app.api._etag import (
-    etag_for_capability,
-    etag_for_canonical_model,
-    parse_if_match,
-)
 from app.routing.canonical import KNOWN_FAMILIES
-
 
 # ── ModelIdentityUpdate (Pydantic) ─────────────────────────────────
 
@@ -61,7 +61,7 @@ def test_validate_aliases_rejects_too_many():
 
 
 def test_validate_aliases_accepts_at_limit():
-    _validate_aliases(["a%d" % i for i in range(16)], "model")  # no raise
+    _validate_aliases([f"a{i}" for i in range(16)], "model")  # no raise
 
 
 def test_validate_aliases_rejects_whitespace():
@@ -115,13 +115,14 @@ def test_known_families_is_immutable():
 # ── ETag helpers ───────────────────────────────────────────────────
 
 
-def _make_cap(model_id: str, aliases: list[str], family=None, variant=None,
-              updated_at=None):
+def _make_cap(model_id: str, aliases: list[str], family=None, variant=None, updated_at=None):
     """Lightweight stub of ModelCapability for ETag testing — only
     the fields ``etag_for_capability`` reads."""
     from datetime import datetime
+
     class StubCap:
         pass
+
     c = StubCap()
     c.model_id = model_id
     c.aliases = aliases
@@ -240,7 +241,9 @@ def test_cluster_build_payload_includes_identity_fields():
     # We import lazily because the function pulls heavy deps; we
     # only need to confirm the payload shape includes the keys.
     import inspect
+
     from app.cluster import manager
+
     src = inspect.getsource(manager)
     assert '"aliases": c.aliases' in src or "'aliases': c.aliases" in src
     assert '"model_family"' in src
@@ -251,7 +254,9 @@ def test_cluster_apply_pass_replicates_identity_fields():
     """The apply pass must also write incoming aliases/family/variant
     or the cluster will diverge after a PUT."""
     import inspect
+
     from app.cluster import sync
+
     src = inspect.getsource(sync)
     # Apply pass: looks for the 3 fields in the c_data dict
     assert 'c_data.get("aliases")' in src

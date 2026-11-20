@@ -1,10 +1,11 @@
 """Unit tests for audit log JSONL export (Wave 6)."""
+
+import json
 import sys
 import types
-import json
+from datetime import UTC, datetime
+
 import pytest
-from datetime import datetime, timezone
-from pathlib import Path
 
 _stub = types.ModuleType("litellm")
 _stub.RateLimitError = type("RateLimitError", (Exception,), {})
@@ -12,9 +13,12 @@ sys.modules.setdefault("litellm", _stub)
 if not hasattr(sys.modules["litellm"], "RateLimitError"):
     sys.modules["litellm"].RateLimitError = type("RateLimitError", (Exception,), {})
 
-import app.monitoring.audit_export as audit_mod
-from app.monitoring.audit_export import (
-    _serialize_row, list_exports, prune_old_exports, export_activity_log,
+import app.monitoring.audit_export as audit_mod  # noqa: E402
+from app.monitoring.audit_export import (  # noqa: E402
+    _serialize_row,
+    export_activity_log,
+    list_exports,
+    prune_old_exports,
 )
 
 
@@ -37,14 +41,16 @@ class _FakeRow:
         self.provider_id = provider_id
         self.api_key_id = api_key_id
         self.event_meta = event_meta or {"foo": "bar"}
-        self.created_at = created_at or datetime(2026, 4, 23, tzinfo=timezone.utc)
+        self.created_at = created_at or datetime(2026, 4, 23, tzinfo=UTC)
 
 
 class _FakeScalars:
     def __init__(self, rows):
         self._rows = rows
+
     def scalars(self):
         return self
+
     def all(self):
         return self._rows
 
@@ -52,6 +58,7 @@ class _FakeScalars:
 class _FakeDB:
     def __init__(self, rows):
         self._rows = rows
+
     async def execute(self, query):
         return _FakeScalars(self._rows)
 
@@ -78,7 +85,7 @@ class TestSerializeRow:
         # so JS Date parses them as UTC instead of local time. The
         # ``+00:00`` form is stripped before ``Z`` is appended (was
         # producing the malformed ``+00:00Z`` form pre-v3.0.73).
-        ts = datetime(2026, 1, 15, 12, 30, 45, tzinfo=timezone.utc)
+        ts = datetime(2026, 1, 15, 12, 30, 45, tzinfo=UTC)
         r = _FakeRow(created_at=ts)
         out = _serialize_row(r)
         assert out["created_at"] == "2026-01-15T12:30:45Z"
@@ -127,7 +134,7 @@ class TestExportActivityLog:
         assert result.path.name.startswith("audit-")
         assert result.path.name.endswith(".jsonl")
         # Format: audit-YYYYMMDDTHHMMSSZ.jsonl
-        stem = result.path.stem[len("audit-"):]
+        stem = result.path.stem[len("audit-") :]
         assert stem.endswith("Z")
         assert "T" in stem
 
@@ -154,8 +161,14 @@ class TestExportActivityLog:
         line = result.path.read_text().strip().split("\n")[0]
         # Find positions of keys — they must be in alphabetical order
         keys_in_order = [
-            "api_key_id", "created_at", "event_meta", "event_type",
-            "id", "message", "provider_id", "severity",
+            "api_key_id",
+            "created_at",
+            "event_meta",
+            "event_type",
+            "id",
+            "message",
+            "provider_id",
+            "severity",
         ]
         positions = [line.index(f'"{k}"') for k in keys_in_order]
         assert positions == sorted(positions)
@@ -195,7 +208,9 @@ class TestListExports:
 
 class TestPruneOldExports:
     def test_removes_old_files(self, tmp_export_dir):
-        import os, time
+        import os
+        import time
+
         old_path = tmp_export_dir / "audit-old.jsonl"
         new_path = tmp_export_dir / "audit-new.jsonl"
         old_path.write_text("old")

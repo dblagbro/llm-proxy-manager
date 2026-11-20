@@ -5,7 +5,9 @@ tmrwww01/02 llm-proxy2 pool exhausts every 24-48h. Root cause
 undiagnosable because the admin trace endpoint requires login and
 login requires the pool. SIGUSR2 breaks the chicken/egg.
 """
+
 from __future__ import annotations
+
 from pathlib import Path
 
 
@@ -72,7 +74,9 @@ def test_install_actually_registers_the_signal():
     register a SIGUSR2 handler with the OS. If the installer no-ops
     silently (e.g. imports fail), the whole ship is useless."""
     import signal as _signal
+
     from app.monitoring.pool_trace_signal import install_pool_trace_signal_handler
+
     # Save prior handler to restore
     prior = _signal.getsignal(_signal.SIGUSR2)
     try:
@@ -87,10 +91,9 @@ def test_install_actually_registers_the_signal():
 
 def test_version_bumped():
     import re
+
     src = Path("app/__version__.py").read_text()
     m = re.search(r'"(\d+)\.(\d+)\.(\d+)"', src)
     assert m
     major, minor, patch = int(m.group(1)), int(m.group(2)), int(m.group(3))
-    assert (major, minor, patch) >= (5, 21, 6), (
-        f"expected >= 5.21.6, got {major}.{minor}.{patch}"
-    )
+    assert (major, minor, patch) >= (5, 21, 6), f"expected >= 5.21.6, got {major}.{minor}.{patch}"

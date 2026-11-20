@@ -4,15 +4,15 @@ Exercises the FastAPI routes in ``app/api/compliance.py`` via the underlying
 handler functions; the patterns mirror other endpoint-shape tests in this
 suite (no ``TestClient`` to keep them fast + deterministic).
 """
+
 from __future__ import annotations
 
 import sys
 import types
-from datetime import datetime, timedelta
 from unittest.mock import patch
 
 import pytest
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine, AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 # Stub litellm before any app import (mirrors test_v5_router_compliance_pre_filter.py).
 _stub = types.ModuleType("litellm")
@@ -24,15 +24,14 @@ if not hasattr(sys.modules["litellm"], "RateLimitError"):
 
 from app.api.compliance import (  # noqa: E402
     admin_compliance_events,
-    admin_compliance_policy_changes,
     cluster_compliance_ready,
     debug_echo,
     me_compliance,
 )
 from app.auth.keys import ApiKeyRecord  # noqa: E402
-from app.compliance import emit_event, emit_policy_change  # noqa: E402
+from app.compliance import emit_event  # noqa: E402
 from app.compliance.policy import invalidate_blocklist_cache  # noqa: E402
-from app.models.db import ApiKey, Base, ComplianceEvent  # noqa: E402
+from app.models.db import ApiKey, Base  # noqa: E402
 
 
 async def _fresh_db():
@@ -76,6 +75,7 @@ async def test_debug_echo_403_when_not_enabled():
     key = _mk_record(debug_echo=False)
     async with Session() as db:
         from fastapi import HTTPException
+
         with pytest.raises(HTTPException) as ex:
             await debug_echo(_stub_request(), db=db, key=key)
     assert ex.value.status_code == 403
@@ -88,14 +88,20 @@ async def test_debug_echo_would_451_when_ua_matches_blocked_company():
     invalidate_blocklist_cache(None)
     # Seed ApiKey row so get_effective_blocklist sees per-key policy.
     async with Session() as db:
-        db.add(ApiKey(
-            id="key-1", name="t", key_hash="h", key_prefix="p",
-            blocked_companies=["anthropic"],
-            debug_echo_enabled=True,
-        ))
+        db.add(
+            ApiKey(
+                id="key-1",
+                name="t",
+                key_hash="h",
+                key_prefix="p",
+                blocked_companies=["anthropic"],
+                debug_echo_enabled=True,
+            )
+        )
         await db.commit()
     key = _mk_record(
-        key_id="key-1", debug_echo=True,
+        key_id="key-1",
+        debug_echo=True,
         blocked=["anthropic"],
     )
     headers = {"user-agent": "claude-cli/2.1.88 (external, cli)"}
@@ -113,11 +119,16 @@ async def test_debug_echo_no_match_when_ua_clean():
     Session = await _fresh_db()
     invalidate_blocklist_cache(None)
     async with Session() as db:
-        db.add(ApiKey(
-            id="key-1", name="t", key_hash="h", key_prefix="p",
-            blocked_companies=["anthropic"],
-            debug_echo_enabled=True,
-        ))
+        db.add(
+            ApiKey(
+                id="key-1",
+                name="t",
+                key_hash="h",
+                key_prefix="p",
+                blocked_companies=["anthropic"],
+                debug_echo_enabled=True,
+            )
+        )
         await db.commit()
     key = _mk_record(key_id="key-1", debug_echo=True, blocked=["anthropic"])
     headers = {"user-agent": "curl/8.4.0"}
@@ -154,16 +165,25 @@ async def test_admin_events_csv_columns():
     Session = await _fresh_db()
     async with Session() as db:
         # Seed an API key + one compliance event
-        db.add(ApiKey(
-            id="key-1", name="t", key_hash="h", key_prefix="p",
-        ))
+        db.add(
+            ApiKey(
+                id="key-1",
+                name="t",
+                key_hash="h",
+                key_prefix="p",
+            )
+        )
         await db.flush()
         await emit_event(
-            db, audit_id="comp_a1", api_key_id="key-1",
+            db,
+            audit_id="comp_a1",
+            api_key_id="key-1",
             event_type="model_substitution",
             reason_code="api-key-policy:blocked-company:anthropic",
-            http_status=200, blocked_company="anthropic",
-            requested_model="claude-haiku", served_model="gpt-4o-mini",
+            http_status=200,
+            blocked_company="anthropic",
+            requested_model="claude-haiku",
+            served_model="gpt-4o-mini",
             served_provider_id="p-openai",
             client_user_agent="openai-python/1.0.0",
             commit=True,
@@ -171,17 +191,25 @@ async def test_admin_events_csv_columns():
     fake_admin = types.SimpleNamespace(user_id="u", username="admin", role="admin")
     async with Session() as db:
         resp = await admin_compliance_events(
-            api_key_id=None, event_type=None, start=None, end=None,
-            format="csv", limit=10, db=db, _=fake_admin,
+            api_key_id=None,
+            event_type=None,
+            start=None,
+            end=None,
+            format="csv",
+            limit=10,
+            db=db,
+            _=fake_admin,
         )
     chunks = []
     async for chunk in resp.body_iterator:
         chunks.append(chunk.encode() if isinstance(chunk, str) else chunk)
     body = b"".join(chunks).decode()
     header_line = body.splitlines()[0]
-    expected = ("audit_id,api_key_id,event_type,requested_at,requested_model,"
-                "served_model,served_provider_id,blocked_company,reason_code,"
-                "client_user_agent,http_status")
+    expected = (
+        "audit_id,api_key_id,event_type,requested_at,requested_model,"
+        "served_model,served_provider_id,blocked_company,reason_code,"
+        "client_user_agent,http_status"
+    )
     assert header_line == expected
     # Row count = header + 1 data row
     assert len(body.strip().splitlines()) == 2
@@ -194,16 +222,25 @@ async def test_admin_events_json_shape():
         db.add(ApiKey(id="key-1", name="t", key_hash="h", key_prefix="p"))
         await db.flush()
         await emit_event(
-            db, audit_id="comp_x", api_key_id="key-1",
+            db,
+            audit_id="comp_x",
+            api_key_id="key-1",
             event_type="model_substitution",
             reason_code="api-key-policy:blocked-company:anthropic",
-            http_status=200, commit=True,
+            http_status=200,
+            commit=True,
         )
     fake_admin = types.SimpleNamespace(user_id="u", username="admin", role="admin")
     async with Session() as db:
         resp = await admin_compliance_events(
-            api_key_id="key-1", event_type=None, start=None, end=None,
-            format="json", limit=10, db=db, _=fake_admin,
+            api_key_id="key-1",
+            event_type=None,
+            start=None,
+            end=None,
+            format="json",
+            limit=10,
+            db=db,
+            _=fake_admin,
         )
     assert "events" in resp
     assert len(resp["events"]) == 1
@@ -222,25 +259,34 @@ async def test_me_compliance_returns_effective_blocklist():
     per-key fields (api_key_id/name added).
     """
     import hashlib
+
     from starlette.datastructures import Headers
+
     from app.compliance import generate_audit_id
+
     Session = await _fresh_db()
     invalidate_blocklist_cache(None)
     raw_key = "sk-test-me-compliance"
     async with Session() as db:
-        db.add(ApiKey(
-            id="key-1", name="t",
-            key_hash=hashlib.sha256(raw_key.encode()).hexdigest(),
-            key_prefix=raw_key[:8],
-            blocked_companies=["anthropic"],
-            allowed_paths=["/v1/chat/completions"],
-        ))
+        db.add(
+            ApiKey(
+                id="key-1",
+                name="t",
+                key_hash=hashlib.sha256(raw_key.encode()).hexdigest(),
+                key_prefix=raw_key[:8],
+                blocked_companies=["anthropic"],
+                allowed_paths=["/v1/chat/completions"],
+            )
+        )
         await db.flush()
         await emit_event(
-            db, audit_id=generate_audit_id(), api_key_id="key-1",
+            db,
+            audit_id=generate_audit_id(),
+            api_key_id="key-1",
             event_type="client_product_refusal",
             reason_code="client-product-banned",
-            http_status=451, commit=True,
+            http_status=451,
+            commit=True,
         )
 
     class _StubRequest:

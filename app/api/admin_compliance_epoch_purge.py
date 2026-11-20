@@ -18,13 +18,13 @@ Hard rules:
   DELETE runs (so a crash mid-purge still records intent).
 - Dry-run returns row counts without modifying anything.
 """
+
 from __future__ import annotations
 
-from datetime import datetime
 import json
 import secrets
 import time
-from typing import List, Optional
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -76,7 +76,7 @@ class PurgeRequest(BaseModel):
         ),
         examples=["2026-06-06T00:00:00Z"],
     )
-    tables: List[str] = Field(
+    tables: list[str] = Field(
         ...,
         description="Table names to purge. Must be a subset of PURGABLE_TABLES.",
         min_length=1,
@@ -89,7 +89,7 @@ class PurgeRequest(BaseModel):
             "When false: hard-delete + write the audit row."
         ),
     )
-    reason: Optional[str] = Field(
+    reason: str | None = Field(
         None,
         max_length=2000,
         description=(
@@ -103,17 +103,17 @@ class TableResult(BaseModel):
     table: str
     rows_matched: int
     rows_deleted: int  # 0 in dry-run mode
-    oldest_timestamp: Optional[str] = None
+    oldest_timestamp: str | None = None
 
 
 class PurgeResponse(BaseModel):
     ok: bool
     dry_run: bool
     cutoff_date: str
-    audit_id: Optional[str] = None
+    audit_id: str | None = None
     total_rows_matched: int
     total_rows_deleted: int  # 0 in dry-run
-    results: List[TableResult]
+    results: list[TableResult]
 
 
 @router.post("", response_model=PurgeResponse)
@@ -126,13 +126,13 @@ async def compliance_epoch_purge(
     for t in body.tables:
         if t in FORBIDDEN_TABLES:
             raise HTTPException(
-                400, f"table '{t}' is in FORBIDDEN_TABLES; never purgeable",
+                400,
+                f"table '{t}' is in FORBIDDEN_TABLES; never purgeable",
             )
         if t not in PURGABLE_TABLES:
             raise HTTPException(
                 400,
-                f"table '{t}' not in PURGABLE_TABLES; allowed: "
-                f"{sorted(PURGABLE_TABLES)}",
+                f"table '{t}' not in PURGABLE_TABLES; allowed: {sorted(PURGABLE_TABLES)}",
             )
 
     # Validate cutoff_date parses.
@@ -141,7 +141,8 @@ async def compliance_epoch_purge(
         _cutoff_dt = datetime.fromisoformat(body.cutoff_date.rstrip("Z"))
     except ValueError:
         raise HTTPException(
-            400, f"cutoff_date must be ISO 8601; got {body.cutoff_date!r}",
+            400,
+            f"cutoff_date must be ISO 8601; got {body.cutoff_date!r}",
         )
     # v5.22.43 — SQLite stores DateTime columns as space-separated
     # 'YYYY-MM-DD HH:MM:SS'. Binding the raw ISO 'T' string made `ts < :cutoff`
@@ -152,24 +153,30 @@ async def compliance_epoch_purge(
     _cutoff_raw = _cutoff_dt.strftime("%Y-%m-%d %H:%M:%S")
 
     # Survey what would be deleted.
-    results: List[TableResult] = []
+    results: list[TableResult] = []
     total_matched = 0
     for t in body.tables:
         ts_col = PURGABLE_TABLES[t]
-        n = (await db.execute(
-            text(f"SELECT COUNT(*) FROM {t} WHERE {ts_col} < :cutoff"),
-            {"cutoff": _cutoff_raw},
-        )).scalar() or 0
-        oldest = (await db.execute(
-            text(f"SELECT MIN({ts_col}) FROM {t} WHERE {ts_col} < :cutoff"),
-            {"cutoff": _cutoff_raw},
-        )).scalar()
-        results.append(TableResult(
-            table=t,
-            rows_matched=n,
-            rows_deleted=0,  # set after DELETE
-            oldest_timestamp=str(oldest) if oldest else None,
-        ))
+        n = (
+            await db.execute(
+                text(f"SELECT COUNT(*) FROM {t} WHERE {ts_col} < :cutoff"),
+                {"cutoff": _cutoff_raw},
+            )
+        ).scalar() or 0
+        oldest = (
+            await db.execute(
+                text(f"SELECT MIN({ts_col}) FROM {t} WHERE {ts_col} < :cutoff"),
+                {"cutoff": _cutoff_raw},
+            )
+        ).scalar()
+        results.append(
+            TableResult(
+                table=t,
+                rows_matched=n,
+                rows_deleted=0,  # set after DELETE
+                oldest_timestamp=str(oldest) if oldest else None,
+            )
+        )
         total_matched += n
 
     if body.dry_run:
@@ -185,34 +192,40 @@ async def compliance_epoch_purge(
 
     # Live mode — write the audit row FIRST (so a mid-DELETE crash
     # still leaves intent in the chain), then run the DELETEs.
-    audit_id = f"ppc_{int(time.time()*1000):013x}{secrets.token_hex(6)}"
+    audit_id = f"ppc_{int(time.time() * 1000):013x}{secrets.token_hex(6)}"
     from app.models.db import CompliancePolicyChange
-    db.add(CompliancePolicyChange(
-        policy_change_id=audit_id,
-        changed_at=datetime.utcnow(),
-        changed_by_user_id=admin.username,
-        scope="system",
-        target_id=None,
-        before_state=json.dumps({
-            "matched_per_table": {r.table: r.rows_matched for r in results},
-            "total_matched": total_matched,
-        }),
-        after_state=json.dumps({
-            "purge_intent": "delete pre-compliance epoch data",
-            "cutoff_date": body.cutoff_date,
-            "tables": body.tables,
-        }),
-        reason=(
-            f"compliance_epoch_purge by {admin.username}: hard-delete "
-            f"pre-v5.2.0 data per security team mandate. "
-            f"cutoff={body.cutoff_date} tables={','.join(body.tables)} "
-            f"matched={total_matched}"
-            + (f" reason={body.reason}" if body.reason else "")
-        ),
-        applied_to_peers=json.dumps([]),
-        pending_peers=None,
-        cluster_sync_status="local_only",
-    ))
+
+    db.add(
+        CompliancePolicyChange(
+            policy_change_id=audit_id,
+            changed_at=datetime.utcnow(),
+            changed_by_user_id=admin.username,
+            scope="system",
+            target_id=None,
+            before_state=json.dumps(
+                {
+                    "matched_per_table": {r.table: r.rows_matched for r in results},
+                    "total_matched": total_matched,
+                }
+            ),
+            after_state=json.dumps(
+                {
+                    "purge_intent": "delete pre-compliance epoch data",
+                    "cutoff_date": body.cutoff_date,
+                    "tables": body.tables,
+                }
+            ),
+            reason=(
+                f"compliance_epoch_purge by {admin.username}: hard-delete "
+                f"pre-v5.2.0 data per security team mandate. "
+                f"cutoff={body.cutoff_date} tables={','.join(body.tables)} "
+                f"matched={total_matched}" + (f" reason={body.reason}" if body.reason else "")
+            ),
+            applied_to_peers=json.dumps([]),
+            pending_peers=None,
+            cluster_sync_status="local_only",
+        )
+    )
     await db.commit()
 
     # Run DELETEs per table.

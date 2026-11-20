@@ -10,24 +10,23 @@ sessions. Suggestion-emit pushes a notification body when the header
 fires; FastMCP tool-call hook drains it on the next tool call. Pattern
 borrowed from ccproxy's NotificationBuffer (TTL + overflow markers).
 """
+
 from __future__ import annotations
 
-import asyncio
 import time
 from pathlib import Path
 
-
 # ── Ship 3 — accept-header parsing ─────────────────────────────────────
-
-
 from tests.unit._handler_surface import messages_handler_source
 
 
 def test_accept_header_module_exists():
     from app.capability_scout.accept_handler import (
-        HEADER_NAME, RESPONSE_STATUS_HEADER, WARNING_HEADER,
-        process_accept_header,
+        HEADER_NAME,
+        RESPONSE_STATUS_HEADER,
+        WARNING_HEADER,
     )
+
     assert HEADER_NAME == "X-Proxy-Accept-MCP"
     assert RESPONSE_STATUS_HEADER == "X-Proxy-MCP-Accept-Status"
     assert WARNING_HEADER == "Warning"
@@ -35,6 +34,7 @@ def test_accept_header_module_exists():
 
 def test_accept_header_parses_comma_separated():
     from app.capability_scout.accept_handler import _parse_accept_header
+
     assert _parse_accept_header("read_xlsx_to_markdown") == ["read_xlsx_to_markdown"]
     assert _parse_accept_header(" tool_a , tool_b , tool_c ") == ["tool_a", "tool_b", "tool_c"]
     # Tolerate the "tool=name" prefix form
@@ -66,7 +66,7 @@ def test_accept_handler_wired_into_messages():
         "messages.py no longer routes through the response tail"
     )
     assert "from app.capability_scout.accept_handler import process_accept_header" in tail_src
-    assert 'X-Proxy-Accept-MCP' in tail_src
+    assert "X-Proxy-Accept-MCP" in tail_src
 
 
 def test_accept_handler_wired_into_completions():
@@ -80,7 +80,7 @@ def test_accept_audit_scope_per_key():
     pattern."""
     src = Path("app/capability_scout/accept_handler.py").read_text()
     assert 'scope="per_key"' in src
-    assert 'target_id=api_key_id' in src
+    assert "target_id=api_key_id" in src
     assert 'reason="mcp_tool_adopted_via_accept_header"' in src
 
 
@@ -89,15 +89,17 @@ def test_accept_audit_scope_per_key():
 
 def test_buffer_module_constants():
     from app.capability_scout.suggestion_buffer_mcp import (
-        _MAX_PER_KEY, _TTL_SEC, BUFFER,
-        push_suggestion_notification, drain_pending,
+        _MAX_PER_KEY,
+        _TTL_SEC,
     )
+
     assert _MAX_PER_KEY == 32
     assert _TTL_SEC == 3600.0
 
 
 def test_buffer_push_drain_round_trip():
     from app.capability_scout.suggestion_buffer_mcp import BUFFER
+
     # Use a synthetic key to avoid colliding with anything live.
     key = f"test-key-{time.time()}"
     BUFFER.push(key, {"type": "proxy_mcp_suggestion", "tool": "x"})
@@ -115,7 +117,8 @@ def test_buffer_overflow_marker_uses_ccproxy_compat_event_type():
     synthetic overflow marker with event type ``ccproxy_buffer_overflow``
     so consumer tools that already parse ccproxy's overflow markers
     accept ours without changes."""
-    from app.capability_scout.suggestion_buffer_mcp import BUFFER, _MAX_PER_KEY
+    from app.capability_scout.suggestion_buffer_mcp import _MAX_PER_KEY, BUFFER
+
     key = f"test-overflow-{time.time()}"
     # Push more than the cap.
     for i in range(_MAX_PER_KEY + 3):
@@ -136,7 +139,9 @@ def test_buffer_drain_wired_into_mcp_tool_call():
 
 def test_suggestion_emit_pushes_to_buffer():
     src = Path("app/capability_scout/suggestion_emit.py").read_text()
-    assert "from app.capability_scout.suggestion_buffer_mcp import push_suggestion_notification" in src
+    assert (
+        "from app.capability_scout.suggestion_buffer_mcp import push_suggestion_notification" in src
+    )
     assert "push_suggestion_notification(api_key_id, tool, score" in src
 
 
@@ -145,6 +150,7 @@ def test_suggestion_emit_pushes_to_buffer():
 
 def test_version_bumped():
     import re
+
     src = Path("app/__version__.py").read_text()
     m = re.search(r'"(\d+)\.(\d+)\.(\d+)"', src)
     assert m and (int(m[1]), int(m[2]), int(m[3])) >= (5, 12, 2), "expected >= 5.12.2"

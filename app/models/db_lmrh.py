@@ -5,7 +5,8 @@ Split out from ``db.py`` in v4.4.11. Owns:
 - ``LmrhDim`` — registered LMRH dimensions (auto-register path).
 - ``LmrhProposal`` — operator-reviewed dim proposals.
 """
-from sqlalchemy import Column, String, Integer, Float, Text, JSON
+
+from sqlalchemy import JSON, Column, Float, Integer, String, Text
 
 from app.models.db_base import Base
 
@@ -23,16 +24,17 @@ class LmrhDim(Base):
     by integrating apps. Read of merged-set goes through ``known_dim_names()``
     which combines both.
     """
+
     __tablename__ = "lmrh_dims"
 
     name = Column(String, primary_key=True)
-    owner_app = Column(String, nullable=True)         # free-form ("paperless-ai-analyzer")
-    owner_key_id = Column(String, nullable=True)      # api_keys.id of submitter
-    semantics = Column(Text, nullable=True)           # one-paragraph description
-    value_type = Column(String, nullable=True)        # "string|int|enum:a,b,c|float"
-    kind = Column(String, default="advisory")        # hard|soft|advisory
-    examples = Column(JSON, default=list)             # ["task=foo;exclude=bar"]
-    requested_name = Column(String, nullable=True)    # what was originally requested
+    owner_app = Column(String, nullable=True)  # free-form ("paperless-ai-analyzer")
+    owner_key_id = Column(String, nullable=True)  # api_keys.id of submitter
+    semantics = Column(Text, nullable=True)  # one-paragraph description
+    value_type = Column(String, nullable=True)  # "string|int|enum:a,b,c|float"
+    kind = Column(String, default="advisory")  # hard|soft|advisory
+    examples = Column(JSON, default=list)  # ["task=foo;exclude=bar"]
+    requested_name = Column(String, nullable=True)  # what was originally requested
     registered_at = Column(Float, nullable=False)
     registered_by_node = Column(String, nullable=True)
     # v3.0.29: tombstone for cluster-replicated soft delete. Without this,
@@ -49,6 +51,7 @@ class LmrhProposal(Base):
     path). Distinct from the registry — proposals are read-only-by-admins
     until promoted to a registry entry.
     """
+
     __tablename__ = "lmrh_proposals"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -57,7 +60,7 @@ class LmrhProposal(Base):
     proposer_app = Column(String, nullable=True)
     proposer_key_id = Column(String, nullable=True)
     proposed_at = Column(Float, nullable=False)
-    status = Column(String, default="pending")        # pending|accepted|rejected
+    status = Column(String, default="pending")  # pending|accepted|rejected
     review_note = Column(Text, nullable=True)
     # v3.0.29: tombstone for cluster-replicated soft delete (see LmrhDim).
     deleted_at = Column(Float, nullable=True)

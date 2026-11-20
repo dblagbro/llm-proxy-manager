@@ -8,11 +8,11 @@ Uses the standard WorkerHeartbeat pattern (v5.4.0 — BUG-069/074) so
 the supervisor sweep sees the worker's last-tick heartbeat and can
 alarm if it stalls.
 """
+
 from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Optional
 
 from app.models.database import AsyncSessionLocal
 from app.monitoring.worker_heartbeat import WorkerHeartbeat
@@ -21,13 +21,14 @@ logger = logging.getLogger(__name__)
 
 
 SWEEP_INTERVAL_SEC = 6 * 60 * 60  # 6h
-_TASK: Optional[asyncio.Task] = None
+_TASK: asyncio.Task | None = None
 _HEARTBEAT = WorkerHeartbeat("caller-score-decay", expected_interval_sec=SWEEP_INTERVAL_SEC)
 
 
 async def _sweep_once() -> tuple[int, int]:
     """One decay tick. Returns (updated_count, gc_count)."""
     from app.capability_scout.score import decay_all_scores
+
     async with AsyncSessionLocal() as db:
         return await decay_all_scores(db)
 
@@ -44,9 +45,7 @@ async def _decay_loop() -> None:
     while True:
         try:
             updated, gc = await _sweep_once()
-            logger.info(
-                "caller_score_decay.swept updated=%d gc=%d", updated, gc
-            )
+            logger.info("caller_score_decay.swept updated=%d gc=%d", updated, gc)
             await _HEARTBEAT.beat()
         except asyncio.CancelledError:
             return

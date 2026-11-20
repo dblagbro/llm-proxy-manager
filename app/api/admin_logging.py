@@ -11,13 +11,13 @@ propagates to www2 + c1conv within one sync round (≤60s). The audit
 row (in compliance_policy_changes) replicates separately via the
 compliance-sync path.
 """
+
 from __future__ import annotations
 
-from typing import Optional
-
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
+from fastapi import HTTPException as HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import select, desc
+from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.admin import AdminUser, require_admin
@@ -33,7 +33,7 @@ router = APIRouter(prefix="/api/admin/logging", tags=["admin", "compliance"])
 
 class ToggleBody(BaseModel):
     enabled: bool
-    reason: Optional[str] = Field(
+    reason: str | None = Field(
         None,
         description=(
             "Free-text justification captured in the audit row. Strongly "
@@ -54,6 +54,7 @@ async def logging_status(
     # Surface the last flip (most recent compliance_policy_changes row
     # with scope='system' and a reason mentioning activity_logging).
     from app.models.db import CompliancePolicyChange
+
     rs = await db.execute(
         select(CompliancePolicyChange)
         .where(CompliancePolicyChange.scope == "system")
@@ -90,7 +91,8 @@ async def logging_toggle(
     so the operator's intent is recorded.
     """
     result = await set_logging_enabled(
-        db, enabled=body.enabled,
+        db,
+        enabled=body.enabled,
         actor=admin.username,
         reason=body.reason,
     )
@@ -103,17 +105,18 @@ async def logging_toggle(
 class RetentionEdit(BaseModel):
     # Per-severity retention overrides. Pass null to CLEAR an override
     # (falls back to the env default).
-    info_days:    Optional[int] = Field(None, ge=1, le=36500)
-    warning_days: Optional[int] = Field(None, ge=1, le=36500)
-    error_days:   Optional[int] = Field(None, ge=1, le=36500)
+    info_days: int | None = Field(None, ge=1, le=36500)
+    warning_days: int | None = Field(None, ge=1, le=36500)
+    error_days: int | None = Field(None, ge=1, le=36500)
     # Explicit flags so the operator can request "clear this override"
     # without ambiguity. When True, the corresponding *_days is
     # treated as None regardless of the parsed value.
-    clear_info:    bool = False
+    clear_info: bool = False
     clear_warning: bool = False
-    clear_error:   bool = False
-    reason: Optional[str] = Field(
-        None, max_length=2000,
+    clear_error: bool = False
+    reason: str | None = Field(
+        None,
+        max_length=2000,
         description="Free-text justification captured in the audit row.",
     )
 
@@ -124,17 +127,21 @@ async def retention_status(
     _admin: AdminUser = Depends(require_admin),
 ):
     from app.monitoring.retention_settings import (
-        refresh_from_db, current_state,
-        KEY_INFO, KEY_WARNING, KEY_ERROR,
+        KEY_ERROR,
+        KEY_INFO,
+        KEY_WARNING,
+        current_state,
+        refresh_from_db,
     )
+
     # Always refresh so the UI shows the authoritative state.
     await refresh_from_db(db)
     state = current_state()
     # Reshape for friendlier client consumption.
     return {
-        "info":    state[KEY_INFO],
+        "info": state[KEY_INFO],
         "warning": state[KEY_WARNING],
-        "error":   state[KEY_ERROR],
+        "error": state[KEY_ERROR],
     }
 
 
@@ -149,16 +156,24 @@ async def retention_edit(
     ``clear_*`` flags clear that key's override (falls back to env).
     """
     from app.monitoring.retention_settings import (
-        set_retention, current_state, refresh_from_db,
-        KEY_INFO, KEY_WARNING, KEY_ERROR,
+        KEY_ERROR,
+        KEY_INFO,
+        KEY_WARNING,
+        current_state,
+        refresh_from_db,
+        set_retention,
     )
+
     await refresh_from_db(db)
     audit_ids: list[str] = []
 
-    async def _apply(key: str, new_days: Optional[int]):
+    async def _apply(key: str, new_days: int | None):
         result = await set_retention(
-            db, key=key, days=new_days,
-            actor=admin.username, reason=body.reason,
+            db,
+            key=key,
+            days=new_days,
+            actor=admin.username,
+            reason=body.reason,
         )
         audit_ids.append(result["audit_id"])
 
@@ -174,8 +189,8 @@ async def retention_edit(
         "ok": True,
         "audit_ids": audit_ids,
         "current": {
-            "info":    state[KEY_INFO],
+            "info": state[KEY_INFO],
             "warning": state[KEY_WARNING],
-            "error":   state[KEY_ERROR],
+            "error": state[KEY_ERROR],
         },
     }

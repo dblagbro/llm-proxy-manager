@@ -44,13 +44,14 @@ Limitations (intentional, documented):
 Compliance + audit semantics match /v1/chat/completions exactly because
 we route through the same handler.
 """
+
 from __future__ import annotations
 
 import json as _json
 import logging
 import time
 import uuid
-from typing import Any, Dict, Optional
+from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -60,19 +61,18 @@ from starlette.requests import Request as StarletteRequest
 from app.models.database import get_db
 from app.utils.disconnect_watchdog import watch_for_disconnect
 
-
 logger = logging.getLogger(__name__)
 
 
 router = APIRouter()
 
 
-def _translate_request(body: Dict[str, Any]) -> Dict[str, Any]:
+def _translate_request(body: dict[str, Any]) -> dict[str, Any]:
     """Responses-shape body → ChatCompletions-shape body.
 
     See module docstring for the field-by-field mapping.
     """
-    out: Dict[str, Any] = {}
+    out: dict[str, Any] = {}
 
     if "model" in body:
         out["model"] = body["model"]
@@ -107,10 +107,14 @@ def _translate_request(body: Dict[str, Any]) -> Dict[str, Any]:
                                 text_parts.append(block.get("text", ""))
                             elif btype in ("input_image", "image"):
                                 # ChatCompletions vision-shape
-                                multimodal.append({
-                                    "type": "image_url",
-                                    "image_url": {"url": block.get("image_url") or block.get("url", "")},
-                                })
+                                multimodal.append(
+                                    {
+                                        "type": "image_url",
+                                        "image_url": {
+                                            "url": block.get("image_url") or block.get("url", "")
+                                        },
+                                    }
+                                )
                             else:
                                 # Unknown block — pass as text representation
                                 text_parts.append(_json.dumps(block))
@@ -127,23 +131,29 @@ def _translate_request(body: Dict[str, Any]) -> Dict[str, Any]:
                         messages.append({"role": role, "content": content})
                 elif item.get("type") == "function_call":
                     # Tool-call replay (rare in Responses input but possible)
-                    messages.append({
-                        "role": "assistant",
-                        "tool_calls": [{
-                            "id": item.get("call_id", f"call_{uuid.uuid4().hex[:8]}"),
-                            "type": "function",
-                            "function": {
-                                "name": item.get("name", ""),
-                                "arguments": item.get("arguments", "{}"),
-                            },
-                        }],
-                    })
+                    messages.append(
+                        {
+                            "role": "assistant",
+                            "tool_calls": [
+                                {
+                                    "id": item.get("call_id", f"call_{uuid.uuid4().hex[:8]}"),
+                                    "type": "function",
+                                    "function": {
+                                        "name": item.get("name", ""),
+                                        "arguments": item.get("arguments", "{}"),
+                                    },
+                                }
+                            ],
+                        }
+                    )
                 elif item.get("type") == "function_call_output":
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": item.get("call_id", ""),
-                        "content": item.get("output", ""),
-                    })
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": item.get("call_id", ""),
+                            "content": item.get("output", ""),
+                        }
+                    )
                 # Unknown item types are dropped (defensive — better than
                 # forwarding garbage to litellm).
     out["messages"] = messages
@@ -172,7 +182,7 @@ def _translate_request(body: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
-def _translate_response(cc_response: Dict[str, Any]) -> Dict[str, Any]:
+def _translate_response(cc_response: dict[str, Any]) -> dict[str, Any]:
     """ChatCompletions JSON response → Responses-shape JSON.
 
     See module docstring for the field-by-field mapping.
@@ -190,25 +200,29 @@ def _translate_response(cc_response: Dict[str, Any]) -> Dict[str, Any]:
 
     output_items = []
     if content_str:
-        output_items.append({
-            "type": "message",
-            "id": f"msg_{uuid.uuid4().hex[:24]}",
-            "status": "completed",
-            "role": "assistant",
-            "content": [{"type": "output_text", "text": content_str, "annotations": []}],
-        })
+        output_items.append(
+            {
+                "type": "message",
+                "id": f"msg_{uuid.uuid4().hex[:24]}",
+                "status": "completed",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": content_str, "annotations": []}],
+            }
+        )
 
     # Tool calls — surface as function_call items
-    for tc in (msg.get("tool_calls") or []):
+    for tc in msg.get("tool_calls") or []:
         fn = tc.get("function") or {}
-        output_items.append({
-            "type": "function_call",
-            "id": f"fc_{uuid.uuid4().hex[:24]}",
-            "call_id": tc.get("id", f"call_{uuid.uuid4().hex[:8]}"),
-            "name": fn.get("name", ""),
-            "arguments": fn.get("arguments", ""),
-            "status": "completed",
-        })
+        output_items.append(
+            {
+                "type": "function_call",
+                "id": f"fc_{uuid.uuid4().hex[:24]}",
+                "call_id": tc.get("id", f"call_{uuid.uuid4().hex[:8]}"),
+                "name": fn.get("name", ""),
+                "arguments": fn.get("arguments", ""),
+                "status": "completed",
+            }
+        )
 
     usage_cc = cc_response.get("usage") or {}
     usage_r = {
@@ -243,7 +257,7 @@ class _BodyOverrideRequest:
     need to hand chat_completions the translated dict.
     """
 
-    def __init__(self, wrapped: StarletteRequest, override_body: Dict[str, Any]):
+    def __init__(self, wrapped: StarletteRequest, override_body: dict[str, Any]):
         self._wrapped = wrapped
         self._override = override_body
         # Cache the serialized form so .body() works too (rare; chat_completions
@@ -272,21 +286,21 @@ async def responses(
     # during session.close(). Same fix as cluster.py v5.21.12. Do NOT reorder.
     db: AsyncSession = Depends(get_db),
     _watchdog: None = Depends(watch_for_disconnect),
-    authorization: Optional[str] = Header(None),
-    x_api_key: Optional[str] = Header(None, alias="x-api-key"),
-    llm_hint: Optional[str] = Header(None, alias="llm-hint"),
-    x_session_id: Optional[str] = Header(None, alias="x-session-id"),
-    x_cot_iterations: Optional[str] = Header(None, alias="x-cot-iterations"),
-    x_cot_verify: Optional[str] = Header(None, alias="x-cot-verify"),
-    x_cot_samples: Optional[str] = Header(None, alias="x-cot-samples"),
-    x_cot_mode: Optional[str] = Header(None, alias="x-cot-mode"),
-    x_webhook_url: Optional[str] = Header(None, alias="x-webhook-url"),
-    x_cache: Optional[str] = Header(None, alias="x-cache"),
-    x_cache_ttl: Optional[str] = Header(None, alias="x-cache-ttl"),
-    x_hedge: Optional[str] = Header(None, alias="x-hedge"),
-    x_context_strategy: Optional[str] = Header(None, alias="x-context-strategy"),
-    x_conversation_id: Optional[str] = Header(None, alias="x-conversation-id"),
-    x_memory_tag: Optional[str] = Header(None, alias="x-memory-tag"),
+    authorization: str | None = Header(None),
+    x_api_key: str | None = Header(None, alias="x-api-key"),
+    llm_hint: str | None = Header(None, alias="llm-hint"),
+    x_session_id: str | None = Header(None, alias="x-session-id"),
+    x_cot_iterations: str | None = Header(None, alias="x-cot-iterations"),
+    x_cot_verify: str | None = Header(None, alias="x-cot-verify"),
+    x_cot_samples: str | None = Header(None, alias="x-cot-samples"),
+    x_cot_mode: str | None = Header(None, alias="x-cot-mode"),
+    x_webhook_url: str | None = Header(None, alias="x-webhook-url"),
+    x_cache: str | None = Header(None, alias="x-cache"),
+    x_cache_ttl: str | None = Header(None, alias="x-cache-ttl"),
+    x_hedge: str | None = Header(None, alias="x-hedge"),
+    x_context_strategy: str | None = Header(None, alias="x-context-strategy"),
+    x_conversation_id: str | None = Header(None, alias="x-conversation-id"),
+    x_memory_tag: str | None = Header(None, alias="x-memory-tag"),
 ):
     """Translate OpenAI Responses-shape → ChatCompletions, dispatch through
     the existing handler, translate back.
@@ -356,12 +370,14 @@ async def responses(
         # is idempotent so it's a no-op when the inner pass already set
         # the header.
         try:
-            from app.api._response_hook_runner import apply_response_hooks, HookContext
+            from app.api._response_hook_runner import HookContext, apply_response_hooks
+
             await apply_response_hooks(
                 handler_id="responses",
                 resp_headers=out_headers,
                 context=HookContext(
-                    api_key_id=getattr(key_record, "id", None) if 'key_record' in locals() else None,
+                    # The delegated handler authenticates the key.
+                    api_key_id=None,
                     request=request,
                 ),
             )

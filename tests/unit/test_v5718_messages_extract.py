@@ -7,10 +7,10 @@ telemetry) from ~50 lines inline into a single helper call. Future
 sub-blocks (#2 normalize_request_body, #3 adapt_wire_format) ship
 as separate v5.7.x patches.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
-
 
 # ── structural pins ────────────────────────────────────────────────────
 
@@ -33,15 +33,17 @@ def test_helper_signature_kwargs_match_call_site():
     catches any drift where messages.py is updated but the helper
     isn't, or vice versa."""
     import inspect
+
     from app.api._messages_pre_route import prepare_request_context
+
     sig = inspect.signature(prepare_request_context)
     assert "x_conversation_id" in sig.parameters
     assert "x_memory_tag" in sig.parameters
     # The first three positional args are request, db, x_api_key.
     positional = [
-        n for n, p in sig.parameters.items()
-        if p.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD,
-                      inspect.Parameter.POSITIONAL_ONLY)
+        n
+        for n, p in sig.parameters.items()
+        if p.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.POSITIONAL_ONLY)
     ]
     assert positional[:3] == ["request", "db", "x_api_key"], positional
 
@@ -79,5 +81,6 @@ def test_messages_py_size_dropped():
 def test_version_bumped():
     """v5.7.18 minimum — later patches keep this passing."""
     from app.__version__ import __version__
+
     parts = tuple(int(p) for p in __version__.split("."))
     assert parts >= (5, 7, 18), f"v5.7.18 must be reachable; got {__version__}"

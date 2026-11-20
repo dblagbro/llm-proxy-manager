@@ -19,10 +19,11 @@ This test file guards three invariants:
    again (741 -> 463); the ceiling has to cover every sibling or a split can
    satisfy it by moving mass somewhere unwatched.
 """
+
 from __future__ import annotations
 
-from pathlib import Path
 import importlib
+from pathlib import Path
 
 
 def test_both_streaming_modules_load_cleanly():
@@ -35,17 +36,17 @@ def test_oauth_symbols_still_importable_from_parent_module():
     ``from app.api._messages_streaming import _stream_claude_oauth, ...``
     imports must keep working unchanged."""
     from app.api._messages_streaming import (  # noqa: F401
-        _inject_claude_code_system,
-        _count_cache_control_markers,
-        _prepare_claude_oauth_request,
-        _oauth_complete_timeout,
-        _refresh_oauth_token,
-        _complete_claude_oauth,
-        _stream_claude_oauth,
-        _CLAUDE_CODE_SYS_MARKER,
         _ALLOWED_SYS_MARKERS,
-        _CLAUDE_OAUTH_TIMEOUT,
+        _CLAUDE_CODE_SYS_MARKER,
         _CLAUDE_OAUTH_STREAM_TIMEOUT,
+        _CLAUDE_OAUTH_TIMEOUT,
+        _complete_claude_oauth,
+        _count_cache_control_markers,
+        _inject_claude_code_system,
+        _oauth_complete_timeout,
+        _prepare_claude_oauth_request,
+        _refresh_oauth_token,
+        _stream_claude_oauth,
     )
 
 
@@ -91,9 +92,10 @@ def test_exc_str_duplicate_is_identical():
         TimeoutError(),
     ]
     for e in cases:
-        assert parent_exc_str(e) == oauth_exc_str(e), \
-            f"_exc_str copies drifted on {type(e).__name__}: " \
+        assert parent_exc_str(e) == oauth_exc_str(e), (
+            f"_exc_str copies drifted on {type(e).__name__}: "
             f"parent={parent_exc_str(e)!r}, oauth={oauth_exc_str(e)!r}"
+        )
 
 
 def test_neither_streaming_file_exceeds_700_loc():
@@ -115,23 +117,22 @@ def test_neither_streaming_file_exceeds_700_loc():
         if loc > 700:
             too_big.append((fn, loc))
     assert not too_big, (
-        f"these post-split files now exceed 700 LOC: {too_big}. "
-        f"Time to split further."
+        f"these post-split files now exceed 700 LOC: {too_big}. Time to split further."
     )
 
 
 def test_external_callers_still_resolve_oauth_symbols():
     """Spot-check the 4 known external import sites still resolve."""
     # app/providers/scanner.py uses _inject_claude_code_system
-    from app.api._messages_streaming import _inject_claude_code_system  # noqa: F401
     # app/routing/hedging.py uses _sse_frame_error (stays in parent)
-    from app.api._messages_streaming import _sse_frame_error  # noqa: F401
     # app/api/completions.py uses preflight_sse + http_status_for_stream_error
-    from app.api._messages_streaming import (  # noqa: F401
-        preflight_sse, http_status_for_stream_error,
-    )
     # app/api/_messages_dispatch.py uses _stream_claude_oauth + _complete_claude_oauth
-    from app.api._messages_streaming import (  # noqa: F401
-        _stream_claude_oauth, _complete_claude_oauth,
+    from app.api._messages_streaming import (  # noqa: F401  # noqa: F401
+        _complete_claude_oauth,
+        _inject_claude_code_system,  # noqa: F401
+        _sse_frame_error,  # noqa: F401
+        _stream_claude_oauth,
+        http_status_for_stream_error,
+        preflight_sse,
     )
     # app/monitoring/keepalive.py uses _complete_claude_oauth (already covered)

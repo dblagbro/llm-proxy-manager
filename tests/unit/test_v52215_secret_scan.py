@@ -54,12 +54,15 @@ def _skip_unless_git_checkout():
     try:
         out = subprocess.run(
             ["git", "rev-parse", "--is-inside-work-tree"],
-            capture_output=True, text=True, check=False,
+            capture_output=True,
+            text=True,
+            check=False,
         )
     except FileNotFoundError:
         _pytest.skip("git is not available in this environment")
     if out.returncode != 0 or out.stdout.strip() != "true":
         _pytest.skip("not a git checkout — this assertion needs the real index")
+
 
 class TestTreeIsClean:
     def test_no_secrets_in_tracked_files(self):

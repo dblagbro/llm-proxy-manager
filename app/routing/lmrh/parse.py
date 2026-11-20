@@ -10,18 +10,18 @@ compatibility with clients that send ``task=reasoning,safety-min=3;require``
 Split out from the monolithic ``routing/lmrh.py`` in the 2026-04-23
 refactor.
 """
+
 from __future__ import annotations
 
 import logging
 import re
-from typing import Optional
 
 from app.routing.lmrh.types import HintDimension, LMRHHint
 
 logger = logging.getLogger(__name__)
 
 
-def parse_hint(header_value: Optional[str]) -> Optional[LMRHHint]:
+def parse_hint(header_value: str | None) -> LMRHHint | None:
     """Parse an LLM-Hint header value into structured dimensions.
 
     Returns None if the header is empty or yields no recognisable dims.
@@ -44,7 +44,7 @@ _REQUIRE_RE = re.compile(r"\s*;\s*require\s*", re.IGNORECASE)
 _SOVEREIGN_RE = re.compile(r"\s*;\s*sovereign\s*", re.IGNORECASE)
 
 
-def _parse_hint_legacy(header_value: str) -> Optional[LMRHHint]:
+def _parse_hint_legacy(header_value: str) -> LMRHHint | None:
     """Legacy comma-tolerant parser for clients not emitting strict RFC 8941.
 
     v3.0.68: handles value-internal commas for list-valued dims (e.g.
@@ -102,13 +102,18 @@ def _parse_hint_legacy(header_value: str) -> Optional[LMRHHint]:
 
     hint = LMRHHint(raw=header_value)
     for key, value, req, sov in merged:
-        hint.dimensions.append(HintDimension(
-            key, value, required=req, sovereign=sov,
-        ))
+        hint.dimensions.append(
+            HintDimension(
+                key,
+                value,
+                required=req,
+                sovereign=sov,
+            )
+        )
     return hint if hint.dimensions else None
 
 
-def _parse_hint_rfc8941(header_value: str) -> Optional[LMRHHint]:
+def _parse_hint_rfc8941(header_value: str) -> LMRHHint | None:
     """RFC 8941 Dictionary parser. Returns None if http-sfv is unavailable
     or the input isn't valid 8941."""
     try:
@@ -178,9 +183,14 @@ def _parse_hint_rfc8941(header_value: str) -> Optional[LMRHHint]:
         params = getattr(item, "params", {}) or {}
         sovereign = bool(params.get("sovereign", False))
         required = bool(params.get("require", False)) or sovereign
-        hint.dimensions.append(HintDimension(
-            key, value_str, required=required, sovereign=sovereign,
-        ))
+        hint.dimensions.append(
+            HintDimension(
+                key,
+                value_str,
+                required=required,
+                sovereign=sovereign,
+            )
+        )
     return hint if hint.dimensions else None
 
 

@@ -1,12 +1,10 @@
 """v3.7.3 — cluster-sync replication of billing/auto-rotation fields tests."""
+
 from __future__ import annotations
 
-from datetime import datetime, timezone
-
-import pytest
+from datetime import UTC, datetime
 
 from app.cluster.sync import _parse_iso_or_none
-
 
 # ── _parse_iso_or_none ────────────────────────────────────────────
 
@@ -42,7 +40,7 @@ def test_parse_iso_returns_none_on_garbage():
 
 def test_parse_iso_passes_through_datetime():
     """If a datetime is already passed (shouldn't happen, but be defensive)."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     assert _parse_iso_or_none(now) == now
 
 
@@ -53,6 +51,7 @@ def test_build_payload_includes_billing_fields():
     """v3.6.x/v3.7.x Provider fields must be in the cluster sync
     payload so peer nodes see the auto-rotation skip decisions."""
     from pathlib import Path
+
     src = Path("app/cluster/manager.py").read_text()
     # Identifier + capture timestamp + auto-rotation outcome (NOT the
     # cookies themselves — those stay on capture node)
@@ -71,6 +70,7 @@ def test_build_payload_does_not_include_cookies():
     the field doesn't false-positive.
     """
     from pathlib import Path
+
     src = Path("app/cluster/manager.py").read_text()
     start = src.index("providers_result = await db.execute")
     end = src.index("# Only push settings")
@@ -84,6 +84,7 @@ def test_build_payload_does_not_include_cookies():
 def test_apply_pass_updates_billing_fields_on_existing_rows():
     """v5.0.10 — providers merge extracted to sync_handlers._apply_providers."""
     from pathlib import Path
+
     src = Path("app/cluster/sync_handlers.py").read_text()
     # The update path (else branch — existing row found). Tolerates multi-
     # line p_data.get(...) reformatting in sync_handlers.
@@ -100,12 +101,13 @@ def test_apply_pass_creates_new_rows_with_billing_fields():
     node doesn't lose the auto-skip state mid-replication. v5.0.10 —
     extracted to sync_handlers._apply_providers."""
     from pathlib import Path
+
     src = Path("app/cluster/sync_handlers.py").read_text()
     # Provider(...) constructor block at the row-insert path
-    insert_marker = "owned_by_key_id=p_data.get(\"owned_by_key_id\")"
+    insert_marker = 'owned_by_key_id=p_data.get("owned_by_key_id")'
     insert_idx = src.index(insert_marker)
     # Look ~30 lines forward for the new fields
-    snippet = src[insert_idx:insert_idx + 1500]
+    snippet = src[insert_idx : insert_idx + 1500]
     assert "anthropic_org_uuid=p_data.get" in snippet
     assert "anthropic_session_captured_at=p_data.get" in snippet
     assert "auto_skip_until=_parse_iso_or_none" in snippet
@@ -124,12 +126,13 @@ def test_apply_pass_does_not_overwrite_local_cookies():
     explicitly document the intentional non-replication).
     """
     from pathlib import Path
+
     src = Path("app/cluster/sync.py").read_text()
     forbidden_patterns = [
-        'anthropic_session_cookies=p_data',
-        'anthropic_session_cookies = p_data',
-        'existing.anthropic_session_cookies =',
-        'existing.anthropic_session_cookies=',
+        "anthropic_session_cookies=p_data",
+        "anthropic_session_cookies = p_data",
+        "existing.anthropic_session_cookies =",
+        "existing.anthropic_session_cookies=",
     ]
     for pat in forbidden_patterns:
         assert pat not in src, f"cookies must not be written by sync apply (found pattern: {pat!r})"

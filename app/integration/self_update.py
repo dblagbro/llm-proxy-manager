@@ -32,12 +32,13 @@ Security:
   (``integration.protocol_proposal``) — never mutates state, just
   gets queued for operator review.
 """
+
 from __future__ import annotations
 
 import hashlib
 import logging
-from datetime import datetime, timezone
-from typing import Any, Optional
+from datetime import UTC, datetime
+from typing import Any
 
 from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -67,31 +68,33 @@ ELIGIBLE_FIELDS: dict[str, dict] = {
 # self-update can't touch. A permission list containing any of these
 # is silently ignored for those fields (not an error — that would
 # leak info about what admin fields exist).
-FORBIDDEN_FIELDS: frozenset[str] = frozenset({
-    "id",
-    "key",
-    "encrypted_key",
-    "key_type",
-    "enabled",
-    "deleted_at",
-    "self_edit_permissions",  # no privilege escalation
-    "spending_cap_usd",
-    "daily_soft_cap_usd",
-    "daily_hard_cap_usd",
-    "hourly_cap_usd",
-    "day_cost_usd",
-    "hour_cost_usd",
-    "day_bucket_ts",
-    "hour_bucket_ts",
-    "rate_limit_rpm",
-    "rate_limit_tier",
-    "blocked_companies",
-    "blocked_models",
-    "allowed_models",
-    "allowed_paths",
-    "debug_echo_enabled",
-    # anything with compliance_ or oauth_ prefix, checked by name-guard below
-})
+FORBIDDEN_FIELDS: frozenset[str] = frozenset(
+    {
+        "id",
+        "key",
+        "encrypted_key",
+        "key_type",
+        "enabled",
+        "deleted_at",
+        "self_edit_permissions",  # no privilege escalation
+        "spending_cap_usd",
+        "daily_soft_cap_usd",
+        "daily_hard_cap_usd",
+        "hourly_cap_usd",
+        "day_cost_usd",
+        "hour_cost_usd",
+        "day_bucket_ts",
+        "hour_bucket_ts",
+        "rate_limit_rpm",
+        "rate_limit_tier",
+        "blocked_companies",
+        "blocked_models",
+        "allowed_models",
+        "allowed_paths",
+        "debug_echo_enabled",
+        # anything with compliance_ or oauth_ prefix, checked by name-guard below
+    }
+)
 
 
 router = APIRouter()
@@ -115,14 +118,15 @@ class SelfUpdateRequest(BaseModel):
     ``integration.protocol_proposal`` — no state mutation, just
     a queued note for the operator to review.
     """
+
     updates: dict[str, Any] = Field(default_factory=dict)
-    protocol_proposal: Optional[str] = Field(default=None, max_length=8000)
-    reason: Optional[str] = Field(default=None, max_length=1000)
+    protocol_proposal: str | None = Field(default=None, max_length=8000)
+    reason: str | None = Field(default=None, max_length=1000)
 
 
 class SelfUpdateResult(BaseModel):
     applied: dict[str, Any]
-    denied: dict[str, str]     # field -> reason
+    denied: dict[str, str]  # field -> reason
     protocol_proposal_logged: bool
 
 
@@ -158,11 +162,12 @@ def _coerce_value(field: str, value: Any) -> Any:
 
 async def _resolve_key_from_headers(
     request: Request,
-    x_api_key: Optional[str],
-    authorization: Optional[str],
+    x_api_key: str | None,
+    authorization: str | None,
     db,
 ):
     from app.models.db import ApiKey
+
     supplied = x_api_key
     if not supplied and authorization:
         # "Bearer <key>" shape
@@ -187,8 +192,8 @@ async def _resolve_key_from_headers(
 async def integration_self_update(
     payload: SelfUpdateRequest,
     request: Request,
-    x_api_key: Optional[str] = Header(default=None),
-    authorization: Optional[str] = Header(default=None),
+    x_api_key: str | None = Header(default=None),
+    authorization: str | None = Header(default=None),
 ) -> SelfUpdateResult:
     """Apply caller-scoped self-updates to the API key that authorized
     the request.
@@ -215,7 +220,11 @@ async def integration_self_update(
         denied: dict[str, str] = {}
 
         for field, raw_value in payload.updates.items():
-            if field in FORBIDDEN_FIELDS or field.startswith("compliance_") or field.startswith("oauth_"):
+            if (
+                field in FORBIDDEN_FIELDS
+                or field.startswith("compliance_")
+                or field.startswith("oauth_")
+            ):
                 denied[field] = "field is never self-editable (admin-only)"
                 continue
             if field not in ELIGIBLE_FIELDS:
@@ -234,47 +243,50 @@ async def integration_self_update(
 
         # Stamp the LWW cursor so cluster sync converges to this state.
         try:
-            key.last_user_edit_at = datetime.now(timezone.utc).timestamp()
+            key.last_user_edit_at = datetime.now(UTC).timestamp()
         except Exception:
             pass
 
         proposal_logged = False
         if payload.protocol_proposal:
-            db.add(ActivityLog(
-                created_at=datetime.now(timezone.utc).replace(tzinfo=None),
-                severity="info",
-                event_type="integration.protocol_proposal",
-                api_key_id=key.id,
-                message=f"Protocol proposal from {key.name}: {payload.protocol_proposal[:180]}",
-                event_meta={
-                    "project_name": key.name,
-                    "proposal": payload.protocol_proposal,
-                    "reason": payload.reason,
-                },
-            ))
+            db.add(
+                ActivityLog(
+                    created_at=datetime.now(UTC).replace(tzinfo=None),
+                    severity="info",
+                    event_type="integration.protocol_proposal",
+                    api_key_id=key.id,
+                    message=f"Protocol proposal from {key.name}: {payload.protocol_proposal[:180]}",
+                    event_meta={
+                        "project_name": key.name,
+                        "proposal": payload.protocol_proposal,
+                        "reason": payload.reason,
+                    },
+                )
+            )
             proposal_logged = True
 
         # Always audit the outcome — including "no changes applied."
-        db.add(ActivityLog(
-            created_at=datetime.now(timezone.utc).replace(tzinfo=None),
-            severity="info",
-            event_type=(
-                "integration.self_update"
-                if applied else "integration.self_update_noop"
-            ),
-            api_key_id=key.id,
-            message=(
-                f"Self-update by {key.name}: "
-                f"applied={list(applied.keys())} denied={list(denied.keys())}"
-            ),
-            event_meta={
-                "project_name": key.name,
-                "applied": applied,
-                "denied": denied,
-                "reason": payload.reason,
-                "permissions_list": permissions,
-            },
-        ))
+        db.add(
+            ActivityLog(
+                created_at=datetime.now(UTC).replace(tzinfo=None),
+                severity="info",
+                event_type=(
+                    "integration.self_update" if applied else "integration.self_update_noop"
+                ),
+                api_key_id=key.id,
+                message=(
+                    f"Self-update by {key.name}: "
+                    f"applied={list(applied.keys())} denied={list(denied.keys())}"
+                ),
+                event_meta={
+                    "project_name": key.name,
+                    "applied": applied,
+                    "denied": denied,
+                    "reason": payload.reason,
+                    "permissions_list": permissions,
+                },
+            )
+        )
         await db.commit()
 
     return SelfUpdateResult(

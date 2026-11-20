@@ -2,11 +2,12 @@
 Structured activity log — writes to DB and emits to in-memory ring buffer
 for real-time streaming to the web dashboard.
 """
+
 import asyncio
 import logging
 from collections import deque
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -25,9 +26,9 @@ async def log_event(
     event_type: str,
     message: str,
     severity: str = "info",
-    provider_id: Optional[str] = None,
-    api_key_id: Optional[str] = None,
-    metadata: Optional[dict[str, Any]] = None,
+    provider_id: str | None = None,
+    api_key_id: str | None = None,
+    metadata: dict[str, Any] | None = None,
 ):
     # v5.1.0 / Batch C1 (compliance panic button) — check the
     # persistent toggle BEFORE writing the DB row OR fanning out to
@@ -37,6 +38,7 @@ async def log_event(
     # policy_changes table) so the operator's proof-of-flip is
     # preserved even when activity logging is silent.
     from app.monitoring.logging_controls import is_logging_enabled
+
     if not await is_logging_enabled(db):
         return
     entry = ActivityLog(

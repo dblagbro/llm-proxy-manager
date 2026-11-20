@@ -3,13 +3,13 @@ Email alert system with throttling.
 Sends HTML-formatted alerts for circuit breaker events, billing errors,
 cluster node failures, and all-providers-down conditions.
 """
+
 import asyncio
 import logging
+import smtplib
 import time
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from typing import Optional
-import smtplib
 
 from app.config import settings
 
@@ -34,7 +34,7 @@ def _is_throttled(event_type: str) -> bool:
     return False
 
 
-def _build_html(severity: str, subject: str, message: str, provider_id: Optional[str]) -> str:
+def _build_html(severity: str, subject: str, message: str, provider_id: str | None) -> str:
     color = SEVERITY_COLORS.get(severity, "#607D8B")
     provider_line = f"<p><strong>Provider:</strong> {provider_id}</p>" if provider_id else ""
     return f"""
@@ -43,7 +43,8 @@ def _build_html(severity: str, subject: str, message: str, provider_id: Optional
         <h2 style="color: {color}; margin-top: 0;">[{severity.upper()}] {subject}</h2>
         {provider_line}
         <p>{message}</p>
-        <p style="color: #888; font-size: 12px;">llm-proxy v2 — {__import__('datetime').datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}</p>
+        <p style="color: #888; font-size: 12px;">llm-proxy v2 — \
+{__import__("datetime").datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")}</p>
       </div>
     </body></html>
     """
@@ -53,9 +54,9 @@ async def send_alert(
     severity: str,
     subject: str,
     message: str,
-    provider_id: Optional[str] = None,
-    throttle_key: Optional[str] = None,
-    to: Optional[str] = None,
+    provider_id: str | None = None,
+    throttle_key: str | None = None,
+    to: str | None = None,
 ):
     """Send an alert email. ``to`` overrides the global ``smtp_to`` recipient
     (used by AIRI per-user notification subscriptions); when None the global
@@ -71,14 +72,14 @@ async def send_alert(
         return
 
     try:
-        await asyncio.to_thread(_send_sync, severity, subject, message,
-                                provider_id, recipient)
+        await asyncio.to_thread(_send_sync, severity, subject, message, provider_id, recipient)
     except Exception as e:
         logger.error(f"Failed to send alert email: {e}")
 
 
-def _send_sync(severity: str, subject: str, message: str,
-               provider_id: Optional[str], recipient: Optional[str] = None):
+def _send_sync(
+    severity: str, subject: str, message: str, provider_id: str | None, recipient: str | None = None
+):
     msg = MIMEMultipart("alternative")
     msg["Subject"] = f"[llm-proxy] {subject}"
     msg["From"] = settings.smtp_from or settings.smtp_user
@@ -101,6 +102,7 @@ def _send_sync(severity: str, subject: str, message: str,
 
 
 # Convenience helpers called from other modules
+
 
 async def alert_circuit_open(provider_name: str, provider_id: str, failures: int):
     await send_alert(

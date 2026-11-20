@@ -11,17 +11,17 @@ status update path. The routing layer calls
 dispatch. The admin UI consumes ``read_all_states(provider_id)`` for
 the per-node display.
 """
+
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal, Optional
+from typing import Literal
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.models.db import ProviderNodeAuthState
-
 
 AuthState = Literal["ok", "expired", "needs_reauth", "never_authed", "bridge_down"]
 
@@ -43,41 +43,44 @@ async def write_local_state(
     db: AsyncSession,
     provider_id: str,
     auth_state: AuthState,
-    last_ok_at: Optional[datetime] = None,
-    reauth_url: Optional[str] = None,
-    last_error: Optional[str] = None,
+    last_ok_at: datetime | None = None,
+    reauth_url: str | None = None,
+    last_error: str | None = None,
 ) -> None:
     """Upsert the row for (provider_id, this_node_id). Always sets
     ``last_check_at = now``. If ``auth_state == "ok"``, also bumps
     ``last_ok_at`` to now unless an explicit value is provided."""
     if auth_state not in _VALID_AUTH_STATES:
         raise ValueError(
-            f"invalid auth_state {auth_state!r}; "
-            f"expected one of {sorted(_VALID_AUTH_STATES)}"
+            f"invalid auth_state {auth_state!r}; expected one of {sorted(_VALID_AUTH_STATES)}"
         )
     now = datetime.utcnow()
     node_id = _own_node_id()
-    err = (last_error or None)
+    err = last_error or None
     if err and len(err) > _MAX_LAST_ERROR_CHARS:
         err = err[:_MAX_LAST_ERROR_CHARS] + "…[truncated]"
 
-    row = (await db.execute(
-        select(ProviderNodeAuthState)
-        .where(ProviderNodeAuthState.provider_id == provider_id)
-        .where(ProviderNodeAuthState.node_id == node_id)
-        .limit(1)
-    )).scalar_one_or_none()
+    row = (
+        await db.execute(
+            select(ProviderNodeAuthState)
+            .where(ProviderNodeAuthState.provider_id == provider_id)
+            .where(ProviderNodeAuthState.node_id == node_id)
+            .limit(1)
+        )
+    ).scalar_one_or_none()
 
     if row is None:
-        db.add(ProviderNodeAuthState(
-            provider_id=provider_id,
-            node_id=node_id,
-            auth_state=auth_state,
-            last_ok_at=(last_ok_at or (now if auth_state == "ok" else None)),
-            last_check_at=now,
-            reauth_url=reauth_url,
-            last_error=err,
-        ))
+        db.add(
+            ProviderNodeAuthState(
+                provider_id=provider_id,
+                node_id=node_id,
+                auth_state=auth_state,
+                last_ok_at=(last_ok_at or (now if auth_state == "ok" else None)),
+                last_check_at=now,
+                reauth_url=reauth_url,
+                last_error=err,
+            )
+        )
         return
 
     row.auth_state = auth_state
@@ -91,34 +94,33 @@ async def write_local_state(
 
 
 async def read_state(
-    db: AsyncSession, provider_id: str, node_id: Optional[str] = None
-) -> Optional[ProviderNodeAuthState]:
+    db: AsyncSession, provider_id: str, node_id: str | None = None
+) -> ProviderNodeAuthState | None:
     """Return the row for ``(provider_id, node_id)``. ``node_id``
     defaults to this proxy's own node — the routing path's typical
     consumer. ``None`` if no row has been written yet."""
     nid = node_id or _own_node_id()
-    return (await db.execute(
-        select(ProviderNodeAuthState)
-        .where(ProviderNodeAuthState.provider_id == provider_id)
-        .where(ProviderNodeAuthState.node_id == nid)
-        .limit(1)
-    )).scalar_one_or_none()
+    return (
+        await db.execute(
+            select(ProviderNodeAuthState)
+            .where(ProviderNodeAuthState.provider_id == provider_id)
+            .where(ProviderNodeAuthState.node_id == nid)
+            .limit(1)
+        )
+    ).scalar_one_or_none()
 
 
-async def read_all_states(
-    db: AsyncSession, provider_id: str
-) -> list[ProviderNodeAuthState]:
+async def read_all_states(db: AsyncSession, provider_id: str) -> list[ProviderNodeAuthState]:
     """Return every node's row for this provider. Used by the admin
     UI's per-node status display + by the per-node routing fallback
     ("none of the nodes' bridges are OK")."""
     rs = await db.execute(
-        select(ProviderNodeAuthState)
-        .where(ProviderNodeAuthState.provider_id == provider_id)
+        select(ProviderNodeAuthState).where(ProviderNodeAuthState.provider_id == provider_id)
     )
     return list(rs.scalars().all())
 
 
-def is_local_node_routable(state: Optional[ProviderNodeAuthState]) -> bool:
+def is_local_node_routable(state: ProviderNodeAuthState | None) -> bool:
     """The routing-side filter: this node can serve the provider iff
     its local row says ``auth_state == "ok"``. Absence of a row
     (``state is None``) is treated as "not routable" — the bridge

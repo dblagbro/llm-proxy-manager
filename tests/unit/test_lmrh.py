@@ -1,15 +1,24 @@
 """Unit tests for the LMRH scoring engine."""
-import pytest
+
 from app.routing.lmrh import (
-    parse_hint, rank_candidates, score_candidate, CapabilityProfile, LMRHHint
+    CapabilityProfile,
+    parse_hint,
+    rank_candidates,
+    score_candidate,
 )
 
 
 def _profile(pid, tasks, cost, latency, safety=3, native=False, priority=10):
     return CapabilityProfile(
-        provider_id=pid, provider_type="openai", model_id="test",
-        tasks=tasks, cost_tier=cost, latency=latency, safety=safety,
-        native_reasoning=native, priority=priority,
+        provider_id=pid,
+        provider_type="openai",
+        model_id="test",
+        tasks=tasks,
+        cost_tier=cost,
+        latency=latency,
+        safety=safety,
+        native_reasoning=native,
+        priority=priority,
     )
 
 
@@ -80,6 +89,7 @@ def test_cost_routing():
 
 # ── Wave 4 #18 — parser robustness (legacy fallback runs when http-sfv absent) ──
 
+
 def test_parse_hint_whitespace_tolerant():
     """Parser should tolerate arbitrary whitespace around = and ,."""
     hint = parse_hint("  task = reasoning ,  safety-min = 3 ; require  ")
@@ -102,8 +112,12 @@ def test_parse_hint_returns_none_when_no_valid_dims():
 # v3.0.51 — LMRH 1.2 §E3 region matching: comma-separated + hierarchy
 def _region_profile(regions):
     return CapabilityProfile(
-        provider_id="p1", provider_type="vertex", model_id="test",
-        tasks=["chat"], regions=regions, priority=10,
+        provider_id="p1",
+        provider_type="vertex",
+        model_id="test",
+        tasks=["chat"],
+        regions=regions,
+        priority=10,
     )
 
 
@@ -173,6 +187,7 @@ def test_sovereign_passes_with_explicit_region():
 
 def test_capability_header_strict_region():
     from app.routing.lmrh import build_capability_header
+
     profile = _region_profile(["us"])
     hint = parse_hint("region=us")
     header = build_capability_header(profile, unmet=[], hint=hint)
@@ -182,6 +197,7 @@ def test_capability_header_strict_region():
 
 def test_capability_header_loose_region_via_hierarchy():
     from app.routing.lmrh import build_capability_header
+
     profile = _region_profile(["eu-west"])
     hint = parse_hint("region=eu")
     header = build_capability_header(profile, unmet=[], hint=hint)
@@ -191,6 +207,7 @@ def test_capability_header_loose_region_via_hierarchy():
 
 def test_capability_header_omits_region_disclosure_when_no_hint():
     from app.routing.lmrh import build_capability_header
+
     profile = _region_profile(["us"])
     header = build_capability_header(profile, unmet=[])
     assert "served-region" not in header
@@ -244,9 +261,13 @@ def test_fallback_chain_match_boosts_score():
     """fallback-chain=<name> on a matching provider gets the same boost
     as provider-hint=<name>."""
     p = CapabilityProfile(
-        provider_id="p1", provider_type="claude-oauth", model_id="claude-sonnet-4-6",
+        provider_id="p1",
+        provider_type="claude-oauth",
+        model_id="claude-sonnet-4-6",
         provider_name="Devin-Anthropic-Max-VG",
-        tasks=["analysis"], cost_tier="standard", priority=10,
+        tasks=["analysis"],
+        cost_tier="standard",
+        priority=10,
     )
     hint_fc = parse_hint("fallback-chain=anthropic")
     score_fc, _ = score_candidate(p, hint_fc)
@@ -259,9 +280,13 @@ def test_fallback_chain_require_hard_filter_eliminates():
     """fallback-chain=anthropic;require on a non-anthropic profile must
     return -inf (was silently passing pre-v3.0.70)."""
     p_openai = CapabilityProfile(
-        provider_id="p1", provider_type="openai", model_id="gpt-4o",
+        provider_id="p1",
+        provider_type="openai",
+        model_id="gpt-4o",
         provider_name="OpenAI-Direct",
-        tasks=["analysis"], cost_tier="standard", priority=10,
+        tasks=["analysis"],
+        cost_tier="standard",
+        priority=10,
     )
     hint = parse_hint("fallback-chain=anthropic;require")
     score, _ = score_candidate(p_openai, hint)
@@ -270,9 +295,13 @@ def test_fallback_chain_require_hard_filter_eliminates():
 
 def test_fallback_chain_require_passes_on_match():
     p = CapabilityProfile(
-        provider_id="p1", provider_type="claude-oauth", model_id="claude-sonnet-4-6",
+        provider_id="p1",
+        provider_type="claude-oauth",
+        model_id="claude-sonnet-4-6",
         provider_name="Devin-Anthropic-Max-VG",
-        tasks=["analysis"], cost_tier="standard", priority=10,
+        tasks=["analysis"],
+        cost_tier="standard",
+        priority=10,
     )
     hint = parse_hint("fallback-chain=anthropic;require")
     score, _ = score_candidate(p, hint)
@@ -283,6 +312,7 @@ def test_fallback_chain_in_builtin_dim_names():
     """Eliminates the unknown-dim:fallback-chain warning that was
     being emitted on every paperless-ai-analyzer call."""
     from app.api.lmrh import _builtin_dim_names
+
     assert "fallback-chain" in _builtin_dim_names()
 
 
@@ -301,9 +331,13 @@ def test_fallback_chain_alongside_other_dims():
 def test_provider_hint_strict_match_by_name_still_works():
     """Caller with the full provider_name still matches (back-compat)."""
     p = CapabilityProfile(
-        provider_id="p1", provider_type="claude-oauth", model_id="claude-sonnet-4-6",
+        provider_id="p1",
+        provider_type="claude-oauth",
+        model_id="claude-sonnet-4-6",
         provider_name="Devin-Anthropic-Max-VG",
-        tasks=["analysis"], cost_tier="standard", priority=10,
+        tasks=["analysis"],
+        cost_tier="standard",
+        priority=10,
     )
     h = parse_hint("provider-hint=Devin-Anthropic-Max-VG")
     score, _ = score_candidate(p, h)
@@ -313,9 +347,13 @@ def test_provider_hint_strict_match_by_name_still_works():
 def test_provider_hint_strict_match_by_type_still_works():
     """Caller with the exact provider_type still matches (back-compat)."""
     p = CapabilityProfile(
-        provider_id="p1", provider_type="claude-oauth", model_id="claude-sonnet-4-6",
+        provider_id="p1",
+        provider_type="claude-oauth",
+        model_id="claude-sonnet-4-6",
         provider_name="Devin-Anthropic-Max-VG",
-        tasks=["analysis"], cost_tier="standard", priority=10,
+        tasks=["analysis"],
+        cost_tier="standard",
+        priority=10,
     )
     h = parse_hint("provider-hint=claude-oauth")
     score, _ = score_candidate(p, h)
@@ -326,9 +364,13 @@ def test_provider_hint_family_match_anthropic_covers_claude_oauth():
     """provider-hint=anthropic now matches claude-oauth (family expansion).
     Pre-v3.0.70 this would have failed strict-equality against the type."""
     p = CapabilityProfile(
-        provider_id="p1", provider_type="claude-oauth", model_id="claude-sonnet-4-6",
+        provider_id="p1",
+        provider_type="claude-oauth",
+        model_id="claude-sonnet-4-6",
         provider_name="Devin-Anthropic-Max-VG",
-        tasks=["analysis"], cost_tier="standard", priority=10,
+        tasks=["analysis"],
+        cost_tier="standard",
+        priority=10,
     )
     h = parse_hint("provider-hint=anthropic;require")
     score, _ = score_candidate(p, h)
@@ -337,9 +379,13 @@ def test_provider_hint_family_match_anthropic_covers_claude_oauth():
 
 def test_provider_hint_family_match_openai_covers_codex_oauth():
     p = CapabilityProfile(
-        provider_id="p1", provider_type="ChatGPT-oauth-plan", model_id="gpt-5.5",
+        provider_id="p1",
+        provider_type="ChatGPT-oauth-plan",
+        model_id="gpt-5.5",
         provider_name="Devin-Codex-Gmail",
-        tasks=["analysis"], cost_tier="standard", priority=10,
+        tasks=["analysis"],
+        cost_tier="standard",
+        priority=10,
     )
     h = parse_hint("provider-hint=openai;require")
     score, _ = score_candidate(p, h)
@@ -348,9 +394,13 @@ def test_provider_hint_family_match_openai_covers_codex_oauth():
 
 def test_provider_hint_family_match_google_covers_vertex():
     p = CapabilityProfile(
-        provider_id="p1", provider_type="vertex_ai", model_id="gemini-2.5-flash",
+        provider_id="p1",
+        provider_type="vertex_ai",
+        model_id="gemini-2.5-flash",
         provider_name="C1 Vertex AI",
-        tasks=["analysis"], cost_tier="economy", priority=10,
+        tasks=["analysis"],
+        cost_tier="economy",
+        priority=10,
     )
     h = parse_hint("provider-hint=google;require")
     score, _ = score_candidate(p, h)
@@ -361,9 +411,13 @@ def test_provider_hint_unknown_family_still_falls_through():
     """An unrecognized family token falls through to strict match —
     so it doesn't accidentally become permissive."""
     p = CapabilityProfile(
-        provider_id="p1", provider_type="claude-oauth", model_id="claude-sonnet-4-6",
+        provider_id="p1",
+        provider_type="claude-oauth",
+        model_id="claude-sonnet-4-6",
         provider_name="Devin-Anthropic-Max-VG",
-        tasks=["analysis"], cost_tier="standard", priority=10,
+        tasks=["analysis"],
+        cost_tier="standard",
+        priority=10,
     )
     h = parse_hint("provider-hint=banana;require")
     score, _ = score_candidate(p, h)

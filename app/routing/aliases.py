@@ -7,13 +7,13 @@ hint resolver propagates, plus an optional ``self_hosted_only`` hard
 filter that lives OUTSIDE the LMRH scorer (decision 29 correction
 2026-06-03).
 """
-from typing import Any, Optional
 
-from sqlalchemy.ext.asyncio import AsyncSession
+from typing import Any
+
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.db import ModelAlias
-
 
 # v5.0.0 — hardcoded logical aliases. Each entry carries an LMRH hint
 # string the caller layers into ``LLM-Hint``; the ``self_hosted_only``
@@ -37,7 +37,7 @@ LOGICAL_ALIASES: dict[str, dict[str, Any]] = {
 }
 
 
-def is_logical_alias(model: Optional[str]) -> bool:
+def is_logical_alias(model: str | None) -> bool:
     """True when ``model`` is one of the four CADC logical aliases.
 
     v5.3.8 — logical aliases are ROUTING DIRECTIVES, not model names.
@@ -52,7 +52,7 @@ def is_logical_alias(model: Optional[str]) -> bool:
     return bool(model) and model in LOGICAL_ALIASES
 
 
-def logical_alias_hint(alias: str) -> Optional[str]:
+def logical_alias_hint(alias: str) -> str | None:
     """Return the LMRH hint string for a logical alias, or None."""
     entry = LOGICAL_ALIASES.get(alias)
     return entry["hint"] if entry else None
@@ -63,7 +63,11 @@ def logical_alias_hint(alias: str) -> Optional[str]:
 # on the generic ``openai-compatible`` / ``custom`` types and on the
 # operator-set ``owner_company`` label.
 SELF_HOSTED_PROVIDER_TYPES = {
-    "ollama", "vllm", "llamacpp", "lmstudio", "localai",
+    "ollama",
+    "vllm",
+    "llamacpp",
+    "lmstudio",
+    "localai",
 }
 
 # v5.23.0 — self-hosted cold-load timeout. Provider.timeout_sec and the
@@ -137,9 +141,7 @@ def is_self_hosted_provider(p: Any) -> bool:
     return False
 
 
-async def resolve_logical_alias(
-    db: AsyncSession, alias: str, api_key_id: str
-) -> Optional[str]:
+async def resolve_logical_alias(db: AsyncSession, alias: str, api_key_id: str) -> str | None:
     """Return the alias string itself when it is a known logical alias,
     or ``None`` otherwise.
 
@@ -161,7 +163,7 @@ async def resolve_logical_alias(
     return None
 
 
-async def resolve_alias(db: AsyncSession, model: Optional[str]) -> Optional[ModelAlias]:
+async def resolve_alias(db: AsyncSession, model: str | None) -> ModelAlias | None:
     """Return the ModelAlias row for this model name, or None if no alias exists."""
     if not model:
         return None

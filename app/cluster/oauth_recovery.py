@@ -25,12 +25,12 @@ we raise as before and the auth-failure CB takes over.
 Authoritative auth signature: same HMAC-of-(node_id) shared secret
 that ``/cluster/settings`` uses.
 """
+
 from __future__ import annotations
 
 import logging
 import time
 from dataclasses import dataclass
-from typing import Optional
 
 import httpx
 
@@ -44,15 +44,15 @@ logger = logging.getLogger(__name__)
 @dataclass
 class PeerOAuthState:
     api_key: str
-    oauth_refresh_token: Optional[str]
-    oauth_expires_at: Optional[float]
-    last_user_edit_at: Optional[float]
-    updated_at_iso: Optional[str]
-    extra_config: Optional[dict]
+    oauth_refresh_token: str | None
+    oauth_expires_at: float | None
+    last_user_edit_at: float | None
+    updated_at_iso: str | None
+    extra_config: dict | None
     source_peer_id: str
 
 
-async def pull_oauth_state_from_peers(provider_id: str) -> Optional[PeerOAuthState]:
+async def pull_oauth_state_from_peers(provider_id: str) -> PeerOAuthState | None:
     """Fan out to each peer; return the freshest non-stale OAuth state, or None.
 
     "Freshest" = highest ``oauth_expires_at`` that is still in the future.
@@ -99,7 +99,8 @@ async def pull_oauth_state_from_peers(provider_id: str) -> Optional[PeerOAuthSta
             if r.status_code != 200:
                 logger.debug(
                     "oauth_recovery.peer_returned_non_200 peer=%s status=%d",
-                    peer.id, r.status_code,
+                    peer.id,
+                    r.status_code,
                 )
                 continue
             try:
@@ -117,15 +118,17 @@ async def pull_oauth_state_from_peers(provider_id: str) -> Optional[PeerOAuthSta
             # Skip already-expired peer state (would be useless to adopt).
             if expires_at is not None and expires_at <= now:
                 continue
-            candidates.append(PeerOAuthState(
-                api_key=api_key,
-                oauth_refresh_token=data.get("oauth_refresh_token") or None,
-                oauth_expires_at=expires_at,
-                last_user_edit_at=data.get("last_user_edit_at"),
-                updated_at_iso=data.get("updated_at"),
-                extra_config=data.get("extra_config"),
-                source_peer_id=peer.id,
-            ))
+            candidates.append(
+                PeerOAuthState(
+                    api_key=api_key,
+                    oauth_refresh_token=data.get("oauth_refresh_token") or None,
+                    oauth_expires_at=expires_at,
+                    last_user_edit_at=data.get("last_user_edit_at"),
+                    updated_at_iso=data.get("updated_at"),
+                    extra_config=data.get("extra_config"),
+                    source_peer_id=peer.id,
+                )
+            )
 
     if not candidates:
         return None
@@ -160,5 +163,7 @@ async def adopt_peer_state(provider, db, state: PeerOAuthState) -> None:
     await db.commit()
     logger.warning(
         "oauth_recovery.adopted_peer_state provider=%s peer=%s expires_at=%s",
-        provider.id, state.source_peer_id, state.oauth_expires_at,
+        provider.id,
+        state.source_peer_id,
+        state.oauth_expires_at,
     )

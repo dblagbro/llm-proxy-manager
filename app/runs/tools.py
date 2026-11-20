@@ -14,9 +14,8 @@ This module adapts ``run.tools_spec`` for whichever litellm route the
 worker just picked. Per-provider ``native_tools`` capability decides
 native-vs-emulation.
 """
-from __future__ import annotations
 
-from typing import Optional
+from __future__ import annotations
 
 
 def to_openai_tools(anthropic_tools: list[dict]) -> list[dict]:
@@ -26,14 +25,16 @@ def to_openai_tools(anthropic_tools: list[dict]) -> list[dict]:
     for t in anthropic_tools or []:
         if not isinstance(t, dict):
             continue
-        out.append({
-            "type": "function",
-            "function": {
-                "name": t.get("name", ""),
-                "description": t.get("description", ""),
-                "parameters": t.get("input_schema", {"type": "object"}),
-            },
-        })
+        out.append(
+            {
+                "type": "function",
+                "function": {
+                    "name": t.get("name", ""),
+                    "description": t.get("description", ""),
+                    "parameters": t.get("input_schema", {"type": "object"}),
+                },
+            }
+        )
     return out
 
 
@@ -42,7 +43,7 @@ def adapt_tools_for_route(
     *,
     litellm_model: str,
     native_tools: bool,
-) -> tuple[Optional[list[dict]], Optional[str]]:
+) -> tuple[list[dict] | None, str | None]:
     """Pick the right wire shape for this provider.
 
     Returns ``(tools_arg, emulation_system_prompt)``:
@@ -57,6 +58,7 @@ def adapt_tools_for_route(
     if not native_tools:
         # Provider has no native tool_use; fall back to PBTC emulation.
         from app.cot.tool_emulation import build_anthropic_tool_prompt
+
         return None, build_anthropic_tool_prompt(anthropic_tools, allow_parallel=True)
 
     # litellm normalises anthropic/* model ids back to native Anthropic format

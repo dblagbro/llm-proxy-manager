@@ -10,11 +10,12 @@ Pin: every background-loop except handler in app/monitoring/ that
 catches a bare ``Exception`` should format the exception with %r so
 3am diagnostics show what type fired.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
-import pytest
 
+import pytest
 
 MONITORING_FILES = [
     "app/monitoring/ai_provider_supervisor.py",
@@ -34,7 +35,7 @@ def test_no_str_format_on_exception_in_except_blocks(path):
     # is fine; this is a monitoring-loop file.
     bad_pattern = 'err=%s", exc'
     assert bad_pattern not in src, (
-        f"{path} still contains ``err=%s\", exc`` — switch to ``%r`` "
+        f'{path} still contains ``err=%s", exc`` — switch to ``%r`` '
         "so empty-str exceptions log a class name."
     )
 
@@ -43,7 +44,8 @@ def test_repr_renders_empty_str_exception_with_class_name():
     """Sanity: this is the WHY for the file. ``str()`` on an exception
     with no args is empty; ``repr()`` shows the class."""
     import httpx
+
     exc = httpx.TimeoutException("")  # explicit empty message
-    assert str(exc) == ""              # the production observation
-    rendered = "%r" % exc
+    assert str(exc) == ""  # the production observation
+    rendered = "%r" % exc  # noqa: UP031 — exercises the production logging format
     assert "TimeoutException" in rendered

@@ -11,7 +11,7 @@ Pins:
   preserves newer ones.
 - ``get_last_sweep`` returns a snapshot the admin endpoint can read.
 """
-import asyncio
+
 from datetime import datetime, timedelta
 
 import pytest
@@ -22,13 +22,12 @@ from app.compliance.audit import (
     generate_audit_id,
     purge_expired_events,
 )
-from app.models.db import ComplianceAuditChain, ComplianceEvent
 from app.models.database import AsyncSessionLocal
+from app.models.db import ComplianceAuditChain, ComplianceEvent
 from app.monitoring.compliance_audit_worker import (
     _run_one_sweep,
     get_last_sweep,
 )
-
 
 pytestmark = pytest.mark.asyncio
 
@@ -143,6 +142,7 @@ async def test_chain_links_forward():
 
     # Manually compute both days' chains
     from app.compliance.audit import compute_daily_integrity_hash
+
     today = datetime.utcnow().date()
     day_m2 = today - timedelta(days=2)
     day_m1 = today - timedelta(days=1)
@@ -154,9 +154,7 @@ async def test_chain_links_forward():
 
     async with AsyncSessionLocal() as db:
         rs = await db.execute(
-            select(ComplianceAuditChain).where(
-                ComplianceAuditChain.day == day_m1.isoformat()
-            )
+            select(ComplianceAuditChain).where(ComplianceAuditChain.day == day_m1.isoformat())
         )
         row_m1 = rs.scalar_one()
     assert row_m1.prior_day_chain_hash == h_m2

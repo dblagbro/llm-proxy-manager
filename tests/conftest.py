@@ -1,8 +1,8 @@
 """
 Root conftest — session-scoped fixtures shared by all test layers.
 """
+
 import os
-import time
 import uuid
 
 import pytest
@@ -11,7 +11,7 @@ import urllib3
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-import os as _os
+import os as _os  # noqa: E402
 
 # ── Where the integration suite points ───────────────────────────────────────
 #
@@ -44,6 +44,7 @@ _UNROUTABLE = "http://llmproxy-tests-not-configured.invalid/llm-proxy2"
 
 if _EPHEMERAL_REQUESTED:
     from tests._ephemeral import start_ephemeral
+
     BASE_URL = start_ephemeral()
 elif _EXPLICIT_BASE_URL:
     BASE_URL = _EXPLICIT_BASE_URL
@@ -80,7 +81,9 @@ def pytest_addoption(parser):
 
 
 def pytest_configure(config):
-    config.addinivalue_line("markers", "real_providers: needs real LLM calls — use --run-real to enable")
+    config.addinivalue_line(
+        "markers", "real_providers: needs real LLM calls — use --run-real to enable"
+    )
     config.addinivalue_line("markers", "live_deployment: needs a deployment to run against")
     config.addinivalue_line(
         "markers",
@@ -119,7 +122,7 @@ def pytest_collection_modifyitems(config, items):
     if not LIVE_TARGET_IS_SHARED:
         skip_shared = pytest.mark.skip(
             reason="needs the shared nginx estate — set LLMPROXY_TEST_LIVE=1 with "
-                   "LLMPROXY_TEST_BASE_URL pointed at a real deployment"
+            "LLMPROXY_TEST_BASE_URL pointed at a real deployment"
         )
         for item in items:
             if "shared_deployment" in item.keywords:
@@ -160,6 +163,7 @@ def pytest_sessionfinish(session, exitstatus):
     in those contexts. Default OFF keeps unit runs self-contained.
     """
     import os
+
     if os.environ.get("LLMPROXY_TEST_PURGE_LIVE") != "1":
         return
     # v5.22.16 — one master switch for "may touch the live deployment".
@@ -308,10 +312,9 @@ def real_providers(admin_session) -> list[dict]:
     assert r.status_code == 200
     return sorted(
         [
-            p for p in r.json()
-            if p["enabled"]
-            and "mock" not in p["name"].lower()
-            and p.get("api_key")
+            p
+            for p in r.json()
+            if p["enabled"] and "mock" not in p["name"].lower() and p.get("api_key")
         ],
         key=lambda p: p["priority"],
     )

@@ -22,11 +22,11 @@ is unavailable or undesirable for billing-audit reasons.
 DevinGPT memo 2026-06-21 — drops their direct-OpenAI usage in favor of
 unified billing + audit + fallback through the proxy.
 """
+
 from __future__ import annotations
 
 import logging
 import time
-from typing import Optional
 
 import httpx
 import litellm
@@ -37,7 +37,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.auth.keys import resolve_api_key_dep
 from app.config import settings
 from app.models.database import get_db
-from app.routing.router import select_provider, build_litellm_kwargs, build_litellm_model
+from app.routing.router import build_litellm_kwargs, build_litellm_model, select_provider
 from app.utils.disconnect_watchdog import watch_for_disconnect
 
 logger = logging.getLogger(__name__)
@@ -84,7 +84,7 @@ async def _bridge_tts(text: str) -> Response:
     )
 
 
-async def _bridge_stt(file_bytes: bytes, filename: str, language: Optional[str]) -> dict:
+async def _bridge_stt(file_bytes: bytes, filename: str, language: str | None) -> dict:
     bridge = _bridge_url()
     if not bridge:
         raise HTTPException(503, "Audio STT unavailable and whisper-bridge is not configured.")
@@ -94,10 +94,17 @@ async def _bridge_stt(file_bytes: bytes, filename: str, language: Optional[str])
         data["language"] = language
     async with httpx.AsyncClient(timeout=_AUDIO_TIMEOUT_SEC) as cli:
         r = await cli.post(
-            f"{bridge}/transcribe", files=files, data=data, headers=_bridge_headers(),
+            f"{bridge}/transcribe",
+            files=files,
+            data=data,
+            headers=_bridge_headers(),
         )
     r.raise_for_status()
-    out = r.json() if r.headers.get("content-type", "").startswith("application/json") else {"text": r.text}
+    out = (
+        r.json()
+        if r.headers.get("content-type", "").startswith("application/json")
+        else {"text": r.text}
+    )
     return out
 
 
@@ -126,12 +133,16 @@ async def audio_speech(
     response_format = body.get("response_format") or "mp3"
     speed = body.get("speed")
 
-    upstream_err: Optional[str] = None
+    upstream_err: str | None = None
     try:
         route = await select_provider(
-            db, hint=None, has_tools=False, has_images=False,
+            db,
+            hint=None,
+            has_tools=False,
+            has_images=False,
             key_type=key_record.key_type,
-            pinned_provider_id=None, model_override=model,
+            pinned_provider_id=None,
+            model_override=model,
             sort_mode=None,
             excluded_provider_types=_EXCLUDED_TYPES,
         )
@@ -153,13 +164,19 @@ async def audio_speech(
         t0 = time.monotonic()
         try:
             result = await litellm.aspeech(
-                model=litellm_model, input=text_input, **kwargs, **extra,
+                model=litellm_model,
+                input=text_input,
+                **kwargs,
+                **extra,
             )
             from app.routing.circuit_breaker import record_success
+
             await record_success(provider.id)
             audio_bytes = getattr(result, "content", None) or getattr(result, "read", lambda: b"")()
             if isinstance(audio_bytes, bytes) and audio_bytes:
-                media = "audio/mpeg" if response_format in ("mp3", None) else f"audio/{response_format}"
+                media = (
+                    "audio/mpeg" if response_format in ("mp3", None) else f"audio/{response_format}"
+                )
                 headers = {
                     "X-Provider-Type": provider.provider_type,
                     "X-Resolved-Provider": provider.name,
@@ -169,7 +186,8 @@ async def audio_speech(
                 }
                 # v5.14.1 — response-shaping hook runner.
                 try:
-                    from app.api._response_hook_runner import apply_response_hooks, HookContext
+                    from app.api._response_hook_runner import HookContext, apply_response_hooks
+
                     await apply_response_hooks(
                         handler_id="audio.speech",
                         resp_headers=headers,
@@ -187,7 +205,8 @@ async def audio_speech(
                 return Response(content=audio_bytes, media_type=media, headers=headers)
             upstream_err = "empty audio body from upstream"
         except Exception as e:
-            from app.routing.circuit_breaker import record_failure, is_billing_error
+            from app.routing.circuit_breaker import is_billing_error, record_failure
+
             err_str = str(e)
             await record_failure(provider.id, billing_error=is_billing_error(err_str))
             upstream_err = err_str.split("\nTraceback", 1)[0].strip()[:400]
@@ -196,9 +215,12 @@ async def audio_speech(
     if _fallback_enabled():
         logger.info("audio.speech.fallback_to_bridge upstream_err=%s", upstream_err)
         return await _bridge_tts(text_input)
-    raise HTTPException(502, f"Audio TTS upstream error: {upstream_err}. "
-                              "Fallback to whisper-bridge is disabled "
-                              "(audio_fallback_to_whisper_bridge=false).")
+    raise HTTPException(
+        502,
+        f"Audio TTS upstream error: {upstream_err}. "
+        "Fallback to whisper-bridge is disabled "
+        "(audio_fallback_to_whisper_bridge=false).",
+    )
 
 
 @router.post("/v1/audio/transcriptions")
@@ -210,10 +232,10 @@ async def audio_transcriptions(
     key_record=Depends(_AUTH),
     file: UploadFile = File(...),
     model: str = Form(...),
-    language: Optional[str] = Form(None),
-    prompt: Optional[str] = Form(None),
-    response_format: Optional[str] = Form(None),
-    temperature: Optional[float] = Form(None),
+    language: str | None = Form(None),
+    prompt: str | None = Form(None),
+    response_format: str | None = Form(None),
+    temperature: float | None = Form(None),
 ):
     """OpenAI-compatible Whisper STT.
 
@@ -227,12 +249,16 @@ async def audio_transcriptions(
     if not file_bytes:
         raise HTTPException(400, "Empty audio file")
 
-    upstream_err: Optional[str] = None
+    upstream_err: str | None = None
     try:
         route = await select_provider(
-            db, hint=None, has_tools=False, has_images=False,
+            db,
+            hint=None,
+            has_tools=False,
+            has_images=False,
             key_type=key_record.key_type,
-            pinned_provider_id=None, model_override=model,
+            pinned_provider_id=None,
+            model_override=model,
             sort_mode=None,
             excluded_provider_types=_EXCLUDED_TYPES,
         )
@@ -257,12 +283,17 @@ async def audio_transcriptions(
         try:
             # litellm.atranscription takes a file-like object
             import io
+
             buf = io.BytesIO(file_bytes)
             buf.name = file.filename or "audio.wav"
             result = await litellm.atranscription(
-                model=litellm_model, file=buf, **kwargs, **extra,
+                model=litellm_model,
+                file=buf,
+                **kwargs,
+                **extra,
             )
             from app.routing.circuit_breaker import record_success
+
             await record_success(provider.id)
             if hasattr(result, "model_dump"):
                 body_out = result.model_dump()
@@ -280,7 +311,8 @@ async def audio_transcriptions(
             }
             # v5.14.1 — response-shaping hook runner.
             try:
-                from app.api._response_hook_runner import apply_response_hooks, HookContext
+                from app.api._response_hook_runner import HookContext, apply_response_hooks
+
                 await apply_response_hooks(
                     handler_id="audio.transcriptions",
                     resp_headers=headers,
@@ -296,7 +328,8 @@ async def audio_transcriptions(
                 pass
             return JSONResponse(content=body_out, headers=headers)
         except Exception as e:
-            from app.routing.circuit_breaker import record_failure, is_billing_error
+            from app.routing.circuit_breaker import is_billing_error, record_failure
+
             err_str = str(e)
             await record_failure(provider.id, billing_error=is_billing_error(err_str))
             upstream_err = err_str.split("\nTraceback", 1)[0].strip()[:400]
@@ -304,9 +337,13 @@ async def audio_transcriptions(
     if _fallback_enabled():
         logger.info("audio.transcribe.fallback_to_bridge upstream_err=%s", upstream_err)
         body_out = await _bridge_stt(file_bytes, file.filename or "audio.wav", language)
-        return JSONResponse(content=body_out, headers={
-            "X-Audio-Source": "whisper-bridge-fallback",
-            "X-Audio-Engine": "whisper",
-        })
-    raise HTTPException(502, f"Audio STT upstream error: {upstream_err}. "
-                              "Fallback to whisper-bridge is disabled.")
+        return JSONResponse(
+            content=body_out,
+            headers={
+                "X-Audio-Source": "whisper-bridge-fallback",
+                "X-Audio-Engine": "whisper",
+            },
+        )
+    raise HTTPException(
+        502, f"Audio STT upstream error: {upstream_err}. Fallback to whisper-bridge is disabled."
+    )

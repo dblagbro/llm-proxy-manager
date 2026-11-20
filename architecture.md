@@ -18,7 +18,14 @@ that can block configured companies (10 built-in + operator-defined customs) at 
 provider-routing, model-family, and client-product layers — with audit-grade event
 logging, daily integrity hash chain, and cluster-quorum policy push.
 
-**Current version: 5.22.64 (2026-11-18), live on both nodes (see `docs/current-state.md`)**
+The live version and the next release candidate are recorded in
+[the deployment status](docs/current-state.md).
+
+In the 5.22.69 candidate the gateway image defines its own runtime identity
+(UID/GID 640:640). Docker-managed volumes hold the gateway data and logs across
+container replacement. A fresh installation requires no host service account or
+SSH endpoint. See [the storage migration guide](docs/service-uid-migration.md)
+for existing volumes.
 
 ### Ship history since v5.0.7 (arc-end summary, doc-drift refresh)
 

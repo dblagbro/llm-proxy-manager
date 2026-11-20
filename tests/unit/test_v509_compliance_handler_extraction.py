@@ -12,6 +12,7 @@ These tests pin the contract:
   every audit-write site (signature requires the captured value as a
   parameter; the helper never reads body["model"] itself).
 """
+
 import inspect
 
 import pytest
@@ -19,6 +20,7 @@ import pytest
 
 def test_helper_exports_four_orchestration_functions():
     from app.api import _compliance_handler as h
+
     for name in (
         "raise_if_banned_client_ua",
         "raise_for_no_substitute_exception",
@@ -34,6 +36,7 @@ def test_request_handlers_no_longer_inline_ua_check(module_name):
     ``detect_client_company(...)`` directly OR import
     ``refusal_headers_ua`` from the public compliance package."""
     import importlib
+
     mod = importlib.import_module(module_name)
     src = inspect.getsource(mod)
     assert "detect_client_company(" not in src, (
@@ -41,8 +44,7 @@ def test_request_handlers_no_longer_inline_ua_check(module_name):
         "the v5.0.9 extraction was bypassed"
     )
     assert "refusal_headers_ua" not in src, (
-        f"{module_name} still imports refusal_headers_ua — only the "
-        "helper should reference it"
+        f"{module_name} still imports refusal_headers_ua — only the helper should reference it"
     )
 
 
@@ -52,6 +54,7 @@ def test_request_handlers_no_longer_inline_no_substitute_handling(module_name):
     import ``refusal_headers_no_substitute`` or
     ``refusal_headers_no_local`` directly."""
     import importlib
+
     mod = importlib.import_module(module_name)
     src = inspect.getsource(mod)
     assert "refusal_headers_no_substitute" not in src, (
@@ -68,6 +71,7 @@ def test_request_handlers_no_longer_inline_substitution_disclosure(module_name):
     file should still import ``build_disclosure_payload`` or
     ``compliance_headers`` directly."""
     import importlib
+
     mod = importlib.import_module(module_name)
     src = inspect.getsource(mod)
     assert "build_disclosure_payload" not in src, (
@@ -86,6 +90,7 @@ def test_helper_called_for_orig_request_model(module_name):
     refactor that accidentally passes ``body.get("model")`` would
     silently reintroduce the audit-mislabel bug from pre-v5.0.6."""
     import importlib
+
     mod = importlib.import_module(module_name)
     src = inspect.getsource(mod)
     # Every call site to either of the three helpers that take

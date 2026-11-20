@@ -15,12 +15,15 @@ Response emits ``X-Hooks-Applied`` (which hooks ran) and
 ``X-Hooks-Skipped`` (which were force-off) when the override
 mechanism engaged — for observability.
 """
+
 from __future__ import annotations
+
 from pathlib import Path
 
 
 def test_parse_empty_returns_empty_sets():
     from app.api._response_hook_runner import _parse_hooks_override_header
+
     assert _parse_hooks_override_header(None) == (set(), set())
     assert _parse_hooks_override_header("") == (set(), set())
     assert _parse_hooks_override_header(" , , ") == (set(), set())
@@ -28,6 +31,7 @@ def test_parse_empty_returns_empty_sets():
 
 def test_parse_force_enable_only():
     from app.api._response_hook_runner import _parse_hooks_override_header
+
     enabled, disabled = _parse_hooks_override_header("+a,+b")
     assert enabled == {"a", "b"}
     assert disabled == set()
@@ -35,6 +39,7 @@ def test_parse_force_enable_only():
 
 def test_parse_force_disable_only():
     from app.api._response_hook_runner import _parse_hooks_override_header
+
     enabled, disabled = _parse_hooks_override_header("-x,-y")
     assert enabled == set()
     assert disabled == {"x", "y"}
@@ -42,15 +47,15 @@ def test_parse_force_disable_only():
 
 def test_parse_mixed_and_whitespace_tolerant():
     from app.api._response_hook_runner import _parse_hooks_override_header
-    enabled, disabled = _parse_hooks_override_header(
-        "  +alpha ,  -beta,  +gamma  "
-    )
+
+    enabled, disabled = _parse_hooks_override_header("  +alpha ,  -beta,  +gamma  ")
     assert enabled == {"alpha", "gamma"}
     assert disabled == {"beta"}
 
 
 def test_parse_unknown_prefix_silently_skipped():
     from app.api._response_hook_runner import _parse_hooks_override_header
+
     enabled, disabled = _parse_hooks_override_header("junk,+valid,also_junk")
     assert enabled == {"valid"}
     assert disabled == set()
@@ -58,6 +63,7 @@ def test_parse_unknown_prefix_silently_skipped():
 
 def test_parse_bare_plus_or_minus_is_ignored():
     from app.api._response_hook_runner import _parse_hooks_override_header
+
     enabled, disabled = _parse_hooks_override_header("+,-")
     assert enabled == set()
     assert disabled == set()
@@ -75,7 +81,8 @@ class _FakeRequest:
 
 
 def test_extract_returns_empty_when_no_debug_echo():
-    from app.api._response_hook_runner import _extract_hooks_override, HookContext
+    from app.api._response_hook_runner import HookContext, _extract_hooks_override
+
     ctx = HookContext(
         request=_FakeRequest({"X-Hooks-Override": "-compliance_substitution_header_hook"}),
         key_record=_FakeKey(debug_echo_enabled=False),
@@ -86,7 +93,8 @@ def test_extract_returns_empty_when_no_debug_echo():
 
 
 def test_extract_returns_parsed_when_debug_echo():
-    from app.api._response_hook_runner import _extract_hooks_override, HookContext
+    from app.api._response_hook_runner import HookContext, _extract_hooks_override
+
     ctx = HookContext(
         request=_FakeRequest({"X-Hooks-Override": "+foo,-bar"}),
         key_record=_FakeKey(debug_echo_enabled=True),
@@ -97,7 +105,8 @@ def test_extract_returns_parsed_when_debug_echo():
 
 
 def test_extract_returns_empty_when_no_request():
-    from app.api._response_hook_runner import _extract_hooks_override, HookContext
+    from app.api._response_hook_runner import HookContext, _extract_hooks_override
+
     ctx = HookContext(request=None, key_record=_FakeKey(debug_echo_enabled=True))
     enabled, disabled = _extract_hooks_override(ctx)
     assert enabled == set()
@@ -105,7 +114,8 @@ def test_extract_returns_empty_when_no_request():
 
 
 def test_extract_returns_empty_when_no_header():
-    from app.api._response_hook_runner import _extract_hooks_override, HookContext
+    from app.api._response_hook_runner import HookContext, _extract_hooks_override
+
     ctx = HookContext(
         request=_FakeRequest({}),
         key_record=_FakeKey(debug_echo_enabled=True),
@@ -116,7 +126,8 @@ def test_extract_returns_empty_when_no_header():
 
 
 def test_extract_case_insensitive_header_lookup():
-    from app.api._response_hook_runner import _extract_hooks_override, HookContext
+    from app.api._response_hook_runner import HookContext, _extract_hooks_override
+
     ctx = HookContext(
         request=_FakeRequest({"x-hooks-override": "+foo"}),
         key_record=_FakeKey(debug_echo_enabled=True),
@@ -127,9 +138,12 @@ def test_extract_case_insensitive_header_lookup():
 
 def test_runner_skips_force_disabled_hook_when_gate_open():
     import asyncio
+
     from app.api._response_hook_runner import (
-        apply_response_hooks, register_hook, reset_registry_for_tests,
         HookContext,
+        apply_response_hooks,
+        register_hook,
+        reset_registry_for_tests,
     )
 
     async def _ran_hook_fn(*, handler_id, resp_headers, context):
@@ -143,9 +157,13 @@ def test_runner_skips_force_disabled_hook_when_gate_open():
         key_record=_FakeKey(debug_echo_enabled=True),
     )
     resp = {}
-    asyncio.run(apply_response_hooks(
-        handler_id="test", resp_headers=resp, context=ctx,
-    ))
+    asyncio.run(
+        apply_response_hooks(
+            handler_id="test",
+            resp_headers=resp,
+            context=ctx,
+        )
+    )
     assert "X-Ran" not in resp
     assert resp.get("X-Hooks-Skipped") == "ran_hook"
     reset_registry_for_tests()
@@ -153,9 +171,12 @@ def test_runner_skips_force_disabled_hook_when_gate_open():
 
 def test_runner_ignores_override_when_gate_closed():
     import asyncio
+
     from app.api._response_hook_runner import (
-        apply_response_hooks, register_hook, reset_registry_for_tests,
         HookContext,
+        apply_response_hooks,
+        register_hook,
+        reset_registry_for_tests,
     )
 
     async def _hook_fn(*, handler_id, resp_headers, context):
@@ -169,9 +190,13 @@ def test_runner_ignores_override_when_gate_closed():
         key_record=_FakeKey(debug_echo_enabled=False),
     )
     resp = {}
-    asyncio.run(apply_response_hooks(
-        handler_id="test", resp_headers=resp, context=ctx,
-    ))
+    asyncio.run(
+        apply_response_hooks(
+            handler_id="test",
+            resp_headers=resp,
+            context=ctx,
+        )
+    )
     assert resp.get("X-Ran") == "yes"
     assert "X-Hooks-Skipped" not in resp
     assert "X-Hooks-Applied" not in resp
@@ -182,6 +207,7 @@ def test_runner_force_enables_degraded_hook():
     """A degraded hook is normally skipped; ``+name`` runs it this once
     (useful for retrying after fixing something upstream)."""
     import asyncio
+
     from app.api import _response_hook_runner as R
 
     async def _hook_fn(*, handler_id, resp_headers, context):
@@ -197,9 +223,13 @@ def test_runner_force_enables_degraded_hook():
         key_record=_FakeKey(debug_echo_enabled=True),
     )
     resp = {}
-    asyncio.run(R.apply_response_hooks(
-        handler_id="test", resp_headers=resp, context=ctx,
-    ))
+    asyncio.run(
+        R.apply_response_hooks(
+            handler_id="test",
+            resp_headers=resp,
+            context=ctx,
+        )
+    )
     assert resp.get("X-Recovered") == "yes"
     R.reset_registry_for_tests()
 
@@ -219,10 +249,9 @@ def test_extract_helper_present():
 
 def test_version_bumped():
     import re
+
     src = Path("app/__version__.py").read_text()
     m = re.search(r'"(\d+)\.(\d+)\.(\d+)"', src)
     assert m
     major, minor, patch = int(m.group(1)), int(m.group(2)), int(m.group(3))
-    assert (major, minor, patch) >= (5, 20, 3), (
-        f"expected >= 5.20.3, got {major}.{minor}.{patch}"
-    )
+    assert (major, minor, patch) >= (5, 20, 3), f"expected >= 5.20.3, got {major}.{minor}.{patch}"

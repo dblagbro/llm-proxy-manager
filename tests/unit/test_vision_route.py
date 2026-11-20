@@ -1,7 +1,8 @@
 """Unit tests for vision-to-text routing (Wave 5 #25)."""
+
 import sys
 import types
-import asyncio
+
 import pytest
 
 # Stub heavy deps before app imports
@@ -16,14 +17,14 @@ sys.modules.setdefault("sqlalchemy", _sqla)
 sys.modules.setdefault("sqlalchemy.ext", _sqla_ext)
 sys.modules.setdefault("sqlalchemy.ext.asyncio", _sqla_ext_async)
 
-from app.api.vision_route import (
+from app.api.vision_route import (  # noqa: E402
+    _VISION_PROMPT,
     transcribe_anthropic,
     transcribe_openai,
-    _VISION_PROMPT,
 )
 
-
 # ── Helpers ────────────────────────────────────────────────────────────────────
+
 
 def _msg_text(text="hello"):
     return {"role": "user", "content": text}
@@ -98,7 +99,7 @@ class TestTranscribeAnthropicNoProvider:
         monkeypatch.setattr(vr, "pick_vision_provider", _no_provider)
 
         # strip_images_anthropic must be importable and return a list
-        from app.api.image_utils import strip_images_anthropic
+
         msgs = [_msg_image_anthropic()]
         out, count = await transcribe_anthropic(msgs, db=None)
         assert count == 0
@@ -186,8 +187,14 @@ class TestTranscribeAnthropicWithProvider:
         two_image_msg = {
             "role": "user",
             "content": [
-                {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "a"}},
-                {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "b"}},
+                {
+                    "type": "image",
+                    "source": {"type": "base64", "media_type": "image/png", "data": "a"},
+                },
+                {
+                    "type": "image",
+                    "source": {"type": "base64", "media_type": "image/png", "data": "b"},
+                },
             ],
         }
         out, count = await transcribe_anthropic([two_image_msg], db=None)

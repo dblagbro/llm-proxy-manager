@@ -18,28 +18,31 @@ Endpoints:
   chain worker snapshot.
 - ``GET /api/me/compliance`` — per-key transparency view.
 """
+
 from __future__ import annotations
 
 import csv
 import hashlib
 import io
 import json
-from datetime import datetime, timedelta, timezone
-from typing import Optional
+from datetime import UTC, datetime, timedelta
+from datetime import timezone as timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select, and_, func
+from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.admin import require_admin, AdminUser
+from app.auth.admin import AdminUser, require_admin
 from app.auth.keys import ApiKeyRecord, resolve_api_key_dep
 from app.compliance import (
     KNOWN_COMPANIES,
     detect_client_company,
-    emit_event,
     generate_audit_id,
     get_effective_blocklist,
+)
+from app.compliance import (
+    emit_event as emit_event,
 )
 from app.compliance.policy import get_custom_companies
 from app.config_runtime import get_setting
@@ -52,9 +55,17 @@ _DISCLAIMER_URL = "https://www.voipguru.org/llm-proxy2/docs/compliance"
 
 # CSV columns required by spec §3.2 (exact order).
 _CSV_COLUMNS = [
-    "audit_id", "api_key_id", "event_type", "requested_at",
-    "requested_model", "served_model", "served_provider_id",
-    "blocked_company", "reason_code", "client_user_agent", "http_status",
+    "audit_id",
+    "api_key_id",
+    "event_type",
+    "requested_at",
+    "requested_model",
+    "served_model",
+    "served_provider_id",
+    "blocked_company",
+    "reason_code",
+    "client_user_agent",
+    "http_status",
 ]
 
 
@@ -125,15 +136,18 @@ async def cluster_compliance_ready(_: AdminUser = Depends(require_admin)):
                 all_healthy = False
             # No state-hash endpoint yet — surface NULL; downstream cluster
             # consistency check folds to True when only one node reports.
-            peer_dicts.append({
-                "name": peer.name,
-                "healthy": healthy,
-                "last_sync_at": (
-                    datetime.utcfromtimestamp(peer.last_heartbeat).isoformat() + "Z"
-                    if peer.last_heartbeat else None
-                ),
-                "current_state_hash": None,
-            })
+            peer_dicts.append(
+                {
+                    "name": peer.name,
+                    "healthy": healthy,
+                    "last_sync_at": (
+                        datetime.utcfromtimestamp(peer.last_heartbeat).isoformat() + "Z"
+                        if peer.last_heartbeat
+                        else None
+                    ),
+                    "current_state_hash": None,
+                }
+            )
         cluster_size = 1 + len(peer_dicts)  # self + peers
         quorum_size = max(0, cluster_size - 1)
         consistent = len(hashes) <= 1
@@ -182,9 +196,7 @@ def _event_row_to_dict(row: ComplianceEvent) -> dict:
         "client_user_agent": row.client_user_agent,
         "http_status": row.http_status,
         "matched_pattern": row.matched_pattern,
-        "client_identity": (
-            json.loads(row.client_identity) if row.client_identity else None
-        ),
+        "client_identity": (json.loads(row.client_identity) if row.client_identity else None),
         "policy_active_since": (
             row.policy_active_since.isoformat() + "Z" if row.policy_active_since else None
         ),
@@ -198,13 +210,13 @@ def _event_row_to_dict(row: ComplianceEvent) -> dict:
 # and doesn't touch the DB. Session releases when the handler returns.
 @router.get("/api/admin/compliance-events")
 async def admin_compliance_events(
-    api_key_id: Optional[str] = None,
-    event_type: Optional[str] = None,
-    start: Optional[str] = None,
-    end: Optional[str] = None,
+    api_key_id: str | None = None,
+    event_type: str | None = None,
+    start: str | None = None,
+    end: str | None = None,
     format: str = "json",
     limit: int = 1000,
-    cursor: Optional[int] = None,
+    cursor: int | None = None,
     db: AsyncSession = Depends(get_db),
     _: AdminUser = Depends(require_admin),
 ):
@@ -224,7 +236,9 @@ async def admin_compliance_events(
         conds.append(ComplianceEvent.event_type == event_type)
     if start:
         try:
-            conds.append(ComplianceEvent.created_at >= datetime.fromisoformat(start.replace("Z", "")))
+            conds.append(
+                ComplianceEvent.created_at >= datetime.fromisoformat(start.replace("Z", ""))
+            )
         except ValueError:
             raise HTTPException(400, f"Invalid 'start' timestamp: {start}")
     if end:
@@ -241,26 +255,34 @@ async def admin_compliance_events(
     rows = rs.scalars().all()
 
     if format == "csv":
+
         def _stream():
             buf = io.StringIO()
             writer = csv.writer(buf)
             writer.writerow(_CSV_COLUMNS)
             yield buf.getvalue()
-            buf.seek(0); buf.truncate(0)
+            buf.seek(0)
+            buf.truncate(0)
             for row in rows:
-                writer.writerow([
-                    row.audit_id, row.api_key_id, row.event_type,
-                    row.requested_at.isoformat() + "Z" if row.requested_at else "",
-                    row.requested_model or "",
-                    row.served_model or "",
-                    row.served_provider_id or "",
-                    row.blocked_company or "",
-                    row.reason_code or "",
-                    row.client_user_agent or "",
-                    row.http_status or 0,
-                ])
+                writer.writerow(
+                    [
+                        row.audit_id,
+                        row.api_key_id,
+                        row.event_type,
+                        row.requested_at.isoformat() + "Z" if row.requested_at else "",
+                        row.requested_model or "",
+                        row.served_model or "",
+                        row.served_provider_id or "",
+                        row.blocked_company or "",
+                        row.reason_code or "",
+                        row.client_user_agent or "",
+                        row.http_status or 0,
+                    ]
+                )
                 yield buf.getvalue()
-                buf.seek(0); buf.truncate(0)
+                buf.seek(0)
+                buf.truncate(0)
+
         return StreamingResponse(
             _stream(),
             media_type="text/csv",
@@ -287,12 +309,8 @@ def _policy_change_to_dict(row: CompliancePolicyChange) -> dict:
         "before_state": json.loads(row.before_state) if row.before_state else None,
         "after_state": json.loads(row.after_state) if row.after_state else None,
         "reason": row.reason,
-        "applied_to_peers": (
-            json.loads(row.applied_to_peers) if row.applied_to_peers else []
-        ),
-        "pending_peers": (
-            json.loads(row.pending_peers) if row.pending_peers else []
-        ),
+        "applied_to_peers": (json.loads(row.applied_to_peers) if row.applied_to_peers else []),
+        "pending_peers": (json.loads(row.pending_peers) if row.pending_peers else []),
         "cluster_sync_status": row.cluster_sync_status,
     }
 
@@ -305,9 +323,7 @@ async def admin_compliance_policy_changes(
 ):
     limit = max(1, min(int(limit or 100), 1000))
     rs = await db.execute(
-        select(CompliancePolicyChange)
-        .order_by(CompliancePolicyChange.id.desc())
-        .limit(limit)
+        select(CompliancePolicyChange).order_by(CompliancePolicyChange.id.desc()).limit(limit)
     )
     return {"changes": [_policy_change_to_dict(r) for r in rs.scalars().all()]}
 
@@ -326,6 +342,7 @@ async def admin_cursor_oauth_expiry(
     decoding JWTs manually.
     """
     from app.monitoring.cursor_oauth_expiry_monitor import get_last_sweep
+
     return get_last_sweep()
 
 
@@ -338,13 +355,12 @@ async def admin_compliance_audit_worker(
     most recent chain rows. Lets operators verify the worker is firing
     + sample the hash chain without docker-exec.
     """
-    from app.monitoring.compliance_audit_worker import get_last_sweep
     from app.models.db import ComplianceAuditChain
+    from app.monitoring.compliance_audit_worker import get_last_sweep
+
     snap = get_last_sweep()
     rs = await db.execute(
-        select(ComplianceAuditChain)
-        .order_by(ComplianceAuditChain.day.desc())
-        .limit(30)
+        select(ComplianceAuditChain).order_by(ComplianceAuditChain.day.desc()).limit(30)
     )
     chain = [
         {
@@ -383,22 +399,26 @@ async def compliance_taxonomy(_: AdminUser = Depends(require_admin)):
     custom = get_custom_companies()
     items: list[dict] = []
     for cid, info in KNOWN_COMPANIES.items():
-        items.append({
-            "id": cid,
-            "label": info.get("display_name", cid),
-            "source": "known",
-        })
+        items.append(
+            {
+                "id": cid,
+                "label": info.get("display_name", cid),
+                "source": "known",
+            }
+        )
     for cid, entry in custom.items():
         # Skip if this custom entry is overriding a known one — the
         # known entry already covered it in the loop above. The runtime
         # resolver follows the same precedence.
         if cid in KNOWN_COMPANIES:
             continue
-        items.append({
-            "id": cid,
-            "label": entry.get("display_name", cid),
-            "source": "custom",
-        })
+        items.append(
+            {
+                "id": cid,
+                "label": entry.get("display_name", cid),
+                "source": "custom",
+            }
+        )
     items.sort(key=lambda x: x["label"].lower())
     return {"companies": items}
 
@@ -450,16 +470,18 @@ async def admin_policy_snapshot(_: AdminUser = Depends(require_admin)):
         # Custom entries already shape-match KNOWN_COMPANIES per
         # ``compliance_custom_companies`` schema; surface verbatim with
         # the ``id`` carried explicitly so consumers can round-trip.
-        custom_serialized.append({
-            "id": cid,
-            "display_name": entry.get("display_name", cid),
-            "model_prefixes": list(entry.get("model_prefixes", [])),
-            "provider_types": list(entry.get("provider_types", [])),
-            "ua_patterns": [
-                {"type": r.get("type"), "value": r.get("value")}
-                for r in entry.get("ua_patterns", [])
-            ],
-        })
+        custom_serialized.append(
+            {
+                "id": cid,
+                "display_name": entry.get("display_name", cid),
+                "model_prefixes": list(entry.get("model_prefixes", [])),
+                "provider_types": list(entry.get("provider_types", [])),
+                "ua_patterns": [
+                    {"type": r.get("type"), "value": r.get("value")}
+                    for r in entry.get("ua_patterns", [])
+                ],
+            }
+        )
 
     # System-wide block list — same source the runtime resolver reads.
     system_blocked_raw = get_setting("compliance_system_blocked_companies", []) or []
@@ -489,7 +511,7 @@ async def admin_policy_snapshot(_: AdminUser = Depends(require_admin)):
 
     return {
         "policy_version": policy_version,
-        "computed_at": datetime.now(timezone.utc).isoformat(),
+        "computed_at": datetime.now(UTC).isoformat(),
         "proxy_version": _proxy_version,
         "snapshot_kind": "canonical-policy",
         "taxonomy": taxonomy,
@@ -526,12 +548,12 @@ async def me_compliance(
 
     If neither auth path works, 401.
     """
-    from app.auth.keys import verify_api_key
     from app.auth.admin import require_any_user
+    from app.auth.keys import verify_api_key
 
     # Try api_key path first.
     auth_header = request.headers.get("authorization") or ""
-    raw_key: Optional[str] = None
+    raw_key: str | None = None
     if auth_header.lower().startswith("bearer "):
         raw_key = auth_header[7:].strip() or None
     if not raw_key:
@@ -554,9 +576,12 @@ async def me_compliance(
         subs_rs = await db.execute(
             select(func.count(ComplianceEvent.id)).where(
                 ComplianceEvent.api_key_id == key.id,
-                ComplianceEvent.event_type.in_((
-                    "model_substitution", "provider_substitution",
-                )),
+                ComplianceEvent.event_type.in_(
+                    (
+                        "model_substitution",
+                        "provider_substitution",
+                    )
+                ),
                 ComplianceEvent.created_at >= since,
             )
         )
@@ -568,10 +593,13 @@ async def me_compliance(
             )
         )
         last_change_rs = await db.execute(
-            select(CompliancePolicyChange).where(
+            select(CompliancePolicyChange)
+            .where(
                 (CompliancePolicyChange.scope == "system")
                 | (CompliancePolicyChange.target_id == key.id)
-            ).order_by(CompliancePolicyChange.id.desc()).limit(1)
+            )
+            .order_by(CompliancePolicyChange.id.desc())
+            .limit(1)
         )
         last_change = last_change_rs.scalar_one_or_none()
         last_change_payload = None
@@ -603,9 +631,12 @@ async def me_compliance(
     user = await require_any_user(request)
     subs_rs = await db.execute(
         select(func.count(ComplianceEvent.id)).where(
-            ComplianceEvent.event_type.in_((
-                "model_substitution", "provider_substitution",
-            )),
+            ComplianceEvent.event_type.in_(
+                (
+                    "model_substitution",
+                    "provider_substitution",
+                )
+            ),
             ComplianceEvent.created_at >= since,
         )
     )
@@ -622,9 +653,7 @@ async def me_compliance(
         )
     )
     last_change_rs = await db.execute(
-        select(CompliancePolicyChange).order_by(
-            CompliancePolicyChange.id.desc()
-        ).limit(1)
+        select(CompliancePolicyChange).order_by(CompliancePolicyChange.id.desc()).limit(1)
     )
     last_change = last_change_rs.scalar_one_or_none()
     last_change_payload = None

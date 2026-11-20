@@ -9,6 +9,7 @@ enabled / auto-skip, and threshold-rule values). A propose tool never
 mutates directly — it creates a PENDING proposal; applying is a separate
 explicit step unless the operator asked AIRI to auto-apply.
 """
+
 from __future__ import annotations
 
 import json
@@ -16,11 +17,15 @@ import logging
 
 import httpx
 
-from app.config import settings
 from app.airi.tools import (
-    TOOL_SCHEMAS, READ_ONLY_TOOLS, run_tool,
-    PROPOSE_TOOL_SCHEMAS, PROPOSE_TOOLS, run_propose_tool,
+    PROPOSE_TOOL_SCHEMAS,
+    PROPOSE_TOOLS,
+    READ_ONLY_TOOLS,
+    TOOL_SCHEMAS,
+    run_propose_tool,
+    run_tool,
 )
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -124,7 +129,8 @@ async def run_airi_turn(messages: list[dict], actor: str | None = None):  # noqa
     # Deliberately runs BEFORE the tool-loop so every LLM call in this
     # turn (including tool-continuations) gets the same hint — the cue
     # is a property of the turn's INTENT, not any individual call.
-    from app.airi.prompt_cues import classify_refuse_tolerance, build_lmrh_hint
+    from app.airi.prompt_cues import build_lmrh_hint, classify_refuse_tolerance
+
     """Run one AIRI turn. ``messages`` is the Anthropic-shaped conversation
     (``[{role, content}, ...]``, ending with the new user message). ``actor``
     is the operator's username — recorded on any proposal AIRI creates.
@@ -152,11 +158,14 @@ async def run_airi_turn(messages: list[dict], actor: str | None = None):  # noqa
         # Surface the classification to the operator via an SSE event.
         # Rendered by the AIRI panel as a small badge so the operator
         # can see what heuristic fired.
-        yield ("lmrh-hint", {
-            "dim": "refuse-tolerance",
-            "value": _refuse_tolerance,
-            "source": "airi.prompt_cues",
-        })
+        yield (
+            "lmrh-hint",
+            {
+                "dim": "refuse-tolerance",
+                "value": _refuse_tolerance,
+                "source": "airi.prompt_cues",
+            },
+        )
 
     for _round in range(_MAX_TOOL_ROUNDS):
         try:
@@ -168,13 +177,9 @@ async def run_airi_turn(messages: list[dict], actor: str | None = None):  # noqa
 
         content = resp.get("content") or []
         text_parts = [
-            b.get("text", "") for b in content
-            if isinstance(b, dict) and b.get("type") == "text"
+            b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"
         ]
-        tool_uses = [
-            b for b in content
-            if isinstance(b, dict) and b.get("type") == "tool_use"
-        ]
+        tool_uses = [b for b in content if isinstance(b, dict) and b.get("type") == "tool_use"]
 
         if not tool_uses:
             answer = "\n".join(t for t in text_parts if t).strip()
@@ -195,39 +200,53 @@ async def run_airi_turn(messages: list[dict], actor: str | None = None):  # noqa
                     # a turn; the rest become pending proposals to approve.
                     targs["mode"] = "suggest"
                 result = await run_propose_tool(
-                    tname, targs, actor=actor or "operator", prompt=user_prompt,
+                    tname,
+                    targs,
+                    actor=actor or "operator",
+                    prompt=user_prompt,
                 )
                 if isinstance(result, dict) and result.get("status") == "applied":
                     auto_applied += 1
                 if isinstance(result, dict) and result.get("proposal_id"):
-                    yield ("proposal", {
-                        "proposal_id": result["proposal_id"],
-                        "kind": result.get("kind"),
-                        "target": result.get("target"),
-                        "change": result.get("change"),
-                        "dry_run": result.get("dry_run"),
-                        "status": result.get("status"),
-                    })
+                    yield (
+                        "proposal",
+                        {
+                            "proposal_id": result["proposal_id"],
+                            "kind": result.get("kind"),
+                            "target": result.get("target"),
+                            "change": result.get("change"),
+                            "dry_run": result.get("dry_run"),
+                            "status": result.get("status"),
+                        },
+                    )
             elif tname in READ_ONLY_TOOLS:
                 result = await run_tool(tname, targs)
             else:
                 # Defence-in-depth — the model asked for a tool we don't expose.
                 result = {"error": f"tool {tname} is not available"}
-            results.append({
-                "type": "tool_result",
-                "tool_use_id": tu.get("id"),
-                "content": json.dumps(result, default=str)[:8000],
-            })
+            results.append(
+                {
+                    "type": "tool_result",
+                    "tool_use_id": tu.get("id"),
+                    "content": json.dumps(result, default=str)[:8000],
+                }
+            )
         convo.append({"role": "user", "content": results})
 
-    yield ("message", {
-        "text": "(AIRI reached the lookup limit for one turn — please ask again.)",
-    })
+    yield (
+        "message",
+        {
+            "text": "(AIRI reached the lookup limit for one turn — please ask again.)",
+        },
+    )
 
 
 async def _call_llm(
-    api_key: str, model: str, messages: list[dict],
-    *, llm_hint: str | None = None,
+    api_key: str,
+    model: str,
+    messages: list[dict],
+    *,
+    llm_hint: str | None = None,
 ) -> dict:
     """One non-streaming call to the proxy's own /v1/messages with tools.
     Tagged ``X-Internal-Source: airi`` so (per BUG-026) AIRI's own traffic

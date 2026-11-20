@@ -8,6 +8,7 @@ tool conversation to an OpenAI-compatible upstream produces a guaranteed
 400 ("Invalid user message at index N"). Better to 503 cleanly than burn
 upstream cost on broken requests.
 """
+
 from __future__ import annotations
 
 # Anthropic content-block types that signal a tool-using conversation.

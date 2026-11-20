@@ -1,20 +1,22 @@
 """Unit tests for PeakEWMA + TTFT hedging logic (Wave 3 #13)."""
+
 import sys
 import types
+
 import pytest
 
 # Stub litellm before any app import
 sys.modules.setdefault("litellm", types.ModuleType("litellm"))
 
-import app.routing.hedging as hedging_mod
-from app.routing.hedging import (
-    record_ttft_sample,
-    peak_ewma,
-    provider_p95_ms,
-    should_hedge_header,
-    wait_budget_ms,
+import app.routing.hedging as hedging_mod  # noqa: E402
+from app.routing.hedging import (  # noqa: E402
     _MIN_SAMPLES,
     _WINDOW_SIZE,
+    peak_ewma,
+    provider_p95_ms,
+    record_ttft_sample,
+    should_hedge_header,
+    wait_budget_ms,
 )
 
 
@@ -42,7 +44,7 @@ class TestPeakEWMA:
         val = peak_ewma("p1")
         assert val is not None
         assert val < 200.0  # decayed
-        assert val > 50.0   # still above the low value
+        assert val > 50.0  # still above the low value
 
     def test_peak_stays_sticky_on_spike(self):
         record_ttft_sample("p1", 100.0)

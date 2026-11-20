@@ -6,10 +6,11 @@
 - BUG-025: a malformed JSON request body must produce a clean 400, not
   a bare HTTP 500.
 """
+
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 import pytest_asyncio
@@ -19,8 +20,8 @@ from sqlalchemy import delete
 
 @pytest_asyncio.fixture
 async def db_ready():
-    from app.models.database import engine, AsyncSessionLocal
-    from app.models.db import Base, ApiKey
+    from app.models.database import AsyncSessionLocal, engine
+    from app.models.db import ApiKey, Base
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -31,19 +32,21 @@ async def db_ready():
 
 
 async def _make_key(SessionLocal, *, enabled: bool, deleted: bool) -> str:
-    from app.models.db import ApiKey
     from app.auth.keys import _hash_key
+    from app.models.db import ApiKey
 
     raw = f"llmp-v31010-{enabled}-{deleted}-test"
     async with SessionLocal() as db:
-        db.add(ApiKey(
-            name=f"v31010-{enabled}-{deleted}",
-            key_hash=_hash_key(raw),
-            key_prefix=raw[:8],
-            key_type="standard",
-            enabled=enabled,
-            deleted_at=datetime.now(timezone.utc) if deleted else None,
-        ))
+        db.add(
+            ApiKey(
+                name=f"v31010-{enabled}-{deleted}",
+                key_hash=_hash_key(raw),
+                key_prefix=raw[:8],
+                key_type="standard",
+                enabled=enabled,
+                deleted_at=datetime.now(UTC) if deleted else None,
+            )
+        )
         await db.commit()
     return raw
 

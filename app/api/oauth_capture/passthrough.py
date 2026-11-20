@@ -5,23 +5,24 @@ arrives here. We load the profile, verify the secret, forward to the
 profile's upstream, record both halves of the exchange, and return the
 upstream response unchanged.
 """
+
 from __future__ import annotations
 
 import logging
 import time
-from typing import Optional
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 from sqlalchemy import select
 
+from app.api.oauth_capture.serializers import (
+    _filter_req_headers,
+    _filter_resp_headers,
+    _safe_text,
+)
 from app.models.database import AsyncSessionLocal
 from app.models.db import OAuthCaptureLog, OAuthCaptureProfile
-
-from app.api.oauth_capture.serializers import (
-    _filter_req_headers, _filter_resp_headers, _safe_text,
-)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/oauth-capture", tags=["oauth-capture"])
@@ -34,9 +35,11 @@ router = APIRouter(prefix="/api/oauth-capture", tags=["oauth-capture"])
 async def capture_passthrough(profile_name: str, path: str, request: Request):
     """Forward the request to the profile's upstream and log everything."""
     async with AsyncSessionLocal() as db:
-        profile = (await db.execute(
-            select(OAuthCaptureProfile).where(OAuthCaptureProfile.name == profile_name)
-        )).scalar_one_or_none()
+        profile = (
+            await db.execute(
+                select(OAuthCaptureProfile).where(OAuthCaptureProfile.name == profile_name)
+            )
+        ).scalar_one_or_none()
 
     if profile is None:
         raise HTTPException(404, f"Capture profile {profile_name!r} not found")
@@ -77,10 +80,10 @@ async def capture_passthrough(profile_name: str, path: str, request: Request):
     forward_headers = _filter_req_headers(req_headers_dict)
 
     t0 = time.monotonic()
-    resp_status: Optional[int] = None
+    resp_status: int | None = None
     resp_headers_dict: dict = {}
     resp_body_bytes: bytes = b""
-    error_msg: Optional[str] = None
+    error_msg: str | None = None
 
     try:
         async with httpx.AsyncClient(timeout=60, follow_redirects=False) as client:

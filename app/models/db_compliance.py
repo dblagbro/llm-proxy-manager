@@ -17,8 +17,15 @@ Retention is governed by ``SystemSetting.compliance_audit_retention_days``
 (default 2555 = 7 years). The daily worker also computes the chain hash
 for the closed prior day.
 """
+
 from sqlalchemy import (
-    Column, String, Integer, Text, DateTime, ForeignKey, Index,
+    Column,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
 )
 from sqlalchemy.sql import func
 
@@ -43,6 +50,7 @@ class ComplianceEvent(Base):
       - ``path_not_allowed``       — allowed_paths middleware 403
       - ``policy_grandfathered_inflight`` — stream that started pre-flip
     """
+
     __tablename__ = "compliance_events"
     id = Column(Integer, primary_key=True, autoincrement=True)
     audit_id = Column(String, nullable=False, unique=True, index=True)
@@ -79,6 +87,7 @@ class CompliancePolicyChange(Base):
     ``reason`` is mandatory (decision 6). ``cluster_sync_status`` records
     whether the quorum fan-out reached full ack or only quorum-with-N-pending.
     """
+
     __tablename__ = "compliance_policy_changes"
     id = Column(Integer, primary_key=True, autoincrement=True)
     policy_change_id = Column(String, nullable=False, unique=True, index=True)
@@ -87,10 +96,10 @@ class CompliancePolicyChange(Base):
     scope = Column(String, nullable=False)  # 'system' | 'per_key'
     target_id = Column(String, nullable=True)  # api_key_id when scope=='per_key'
     before_state = Column(Text, nullable=False)  # JSON
-    after_state = Column(Text, nullable=False)   # JSON
+    after_state = Column(Text, nullable=False)  # JSON
     reason = Column(Text, nullable=False)
     applied_to_peers = Column(Text, nullable=False)  # JSON list of {peer, acked_at}
-    pending_peers = Column(Text, nullable=True)      # JSON list of {peer, reason}
+    pending_peers = Column(Text, nullable=True)  # JSON list of {peer, reason}
     cluster_sync_status = Column(String, nullable=False)
 
 
@@ -108,6 +117,7 @@ class ComplianceAuditChain(Base):
     First day has prior_day_chain_hash=NULL (effectively the empty string in
     the hash input).
     """
+
     __tablename__ = "compliance_audit_chain"
     id = Column(Integer, primary_key=True, autoincrement=True)
     day = Column(String, nullable=False, unique=True, index=True)  # YYYY-MM-DD

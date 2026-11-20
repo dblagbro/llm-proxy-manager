@@ -15,10 +15,10 @@ Flow:
 Published FrugalGPT result: up to ~90% cost reduction at matched quality
 when the task distribution is dominated by easy-to-answer prompts.
 """
+
 import json
 import logging
 from dataclasses import dataclass
-from typing import Optional
 
 from app.routing.retry import acompletion_with_retry
 
@@ -56,7 +56,7 @@ def parse_verdict(text: str) -> CascadeVerdict:
     end = cleaned.rfind("}")
     if start >= 0 and end > start:
         try:
-            obj = json.loads(cleaned[start:end + 1])
+            obj = json.loads(cleaned[start : end + 1])
             return CascadeVerdict(
                 acceptable=bool(obj.get("acceptable", False)),
                 reason=str(obj.get("reason", ""))[:200],
@@ -65,7 +65,7 @@ def parse_verdict(text: str) -> CascadeVerdict:
             pass
     # Lenient fallback: look for yes/no words
     lower = cleaned.lower()
-    if "\"acceptable\": true" in lower or "\"acceptable\":true" in lower:
+    if '"acceptable": true' in lower or '"acceptable":true' in lower:
         return CascadeVerdict(acceptable=True, reason="lenient-yes")
     if "acceptable: true" in lower and "false" not in lower:
         return CascadeVerdict(acceptable=True, reason="lenient-yes")
@@ -87,10 +87,10 @@ async def grade_answer(
             model=grader_model,
             messages=[
                 {"role": "system", "content": GRADER_SYSTEM},
-                {"role": "user", "content": (
-                    f"Question:\n{user_text}\n\n"
-                    f"Candidate answer:\n{candidate_answer}"
-                )},
+                {
+                    "role": "user",
+                    "content": (f"Question:\n{user_text}\n\nCandidate answer:\n{candidate_answer}"),
+                },
             ],
             max_tokens=max_tokens,
             stream=False,
@@ -104,7 +104,7 @@ async def grade_answer(
         return CascadeVerdict(acceptable=False, reason=f"grader-error:{type(exc).__name__}")
 
 
-def cascade_requested(lmrh_cascade: Optional[str], x_cascade_header: Optional[str]) -> bool:
+def cascade_requested(lmrh_cascade: str | None, x_cascade_header: str | None) -> bool:
     """Opt-in detection: LMRH cascade=auto OR X-Cot-Cascade: on."""
     if (lmrh_cascade or "").lower() == "auto":
         return True

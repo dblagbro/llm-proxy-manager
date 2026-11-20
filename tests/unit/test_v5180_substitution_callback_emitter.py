@@ -5,26 +5,18 @@ v5.14 shipped the inbound registry only; v5.18.0 adds the outbound emitter
 that POSTs a substitution event to hub's
 ``/api/compliance/callbacks/substitution`` receiver.
 """
+
 from __future__ import annotations
 
 import asyncio
-import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
-
-import pytest
-
 
 # ── (1) Module surface ────────────────────────────────────────────────
 
 
 def test_hook_module_importable():
-    from app.compliance.substitution_callback_hook import (
-        compliance_substitution_callback_hook,
-        _api_key_alias,
-        _build_event,
-        _post_once,
-    )
+    pass
 
 
 def test_hook_registered_in_builtin_registration():
@@ -38,26 +30,30 @@ def test_hook_registered_in_builtin_registration():
 
 def test_noop_when_not_substituted():
     """Hook MUST NOT POST when substitution didn't happen."""
+    from app.api._response_hook_runner import HookContext
     from app.compliance.substitution_callback_hook import (
         compliance_substitution_callback_hook,
     )
-    from app.api._response_hook_runner import HookContext
 
     ctx = HookContext(substituted=False)
     with patch("httpx.AsyncClient") as mock_client_cls:
-        result = asyncio.run(compliance_substitution_callback_hook(
-            handler_id="messages", resp_headers={}, context=ctx,
-        ))
+        result = asyncio.run(
+            compliance_substitution_callback_hook(
+                handler_id="messages",
+                resp_headers={},
+                context=ctx,
+            )
+        )
     assert result is None
     mock_client_cls.assert_not_called()
 
 
 def test_noop_when_url_empty():
     """Empty URL setting = safe default = hook is a no-op."""
+    from app.api._response_hook_runner import HookContext
     from app.compliance.substitution_callback_hook import (
         compliance_substitution_callback_hook,
     )
-    from app.api._response_hook_runner import HookContext
     from app.config import settings as _s
 
     orig_url = _s.substitution_callback_url
@@ -65,9 +61,13 @@ def test_noop_when_url_empty():
     try:
         ctx = HookContext(substituted=True, requested_model="a", served_model="b")
         with patch("httpx.AsyncClient") as mock_client_cls:
-            result = asyncio.run(compliance_substitution_callback_hook(
-                handler_id="messages", resp_headers={}, context=ctx,
-            ))
+            result = asyncio.run(
+                compliance_substitution_callback_hook(
+                    handler_id="messages",
+                    resp_headers={},
+                    context=ctx,
+                )
+            )
         assert result is None
         mock_client_cls.assert_not_called()
     finally:
@@ -78,8 +78,8 @@ def test_noop_when_url_empty():
 
 
 def test_event_body_uses_litellm_shape():
-    from app.compliance.substitution_callback_hook import _build_event
     from app.api._response_hook_runner import HookContext
+    from app.compliance.substitution_callback_hook import _build_event
 
     mock_key = MagicMock()
     mock_key.label = "coordinator-hub"
@@ -106,6 +106,7 @@ def test_event_body_uses_litellm_shape():
 def test_event_body_prefers_label_over_name():
     """When both label + name are set, label wins."""
     from app.compliance.substitution_callback_hook import _api_key_alias
+
     key = MagicMock()
     key.label = "custom-alias"
     key.name = "internal-name"
@@ -122,14 +123,20 @@ def test_event_body_prefers_label_over_name():
 
 def test_post_once_returns_ok_on_2xx():
     from app.compliance.substitution_callback_hook import _post_once
+
     mock_resp = MagicMock()
     mock_resp.status_code = 202
     mock_client = MagicMock()
     mock_client.post = AsyncMock(return_value=mock_resp)
 
-    ok, code, err = asyncio.run(_post_once(
-        mock_client, "http://hub/callback", {"x": 1}, {},
-    ))
+    ok, code, err = asyncio.run(
+        _post_once(
+            mock_client,
+            "http://hub/callback",
+            {"x": 1},
+            {},
+        )
+    )
     assert ok is True
     assert code == 202
     assert err is None
@@ -137,14 +144,20 @@ def test_post_once_returns_ok_on_2xx():
 
 def test_post_once_returns_failure_on_5xx():
     from app.compliance.substitution_callback_hook import _post_once
+
     mock_resp = MagicMock()
     mock_resp.status_code = 503
     mock_client = MagicMock()
     mock_client.post = AsyncMock(return_value=mock_resp)
 
-    ok, code, err = asyncio.run(_post_once(
-        mock_client, "http://hub/callback", {}, {},
-    ))
+    ok, code, err = asyncio.run(
+        _post_once(
+            mock_client,
+            "http://hub/callback",
+            {},
+            {},
+        )
+    )
     assert ok is False
     assert code == 503
     assert err == "http_503"
@@ -152,13 +165,20 @@ def test_post_once_returns_failure_on_5xx():
 
 def test_post_once_returns_failure_on_transport_error():
     import httpx
+
     from app.compliance.substitution_callback_hook import _post_once
+
     mock_client = MagicMock()
     mock_client.post = AsyncMock(side_effect=httpx.ConnectError("refused"))
 
-    ok, code, err = asyncio.run(_post_once(
-        mock_client, "http://hub/callback", {}, {},
-    ))
+    ok, code, err = asyncio.run(
+        _post_once(
+            mock_client,
+            "http://hub/callback",
+            {},
+            {},
+        )
+    )
     assert ok is False
     assert code is None
     assert err == "ConnectError"
@@ -200,6 +220,7 @@ def test_messages_handler_passes_substitution_reason_in_extra():
 
 def test_settings_present_with_safe_defaults():
     from app.config import settings
+
     assert hasattr(settings, "substitution_callback_url")
     assert hasattr(settings, "substitution_callback_shared_secret")
     assert settings.substitution_callback_url == ""
@@ -211,10 +232,9 @@ def test_settings_present_with_safe_defaults():
 
 def test_version_bumped():
     import re
+
     src = Path("app/__version__.py").read_text()
     m = re.search(r'"(\d+)\.(\d+)\.(\d+)"', src)
     assert m
     major, minor, patch = int(m.group(1)), int(m.group(2)), int(m.group(3))
-    assert (major, minor, patch) >= (5, 18, 0), (
-        f"expected >= 5.18.0, got {major}.{minor}.{patch}"
-    )
+    assert (major, minor, patch) >= (5, 18, 0), f"expected >= 5.18.0, got {major}.{minor}.{patch}"

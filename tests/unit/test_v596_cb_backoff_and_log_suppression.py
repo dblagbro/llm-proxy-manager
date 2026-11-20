@@ -15,11 +15,12 @@ Post-fix:
   provider that re-opens N times in a row escalates to 32× base (~64m
   at the default 120s), bridging the gap to billing-error (6h hold)
 """
+
 from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Iterator
+from collections.abc import Iterator
 
 import pytest
 
@@ -27,6 +28,7 @@ import pytest
 @pytest.fixture(autouse=True)
 def _isolate_cb() -> Iterator[None]:
     from app.routing import circuit_breaker as cb
+
     cb._local_states.clear()
     cb._provider_overrides.clear()
     yield

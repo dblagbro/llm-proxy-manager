@@ -13,6 +13,7 @@ Verifies:
   the standard logging API (covers the production code path where
   openai-python's logger emits the record).
 """
+
 from __future__ import annotations
 
 import logging
@@ -29,12 +30,12 @@ def _reset_openai_tap_state():
     Reset all three between tests so we don't stack handlers and
     overcount in the end-to-end test."""
     from app.observability import openai_retry_tap as tap_mod
+
     target = logging.getLogger("openai._base_client")
     saved_handlers = list(target.handlers)
     saved_propagate = target.propagate
     saved_level = target.level
-    target.handlers = [h for h in target.handlers
-                       if not isinstance(h, tap_mod._OpenAIRetryTap)]
+    target.handlers = [h for h in target.handlers if not isinstance(h, tap_mod._OpenAIRetryTap)]
     tap_mod._installed = False
     yield
     target.handlers = saved_handlers
@@ -48,8 +49,10 @@ def _reset_openai_tap_state():
 
 def test_tap_module_exists():
     from app.observability.openai_retry_tap import (
-        _OpenAIRetryTap, install_openai_retry_tap,
+        _OpenAIRetryTap,
+        install_openai_retry_tap,
     )
+
     assert issubclass(_OpenAIRetryTap, logging.Handler)
     assert callable(install_openai_retry_tap)
 
@@ -60,6 +63,7 @@ def test_counter_exported():
     prometheus shim; instead verify the public observer accepts the
     label without raising."""
     from app.observability.prometheus import OPENAI_RETRIES_TOTAL, observe_openai_retry
+
     assert OPENAI_RETRIES_TOTAL is not None
     assert callable(observe_openai_retry)
     # Must accept the endpoint kwarg shape we ship.
@@ -78,14 +82,19 @@ def test_main_py_installs_the_tap():
 
 def _make_record(msg: str, logger_name: str = "openai._base_client") -> logging.LogRecord:
     return logging.LogRecord(
-        name=logger_name, level=logging.INFO,
-        pathname=__file__, lineno=0,
-        msg=msg, args=(), exc_info=None,
+        name=logger_name,
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=0,
+        msg=msg,
+        args=(),
+        exc_info=None,
     )
 
 
 def test_handler_increments_on_retry_message():
     from app.observability.openai_retry_tap import _OpenAIRetryTap
+
     tap = _OpenAIRetryTap()
     with patch("app.observability.prometheus.observe_openai_retry") as m:
         tap.emit(_make_record("Retrying request to /chat/completions in 0.381504 seconds"))
@@ -94,6 +103,7 @@ def test_handler_increments_on_retry_message():
 
 def test_handler_extracts_alt_endpoint():
     from app.observability.openai_retry_tap import _OpenAIRetryTap
+
     tap = _OpenAIRetryTap()
     with patch("app.observability.prometheus.observe_openai_retry") as m:
         tap.emit(_make_record("Retrying request to /messages in 1.234 seconds"))
@@ -105,6 +115,7 @@ def test_handler_ignores_non_retry_lines():
     N retries" line) must NOT increment the retry counter — that would
     overcount."""
     from app.observability.openai_retry_tap import _OpenAIRetryTap
+
     tap = _OpenAIRetryTap()
     with patch("app.observability.prometheus.observe_openai_retry") as m:
         tap.emit(_make_record("Defaulting to 2 retries for client"))
@@ -116,6 +127,7 @@ def test_handler_falls_back_to_other_when_unparseable():
     fires but with endpoint='other' so the operator at least sees the
     rate jump."""
     from app.observability.openai_retry_tap import _OpenAIRetryTap
+
     tap = _OpenAIRetryTap()
     with patch("app.observability.prometheus.observe_openai_retry") as m:
         tap.emit(_make_record("Retrying request without a recognisable path"))
@@ -126,9 +138,12 @@ def test_handler_swallows_exceptions():
     """Logging handlers MUST NOT raise — if prometheus is unavailable
     or counter increment throws, the tap silently no-ops."""
     from app.observability.openai_retry_tap import _OpenAIRetryTap
+
     tap = _OpenAIRetryTap()
-    with patch("app.observability.prometheus.observe_openai_retry",
-               side_effect=RuntimeError("metrics broken")):
+    with patch(
+        "app.observability.prometheus.observe_openai_retry",
+        side_effect=RuntimeError("metrics broken"),
+    ):
         # Must NOT raise
         tap.emit(_make_record("Retrying request to /chat/completions in 1 seconds"))
 
@@ -137,6 +152,7 @@ def test_install_is_idempotent():
     """Boot may invoke install() more than once (reload, hot-rewire,
     etc.) — must not stack duplicate handlers."""
     from app.observability import openai_retry_tap as tap_mod
+
     target = logging.getLogger("openai._base_client")
     # Reset module-level flag so the install() call body executes once
     tap_mod._installed = False
@@ -152,6 +168,7 @@ def test_install_sets_propagate_false():
     (which writes stdout). propagate=False on the target logger keeps
     the records local to our tap."""
     from app.observability import openai_retry_tap as tap_mod
+
     tap_mod._installed = False
     tap_mod.install_openai_retry_tap()
     target = logging.getLogger("openai._base_client")
@@ -163,6 +180,7 @@ def test_logger_pipeline_increments_counter():
     the retry template, the counter goes up. This is the actual
     production code path."""
     from app.observability import openai_retry_tap as tap_mod
+
     tap_mod._installed = False
     tap_mod.install_openai_retry_tap()
 

@@ -20,29 +20,28 @@ When ``COORDINATOR_HMAC_KEY`` is unset, the dependency returns 503 so
 the operator notices the misconfiguration immediately instead of
 silently allowing/denying.
 """
+
 from __future__ import annotations
 
 import hashlib
 import hmac
 import os
 import time
-from typing import Optional
 
 from fastapi import Header, HTTPException, Request
-
 
 _TIMESTAMP_WINDOW_SEC = 60
 
 
-def _secret() -> Optional[str]:
+def _secret() -> str | None:
     s = os.environ.get("COORDINATOR_HMAC_KEY")
     return s if s else None
 
 
 async def require_cluster_hmac(
     request: Request,
-    x_cluster_timestamp: Optional[str] = Header(None),
-    x_cluster_auth: Optional[str] = Header(None),
+    x_cluster_timestamp: str | None = Header(None),
+    x_cluster_auth: str | None = Header(None),
 ) -> bool:
     secret = _secret()
     if not secret:
@@ -52,25 +51,19 @@ async def require_cluster_hmac(
             "var is unset on this proxy node.",
         )
     if not x_cluster_timestamp or not x_cluster_auth:
-        raise HTTPException(
-            401, "Missing X-Cluster-Timestamp / X-Cluster-Auth headers"
-        )
+        raise HTTPException(401, "Missing X-Cluster-Timestamp / X-Cluster-Auth headers")
     try:
         ts = int(x_cluster_timestamp)
     except ValueError:
-        raise HTTPException(
-            401, "X-Cluster-Timestamp must be unix epoch seconds"
-        )
+        raise HTTPException(401, "X-Cluster-Timestamp must be unix epoch seconds")
     if abs(int(time.time()) - ts) > _TIMESTAMP_WINDOW_SEC:
         raise HTTPException(
             401,
             f"X-Cluster-Timestamp out of window (±{_TIMESTAMP_WINDOW_SEC}s)",
         )
     body = await request.body()
-    signed = f"{ts}{request.url.path}".encode("utf-8") + (body or b"")
-    expected = hmac.new(
-        secret.encode("utf-8"), signed, hashlib.sha256
-    ).hexdigest()
+    signed = f"{ts}{request.url.path}".encode() + (body or b"")
+    expected = hmac.new(secret.encode("utf-8"), signed, hashlib.sha256).hexdigest()
     if not hmac.compare_digest(expected, x_cluster_auth.strip().lower()):
         raise HTTPException(401, "Invalid X-Cluster-Auth signature")
     return True

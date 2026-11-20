@@ -13,19 +13,21 @@ Public surface (re-exported from ``_messages_streaming.py``):
 - ``_complete_claude_oauth`` — non-streaming dispatch
 - ``_stream_claude_oauth`` — streaming dispatch
 """
+
 from __future__ import annotations
 
 import json
 import logging
 import time
-from typing import AsyncIterator, Optional
+from collections.abc import AsyncIterator
 
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.cache.middleware import maybe_store
 from app.monitoring.helpers import record_outcome
-from app.providers.claude_oauth import build_headers as _claude_oauth_headers, PLATFORM_BASE_URL
+from app.providers.claude_oauth import PLATFORM_BASE_URL
+from app.providers.claude_oauth import build_headers as _claude_oauth_headers
 
 logger = logging.getLogger(__name__)
 
@@ -64,13 +66,13 @@ def _count_cache_control_markers(body: dict) -> int:
         for b in sys_field:
             if isinstance(b, dict) and b.get("cache_control"):
                 n += 1
-    for msg in (body.get("messages") or []):
+    for msg in body.get("messages") or []:
         c = msg.get("content") if isinstance(msg, dict) else None
         if isinstance(c, list):
             for b in c:
                 if isinstance(b, dict) and b.get("cache_control"):
                     n += 1
-    for tool in (body.get("tools") or []):
+    for tool in body.get("tools") or []:
         if isinstance(tool, dict) and tool.get("cache_control"):
             n += 1
     return n
@@ -127,7 +129,8 @@ def _inject_claude_code_system(body: dict) -> dict:
     if cc_count > 4:
         try:
             sys_cc = sum(
-                1 for b in (sys_field if isinstance(sys_field, list) else [])
+                1
+                for b in (sys_field if isinstance(sys_field, list) else [])
                 if isinstance(b, dict) and b.get("cache_control")
             )
             msg_cc = sum(
@@ -138,7 +141,8 @@ def _inject_claude_code_system(body: dict) -> dict:
                 if isinstance(blk, dict) and blk.get("cache_control")
             )
             tool_cc = sum(
-                1 for t in (body.get("tools") or [])
+                1
+                for t in (body.get("tools") or [])
                 if isinstance(t, dict) and t.get("cache_control")
             )
             logger.warning(
@@ -146,7 +150,10 @@ def _inject_claude_code_system(body: dict) -> dict:
                 "(Anthropic caps at 4 — upstream will 400). "
                 "breakdown: sys=%d msgs=%d tools=%d. "
                 "Proxy did NOT add its own marker's cache_control.",
-                cc_count, sys_cc, msg_cc, tool_cc,
+                cc_count,
+                sys_cc,
+                msg_cc,
+                tool_cc,
             )
         except Exception:
             pass  # never break the dispatch path on telemetry
@@ -232,12 +239,14 @@ def _prepare_claude_oauth_request(body: dict, *, stream: bool) -> tuple[str, dic
     return url, prepared
 
 
-async def _refresh_oauth_token(provider_id: str, db: AsyncSession) -> Optional[str]:
+async def _refresh_oauth_token(provider_id: str, db: AsyncSession) -> str | None:
     """Fetch the provider, run refresh_and_persist, return new access_token.
     Returns None if refresh fails (e.g. invalid_grant — admin must re-auth)."""
     from sqlalchemy import select
+
     from app.models.db import Provider
-    from app.providers.claude_oauth_flow import refresh_and_persist, OAuthFlowError
+    from app.providers.claude_oauth_flow import OAuthFlowError, refresh_and_persist
+
     try:
         r = await db.execute(select(Provider).where(Provider.id == provider_id))
         provider = r.scalar_one_or_none()
@@ -261,12 +270,12 @@ async def _complete_claude_oauth(
     db: AsyncSession,
     key_record_id: str,
     t0: float,
-    provider_name: Optional[str] = None,
+    provider_name: str | None = None,
     # v3.0.58: plumb the raw LLM-Hint header through claude-oauth so
     # event_meta.lmrh_hint captures it (the claude-oauth dispatch path
     # was uninstrumented in v3.0.55, leaving paperless's hint invisible
     # in activity logs even though FastAPI parsed it correctly).
-    llm_hint: Optional[str] = None,
+    llm_hint: str | None = None,
 ) -> dict:
     """Non-streaming ``/v1/messages`` call against platform.claude.com.
 
@@ -308,11 +317,17 @@ async def _complete_claude_oauth(
             req_model = body.get("model") or "claude-oauth"
             if r.status_code >= 400:
                 await record_outcome(
-                    db, provider_id, req_model, success=False,
-                    key_record_id=key_record_id, error_str=f"{r.status_code}: {r.text[:200]}",
-                    provider_name=provider_name, request_body=body,
+                    db,
+                    provider_id,
+                    req_model,
+                    success=False,
+                    key_record_id=key_record_id,
+                    error_str=f"{r.status_code}: {r.text[:200]}",
+                    provider_name=provider_name,
+                    request_body=body,
                     requested_model=req_model,
-                    had_lmrh_hint=bool(llm_hint), lmrh_hint_raw=llm_hint or None,
+                    had_lmrh_hint=bool(llm_hint),
+                    lmrh_hint_raw=llm_hint or None,
                 )
                 r.raise_for_status()
             data = r.json()
@@ -324,22 +339,37 @@ async def _complete_claude_oauth(
             # v3.0.43: also surface served_model from upstream's response.
             served_actual = data.get("model") or req_model
             await record_outcome(
-                db, provider_id, served_actual, success=True,
-                in_tok=in_tok, out_tok=out_tok, t0=t0, key_record_id=key_record_id,
-                cache_creation=cache_creation, cache_read=cache_read,
+                db,
+                provider_id,
+                served_actual,
+                success=True,
+                in_tok=in_tok,
+                out_tok=out_tok,
+                t0=t0,
+                key_record_id=key_record_id,
+                cache_creation=cache_creation,
+                cache_read=cache_read,
                 provider_name=provider_name,
-                request_body=body, response_body=data,
+                request_body=body,
+                response_body=data,
                 requested_model=req_model,
-                had_lmrh_hint=bool(llm_hint), lmrh_hint_raw=llm_hint or None,
+                had_lmrh_hint=bool(llm_hint),
+                lmrh_hint_raw=llm_hint or None,
             )
             return data
         except httpx.HTTPError as e:
             await record_outcome(
-                db, provider_id, body.get("model") or "claude-oauth", success=False,
-                key_record_id=key_record_id, error_str=_exc_str(e),
-                provider_name=provider_name, request_body=body,
+                db,
+                provider_id,
+                body.get("model") or "claude-oauth",
+                success=False,
+                key_record_id=key_record_id,
+                error_str=_exc_str(e),
+                provider_name=provider_name,
+                request_body=body,
                 requested_model=body.get("model") or "claude-oauth",
-                had_lmrh_hint=bool(llm_hint), lmrh_hint_raw=llm_hint or None,
+                had_lmrh_hint=bool(llm_hint),
+                lmrh_hint_raw=llm_hint or None,
             )
             raise
 
@@ -353,16 +383,16 @@ async def _stream_claude_oauth(
     t0: float,
     budget_total: int = 0,
     cache_decision=None,
-    provider_name: Optional[str] = None,
-    llm_hint: Optional[str] = None,  # v3.0.58: capture in event_meta.lmrh_hint
+    provider_name: str | None = None,
+    llm_hint: str | None = None,  # v3.0.58: capture in event_meta.lmrh_hint
     # v3.9.11 Phase 5.5 — caller-memory write-back for streamed responses.
     # When ``conversation_id`` is set, the assembled response_dict
     # (containing tool_use blocks for memory_20250818) gets fed through
     # the same maybe_extract_memory_writes path as non-streaming. No-op
     # when conversation_id is None (legacy non-memory traffic).
-    api_key_id: Optional[str] = None,
-    conversation_id: Optional[str] = None,
-    memory_tag: Optional[str] = None,
+    api_key_id: str | None = None,
+    conversation_id: str | None = None,
+    memory_tag: str | None = None,
 ) -> AsyncIterator[bytes]:
     """Streaming ``/v1/messages`` — platform.claude.com already emits
     Anthropic SSE, so we can forward chunks as-is and just sniff usage
@@ -419,16 +449,23 @@ async def _stream_claude_oauth(
                     if r.status_code >= 400:
                         err_body = (await r.aread()).decode(errors="replace")[:400]
                         await record_outcome(
-                            db, provider_id, body.get("model") or "claude-oauth", success=False,
+                            db,
+                            provider_id,
+                            body.get("model") or "claude-oauth",
+                            success=False,
                             key_record_id=key_record_id,
                             error_str=f"{r.status_code}: {err_body}",
-                            provider_name=provider_name, request_body=body,
-                            had_lmrh_hint=bool(llm_hint), lmrh_hint_raw=llm_hint or None,
+                            provider_name=provider_name,
+                            request_body=body,
+                            had_lmrh_hint=bool(llm_hint),
+                            lmrh_hint_raw=llm_hint or None,
                         )
                         # RAISE — dispatch will convert to HTTP error response.
                         # Do NOT yield SSE error frames; status hasn't been sent.
                         raise httpx.HTTPStatusError(
-                            f"{r.status_code}: {err_body}", request=r.request, response=r,
+                            f"{r.status_code}: {err_body}",
+                            request=r.request,
+                            response=r,
                         )
 
                     # 2xx — start streaming bytes
@@ -455,12 +492,23 @@ async def _stream_claude_oauth(
                                 msg = evt.get("message") or {}
                                 usage = msg.get("usage") or {}
                                 in_tok = int(usage.get("input_tokens") or in_tok)
-                                cache_creation = int(usage.get("cache_creation_input_tokens") or cache_creation)
+                                cache_creation = int(
+                                    usage.get("cache_creation_input_tokens") or cache_creation
+                                )
                                 cache_read = int(usage.get("cache_read_input_tokens") or cache_read)
                                 # v2.8.4: capture top-level message metadata for synthesis
                                 assembled_meta = {
-                                    k: v for k, v in msg.items()
-                                    if k in ("id", "model", "role", "type", "stop_reason", "stop_sequence")
+                                    k: v
+                                    for k, v in msg.items()
+                                    if k
+                                    in (
+                                        "id",
+                                        "model",
+                                        "role",
+                                        "type",
+                                        "stop_reason",
+                                        "stop_sequence",
+                                    )
                                 }
                             elif t == "message_delta":
                                 usage = evt.get("usage") or {}
@@ -484,7 +532,10 @@ async def _stream_claude_oauth(
                                 elif cb.get("type") == "thinking":
                                     assembled_blocks[idx] = {"type": "thinking", "thinking": ""}
                                 else:
-                                    assembled_blocks[idx] = {"type": cb.get("type", "text"), "text": ""}
+                                    assembled_blocks[idx] = {
+                                        "type": cb.get("type", "text"),
+                                        "text": "",
+                                    }
                             elif t == "content_block_delta":
                                 idx = evt.get("index", 0)
                                 delta = evt.get("delta") or {}
@@ -494,10 +545,14 @@ async def _stream_claude_oauth(
                                     full_text_buf.append(txt)
                                     blk["text"] = (blk.get("text") or "") + txt
                                 elif delta.get("type") == "thinking_delta":
-                                    blk["thinking"] = (blk.get("thinking") or "") + (delta.get("thinking") or "")
+                                    blk["thinking"] = (blk.get("thinking") or "") + (
+                                        delta.get("thinking") or ""
+                                    )
                                 elif delta.get("type") == "input_json_delta":
                                     # tool_use input streams as partial JSON
-                                    blk["input"] = (blk.get("input") or "") + (delta.get("partial_json") or "")
+                                    blk["input"] = (blk.get("input") or "") + (
+                                        delta.get("partial_json") or ""
+                                    )
 
             # v2.8.4: assemble final response body in non-streaming shape so
             # the activity log shows the actual content + tool calls.
@@ -510,19 +565,26 @@ async def _stream_claude_oauth(
                         parsed_input = json.loads(raw_input) if raw_input else {}
                     except ValueError:
                         parsed_input = {"_raw": raw_input}
-                    content_list.append({
-                        "type": "tool_use", "id": blk.get("id"),
-                        "name": blk.get("name"), "input": parsed_input,
-                    })
+                    content_list.append(
+                        {
+                            "type": "tool_use",
+                            "id": blk.get("id"),
+                            "name": blk.get("name"),
+                            "input": parsed_input,
+                        }
+                    )
                 elif blk.get("type") == "thinking":
                     content_list.append({"type": "thinking", "thinking": blk.get("thinking", "")})
                 else:
-                    content_list.append({"type": blk.get("type", "text"), "text": blk.get("text", "")})
+                    content_list.append(
+                        {"type": blk.get("type", "text"), "text": blk.get("text", "")}
+                    )
             assembled_response = {
                 **assembled_meta,
                 "content": content_list,
                 "usage": {
-                    "input_tokens": in_tok, "output_tokens": out_tok,
+                    "input_tokens": in_tok,
+                    "output_tokens": out_tok,
                     "cache_creation_input_tokens": cache_creation,
                     "cache_read_input_tokens": cache_read,
                 },
@@ -533,17 +595,29 @@ async def _stream_claude_oauth(
             # See _completions_streaming.py for context.
             # v3.0.43: requested_model + served-from-upstream-when-available
             req_model_str = body.get("model") or "claude-oauth"
-            served_str = (assembled_response.get("model")
-                          if isinstance(assembled_response, dict) and assembled_response.get("model")
-                          else req_model_str)
+            served_str = (
+                assembled_response.get("model")
+                if isinstance(assembled_response, dict) and assembled_response.get("model")
+                else req_model_str
+            )
             await record_outcome(
-                db, provider_id, served_str, success=True,
-                in_tok=in_tok, out_tok=out_tok, t0=t0, key_record_id=key_record_id,
-                ttft_ms=ttft_ms, cache_creation=cache_creation, cache_read=cache_read,
+                db,
+                provider_id,
+                served_str,
+                success=True,
+                in_tok=in_tok,
+                out_tok=out_tok,
+                t0=t0,
+                key_record_id=key_record_id,
+                ttft_ms=ttft_ms,
+                cache_creation=cache_creation,
+                cache_read=cache_read,
                 provider_name=provider_name,
-                request_body=body, response_body=assembled_response,
+                request_body=body,
+                response_body=assembled_response,
                 requested_model=req_model_str,
-                had_lmrh_hint=bool(llm_hint), lmrh_hint_raw=llm_hint or None,
+                had_lmrh_hint=bool(llm_hint),
+                lmrh_hint_raw=llm_hint or None,
             )
             # v3.9.11 (#267) Phase 5.5 — feed the assembled response_dict
             # through the same memory-tool write-back path as the
@@ -555,6 +629,7 @@ async def _stream_claude_oauth(
             if conversation_id and api_key_id:
                 try:
                     from app.memory.extract import maybe_extract_memory_writes
+
                     await maybe_extract_memory_writes(
                         db,
                         response_dict=assembled_response,
@@ -577,18 +652,24 @@ async def _stream_claude_oauth(
             raise
         except httpx.HTTPError as e:
             await record_outcome(
-                db, provider_id, body.get("model") or "claude-oauth", success=False,
-                key_record_id=key_record_id, error_str=_exc_str(e),
-                provider_name=provider_name, request_body=body,
-                had_lmrh_hint=bool(llm_hint), lmrh_hint_raw=llm_hint or None,
+                db,
+                provider_id,
+                body.get("model") or "claude-oauth",
+                success=False,
+                key_record_id=key_record_id,
+                error_str=_exc_str(e),
+                provider_name=provider_name,
+                request_body=body,
+                had_lmrh_hint=bool(llm_hint),
+                lmrh_hint_raw=llm_hint or None,
             )
             if not yielded_first_chunk:
                 # Pre-stream connection error — surface as HTTP error
                 raise
             # Mid-stream — emit SSE error event + [DONE], NOT message_stop
             yield (
-                b'event: error\ndata: '
+                b"event: error\ndata: "
                 + json.dumps({"type": "error", "error": {"message": _exc_str(e)}}).encode()
-                + b'\n\ndata: [DONE]\n\n'
+                + b"\n\ndata: [DONE]\n\n"
             )
             return

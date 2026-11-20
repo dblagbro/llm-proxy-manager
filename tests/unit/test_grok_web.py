@@ -5,6 +5,7 @@ stored on Provider.extra_config) and v3.2.1 bridge mode (forward to a
 Playwright sidecar's /api/chat). Network calls are mocked via httpx's
 MockTransport so the tests never touch real grok.com or a real bridge.
 """
+
 from __future__ import annotations
 
 import json
@@ -14,10 +15,10 @@ import pytest
 
 from app.providers.grok_web import (
     DEFAULT_MODEL,
-    GrokWebAuthError,
-    GrokWebError,
     MODEL_TO_MODE_ID,
     SUPPORTED_MODELS,
+    GrokWebAuthError,
+    GrokWebError,
     _bridge_chat,
     _build_body,
     _build_headers,
@@ -27,10 +28,7 @@ from app.providers.grok_web import (
     _validate_extra_config,
     anthropic_response_from_openai,
     complete_grok_web,
-    stream_grok_web,
-    stream_grok_web_anthropic,
 )
-
 
 # ── Static config / catalog ─────────────────────────────────────────────
 
@@ -51,6 +49,7 @@ def test_supported_models_canonical_with_aliases():
         but without leaking duplicates into ``GET /v1/models``.
     """
     from app.providers.grok_web import SUPPORTED_MODEL_ALIASES
+
     # Canonical list is OR-prefixed only (no bare names, no dupes)
     assert SUPPORTED_MODELS == ["x-ai/grok-3", "x-ai/grok-4"]
     # Bare names live as aliases of their canonical entry
@@ -116,10 +115,12 @@ def test_validate_manual_requires_cookie_and_conv():
         _validate_extra_config({"conversation_id": "uuid"})  # missing cookies
 
     # Both present → valid (no raise)
-    _validate_extra_config({
-        "cookie_header": "cf_clearance=x; sso=y",
-        "conversation_id": "e41fca28-3df3-44ae-ad27-1cb65d5fe2a5",
-    })
+    _validate_extra_config(
+        {
+            "cookie_header": "cf_clearance=x; sso=y",
+            "conversation_id": "e41fca28-3df3-44ae-ad27-1cb65d5fe2a5",
+        }
+    )
 
 
 def test_validate_bridge_only_needs_conv():
@@ -132,10 +133,12 @@ def test_validate_bridge_only_needs_conv():
     assert "conversation_id" in str(ex.value)
 
     # bridge_url + conversation_id → valid even WITHOUT cookie_header
-    _validate_extra_config({
-        "bridge_url": "http://llm-proxy2-grok-bridge:8443",
-        "conversation_id": "e41fca28-3df3-44ae-ad27-1cb65d5fe2a5",
-    })
+    _validate_extra_config(
+        {
+            "bridge_url": "http://llm-proxy2-grok-bridge:8443",
+            "conversation_id": "e41fca28-3df3-44ae-ad27-1cb65d5fe2a5",
+        }
+    )
 
 
 # ── Header / body construction ──────────────────────────────────────────
@@ -217,13 +220,15 @@ def test_flatten_multi_turn_labels_each_role():
 def test_flatten_anthropic_content_blocks():
     """Anthropic-style content can be a list of typed blocks. Text
     blocks should be concatenated; tool_use/tool_result get serialized."""
-    msgs = [{
-        "role": "user",
-        "content": [
-            {"type": "text", "text": "Compute 2+2"},
-            {"type": "tool_use", "name": "calc", "input": {"expr": "2+2"}},
-        ],
-    }]
+    msgs = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Compute 2+2"},
+                {"type": "tool_use", "name": "calc", "input": {"expr": "2+2"}},
+            ],
+        }
+    ]
     out = _flatten_messages_to_prompt(msgs)
     assert "Compute 2+2" in out
     assert "tool_use" in out  # serialized fallback
@@ -263,8 +268,9 @@ def test_anthropic_response_handles_empty_text():
 # ── Bridge dispatch (mocked transport) ──────────────────────────────────
 
 
-def _bridge_handler_factory(*, status: int = 200, body: dict | None = None,
-                            captured: list | None = None):
+def _bridge_handler_factory(
+    *, status: int = 200, body: dict | None = None, captured: list | None = None
+):
     """Build a httpx MockTransport handler that captures incoming
     requests and returns a canned response."""
     body = body or {
@@ -306,8 +312,9 @@ async def test_bridge_chat_sends_token_and_payload(monkeypatch):
         "bridge_token": "secret-token-123",
         "conversation_id": "conv-uuid",
     }
-    out = await _bridge_chat(cfg, [{"role": "user", "content": "hi"}], "grok-3",
-                             stream=False, timeout=10.0)
+    out = await _bridge_chat(
+        cfg, [{"role": "user", "content": "hi"}], "grok-3", stream=False, timeout=10.0
+    )
     assert out["id"] == "bridge-result"
 
     # Verify request shape
@@ -340,8 +347,9 @@ async def test_bridge_chat_401_raises_auth_error(monkeypatch):
         "conversation_id": "c",
     }
     with pytest.raises(GrokWebAuthError):
-        await _bridge_chat(cfg, [{"role": "user", "content": "x"}], "grok-3",
-                           stream=False, timeout=5.0)
+        await _bridge_chat(
+            cfg, [{"role": "user", "content": "x"}], "grok-3", stream=False, timeout=5.0
+        )
 
 
 @pytest.mark.asyncio
@@ -357,8 +365,9 @@ async def test_bridge_chat_500_raises_generic_error(monkeypatch):
 
     cfg = {"bridge_url": "http://x", "conversation_id": "c"}
     with pytest.raises(GrokWebError) as ex:
-        await _bridge_chat(cfg, [{"role": "user", "content": "x"}], "grok-3",
-                           stream=False, timeout=5.0)
+        await _bridge_chat(
+            cfg, [{"role": "user", "content": "x"}], "grok-3", stream=False, timeout=5.0
+        )
     assert ex.value.status_code == 502
 
 
@@ -366,8 +375,10 @@ async def test_bridge_chat_500_raises_generic_error(monkeypatch):
 async def test_bridge_chat_network_error(monkeypatch):
     """ConnectError → GrokWebError with informative message. Operator
     gets a clear 'bridge unreachable' instead of a Python traceback."""
+
     def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("simulated DNS failure")
+
     real_client = httpx.AsyncClient
 
     def patched(*args, **kwargs):
@@ -378,8 +389,9 @@ async def test_bridge_chat_network_error(monkeypatch):
 
     cfg = {"bridge_url": "http://x", "conversation_id": "c"}
     with pytest.raises(GrokWebError) as ex:
-        await _bridge_chat(cfg, [{"role": "user", "content": "x"}], "grok-3",
-                           stream=False, timeout=5.0)
+        await _bridge_chat(
+            cfg, [{"role": "user", "content": "x"}], "grok-3", stream=False, timeout=5.0
+        )
     assert "unreachable" in str(ex.value).lower()
 
 

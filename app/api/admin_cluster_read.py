@@ -15,17 +15,17 @@ Auth: HMAC over ``(timestamp + path + body)`` per
 ``app.auth.cluster_hmac``. The hub already holds the shared secret as
 ``COORDINATOR_HMAC_KEY``; the proxy reads it from the same env var.
 """
+
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends
-from sqlalchemy import select, func
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.cluster_hmac import require_cluster_hmac
 from app.models.database import get_db
 from app.models.db import ExternalUsageSnapshot, Provider
 from app.utils.timefmt import utc_iso
-
 
 router = APIRouter(prefix="/api/admin", tags=["admin-cluster-read"])
 
@@ -86,14 +86,10 @@ async def external_usage_summary(
                 "seven_day_utilization": snap.seven_day_utilization,
                 "five_hour_utilization": snap.five_hour_utilization,
                 "auth_state": snap.auth_state,
-                "last_scrape_at": utc_iso(snap.captured_at)
-                if snap.captured_at
-                else None,
+                "last_scrape_at": utc_iso(snap.captured_at) if snap.captured_at else None,
             }
         )
-        if snap.captured_at and (
-            latest_overall is None or snap.captured_at > latest_overall
-        ):
+        if snap.captured_at and (latest_overall is None or snap.captured_at > latest_overall):
             latest_overall = snap.captured_at
 
     return {

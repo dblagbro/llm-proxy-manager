@@ -17,11 +17,12 @@ into ``db_base.py`` + 9 domain modules + a re-export shim at
    were 32; this test pins that count so a new table addition that
    forgets the re-export-then-registry-population path is caught.
 """
+
 from __future__ import annotations
 
-from pathlib import Path
 import importlib
 import inspect
+from pathlib import Path
 
 
 def _classes_in(module_name: str) -> set[str]:
@@ -29,6 +30,7 @@ def _classes_in(module_name: str) -> set[str]:
     Base) defined in the given module."""
     mod = importlib.import_module(module_name)
     from app.models.db_base import Base
+
     out = set()
     for name, obj in inspect.getmembers(mod, inspect.isclass):
         if obj is Base:
@@ -74,12 +76,8 @@ def test_re_export_shim_includes_every_model_class():
     # was invisible here — and, more seriously, ``model_pricing_catalog`` was
     # missing from the ``Base.metadata`` that ``alembic/env.py`` uses as
     # ``target_metadata``. Globbing covers a new domain module the day it lands.
-    mod_names = sorted(
-        f"app.models.{f.stem}" for f in _Path("app/models").glob("db_*.py")
-    )
-    assert len(mod_names) >= 14, (
-        f"expected at least 14 domain modules on disk, found {mod_names}"
-    )
+    mod_names = sorted(f"app.models.{f.stem}" for f in _Path("app/models").glob("db_*.py"))
+    assert len(mod_names) >= 14, f"expected at least 14 domain modules on disk, found {mod_names}"
     expected = set()
     for mod_name in mod_names:
         expected |= _classes_in(mod_name)
@@ -120,6 +118,7 @@ def test_registry_has_all_tables():
     # Importing db.py triggers imports of every domain module
     from app.models import db
     from app.models.db_base import Base
+
     tables = set(Base.metadata.tables.keys())
     FLOOR = 37  # v5.7.0 baseline; raise only when a table is intentionally removed
     assert len(tables) >= FLOOR, (
@@ -153,7 +152,4 @@ def test_no_domain_module_exceeds_500_loc():
         loc = sum(1 for _ in f.read_text().splitlines())
         if loc > 500:
             too_big.append((f.name, loc))
-    assert not too_big, (
-        f"these domain modules now exceed 500 LOC and should be re-split: "
-        f"{too_big}"
-    )
+    assert not too_big, f"these domain modules now exceed 500 LOC and should be re-split: {too_big}"

@@ -11,11 +11,12 @@ Translates Chat Completions request → Responses API → SSE → Chat
 Completions response (stream or non-stream aggregate) so callers don't
 need to know the difference.
 """
+
 from __future__ import annotations
 
-import json
+import json as json
 import logging
-from typing import AsyncIterator, Optional
+from collections.abc import AsyncIterator
 
 import httpx
 from fastapi import HTTPException
@@ -25,14 +26,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.providers.codex_oauth import CODEX_RESPONSES_URL, build_headers
 from app.providers.codex_translate import (
     chat_completions_to_responses,
-    responses_sse_to_chat_completions_sse,
     collect_responses_stream_into_completion,
+    responses_sse_to_chat_completions_sse,
 )
 
 logger = logging.getLogger(__name__)
 
 
-def _account_id_for(provider) -> Optional[str]:
+def _account_id_for(provider) -> str | None:
     cfg = provider.extra_config or {}
     if isinstance(cfg, dict):
         aid = cfg.get("chatgpt_account_id")
@@ -43,22 +44,27 @@ def _account_id_for(provider) -> Optional[str]:
 
 async def _refresh_if_needed(provider, db: AsyncSession) -> None:
     from app.providers.codex_oauth import is_token_expired
+
     if not is_token_expired(provider.oauth_expires_at):
         return
     if not provider.oauth_refresh_token:
         return
     from app.providers.codex_oauth_flow import refresh_and_persist
+
     try:
         await refresh_and_persist(provider, db)
     except Exception as e:
         logger.warning(
             "codex_oauth.preemptive_refresh_failed provider=%s err=%s",
-            provider.id, e,
+            provider.id,
+            e,
         )
 
 
 async def _stream_codex_response_lines(
-    provider, db: AsyncSession, upstream_body: dict,
+    provider,
+    db: AsyncSession,
+    upstream_body: dict,
 ) -> AsyncIterator[str]:
     """Open the codex POST, handling one 401 auto-refresh retry. Yields
     raw SSE lines from upstream. Owns the httpx client + response
@@ -69,7 +75,8 @@ async def _stream_codex_response_lines(
     flips to the next-priority provider for the rest of the window.
     """
     from app.providers.codex_ratelimit import (
-        update_from_headers, detect_rate_limit_failure,
+        detect_rate_limit_failure,
+        update_from_headers,
     )
     from app.routing.circuit_breaker import force_open
 
@@ -82,11 +89,15 @@ async def _stream_codex_response_lines(
             timeout=httpx.Timeout(connect=5.0, read=120.0, write=10.0, pool=5.0),
         ) as client:
             async with client.stream(
-                "POST", CODEX_RESPONSES_URL, headers=headers, json=upstream_body,
+                "POST",
+                CODEX_RESPONSES_URL,
+                headers=headers,
+                json=upstream_body,
             ) as resp:
                 if resp.status_code == 401 and not refreshed_once and provider.oauth_refresh_token:
                     refreshed_once = True
                     from app.providers.codex_oauth_flow import refresh_and_persist
+
                     try:
                         await refresh_and_persist(provider, db)
                     except Exception as e:
@@ -99,14 +110,19 @@ async def _stream_codex_response_lines(
                     # the CB until the window resets. Prevents the next 5
                     # retries from also slamming into the limit.
                     holddown = detect_rate_limit_failure(
-                        resp.status_code, body_text, dict(resp.headers),
+                        resp.status_code,
+                        body_text,
+                        dict(resp.headers),
                     )
                     if holddown is not None:
                         try:
                             await force_open(provider.id)
                             logger.warning(
-                                "codex_oauth.rate_limit_tripped provider=%s holddown_sec=%.0f status=%d",
-                                provider.id, holddown, resp.status_code,
+                                "codex_oauth.rate_limit_tripped provider=%s "
+                                "holddown_sec=%.0f status=%d",
+                                provider.id,
+                                holddown,
+                                resp.status_code,
                             )
                         except Exception:
                             pass
@@ -126,11 +142,14 @@ async def _stream_codex_response_lines(
 
 async def dispatch_codex_oauth(
     *,
-    provider, body: dict, stream: bool, db: AsyncSession,
+    provider,
+    body: dict,
+    stream: bool,
+    db: AsyncSession,
     resp_headers: dict,
-    key_record_id: Optional[str] = None,
-    llm_hint: Optional[str] = None,
-    access_programs: Optional[dict] = None,
+    key_record_id: str | None = None,
+    llm_hint: str | None = None,
+    access_programs: dict | None = None,
 ) -> StreamingResponse | JSONResponse:
     """Translate + forward + translate back. Returns a FastAPI response.
 
@@ -142,10 +161,13 @@ async def dispatch_codex_oauth(
     same record_outcome treatment as the claude-oauth path now.
     """
     import time as _time
+
     from app.monitoring.helpers import record_outcome
+
     if not provider.api_key:
         raise HTTPException(
-            502, f"codex-oauth provider {provider.name!r} has no access token",
+            502,
+            f"codex-oauth provider {provider.name!r} has no access token",
         )
 
     upstream_body = chat_completions_to_responses(body, access_programs=access_programs)
@@ -157,6 +179,7 @@ async def dispatch_codex_oauth(
     t0 = _time.monotonic()
 
     if stream:
+
         async def _translated():
             try:
                 async for chunk in responses_sse_to_chat_completions_sse(
@@ -168,10 +191,14 @@ async def dispatch_codex_oauth(
                 # On stream error, log the failure outcome so operators see it.
                 try:
                     from app.models.database import AsyncSessionLocal
+
                     async with AsyncSessionLocal() as _logdb:
                         await record_outcome(
-                            _logdb, provider_id=provider.id, model=model,
-                            success=False, t0=t0,
+                            _logdb,
+                            provider_id=provider.id,
+                            model=model,
+                            success=False,
+                            t0=t0,
                             key_record_id=key_record_id or "unknown",
                             error_str=f"{type(e).__name__}: {str(e)[:300]}",
                             provider_name=provider.name,
@@ -189,10 +216,16 @@ async def dispatch_codex_oauth(
             # classification (codex-oauth is subscription tier).
             try:
                 from app.models.database import AsyncSessionLocal
+
                 async with AsyncSessionLocal() as _logdb:
                     await record_outcome(
-                        _logdb, provider_id=provider.id, model=model,
-                        success=True, in_tok=0, out_tok=0, t0=t0,
+                        _logdb,
+                        provider_id=provider.id,
+                        model=model,
+                        success=True,
+                        in_tok=0,
+                        out_tok=0,
+                        t0=t0,
                         key_record_id=key_record_id or "unknown",
                         provider_name=provider.name,
                         request_body=body,
@@ -220,8 +253,11 @@ async def dispatch_codex_oauth(
     except Exception as e:
         try:
             await record_outcome(
-                db, provider_id=provider.id, model=model,
-                success=False, t0=t0,
+                db,
+                provider_id=provider.id,
+                model=model,
+                success=False,
+                t0=t0,
                 key_record_id=key_record_id or "unknown",
                 error_str=f"{type(e).__name__}: {str(e)[:300]}",
                 provider_name=provider.name,
@@ -240,8 +276,13 @@ async def dispatch_codex_oauth(
     out_tok = int(usage.get("completion_tokens") or 0)
     try:
         await record_outcome(
-            db, provider_id=provider.id, model=model,
-            success=True, in_tok=in_tok, out_tok=out_tok, t0=t0,
+            db,
+            provider_id=provider.id,
+            model=model,
+            success=True,
+            in_tok=in_tok,
+            out_tok=out_tok,
+            t0=t0,
             key_record_id=key_record_id or "unknown",
             provider_name=provider.name,
             request_body=body,

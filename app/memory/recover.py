@@ -39,18 +39,19 @@ add an in-memory backoff (mirroring the circuit breaker pattern).
 On success, ``recovered_at`` is set and subsequent requests skip
 recovery for this (api_key, conversation, tag).
 """
+
 from __future__ import annotations
 
 import logging
 import time
-from typing import Any, Awaitable, Callable, Optional
+from collections.abc import Awaitable, Callable
 
 logger = logging.getLogger(__name__)
 
 # Provider-type → async handler. Each handler receives ``ctx``
 # (everything the recovery might need) and returns the reconstructed
 # content as a string, or None when reconstruction isn't possible.
-RecoverHandler = Callable[[dict], Awaitable[Optional[str]]]
+RecoverHandler = Callable[[dict], Awaitable[str | None]]
 _HANDLERS: dict[str, RecoverHandler] = {}
 
 
@@ -64,9 +65,9 @@ async def maybe_recover_memory(
     db,
     *,
     api_key_id: str,
-    conversation_id: Optional[str],
-    memory_tag: Optional[str],
-) -> Optional[str]:
+    conversation_id: str | None,
+    memory_tag: str | None,
+) -> str | None:
     """Try to reconstruct missing memory content from the original
     upstream provider. Returns the recovered content on success, None
     otherwise.
@@ -81,6 +82,7 @@ async def maybe_recover_memory(
     """
     try:
         from app.config import settings
+
         if not getattr(settings, "caller_memory_enabled", False):
             return None
         if not getattr(settings, "caller_memory_recovery_enabled", True):
@@ -91,6 +93,7 @@ async def maybe_recover_memory(
         tag = memory_tag or "default"
 
         from sqlalchemy import select
+
         from app.models.db import CallerMemoryMarker, Provider
 
         mq = (
@@ -140,6 +143,7 @@ async def maybe_recover_memory(
         if not content:
             try:
                 from app.observability.prometheus import observe_memory_operation
+
                 observe_memory_operation("recover", "skipped")
             except Exception:
                 pass
@@ -152,6 +156,7 @@ async def maybe_recover_memory(
 
         # Persist + mark recovered.
         from app.memory.store import put
+
         await put(
             db,
             api_key_id=api_key_id,
@@ -164,6 +169,7 @@ async def maybe_recover_memory(
         await db.commit()
         try:
             from app.observability.prometheus import observe_memory_operation
+
             observe_memory_operation("recover", "applied")
         except Exception:
             pass
@@ -176,10 +182,9 @@ async def maybe_recover_memory(
     except Exception as e:
         try:
             from app.observability.prometheus import observe_memory_operation
+
             observe_memory_operation("recover", "degraded")
         except Exception:
             pass
-        logger.warning(
-            f"caller_memory.recover: silent degrade ({e!r}) — continuing"
-        )
+        logger.warning(f"caller_memory.recover: silent degrade ({e!r}) — continuing")
         return None

@@ -29,6 +29,7 @@ sessions, so the defaults are deliberately conservative:
 * Single-use, short-lived, server-side state (never a client-supplied
   round-trip), so a replayed callback cannot mint a second session.
 """
+
 from __future__ import annotations
 
 import logging
@@ -63,7 +64,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/auth/sso", tags=["auth"])
 
 SESSION_COOKIE_MAX_AGE = 86400 * 7
-_STATE_TTL_SEC = 600          # 10 minutes to complete the round trip
+_STATE_TTL_SEC = 600  # 10 minutes to complete the round trip
 _DISCOVERY_TTL_SEC = 3600
 
 # state -> {nonce, verifier, created_at, next}
@@ -74,10 +75,11 @@ _discovery_cache: dict[str, tuple[float, dict]] = {}
 def _cfg() -> dict:
     """Runtime settings first, env/Pydantic second (same pattern as mailer)."""
     from app.config import settings
+
     try:
         from app.config_runtime import get_setting
-    except Exception:                                    # pragma: no cover
-        get_setting = lambda *_a, **_k: None             # noqa: E731
+    except Exception:  # pragma: no cover
+        get_setting = lambda *_a, **_k: None  # noqa: E731
 
     def pick(key, fallback):
         try:
@@ -177,7 +179,7 @@ async def sso_start(request: Request):
     state, nonce = generate_state(), generate_nonce()
     now = time.time()
     _sweep_pending(now)
-    if len(_pending) > 500:                      # crude bound on abuse
+    if len(_pending) > 500:  # crude bound on abuse
         raise HTTPException(429, "Too many sign-in attempts in flight")
     _pending[state] = {"nonce": nonce, "verifier": verifier, "created_at": now}
 
@@ -228,7 +230,7 @@ async def sso_callback(
 
     now = time.time()
     _sweep_pending(now)
-    pending = _pending.pop(state, None)           # single-use by construction
+    pending = _pending.pop(state, None)  # single-use by construction
     if pending is None:
         return _fail(request, "expired", "unknown or replayed state")
 
@@ -242,14 +244,18 @@ async def sso_callback(
     )
     try:
         async with httpx.AsyncClient(timeout=20) as c:
-            tr = await c.post(doc["token_endpoint"], data={
-                "grant_type": "authorization_code",
-                "code": code,
-                "redirect_uri": redirect_uri,
-                "client_id": cfg["client_id"],
-                "client_secret": cfg["client_secret"],
-                "code_verifier": pending["verifier"],
-            }, headers={"Accept": "application/json"})
+            tr = await c.post(
+                doc["token_endpoint"],
+                data={
+                    "grant_type": "authorization_code",
+                    "code": code,
+                    "redirect_uri": redirect_uri,
+                    "client_id": cfg["client_id"],
+                    "client_secret": cfg["client_secret"],
+                    "code_verifier": pending["verifier"],
+                },
+                headers={"Accept": "application/json"},
+            )
         if tr.status_code != 200:
             return _fail(request, "exchange_failed", f"token endpoint {tr.status_code}")
         tok = tr.json()
@@ -290,21 +296,17 @@ async def sso_callback(
     if cfg["allowed_domains"] and email.rsplit("@", 1)[-1] not in cfg["allowed_domains"]:
         return _fail(request, "domain", f"domain not allowed: {email.rsplit('@', 1)[-1]}")
 
-    row = await db.execute(
-        select(User).where(User.email == email, User.deleted_at.is_(None))
-    )
+    row = await db.execute(select(User).where(User.email == email, User.deleted_at.is_(None)))
     user = row.scalars().first()
     if user is None:
         # Fall back to matching the local part as a username — covers accounts
         # that predate the email column (e.g. "dblagbro").
         row = await db.execute(
-            select(User).where(
-                User.username == email.split("@", 1)[0], User.deleted_at.is_(None)
-            )
+            select(User).where(User.username == email.split("@", 1)[0], User.deleted_at.is_(None))
         )
         user = row.scalars().first()
         if user is not None and not user.email:
-            user.email = email                       # bind it for next time
+            user.email = email  # bind it for next time
 
     if user is None:
         if not cfg["auto_provision"]:
@@ -327,9 +329,13 @@ async def sso_callback(
     token = await create_session(user.id, user.username, user.role)
     redirect = RedirectResponse(f"{_base_path(request)}/", status_code=302)
     redirect.set_cookie(
-        SESSION_COOKIE_NAME, token,
-        httponly=True, samesite="lax", secure=True,
-        max_age=SESSION_COOKIE_MAX_AGE, path=SESSION_COOKIE_PATH,
+        SESSION_COOKIE_NAME,
+        token,
+        httponly=True,
+        samesite="lax",
+        secure=True,
+        max_age=SESSION_COOKIE_MAX_AGE,
+        path=SESSION_COOKIE_PATH,
     )
     logger.info("sso.login_ok user=%s role=%s", user.username, user.role)
     return redirect

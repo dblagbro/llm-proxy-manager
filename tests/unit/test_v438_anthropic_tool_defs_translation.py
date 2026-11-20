@@ -15,15 +15,13 @@ The fix adds a ``has_anthropic_tool_defs(tools)`` helper in
 These tests pin the helper's classification matrix + a regression
 guard against re-narrowing the gate.
 """
-from __future__ import annotations
 
-import pytest
+from __future__ import annotations
 
 from app.routing.tool_content import (
     has_anthropic_tool_content,
     has_anthropic_tool_defs,
 )
-
 
 # ── has_anthropic_tool_defs ───────────────────────────────────────
 
@@ -37,25 +35,27 @@ def test_returns_false_for_empty_list():
 
 
 def test_anthropic_shape_with_input_schema():
-    tools = [{
-        "name": "get_weather",
-        "description": "Look up the weather",
-        "input_schema": {"type": "object",
-                          "properties": {"city": {"type": "string"}}},
-    }]
+    tools = [
+        {
+            "name": "get_weather",
+            "description": "Look up the weather",
+            "input_schema": {"type": "object", "properties": {"city": {"type": "string"}}},
+        }
+    ]
     assert has_anthropic_tool_defs(tools) is True
 
 
 def test_openai_shape_returns_false():
-    tools = [{
-        "type": "function",
-        "function": {
-            "name": "get_weather",
-            "description": "Look up the weather",
-            "parameters": {"type": "object",
-                            "properties": {"city": {"type": "string"}}},
-        },
-    }]
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "get_weather",
+                "description": "Look up the weather",
+                "parameters": {"type": "object", "properties": {"city": {"type": "string"}}},
+            },
+        }
+    ]
     assert has_anthropic_tool_defs(tools) is False
 
 
@@ -91,8 +91,7 @@ def test_mixed_anthropic_and_openai_returns_true():
 
 def test_non_dict_items_ignored():
     """Defensive: skip non-dict items, don't crash."""
-    tools = [None, "not-a-dict", 42,
-             {"type": "function", "function": {"name": "ok"}}]
+    tools = [None, "not-a-dict", 42, {"type": "function", "function": {"name": "ok"}}]
     assert has_anthropic_tool_defs(tools) is False
 
 
@@ -108,15 +107,16 @@ def test_only_input_schema_field_present():
 def test_has_anthropic_tool_content_unaffected():
     """The original helper for message-block detection must remain
     untouched by the v4.3.8 changes."""
-    msgs = [{"role": "user", "content": [
-        {"type": "tool_use", "id": "tu_x", "name": "get_weather", "input": {}}
-    ]}]
+    msgs = [
+        {
+            "role": "user",
+            "content": [{"type": "tool_use", "id": "tu_x", "name": "get_weather", "input": {}}],
+        }
+    ]
     assert has_anthropic_tool_content(msgs) is True
     assert has_anthropic_tool_content([]) is False
     # text-only messages still don't trigger
-    assert has_anthropic_tool_content(
-        [{"role": "user", "content": "hi"}]
-    ) is False
+    assert has_anthropic_tool_content([{"role": "user", "content": "hi"}]) is False
 
 
 # ── Independence: tool-defs vs tool-blocks are orthogonal ────────
@@ -134,8 +134,11 @@ def test_tool_defs_and_blocks_are_independent_signals():
     assert has_anthropic_tool_content(defs_only_messages) is False
 
     # Follow-up turn: blocks but no defs (rare; usually both present)
-    blocks_only_messages = [{"role": "user", "content": [
-        {"type": "tool_result", "tool_use_id": "tu_x", "content": "42"}
-    ]}]
+    blocks_only_messages = [
+        {
+            "role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": "tu_x", "content": "42"}],
+        }
+    ]
     assert has_anthropic_tool_content(blocks_only_messages) is True
     assert has_anthropic_tool_defs(None) is False

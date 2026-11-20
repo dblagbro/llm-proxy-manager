@@ -48,13 +48,13 @@ trace (root-cause evidence) and then recycles the pool. A cooldown
 prevents thrashing. Result: a residual leak degrades to a periodic
 self-recycle logged loudly, never a user-visible outage.
 """
+
 from __future__ import annotations
 
 import asyncio
 import logging
 import os
 import time
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -80,8 +80,8 @@ _armed: dict[float, bool] = {t: True for t in _THRESHOLDS}
 # whereas a legitimate burst of concurrent long streams drains on its
 # own and resets the counter well before we'd recycle.
 _HEAL_THRESHOLD: float = 0.90
-_HEAL_SUSTAINED_POLLS: int = 4          # 4 × 30s = ~2 min of sustained saturation
-_HEAL_COOLDOWN_SEC: float = 300.0       # don't recycle more than once per 5 min
+_HEAL_SUSTAINED_POLLS: int = 4  # 4 × 30s = ~2 min of sustained saturation
+_HEAL_COOLDOWN_SEC: float = 300.0  # don't recycle more than once per 5 min
 
 # Master switch — v5.22.1: DEFAULT OFF. The self-heal ``engine.dispose()``
 # was itself a primary cause of the aiosqlite OS-thread leak: it fired on
@@ -96,12 +96,15 @@ _HEAL_COOLDOWN_SEC: float = 300.0       # don't recycle more than once per 5 min
 # safer than dispose-orphaning. Re-enable only with POOL_SELF_HEAL_ENABLED=1
 # and only after the connection teardown is proven aiosqlite-thread-safe.
 _SELF_HEAL_ENABLED: bool = os.getenv("POOL_SELF_HEAL_ENABLED", "0").lower() not in (
-    "0", "false", "no", "off",
+    "0",
+    "false",
+    "no",
+    "off",
 )
 
 # Self-heal state.
 _consecutive_high: int = 0
-_last_heal_monotonic: Optional[float] = None
+_last_heal_monotonic: float | None = None
 
 # ── v5.22.0 — aiosqlite THREAD-count monitoring ──────────────────────
 # The real leak metric is OS-thread count, NOT pool-slot utilization:
@@ -123,16 +126,18 @@ _thread_armed = {"warn": True, "crit": True}
 def _thread_count() -> int:
     try:
         import threading
+
         return threading.active_count()
     except Exception:
         return -1
 
 
-def _get_pool_utilization() -> Optional[float]:
+def _get_pool_utilization() -> float | None:
     """Return current utilization (0.0-1.0) or None if unavailable.
     Reads the same numbers ``/health`` exposes."""
     try:
         from app.models.database import engine
+
         pool = engine.pool
         size = pool.size()
         checked_out = pool.checkedout()
@@ -156,27 +161,36 @@ def _dump_current_trace(reason: str) -> None:
     can parse either interchangeably."""
     try:
         from app.models.database import (
-            get_async_session_trace, get_pool_checkout_trace,
+            get_async_session_trace,
+            get_pool_checkout_trace,
         )
+
         async_sessions = get_async_session_trace()
         pool_checkouts = get_pool_checkout_trace()
 
         logger.warning(
             "pool_leak_watcher.auto_dump reason=%s async_sessions=%d sync_checkouts=%d",
-            reason, len(async_sessions), len(pool_checkouts),
+            reason,
+            len(async_sessions),
+            len(pool_checkouts),
         )
         top_n = 20
         for i, entry in enumerate(async_sessions[:top_n]):
             stack = entry.get("stack", "")
             app_frames = [
-                line.strip() for line in stack.split("\n")
-                if "/app/" in line or "app/api" in line or "app/routing" in line
-                or "app/monitoring" in line or "app/models" in line
+                line.strip()
+                for line in stack.split("\n")
+                if "/app/" in line
+                or "app/api" in line
+                or "app/routing" in line
+                or "app/monitoring" in line
+                or "app/models" in line
             ]
             leaf_frames = app_frames[-6:] if len(app_frames) > 6 else app_frames
             logger.warning(
                 "  #%d age=%.1fs session_id=%s",
-                i, entry.get("age_sec", 0.0),
+                i,
+                entry.get("age_sec", 0.0),
                 entry.get("session_id", "?")[:12],
             )
             for line in leaf_frames:
@@ -184,7 +198,8 @@ def _dump_current_trace(reason: str) -> None:
         if len(async_sessions) > top_n:
             logger.warning(
                 "  … +%d more async sessions (dump capped at %d)",
-                len(async_sessions) - top_n, top_n,
+                len(async_sessions) - top_n,
+                top_n,
             )
     except Exception as exc:
         logger.warning("pool_leak_watcher.dump_failed err=%r", exc)
@@ -208,8 +223,7 @@ async def _self_heal_recycle(util: float) -> bool:
         try:
             pool = engine.pool
             before = (
-                f"size={pool.size()} checked_out={pool.checkedout()} "
-                f"overflow={pool.overflow()}"
+                f"size={pool.size()} checked_out={pool.checkedout()} overflow={pool.overflow()}"
             )
         except Exception:
             before = "unavailable"
@@ -222,7 +236,8 @@ async def _self_heal_recycle(util: float) -> bool:
             "pool_leak_watcher.SELF_HEAL recycling DB pool — sustained "
             "saturation util=%.2f (%s). engine.dispose() reclaims leaked "
             "slots without a container restart.",
-            util, before,
+            util,
+            before,
         )
         await engine.dispose()
         logger.error("pool_leak_watcher.SELF_HEAL complete — pool recreated fresh")
@@ -236,6 +251,7 @@ async def pool_leak_watcher_loop() -> None:
     """Background loop. Runs forever. Registered via WorkerHeartbeat
     so the /health monitoring shows whether it's alive."""
     from app.monitoring.worker_heartbeat import WorkerHeartbeat
+
     heartbeat = WorkerHeartbeat(
         name="pool_leak_watcher",
         expected_interval_sec=_POLL_INTERVAL_SEC,
@@ -243,7 +259,8 @@ async def pool_leak_watcher_loop() -> None:
 
     logger.info(
         "pool_leak_watcher.started thresholds=%s poll_interval=%ss",
-        _THRESHOLDS, _POLL_INTERVAL_SEC,
+        _THRESHOLDS,
+        _POLL_INTERVAL_SEC,
     )
     while True:
         try:
@@ -255,7 +272,8 @@ async def pool_leak_watcher_loop() -> None:
                         _armed[threshold] = True
                         logger.info(
                             "pool_leak_watcher.rearmed threshold=%.2f util=%.2f",
-                            threshold, util,
+                            threshold,
+                            util,
                         )
                 # Fire at the HIGHEST crossed-and-armed threshold
                 # (higher thresholds are more urgent — if we're at 92%,
@@ -263,9 +281,7 @@ async def pool_leak_watcher_loop() -> None:
                 for threshold in reversed(_THRESHOLDS):
                     if util >= threshold and _armed[threshold]:
                         _armed[threshold] = False
-                        _dump_current_trace(
-                            f"utilization_crossed_{int(threshold*100)}pct"
-                        )
+                        _dump_current_trace(f"utilization_crossed_{int(threshold * 100)}pct")
                         break
 
                 # ── v5.21.13 self-heal ───────────────────────────────
@@ -307,14 +323,16 @@ async def pool_leak_watcher_loop() -> None:
                         "(>=%d). aiosqlite connection-thread leak — these are "
                         "orphaned and NOT reclaimable in-process; schedule a "
                         "container restart. Check pool churn / recent config.",
-                        n_threads, _THREAD_CRIT,
+                        n_threads,
+                        _THREAD_CRIT,
                     )
                 elif n_threads >= _THREAD_WARN and _thread_armed["warn"]:
                     _thread_armed["warn"] = False
                     logger.warning(
                         "pool_leak_watcher.thread_count_high threads=%d (>=%d) "
                         "— watching for aiosqlite connection-thread leak.",
-                        n_threads, _THREAD_WARN,
+                        n_threads,
+                        _THREAD_WARN,
                     )
 
             # Heartbeat is best-effort and DB-backed: under saturation
@@ -324,8 +342,11 @@ async def pool_leak_watcher_loop() -> None:
             try:
                 await heartbeat.tick(
                     status="ok",
-                    note=(f"util={util:.2f} threads={n_threads}"
-                          if util is not None else f"util=? threads={n_threads}"),
+                    note=(
+                        f"util={util:.2f} threads={n_threads}"
+                        if util is not None
+                        else f"util=? threads={n_threads}"
+                    ),
                 )
             except Exception as hb_exc:
                 logger.debug("pool_leak_watcher.heartbeat_write_failed err=%r", hb_exc)

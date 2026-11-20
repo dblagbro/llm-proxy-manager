@@ -14,10 +14,10 @@ hub team:
 v5.14.0 shipped with only 2 of 7 wired (messages + completions); v5.14.1
 catches up the remaining 5 + locks in this pin so it stays caught up.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
-
 
 # The seven model-resolving handler files. Each must call
 # ``apply_response_hooks`` somewhere AND import ``HookContext``.
@@ -44,8 +44,21 @@ def _all_sources_for(path: str) -> str:
     """Return the endpoint file's text concatenated with any extract
     companions so static-grep asserts hit both."""
     files = [path] + PINNED_ENDPOINTS[path]
-    return "\n".join(
-        Path(f).read_text() for f in files if Path(f).exists()
+    return "\n".join(Path(f).read_text() for f in files if Path(f).exists())
+
+
+def test_runner_import_check_is_order_independent_and_requires_both_names():
+    from tests.unit._handler_surface import imports_response_hook_runner
+
+    assert imports_response_hook_runner(
+        "from app.api._response_hook_runner import apply_response_hooks, HookContext"
+    )
+    assert imports_response_hook_runner(
+        "from app.api._response_hook_runner import HookContext, apply_response_hooks"
+    )
+    assert not imports_response_hook_runner("from app.api._response_hook_runner import HookContext")
+    assert not imports_response_hook_runner(
+        "from another_module import HookContext, apply_response_hooks"
     )
 
 
@@ -54,7 +67,9 @@ def test_all_pinned_endpoints_import_runner():
     runner + the context type."""
     for path in PINNED_ENDPOINTS:
         src = _all_sources_for(path)
-        assert "from app.api._response_hook_runner import apply_response_hooks, HookContext" in src, (
+        from tests.unit._handler_surface import imports_response_hook_runner
+
+        assert imports_response_hook_runner(src), (
             f"v5.14.1: {path} (or its extract) must import the response hook runner."
         )
 
@@ -76,6 +91,7 @@ def test_handler_ids_are_unique():
     """The seven handlers each use a distinct ``handler_id`` so hub-side
     hooks that key on the id can target one without aliasing."""
     import re
+
     ids: dict[str, list[str]] = {}
     for path in PINNED_ENDPOINTS:
         src = _all_sources_for(path)
@@ -91,8 +107,15 @@ def test_handler_ids_are_unique():
             f"v5.14.1: handler_id={handler_id!r} appears in multiple files: {sorted(seen_in)}"
         )
     # Expected set covers all 7 surfaces. audio.py contributes 2.
-    expected = {"messages", "completions", "responses", "audio.speech",
-                "audio.transcriptions", "images", "embeddings"}
+    expected = {
+        "messages",
+        "completions",
+        "responses",
+        "audio.speech",
+        "audio.transcriptions",
+        "images",
+        "embeddings",
+    }
     found = set(ids.keys())
     missing = expected - found
     assert not missing, f"v5.14.1: missing handler_ids: {sorted(missing)}"
@@ -101,6 +124,7 @@ def test_handler_ids_are_unique():
 def test_version_bumped():
     """v5.14.1 shipped this pin; assert at-or-beyond."""
     import re
+
     src = Path("app/__version__.py").read_text()
     m = re.search(r'__version__\s*=\s*"(\d+)\.(\d+)\.(\d+)"', src)
     assert m, f"could not parse __version__ from {src!r}"

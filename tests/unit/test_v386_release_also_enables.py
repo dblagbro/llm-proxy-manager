@@ -13,6 +13,7 @@ Fix: ``release_manual_overrides`` now ALSO sets enabled=True by default
 (symmetric to the Disable click that originally locked them). Caller
 can opt out via ``?enable=false`` for the legacy release-only behavior.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -21,7 +22,7 @@ from pathlib import Path
 def test_release_endpoint_re_enables_by_default():
     src = Path("app/api/provider_lifecycle.py").read_text()
     idx = src.index("async def release_manual_overrides")
-    body = src[idx:idx + 3000]
+    body = src[idx : idx + 3000]
     # Default behavior: enable=True
     assert "enable: bool = True" in body
     # When enable is set, values include enabled=True
@@ -35,7 +36,7 @@ def test_release_endpoint_supports_opt_out():
     behavior (e.g. an operator script handing off to AI supervisor)."""
     src = Path("app/api/provider_lifecycle.py").read_text()
     idx = src.index("async def release_manual_overrides")
-    body = src[idx:idx + 3000]
+    body = src[idx : idx + 3000]
     # The conditional path: skip the enabled column when caller opts out
     assert "if enable:" in body
 
@@ -73,5 +74,6 @@ def test_banner_toast_surfaces_re_enable_flag():
 
 def test_version_bumped():
     from app.__version__ import __version__
+
     parts = tuple(int(p) for p in __version__.split("."))
     assert parts >= (3, 8, 6)

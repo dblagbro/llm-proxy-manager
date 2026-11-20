@@ -44,11 +44,12 @@ Future handlers (queued for Phase 6.1+)
   start using Assistants — currently unused).
 - Custom provider integrations: arbitrary cleanup callbacks.
 """
+
 from __future__ import annotations
 
 import logging
-import time
-from typing import Any, Awaitable, Callable, Optional
+import time as time
+from collections.abc import Awaitable, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -87,8 +88,8 @@ async def maybe_flush_provider_memory(
     db,
     *,
     api_key_id: str,
-    conversation_id: Optional[str],
-    memory_tag: Optional[str],
+    conversation_id: str | None,
+    memory_tag: str | None,
     new_provider_id: str,
 ) -> bool:
     """Detect provider transition and flush the old provider's memory.
@@ -103,6 +104,7 @@ async def maybe_flush_provider_memory(
     """
     try:
         from app.config import settings
+
         if not getattr(settings, "caller_memory_enabled", False):
             return False
         if not getattr(settings, "caller_memory_active_flush_enabled", True):
@@ -113,6 +115,7 @@ async def maybe_flush_provider_memory(
         tag = memory_tag or "default"
 
         from sqlalchemy import select
+
         from app.models.db import CallerMemoryMarker, Provider
 
         # Look up the marker — it carries the last_known_provider_id.
@@ -164,6 +167,7 @@ async def maybe_flush_provider_memory(
 
         try:
             from app.observability.prometheus import observe_memory_operation
+
             observe_memory_operation("flush", "applied" if ok else "skipped")
         except Exception:
             pass
@@ -171,10 +175,9 @@ async def maybe_flush_provider_memory(
     except Exception as e:
         try:
             from app.observability.prometheus import observe_memory_operation
+
             observe_memory_operation("flush", "degraded")
         except Exception:
             pass
-        logger.warning(
-            f"caller_memory.flush: silent degrade ({e!r}) — continuing"
-        )
+        logger.warning(f"caller_memory.flush: silent degrade ({e!r}) — continuing")
         return False

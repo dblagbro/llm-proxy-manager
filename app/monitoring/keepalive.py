@@ -25,27 +25,28 @@ Skip rules:
   - Providers that received any real traffic in the last 2× probe
     interval — no point burning budget when traffic is flowing
 """
+
 from __future__ import annotations
 
 import asyncio
-import httpx
 import logging
 import time
-from typing import Optional
+from datetime import UTC
 
+import httpx
 import litellm
-from sqlalchemy import select, func
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.models.db import Provider, ProviderMetric
 from app.models.database import AsyncSessionLocal
+from app.models.db import Provider, ProviderMetric
 from app.monitoring.helpers import record_outcome
 
 logger = logging.getLogger(__name__)
 
 
-_DEFAULT_INTERVAL_SEC = 300         # 5 min
+_DEFAULT_INTERVAL_SEC = 300  # 5 min
 _PROBE_TIMEOUT_SEC = 15
 # v5.22.60: per-provider-type probe timeout overrides. Browser-driven
 # providers (grok-web) need far longer than a plain HTTP probe.
@@ -87,6 +88,8 @@ def clear_chronic_gate(provider_id: str) -> bool:
     had = (_probe_backoff_until.pop(provider_id, None) is not None) or had
     _consecutive_rate_limits.pop(provider_id, None)
     return had
+
+
 _consecutive_rate_limits: dict[str, int] = {}
 
 
@@ -97,10 +100,17 @@ def _is_rate_limit_error(error_str: str) -> bool:
     if not error_str:
         return False
     low = error_str.lower()
-    return any(p in low for p in (
-        "429", "rate_limit", "rate limit", "too many requests",
-        "ratelimit", "throttled",
-    ))
+    return any(
+        p in low
+        for p in (
+            "429",
+            "rate_limit",
+            "rate limit",
+            "too many requests",
+            "ratelimit",
+            "throttled",
+        )
+    )
 
 
 # v5.9.1 — consecutive probe auth-failure streak. Re-persists
@@ -118,12 +128,22 @@ def _looks_like_auth_failure(error_str: str) -> bool:
     if not error_str:
         return False
     low = error_str.lower()
-    return any(p in low for p in (
-        "401", "unauthorized", "invalid authentication",
-        "invalid_grant", "invalid_token", "missing scopes",
-        "refresh_token_reused", "refresh_token_expired",
-        "needs_reauth", "needs re-auth", "permission denied",
-    ))
+    return any(
+        p in low
+        for p in (
+            "401",
+            "unauthorized",
+            "invalid authentication",
+            "invalid_grant",
+            "invalid_token",
+            "missing scopes",
+            "refresh_token_reused",
+            "refresh_token_expired",
+            "needs_reauth",
+            "needs re-auth",
+            "permission denied",
+        )
+    )
 
 
 def _backoff_skip(provider_id: str) -> bool:
@@ -148,12 +168,20 @@ def _record_probe_outcome_for_backoff(provider_id: str, error_str: str) -> None:
         _consecutive_rate_limits[provider_id] = n
         try:
             interval = _probe_interval_sec() or _DEFAULT_INTERVAL_SEC
-            factor = float(getattr(
-                settings, "keepalive_probe_rate_limit_backoff_factor", 2.0,
-            ))
-            cap = int(getattr(
-                settings, "keepalive_probe_rate_limit_backoff_max_sec", 1800,
-            ))
+            factor = float(
+                getattr(
+                    settings,
+                    "keepalive_probe_rate_limit_backoff_factor",
+                    2.0,
+                )
+            )
+            cap = int(
+                getattr(
+                    settings,
+                    "keepalive_probe_rate_limit_backoff_max_sec",
+                    1800,
+                )
+            )
         except Exception:
             interval, factor, cap = _DEFAULT_INTERVAL_SEC, 2.0, 1800
         if cap <= 0 or factor <= 1.0:
@@ -165,12 +193,13 @@ def _record_probe_outcome_for_backoff(provider_id: str, error_str: str) -> None:
         # the first 429 doubles the gap (interval×2 from now ≈
         # interval since the loop sleeps interval before the next
         # sweep anyway → effective ≥ 2×interval = 10min by default).
-        delay = min(interval * (factor ** n), float(cap))
+        delay = min(interval * (factor**n), float(cap))
         _probe_backoff_until[provider_id] = time.time() + delay
         logger.info(
-            "keepalive.backoff_set provider=%s consecutive_429=%d "
-            "next_probe_in_sec=%.0f",
-            provider_id, n, delay,
+            "keepalive.backoff_set provider=%s consecutive_429=%d next_probe_in_sec=%.0f",
+            provider_id,
+            n,
+            delay,
         )
     else:
         # Any non-rate-limit outcome (success, auth, network) resets.
@@ -222,11 +251,14 @@ async def _probe_one(provider: Provider) -> None:
     # (default 5) AND the backoff window is still active, drop this
     # probe. Backoff is per-provider, 6h by default.
     from app.routing.circuit_breaker import get_consecutive_opens
+
     _co = get_consecutive_opens(provider.id)
     _co_threshold = getattr(settings, "keepalive_chronic_cb_open_threshold", 5)
     if _co >= _co_threshold:
         _co_backoff_sec = getattr(
-            settings, "keepalive_chronic_cb_open_backoff_sec", 21600,
+            settings,
+            "keepalive_chronic_cb_open_backoff_sec",
+            21600,
         )
         _key = f"chronic_cb_{provider.id}"
         _now = time.time()
@@ -236,13 +268,16 @@ async def _probe_one(provider: Provider) -> None:
             logger.info(
                 "keepalive.chronic_cb_gated provider=%s consecutive_opens=%d "
                 "backoff_sec=%d (v5.19.1 — at _probe_one)",
-                provider.id, _co, _co_backoff_sec,
+                provider.id,
+                _co,
+                _co_backoff_sec,
             )
             return
         if _now < _next:
             logger.debug(
                 "keepalive.skipped_chronic_cb_gated provider=%s remaining=%.0fs",
-                provider.id, _next - _now,
+                provider.id,
+                _next - _now,
             )
             return
         # Backoff elapsed — clear + let this probe fire to detect recovery.
@@ -253,13 +288,13 @@ async def _probe_one(provider: Provider) -> None:
     # here and in scanner.test_provider — see resolve_chat_model_for_provider
     # docstring for the bug history.
     from app.routing.router import resolve_chat_model_for_provider
+
     async with AsyncSessionLocal() as _resolve_db:
-        chat_model, skip_reason = await resolve_chat_model_for_provider(
-            _resolve_db, provider
-        )
+        chat_model, skip_reason = await resolve_chat_model_for_provider(_resolve_db, provider)
     if skip_reason is not None:
-        logger.debug("keepalive.skipped_embedding_only provider=%s reason=%s",
-                     provider.id, skip_reason)
+        logger.debug(
+            "keepalive.skipped_embedding_only provider=%s reason=%s", provider.id, skip_reason
+        )
         return
     model = chat_model or "gpt-4o-mini"
     # Build litellm-shape model id from provider_type if no slash
@@ -288,9 +323,11 @@ async def _probe_one(provider: Provider) -> None:
         # via platform.claude.com). Reuse the dispatch helper from messages.py
         # rather than going through litellm.
         from app.api._messages_streaming import _complete_claude_oauth
+
         # v5.0.21 — per-provider 1M-context opt-out via ContextVar
         # v5.0.21 hotfix: defensive getattr + identity-check for bool.
         from app.providers.claude_oauth import set_disable_long_context
+
         set_disable_long_context(
             (getattr(provider, "extra_config", None) or {}).get("disable_long_context") is True
         )
@@ -328,8 +365,11 @@ async def _probe_one(provider: Provider) -> None:
         # effect, so a probe failure here is the earliest signal that
         # the operator's session needs re-login.
         from app.providers.grok_web import (
-            complete_grok_web, GrokWebError, GrokWebAuthError,
+            GrokWebAuthError,
+            GrokWebError,
+            complete_grok_web,
         )
+
         try:
             resp = await asyncio.wait_for(
                 complete_grok_web(
@@ -359,6 +399,7 @@ async def _probe_one(provider: Provider) -> None:
         # record_outcome path below.
         try:
             from app.routing import node_auth_state as _nas
+
             if success:
                 _new_state = "ok"
                 _last_error = None
@@ -370,6 +411,7 @@ async def _probe_one(provider: Provider) -> None:
                 # and "bridge_down" (network/timeout/upstream_5xx —
                 # transient).
                 from app.routing.circuit_breaker import classify_error
+
                 _cls = classify_error(err_str or "")
                 if _cls == "auth":
                     _new_state = "needs_reauth"
@@ -395,7 +437,8 @@ async def _probe_one(provider: Provider) -> None:
         except Exception as _e:
             logger.debug(
                 "keepalive.m3_node_auth_state_write_failed provider=%s err=%r",
-                provider.id, _e,
+                provider.id,
+                _e,
             )
     elif provider.provider_type == "ChatGPT-oauth-plan":
         # v3.0.19: codex-oauth probes were going through litellm.acompletion
@@ -406,17 +449,22 @@ async def _probe_one(provider: Provider) -> None:
         # standard record_outcome path below logs the activity_log entry
         # with the right probe markers without double-recording.
         from app.providers.codex_oauth import (
-            CODEX_RESPONSES_URL, build_headers,
+            CODEX_RESPONSES_URL,
+            build_headers,
         )
+
         cfg = provider.extra_config or {}
         account_id = cfg.get("chatgpt_account_id") if isinstance(cfg, dict) else None
         codex_body = {
             "model": model,
             "instructions": "Reply briefly.",
-            "input": [{
-                "type": "message", "role": "user",
-                "content": [{"type": "input_text", "text": prompt}],
-            }],
+            "input": [
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": prompt}],
+                }
+            ],
             "stream": True,
             "store": False,
         }
@@ -424,10 +472,15 @@ async def _probe_one(provider: Provider) -> None:
             headers = build_headers(provider.api_key, chatgpt_account_id=account_id)
             # v3.0.60: split connect/read so probes fail fast on DNS outages.
             async with httpx.AsyncClient(
-                timeout=httpx.Timeout(connect=5.0, read=float(_PROBE_TIMEOUT_SEC), write=5.0, pool=5.0),
+                timeout=httpx.Timeout(
+                    connect=5.0, read=float(_PROBE_TIMEOUT_SEC), write=5.0, pool=5.0
+                ),
             ) as _c:
                 async with _c.stream(
-                    "POST", CODEX_RESPONSES_URL, headers=headers, json=codex_body,
+                    "POST",
+                    CODEX_RESPONSES_URL,
+                    headers=headers,
+                    json=codex_body,
                 ) as _r:
                     if _r.status_code >= 400:
                         body = await _r.aread()
@@ -440,6 +493,7 @@ async def _probe_one(provider: Provider) -> None:
                         # showed 0/0 because we broke out without parsing
                         # the JSON. Operator-flagged 2026-05-07.
                         import json as _json
+
                         async for line in _r.aiter_lines():
                             if not line.startswith("data:") or "response.completed" not in line:
                                 continue
@@ -500,15 +554,19 @@ async def _probe_one(provider: Provider) -> None:
                 key_record_id="probe-keepalive",
                 error_str=err_str,
                 provider_name=provider.name,
-                request_body={"_probe": True, "model": litellm_model,
-                              "messages": [{"role": "user", "content": prompt}]},
-                response_body=({"_probe": True, "ok": True,
-                                "tokens_in": in_tok, "tokens_out": out_tok}
-                               if success else None),
+                request_body={
+                    "_probe": True,
+                    "model": litellm_model,
+                    "messages": [{"role": "user", "content": prompt}],
+                },
+                response_body=(
+                    {"_probe": True, "ok": True, "tokens_in": in_tok, "tokens_out": out_tok}
+                    if success
+                    else None
+                ),
             )
         except Exception as e:
-            logger.warning("keepalive.record_outcome_failed provider=%s err=%s",
-                           provider.id, e)
+            logger.warning("keepalive.record_outcome_failed provider=%s err=%s", provider.id, e)
     # v3.3.3: feed the back-off state machine. Success clears any
     # consecutive-429 streak; rate_limit error extends the next-probe
     # delay. Done OUTSIDE the AsyncSessionLocal block so DB lifetime
@@ -532,28 +590,28 @@ async def _probe_one(provider: Provider) -> None:
     # auto_skip_until = +24h. That re-engages the v5.8.6/7 gates and
     # silences the cycle. Any success resets the streak.
     if not success and _looks_like_auth_failure(err_str):
-        _PROBE_AUTH_FAILURE_STREAK[provider.id] = (
-            _PROBE_AUTH_FAILURE_STREAK.get(provider.id, 0) + 1
-        )
+        _PROBE_AUTH_FAILURE_STREAK[provider.id] = _PROBE_AUTH_FAILURE_STREAK.get(provider.id, 0) + 1
         if _PROBE_AUTH_FAILURE_STREAK[provider.id] >= _PROBE_AUTH_FAILURE_RE_SKIP_THRESHOLD:
             try:
                 from app.routing.circuit_breaker import _persist_auto_skip
+
                 await _persist_auto_skip(
                     provider.id,
                     f"persistent_auth_failure_via_probe_streak "
                     f"(n={_PROBE_AUTH_FAILURE_STREAK[provider.id]})",
                 )
                 logger.info(
-                    "keepalive.persisted_auto_skip_via_streak provider=%s "
-                    "streak=%d",
-                    provider.id, _PROBE_AUTH_FAILURE_STREAK[provider.id],
+                    "keepalive.persisted_auto_skip_via_streak provider=%s streak=%d",
+                    provider.id,
+                    _PROBE_AUTH_FAILURE_STREAK[provider.id],
                 )
                 # Reset so the next streak counts from 0.
                 _PROBE_AUTH_FAILURE_STREAK[provider.id] = 0
             except Exception as _e:
                 logger.warning(
-                    "keepalive.persist_auto_skip_via_streak_failed "
-                    "provider=%s err=%r", provider.id, _e,
+                    "keepalive.persist_auto_skip_via_streak_failed provider=%s err=%r",
+                    provider.id,
+                    _e,
                 )
     elif success:
         _PROBE_AUTH_FAILURE_STREAK.pop(provider.id, None)
@@ -564,7 +622,6 @@ async def _probe_all_once() -> int:
     interval = _probe_interval_sec()
     if interval == 0:
         return 0
-    skip_lookback = max(60, 2 * interval)
     count = 0
     async with AsyncSessionLocal() as db:
         res = await db.execute(
@@ -578,6 +635,7 @@ async def _probe_all_once() -> int:
     # (billing-quota-exhausted, auth-revoked, or repeated transient
     # failures). When the breaker closes, probes resume automatically.
     from app.routing.circuit_breaker import is_available
+
     # v3.0.56: skip probes on PER-CALL provider types by default.
     # Synthetic probes on Cohere / OpenAI / Vertex / Google etc. burn
     # real $ every 5 min × 24h × 4 nodes = ~1152 probes/day per
@@ -586,9 +644,7 @@ async def _probe_all_once() -> int:
     # anthropic-oauth) cost $0 per probe so we keep probing them.
     # Operator can re-enable per-call probes globally via
     # settings.keepalive_probe_per_call_providers=True if needed.
-    probe_per_call = getattr(
-        settings, "keepalive_probe_per_call_providers", False
-    )
+    probe_per_call = getattr(settings, "keepalive_probe_per_call_providers", False)
     # v3.2.10: grok-web added — operator's grok.com subscription is
     # cost=$0 per probe (same as other OAuth subscriptions), so worth
     # the every-5-min health check. Without this, the bridge container
@@ -600,7 +656,8 @@ async def _probe_all_once() -> int:
         if not probe_per_call and p.provider_type not in SUBSCRIPTION_TYPES:
             logger.debug(
                 "keepalive.skipped_per_call provider=%s type=%s",
-                p.id, p.provider_type,
+                p.id,
+                p.provider_type,
             )
             continue
         # v5.9.2 — check auto_skip_until BEFORE is_available. v5.8.7
@@ -615,17 +672,19 @@ async def _probe_all_once() -> int:
         auto_skip_until = getattr(p, "auto_skip_until", None)
         if auto_skip_until is not None:
             try:
-                from datetime import datetime as _dt, timezone as _tz
+                from datetime import datetime as _dt
+
                 if hasattr(auto_skip_until, "tzinfo"):
                     askdt = auto_skip_until
                 else:
                     askdt = _dt.fromisoformat(str(auto_skip_until).replace("Z", "+00:00"))
                 if askdt.tzinfo is None:
-                    askdt = askdt.replace(tzinfo=_tz.utc)
-                if askdt > _dt.now(_tz.utc):
+                    askdt = askdt.replace(tzinfo=UTC)
+                if askdt > _dt.now(UTC):
                     logger.debug(
                         "keepalive.skipped_auto_skip provider=%s until=%s",
-                        p.id, askdt.isoformat(),
+                        p.id,
+                        askdt.isoformat(),
                     )
                     continue
             except Exception:
@@ -641,7 +700,8 @@ async def _probe_all_once() -> int:
         if _backoff_skip(p.id):
             logger.debug(
                 "keepalive.skipped_rate_limit_backoff provider=%s remaining=%.0fs",
-                p.id, max(0.0, _probe_backoff_until.get(p.id, 0.0) - time.time()),
+                p.id,
+                max(0.0, _probe_backoff_until.get(p.id, 0.0) - time.time()),
             )
             continue
         try:
@@ -656,6 +716,7 @@ async def _probe_loop() -> None:
     """Periodic loop. Fires the first sweep ~30s after startup (so the
     rest of the boot finishes), then on the configured interval."""
     from app.monitoring.worker_heartbeat import WorkerHeartbeat, register_expected_interval
+
     hb = WorkerHeartbeat(name="keepalive")
     await asyncio.sleep(30)  # let providers register, db settle
     while True:
@@ -676,7 +737,7 @@ async def _probe_loop() -> None:
         await asyncio.sleep(interval)
 
 
-_TASK: Optional[asyncio.Task] = None
+_TASK: asyncio.Task | None = None
 
 
 def start() -> None:

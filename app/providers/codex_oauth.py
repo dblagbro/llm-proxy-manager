@@ -33,13 +33,12 @@ don't get API keys. The chatgpt.com backend exposes a separate Codex
 surface that accepts the OAuth bearer + workspace header and bills the
 subscription.
 """
+
 from __future__ import annotations
 
 import json
 import time
 from dataclasses import dataclass
-from typing import Optional
-
 
 CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
 CODEX_RESPONSES_URL = f"{CODEX_BASE_URL}/responses"
@@ -61,11 +60,11 @@ _JWT_TOKEN_PARTS = 3
 @dataclass
 class CodexOAuthCredentials:
     access_token: str
-    refresh_token: Optional[str] = None
-    expires_at: Optional[float] = None  # unix timestamp
-    chatgpt_account_id: Optional[str] = None
-    chatgpt_plan_type: Optional[str] = None
-    id_token: Optional[str] = None
+    refresh_token: str | None = None
+    expires_at: float | None = None  # unix timestamp
+    chatgpt_account_id: str | None = None
+    chatgpt_plan_type: str | None = None
+    id_token: str | None = None
 
 
 class CredentialParseError(ValueError):
@@ -114,10 +113,7 @@ def parse_credentials(raw: str) -> CodexOAuthCredentials:
         else:
             merged = data
 
-        access = (
-            merged.get("access_token")
-            or merged.get("accessToken")
-        )
+        access = merged.get("access_token") or merged.get("accessToken")
         if not access:
             raise CredentialParseError(
                 "JSON is missing an 'access_token' field. Look for a key like "
@@ -133,9 +129,7 @@ def parse_credentials(raw: str) -> CodexOAuthCredentials:
         refresh = merged.get("refresh_token") or merged.get("refreshToken")
         id_token = merged.get("id_token") or merged.get("idToken")
         account_id = (
-            merged.get("account_id")
-            or merged.get("accountId")
-            or merged.get("chatgpt_account_id")
+            merged.get("account_id") or merged.get("accountId") or merged.get("chatgpt_account_id")
         )
         plan_type = merged.get("chatgpt_plan_type") or merged.get("planType")
         expires_at = _extract_expiry(merged)
@@ -143,6 +137,7 @@ def parse_credentials(raw: str) -> CodexOAuthCredentials:
         # If account_id wasn't on the row but we have an id_token, decode it.
         if not account_id and id_token:
             from app.providers.codex_oauth_flow import parse_id_token
+
             account_id, plan_type_from_jwt = parse_id_token(id_token)
             if not plan_type:
                 plan_type = plan_type_from_jwt
@@ -162,7 +157,7 @@ def parse_credentials(raw: str) -> CodexOAuthCredentials:
     )
 
 
-def _extract_expiry(data: dict) -> Optional[float]:
+def _extract_expiry(data: dict) -> float | None:
     if "expires_at" in data or "expiresAt" in data:
         return _to_unix_ts(data.get("expires_at") or data.get("expiresAt"))
     if "expires_in" in data or "expiresIn" in data:
@@ -174,13 +169,14 @@ def _extract_expiry(data: dict) -> Optional[float]:
     return None
 
 
-def _to_unix_ts(v) -> Optional[float]:
+def _to_unix_ts(v) -> float | None:
     if v is None:
         return None
     if isinstance(v, (int, float)):
         return float(v) / 1000.0 if float(v) > 32503680000 else float(v)
     if isinstance(v, str):
         from datetime import datetime
+
         try:
             return datetime.fromisoformat(v.replace("Z", "+00:00")).timestamp()
         except ValueError:
@@ -196,8 +192,10 @@ def _to_unix_ts(v) -> Optional[float]:
 
 
 def build_headers(
-    access_token: str, *, chatgpt_account_id: Optional[str] = None,
-    extra: Optional[dict] = None,
+    access_token: str,
+    *,
+    chatgpt_account_id: str | None = None,
+    extra: dict | None = None,
 ) -> dict[str, str]:
     """Return the exact header set Codex CLI uses for chat calls.
 
@@ -218,7 +216,7 @@ def build_headers(
     return headers
 
 
-def is_token_expired(expires_at: Optional[float], skew_seconds: float = 30.0) -> bool:
+def is_token_expired(expires_at: float | None, skew_seconds: float = 30.0) -> bool:
     """Lazy-refresh check; True if expired or within ``skew_seconds`` of expiring."""
     if expires_at is None:
         return False

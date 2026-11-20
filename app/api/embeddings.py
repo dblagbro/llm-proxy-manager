@@ -23,6 +23,7 @@ Dispatch: litellm.aembedding handles the per-vendor wire details (OpenAI,
 Cohere, Google text-embedding-gecko, Azure, etc.). claude-oauth and
 codex-oauth are excluded — neither subscription endpoint exposes embeddings.
 """
+
 from __future__ import annotations
 
 import logging
@@ -36,7 +37,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.keys import resolve_api_key_dep
 from app.models.database import get_db
-from app.routing.router import select_provider, build_litellm_kwargs
+from app.routing.router import build_litellm_kwargs, select_provider
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["embeddings"])
@@ -62,9 +63,13 @@ async def create_embeddings(
     # Route. Subscription-OAuth providers don't expose embeddings; exclude.
     try:
         route = await select_provider(
-            db, hint=None, has_tools=False, has_images=False,
+            db,
+            hint=None,
+            has_tools=False,
+            has_images=False,
             key_type=key_record.key_type,
-            pinned_provider_id=None, model_override=model,
+            pinned_provider_id=None,
+            model_override=model,
             sort_mode=None,
             excluded_provider_types={"claude-oauth", "ChatGPT-oauth-plan"},
         )
@@ -84,6 +89,7 @@ async def create_embeddings(
     # build_litellm_model's prefix logic — it uses the provider type's
     # litellm prefix (cohere/, openai/, gemini/, etc.).
     from app.routing.router import build_litellm_model
+
     litellm_model = build_litellm_model(provider, model_override=model)
 
     extra: dict[str, Any] = {}
@@ -98,10 +104,14 @@ async def create_embeddings(
     t0 = time.monotonic()
     try:
         result = await litellm.aembedding(
-            model=litellm_model, input=input_data, **kwargs, **extra,
+            model=litellm_model,
+            input=input_data,
+            **kwargs,
+            **extra,
         )
     except Exception as e:
-        from app.routing.circuit_breaker import record_failure, is_billing_error
+        from app.routing.circuit_breaker import is_billing_error, record_failure
+
         err_str = str(e)
         billing = is_billing_error(err_str)
         await record_failure(provider.id, billing_error=billing)
@@ -113,6 +123,7 @@ async def create_embeddings(
     # Log + bump CB success. The result is litellm's EmbeddingResponse
     # which has model_dump() — fall back to dict shape if not.
     from app.routing.circuit_breaker import record_success
+
     await record_success(provider.id)
 
     elapsed_ms = (time.monotonic() - t0) * 1000.0
@@ -148,7 +159,8 @@ async def create_embeddings(
     }
     # v5.14.1 — response-shaping hook runner. Same contract as messages.py.
     try:
-        from app.api._response_hook_runner import apply_response_hooks, HookContext
+        from app.api._response_hook_runner import HookContext, apply_response_hooks
+
         await apply_response_hooks(
             handler_id="embeddings",
             resp_headers=headers,
@@ -177,6 +189,7 @@ def _normalize_embeddings_to_floats(body_out: dict) -> None:
     """
     import base64
     import struct
+
     data = body_out.get("data") or []
     if not isinstance(data, list):
         return
@@ -194,5 +207,6 @@ def _normalize_embeddings_to_floats(body_out: dict) -> None:
             except Exception as exc:
                 logger.warning(
                     "embeddings._normalize_decode_failed err=%s len=%d",
-                    exc, len(emb),
+                    exc,
+                    len(emb),
                 )

@@ -11,6 +11,7 @@ embedding-only. The picker resolves a chat-capable model via:
 
 These unit tests pin each branch + the caching behaviour.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -18,10 +19,10 @@ import pytest
 # Import the picker directly. It lives in an integration-test file but is
 # a pure helper — safe to unit-test in isolation.
 from tests.integration.test_compatibility_matrix import (
-    _pick_chat_model,
-    _chat_model_cache,
     _PROVIDER_TYPE_CHAT_DEFAULT,
+    _chat_model_cache,
     _looks_embedding,
+    _pick_chat_model,
 )
 
 
@@ -57,18 +58,31 @@ class _FakeSession:
 # ── _looks_embedding ──────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("slug", [
-    "embed-english-v3.0", "text-embedding-3-large",
-    "cohere-embed-v2", "rerank-english-v2", "vector-store-small",
-])
+@pytest.mark.parametrize(
+    "slug",
+    [
+        "embed-english-v3.0",
+        "text-embedding-3-large",
+        "cohere-embed-v2",
+        "rerank-english-v2",
+        "vector-store-small",
+    ],
+)
 def test_looks_embedding_positive(slug):
     assert _looks_embedding(slug) is True
 
 
-@pytest.mark.parametrize("slug", [
-    "gpt-4o", "claude-sonnet-4-6", "gemini-2.5-flash",
-    "command-r", "grok-3", "openrouter/openai/gpt-4o",
-])
+@pytest.mark.parametrize(
+    "slug",
+    [
+        "gpt-4o",
+        "claude-sonnet-4-6",
+        "gemini-2.5-flash",
+        "command-r",
+        "grok-3",
+        "openrouter/openai/gpt-4o",
+    ],
+)
 def test_looks_embedding_negative(slug):
     assert _looks_embedding(slug) is False
 
@@ -78,8 +92,7 @@ def test_looks_embedding_negative(slug):
 
 def test_uses_default_model_when_non_empty_non_embedding():
     s = _FakeSession(_FakeResp(200, []))
-    provider = {"id": "p1", "provider_type": "anthropic",
-                "default_model": "claude-sonnet-4-6"}
+    provider = {"id": "p1", "provider_type": "anthropic", "default_model": "claude-sonnet-4-6"}
     assert _pick_chat_model(s, provider) == "claude-sonnet-4-6"
     # No capability lookup needed when default_model is good
     assert s.calls == []
@@ -89,33 +102,45 @@ def test_uses_default_model_when_non_empty_non_embedding():
 
 
 def test_falls_through_when_default_model_empty():
-    s = _FakeSession(_FakeResp(200, [
-        {"model_id": "gemini-2.5-flash", "tasks": ["chat"]},
-        {"model_id": "text-embedding-3-large", "tasks": ["embed"]},
-    ]))
-    provider = {"id": "p2", "provider_type": "openrouter",
-                "default_model": ""}
+    s = _FakeSession(
+        _FakeResp(
+            200,
+            [
+                {"model_id": "gemini-2.5-flash", "tasks": ["chat"]},
+                {"model_id": "text-embedding-3-large", "tasks": ["embed"]},
+            ],
+        )
+    )
+    provider = {"id": "p2", "provider_type": "openrouter", "default_model": ""}
     assert _pick_chat_model(s, provider) == "gemini-2.5-flash"
     assert len(s.calls) == 1
 
 
 def test_falls_through_when_default_model_is_embedding():
-    s = _FakeSession(_FakeResp(200, [
-        {"model_id": "command-r", "tasks": ["chat"]},
-        {"model_id": "c4ai-aya-expanse-32b", "tasks": ["chat"]},
-    ]))
-    provider = {"id": "p3", "provider_type": "cohere",
-                "default_model": "embed-english-v3.0"}
+    s = _FakeSession(
+        _FakeResp(
+            200,
+            [
+                {"model_id": "command-r", "tasks": ["chat"]},
+                {"model_id": "c4ai-aya-expanse-32b", "tasks": ["chat"]},
+            ],
+        )
+    )
+    provider = {"id": "p3", "provider_type": "cohere", "default_model": "embed-english-v3.0"}
     # Preference order picks command-r over alphabetical first
     assert _pick_chat_model(s, provider) == "command-r"
 
 
 def test_falls_through_when_default_model_is_null():
-    s = _FakeSession(_FakeResp(200, [
-        {"model_id": "claude-haiku-4-5", "tasks": ["chat"]},
-    ]))
-    provider = {"id": "p4", "provider_type": "anthropic",
-                "default_model": None}
+    s = _FakeSession(
+        _FakeResp(
+            200,
+            [
+                {"model_id": "claude-haiku-4-5", "tasks": ["chat"]},
+            ],
+        )
+    )
+    provider = {"id": "p4", "provider_type": "anthropic", "default_model": None}
     assert _pick_chat_model(s, provider) == "claude-haiku-4-5"
 
 
@@ -129,29 +154,36 @@ def test_capability_preference_order():
         {"model_id": "command-r", "tasks": ["chat"]},
     ]
     s = _FakeSession(_FakeResp(200, rows))
-    provider = {"id": "p5", "provider_type": "openrouter",
-                "default_model": ""}
+    provider = {"id": "p5", "provider_type": "openrouter", "default_model": ""}
     # command- wins (highest preference)
     assert _pick_chat_model(s, provider) == "command-r"
 
 
 def test_excludes_embedding_capability_rows():
-    s = _FakeSession(_FakeResp(200, [
-        {"model_id": "text-embedding-3-large", "tasks": ["chat"]},  # name-embed
-        {"model_id": "gpt-4o-mini",            "tasks": ["chat"]},
-    ]))
-    provider = {"id": "p6", "provider_type": "openai",
-                "default_model": ""}
+    s = _FakeSession(
+        _FakeResp(
+            200,
+            [
+                {"model_id": "text-embedding-3-large", "tasks": ["chat"]},  # name-embed
+                {"model_id": "gpt-4o-mini", "tasks": ["chat"]},
+            ],
+        )
+    )
+    provider = {"id": "p6", "provider_type": "openai", "default_model": ""}
     assert _pick_chat_model(s, provider) == "gpt-4o-mini"
 
 
 def test_excludes_rows_without_chat_in_tasks():
-    s = _FakeSession(_FakeResp(200, [
-        {"model_id": "voice-only-model", "tasks": ["voice"]},
-        {"model_id": "gpt-4o-mini",      "tasks": ["chat"]},
-    ]))
-    provider = {"id": "p7", "provider_type": "openai",
-                "default_model": ""}
+    s = _FakeSession(
+        _FakeResp(
+            200,
+            [
+                {"model_id": "voice-only-model", "tasks": ["voice"]},
+                {"model_id": "gpt-4o-mini", "tasks": ["chat"]},
+            ],
+        )
+    )
+    provider = {"id": "p7", "provider_type": "openai", "default_model": ""}
     assert _pick_chat_model(s, provider) == "gpt-4o-mini"
 
 
@@ -162,8 +194,7 @@ def test_per_type_fallback_when_no_capabilities():
     """C1 Anthropic config case (BUG-045): 0 capability rows AND null
     default_model. The picker falls back to the type's default."""
     s = _FakeSession(_FakeResp(200, []))  # zero capability rows
-    provider = {"id": "p8", "provider_type": "anthropic",
-                "default_model": None}
+    provider = {"id": "p8", "provider_type": "anthropic", "default_model": None}
     result = _pick_chat_model(s, provider)
     assert result == _PROVIDER_TYPE_CHAT_DEFAULT["anthropic"]
     assert result == "claude-haiku-4-5"
@@ -175,16 +206,13 @@ def test_per_type_fallback_for_every_known_type():
     for ptype, expected in _PROVIDER_TYPE_CHAT_DEFAULT.items():
         _chat_model_cache.clear()
         s = _FakeSession(_FakeResp(200, []))
-        provider = {"id": f"p-{ptype}", "provider_type": ptype,
-                    "default_model": ""}
-        assert _pick_chat_model(s, provider) == expected, \
-            f"per-type fallback failed for {ptype!r}"
+        provider = {"id": f"p-{ptype}", "provider_type": ptype, "default_model": ""}
+        assert _pick_chat_model(s, provider) == expected, f"per-type fallback failed for {ptype!r}"
 
 
 def test_capability_endpoint_500_falls_through_to_per_type():
     s = _FakeSession(_FakeResp(500, None))
-    provider = {"id": "p9", "provider_type": "cohere",
-                "default_model": "embed-english-v3.0"}
+    provider = {"id": "p9", "provider_type": "cohere", "default_model": "embed-english-v3.0"}
     assert _pick_chat_model(s, provider) == _PROVIDER_TYPE_CHAT_DEFAULT["cohere"]
 
 
@@ -195,8 +223,7 @@ def test_ultimate_fallback_for_unknown_provider_type():
     """A provider_type not in the table still gets gpt-4o-mini so the
     test doesn't crash. Documented as a config-drift signal."""
     s = _FakeSession(_FakeResp(200, []))
-    provider = {"id": "p10", "provider_type": "completely-new-type",
-                "default_model": ""}
+    provider = {"id": "p10", "provider_type": "completely-new-type", "default_model": ""}
     assert _pick_chat_model(s, provider) == "gpt-4o-mini"
 
 
@@ -204,9 +231,14 @@ def test_ultimate_fallback_for_unknown_provider_type():
 
 
 def test_result_is_cached_per_provider_id():
-    s = _FakeSession(_FakeResp(200, [
-        {"model_id": "gpt-4o-mini", "tasks": ["chat"]},
-    ]))
+    s = _FakeSession(
+        _FakeResp(
+            200,
+            [
+                {"model_id": "gpt-4o-mini", "tasks": ["chat"]},
+            ],
+        )
+    )
     provider = {"id": "p11", "provider_type": "openai", "default_model": ""}
     a = _pick_chat_model(s, provider)
     b = _pick_chat_model(s, provider)

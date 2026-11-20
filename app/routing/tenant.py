@@ -10,10 +10,7 @@ ownership filter. Null when no chat request is in flight (background
 keepalive probes, scan-models, test buttons) — those bypass the
 ownership filter intentionally because they're operator-internal.
 """
+
 from contextvars import ContextVar
-from typing import Optional
 
-
-current_api_key_id: ContextVar[Optional[str]] = ContextVar(
-    "current_api_key_id", default=None
-)
+current_api_key_id: ContextVar[str | None] = ContextVar("current_api_key_id", default=None)

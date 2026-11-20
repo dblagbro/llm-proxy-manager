@@ -21,6 +21,7 @@ These guards lock the pin shape so a future contributor doesn't
 accidentally re-tighten it OR widen it past the next deliberate-eval
 ceiling.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -35,14 +36,13 @@ def test_pin_floor_is_1_85_2():
     # Look at the pin line specifically (not comments, which may
     # legitimately reference the OLD ceiling for context).
     pin_lines = [
-        l for l in req.splitlines()
-        if l.strip().startswith("litellm") and not l.strip().startswith("#")
+        line
+        for line in req.splitlines()
+        if line.strip().startswith("litellm") and not line.strip().startswith("#")
     ]
     assert pin_lines, "no litellm pin found"
     pin = pin_lines[0]
-    assert pin == "litellm>=1.85.2,<1.87.0", (
-        f"expected canonical v4.4.30 pin; got {pin!r}"
-    )
+    assert pin == "litellm>=1.85.2,<1.87.0", f"expected canonical v4.4.30 pin; got {pin!r}"
 
 
 def test_pin_keeps_ceiling_for_next_major():
@@ -69,6 +69,7 @@ def _litellm_attrs_in_clean_interpreter() -> set[str]:
     of attribute names we care about that are present."""
     import subprocess
     import sys
+
     probe = (
         "import litellm, json; "
         "names=['acompletion','completion','AuthenticationError',"
@@ -78,10 +79,13 @@ def _litellm_attrs_in_clean_interpreter() -> set[str]:
     )
     out = subprocess.run(
         [sys.executable, "-c", probe],
-        capture_output=True, text=True, timeout=60,
+        capture_output=True,
+        text=True,
+        timeout=60,
     )
     assert out.returncode == 0, f"litellm probe failed: {out.stderr[:500]}"
     import json as _json
+
     return set(_json.loads(out.stdout.strip()))
 
 

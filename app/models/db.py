@@ -20,26 +20,21 @@ re-export here so:
   1. The table is registered on ``Base.metadata`` at app boot.
   2. Existing ``from app.models.db import X`` imports keep working.
 """
-# Re-export Base + auth Session
-from app.models.db_base import Base, Session
 
-# Provider domain — heaviest module
-from app.models.db_provider import (
-    Provider,
-    ProviderOAuthAccount,
-    ProviderUsageWindow,
-    ProviderNodeAuthState,
-    ExternalUsageSnapshot,
-    ProviderAiReview,
-    ProviderMetric,
+# Activity log + blocked IPs
+from app.models.db_activity import (
+    ActivityLog,
+    BlockedIp,
 )
 
-# Per-model tables (v5.22.36 — split out of db_provider.py for the
-# 500-LOC domain ceiling; keyed by (provider_id, model_id)).
-from app.models.db_model import (
-    ModelCapability,
-    ModelToolProbe,
-    ModelAlias,
+# AIRI rule layer (v4.0)
+from app.models.db_airi import (
+    AiriConversation,
+    AiriMessage,
+    AiriNotificationPref,
+    AiriProposal,
+    AiriRule,
+    AiriRuleset,
 )
 
 # API key domain
@@ -48,31 +43,25 @@ from app.models.db_apikey import (
     ApiKeyAiReview,
 )
 
-# User + system settings
-from app.models.db_user import (
-    User,
-    SystemSetting,
-    PasswordResetToken,
+# Re-export Base + auth Session
+from app.models.db_base import Base, Session
+
+# Caller memory (#267 Phase 2)
+from app.models.db_caller_memory import (
+    CallerMemory,
+    CallerMemoryMarker,
 )
 
-# Activity log + blocked IPs
-from app.models.db_activity import (
-    BlockedIp,
-    ActivityLog,
+# Cluster peers (v5.0.18 — UI-configurable peer list)
+from app.models.db_cluster_peer import (
+    ClusterPeer,
 )
 
-# v5.7.0 — MCP tool-call audit
-from app.models.db_mcp import (
-    McpToolCall,
-    CallerCapabilityScore,  # v5.10.0
-)
-
-# Run runtime (v3.0)
-from app.models.db_run import (
-    Run,
-    RunMessage,
-    RunEvent,
-    RunIdempotency,
+# Compliance audit (v5.0.0)
+from app.models.db_compliance import (
+    ComplianceAuditChain,
+    ComplianceEvent,
+    CompliancePolicyChange,
 )
 
 # LMRH protocol
@@ -81,38 +70,18 @@ from app.models.db_lmrh import (
     LmrhProposal,
 )
 
-# OAuth capture
-from app.models.db_oauth import (
-    OAuthCaptureProfile,
-    OAuthCaptureLog,
+# v5.7.0 — MCP tool-call audit
+from app.models.db_mcp import (
+    CallerCapabilityScore,  # v5.10.0
+    McpToolCall,
 )
 
-# Caller memory (#267 Phase 2)
-from app.models.db_caller_memory import (
-    CallerMemory,
-    CallerMemoryMarker,
-)
-
-# AIRI rule layer (v4.0)
-from app.models.db_airi import (
-    AiriRuleset,
-    AiriRule,
-    AiriProposal,
-    AiriConversation,
-    AiriMessage,
-    AiriNotificationPref,
-)
-
-# Compliance audit (v5.0.0)
-from app.models.db_compliance import (
-    ComplianceEvent,
-    CompliancePolicyChange,
-    ComplianceAuditChain,
-)
-
-# Cluster peers (v5.0.18 — UI-configurable peer list)
-from app.models.db_cluster_peer import (
-    ClusterPeer,
+# Per-model tables (v5.22.36 — split out of db_provider.py for the
+# 500-LOC domain ceiling; keyed by (provider_id, model_id)).
+from app.models.db_model import (
+    ModelAlias,
+    ModelCapability,
+    ModelToolProbe,
 )
 
 # Model pricing catalog (v5.20.6 — LiteLLM `main` cost map, synced daily).
@@ -124,8 +93,40 @@ from app.models.db_cluster_peer import (
 from app.models.db_model_pricing import (
     ModelPricingEntry,
 )
+
+# OAuth capture
+from app.models.db_oauth import (
+    OAuthCaptureLog,
+    OAuthCaptureProfile,
+)
+
+# Provider domain — heaviest module
+from app.models.db_provider import (
+    ExternalUsageSnapshot,
+    Provider,
+    ProviderAiReview,
+    ProviderMetric,
+    ProviderNodeAuthState,
+    ProviderOAuthAccount,
+    ProviderUsageWindow,
+)
+
+# Run runtime (v3.0)
+from app.models.db_run import (
+    Run,
+    RunEvent,
+    RunIdempotency,
+    RunMessage,
+)
 from app.models.db_usage_reset_advisor import (
     UsageResetAdvisorState,
+)
+
+# User + system settings
+from app.models.db_user import (
+    PasswordResetToken,
+    SystemSetting,
+    User,
 )
 
 __all__ = [

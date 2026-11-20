@@ -1,12 +1,12 @@
 """v3.7.16 — persistent auth-failure → DB-persisted auto_skip (#239)
 plus the config_runtime SCHEMA type harmonization (#238)."""
+
 from __future__ import annotations
 
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 
 # ── #238: config_runtime SCHEMA type harmonized ────────────────────
 
@@ -15,6 +15,7 @@ def test_semantic_cache_schema_uses_str_not_string():
     """Old type='string' triggered a warning on every settings load
     because pydantic reports 'str'. Harmonize to 'str'."""
     from app.config_runtime import SCHEMA
+
     assert SCHEMA["semantic_cache_embedding_model"]["type"] == "str"
     assert SCHEMA["semantic_cache_provider_id"]["type"] == "str"
 
@@ -24,12 +25,14 @@ def test_semantic_cache_schema_uses_str_not_string():
 
 def test_constants_exist():
     from app.routing import circuit_breaker as cb
+
     assert cb.PERSISTENT_AUTH_THRESHOLD >= 2
     assert cb.PERSISTENT_AUTH_WINDOW_SEC >= 60.0
 
 
 def test_history_dict_exists():
     from app.routing import circuit_breaker as cb
+
     assert hasattr(cb, "_auth_failure_history")
     assert isinstance(cb._auth_failure_history, dict)
 
@@ -38,6 +41,7 @@ def test_clear_auth_failure_also_clears_history():
     """clear_auth_failure must reset the per-provider failure counter,
     else a successful re-auth doesn't reset the threshold."""
     from app.routing import circuit_breaker as cb
+
     cb._auth_failure_history["p1"] = [time.time(), time.time()]
     cb.clear_auth_failure("p1")
     assert "p1" not in cb._auth_failure_history
@@ -48,6 +52,7 @@ async def test_record_auth_failure_appends_history():
     """Each call to record_auth_failure must extend the per-provider
     history list — that's what _persist_auto_skip uses to decide."""
     from app.routing import circuit_breaker as cb
+
     cb._auth_failure_history.pop("p2", None)
     cb._auth_failed.pop("p2", None)
     # Patch the persistence call so this unit test doesn't need a real DB
@@ -70,6 +75,7 @@ async def test_below_threshold_does_not_persist():
     record of 8 successes and 1 failure. Restored in v5.22.23.
     """
     from app.routing import circuit_breaker as cb
+
     cb.clear_auth_failure("p3")
     fake_persist = AsyncMock()
     with patch.object(cb, "_persist_auto_skip", new=fake_persist):
@@ -83,6 +89,7 @@ async def test_below_threshold_does_not_persist():
 async def test_at_threshold_persists_auto_skip():
     """Three consecutive failures escalate; the provider id passes through."""
     from app.routing import circuit_breaker as cb
+
     cb._auth_failure_history.pop("p4", None)
     cb._auth_failed.pop("p4", None)
     fake_persist = AsyncMock()
@@ -100,6 +107,7 @@ async def test_at_threshold_persists_auto_skip():
 async def test_window_prunes_old_failures():
     """A failure older than the window must be pruned from the history."""
     from app.routing import circuit_breaker as cb
+
     cb._auth_failure_history.pop("p5", None)
     cb._auth_failed.pop("p5", None)
     # Seed with two failures that are older than the window
@@ -119,12 +127,18 @@ async def test_window_prunes_old_failures():
 async def test_persist_auto_skip_writes_db_fields():
     """_persist_auto_skip must update Provider.auto_skip_until +
     auto_skip_reason fields."""
-    from app.routing import circuit_breaker as cb
     from app.models.db import Provider
+    from app.routing import circuit_breaker as cb
+
     p = Provider(
-        id="p6", name="test", provider_type="ChatGPT-oauth-plan",
-        api_key="x", enabled=True, priority=1,
-        auto_skip_until=None, auto_skip_reason=None,
+        id="p6",
+        name="test",
+        provider_type="ChatGPT-oauth-plan",
+        api_key="x",
+        enabled=True,
+        priority=1,
+        auto_skip_until=None,
+        auto_skip_reason=None,
     )
     db = MagicMock()
     db.__aenter__ = AsyncMock(return_value=db)
@@ -143,14 +157,21 @@ async def test_persist_auto_skip_writes_db_fields():
 @pytest.mark.asyncio
 async def test_persist_auto_skip_idempotent():
     """If provider already has auto_skip_until > now+24h, don't shorten it."""
-    from app.routing import circuit_breaker as cb
-    from app.models.db import Provider
     from datetime import datetime, timedelta
+
+    from app.models.db import Provider
+    from app.routing import circuit_breaker as cb
+
     far_future = datetime.utcnow() + timedelta(hours=48)
     p = Provider(
-        id="p7", name="test", provider_type="ChatGPT-oauth-plan",
-        api_key="x", enabled=True, priority=1,
-        auto_skip_until=far_future, auto_skip_reason="billing_100pct",
+        id="p7",
+        name="test",
+        provider_type="ChatGPT-oauth-plan",
+        api_key="x",
+        enabled=True,
+        priority=1,
+        auto_skip_until=far_future,
+        auto_skip_reason="billing_100pct",
     )
     db = MagicMock()
     db.__aenter__ = AsyncMock(return_value=db)
@@ -171,5 +192,6 @@ async def test_persist_auto_skip_idempotent():
 
 def test_version_bumped():
     from app.__version__ import __version__
+
     parts = tuple(int(p) for p in __version__.split("."))
     assert parts >= (3, 7, 16)

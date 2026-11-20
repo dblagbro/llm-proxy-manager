@@ -13,12 +13,12 @@ Emits ``context_compacted`` event with ``model_used``, ``tokens_in``,
 ``tokens_out`` so the hub's task_events.payload mirror gets the cost
 attribution per-run (per their week-1 ack).
 """
+
 from __future__ import annotations
 
 import json
 import logging
 import time
-from typing import Optional
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -52,8 +52,8 @@ _SUMMARY_SYSTEM_PROMPT = (
 
 
 async def _pick_compaction_model(
-    db: AsyncSession, override: Optional[str] = None
-) -> tuple[str, Optional[Provider]]:
+    db: AsyncSession, override: str | None = None
+) -> tuple[str, Provider | None]:
     """Return ``(model_id, provider_row)``. If override is set, search for a
     provider that has it; else pick the cheapest claude-haiku-* available.
 
@@ -137,7 +137,7 @@ def _split_for_compaction(
 
 
 async def _call_summary_model(
-    model: str, provider: Optional[Provider], body_messages: list[dict]
+    model: str, provider: Provider | None, body_messages: list[dict]
 ) -> tuple[str, int, int]:
     """One-shot LLM call to generate the summary. Returns
     ``(summary_text, in_tokens, out_tokens)``."""
@@ -155,7 +155,10 @@ async def _call_summary_model(
                 if t == "text":
                     parts.append(blk.get("text", ""))
                 elif t == "tool_use":
-                    parts.append(f"[tool_use {blk.get('name','')} input={json.dumps(blk.get('input',{}))[:300]}]")
+                    parts.append(
+                        f"[tool_use {blk.get('name', '')} "
+                        f"input={json.dumps(blk.get('input', {}))[:300]}]"
+                    )
                 elif t == "tool_result":
                     inner = blk.get("content", "")
                     inner_s = inner if isinstance(inner, str) else json.dumps(inner)[:500]
@@ -200,10 +203,10 @@ async def maybe_compact(
     db: AsyncSession,
     *,
     run_id: str,
-    run_compaction_model: Optional[str],
+    run_compaction_model: str | None,
     next_call_model: str,
     messages: list[dict],
-) -> Optional[dict]:
+) -> dict | None:
     """Run the compaction step if the conversation has crossed the 80%
     threshold for ``next_call_model``'s context window.
 
@@ -220,14 +223,17 @@ async def maybe_compact(
     if not body:
         # Nothing to summarise even though we're over threshold — surface
         # the context_exhausted error path instead. Caller decides.
-        logger.info("runs.compaction.nothing_to_summarize run=%s used=%d max=%d",
-                    run_id, used, max_ctx)
+        logger.info(
+            "runs.compaction.nothing_to_summarize run=%s used=%d max=%d", run_id, used, max_ctx
+        )
         return None
 
     target = compaction_target(max_ctx)
     summary_model, provider = await _pick_compaction_model(db, run_compaction_model)
     summary_text, in_tok, out_tok = await _call_summary_model(
-        summary_model, provider, body,
+        summary_model,
+        provider,
+        body,
     )
 
     # Iteratively shrink the tail-anchor if a single summary still leaves us
@@ -272,16 +278,20 @@ async def apply_compaction_to_db(
     were folded.
     """
     from sqlalchemy import delete
+
     # Wipe + re-insert is acceptable here because the conversation is the
     # authoritative source-of-truth (no FKs reference run_messages.seq).
     await db.execute(delete(RunMessage).where(RunMessage.run_id == run_id))
     now = time.time()
     for i, m in enumerate(new_messages, start=1):
-        db.add(RunMessage(
-            run_id=run_id, seq=i,
-            role=m.get("role", "user"),
-            content=m.get("content", ""),
-            tokens=0,
-            created_at=now,
-        ))
+        db.add(
+            RunMessage(
+                run_id=run_id,
+                seq=i,
+                role=m.get("role", "user"),
+                content=m.get("content", ""),
+                tokens=0,
+                created_at=now,
+            )
+        )
     await db.flush()

@@ -141,8 +141,8 @@ async def retest_and_reset(provider: Any) -> dict:
 
     Returns ``{success, reset, error?}`` -- never the key or raw test payload.
     """
-    from app.providers.scanner import test_provider
     from app.cluster.breaker_reset import reset_everywhere
+    from app.providers.scanner import test_provider
 
     try:
         result = await test_provider(provider)

@@ -67,7 +67,8 @@ class TestSsrfMetadataGuard:
     def test_guard_is_wired_into_the_create_model(self):
         with pytest.raises(Exception):
             ProviderCreate(
-                name="evil", provider_type="openai",
+                name="evil",
+                provider_type="openai",
                 base_url="http://169.254.169.254/latest/meta-data/",
             )
 
@@ -77,14 +78,13 @@ class TestSsrfMetadataGuard:
         assert issubclass(ProviderUpdate, ProviderCreate)
         with pytest.raises(Exception):
             ProviderUpdate(
-                name="evil", provider_type="openai",
+                name="evil",
+                provider_type="openai",
                 base_url="http://metadata.google.internal/",
             )
 
     def test_a_benign_provider_still_constructs(self):
-        p = ProviderCreate(
-            name="ok", provider_type="openai", base_url="https://api.openai.com/v1"
-        )
+        p = ProviderCreate(name="ok", provider_type="openai", base_url="https://api.openai.com/v1")
         assert p.base_url == "https://api.openai.com/v1"
 
 

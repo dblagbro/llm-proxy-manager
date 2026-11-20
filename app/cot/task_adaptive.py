@@ -16,6 +16,7 @@ Since the proxy container only has python3 + stdlib, generated code can
 use math/statistics/decimal/fractions/datetime/re/json/etc — no numpy,
 no pandas. This matches what math-word-problem benchmarks need.
 """
+
 from __future__ import annotations
 
 import logging
@@ -27,7 +28,6 @@ import sys
 import tempfile
 import textwrap
 from dataclasses import dataclass
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -47,13 +47,15 @@ class PyExecResult:
         return not self.timed_out and self.returncode == 0
 
 
-def extract_python(text: str) -> Optional[str]:
+def extract_python(text: str) -> str | None:
     """Pull the first ```python …``` fenced block out of a response."""
     m = _PYCODE_RE.search(text)
     return m.group("code") if m else None
 
 
-def run_python_sandbox(code: str, timeout_sec: float = 5.0, max_memory_mb: int = 256) -> PyExecResult:
+def run_python_sandbox(
+    code: str, timeout_sec: float = 5.0, max_memory_mb: int = 256
+) -> PyExecResult:
     """Execute `code` in an isolated python3 -I subprocess with resource caps."""
     import time
 
@@ -92,7 +94,9 @@ def run_python_sandbox(code: str, timeout_sec: float = 5.0, max_memory_mb: int =
         duration_ms = (time.monotonic() - t0) * 1000
         return PyExecResult(
             stdout=(e.stdout or b"").decode("utf-8", errors="replace")[:4000] if e.stdout else "",
-            stderr=(e.stderr or b"").decode("utf-8", errors="replace")[:2000] if e.stderr else "timeout",
+            stderr=(e.stderr or b"").decode("utf-8", errors="replace")[:2000]
+            if e.stderr
+            else "timeout",
             returncode=-1,
             timed_out=True,
             duration_ms=duration_ms,
@@ -149,7 +153,7 @@ SUMMARIZE_SYSTEM = textwrap.dedent("""
 """).strip()
 
 
-def select_task_branch(lmrh_task: Optional[str]) -> Optional[str]:
+def select_task_branch(lmrh_task: str | None) -> str | None:
     """Map a raw LMRH task hint to a known branch name, else None."""
     if not lmrh_task:
         return None

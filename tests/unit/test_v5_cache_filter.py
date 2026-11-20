@@ -11,6 +11,7 @@ These tests stub ``_ensure_init`` + ``_embed`` so we don't need a live
 Redis or embedding provider. ``self._index.query`` returns synthetic
 rows that mimic the RedisVL ``Document`` shape (``.get`` lookups).
 """
+
 from __future__ import annotations
 
 import sys
@@ -56,6 +57,7 @@ def _stub_redisvl(monkeypatch):
 class _StubIndex:
     """Minimal stand-in for ``redisvl.index.AsyncSearchIndex`` — only the
     ``.query()`` method is exercised here."""
+
     def __init__(self, rows):
         self._rows = rows
 
@@ -100,7 +102,9 @@ def _hit_row(source_company, distance=0.0):
 async def test_check_drops_hit_when_source_company_banned():
     cache = _make_cache([_hit_row("anthropic")])
     out = await cache.check(
-        "ns-1", "what time is it?", 0.5,
+        "ns-1",
+        "what time is it?",
+        0.5,
         blocked_companies={"anthropic"},
     )
     assert out is None
@@ -117,7 +121,9 @@ async def test_check_drops_hit_when_source_company_is_null_and_blocklist_nonempt
     banned content for the rebuild window."""
     cache = _make_cache([_hit_row(None)])
     out = await cache.check(
-        "ns-1", "q", 0.5,
+        "ns-1",
+        "q",
+        0.5,
         blocked_companies={"anthropic"},
     )
     assert out is None
@@ -153,12 +159,16 @@ async def test_check_skips_banned_row_and_serves_legitimate_runner_up():
     company, ``check()`` MUST serve the runner-up rather than miss.
     Otherwise a single bad row at the top would starve the cache for
     every banned key."""
-    cache = _make_cache([
-        _hit_row("anthropic", distance=0.0),  # banned — drop
-        _hit_row("openai", distance=0.05),    # legit — keep
-    ])
+    cache = _make_cache(
+        [
+            _hit_row("anthropic", distance=0.0),  # banned — drop
+            _hit_row("openai", distance=0.05),  # legit — keep
+        ]
+    )
     out = await cache.check(
-        "ns-1", "q", 0.5,
+        "ns-1",
+        "q",
+        0.5,
         blocked_companies={"anthropic"},
     )
     assert out is not None
@@ -171,6 +181,7 @@ async def test_check_skips_banned_row_and_serves_legitimate_runner_up():
 
 def test_index_schema_includes_source_company_tag():
     from app.cache.semantic import _INDEX_SCHEMA
+
     names = {f["name"] for f in _INDEX_SCHEMA["fields"]}
     assert "source_company" in names
     sc = next(f for f in _INDEX_SCHEMA["fields"] if f["name"] == "source_company")
@@ -181,7 +192,9 @@ def test_check_signature_accepts_blocked_companies():
     """Compile-time guard: the new kwarg must be reachable from the
     middleware caller (keyword-only)."""
     import inspect
+
     from app.cache.semantic import SemanticCache
+
     sig = inspect.signature(SemanticCache.check)
     assert "blocked_companies" in sig.parameters
     assert sig.parameters["blocked_companies"].kind == inspect.Parameter.KEYWORD_ONLY
@@ -189,7 +202,9 @@ def test_check_signature_accepts_blocked_companies():
 
 def test_store_signature_accepts_source_company():
     import inspect
+
     from app.cache.semantic import SemanticCache
+
     sig = inspect.signature(SemanticCache.store)
     assert "source_company" in sig.parameters
     assert sig.parameters["source_company"].kind == inspect.Parameter.KEYWORD_ONLY

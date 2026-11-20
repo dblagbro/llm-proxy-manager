@@ -9,13 +9,13 @@ Tests cover the four moving pieces:
 
 Background memory: project_backlog_cursor_oauth_usage_monitoring.md.
 """
+
 from __future__ import annotations
 
 from datetime import datetime
-from unittest.mock import patch, AsyncMock, MagicMock
+from unittest.mock import patch
 
 import pytest
-
 
 # ── parse_usage_response ────────────────────────────────────────────
 
@@ -25,6 +25,7 @@ def test_parse_usage_response_maps_totalPercentUsed_to_seven_day_utilization():
     ``seven_day_utilization``. Reusing the Anthropic-shaped column name
     is intentional — the SEMANTICS (current util %) generalize."""
     from app.providers.cursor_billing import parse_usage_response
+
     merged = {
         "auth_me": {"sub": "user_01J..."},
         "usage_summary": {
@@ -36,9 +37,11 @@ def test_parse_usage_response_maps_totalPercentUsed_to_seven_day_utilization():
                     "totalPercentUsed": 47.3,
                     "autoPercentUsed": 50.0,
                     "apiPercentUsed": 12.0,
-                    "used": 1000, "limit": 5000, "remaining": 4000,
+                    "used": 1000,
+                    "limit": 5000,
+                    "remaining": 4000,
                 }
-            }
+            },
         },
         "aggregated_events": {
             "totalInputTokens": "27581",
@@ -62,6 +65,7 @@ def test_parse_usage_response_tolerates_missing_individualUsage():
     """A free-tier or empty account may not have the plan block — we
     must not crash; just omit the routing-signal fields."""
     from app.providers.cursor_billing import parse_usage_response
+
     merged = {"auth_me": None, "usage_summary": {"membershipType": "free"}, "aggregated_events": {}}
     out = parse_usage_response(merged)
     assert "seven_day_utilization" not in out
@@ -70,6 +74,7 @@ def test_parse_usage_response_tolerates_missing_individualUsage():
 
 def test_parse_usage_response_tolerates_missing_aggregated_events():
     from app.providers.cursor_billing import parse_usage_response
+
     merged = {
         "auth_me": None,
         "usage_summary": {
@@ -98,22 +103,37 @@ async def test_fetch_usage_happy_path_sends_cookie_header():
     class FakeResp:
         status_code = 200
         text = ""
+
         def json(self):
             # Return different shapes per path so we can assert the merge
-            return {"sub": "user_01"} if "auth/me" in self._url else (
-                {"individualUsage": {"plan": {"totalPercentUsed": 25.0}},
-                 "billingCycleEnd": "2026-06-22T18:22:28.366Z"}
-                if "usage-summary" in self._url else
-                {"totalCostCents": 5.0}
+            return (
+                {"sub": "user_01"}
+                if "auth/me" in self._url
+                else (
+                    {
+                        "individualUsage": {"plan": {"totalPercentUsed": 25.0}},
+                        "billingCycleEnd": "2026-06-22T18:22:28.366Z",
+                    }
+                    if "usage-summary" in self._url
+                    else {"totalCostCents": 5.0}
+                )
             )
 
     class FakeClient:
-        def __init__(self, *a, **kw): pass
-        async def __aenter__(self): return self
-        async def __aexit__(self, *a): pass
+        def __init__(self, *a, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            pass
+
         async def get(self, url, headers=None):
             captured_headers.append(dict(headers or {}))
-            r = FakeResp(); r._url = url; return r
+            r = FakeResp()
+            r._url = url
+            return r
 
     with patch("app.providers.cursor_billing.httpx.AsyncClient", FakeClient):
         result = await cursor_billing.fetch_usage(cookie_value="user_xxx::eyJfake")
@@ -130,19 +150,27 @@ async def test_fetch_usage_happy_path_sends_cookie_header():
 
 @pytest.mark.asyncio
 async def test_fetch_usage_401_returns_session_expired():
+
     from app.providers import cursor_billing
-    import urllib.error
 
     class FakeResp:
         def __init__(self, status):
             self.status_code = status
             self.text = "auth fail"
-        def json(self): return {}
+
+        def json(self):
+            return {}
 
     class FakeClient:
-        def __init__(self, *a, **kw): pass
-        async def __aenter__(self): return self
-        async def __aexit__(self, *a): pass
+        def __init__(self, *a, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            pass
+
         async def get(self, url, headers=None):
             return FakeResp(401)
 
@@ -162,10 +190,11 @@ def test_evaluate_rules_query_includes_cursor_oauth():
     update ExternalUsageSnapshot rows but auto_skip_until never fires
     for cursor providers."""
     from pathlib import Path
+
     src = Path("app/routing/external_rotation.py").read_text()
     # The query must list cursor-oauth explicitly (or via a tuple/.in_())
     idx = src.index("evaluate_rules_for_all_providers")
-    block = src[idx:idx + 800]
+    block = src[idx : idx + 800]
     assert "cursor-oauth" in block, (
         "evaluate_rules_for_all_providers must include cursor-oauth in its "
         "provider_type filter — otherwise the auto-skip cron only ever "
@@ -187,12 +216,15 @@ def test_reorder_subscription_by_utilization_claude_only():
     """v4.4.41 new generalized function. With provider_type='claude-oauth',
     behavior matches the v3.7.4 original."""
     from app.routing.external_rotation import reorder_subscription_by_utilization
+
     a = _FakeProvider("a", "claude-oauth", priority=5)  # util 80%
     b = _FakeProvider("b", "claude-oauth", priority=5)  # util 20% — should sort first
-    c = _FakeProvider("c", "openai", priority=5)        # untouched
+    c = _FakeProvider("c", "openai", priority=5)  # untouched
     util_map = {"a": 80.0, "b": 20.0}
     result = reorder_subscription_by_utilization(
-        [a, b, c], util_map, provider_type="claude-oauth",
+        [a, b, c],
+        util_map,
+        provider_type="claude-oauth",
     )
     # b (lower util) should now be at the first claude-oauth position
     assert result[0] is b
@@ -204,10 +236,13 @@ def test_reorder_subscription_by_utilization_cursor():
     """Same logic for cursor-oauth — confirms the type parameter actually
     gates the filter."""
     from app.routing.external_rotation import reorder_subscription_by_utilization
+
     a = _FakeProvider("a", "cursor-oauth", priority=5)  # util 80
     b = _FakeProvider("b", "cursor-oauth", priority=5)  # util 20
     result = reorder_subscription_by_utilization(
-        [a, b], {"a": 80.0, "b": 20.0}, provider_type="cursor-oauth",
+        [a, b],
+        {"a": 80.0, "b": 20.0},
+        provider_type="cursor-oauth",
     )
     assert result[0] is b
     assert result[1] is a
@@ -218,6 +253,7 @@ def test_reorder_claude_oauth_by_utilization_now_handles_both():
     name now reorders BOTH claude-oauth AND cursor-oauth in one pass.
     Each subscription type stays scoped to its own subset."""
     from app.routing.external_rotation import reorder_claude_oauth_by_utilization
+
     ca = _FakeProvider("ca", "claude-oauth", priority=5)  # util 80
     cb = _FakeProvider("cb", "claude-oauth", priority=5)  # util 20
     cura = _FakeProvider("cura", "cursor-oauth", priority=5)  # util 90
@@ -226,7 +262,8 @@ def test_reorder_claude_oauth_by_utilization_now_handles_both():
 
     util_map = {"ca": 80.0, "cb": 20.0, "cura": 90.0, "curb": 10.0}
     result = reorder_claude_oauth_by_utilization(
-        [ca, cb, cura, curb, others], util_map,
+        [ca, cb, cura, curb, others],
+        util_map,
     )
     # claude-oauth slots: positions 0 and 1 — cb wins
     assert result[0] is cb
@@ -243,6 +280,7 @@ def test_reorder_claude_oauth_by_utilization_now_handles_both():
 
 def test_main_starts_cursor_billing_worker():
     from pathlib import Path
+
     src = Path("app/main.py").read_text()
     assert "cursor_billing_worker" in src
     # Same try/except shape as the Anthropic and Codex workers

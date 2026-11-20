@@ -1,13 +1,14 @@
 """Unit tests for tool emulation — multi-tag parsing, normalisation, prompt building."""
+
 import json
-import pytest
+
 from app.cot.tool_emulation import (
-    parse_tool_call,
-    parse_tool_calls,
     build_anthropic_tool_prompt,
     build_openai_tool_prompt,
     normalize_anthropic_messages,
     normalize_openai_messages,
+    parse_tool_call,
+    parse_tool_calls,
 )
 
 TOOL_DEF_ANTHROPIC = {
@@ -35,6 +36,7 @@ TOOL_DEF_OPENAI = {
 
 
 # ── parse_tool_call — tag variants ────────────────────────────────────────────
+
 
 def test_parse_tool_call_standard_tag():
     text = '<tool_call>\n{"name": "read_file", "input": {"path": "/tmp/test"}}\n</tool_call>'
@@ -76,6 +78,7 @@ def test_parse_returns_none_for_malformed_json():
 
 # ── parse_tool_call — field name normalisation ────────────────────────────────
 
+
 def test_parse_normalises_function_name_to_name():
     text = '<tool_call>\n{"function_name": "read_file", "input": {"path": "/tmp"}}\n</tool_call>'
     result = parse_tool_call(text)
@@ -85,7 +88,12 @@ def test_parse_normalises_function_name_to_name():
 
 
 def test_parse_normalises_tool_name_to_name():
-    text = '<tool_call>\n{"tool_name": "write_file", "input": {"path": "/tmp", "content": "hi"}}\n</tool_call>'
+    text = (
+        '<tool_call>\n{"tool_name": '
+        '"write_file", "input": {"path": '
+        '"/tmp", "content": '
+        '"hi"}}\n</tool_call>'
+    )
     result = parse_tool_call(text)
     assert result is not None
     assert result["name"] == "write_file"
@@ -129,14 +137,21 @@ def test_parse_returns_none_when_no_name():
 
 # ── parse_tool_call — surrounding text ───────────────────────────────────────
 
+
 def test_parse_ignores_surrounding_text():
-    text = 'I will call the tool now:\n<tool_call>\n{"name": "read_file", "input": {"path": "/x"}}\n</tool_call>\nDone.'
+    text = (
+        "I will call the tool "
+        'now:\n<tool_call>\n{"name": '
+        '"read_file", "input": {"path": '
+        '"/x"}}\n</tool_call>\nDone.'
+    )
     result = parse_tool_call(text)
     assert result is not None
     assert result["name"] == "read_file"
 
 
 # ── build_anthropic_tool_prompt ───────────────────────────────────────────────
+
 
 def test_build_anthropic_prompt_contains_tool_name():
     prompt = build_anthropic_tool_prompt([TOOL_DEF_ANTHROPIC])
@@ -161,7 +176,11 @@ def test_build_anthropic_prompt_contains_tool_call_instruction():
 def test_build_anthropic_prompt_multiple_tools():
     tools = [
         TOOL_DEF_ANTHROPIC,
-        {"name": "write_file", "description": "Write data", "input_schema": {"type": "object", "properties": {}}},
+        {
+            "name": "write_file",
+            "description": "Write data",
+            "input_schema": {"type": "object", "properties": {}},
+        },
     ]
     prompt = build_anthropic_tool_prompt(tools)
     assert "read_file" in prompt
@@ -169,6 +188,7 @@ def test_build_anthropic_prompt_multiple_tools():
 
 
 # ── build_openai_tool_prompt ──────────────────────────────────────────────────
+
 
 def test_build_openai_prompt_contains_tool_name():
     prompt = build_openai_tool_prompt([TOOL_DEF_OPENAI])
@@ -187,6 +207,7 @@ def test_build_openai_prompt_contains_parameter():
 
 # ── normalize_anthropic_messages ──────────────────────────────────────────────
 
+
 def test_normalize_anthropic_string_content_unchanged():
     msgs = [{"role": "user", "content": "hello"}]
     result = normalize_anthropic_messages(msgs)
@@ -200,9 +221,14 @@ def test_normalize_anthropic_text_block():
 
 
 def test_normalize_anthropic_tool_use_block():
-    msgs = [{"role": "assistant", "content": [
-        {"type": "tool_use", "name": "read_file", "input": {"path": "/tmp"}},
-    ]}]
+    msgs = [
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "tool_use", "name": "read_file", "input": {"path": "/tmp"}},
+            ],
+        }
+    ]
     result = normalize_anthropic_messages(msgs)
     content = result[0]["content"]
     assert "<tool_call>" in content
@@ -211,9 +237,14 @@ def test_normalize_anthropic_tool_use_block():
 
 
 def test_normalize_anthropic_tool_result_block():
-    msgs = [{"role": "user", "content": [
-        {"type": "tool_result", "tool_use_id": "tid123", "content": "file contents here"},
-    ]}]
+    msgs = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "tid123", "content": "file contents here"},
+            ],
+        }
+    ]
     result = normalize_anthropic_messages(msgs)
     content = result[0]["content"]
     assert "tool_result" in content
@@ -222,10 +253,18 @@ def test_normalize_anthropic_tool_result_block():
 
 
 def test_normalize_anthropic_tool_result_list_content():
-    msgs = [{"role": "user", "content": [
-        {"type": "tool_result", "tool_use_id": "tid",
-         "content": [{"type": "text", "text": "result data"}]},
-    ]}]
+    msgs = [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "tid",
+                    "content": [{"type": "text", "text": "result data"}],
+                },
+            ],
+        }
+    ]
     result = normalize_anthropic_messages(msgs)
     assert "result data" in result[0]["content"]
 
@@ -237,6 +276,7 @@ def test_normalize_anthropic_skips_empty_messages():
 
 
 # ── normalize_openai_messages ─────────────────────────────────────────────────
+
 
 def test_normalize_openai_regular_message():
     msgs = [{"role": "user", "content": "hello"}]
@@ -253,9 +293,14 @@ def test_normalize_openai_tool_role_becomes_user():
 
 
 def test_normalize_openai_tool_calls_in_assistant():
-    msgs = [{"role": "assistant", "tool_calls": [
-        {"function": {"name": "read_file", "arguments": json.dumps({"path": "/tmp"})}}
-    ]}]
+    msgs = [
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {"function": {"name": "read_file", "arguments": json.dumps({"path": "/tmp"})}}
+            ],
+        }
+    ]
     result = normalize_openai_messages(msgs)
     assert result[0]["role"] == "assistant"
     assert "<tool_call>" in result[0]["content"]
@@ -263,9 +308,12 @@ def test_normalize_openai_tool_calls_in_assistant():
 
 
 def test_normalize_openai_tool_calls_invalid_json_args():
-    msgs = [{"role": "assistant", "tool_calls": [
-        {"function": {"name": "read_file", "arguments": "not-json"}}
-    ]}]
+    msgs = [
+        {
+            "role": "assistant",
+            "tool_calls": [{"function": {"name": "read_file", "arguments": "not-json"}}],
+        }
+    ]
     result = normalize_openai_messages(msgs)
     # Should not crash; content is still set with the tool call
     assert result[0]["role"] == "assistant"
@@ -279,6 +327,7 @@ def test_normalize_openai_preserves_system_role():
 
 
 # ── Wave 5 #23 — parse_tool_calls (parallel tool emulation) ──────────────────
+
 
 def test_parse_tool_calls_extracts_all():
     text = (
@@ -303,8 +352,7 @@ def test_parse_tool_calls_empty_when_no_tags():
 
 def test_parse_tool_calls_skips_malformed_mixed_with_valid():
     text = (
-        '<tool_call>{"broken}</tool_call>\n'
-        '<tool_call>{"name":"good","input":{"z":3}}</tool_call>'
+        '<tool_call>{"broken}</tool_call>\n<tool_call>{"name":"good","input":{"z":3}}</tool_call>'
     )
     calls = parse_tool_calls(text)
     assert len(calls) == 1

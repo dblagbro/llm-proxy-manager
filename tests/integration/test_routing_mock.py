@@ -4,15 +4,14 @@ All tests force-trip real provider CBs so only the mock is reachable.
 This validates proxy mechanics (format conversion, streaming, tool use,
 tool emulation, CoT-E) without spending real API credits.
 """
-import json
-import pytest
+
 import requests
 import urllib3
 
 urllib3.disable_warnings()
 
-from tests.conftest import BASE_URL
-from tests.integration.conftest import collect_sse
+from tests.conftest import BASE_URL  # noqa: E402
+from tests.integration.conftest import collect_sse  # noqa: E402
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -76,6 +75,7 @@ def post_completions(headers, body, stream=False):
 
 # ── Anthropic /v1/messages — non-streaming ────────────────────────────────────
 
+
 class TestAnthropicNonStream:
     def test_basic_text_response_shape(self, only_mock_routing, mock_ctl, llm_headers):
         mock_ctl.queue(type="text", content="hello world")
@@ -105,6 +105,7 @@ class TestAnthropicNonStream:
 
 # ── Anthropic /v1/messages — streaming ───────────────────────────────────────
 
+
 class TestAnthropicStream:
     def test_sse_event_sequence(self, only_mock_routing, mock_ctl, llm_headers):
         mock_ctl.queue(type="text", content="hello world")
@@ -123,9 +124,12 @@ class TestAnthropicStream:
         mock_ctl.queue(type="text", content="hello world")
         r = post_messages(llm_headers, SIMPLE_ANTHROPIC, stream=True)
         events = collect_sse(r)
-        deltas = [e["delta"]["text"] for e in events
-                  if e.get("type") == "content_block_delta"
-                  and e.get("delta", {}).get("type") == "text_delta"]
+        deltas = [
+            e["delta"]["text"]
+            for e in events
+            if e.get("type") == "content_block_delta"
+            and e.get("delta", {}).get("type") == "text_delta"
+        ]
         full_text = "".join(deltas)
         assert "hello" in full_text.lower()
 
@@ -140,6 +144,7 @@ class TestAnthropicStream:
 
 
 # ── OpenAI /v1/chat/completions — non-streaming ──────────────────────────────
+
 
 class TestOpenAINonStream:
     def test_basic_text_response_shape(self, only_mock_routing, mock_ctl, llm_headers):
@@ -162,6 +167,7 @@ class TestOpenAINonStream:
 
 
 # ── OpenAI /v1/chat/completions — streaming ───────────────────────────────────
+
 
 class TestOpenAIStream:
     def test_sse_chunk_sequence(self, only_mock_routing, mock_ctl, llm_headers):
@@ -191,14 +197,18 @@ class TestOpenAIStream:
 
 # ── Native tool call (mock returns proper tool_calls JSON) ────────────────────
 
+
 class TestNativeToolUse:
     """
     The mock is a 'compatible' provider (native_tools=False) so the proxy uses
     tool emulation for all tool requests. Queue 'tool_emulation' type so the mock
     returns <tool_call> XML which the emulation layer parses into a tool_use block.
     """
+
     def test_anthropic_tool_use_block_returned(self, only_mock_routing, mock_ctl, llm_headers):
-        mock_ctl.queue(type="tool_emulation", tool_name="read_file", tool_input={"path": "/etc/hosts"})
+        mock_ctl.queue(
+            type="tool_emulation", tool_name="read_file", tool_input={"path": "/etc/hosts"}
+        )
         r = post_messages(llm_headers, {**SIMPLE_ANTHROPIC, "tools": [TOOL_DEF]})
         assert r.status_code == 200
         d = r.json()
@@ -209,7 +219,9 @@ class TestNativeToolUse:
         assert "path" in tb["input"]
 
     def test_openai_tool_call_in_message(self, only_mock_routing, mock_ctl, llm_headers):
-        mock_ctl.queue(type="tool_emulation", tool_name="read_file", tool_input={"path": "/etc/hosts"})
+        mock_ctl.queue(
+            type="tool_emulation", tool_name="read_file", tool_input={"path": "/etc/hosts"}
+        )
         r = post_completions(llm_headers, {**SIMPLE_OPENAI, "tools": [TOOL_DEF_OPENAI]})
         assert r.status_code == 200
         d = r.json()
@@ -221,26 +233,35 @@ class TestNativeToolUse:
             assert tc["function"]["name"] == "read_file"
 
     def test_anthropic_tool_call_streaming(self, only_mock_routing, mock_ctl, llm_headers):
-        mock_ctl.queue(type="tool_emulation", tool_name="read_file", tool_input={"path": "/tmp/test"})
+        mock_ctl.queue(
+            type="tool_emulation", tool_name="read_file", tool_input={"path": "/tmp/test"}
+        )
         r = post_messages(llm_headers, {**SIMPLE_ANTHROPIC, "tools": [TOOL_DEF]}, stream=True)
         assert r.status_code == 200
         events = collect_sse(r)
         # Streaming tool use: content_block_start with type=tool_use (from emulation)
-        tool_starts = [e for e in events if e.get("type") == "content_block_start"
-                       and e.get("content_block", {}).get("type") == "tool_use"]
+        tool_starts = [
+            e
+            for e in events
+            if e.get("type") == "content_block_start"
+            and e.get("content_block", {}).get("type") == "tool_use"
+        ]
         assert len(tool_starts) > 0 or "tool_calls" in str(events)
 
 
 # ── Tool emulation (mock returns <tool_call> text; proxy synthesizes tool_use) ─
+
 
 class TestToolEmulation:
     """
     The mock provider is `compatible` type — defaults to native_tools=False.
     Proxy injects tool schema as system prompt and parses <tool_call> from response.
     """
+
     def test_anthropic_emulated_tool_use_block(self, only_mock_routing, mock_ctl, llm_headers):
-        mock_ctl.queue(type="tool_emulation", tool_name="read_file",
-                       tool_input={"path": "/etc/hosts"})
+        mock_ctl.queue(
+            type="tool_emulation", tool_name="read_file", tool_input={"path": "/etc/hosts"}
+        )
         r = post_messages(llm_headers, {**SIMPLE_ANTHROPIC, "tools": [TOOL_DEF]})
         assert r.status_code == 200
         d = r.json()
@@ -251,8 +272,9 @@ class TestToolEmulation:
 
     def test_mock_received_tool_schema_in_system(self, only_mock_routing, mock_ctl, llm_headers):
         """System prompt injected by proxy must contain the tool definition."""
-        mock_ctl.queue(type="tool_emulation", tool_name="read_file",
-                       tool_input={"path": "/etc/hosts"})
+        mock_ctl.queue(
+            type="tool_emulation", tool_name="read_file", tool_input={"path": "/etc/hosts"}
+        )
         post_messages(llm_headers, {**SIMPLE_ANTHROPIC, "tools": [TOOL_DEF]})
         req = mock_ctl.last()
         # Proxy strips 'tools' and injects schema into system message
@@ -263,8 +285,9 @@ class TestToolEmulation:
         assert "read_file" in all_sys, "Tool schema must appear in system prompt for emulation"
 
     def test_openai_emulated_tool_call(self, only_mock_routing, mock_ctl, llm_headers):
-        mock_ctl.queue(type="tool_emulation", tool_name="read_file",
-                       tool_input={"path": "/etc/hosts"})
+        mock_ctl.queue(
+            type="tool_emulation", tool_name="read_file", tool_input={"path": "/etc/hosts"}
+        )
         r = post_completions(llm_headers, {**SIMPLE_OPENAI, "tools": [TOOL_DEF_OPENAI]})
         assert r.status_code == 200
         d = r.json()
@@ -272,7 +295,9 @@ class TestToolEmulation:
         assert msg.get("tool_calls"), f"Expected tool_calls in response, got: {msg}"
         assert msg["tool_calls"][0]["function"]["name"] == "read_file"
 
-    def test_plain_text_when_no_tool_call_in_response(self, only_mock_routing, mock_ctl, llm_headers):
+    def test_plain_text_when_no_tool_call_in_response(
+        self, only_mock_routing, mock_ctl, llm_headers
+    ):
         """If model doesn't call a tool, proxy returns plain text — not tool_use."""
         mock_ctl.queue(type="text", content="I cannot read files directly.")
         r = post_messages(llm_headers, {**SIMPLE_ANTHROPIC, "tools": [TOOL_DEF]})
@@ -284,6 +309,7 @@ class TestToolEmulation:
 
 # ── CoT-E engagement ──────────────────────────────────────────────────────────
 
+
 class TestCoTEmulation:
     """
     CoT-E is triggered by `claude-code` key type (not via LLM-Hint, since that
@@ -291,11 +317,14 @@ class TestCoTEmulation:
     The pipeline makes 2-3 calls to the mock: plan, draft, critique.
     We queue enough responses and verify thinking blocks appear in the SSE stream.
     """
-    def test_cot_produces_thinking_blocks(self, only_mock_routing, mock_ctl, cot_headers,
-                                          admin_session, settings_snapshot):
+
+    def test_cot_produces_thinking_blocks(
+        self, only_mock_routing, mock_ctl, cot_headers, admin_session, settings_snapshot
+    ):
         # Ensure CoT is enabled globally
-        admin_session.put(f"{BASE_URL}/api/settings",
-                          json={"cot_enabled": True, "cot_max_iterations": 1})
+        admin_session.put(
+            f"{BASE_URL}/api/settings", json={"cot_enabled": True, "cot_max_iterations": 1}
+        )
 
         # Queue responses for each CoT pass:
         # 1. Plan pass
@@ -305,40 +334,55 @@ class TestCoTEmulation:
         # 3. Critique pass (score above threshold → skip refine)
         mock_ctl.queue(type="text", content="SCORE: 8\nGAPS: none")
 
-        r = post_messages(cot_headers, {
-            "model": "claude-3-5-sonnet-20241022",
-            "max_tokens": 200,
-            "messages": [{"role": "user", "content": "Write a Python function to sum a list."}],
-            "stream": True,
-        }, stream=True)
+        r = post_messages(
+            cot_headers,
+            {
+                "model": "claude-3-5-sonnet-20241022",
+                "max_tokens": 200,
+                "messages": [{"role": "user", "content": "Write a Python function to sum a list."}],
+                "stream": True,
+            },
+            stream=True,
+        )
 
         assert r.status_code == 200, f"CoT request failed: {r.text}"
         events = collect_sse(r)
         types = [e.get("type") for e in events]
-        thinking_deltas = [e for e in events
-                           if e.get("type") == "content_block_delta"
-                           and e.get("delta", {}).get("type") == "thinking_delta"]
+        thinking_deltas = [
+            e
+            for e in events
+            if e.get("type") == "content_block_delta"
+            and e.get("delta", {}).get("type") == "thinking_delta"
+        ]
         assert len(thinking_deltas) > 0, (
             f"Expected thinking blocks in SSE stream, got event types: {types}"
         )
 
-    def test_cot_disabled_produces_no_thinking(self, only_mock_routing, mock_ctl, cot_headers,
-                                                admin_session, settings_snapshot):
+    def test_cot_disabled_produces_no_thinking(
+        self, only_mock_routing, mock_ctl, cot_headers, admin_session, settings_snapshot
+    ):
         admin_session.put(f"{BASE_URL}/api/settings", json={"cot_enabled": False})
         mock_ctl.queue(type="text", content="def sum_list(lst): return sum(lst)")
 
-        r = post_messages(cot_headers, {
-            "model": "claude-3-5-sonnet-20241022",
-            "max_tokens": 100,
-            "messages": [{"role": "user", "content": "Write a Python function to sum a list."}],
-            "stream": True,
-        }, stream=True)
+        r = post_messages(
+            cot_headers,
+            {
+                "model": "claude-3-5-sonnet-20241022",
+                "max_tokens": 100,
+                "messages": [{"role": "user", "content": "Write a Python function to sum a list."}],
+                "stream": True,
+            },
+            stream=True,
+        )
 
         assert r.status_code == 200
         events = collect_sse(r)
-        thinking_deltas = [e for e in events
-                           if e.get("type") == "content_block_delta"
-                           and e.get("delta", {}).get("type") == "thinking_delta"]
+        thinking_deltas = [
+            e
+            for e in events
+            if e.get("type") == "content_block_delta"
+            and e.get("delta", {}).get("type") == "thinking_delta"
+        ]
         assert len(thinking_deltas) == 0, "CoT is disabled — no thinking blocks expected"
         # Restore
         admin_session.put(f"{BASE_URL}/api/settings", json={"cot_enabled": True})

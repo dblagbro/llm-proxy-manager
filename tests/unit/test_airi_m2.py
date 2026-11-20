@@ -1,4 +1,5 @@
 """AIRI v4.0 milestone 2 — rules layer + rule-sets."""
+
 from __future__ import annotations
 
 import pytest
@@ -11,8 +12,9 @@ from app.airi.tools import run_tool
 
 @pytest_asyncio.fixture
 async def db_ready():
-    from app.models.database import engine, AsyncSessionLocal
-    from app.models.db import Base, AiriRuleset, AiriRule
+    from app.models.database import AsyncSessionLocal, engine
+    from app.models.db import AiriRule, AiriRuleset, Base
+
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     async with AsyncSessionLocal() as c:
@@ -62,8 +64,8 @@ async def test_save_as_snapshots_active_without_activating(db_ready):
         sets = await rules.list_rulesets(db)
         assert {s["name"] for s in sets} == {"Default", "Aggressive"}
         agg = await rules.get_ruleset_detail(db, res["ruleset_id"])
-    assert len(agg["rules"]) == 4          # snapshot of Default's 4 rules
-    assert agg["is_active"] is False       # save-as does not activate
+    assert len(agg["rules"]) == 4  # snapshot of Default's 4 rules
+    assert agg["is_active"] is False  # save-as does not activate
 
 
 @pytest.mark.asyncio
@@ -95,14 +97,12 @@ async def test_activate_and_restore_default(db_ready):
 async def test_update_threshold_rule(db_ready):
     async with db_ready() as db:
         active = await rules.get_active_ruleset(db)
-        rule = next(r for r in active["rules"]
-                    if r["spec"]["setting"] == "max_priority_delta")
+        rule = next(r for r in active["rules"] if r["spec"]["setting"] == "max_priority_delta")
         res = await rules.update_rule(db, rule["id"], 5)
     assert res.get("ok") and res["value"] == 5
     async with db_ready() as db:
         active = await rules.get_active_ruleset(db)
-        rule = next(r for r in active["rules"]
-                    if r["spec"]["setting"] == "max_priority_delta")
+        rule = next(r for r in active["rules"] if r["spec"]["setting"] == "max_priority_delta")
     assert rule["spec"]["value"] == 5
 
 

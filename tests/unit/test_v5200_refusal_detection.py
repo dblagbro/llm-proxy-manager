@@ -10,17 +10,18 @@ task and substitute adjacent content (silent task substitution, HTTP
 This test file pins the shape so v5.20.1 (retry) doesn't accidentally
 regress the detection contract.
 """
+
 from __future__ import annotations
+
 from pathlib import Path
 
-
 # ---- detection patterns ----
-
 from tests.unit._handler_surface import messages_handler_source
 
 
 def test_explicit_refused_marker_detected():
     from app.refusal_detection import detect_refusal
+
     m = detect_refusal("REFUSED: I don't reproduce copyrighted lyrics.")
     assert m is not None
     assert m.pattern_name == "explicit_refused_marker"
@@ -31,10 +32,8 @@ def test_task_substitution_detected():
     """The operator's actual case: 'I can't write that song, but here's
     similar lyrics.' Response is HTTP 200 with valid content but wrong task."""
     from app.refusal_detection import detect_refusal
-    text = (
-        "I can't reproduce those exact lyrics, but here's an original "
-        "song in a similar style..."
-    )
+
+    text = "I can't reproduce those exact lyrics, but here's an original song in a similar style..."
     m = detect_refusal(text)
     assert m is not None
     assert m.category == "task_substitution"
@@ -42,6 +41,7 @@ def test_task_substitution_detected():
 
 def test_here_is_original_alternative_detected():
     from app.refusal_detection import detect_refusal
+
     text = "Sure! Here's an original poem inspired by the theme."
     m = detect_refusal(text)
     assert m is not None
@@ -50,6 +50,7 @@ def test_here_is_original_alternative_detected():
 
 def test_capability_deny_detected():
     from app.refusal_detection import detect_refusal
+
     text = "As an AI language model, I'm not able to help with that."
     m = detect_refusal(text)
     assert m is not None
@@ -58,12 +59,14 @@ def test_capability_deny_detected():
 
 def test_non_refusal_returns_none():
     from app.refusal_detection import detect_refusal
+
     text = "Once upon a time, in a land far away, there lived a dragon."
     assert detect_refusal(text) is None
 
 
 def test_empty_text_returns_none():
     from app.refusal_detection import detect_refusal
+
     assert detect_refusal("") is None
     assert detect_refusal(None) is None  # type: ignore[arg-type]
 
@@ -73,6 +76,7 @@ def test_matched_snippet_bounded():
     long response. Use a task_substitution pattern (which matches
     anywhere) to trigger the match well inside the string."""
     from app.refusal_detection import detect_refusal
+
     prefix = "prose about a nice topic. " * 30
     suffix = " and then more prose about various things. " * 30
     text = prefix + "I can't write those exact lyrics, but here's an original song " + suffix
@@ -84,8 +88,10 @@ def test_matched_snippet_bounded():
 
 # ---- Anthropic-shape extraction ----
 
+
 def test_extract_text_from_response():
     from app.refusal_detection import extract_text_from_anthropic_response
+
     resp = {
         "content": [
             {"type": "text", "text": "Hello world."},
@@ -101,12 +107,14 @@ def test_extract_text_from_response():
 
 def test_extract_handles_bad_shape():
     from app.refusal_detection import extract_text_from_anthropic_response
+
     assert extract_text_from_anthropic_response(None) == ""
     assert extract_text_from_anthropic_response({}) == ""
     assert extract_text_from_anthropic_response({"content": "not a list"}) == ""
 
 
 # ---- schema + wire pins ----
+
 
 def test_apikey_columns_present():
     src = Path("app/models/db_apikey.py").read_text()
@@ -147,8 +155,8 @@ def test_messages_passes_anthropic_result_to_tail():
     # its 1080-LOC pin. See tests/unit/_handler_surface.py.
     src = messages_handler_source()
     # The apply_response_tail call must include anthropic_result= kwarg.
-    tail_call = src[src.find("apply_response_tail("):]
-    tail_call = tail_call[:tail_call.find(")")]
+    tail_call = src[src.find("apply_response_tail(") :]
+    tail_call = tail_call[: tail_call.find(")")]
     assert "anthropic_result=anthropic_result" in tail_call
 
 
@@ -157,15 +165,15 @@ def test_hardening_instruction_says_refused_marker():
     with 'REFUSED:' — that's the machine-detectable marker the
     detector uses for explicit_refused_marker pattern."""
     from app.refusal_detection import REFUSAL_HARDENING_INSTRUCTION
+
     assert "REFUSED:" in REFUSAL_HARDENING_INSTRUCTION
 
 
 def test_version_bumped():
     import re
+
     src = Path("app/__version__.py").read_text()
     m = re.search(r'"(\d+)\.(\d+)\.(\d+)"', src)
     assert m
     major, minor, patch = int(m.group(1)), int(m.group(2)), int(m.group(3))
-    assert (major, minor, patch) >= (5, 20, 0), (
-        f"expected >= 5.20.0, got {major}.{minor}.{patch}"
-    )
+    assert (major, minor, patch) >= (5, 20, 0), f"expected >= 5.20.0, got {major}.{minor}.{patch}"

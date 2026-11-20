@@ -18,13 +18,15 @@ Run with:
     playwright install chromium
     python -m pytest tests/integration/test_v5212_default_refuse_tolerance_ui_pin.py -v -s
 """
+
 from __future__ import annotations
 
 import pytest
 from playwright.sync_api import Page, expect, sync_playwright
 
 # v5.22.38 — target and credentials come from tests/conftest.py, the single
-# source of truth. This file used to carry its own hardcoded smoke URL and admin password, which meant:
+# source of truth. This file used to carry its own hardcoded smoke URL and admin
+# password, which meant:
 #   - it could not be pointed at the ephemeral instance (LLMPROXY_TEST_EPHEMERAL=1),
 #     so it could only run where that URL resolves;
 #   - it sat outside the live gate, so a bare `pytest tests/integration` sent it
@@ -84,7 +86,7 @@ def test_default_rt_select_renders_with_all_options(page):
 
     # All 4 options present (including the "no default" clear option)
     html = page.content()
-    for opt in ('(none — no default)', 'strict', 'default', 'lenient'):
+    for opt in ("(none — no default)", "strict", "default", "lenient"):
         assert opt in html, f"missing default_refuse_tolerance option: {opt}"
 
 
@@ -97,9 +99,9 @@ def test_default_rt_end_to_end_round_trip(page):
 
     # Find the select (there's only one <select> in the compliance
     # editor panel that matches this label)
-    select_locator = page.locator("select").filter(
-        has=page.locator("option", has_text="strict")
-    ).first
+    select_locator = (
+        page.locator("select").filter(has=page.locator("option", has_text="strict")).first
+    )
     select_locator.wait_for(state="visible", timeout=5_000)
 
     # Record current value so we can restore it
@@ -121,9 +123,9 @@ def test_default_rt_end_to_end_round_trip(page):
     # Reopen the SAME key's edit modal and verify the select shows
     # the new value.
     _open_first_key_edit_modal(page)
-    reopened_select = page.locator("select").filter(
-        has=page.locator("option", has_text="strict")
-    ).first
+    reopened_select = (
+        page.locator("select").filter(has=page.locator("option", has_text="strict")).first
+    )
     reopened_select.wait_for(state="visible", timeout=5_000)
     persisted_value = reopened_select.evaluate("el => el.value")
     assert persisted_value == new_value, (
@@ -132,7 +134,7 @@ def test_default_rt_end_to_end_round_trip(page):
     )
 
     # Restore to original for test isolation
-    reopened_select.select_option(original_value if original_value else '')
+    reopened_select.select_option(original_value if original_value else "")
     page.wait_for_timeout(300)
     save_btn2 = page.get_by_role("button", name="Save").first
     save_btn2.click()

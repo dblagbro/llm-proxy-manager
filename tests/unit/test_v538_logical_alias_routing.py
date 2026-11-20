@@ -22,23 +22,23 @@ Fix surface:
      content, error key present) count as empty-success failures;
      ERROR_BAD_MODEL_NAME added to the marker list.
 """
+
 from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
 
-from app.routing.aliases import (
-    LOGICAL_ALIASES,
-    is_logical_alias,
-    logical_alias_hint,
-)
 from app.api._request_pipeline import (
     _layer_logical_alias_hint,
     resolve_auto_model_into_body,
 )
 from app.api._response_validators import looks_like_empty_success_failure
+from app.routing.aliases import (
+    LOGICAL_ALIASES,
+    is_logical_alias,
+    logical_alias_hint,
+)
 from app.routing.lmrh.parse import parse_hint
-
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -54,8 +54,12 @@ def _route(model_id="", default_model="", name="prov"):
 
 
 def test_is_logical_alias_all_four():
-    for alias in ("coordinator-code", "coordinator-fast",
-                  "coordinator-reasoning", "coordinator-local"):
+    for alias in (
+        "coordinator-code",
+        "coordinator-fast",
+        "coordinator-reasoning",
+        "coordinator-local",
+    ):
         assert is_logical_alias(alias)
 
 
@@ -111,16 +115,15 @@ def test_layer_hint_coordinator_fast_latency():
 
 def test_logical_alias_substitutes_route_model():
     body = {"model": "coordinator-code", "messages": []}
-    out = resolve_auto_model_into_body(
-        body, _route(model_id="gemini-2.5-flash"), is_auto=False)
+    out = resolve_auto_model_into_body(body, _route(model_id="gemini-2.5-flash"), is_auto=False)
     assert out["model"] == "gemini-2.5-flash"
 
 
 def test_logical_alias_falls_back_to_provider_default():
     body = {"model": "coordinator-fast", "messages": []}
     out = resolve_auto_model_into_body(
-        body, _route(model_id="", default_model="gemini-2.5-flash"),
-        is_auto=False)
+        body, _route(model_id="", default_model="gemini-2.5-flash"), is_auto=False
+    )
     assert out["model"] == "gemini-2.5-flash"
 
 
@@ -133,15 +136,13 @@ def test_logical_alias_502_when_no_default_model():
 
 def test_real_model_name_untouched():
     body = {"model": "gpt-4o", "messages": []}
-    out = resolve_auto_model_into_body(
-        body, _route(model_id="something-else"), is_auto=False)
+    out = resolve_auto_model_into_body(body, _route(model_id="something-else"), is_auto=False)
     assert out is body  # identity — no copy, no substitution
 
 
 def test_auto_still_substitutes():
     body = {"model": "auto", "messages": []}
-    out = resolve_auto_model_into_body(
-        body, _route(model_id="gpt-5.5"), is_auto=True)
+    out = resolve_auto_model_into_body(body, _route(model_id="gpt-5.5"), is_auto=True)
     assert out["model"] == "gpt-5.5"
 
 
@@ -155,9 +156,9 @@ _BRIDGE_EMPTY_BODY = {
     "id": "chatcmpl-c5624e66-43ab-49a8-bdc9-44aefcf5a53d",
     "object": "chat.completion",
     "model": "coordinator-code",
-    "choices": [{"index": 0,
-                 "message": {"role": "assistant", "content": ""},
-                 "finish_reason": "stop"}],
+    "choices": [
+        {"index": 0, "message": {"role": "assistant", "content": ""}, "finish_reason": "stop"}
+    ],
     "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
 }
 
@@ -171,30 +172,36 @@ def test_guard_catches_bridge_empty_body():
 def test_guard_catches_shapeless_error_body():
     # v5.3.8 — no choices, no content, just an error key (bridge error
     # pass-through shape). Pre-fix this fell through every branch.
-    body = {"error": {"code": "resource_exhausted",
-                      "details": [{"debug": {"error": "ERROR_BAD_MODEL_NAME"}}]}}
+    body = {
+        "error": {
+            "code": "resource_exhausted",
+            "details": [{"debug": {"error": "ERROR_BAD_MODEL_NAME"}}],
+        }
+    }
     assert looks_like_empty_success_failure(response_dict=body)
 
 
 def test_guard_catches_bad_model_name_marker():
-    body = {"choices": [{"index": 0,
-                         "message": {"role": "assistant", "content": ""},
-                         "finish_reason": "stop"}],
-            "usage": {}}
+    body = {
+        "choices": [
+            {"index": 0, "message": {"role": "assistant", "content": ""}, "finish_reason": "stop"}
+        ],
+        "usage": {},
+    }
     raw = '{"error":{"debug":{"error":"ERROR_BAD_MODEL_NAME"}}}'
     assert looks_like_empty_success_failure(response_dict=body, raw_body=raw)
 
 
 def test_guard_passes_real_completion():
-    body = {"choices": [{"index": 0,
-                         "message": {"role": "assistant", "content": "hi"},
-                         "finish_reason": "stop"}],
-            "usage": {"prompt_tokens": 12, "completion_tokens": 1,
-                      "total_tokens": 13}}
+    body = {
+        "choices": [
+            {"index": 0, "message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}
+        ],
+        "usage": {"prompt_tokens": 12, "completion_tokens": 1, "total_tokens": 13},
+    }
     assert not looks_like_empty_success_failure(response_dict=body)
 
 
 def test_guard_passes_shapeless_non_error():
     # e.g. an embeddings-ish or unknown body with no error key — don't flag.
-    assert not looks_like_empty_success_failure(
-        response_dict={"data": [], "object": "list"})
+    assert not looks_like_empty_success_failure(response_dict={"data": [], "object": "list"})

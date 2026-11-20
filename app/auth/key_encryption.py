@@ -6,9 +6,9 @@ without migration, existing encrypted_key values become unreadable — but
 the underlying hashed key continues to authenticate normally, so requests
 keep working; only the "reveal" path degrades to "(not retrievable)".
 """
+
 import base64
 import hashlib
-from typing import Optional
 
 from cryptography.fernet import Fernet, InvalidToken
 
@@ -25,7 +25,7 @@ def encrypt_key(raw_key: str) -> str:
     return _fernet().encrypt(raw_key.encode()).decode()
 
 
-def decrypt_key(encrypted: Optional[str]) -> Optional[str]:
+def decrypt_key(encrypted: str | None) -> str | None:
     """Decrypt; return None if ciphertext is missing or unreadable."""
     if not encrypted:
         return None

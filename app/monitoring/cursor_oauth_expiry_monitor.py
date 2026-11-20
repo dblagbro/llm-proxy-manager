@@ -50,6 +50,7 @@ endpoint is known, the refresh-flow implementation should add a
 ``maybe_refresh_proactively()`` call to this worker right before the
 expiry check.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -57,9 +58,8 @@ import base64
 import json
 import logging
 import time
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
-
+from datetime import UTC, datetime
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -101,19 +101,19 @@ _DEFAULT_REFRESH_LEAD_DAYS = 1.0
 _PROACTIVE_REFRESH_TYPES = ("claude-oauth", "ChatGPT-oauth-plan")
 
 
-_LAST_SWEEP: Dict[str, Any] = {
+_LAST_SWEEP: dict[str, Any] = {
     "last_sweep_ts": None,
     "providers": [],
     "warn_threshold_days": _DEFAULT_WARN_THRESHOLD_DAYS,
 }
 
 
-def get_last_sweep() -> Dict[str, Any]:
+def get_last_sweep() -> dict[str, Any]:
     """Snapshot accessor for the admin endpoint."""
     return dict(_LAST_SWEEP)
 
 
-def _decode_jwt_exp(token: Optional[str]) -> Optional[float]:
+def _decode_jwt_exp(token: str | None) -> float | None:
     """Pull the ``exp`` claim out of a JWT (base64-url-decoded payload).
     Handles the Cursor synthesized form ``user_<id>::<JWT>`` by
     splitting on ``::`` first.
@@ -142,7 +142,7 @@ def _decode_jwt_exp(token: Optional[str]) -> Optional[float]:
         return None
 
 
-def _days_until(ts: Optional[float]) -> Optional[float]:
+def _days_until(ts: float | None) -> float | None:
     if ts is None:
         return None
     return (ts - time.time()) / 86400.0
@@ -150,7 +150,7 @@ def _days_until(ts: Optional[float]) -> Optional[float]:
 
 async def _run_one_sweep(
     warn_threshold_days: float = _DEFAULT_WARN_THRESHOLD_DAYS,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """One pass — read every cursor-oauth provider, decode JWT exp,
     persist ``oauth_expires_at`` if unset, return per-provider snapshot.
 
@@ -158,11 +158,13 @@ async def _run_one_sweep(
     Operator-facing UI renders the days-until-expiry plus warn flag.
     """
     from datetime import timedelta
-    from sqlalchemy import select
-    from app.models.database import AsyncSessionLocal
-    from app.models.db import Provider, ActivityLog
 
-    snapshots: List[Dict[str, Any]] = []
+    from sqlalchemy import select
+
+    from app.models.database import AsyncSessionLocal
+    from app.models.db import ActivityLog, Provider
+
+    snapshots: list[dict[str, Any]] = []
     async with AsyncSessionLocal() as db:
         # v5.4.4 — scope widened from ``provider_type == "cursor-oauth"``
         # to ALL providers that persist a ``oauth_expires_at``. This makes
@@ -170,12 +172,11 @@ async def _run_one_sweep(
         # OAuth provider type with zero further code change.
         rs = await db.execute(
             select(Provider).where(
-                Provider.oauth_expires_at.is_not(None)
-                | (Provider.provider_type == "cursor-oauth")
+                Provider.oauth_expires_at.is_not(None) | (Provider.provider_type == "cursor-oauth")
             )
         )
         providers = rs.scalars().all()
-        look_back = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=24)
+        look_back = datetime.now(UTC).replace(tzinfo=None) - timedelta(hours=24)
         for p in providers:
             stored_exp = getattr(p, "oauth_expires_at", None)
             jwt_exp = _decode_jwt_exp(getattr(p, "api_key", None))
@@ -186,8 +187,7 @@ async def _run_one_sweep(
                 try:
                     p.oauth_expires_at = jwt_exp
                     logger.info(
-                        "cursor_oauth_expiry.backfilled provider=%s exp=%s "
-                        "days_left=%.1f",
+                        "cursor_oauth_expiry.backfilled provider=%s exp=%s days_left=%.1f",
                         p.id,
                         jwt_exp,
                         _days_until(jwt_exp) or 0.0,
@@ -223,15 +223,16 @@ async def _run_one_sweep(
             auto_skipped_now = False
             if auto_skip_until is not None:
                 try:
-                    from datetime import datetime as _dt, timezone as _tz
+                    from datetime import datetime as _dt
+
                     if hasattr(auto_skip_until, "tzinfo"):
                         askdt = auto_skip_until
                     else:
                         s = str(auto_skip_until).replace("Z", "+00:00")
                         askdt = _dt.fromisoformat(s)
                     if askdt.tzinfo is None:
-                        askdt = askdt.replace(tzinfo=_tz.utc)
-                    auto_skipped_now = askdt > _dt.now(_tz.utc)
+                        askdt = askdt.replace(tzinfo=UTC)
+                    auto_skipped_now = askdt > _dt.now(UTC)
                 except Exception:
                     pass
             if (
@@ -258,21 +259,24 @@ async def _run_one_sweep(
                         effective_exp = float(new_exp)
                         days_left = _days_until(effective_exp)
                     logger.info(
-                        "oauth_expiry.proactive_refresh provider=%s type=%s "
-                        "new_days_left=%.1f",
-                        p.id, p.provider_type, days_left or 0.0,
+                        "oauth_expiry.proactive_refresh provider=%s type=%s new_days_left=%.1f",
+                        p.id,
+                        p.provider_type,
+                        days_left or 0.0,
                     )
                 except Exception as exc:
                     refresh_outcome = f"failed:{type(exc).__name__}"
                     logger.warning(
-                        "oauth_expiry.proactive_refresh_failed provider=%s "
-                        "type=%s err=%r",
-                        p.id, p.provider_type, exc,
+                        "oauth_expiry.proactive_refresh_failed provider=%s type=%s err=%r",
+                        p.id,
+                        p.provider_type,
+                        exc,
                     )
                     # Mark auth-failed so the UI shows it; operator can
                     # re-auth before traffic hits the dead token.
                     try:
                         from app.routing.circuit_breaker import record_auth_failure
+
                         await record_auth_failure(p.id, f"proactive refresh failed: {exc!r}"[:300])
                     except Exception:
                         pass
@@ -296,14 +300,11 @@ async def _run_one_sweep(
             # refresh ran successfully OR simply hasn't been triggered
             # yet, suppress.
             _has_refresh = bool(getattr(p, "oauth_refresh_token", None))
-            _refresh_failed = (
-                refresh_outcome is not None
-                and str(refresh_outcome).startswith("failed:")
+            _refresh_failed = refresh_outcome is not None and str(refresh_outcome).startswith(
+                "failed:"
             )
             _is_auto_refresh_eligible = (
-                _has_refresh
-                and p.provider_type in _PROACTIVE_REFRESH_TYPES
-                and not _refresh_failed
+                _has_refresh and p.provider_type in _PROACTIVE_REFRESH_TYPES and not _refresh_failed
             )
             warn = (
                 days_left is not None
@@ -318,9 +319,7 @@ async def _run_one_sweep(
                 "stored_expires_at": stored_exp,
                 "jwt_expires_at": jwt_exp,
                 "effective_expires_at": effective_exp,
-                "days_left": (
-                    round(days_left, 2) if days_left is not None else None
-                ),
+                "days_left": (round(days_left, 2) if days_left is not None else None),
                 "warn": warn,
                 "has_refresh_token": bool(getattr(p, "oauth_refresh_token", None)),
                 # v5.7.21 — surface what the proactive-refresh path did
@@ -331,9 +330,11 @@ async def _run_one_sweep(
             snapshots.append(snapshot)
             if warn and not p.deleted_at and p.enabled:
                 logger.warning(
-                    "cursor_oauth_expiry.warning provider=%s name=%s "
-                    "days_left=%.1f threshold=%s",
-                    p.id, p.name, days_left or 0.0, warn_threshold_days,
+                    "cursor_oauth_expiry.warning provider=%s name=%s days_left=%.1f threshold=%s",
+                    p.id,
+                    p.name,
+                    days_left or 0.0,
+                    warn_threshold_days,
                 )
                 # v5.4.4 — also write to activity_log so the UI can
                 # surface the warning without scraping stderr. Idempotent
@@ -349,41 +350,48 @@ async def _run_one_sweep(
                     if existing.scalar_one_or_none() is None:
                         exp_iso = (
                             datetime.utcfromtimestamp(effective_exp).isoformat()
-                            if effective_exp else "unknown"
+                            if effective_exp
+                            else "unknown"
                         )
-                        db.add(ActivityLog(
-                            created_at=datetime.utcnow(),
-                            severity="warning",
-                            event_type="oauth_expiry_warning",
-                            provider_id=p.id,
-                            message=(
-                                f"Provider '{p.name}' (type={p.provider_type}) "
-                                f"OAuth token expires in {days_left:.1f}d "
-                                f"(at {exp_iso}Z). Threshold: "
-                                f"{warn_threshold_days}d. Schedule re-auth "
-                                f"before the JWT lapses or the provider "
-                                f"will start returning auth-failed."
-                            ),
-                        ))
+                        db.add(
+                            ActivityLog(
+                                created_at=datetime.utcnow(),
+                                severity="warning",
+                                event_type="oauth_expiry_warning",
+                                provider_id=p.id,
+                                message=(
+                                    f"Provider '{p.name}' (type={p.provider_type}) "
+                                    f"OAuth token expires in {days_left:.1f}d "
+                                    f"(at {exp_iso}Z). Threshold: "
+                                    f"{warn_threshold_days}d. Schedule re-auth "
+                                    f"before the JWT lapses or the provider "
+                                    f"will start returning auth-failed."
+                                ),
+                            )
+                        )
                 except Exception as exc:
                     logger.warning(
                         "oauth_expiry.activity_log_failed provider=%s err=%s",
-                        p.id, exc,
+                        p.id,
+                        exc,
                     )
         try:
             await db.commit()
         except Exception as exc:
             logger.warning("cursor_oauth_expiry.commit_failed err=%r", exc)
-    _LAST_SWEEP.update({
-        "last_sweep_ts": datetime.now(timezone.utc).isoformat(),
-        "providers": snapshots,
-        "warn_threshold_days": warn_threshold_days,
-    })
+    _LAST_SWEEP.update(
+        {
+            "last_sweep_ts": datetime.now(UTC).isoformat(),
+            "providers": snapshots,
+            "warn_threshold_days": warn_threshold_days,
+        }
+    )
     return snapshots
 
 
 async def _sweep_loop() -> None:
     from app.monitoring.worker_heartbeat import WorkerHeartbeat, register_expected_interval
+
     hb = WorkerHeartbeat(name="cursor_oauth_expiry")
     register_expected_interval("cursor_oauth_expiry", _SWEEP_INTERVAL_SEC)
     await asyncio.sleep(_INITIAL_DELAY_SEC)
@@ -397,7 +405,7 @@ async def _sweep_loop() -> None:
         await asyncio.sleep(_SWEEP_INTERVAL_SEC)
 
 
-_TASK: Optional[asyncio.Task] = None
+_TASK: asyncio.Task | None = None
 
 
 def start() -> None:

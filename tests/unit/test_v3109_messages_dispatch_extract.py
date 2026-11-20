@@ -7,6 +7,7 @@ extracted to ``app/api/_messages_dispatch.py`` as
 ``dispatch_claude_oauth_chain()``. A pure behavior-preserving move; the
 chain-walk helper ``_select_excluding`` moved with it.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -31,12 +32,22 @@ async def test_non_claude_oauth_route_falls_through():
     to the litellm path with the route unchanged. Other args are never
     touched, so passing None for db/key_record is safe here."""
     from app.api._messages_dispatch import dispatch_claude_oauth_chain
+
     route = _FakeRoute()
     resp, out_route = await dispatch_claude_oauth_chain(
-        route, body={}, db=None, key_record=None, resp_headers={},
-        stream=False, max_tokens=16, llm_hint=None, hint=None,
-        has_tools=False, has_images=False,
-        conversation_id=None, memory_tag=None,
+        route,
+        body={},
+        db=None,
+        key_record=None,
+        resp_headers={},
+        stream=False,
+        max_tokens=16,
+        llm_hint=None,
+        hint=None,
+        has_tools=False,
+        has_images=False,
+        conversation_id=None,
+        memory_tag=None,
     )
     assert resp is None
     assert out_route is route
@@ -44,6 +55,7 @@ async def test_non_claude_oauth_route_falls_through():
 
 def test_dispatch_module_exposes_helpers():
     from app.api import _messages_dispatch
+
     assert hasattr(_messages_dispatch, "dispatch_claude_oauth_chain")
     assert hasattr(_messages_dispatch, "_select_excluding")
 

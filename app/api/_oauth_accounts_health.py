@@ -25,6 +25,7 @@ existing 3s health cache already excludes clusterSync + workers + this
 block from its body; the 15s here is the second-order cheapness for
 tight-loop probers.
 """
+
 from __future__ import annotations
 
 import time
@@ -105,11 +106,9 @@ async def snapshot_oauth_accounts(db: AsyncSession) -> dict:
         rotation_counts = {row[0]: int(row[1]) for row in rot_rows}
 
         # Per-provider distribution (single vs multiple vs zero)
-        dist_q = (
-            select(Provider.id).where(
-                Provider.provider_type.in_(_OAUTH_TYPES),
-                Provider.enabled == True,  # noqa: E712
-            )
+        dist_q = select(Provider.id).where(
+            Provider.provider_type.in_(_OAUTH_TYPES),
+            Provider.enabled == True,  # noqa: E712
         )
         provider_ids = [row[0] for row in (await db.execute(dist_q)).all()]
 
@@ -117,12 +116,10 @@ async def snapshot_oauth_accounts(db: AsyncSession) -> dict:
         with_single = 0
         with_zero = 0
         for pid in provider_ids:
-            count_q = (
-                select(func.count(ProviderOAuthAccount.id)).where(
-                    ProviderOAuthAccount.provider_id == pid,
-                    ProviderOAuthAccount.enabled == True,  # noqa: E712
-                    ProviderOAuthAccount.deleted_at.is_(None),
-                )
+            count_q = select(func.count(ProviderOAuthAccount.id)).where(
+                ProviderOAuthAccount.provider_id == pid,
+                ProviderOAuthAccount.enabled == True,  # noqa: E712
+                ProviderOAuthAccount.deleted_at.is_(None),
             )
             n = int((await db.execute(count_q)).scalar() or 0)
             if n >= 2:
@@ -134,6 +131,7 @@ async def snapshot_oauth_accounts(db: AsyncSession) -> dict:
 
         # Aggregate the by-type map with defaults for missing types.
         by_type = {}
+
         # Normalize ChatGPT-oauth-plan → codex-oauth in the surface so operators
         # don't have to know the v3.8.0 internal rename.
         def _bucket(t: str) -> str:

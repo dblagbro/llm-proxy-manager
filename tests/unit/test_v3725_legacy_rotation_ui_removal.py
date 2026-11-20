@@ -16,6 +16,7 @@ no live React harness in this repo. The behaviors verified:
      proxy-internal 'Usage-based rotation' section below") is cleaned up
      since there's no such section to reference for claude-oauth.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -89,5 +90,6 @@ def test_panel_still_describes_rotation_signal_role():
 
 def test_version_bumped():
     from app.__version__ import __version__
+
     parts = tuple(int(p) for p in __version__.split("."))
     assert parts >= (3, 7, 25)

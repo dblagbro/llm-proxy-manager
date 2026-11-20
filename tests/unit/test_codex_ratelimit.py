@@ -1,12 +1,12 @@
 """Unit tests for Codex subscription rate-limit tracking (v3.0.16)."""
+
 import time
 
 from app.providers.codex_ratelimit import (
-    RateLimitState,
-    update_from_headers,
-    get_state,
-    detect_rate_limit_failure,
     _STATES,
+    detect_rate_limit_failure,
+    get_state,
+    update_from_headers,
 )
 
 
@@ -94,4 +94,4 @@ class TestDetectRateLimitFailure:
 
     def test_429_default_when_no_headers(self):
         holddown = detect_rate_limit_failure(429, "rate limited", {})
-        assert holddown == 300.0   # 5-minute default
+        assert holddown == 300.0  # 5-minute default

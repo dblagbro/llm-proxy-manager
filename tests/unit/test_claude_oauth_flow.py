@@ -1,10 +1,11 @@
 """Unit tests for the browser-initiated Claude Pro Max OAuth flow (v2.7.1)."""
+
 from __future__ import annotations
 
 import sys
 import time
 import types
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 
@@ -15,20 +16,20 @@ sys.modules.setdefault("litellm", _stub)
 if not hasattr(sys.modules["litellm"], "RateLimitError"):
     sys.modules["litellm"].RateLimitError = type("RateLimitError", (Exception,), {})
 
-from app.providers import claude_oauth_flow as flow
-from app.providers.claude_oauth_flow import (
+from app.providers import claude_oauth_flow as flow  # noqa: E402
+from app.providers.claude_oauth_flow import (  # noqa: E402
+    _PENDING,
     AUTHORIZE_URL,
     CLIENT_ID,
     DEFAULT_SCOPE,
     REDIRECT_URI,
     OAuthFlowError,
+    _code_challenge,
+    _gen_code_verifier,
     exchange_code,
     extract_code_from_callback,
     refresh_access_token,
     start_authorize,
-    _code_challenge,
-    _gen_code_verifier,
-    _PENDING,
 )
 
 
@@ -68,15 +69,21 @@ class _FakeClient:
     async def post(self, url, data=None, json=None, headers=None):
         # The flow POSTs application/json; older code used form-urlencoded.
         # We capture whichever kwarg was used so tests can assert on it.
-        _FakeClient.captured.append({
-            "url": url, "data": data, "json": json, "headers": headers,
-        })
+        _FakeClient.captured.append(
+            {
+                "url": url,
+                "data": data,
+                "json": json,
+                "headers": headers,
+            }
+        )
         return _FakeResp(_FakeClient.next_status, _FakeClient.next_data, _FakeClient.next_text)
 
 
 @pytest.fixture
 def fake_http(monkeypatch):
     import httpx
+
     _FakeClient.captured = []
     _FakeClient.next_status = 200
     _FakeClient.next_data = {}
@@ -93,6 +100,7 @@ class TestPKCE:
 
     def test_verifier_uses_url_safe_charset(self):
         import re
+
         v = _gen_code_verifier()
         assert re.fullmatch(r"[A-Za-z0-9_\-]+", v) is not None
 
@@ -149,16 +157,12 @@ class TestStartAuthorize:
 # ── extract_code_from_callback ──────────────────────────────────────────────
 class TestExtractCode:
     def test_full_url(self):
-        code, state = extract_code_from_callback(
-            "http://localhost/callback?code=abc123&state=xyz"
-        )
+        code, state = extract_code_from_callback("http://localhost/callback?code=abc123&state=xyz")
         assert code == "abc123"
         assert state == "xyz"
 
     def test_https_url(self):
-        code, state = extract_code_from_callback(
-            "https://localhost/callback?code=abc123&state=xyz"
-        )
+        code, state = extract_code_from_callback("https://localhost/callback?code=abc123&state=xyz")
         assert (code, state) == ("abc123", "xyz")
 
     def test_query_fragment(self):
@@ -378,7 +382,7 @@ class TestRefreshAndPersist:
 
         async def refresh(self, instance, attribute_names=None):
             self.refreshed.append(tuple(attribute_names or ()))
-            for name in (attribute_names or list(self.stored)):
+            for name in attribute_names or list(self.stored):
                 if name in self.stored:
                     setattr(instance, name, self.stored[name])
 
@@ -388,6 +392,7 @@ class TestRefreshAndPersist:
     @pytest.mark.asyncio
     async def test_persists_rotated_tokens(self, fake_http):
         from app.providers.claude_oauth_flow import refresh_and_persist
+
         fake_http.next_data = {
             "access_token": "sk-ant-oat01-NEW",
             "refresh_token": "rotated-refresh",
@@ -410,6 +415,7 @@ class TestRefreshAndPersist:
     async def test_keeps_old_refresh_when_server_omits_rotation(self, fake_http):
         """If the server returns no refresh_token, keep the old one (non-rotating server)."""
         from app.providers.claude_oauth_flow import refresh_and_persist
+
         fake_http.next_data = {"access_token": "sk-ant-oat01-NEW"}  # no refresh_token
         p = self._FakeProvider("keep-me")
         db = self._FakeDB()
@@ -427,6 +433,7 @@ class TestRefreshAndPersist:
         because the missing ``_FakeDB.refresh`` kept both sibling tests red.
         """
         from app.providers.claude_oauth_flow import refresh_and_persist
+
         fake_http.next_data = {
             "access_token": "sk-ant-oat01-THIRD",
             "refresh_token": "third-refresh",
@@ -449,6 +456,7 @@ class TestRefreshAndPersist:
     @pytest.mark.asyncio
     async def test_no_refresh_token_raises(self, fake_http):
         from app.providers.claude_oauth_flow import refresh_and_persist
+
         p = self._FakeProvider(None)
         db = self._FakeDB()
         with pytest.raises(OAuthFlowError, match="no refresh_token"):

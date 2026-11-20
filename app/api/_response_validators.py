@@ -23,11 +23,11 @@ forwarded to the caller. It looks for the empty-content + zero-token
 + embedded-error pattern and raises a 502 so the caller (and the
 routing layer) see an actual failure.
 """
+
 from __future__ import annotations
 
 import logging
-import re
-from typing import Any, Optional
+import re as re
 
 logger = logging.getLogger(__name__)
 
@@ -72,16 +72,13 @@ def _zero_tokens(usage: dict) -> bool:
     if not isinstance(usage, dict):
         return True
     # Treat missing/None/0 in all relevant fields as "zero"
-    fields = ("prompt_tokens", "completion_tokens", "total_tokens",
-              "input_tokens", "output_tokens")
-    return all(
-        (usage.get(f) or 0) == 0 for f in fields if f in usage
-    ) or all(
+    fields = ("prompt_tokens", "completion_tokens", "total_tokens", "input_tokens", "output_tokens")
+    return all((usage.get(f) or 0) == 0 for f in fields if f in usage) or all(
         (usage.get(f) or 0) == 0 for f in fields
     )
 
 
-def _body_carries_error_marker(body_text: Optional[str]) -> bool:
+def _body_carries_error_marker(body_text: str | None) -> bool:
     if not body_text:
         return False
     return any(marker in body_text for marker in _ERROR_MARKERS)
@@ -104,7 +101,9 @@ def _prompt_tokens_zero(usage: dict) -> bool:
 
 
 def looks_like_empty_success_failure(
-    *, response_dict: dict, raw_body: Optional[str] = None,
+    *,
+    response_dict: dict,
+    raw_body: str | None = None,
 ) -> bool:
     """Return True when the response looks like a masked upstream failure.
 
@@ -186,8 +185,7 @@ def looks_like_empty_success_failure(
     return False
 
 
-def empty_success_failure_message(response_dict: dict,
-                                  raw_body: Optional[str] = None) -> str:
+def empty_success_failure_message(response_dict: dict, raw_body: str | None = None) -> str:
     """Return a short, log-safe summary for the failure path."""
     err = (response_dict or {}).get("error") if isinstance(response_dict, dict) else None
     if err:

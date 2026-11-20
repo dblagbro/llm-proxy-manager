@@ -17,12 +17,13 @@ Scrape freshness alerts:
     default scrape interval — anything past that is a stalled scrape;
     likely cookies expired)
 """
+
 from __future__ import annotations
 
 import asyncio
 import logging
-import time
-from datetime import datetime, timezone
+import time as time
+from datetime import UTC, datetime
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,7 @@ async def _sample_pool() -> None:
     try:
         from app.models.database import engine
         from app.observability.prometheus import observe_db_pool_snapshot
+
         pool = engine.pool
         size = pool.size() if hasattr(pool, "size") else 0
         checked_out = pool.checkedout() if hasattr(pool, "checkedout") else 0
@@ -44,25 +46,34 @@ async def _sample_pool() -> None:
 
 async def _sample_scrape_freshness() -> None:
     try:
-        from sqlalchemy import select, desc
+        from sqlalchemy import desc, select
+
         from app.models.database import AsyncSessionLocal
-        from app.models.db import Provider, ExternalUsageSnapshot
+        from app.models.db import ExternalUsageSnapshot, Provider
         from app.observability.prometheus import observe_scrape_freshness
 
         async with AsyncSessionLocal() as db:
-            provs = (await db.execute(
-                select(Provider)
-                .where(Provider.deleted_at.is_(None))
-                .where(Provider.usage_tracking_enabled == True)  # noqa: E712
-            )).scalars().all()
-            now_naive = datetime.now(timezone.utc).replace(tzinfo=None)
+            provs = (
+                (
+                    await db.execute(
+                        select(Provider)
+                        .where(Provider.deleted_at.is_(None))
+                        .where(Provider.usage_tracking_enabled == True)  # noqa: E712
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            now_naive = datetime.now(UTC).replace(tzinfo=None)
             for p in provs:
-                snap = (await db.execute(
-                    select(ExternalUsageSnapshot)
-                    .where(ExternalUsageSnapshot.provider_id == p.id)
-                    .order_by(desc(ExternalUsageSnapshot.captured_at))
-                    .limit(1)
-                )).scalar_one_or_none()
+                snap = (
+                    await db.execute(
+                        select(ExternalUsageSnapshot)
+                        .where(ExternalUsageSnapshot.provider_id == p.id)
+                        .order_by(desc(ExternalUsageSnapshot.captured_at))
+                        .limit(1)
+                    )
+                ).scalar_one_or_none()
                 if snap is None or snap.captured_at is None:
                     # Skip providers that have never been scraped — emitting
                     # an "infinity" gauge would noise up dashboards. They
@@ -86,7 +97,10 @@ _tick = 0
 
 
 def _should_alert_error_rate(
-    err: int, total: int, min_count: int, threshold_pct: float,
+    err: int,
+    total: int,
+    min_count: int,
+    threshold_pct: float,
 ) -> bool:
     """Pure decision: alert when the window has at least ``min_count``
     operator-actionable errors AND they are at least ``threshold_pct``
@@ -100,29 +114,33 @@ def _should_alert_error_rate(
 async def _sample_error_rate() -> None:
     try:
         from app.config import settings
+
         if not getattr(settings, "error_rate_alert_enabled", True):
             return
         from collections import Counter
         from datetime import timedelta
+
         from sqlalchemy import select
+
         from app.models.database import AsyncSessionLocal
         from app.models.db import ActivityLog
 
         window = int(getattr(settings, "error_rate_alert_window_min", 15))
         threshold = float(getattr(settings, "error_rate_alert_threshold_pct", 10.0))
         min_count = int(getattr(settings, "error_rate_alert_min_count", 10))
-        cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=window)
+        cutoff = datetime.now(UTC).replace(tzinfo=None) - timedelta(minutes=window)
 
         async with AsyncSessionLocal() as db:
-            rows = (await db.execute(
-                select(ActivityLog.severity, ActivityLog.message,
-                       ActivityLog.event_meta)
-                .where(ActivityLog.created_at >= cutoff)
-                .where(ActivityLog.event_type == "llm_request")
-            )).all()
+            rows = (
+                await db.execute(
+                    select(ActivityLog.severity, ActivityLog.message, ActivityLog.event_meta)
+                    .where(ActivityLog.created_at >= cutoff)
+                    .where(ActivityLog.event_type == "llm_request")
+                )
+            ).all()
 
         total = err = 0
-        classes: "Counter[str]" = Counter()
+        classes: Counter[str] = Counter()
         for sev, msg, meta in rows:
             if msg and "[probe]" in msg:
                 continue  # keepalive probes aren't user traffic
@@ -143,16 +161,20 @@ async def _sample_error_rate() -> None:
         rate = err * 100.0 / total
         top = ", ".join(f"{c}×{n}" for c, n in classes.most_common(3)) or "n/a"
         from app.monitoring.notifications import alert_high_error_rate
+
         await alert_high_error_rate(err, total, rate, window, top)
         logger.warning(
             "observability_sampler.high_error_rate err=%d total=%d rate=%.1f%% top=%s",
-            err, total, rate, top,
+            err,
+            total,
+            rate,
+            top,
         )
     except Exception as e:
         logger.debug(f"observability_sampler.error_rate err={e!r}")
 
 
-_infra_fault_baseline: "float | None" = None
+_infra_fault_baseline: float | None = None
 
 
 async def _sample_infra_errors() -> None:
@@ -165,6 +187,7 @@ async def _sample_infra_errors() -> None:
     global _infra_fault_baseline
     try:
         from app.observability.prometheus import INFRA_ERRORS_TOTAL
+
         faults = 0.0
         for metric in INFRA_ERRORS_TOTAL.collect():
             for s in metric.samples:
@@ -180,7 +203,9 @@ async def _sample_infra_errors() -> None:
                 "observability_sampler.infra_faults_climbing delta=%.0f "
                 "total=%.0f in ~%ds — check ASGI / DB-pool health "
                 "(llm_proxy_infra_errors_total)",
-                delta, faults, _INTERVAL_SEC,
+                delta,
+                faults,
+                _INTERVAL_SEC,
             )
     except Exception as e:
         logger.debug(f"observability_sampler.infra_errors err={e!r}")
@@ -189,6 +214,7 @@ async def _sample_infra_errors() -> None:
 async def _loop() -> None:
     global _tick
     from app.monitoring.worker_heartbeat import WorkerHeartbeat, register_expected_interval
+
     hb = WorkerHeartbeat(name="observability_sampler")
     register_expected_interval("observability_sampler", _INTERVAL_SEC)
     # Boot delay so we don't fight startup migrations / first scrape.

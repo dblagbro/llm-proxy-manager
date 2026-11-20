@@ -21,6 +21,7 @@ Schema fields:
 - ``ok`` — boolean success flag.
 - ``error_msg`` — capped exception message on failure.
 """
+
 from __future__ import annotations
 
 from sqlalchemy import Boolean, Column, DateTime, Integer, String, Text
@@ -70,6 +71,7 @@ class CallerCapabilityScore(Base):
     Identity: (api_key_id, suggested_tool). Cluster-synced via the
     settings-sync loop.
     """
+
     __tablename__ = "caller_capability_score"
 
     id = Column(Integer, primary_key=True, autoincrement=True)

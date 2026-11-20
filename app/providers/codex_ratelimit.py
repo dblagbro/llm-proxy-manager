@@ -35,12 +35,12 @@ State is in-memory only; resets on container restart. That's acceptable
 because the upstream computes the limits authoritatively and we'll
 re-discover them on the next response.
 """
+
 from __future__ import annotations
 
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -48,14 +48,15 @@ logger = logging.getLogger(__name__)
 @dataclass
 class RateLimitState:
     """Per-provider snapshot of the subscription's quota window."""
-    primary_used_percent: Optional[float] = None
-    primary_window_minutes: Optional[int] = None
-    primary_reset_at: Optional[float] = None       # unix timestamp
-    secondary_used_percent: Optional[float] = None
-    secondary_window_minutes: Optional[int] = None
-    secondary_reset_at: Optional[float] = None
-    plan_type: Optional[str] = None                # "plus" / "pro" / "team" / ...
-    active_limit: Optional[str] = None             # "premium" / etc
+
+    primary_used_percent: float | None = None
+    primary_window_minutes: int | None = None
+    primary_reset_at: float | None = None  # unix timestamp
+    secondary_used_percent: float | None = None
+    secondary_window_minutes: int | None = None
+    secondary_reset_at: float | None = None
+    plan_type: str | None = None  # "plus" / "pro" / "team" / ...
+    active_limit: str | None = None  # "premium" / etc
     last_observed_at: float = field(default_factory=time.time)
 
 
@@ -89,10 +90,18 @@ def update_from_headers(provider_id: str, headers: dict) -> RateLimitState:
     Returns the new state for caller logging if useful.
     """
     state = _STATES.get(provider_id) or RateLimitState()
-    state.primary_used_percent = _f(headers, "x-codex-primary-used-percent", state.primary_used_percent)
-    state.primary_window_minutes = _i(headers, "x-codex-primary-window-minutes", state.primary_window_minutes)
-    state.secondary_used_percent = _f(headers, "x-codex-secondary-used-percent", state.secondary_used_percent)
-    state.secondary_window_minutes = _i(headers, "x-codex-secondary-window-minutes", state.secondary_window_minutes)
+    state.primary_used_percent = _f(
+        headers, "x-codex-primary-used-percent", state.primary_used_percent
+    )
+    state.primary_window_minutes = _i(
+        headers, "x-codex-primary-window-minutes", state.primary_window_minutes
+    )
+    state.secondary_used_percent = _f(
+        headers, "x-codex-secondary-used-percent", state.secondary_used_percent
+    )
+    state.secondary_window_minutes = _i(
+        headers, "x-codex-secondary-window-minutes", state.secondary_window_minutes
+    )
 
     primary_reset_at = _f(headers, "x-codex-primary-reset-at")
     if primary_reset_at:
@@ -117,7 +126,7 @@ def update_from_headers(provider_id: str, headers: dict) -> RateLimitState:
     return state
 
 
-def get_state(provider_id: str) -> Optional[RateLimitState]:
+def get_state(provider_id: str) -> RateLimitState | None:
     """Return the most recently observed state, or None if never observed."""
     return _STATES.get(provider_id)
 
@@ -126,7 +135,7 @@ def all_states() -> dict[str, RateLimitState]:
     return dict(_STATES)
 
 
-def detect_rate_limit_failure(status_code: int, body_text: str, headers: dict) -> Optional[float]:
+def detect_rate_limit_failure(status_code: int, body_text: str, headers: dict) -> float | None:
     """Inspect a 4xx response; if it indicates a quota/rate-limit hit, return
     the recommended hold-down in seconds. Else None.
 

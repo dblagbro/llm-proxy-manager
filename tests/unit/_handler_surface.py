@@ -21,8 +21,10 @@ something is **absent** from it specifically — e.g.
 ``test_v5190_...::test_messages_inline_blocks_removed``, whose whole point is
 that a block no longer sits in that file.
 """
+
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 
 # messages.py plus every module its handler body has been extracted into.
@@ -33,6 +35,7 @@ MESSAGES_SURFACE_FILES = (
     # stay clear of the 700-LOC ceiling. Adding it here was the whole point of
     # this helper: one line, instead of repointing 14 guards by hand again.
     "app/api/_messages_nonstream_dispatch.py",
+    "app/api/_messages_tool_emulation.py",
 )
 
 # completions.py likewise. v5.22.37 split its two own-dispatcher branches out to
@@ -41,6 +44,8 @@ COMPLETIONS_SURFACE_FILES = (
     "app/api/completions.py",
     "app/api/_completions_claude_oauth.py",
     "app/api/_completions_grok_web.py",
+    "app/api/_completions_stream_dispatch.py",
+    "app/api/_completions_tool_emulation.py",
 )
 
 
@@ -68,3 +73,14 @@ def handler_source(endpoint: str) -> str:
     if endpoint in ("completions", "app/api/completions.py"):
         return completions_handler_source()
     raise ValueError(f"unknown endpoint surface: {endpoint!r}")
+
+
+def imports_response_hook_runner(source: str) -> bool:
+    """Check the real import and both bindings, regardless of formatting order."""
+    return any(
+        isinstance(node, ast.ImportFrom)
+        and node.module == "app.api._response_hook_runner"
+        and {"apply_response_hooks", "HookContext"}
+        <= {alias.name for alias in node.names if alias.asname in (None, alias.name)}
+        for node in ast.walk(ast.parse(source))
+    )

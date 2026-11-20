@@ -13,6 +13,11 @@ cleanup utility. Host migration tools use a private configuration and are not
 shipped inside the gateway image. The release script builds from a committed
 tree, verifies the tested image, and leaves image promotion to a later step.
 
+The gateway CI job now runs the repository's lint and format checks with Ruff
+0.17.6. The provider priority, tool emulation and streaming dispatch helpers
+live alongside their HTTP handlers. The new `make test-gateway-container`
+target checks the image's default identity and persistence across replacement.
+
 ### v5.22.68 (2026-11-18)
 
 **Fix: grok-web comes back as soon as the bridge is signed in again.**

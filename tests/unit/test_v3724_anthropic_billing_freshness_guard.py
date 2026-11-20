@@ -5,6 +5,7 @@ provider already exists. Closes the operator complaint that container
 restarts + per-node-independent scrapes were producing "every few
 minutes" snapshot rows during deploy bursts.
 """
+
 from __future__ import annotations
 
 from datetime import datetime, timedelta
@@ -12,7 +13,6 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 
 # ── Source-level expectations ────────────────────────────────────
 
@@ -40,7 +40,7 @@ def test_worker_has_latest_snapshot_age_helper():
 def test_scrape_all_once_checks_freshness_before_scraping():
     src = Path("app/monitoring/anthropic_billing_worker.py").read_text()
     idx = src.index("async def _scrape_all_once")
-    body = src[idx:idx + 3000]
+    body = src[idx : idx + 3000]
     assert "_latest_snapshot_age_sec" in body
     assert "_freshness_floor_sec" in body
     # Skip path must continue without scraping
@@ -53,13 +53,14 @@ def test_scrape_all_once_checks_freshness_before_scraping():
 def test_scrape_loop_applies_startup_jitter():
     src = Path("app/monitoring/anthropic_billing_worker.py").read_text()
     idx = src.index("async def _scrape_loop")
-    body = src[idx:idx + 1500]
+    body = src[idx : idx + 1500]
     assert "random.uniform" in body
     assert "WARMUP_DELAY_SEC + jitter" in body
 
 
 def test_config_exposes_min_scrape_gap_override():
     from app.config import settings
+
     assert hasattr(settings, "anthropic_billing_min_scrape_gap_sec")
     # Default 0 means "use the interval/2 heuristic"
     assert settings.anthropic_billing_min_scrape_gap_sec == 0
@@ -71,6 +72,7 @@ def test_config_exposes_min_scrape_gap_override():
 @pytest.mark.asyncio
 async def test_freshness_helper_returns_none_when_no_snapshots():
     from app.monitoring.anthropic_billing_worker import _latest_snapshot_age_sec
+
     fake_result = MagicMock()
     fake_result.scalar = MagicMock(return_value=None)
     fake_db = MagicMock()
@@ -82,6 +84,7 @@ async def test_freshness_helper_returns_none_when_no_snapshots():
 @pytest.mark.asyncio
 async def test_freshness_helper_returns_positive_age_for_recent_row():
     from app.monitoring.anthropic_billing_worker import _latest_snapshot_age_sec
+
     five_min_ago = datetime.utcnow() - timedelta(minutes=5)
     fake_result = MagicMock()
     fake_result.scalar = MagicMock(return_value=five_min_ago)
@@ -98,6 +101,7 @@ async def test_freshness_helper_parses_string_timestamps():
     """SQLite returns DATETIME columns as strings via aiosqlite. The
     helper must coerce them to datetime before subtracting."""
     from app.monitoring.anthropic_billing_worker import _latest_snapshot_age_sec
+
     ten_min_ago = datetime.utcnow() - timedelta(minutes=10)
     fake_result = MagicMock()
     fake_result.scalar = MagicMock(return_value=ten_min_ago.strftime("%Y-%m-%d %H:%M:%S"))
@@ -113,6 +117,7 @@ async def test_freshness_helper_clamps_future_timestamps():
     """If a peer has a clock slightly ahead of us, the captured_at can
     read as future. Clamp to 0 (treat as fresh) so we still skip."""
     from app.monitoring.anthropic_billing_worker import _latest_snapshot_age_sec
+
     future = datetime.utcnow() + timedelta(seconds=30)
     fake_result = MagicMock()
     fake_result.scalar = MagicMock(return_value=future)
@@ -124,6 +129,7 @@ async def test_freshness_helper_clamps_future_timestamps():
 
 def test_freshness_floor_default_is_half_interval():
     from app.monitoring.anthropic_billing_worker import _freshness_floor_sec
+
     # 4h interval → 2h floor
     assert _freshness_floor_sec(14400) == 7200
     # Override-zero behavior: returns interval/2 when override is 0
@@ -133,6 +139,7 @@ def test_freshness_floor_default_is_half_interval():
 
 def test_freshness_floor_has_minimum_60s():
     from app.monitoring.anthropic_billing_worker import _freshness_floor_sec
+
     # Pathological tiny intervals still get a 60s floor so the guard
     # is meaningful (a 10s interval would otherwise produce a 5s floor
     # which doesn't actually deduplicate anything in practice).
@@ -141,8 +148,10 @@ def test_freshness_floor_has_minimum_60s():
 
 def test_freshness_floor_respects_operator_override():
     from app.monitoring.anthropic_billing_worker import _freshness_floor_sec
+
     with patch("app.monitoring.anthropic_billing_worker._interval_sec", return_value=14400):
         from app.config import settings
+
         with patch.object(settings, "anthropic_billing_min_scrape_gap_sec", 3600):
             # Operator pinned to 1h
             assert _freshness_floor_sec(14400) == 3600
@@ -150,5 +159,6 @@ def test_freshness_floor_respects_operator_override():
 
 def test_version_bumped():
     from app.__version__ import __version__
+
     parts = tuple(int(p) for p in __version__.split("."))
     assert parts >= (3, 7, 24)

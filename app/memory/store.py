@@ -18,13 +18,13 @@ always LOCAL — no network hop in the hot path.
 Phase 3 ships the store + admin write helpers. No request-time
 injection yet — Phase 4 handles that.
 """
+
 from __future__ import annotations
 
 import json
 import logging
 import time
 from dataclasses import dataclass
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -38,20 +38,21 @@ _fallback: dict[str, dict] = {}  # last-resort if Redis + SQLite both down
 class MemoryEntry:
     """Operator-facing view of a memory row. Excludes internal
     bookkeeping fields (id, updated_by_node, etc.)."""
+
     api_key_id: str
-    conversation_id: Optional[str]
+    conversation_id: str | None
     memory_tag: str
     content: str
     content_format: str
     updated_at: float
-    source_provider_id: Optional[str] = None
+    source_provider_id: str | None = None
     # v5.0.0 compliance — owner_company of the provider that produced this
     # memory turn. Filtered against the requesting key's effective blocklist
     # in get(); decision 7 treats NULL as banned for non-empty blocklists.
-    source_company: Optional[str] = None
+    source_company: str | None = None
 
 
-def _key(api_key_id: str, conversation_id: Optional[str], memory_tag: str) -> str:
+def _key(api_key_id: str, conversation_id: str | None, memory_tag: str) -> str:
     """Build the Redis cache key. ``None`` conversation_id is encoded
     as the literal string ``__default__`` to avoid colliding with
     callers who actually pass that as a tag value."""
@@ -67,9 +68,11 @@ async def _get_redis():
         return _redis_client if _redis_ok else None
     try:
         from app.config import settings
+
         if not settings.redis_url:
             return None
         import redis.asyncio as aioredis
+
         _redis_client = aioredis.from_url(settings.redis_url, decode_responses=True)
         await _redis_client.ping()
         _redis_ok = True
@@ -83,11 +86,11 @@ async def _get_redis():
 async def get(
     db,
     api_key_id: str,
-    conversation_id: Optional[str] = None,
+    conversation_id: str | None = None,
     memory_tag: str = "default",
     *,
-    blocked_companies: Optional[set] = None,
-) -> Optional[MemoryEntry]:
+    blocked_companies: set | None = None,
+) -> MemoryEntry | None:
     """Read one memory entry. Redis-first; falls back to SQLite, then
     to the in-process dict. Returns None if no live row exists (or
     the row is tombstoned via deleted_at).
@@ -124,7 +127,9 @@ async def get(
 
     # SQLite durable path
     from sqlalchemy import select
+
     from app.models.db import CallerMemory
+
     q = (
         select(CallerMemory)
         .where(CallerMemory.api_key_id == api_key_id)
@@ -185,12 +190,12 @@ async def put(
     *,
     api_key_id: str,
     content: str,
-    conversation_id: Optional[str] = None,
+    conversation_id: str | None = None,
     memory_tag: str = "default",
     content_format: str = "text",
-    source_provider_id: Optional[str] = None,
-    source_request_id: Optional[str] = None,
-    source_company: Optional[str] = None,
+    source_provider_id: str | None = None,
+    source_request_id: str | None = None,
+    source_company: str | None = None,
 ) -> MemoryEntry:
     """Write/update one memory entry.
 
@@ -205,8 +210,10 @@ async def put(
     compliance-filtered request (decision 7).
     """
     from sqlalchemy import select
+
     from app.config import settings
     from app.models.db import CallerMemory, CallerMemoryMarker
+
     now = time.time()
     node_id = getattr(settings, "cluster_node_id", None)
 
@@ -265,17 +272,19 @@ async def put(
         mq = mq.where(CallerMemoryMarker.conversation_id == conversation_id)
     marker = (await db.execute(mq)).scalar_one_or_none()
     if marker is None:
-        db.add(CallerMemoryMarker(
-            api_key_id=api_key_id,
-            conversation_id=conversation_id,
-            memory_tag=memory_tag,
-            first_seen_at=now,
-            last_known_provider_id=source_provider_id,
-            last_known_external_ref=None,
-            source_company=source_company,
-            recovered_at=None,
-            deleted_at=None,
-        ))
+        db.add(
+            CallerMemoryMarker(
+                api_key_id=api_key_id,
+                conversation_id=conversation_id,
+                memory_tag=memory_tag,
+                first_seen_at=now,
+                last_known_provider_id=source_provider_id,
+                last_known_external_ref=None,
+                source_company=source_company,
+                recovered_at=None,
+                deleted_at=None,
+            )
+        )
     else:
         if source_provider_id:
             marker.last_known_provider_id = source_provider_id
@@ -308,14 +317,16 @@ async def put(
 async def delete(
     db,
     api_key_id: str,
-    conversation_id: Optional[str] = None,
+    conversation_id: str | None = None,
     memory_tag: str = "default",
 ) -> bool:
     """Soft-delete one memory entry. Returns True if a row was found
     and tombstoned, False otherwise. Tombstone propagates via
     cluster sync (peer nodes adopt the deleted_at via LWW)."""
     from sqlalchemy import select
+
     from app.models.db import CallerMemory
+
     now = time.time()
     q = (
         select(CallerMemory)
@@ -345,15 +356,23 @@ async def delete(
 
 async def list_for_key(db, api_key_id: str, limit: int = 100) -> list[MemoryEntry]:
     """List all live memory entries for an api_key (admin-side view)."""
-    from sqlalchemy import select, desc
+    from sqlalchemy import desc, select
+
     from app.models.db import CallerMemory
-    rows = (await db.execute(
-        select(CallerMemory)
-        .where(CallerMemory.api_key_id == api_key_id)
-        .where(CallerMemory.deleted_at.is_(None))
-        .order_by(desc(CallerMemory.updated_at))
-        .limit(limit)
-    )).scalars().all()
+
+    rows = (
+        (
+            await db.execute(
+                select(CallerMemory)
+                .where(CallerMemory.api_key_id == api_key_id)
+                .where(CallerMemory.deleted_at.is_(None))
+                .order_by(desc(CallerMemory.updated_at))
+                .limit(limit)
+            )
+        )
+        .scalars()
+        .all()
+    )
     return [
         MemoryEntry(
             api_key_id=r.api_key_id,

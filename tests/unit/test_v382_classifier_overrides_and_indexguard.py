@@ -9,6 +9,7 @@
       that gemini safety-block paths produce — surface a clear error
       instead of the generic IndexError that bucketed as unknown.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -16,17 +17,26 @@ from unittest.mock import MagicMock
 
 import pytest
 
-
 # ── #260: classifier patterns ──────────────────────────────────────
 
 
 def test_classify_invalid_user_message_as_bad_request():
     from app.routing.circuit_breaker import classify_error
+
     # Real upstream errors observed in 24h scan
     samples = [
         "litellm.APIConnectionError: Invalid user message at index 2",
-        "litellm.APIConnectionError: APIConnectionError: XaiException - Invalid user message at index 4",
-        "litellm.APIConnectionError: APIConnectionError: OpenrouterException - Invalid user message at index 1",
+        (
+            "litellm.APIConnectionError: "
+            "APIConnectionError: XaiException - "
+            "Invalid user message at index 4"
+        ),
+        (
+            "litellm.APIConnectionError: "
+            "APIConnectionError: "
+            "OpenrouterException - Invalid user "
+            "message at index 1"
+        ),
     ]
     for s in samples:
         assert classify_error(s) == "bad_request", f"{s!r} -> {classify_error(s)!r}"
@@ -34,15 +44,18 @@ def test_classify_invalid_user_message_as_bad_request():
 
 def test_classify_empty_choices_as_bad_request():
     from app.routing.circuit_breaker import classify_error
-    assert classify_error(
-        "ValueError: upstream returned no choices — likely safety-block or refusal"
-    ) == "bad_request"
+
+    assert (
+        classify_error("ValueError: upstream returned no choices — likely safety-block or refusal")
+        == "bad_request"
+    )
 
 
 def test_classify_other_errors_unchanged():
     """Regression check: the new patterns don't accidentally swallow
     legitimate auth / rate_limit / upstream_5xx errors."""
     from app.routing.circuit_breaker import classify_error
+
     assert classify_error("401 Unauthorized") == "auth"
     assert classify_error("429 Too Many Requests") == "rate_limit"
     assert classify_error("500 Internal Server Error") == "upstream_5xx"
@@ -66,7 +79,7 @@ def test_backfill_migration_safe_to_rerun():
     so re-running it produces a no-op on already-backfilled rows."""
     src = Path("app/models/database.py").read_text()
     idx = src.index("UPDATE providers SET manual_override_until")
-    stmt = src[idx:idx + 300]
+    stmt = src[idx : idx + 300]
     assert "manual_override_until IS NULL" in stmt
 
 
@@ -76,7 +89,7 @@ def test_backfill_migration_does_not_touch_deleted_rows():
     block the v3.0.13 tombstone GC path."""
     src = Path("app/models/database.py").read_text()
     idx = src.index("UPDATE providers SET manual_override_until")
-    stmt = src[idx:idx + 300]
+    stmt = src[idx : idx + 300]
     assert "deleted_at IS NULL" in stmt
 
 
@@ -148,12 +161,12 @@ def test_empty_choices_error_message_matches_classifier_pattern():
         assert False, "expected ValueError"
     except ValueError as e:
         assert classify_error(str(e)) == "bad_request", (
-            f"empty-choices error must classify as bad_request, "
-            f"got {classify_error(str(e))!r}"
+            f"empty-choices error must classify as bad_request, got {classify_error(str(e))!r}"
         )
 
 
 def test_version_bumped():
     from app.__version__ import __version__
+
     parts = tuple(int(p) for p in __version__.split("."))
     assert parts >= (3, 8, 2)

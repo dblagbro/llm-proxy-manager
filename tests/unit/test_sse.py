@@ -1,7 +1,9 @@
 """Unit tests for SSE primitives, response builders, and usage extraction (app/cot/sse.py)."""
+
+import json
 import sys
 import types
-import json
+
 import pytest
 
 _stub = types.ModuleType("litellm")
@@ -10,15 +12,27 @@ sys.modules.setdefault("litellm", _stub)
 if not hasattr(sys.modules["litellm"], "RateLimitError"):
     sys.modules["litellm"].RateLimitError = type("RateLimitError", (Exception,), {})
 
-from app.cot.sse import (
-    sse_thinking_start, sse_thinking_delta, sse_thinking_stop,
-    sse_text_start, sse_text_delta, sse_text_stop,
-    sse_message_delta, sse_done,
-    anthropic_tool_sse, anthropic_text_sse, anthropic_tools_sse,
-    anthropic_tool_response, anthropic_tools_response, anthropic_text_response,
-    openai_tool_sse, openai_text_sse, openai_tools_sse,
-    openai_tool_response, openai_tools_response, openai_text_response,
-    extract_cache_tokens, to_anthropic_response,
+from app.cot.sse import (  # noqa: E402
+    anthropic_text_response,
+    anthropic_text_sse,
+    anthropic_tool_response,
+    anthropic_tool_sse,
+    anthropic_tools_response,
+    anthropic_tools_sse,
+    extract_cache_tokens,
+    openai_text_response,
+    openai_text_sse,
+    openai_tool_response,
+    openai_tool_sse,
+    openai_tools_response,
+    openai_tools_sse,
+    sse_done,
+    sse_message_delta,
+    sse_text_delta,
+    sse_text_stop,
+    sse_thinking_delta,
+    sse_thinking_start,
+    to_anthropic_response,
 )
 
 
@@ -139,7 +153,9 @@ class TestAnthropicSSEGenerators:
         assert "content_block_delta" in types_
         assert "content_block_stop" in types_
         # Final events include message_delta and message_stop
-        assert any(e["type"] == "message_delta" and e["delta"]["stop_reason"] == "tool_use" for e in events)
+        assert any(
+            e["type"] == "message_delta" and e["delta"]["stop_reason"] == "tool_use" for e in events
+        )
         assert any(e["type"] == "message_stop" for e in events)
 
     @pytest.mark.asyncio
@@ -355,8 +371,10 @@ class TestToAnthropicResponse:
         assert out["content"] == [{"type": "text", "text": ""}]
 
     def test_text_plus_tool_call_both_present(self):
-        tc = _FakeToolCall("f", '{}')
-        resp = _FakeResponse(_FakeChoice(_FakeMessage(content="thinking...", tool_calls=[tc]), "tool_calls"))
+        tc = _FakeToolCall("f", "{}")
+        resp = _FakeResponse(
+            _FakeChoice(_FakeMessage(content="thinking...", tool_calls=[tc]), "tool_calls")
+        )
         out = to_anthropic_response(resp)
         types_ = [c["type"] for c in out["content"]]
         assert "text" in types_

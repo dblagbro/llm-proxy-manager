@@ -15,10 +15,11 @@ Test matrix:
 We stub ``_push_to_peer`` so the test stays synchronous-ish and
 deterministic. The real HTTP path is exercised in integration tests.
 """
+
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -37,7 +38,10 @@ def reset_peers(monkeypatch):
     manager._peers.clear()
     for name in ("alpha", "bravo", "charlie"):
         manager._peers[name] = PeerNode(
-            id=name, name=name, url=f"http://{name}/llm", status="healthy",
+            id=name,
+            name=name,
+            url=f"http://{name}/llm",
+            status="healthy",
         )
     yield
     manager._peers.clear()
@@ -50,7 +54,7 @@ def _ack_after(delay: float):
 
     async def _impl(peer, payload, timeout_sec):
         await asyncio.sleep(delay)
-        return peer, datetime.now(timezone.utc)
+        return peer, datetime.now(UTC)
 
     return _impl
 
@@ -93,7 +97,7 @@ async def test_quorum_n_minus_1_one_pending(monkeypatch, reset_peers):
         # synthetic quorum check window.
         if peer.id == "charlie":
             await asyncio.sleep(1.0)
-        return peer, datetime.now(timezone.utc)
+        return peer, datetime.now(UTC)
 
     monkeypatch.setattr(manager, "_push_to_peer", staged)
 
@@ -115,7 +119,7 @@ async def test_quorum_insufficient_raises(monkeypatch, reset_peers):
 
     async def mostly_fail(peer, payload, timeout_sec):
         if peer.id == "alpha":
-            return peer, datetime.now(timezone.utc)
+            return peer, datetime.now(UTC)
         # bravo + charlie both fail
         raise RuntimeError("HTTP 500: synthetic")
 

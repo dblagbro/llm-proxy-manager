@@ -15,6 +15,7 @@ This module:
 Commands outside the safe subset are returned unexecuted with status="skipped"
 so agent frameworks / clients can execute them themselves if they wish.
 """
+
 from __future__ import annotations
 
 import logging
@@ -24,14 +25,11 @@ import ssl
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass, field
-from typing import Optional
+from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
-_STEP_RE = re.compile(
-    r"^\s*(?P<num>\d+)\.\s*`(?P<cmd>[^`]+)`\s*(?:→|->|—|-)\s*(?P<exp>.+?)\s*$"
-)
+_STEP_RE = re.compile(r"^\s*(?P<num>\d+)\.\s*`(?P<cmd>[^`]+)`\s*(?:→|->|—|-)\s*(?P<exp>.+?)\s*$")
 _HTTP_RE = re.compile(r"^curl\s+(?:-\S+\s+)*(?P<url>https?://\S+)\s*$")
 _HOST_RE = re.compile(r"^(?:host|nslookup|dig)\s+(?P<target>\S+)(?:\s+.*)?$")
 _TCP_RE = re.compile(r"^nc\s+-z\s+(?P<host>\S+)\s+(?P<port>\d+)\s*$")
@@ -67,11 +65,13 @@ def parse_verify_block(text: str) -> list[VerifyStep]:
         m = _STEP_RE.match(line)
         if not m:
             continue
-        steps.append(VerifyStep(
-            number=int(m.group("num")),
-            command=m.group("cmd").strip(),
-            expected=m.group("exp").strip(),
-        ))
+        steps.append(
+            VerifyStep(
+                number=int(m.group("num")),
+                command=m.group("cmd").strip(),
+                expected=m.group("exp").strip(),
+            )
+        )
     return steps
 
 
@@ -132,7 +132,9 @@ async def execute_step(step: VerifyStep, timeout_sec: float = 5.0) -> VerifyStep
 def _http_get(url: str, timeout: float) -> tuple[str, str]:
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "llm-proxy-verify/1"})
-        with urllib.request.urlopen(req, timeout=timeout, context=ssl.create_default_context()) as r:
+        with urllib.request.urlopen(
+            req, timeout=timeout, context=ssl.create_default_context()
+        ) as r:
             body = r.read(4096).decode("utf-8", errors="replace")
             return f"HTTP {r.status} {r.reason}\n{body[:2000]}", ""
     except urllib.error.HTTPError as e:
@@ -147,7 +149,9 @@ def _http_head(url: str, timeout: float) -> tuple[str, str]:
         req = urllib.request.Request(
             url, headers={"User-Agent": "llm-proxy-verify/1"}, method="HEAD"
         )
-        with urllib.request.urlopen(req, timeout=timeout, context=ssl.create_default_context()) as r:
+        with urllib.request.urlopen(
+            req, timeout=timeout, context=ssl.create_default_context()
+        ) as r:
             hdrs = "\n".join(f"{k}: {v}" for k, v in r.headers.items())
             return f"HTTP {r.status} {r.reason}\n{hdrs[:1500]}", ""
     except urllib.error.HTTPError as e:

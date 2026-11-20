@@ -19,8 +19,8 @@ returns zero — that's fine for the "free/local" case (e.g. an on-prem
 llama.cpp sidecar). Not a regression versus the pre-v5.20.6 shape,
 which would have also returned zero for the same input.
 """
+
 import logging
-from typing import Optional
 
 import litellm
 
@@ -57,6 +57,7 @@ def _load_catalog_cache_sync() -> None:
     _CATALOG_LOADED = True  # set FIRST so a load failure doesn't loop
     try:
         from sqlalchemy import create_engine, text
+
         # v5.22.13 BUGFIX: this used to be
         #     from app.models.database import DATABASE_URL
         # but app.models.database does NOT export that name. The ImportError
@@ -66,15 +67,18 @@ def _load_catalog_cache_sync() -> None:
         # model_cost_map_worker ingest (2,568 rows) was never read by anything.
         # Read the configured URL from settings, which is the real source.
         from app.config import settings
+
         # AsyncSessionLocal uses aiosqlite; swap to sync driver for
         # this cheap read.
         sync_url = settings.database_url.replace("sqlite+aiosqlite", "sqlite")
         engine = create_engine(sync_url)
         with engine.connect() as conn:
-            rows = conn.execute(text(
-                "SELECT model_key, input_cost_per_token, output_cost_per_token, "
-                "max_output_tokens FROM model_pricing_catalog"
-            )).fetchall()
+            rows = conn.execute(
+                text(
+                    "SELECT model_key, input_cost_per_token, output_cost_per_token, "
+                    "max_output_tokens FROM model_pricing_catalog"
+                )
+            ).fetchall()
         for row in rows:
             _CATALOG_CACHE[row[0]] = (float(row[1]), float(row[2]))
             # v5.22.13 — the catalog also carries each model's OUTPUT cap
@@ -94,7 +98,7 @@ def _load_catalog_cache_sync() -> None:
         pass
 
 
-def _catalog_lookup(model: str) -> Optional[tuple[float, float]]:
+def _catalog_lookup(model: str) -> tuple[float, float] | None:
     """Return (input_per_token, output_per_token) from the DB catalog
     if present, else None. Tries the model as-is + with/without a
     provider prefix (same variants as the _OVERRIDES lookup)."""
@@ -140,7 +144,9 @@ def max_output_tokens_for(model: str) -> int | None:
 
 
 def estimate_cost_split(
-    litellm_model: str, input_tokens: int, output_tokens: int,
+    litellm_model: str,
+    input_tokens: int,
+    output_tokens: int,
 ) -> tuple[float, float]:
     """v3.4.0: returns ``(input_cost_usd, output_cost_usd)`` tuple.
 

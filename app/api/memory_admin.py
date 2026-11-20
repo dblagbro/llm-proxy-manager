@@ -7,7 +7,7 @@ Endpoints
 - GET  /api/memory/keys/{api_key_id}/{tag}/{conv_id} → single entry (scoped to conv)
 - PUT  /api/memory/keys/{api_key_id}/{tag}           → upsert entry (operator-driven write)
 - DELETE /api/memory/keys/{api_key_id}/{tag}         → soft-delete (tombstone)
-- GET  /api/memory/markers/{api_key_id}              → list markers (with last_known_provider_id etc)
+- GET  /api/memory/markers/{api_key_id} → list markers, including last_known_provider_id
 - POST /api/memory/markers/{marker_id}/clear-recovered → reset recovered_at so Phase 7 retries
 - POST /api/memory/recover/{api_key_id}/{conv_id}/{tag} → manual recovery trigger
 
@@ -16,18 +16,17 @@ feature is still gated on settings.caller_memory_enabled overall, but
 admin endpoints work whether or not the flag is flipped — useful for
 inspecting state before turning the feature on.
 """
-from __future__ import annotations
 
-from typing import Optional
+from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select, desc
+from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth.admin import AdminUser, require_admin
 from app.models.database import get_db
 from app.models.db import CallerMemory, CallerMemoryMarker
-from app.auth.admin import require_admin, AdminUser
 
 router = APIRouter(prefix="/api/memory", tags=["caller-memory"])
 
@@ -35,8 +34,8 @@ router = APIRouter(prefix="/api/memory", tags=["caller-memory"])
 class MemoryPut(BaseModel):
     content: str
     content_format: str = "text"
-    conversation_id: Optional[str] = None
-    source_provider_id: Optional[str] = None
+    conversation_id: str | None = None
+    source_provider_id: str | None = None
 
 
 def _serialize_memory(row: CallerMemory) -> dict:
@@ -101,6 +100,7 @@ async def upsert_memory(
     _: AdminUser = Depends(require_admin),
 ):
     from app.memory.store import put
+
     entry = await put(
         db,
         api_key_id=api_key_id,
@@ -123,11 +123,12 @@ async def upsert_memory(
 async def delete_memory(
     api_key_id: str,
     memory_tag: str,
-    conversation_id: Optional[str] = None,
+    conversation_id: str | None = None,
     db: AsyncSession = Depends(get_db),
     _: AdminUser = Depends(require_admin),
 ):
     from app.memory.store import delete as store_delete
+
     ok = await store_delete(
         db,
         api_key_id=api_key_id,
@@ -148,13 +149,19 @@ async def list_markers(
     db: AsyncSession = Depends(get_db),
     _: AdminUser = Depends(require_admin),
 ):
-    rows = (await db.execute(
-        select(CallerMemoryMarker)
-        .where(CallerMemoryMarker.api_key_id == api_key_id)
-        .where(CallerMemoryMarker.deleted_at.is_(None))
-        .order_by(desc(CallerMemoryMarker.first_seen_at))
-        .limit(500)
-    )).scalars().all()
+    rows = (
+        (
+            await db.execute(
+                select(CallerMemoryMarker)
+                .where(CallerMemoryMarker.api_key_id == api_key_id)
+                .where(CallerMemoryMarker.deleted_at.is_(None))
+                .order_by(desc(CallerMemoryMarker.first_seen_at))
+                .limit(500)
+            )
+        )
+        .scalars()
+        .all()
+    )
     return [_serialize_marker(r) for r in rows]
 
 
@@ -168,9 +175,9 @@ async def clear_marker_recovered_at(
     after fixing a broken recovery handler — without this, a successful
     'recovery' that produced empty content would lock out further
     attempts."""
-    row = (await db.execute(
-        select(CallerMemoryMarker).where(CallerMemoryMarker.id == marker_id)
-    )).scalar_one_or_none()
+    row = (
+        await db.execute(select(CallerMemoryMarker).where(CallerMemoryMarker.id == marker_id))
+    ).scalar_one_or_none()
     if row is None:
         raise HTTPException(404, "marker not found")
     row.recovered_at = None
@@ -193,6 +200,7 @@ async def trigger_recovery(
     tag). Returns the recovered content (or None on failure). Useful
     for testing handler implementations end-to-end."""
     from app.memory.recover import maybe_recover_memory
+
     content = await maybe_recover_memory(
         db,
         api_key_id=api_key_id,

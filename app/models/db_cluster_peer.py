@@ -25,6 +25,7 @@ Security:
       two clusters; the HMAC mismatch surfaces as a 401 on the
       sync push.
 """
+
 from __future__ import annotations
 
 from sqlalchemy import Column, DateTime, Float, String
@@ -53,6 +54,7 @@ class ClusterPeer(Base):
                         cluster sync apply so the most-recent edit
                         across the cluster wins.
     """
+
     __tablename__ = "cluster_peers"
 
     id = Column(String(64), primary_key=True)

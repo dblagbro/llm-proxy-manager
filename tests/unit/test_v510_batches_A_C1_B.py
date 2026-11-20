@@ -5,16 +5,14 @@ grok-3 model-name preservation in failover (extra-swap).
 Batch C1: activity-log on/off toggle.
 Batch B: ApiKey trash bin + copy-from-existing.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
 
 import pytest
 
-
 # ── Batch A: backup script ──────────────────────────────────────────
-
-
 from tests.unit._handler_surface import completions_handler_source
 
 
@@ -35,10 +33,7 @@ def test_backup_script_includes_clone_and_smoke():
     _host_copy = Path("/home/dblagbro/docker/scripts/backup-safe-dumps.sh")
     _script = _repo_copy if _repo_copy.is_file() else _host_copy
     if not _script.is_file():
-        pytest.skip(
-            "neither the repo copy nor the host copy of backup-safe-dumps.sh "
-            "is present"
-        )
+        pytest.skip("neither the repo copy nor the host copy of backup-safe-dumps.sh is present")
     src = _script.read_text()
     assert "llmproxy-clone.db" in src, (
         "backup script missing clone DB — operator restores would lose "
@@ -55,7 +50,7 @@ def test_backup_script_includes_clone_and_smoke():
 def test_peer_node_has_version_field():
     """PeerNode dataclass must carry a version field captured from /health."""
     src = Path("app/cluster/manager.py").read_text()
-    assert "version: Optional[str] = None" in src, (
+    assert "version: Optional[str] = None" in src or "version: str | None = None" in src, (
         "PeerNode.version missing — Settings → Cluster can't surface skew."
     )
 
@@ -82,7 +77,7 @@ def test_completions_failover_swaps_extra_kwargs():
     # Look in the grok-web failover block for the extra-swap pattern.
     fb = src.find("X-Grok-Web-Failover-Target")
     assert fb != -1
-    block = src[max(0, fb - 2000):fb + 200]
+    block = src[max(0, fb - 2000) : fb + 200]
     assert "extra.pop(_k, None)" in block, (
         "completions.py grok-web failover no longer swaps `extra` (litellm_kwargs); "
         "the openai-shape upstream call uses the wrong credentials → "
@@ -95,7 +90,7 @@ def test_messages_failover_swaps_extra_kwargs():
     src = Path("app/api/messages.py").read_text()
     fb = src.find("X-Grok-Web-Failover-Target")
     assert fb != -1
-    block = src[max(0, fb - 2000):fb + 200]
+    block = src[max(0, fb - 2000) : fb + 200]
     assert "extra.pop(_k, None)" in block
     assert "extra.update(new_route.litellm_kwargs)" in block
 
@@ -106,10 +101,11 @@ def test_messages_failover_swaps_extra_kwargs():
 def test_logging_controls_module_exists():
     from app.monitoring.logging_controls import (
         SETTING_KEY,
+        invalidate_cache,
         is_logging_enabled,
         set_logging_enabled,
-        invalidate_cache,
     )
+
     assert SETTING_KEY == "compliance.activity_logging_enabled"
     assert callable(is_logging_enabled)
     assert callable(set_logging_enabled)
@@ -147,7 +143,16 @@ def test_toggle_writes_audit_row_to_compliance_policy_changes():
     row. Two-file pin: factory holds the write; shim still has to
     construct the factory."""
     factory_src = Path("app/monitoring/_bool_system_setting.py").read_text()
-    assert "from app.models.db import SystemSetting, CompliancePolicyChange" in factory_src
+    import ast
+
+    imports = [
+        n
+        for n in ast.walk(ast.parse(factory_src))
+        if isinstance(n, ast.ImportFrom) and n.module == "app.models.db"
+    ]
+    assert any(
+        {"SystemSetting", "CompliancePolicyChange"} <= {a.name for a in n.names} for n in imports
+    )
     assert 'scope="system"' in factory_src
     shim_src = Path("app/monitoring/logging_controls.py").read_text()
     assert "BoolSystemSetting(" in shim_src
@@ -160,7 +165,7 @@ def test_list_keys_accepts_include_deleted():
     src = Path("app/api/apikeys.py").read_text()
     list_idx = src.find("async def list_keys(")
     assert list_idx != -1
-    block = src[list_idx:list_idx + 1000]
+    block = src[list_idx : list_idx + 1000]
     assert "include_deleted: bool = False" in block
     assert "if not include_deleted:" in block
 
@@ -182,7 +187,7 @@ def test_tombstone_retention_setting_registered():
 
 def test_key_create_supports_copy_from_id():
     src = Path("app/api/apikeys.py").read_text()
-    assert "copy_from_id: Optional[str] = None" in src
+    assert "copy_from_id: Optional[str] = None" in src or "copy_from_id: str | None = None" in src
     # And the dispatch handles it
     assert "if body.copy_from_id:" in src
     assert "body.spending_cap_usd = src.spending_cap_usd" in src

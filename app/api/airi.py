@@ -7,21 +7,22 @@
 
 Admin-gated. Read-only — no routing mutation in milestone 1.
 """
+
 from __future__ import annotations
 
 import json
 import logging
 
 import httpx
-from fastapi import APIRouter, Request, Depends, HTTPException, UploadFile, File
-from fastapi.responses import StreamingResponse, JSONResponse, Response
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import settings
-from app.auth.admin import require_admin, AdminUser
-from app.models.database import get_db, AsyncSessionLocal
+from app.airi import history, rules
 from app.airi.agent import run_airi_turn
-from app.airi import rules, history
+from app.auth.admin import AdminUser, require_admin
+from app.config import settings
+from app.models.database import AsyncSessionLocal, get_db
 
 logger = logging.getLogger(__name__)
 
@@ -78,22 +79,25 @@ async def airi_transcribe(
 
     bridge = (settings.airi_whisper_bridge_url or "").rstrip("/")
     if not bridge:
-        return JSONResponse({"error": "voice transcription is not configured"},
-                            status_code=503)
+        return JSONResponse({"error": "voice transcription is not configured"}, status_code=503)
     try:
         async with httpx.AsyncClient(timeout=_TRANSCRIBE_TIMEOUT) as client:
             r = await client.post(
                 f"{bridge}/transcribe",
-                files={"file": (file.filename or "audio.webm", audio,
-                                file.content_type or "application/octet-stream")},
+                files={
+                    "file": (
+                        file.filename or "audio.webm",
+                        audio,
+                        file.content_type or "application/octet-stream",
+                    )
+                },
                 headers=_bridge_headers(),
             )
         r.raise_for_status()
         data = r.json()
     except Exception as e:  # never leak a stack — the panel falls back to typing
         logger.warning("airi.transcribe failed err=%r", e)
-        return JSONResponse({"error": "transcription is unavailable right now"},
-                            status_code=502)
+        return JSONResponse({"error": "transcription is unavailable right now"}, status_code=502)
     return {"text": (data.get("text") or "").strip()}
 
 
@@ -116,10 +120,12 @@ async def airi_voice_model(_: AdminUser = Depends(require_admin)):
         r.raise_for_status()
     except Exception as e:
         logger.warning("airi.voice_model fetch failed err=%r", e)
-        return JSONResponse({"error": "the voice model is unavailable right now"},
-                            status_code=502)
-    return Response(content=r.content, media_type="application/gzip",
-                    headers={"Cache-Control": "private, max-age=604800"})
+        return JSONResponse({"error": "the voice model is unavailable right now"}, status_code=502)
+    return Response(
+        content=r.content,
+        media_type="application/gzip",
+        headers={"Cache-Control": "private, max-age=604800"},
+    )
 
 
 @router.post("/speak")
@@ -139,8 +145,7 @@ async def airi_speak(payload: dict, _: AdminUser = Depends(require_admin)):
         return JSONResponse({"error": "text too long"}, status_code=413)
     bridge = (settings.airi_whisper_bridge_url or "").rstrip("/")
     if not bridge:
-        return JSONResponse({"error": "voice output is not configured"},
-                            status_code=503)
+        return JSONResponse({"error": "voice output is not configured"}, status_code=503)
     try:
         async with httpx.AsyncClient(timeout=_TRANSCRIBE_TIMEOUT) as client:
             r = await client.post(
@@ -151,10 +156,10 @@ async def airi_speak(payload: dict, _: AdminUser = Depends(require_admin)):
         r.raise_for_status()
     except Exception as e:  # never leak a stack — the panel falls back to text
         logger.warning("airi.speak failed err=%r", e)
-        return JSONResponse({"error": "speech synthesis is unavailable right now"},
-                            status_code=502)
-    return Response(content=r.content, media_type="audio/wav",
-                    headers={"Cache-Control": "no-store"})
+        return JSONResponse({"error": "speech synthesis is unavailable right now"}, status_code=502)
+    return Response(
+        content=r.content, media_type="audio/wav", headers={"Cache-Control": "no-store"}
+    )
 
 
 def _sse(event: str, data: dict) -> bytes:
@@ -164,8 +169,7 @@ def _sse(event: str, data: dict) -> bytes:
 def _last_user_text(messages: list) -> str:
     """The newest plain-text user message — the title seed + the persisted turn."""
     for m in reversed(messages):
-        if isinstance(m, dict) and m.get("role") == "user" \
-                and isinstance(m.get("content"), str):
+        if isinstance(m, dict) and m.get("role") == "user" and isinstance(m.get("content"), str):
             return m["content"]
     return ""
 
@@ -199,8 +203,10 @@ async def airi_chat(request: Request, user: AdminUser = Depends(require_admin)):
         try:
             async with AsyncSessionLocal() as db:
                 conv_id = await history.start_turn(
-                    db, user_id=user.username,
-                    conversation_id=conversation_id, user_text=user_text,
+                    db,
+                    user_id=user.username,
+                    conversation_id=conversation_id,
+                    user_text=user_text,
                 )
         except Exception as e:
             logger.warning("airi.history_start_failed err=%r", e)
@@ -221,8 +227,7 @@ async def airi_chat(request: Request, user: AdminUser = Depends(require_admin)):
         if conv_id and answer:
             try:
                 async with AsyncSessionLocal() as db:
-                    await history.record_assistant(
-                        db, conversation_id=conv_id, text=answer)
+                    await history.record_assistant(db, conversation_id=conv_id, text=answer)
             except Exception as e:
                 logger.warning("airi.history_record_failed err=%r", e)
         yield _sse("done", {})
@@ -237,6 +242,7 @@ async def airi_chat(request: Request, user: AdminUser = Depends(require_admin)):
 # ── v4.0 milestone 2 — rules layer + rule-sets ───────────────────────────────
 # Rules are stored config in this milestone; they are wired to live supervisor
 # behaviour in a later milestone. All endpoints admin-gated + feature-flagged.
+
 
 async def _require_airi_enabled() -> None:
     if not settings.airi_enabled:
@@ -339,6 +345,7 @@ async def airi_update_rule(
 
 # ── v4.0 milestone 3 — proposals (propose -> apply / reject / revert) ─────────
 
+
 @router.get("/proposals")
 async def airi_list_proposals(
     status: str | None = None,
@@ -348,6 +355,7 @@ async def airi_list_proposals(
 ) -> dict:
     """Recent AIRI proposals — the change audit trail. Optional ``?status=``."""
     from app.airi import proposals
+
     return {"proposals": await proposals.list_proposals(db, status=status)}
 
 
@@ -359,6 +367,7 @@ async def airi_get_proposal(
     db: AsyncSession = Depends(get_db),
 ):
     from app.airi import proposals
+
     p = await proposals.get_proposal(db, proposal_id)
     if p is None:
         return JSONResponse({"detail": "proposal not found"}, status_code=404)
@@ -374,6 +383,7 @@ async def airi_apply_proposal(
 ):
     """Approve + apply a pending proposal."""
     from app.airi import proposals
+
     result = await proposals.apply_proposal(db, proposal_id, applied_by=user.username)
     if "error" in result:
         return JSONResponse(result, status_code=400)
@@ -389,6 +399,7 @@ async def airi_reject_proposal(
 ):
     """Reject a pending proposal."""
     from app.airi import proposals
+
     result = await proposals.reject_proposal(db, proposal_id, decided_by=user.username)
     if "error" in result:
         return JSONResponse(result, status_code=400)
@@ -404,6 +415,7 @@ async def airi_revert_proposal(
 ):
     """Undo an applied proposal — restore the prior-state snapshot."""
     from app.airi import proposals
+
     result = await proposals.revert_proposal(db, proposal_id, decided_by=user.username)
     if "error" in result:
         return JSONResponse(result, status_code=400)
@@ -412,6 +424,7 @@ async def airi_revert_proposal(
 
 # ── v4.0 milestone 4 — automation kill switch + scheduled-rule registry ───────
 
+
 @router.get("/automation")
 async def airi_get_automation(
     _: AdminUser = Depends(require_admin),
@@ -419,6 +432,7 @@ async def airi_get_automation(
 ) -> dict:
     """Current state of the scheduled-rule automation kill switch."""
     from app.airi import evaluator
+
     return {
         "automation_enabled": evaluator.is_automation_enabled(),
         "evaluator_interval_sec": int(settings.airi_evaluator_interval_sec),
@@ -433,6 +447,7 @@ async def airi_set_automation(
 ):
     """Flip the automation kill switch. Body: ``{"enabled": <bool>}``."""
     from app.airi import evaluator
+
     body = await request.json()
     enabled = bool(body.get("enabled")) if isinstance(body, dict) else False
     evaluator.set_automation(enabled)
@@ -455,6 +470,7 @@ async def airi_toggle_rule(
 
 
 # ── v4.0 milestone 5 — conversation history (per-user) + cross-user search ────
+
 
 @router.get("/conversations")
 async def airi_list_conversations(
@@ -495,6 +511,7 @@ async def airi_get_conversation(
 
 # ── v4.0.3 — per-user notification preferences ───────────────────────────────
 
+
 @router.get("/notification-prefs")
 async def airi_get_notification_pref(
     user: AdminUser = Depends(require_admin),
@@ -503,6 +520,7 @@ async def airi_get_notification_pref(
 ) -> dict:
     """The calling operator's own AIRI-notification subscription."""
     from app.airi import notify_prefs
+
     return await notify_prefs.get_pref(db, user.username)
 
 
@@ -516,11 +534,13 @@ async def airi_set_notification_pref(
     """Save the calling operator's notification subscription. Body:
     ``{email, enabled, categories: {monitor, automation}, min_severity}``."""
     from app.airi import notify_prefs
+
     body = await request.json()
     if not isinstance(body, dict):
         return JSONResponse({"error": "a JSON object body is required"}, status_code=400)
     result = await notify_prefs.set_pref(
-        db, user.username,
+        db,
+        user.username,
         email=body.get("email"),
         enabled=bool(body.get("enabled", True)),
         categories=body.get("categories"),
@@ -556,12 +576,11 @@ async def airi_test_dispatch(
     because doing so used to spam the operator's inbox.
     """
     from app.airi.notify import airi_notify
+
     subject = (payload.get("subject") or "").strip()
     message = (payload.get("message") or "").strip()
     if not subject or not message:
-        return JSONResponse(
-            {"error": "subject and message are required"}, status_code=400
-        )
+        return JSONResponse({"error": "subject and message are required"}, status_code=400)
     severity = (payload.get("severity") or "warning").strip()
     if severity not in ("info", "warning", "critical"):
         return JSONResponse(

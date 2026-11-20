@@ -14,6 +14,7 @@ Budget info remains on the ``X-Token-Budget-Remaining`` response
 header set pre-stream. These static-pin tests catch any accidental
 re-introduction.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -37,12 +38,12 @@ def test_no_event_budget_frame_in_streaming_module(path):
     """
     src = Path(path).read_text()
     bad = (
-        "f'event: budget",   # f-string single-quote (pre-v5.0.12 form)
-        'f"event: budget',   # f-string double-quote
-        "'event: budget",    # plain string single-quote yield
-        '"event: budget',    # plain string double-quote yield
-        "b'event: budget",   # raw bytes single-quote
-        'b"event: budget',   # raw bytes double-quote
+        "f'event: budget",  # f-string single-quote (pre-v5.0.12 form)
+        'f"event: budget',  # f-string double-quote
+        "'event: budget",  # plain string single-quote yield
+        '"event: budget',  # plain string double-quote yield
+        "b'event: budget",  # raw bytes single-quote
+        'b"event: budget',  # raw bytes double-quote
     )
     for marker in bad:
         assert marker not in src, (

@@ -21,6 +21,7 @@ Original rationale, preserved verbatim:
     # OpenAI ChatCompletion only; this lets them reach Devin-Anthropic-Max-VG
     # without a 600-LOC client-side branch for /v1/messages.
 """
+
 from __future__ import annotations
 
 import logging
@@ -39,8 +40,6 @@ router = APIRouter()
 # (~60s max) so the session isn't held for the multi-hour class of
 # leak that v5.21.7 fixed in runs.py.
 @router.post("/v1/chat/completions")
-
-
 async def dispatch_claude_oauth_openai(
     *,
     route,
@@ -72,6 +71,7 @@ async def dispatch_claude_oauth_openai(
         openai_request_to_anthropic,
         stream_anthropic_to_openai_sse,
     )
+
     t0 = time.monotonic()
     anthropic_body = openai_request_to_anthropic(body)
     # v3.0.42: auto-cache injection on the OpenAI-→-Anthropic
@@ -80,7 +80,8 @@ async def dispatch_claude_oauth_openai(
     cache_injected = False
     if cache_decision.mode != "none":
         anthropic_body, cache_injected = inject_cache_control(
-            anthropic_body, "claude-oauth",
+            anthropic_body,
+            "claude-oauth",
             min_chars=resolve_min_chars(cache_decision),
         )
     # Resolve the actual model the caller asked for; the routing layer
@@ -93,6 +94,7 @@ async def dispatch_claude_oauth_openai(
     # the OAuth path so build_headers strips the long-context beta.
     # v5.0.21 hotfix: defensive getattr + identity-check for bool.
     from app.providers.claude_oauth import set_disable_long_context
+
     set_disable_long_context(
         (getattr(route.provider, "extra_config", None) or {}).get("disable_long_context") is True
     )
@@ -119,10 +121,10 @@ async def dispatch_claude_oauth_openai(
             memory_tag=x_memory_tag,
         )
         openai_sse = stream_anthropic_to_openai_sse(
-            anthropic_sse, requested_model=body.get("model") or "",
+            anthropic_sse,
+            requested_model=body.get("model") or "",
         )
-        return StreamingResponse(openai_sse, media_type="text/event-stream",
-                                  headers=resp_headers)
+        return StreamingResponse(openai_sse, media_type="text/event-stream", headers=resp_headers)
     else:
         anth_resp = await _complete_claude_oauth(
             access_token=route.provider.api_key,
@@ -142,6 +144,7 @@ async def dispatch_claude_oauth_openai(
             append_cache_disclosure,
             build_cache_disclosure,
         )
+
         append_cache_disclosure(
             resp_headers,
             build_cache_disclosure(
@@ -153,6 +156,8 @@ async def dispatch_claude_oauth_openai(
             ),
         )
         return JSONResponse(
-            content=anthropic_response_to_openai(anth_resp, requested_model=body.get("model") or ""),
+            content=anthropic_response_to_openai(
+                anth_resp, requested_model=body.get("model") or ""
+            ),
             headers=resp_headers,
         )

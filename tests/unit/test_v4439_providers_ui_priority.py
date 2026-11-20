@@ -9,8 +9,8 @@ Source-guard tests pinning the operator-filed fix:
 - A reusable ``ordinal()`` utility was added at ``frontend/src/utils/ordinal.ts``
 
 Background memory: ``project_backlog_providers_ui_priority_preferred``."""
-from pathlib import Path
 
+from pathlib import Path
 
 # ── ordinal helper ───────────────────────────────────────────────────
 
@@ -81,13 +81,9 @@ def test_preferred_badge_tooltip_explains_relationship_to_priority():
     # We don't pin the exact words, but it must mention 'priority' OR
     # 'manually-configured' OR 'separate' so the operator hovering it learns
     # the badge ≠ priority field.
-    relevant_excerpts = [
-        s for s in src.split('title="') if 'router' in s.lower()
-    ]
+    relevant_excerpts = [s for s in src.split('title="') if "router" in s.lower()]
     assert any(
-        ("not related" in s.lower()
-         or "separate" in s.lower()
-         or "manually" in s.lower())
+        ("not related" in s.lower() or "separate" in s.lower() or "manually" in s.lower())
         for s in relevant_excerpts
     ), (
         "The preferred-badge tooltip must explicitly say it's separate from / "

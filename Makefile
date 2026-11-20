@@ -1,5 +1,5 @@
 .PHONY: install dev test test-all lint format build up down-container logs shell \
-	migrate migrate-new secret-scan install-hooks verify-ci
+	migrate migrate-new secret-scan install-hooks verify-ci test-gateway-container
 
 install:
 	pip install -e ".[dev]"
@@ -9,6 +9,9 @@ dev:
 
 test:
 	pytest tests/unit -v
+
+test-gateway-container:
+	python3 tools/check_gateway_container.py --image "$(GATEWAY_IMAGE)"
 
 test-all:
 	pytest tests/ -v

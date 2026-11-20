@@ -14,6 +14,7 @@ Smoke instance (llm-proxy2-smoke) is the test target — separate DB,
 safe to exercise; auth is the same admin/admin default the project
 CLAUDE.md ships with.
 """
+
 from __future__ import annotations
 
 import time
@@ -22,7 +23,8 @@ import pytest
 from playwright.sync_api import Page, expect, sync_playwright
 
 # v5.22.38 — target and credentials come from tests/conftest.py, the single
-# source of truth. This file used to carry its own hardcoded smoke URL and admin password, which meant:
+# source of truth. This file used to carry its own hardcoded smoke URL and admin
+# password, which meant:
 #   - it could not be pointed at the ephemeral instance (LLMPROXY_TEST_EPHEMERAL=1),
 #     so it could only run where that URL resolves;
 #   - it sat outside the live gate, so a bare `pytest tests/integration` sent it
@@ -118,9 +120,9 @@ def test_load_detail_button_wired_to_detail_endpoint(page):
         or "correlated event(s):" in page.content()
     )
 
-    assert not button_still_visible or loading_indicator or error_present or correlated_events_rendered, (
-        "clicking Load detail didn't trigger a state change — hook is broken"
-    )
+    assert (
+        not button_still_visible or loading_indicator or error_present or correlated_events_rendered
+    ), "clicking Load detail didn't trigger a state change — hook is broken"
     # Prefer the happy-path assertion
     assert error_present or correlated_events_rendered, (
         "detail endpoint call didn't populate provider/api_key/correlated_events "

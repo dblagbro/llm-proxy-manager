@@ -3,6 +3,7 @@
 Covers parse_cookie_jar, validate_cookies, parse_usage_response, and
 the fetch_usage error-classification paths (mocked httpx).
 """
+
 from __future__ import annotations
 
 from datetime import datetime
@@ -12,13 +13,11 @@ import httpx
 import pytest
 
 from app.providers.anthropic_billing import (
-    parse_cookie_jar,
-    validate_cookies,
-    parse_usage_response,
     fetch_usage,
-    ScrapeResult,
+    parse_cookie_jar,
+    parse_usage_response,
+    validate_cookies,
 )
-
 
 # ── parse_cookie_jar ───────────────────────────────────────────────
 
@@ -174,10 +173,14 @@ def test_parse_extracts_extra_usage_block():
 def test_parse_handles_unexpected_shapes():
     """Defensive: garbage in → empty out, no raise."""
     assert parse_usage_response({}) == {
-        "five_hour_utilization": None, "five_hour_resets_at": None,
-        "seven_day_utilization": None, "seven_day_resets_at": None,
-        "seven_day_sonnet_utilization": None, "seven_day_sonnet_resets_at": None,
-        "seven_day_opus_utilization": None, "seven_day_opus_resets_at": None,
+        "five_hour_utilization": None,
+        "five_hour_resets_at": None,
+        "seven_day_utilization": None,
+        "seven_day_resets_at": None,
+        "seven_day_sonnet_utilization": None,
+        "seven_day_sonnet_resets_at": None,
+        "seven_day_opus_utilization": None,
+        "seven_day_opus_resets_at": None,
     }
 
 
@@ -205,8 +208,9 @@ def test_parse_handles_invalid_iso_timestamp():
 # ── fetch_usage error classification (mocked httpx) ────────────────
 
 
-def _mock_response(*, status: int, body: str = "", json_body: dict | None = None,
-                   headers: dict | None = None):
+def _mock_response(
+    *, status: int, body: str = "", json_body: dict | None = None, headers: dict | None = None
+):
     """Build a mock httpx.Response surrogate for AsyncClient.get."""
     resp = MagicMock()
     resp.status_code = status
@@ -310,6 +314,7 @@ async def test_fetch_classifies_parse_error():
 
 def test_worker_module_loads_and_has_start():
     from app.monitoring import anthropic_billing_worker
+
     assert hasattr(anthropic_billing_worker, "start")
     assert callable(anthropic_billing_worker.start)
 
@@ -322,6 +327,7 @@ def test_main_lifespan_starts_billing_worker():
     env. We just need to confirm the wiring is present in source.
     """
     from pathlib import Path
+
     src = Path("app/main.py").read_text()
     assert "anthropic_billing_worker" in src
     assert "_ab_worker.start()" in src
@@ -330,6 +336,7 @@ def test_main_lifespan_starts_billing_worker():
 def test_admin_router_is_registered():
     """The /api/providers/{id}/anthropic-billing-* endpoints must be wired."""
     from pathlib import Path
+
     src = Path("app/main.py").read_text()
     assert "anthropic_billing_router" in src
     assert "include_router(anthropic_billing_router)" in src
@@ -337,6 +344,7 @@ def test_admin_router_is_registered():
 
 def test_settings_has_interval_field():
     from app.config import settings
+
     assert hasattr(settings, "anthropic_billing_scrape_interval_sec")
     assert settings.anthropic_billing_scrape_interval_sec > 0
 
@@ -344,6 +352,7 @@ def test_settings_has_interval_field():
 def test_provider_model_has_billing_columns():
     """Schema regression — three new columns on Provider."""
     from app.models.db import Provider
+
     cols = {c.name for c in Provider.__table__.columns}
     assert "anthropic_org_uuid" in cols
     assert "anthropic_session_cookies" in cols
@@ -352,15 +361,28 @@ def test_provider_model_has_billing_columns():
 
 def test_external_usage_snapshot_model_exists():
     from app.models.db import ExternalUsageSnapshot
+
     cols = {c.name for c in ExternalUsageSnapshot.__table__.columns}
     expected = {
-        "id", "provider_id", "captured_at", "source", "http_status",
-        "error", "auth_state", "five_hour_utilization", "five_hour_resets_at",
-        "seven_day_utilization", "seven_day_resets_at",
-        "seven_day_sonnet_utilization", "seven_day_opus_utilization",
-        "extra_usage_is_enabled", "extra_usage_monthly_limit",
-        "extra_usage_used_credits", "extra_usage_utilization",
-        "extra_usage_currency", "raw_response",
+        "id",
+        "provider_id",
+        "captured_at",
+        "source",
+        "http_status",
+        "error",
+        "auth_state",
+        "five_hour_utilization",
+        "five_hour_resets_at",
+        "seven_day_utilization",
+        "seven_day_resets_at",
+        "seven_day_sonnet_utilization",
+        "seven_day_opus_utilization",
+        "extra_usage_is_enabled",
+        "extra_usage_monthly_limit",
+        "extra_usage_used_credits",
+        "extra_usage_utilization",
+        "extra_usage_currency",
+        "raw_response",
     }
     missing = expected - cols
     assert not missing, f"missing columns on ExternalUsageSnapshot: {missing}"

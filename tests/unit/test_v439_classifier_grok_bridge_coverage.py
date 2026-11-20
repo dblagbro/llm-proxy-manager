@@ -23,12 +23,12 @@ These tests pin the exact prod-observed error strings + add coverage
 for the broader 4xx-other-than-401/403/429 buckets we added
 prophylactically.
 """
+
 from __future__ import annotations
 
 import pytest
 
 from app.routing.circuit_breaker import classify_error
-
 
 # ── BUG-048 specific: actual prod strings ────────────────────────
 
@@ -37,7 +37,7 @@ def test_grok_bridge_404_conversation_not_found():
     """4 of 5 recent unknown-class errors on Grok-Web-Devin were this
     exact shape (stale conversation ID at grok.com)."""
     err = (
-        'GrokWebError: grok-web bridge 404: '
+        "GrokWebError: grok-web bridge 404: "
         '{"detail":"grok.com 404: {\\"error\\":{\\"code\\":5,'
         '\\"message\\":\\"\'Conversation\' with ID '
         '\'e41fca28-3df3-44ae-ad27-1cb65d5fe2a5\' was not found.\\","details\\":[]}}\\n"}'
@@ -49,8 +49,7 @@ def test_grok_bridge_unreachable_remote_protocol_prose():
     """The 5th unknown was the httpx RemoteProtocolError prose
     surfaced via GrokWebError."""
     err = (
-        "GrokWebError: grok-web bridge unreachable: "
-        "Server disconnected without sending a response."
+        "GrokWebError: grok-web bridge unreachable: Server disconnected without sending a response."
     )
     assert classify_error(err) == "network"
 
@@ -58,15 +57,18 @@ def test_grok_bridge_unreachable_remote_protocol_prose():
 # ── broader 4xx coverage prophylactic ────────────────────────────
 
 
-@pytest.mark.parametrize("code,phrase", [
-    ("404", "Not Found"),
-    ("405", "Method Not Allowed"),
-    ("409", "Conflict"),
-    ("410", "Gone"),
-    ("413", "Payload Too Large"),
-    ("415", "Unsupported Media Type"),
-    ("422", "Unprocessable Entity"),
-])
+@pytest.mark.parametrize(
+    "code,phrase",
+    [
+        ("404", "Not Found"),
+        ("405", "Method Not Allowed"),
+        ("409", "Conflict"),
+        ("410", "Gone"),
+        ("413", "Payload Too Large"),
+        ("415", "Unsupported Media Type"),
+        ("422", "Unprocessable Entity"),
+    ],
+)
 def test_4xx_codes_bucket_as_bad_request(code, phrase):
     assert classify_error(f"upstream returned {code}: {phrase}") == "bad_request"
 
@@ -75,9 +77,7 @@ def test_lowercase_not_found_phrase():
     """The phrase 'not found' alone (lowercase, no status code)
     should also bucket as bad_request — surfaces in grok.com's
     nested JSON without an HTTP code at that layer."""
-    assert classify_error(
-        "grok.com responded: object 'X' was not found"
-    ) == "bad_request"
+    assert classify_error("grok.com responded: object 'X' was not found") == "bad_request"
 
 
 # ── network-pattern additions for httpx prose ────────────────────

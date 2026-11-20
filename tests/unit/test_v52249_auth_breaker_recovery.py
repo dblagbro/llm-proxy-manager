@@ -19,6 +19,7 @@ genuinely dead provider still backs off and escalates to the durable
 auto_skip. `record_success` and `force_close` also clear the auth-failure
 streak/map so recovery is clean.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -38,6 +39,7 @@ def _reset(pid: str):
 
 def test_first_auth_failure_uses_short_hold_not_24h():
     import time
+
     pid = "v52249-p1"
     _reset(pid)
     _run(cb.record_auth_failure(pid, "401 invalid_token"))
@@ -56,6 +58,7 @@ def test_auth_failure_hold_backs_off_exponentially():
     _reset(pid)
     base = cb._hold_down_sec(pid)
     import time
+
     _run(cb.record_auth_failure(pid, "401"))
     h1 = cb._get_local(pid).hold_down_until - time.time()
     _run(cb.record_auth_failure(pid, "401"))

@@ -18,8 +18,10 @@ Discovery (2026-05-13 dev-tools capture):
   ```json
   {
     "rate_limit": {
-      "primary_window":   { "used_percent": 30, "limit_window_seconds": 18000,  "reset_at": 1778725635 },
-      "secondary_window": { "used_percent": 5,  "limit_window_seconds": 604800, "reset_at": 1779312435 }
+      "primary_window": { "used_percent": 30, "limit_window_seconds": 18000,
+                          "reset_at": 1778725635 },
+      "secondary_window": { "used_percent": 5, "limit_window_seconds": 604800,
+                            "reset_at": 1779312435 }
     },
     "additional_rate_limits": [
       { "limit_name": "GPT-5.3-Codex-Spark", "rate_limit": { ...same shape... } }
@@ -38,12 +40,13 @@ Operator workflow: no separate paste needed. Once a codex-oauth (now
 / ``codex_usage_endpoint_url`` columns from v3.7.27 Phase 1 are no
 longer required and remain on the schema as unused.
 """
+
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any
 
 import httpx
 
@@ -59,15 +62,17 @@ DEFAULT_TIMEOUT_SEC = 30.0
 @dataclass
 class ScrapeResult:
     """Parsed outcome of one scrape attempt."""
+
     ok: bool
-    http_status: Optional[int]
-    auth_state: str  # "ok" | "session_expired" | "network_error" | "http_error" | "parse_error" | "config_error"
-    raw_body: Optional[str]
-    parsed: Optional[dict]
-    error: Optional[str]
+    http_status: int | None
+    # ok, session_expired, network_error, http_error, parse_error or config_error
+    auth_state: str
+    raw_body: str | None
+    parsed: dict | None
+    error: str | None
 
 
-def _epoch_to_datetime(ts: Any) -> Optional[datetime]:
+def _epoch_to_datetime(ts: Any) -> datetime | None:
     """Convert a unix epoch seconds value (int or float) to naive UTC
     datetime. Returns None on bad input — every field is defensively
     optional so a quirky response shape doesn't crash the scraper."""
@@ -79,7 +84,7 @@ def _epoch_to_datetime(ts: Any) -> Optional[datetime]:
         return None
 
 
-def _extract_window(window: Any, expected_secs: int) -> tuple[Optional[float], Optional[datetime]]:
+def _extract_window(window: Any, expected_secs: int) -> tuple[float | None, datetime | None]:
     """Pull (used_percent, reset_at_datetime) from one window dict.
     Validates ``limit_window_seconds`` against the expected duration
     so primary/secondary aren't accidentally swapped if upstream ever
@@ -120,7 +125,9 @@ def parse_usage_response(body: Any) -> dict:
     return out
 
 
-async def _fetch_with_token(access_token: str, timeout_sec: float = DEFAULT_TIMEOUT_SEC) -> tuple[int, str]:
+async def _fetch_with_token(
+    access_token: str, timeout_sec: float = DEFAULT_TIMEOUT_SEC
+) -> tuple[int, str]:
     """Single bearer-auth GET against the wham/usage endpoint. Returns
     (http_status, body_text). No headers beyond Authorization + a polite
     User-Agent — the 2026-05-13 capture confirmed bearer-only suffices
@@ -148,8 +155,11 @@ async def fetch_usage(provider, db) -> ScrapeResult:
     """
     if not provider or not provider.api_key:
         return ScrapeResult(
-            ok=False, http_status=None, auth_state="config_error",
-            raw_body=None, parsed=None,
+            ok=False,
+            http_status=None,
+            auth_state="config_error",
+            raw_body=None,
+            parsed=None,
             error="provider has no api_key (OAuth access_token)",
         )
 
@@ -157,8 +167,12 @@ async def fetch_usage(provider, db) -> ScrapeResult:
         http_status, body_text = await _fetch_with_token(provider.api_key)
     except httpx.RequestError as exc:
         return ScrapeResult(
-            ok=False, http_status=None, auth_state="network_error",
-            raw_body=None, parsed=None, error=f"network: {exc!s}",
+            ok=False,
+            http_status=None,
+            auth_state="network_error",
+            raw_body=None,
+            parsed=None,
+            error=f"network: {exc!s}",
         )
 
     if http_status == 401 and provider.oauth_refresh_token:
@@ -170,40 +184,58 @@ async def fetch_usage(provider, db) -> ScrapeResult:
         )
         try:
             from app.providers.codex_oauth_flow import refresh_and_persist
+
             await refresh_and_persist(provider, db)
             # provider.api_key is now the fresh access_token (in-place mutation)
             http_status, body_text = await _fetch_with_token(provider.api_key)
         except Exception as exc:
             return ScrapeResult(
-                ok=False, http_status=http_status, auth_state="session_expired",
-                raw_body=body_text[:2000], parsed=None,
+                ok=False,
+                http_status=http_status,
+                auth_state="session_expired",
+                raw_body=body_text[:2000],
+                parsed=None,
                 error=f"refresh failed: {exc!s}",
             )
 
     if http_status == 401 or http_status == 403:
         return ScrapeResult(
-            ok=False, http_status=http_status, auth_state="session_expired",
-            raw_body=body_text[:2000], parsed=None,
+            ok=False,
+            http_status=http_status,
+            auth_state="session_expired",
+            raw_body=body_text[:2000],
+            parsed=None,
             error=f"{http_status}: bearer rejected — operator may need to re-auth codex-oauth",
         )
     if http_status != 200:
         return ScrapeResult(
-            ok=False, http_status=http_status, auth_state="http_error",
-            raw_body=body_text[:2000], parsed=None,
+            ok=False,
+            http_status=http_status,
+            auth_state="http_error",
+            raw_body=body_text[:2000],
+            parsed=None,
             error=f"unexpected http {http_status}",
         )
     try:
         import json
+
         parsed = json.loads(body_text)
     except Exception as exc:
         return ScrapeResult(
-            ok=False, http_status=http_status, auth_state="parse_error",
-            raw_body=body_text[:2000], parsed=None,
+            ok=False,
+            http_status=http_status,
+            auth_state="parse_error",
+            raw_body=body_text[:2000],
+            parsed=None,
             error=f"json parse: {exc!s}",
         )
     return ScrapeResult(
-        ok=True, http_status=http_status, auth_state="ok",
-        raw_body=body_text, parsed=parsed, error=None,
+        ok=True,
+        http_status=http_status,
+        auth_state="ok",
+        raw_body=body_text,
+        parsed=parsed,
+        error=None,
     )
 
 
@@ -213,6 +245,7 @@ async def scrape_provider_into_snapshot(db, provider) -> dict:
     worker + admin UI share render paths.
     """
     from app.models.db import ExternalUsageSnapshot
+
     result = await fetch_usage(provider, db)
     snap_kwargs: dict = {
         "provider_id": provider.id,
@@ -261,10 +294,12 @@ async def scrape_provider_into_snapshot(db, provider) -> dict:
 # (operator-pasted cookies + endpoint URL) is obsolete now that we
 # use the OAuth bearer.
 
+
 def parse_cookie_jar(raw):
     """Phase 1 legacy stub — kept for import compat. Returns whatever
     structure parses; not used by the v3.8.1 scrape path."""
     import json
+
     if isinstance(raw, dict):
         return {k: str(v) for k, v in raw.items() if k and v}
     if isinstance(raw, str) and raw.strip().startswith("{"):

@@ -1,21 +1,16 @@
 """v3.7.10 — AI rate limiter tests."""
+
 from __future__ import annotations
 
-import json
-from datetime import datetime, timezone, timedelta
-
-import pytest
-
 from app.monitoring.ai_rate_limiter import (
-    _redact,
     _percentile,
-    compute_stats,
-    pick_sample_previews,
-    build_prompt,
-    parse_llm_response,
+    _redact,
     _verdict_to_action,
+    build_prompt,
+    compute_stats,
+    parse_llm_response,
+    pick_sample_previews,
 )
-
 
 # ── _redact ────────────────────────────────────────────────────────
 
@@ -74,9 +69,16 @@ def test_percentile_handles_floats():
 # ── compute_stats ──────────────────────────────────────────────────
 
 
-def _event(severity="info", in_tok=100, out_tok=50, latency_ms=500,
-           ip="192.168.1.1", model="claude-haiku-4-5", cost_class="subscription",
-           preview="hello"):
+def _event(
+    severity="info",
+    in_tok=100,
+    out_tok=50,
+    latency_ms=500,
+    ip="192.168.1.1",
+    model="claude-haiku-4-5",
+    cost_class="subscription",
+    preview="hello",
+):
     return {
         "timestamp": "2026-05-10T12:00:00Z",
         "event_type": "llm_request",
@@ -158,8 +160,15 @@ def test_compute_stats_cost_class_distribution():
 
 
 def test_compute_stats_handles_missing_metadata():
-    events = [{"timestamp": "2026-05-10T12:00:00Z", "event_type": "x",
-               "severity": "info", "message": "", "metadata": None}]
+    events = [
+        {
+            "timestamp": "2026-05-10T12:00:00Z",
+            "event_type": "x",
+            "severity": "info",
+            "message": "",
+            "metadata": None,
+        }
+    ]
     # Should not raise
     s = compute_stats(events)
     assert s["total_requests"] == 1
@@ -231,7 +240,9 @@ def test_parse_handles_markdown_wrap():
 
 
 def test_parse_handles_preamble():
-    text = 'Sure thing! Here is my analysis:\n\n{"verdict": "watch", "reasoning": "slightly elevated"}'
+    text = (
+        'Sure thing! Here is my analysis:\n\n{"verdict": "watch", "reasoning": "slightly elevated"}'
+    )
     out = parse_llm_response(text)
     assert out is not None
     assert out["verdict"] == "watch"
@@ -258,6 +269,7 @@ def test_verdict_to_action_mapping():
 
 def test_main_lifespan_starts_ai_rate_limiter():
     from pathlib import Path
+
     src = Path("app/main.py").read_text()
     assert "ai_rate_limiter" in src
     assert "_ai_rl.start()" in src
@@ -265,6 +277,7 @@ def test_main_lifespan_starts_ai_rate_limiter():
 
 def test_admin_router_registered():
     from pathlib import Path
+
     src = Path("app/main.py").read_text()
     assert "ai_rate_limiter_router" in src
     assert "include_router(ai_rate_limiter_router)" in src
@@ -272,6 +285,7 @@ def test_admin_router_registered():
 
 def test_settings_have_ai_rate_limiter_fields():
     from app.config import settings
+
     assert hasattr(settings, "ai_rate_limiter_enabled")
     assert hasattr(settings, "ai_rate_limiter_interval_sec")
     assert hasattr(settings, "ai_rate_limiter_model")
@@ -284,12 +298,22 @@ def test_settings_have_ai_rate_limiter_fields():
 
 def test_api_key_ai_review_model_exists():
     from app.models.db import ApiKeyAiReview
+
     cols = {c.name for c in ApiKeyAiReview.__table__.columns}
     expected = {
-        "id", "api_key_id", "captured_at", "llm_model", "llm_verdict",
-        "llm_reasoning", "suggested_action", "stats_summary",
-        "applied_at", "applied_action", "prior_rate_limit_rpm",
-        "reverted_at", "dismissed_at",
+        "id",
+        "api_key_id",
+        "captured_at",
+        "llm_model",
+        "llm_verdict",
+        "llm_reasoning",
+        "suggested_action",
+        "stats_summary",
+        "applied_at",
+        "applied_action",
+        "prior_rate_limit_rpm",
+        "reverted_at",
+        "dismissed_at",
     }
     missing = expected - cols
     assert not missing, f"missing columns: {missing}"
@@ -302,6 +326,7 @@ def test_classify_with_llm_sends_internal_source_header():
     """Outgoing httpx request must carry X-Internal-Source: ai_rate_limiter
     so the activity-log row gets tagged and excluded from next cycle."""
     from pathlib import Path
+
     src = Path("app/monitoring/ai_rate_limiter.py").read_text()
     # The header literal must be present in classify_with_llm's headers dict
     assert "X-Internal-Source" in src
@@ -312,17 +337,19 @@ def test_review_one_key_filters_internal_source_in_source():
     """review_one_key() must skip rows whose metadata.internal_source
     matches our own tag — defensive filter in case the meta gets stamped."""
     from pathlib import Path
+
     src = Path("app/monitoring/ai_rate_limiter.py").read_text()
     assert "internal_source" in src
-    assert 'ai_rate_limiter' in src
+    assert "ai_rate_limiter" in src
     # Specifically: a filter expression on r.metadata
-    assert 'get("internal_source")' in src or 'get(\'internal_source\')' in src
+    assert 'get("internal_source")' in src or "get('internal_source')" in src
 
 
 def test_record_outcome_helper_attaches_internal_source():
     """_attach_client_ip() (R5 helper) must also pull get_internal_source()
     so the meta dict carries internal_source when set."""
     from pathlib import Path
+
     src = Path("app/monitoring/helpers.py").read_text()
     assert "get_internal_source" in src
     assert 'meta["internal_source"]' in src
@@ -330,8 +357,10 @@ def test_record_outcome_helper_attaches_internal_source():
 
 def test_request_context_exposes_internal_source_helpers():
     from app.observability.request_context import (
-        set_internal_source, get_internal_source,
+        get_internal_source,
+        set_internal_source,
     )
+
     set_internal_source("ai_rate_limiter")
     assert get_internal_source() == "ai_rate_limiter"
     set_internal_source(None)
@@ -342,7 +371,8 @@ def test_log_requests_middleware_reads_internal_source_header():
     """log_requests middleware must read the X-Internal-Source header
     and stamp the contextvar."""
     from pathlib import Path
+
     src = Path("app/main.py").read_text()
     assert "set_internal_source" in src
     # Read from request headers
-    assert 'x-internal-source' in src.lower()
+    assert "x-internal-source" in src.lower()

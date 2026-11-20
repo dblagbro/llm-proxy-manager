@@ -6,6 +6,7 @@ memory-tool `tool_use` blocks from the SSE passthrough and (b) feeds the
 assembled response through the extractor when `conversation_id` is set —
 and stays a no-op when the caller did not opt into memory.
 """
+
 from __future__ import annotations
 
 import json
@@ -23,26 +24,49 @@ async def test_cot_stream_runs_memory_extract(monkeypatch):
     import app.memory.extract as mem
 
     async def fake_cot_pipeline(*a, **k):
-        yield _sse({"type": "content_block_start", "index": 0,
-                    "content_block": {"type": "tool_use", "id": "toolu_1",
-                                      "name": "memory_20250818", "input": {}}})
-        yield _sse({"type": "content_block_delta", "index": 0,
-                    "delta": {"type": "input_json_delta",
-                              "partial_json": '{"command": '}})
-        yield _sse({"type": "content_block_delta", "index": 0,
-                    "delta": {"type": "input_json_delta",
-                              "partial_json": '"view"}'}})
+        yield _sse(
+            {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {
+                    "type": "tool_use",
+                    "id": "toolu_1",
+                    "name": "memory_20250818",
+                    "input": {},
+                },
+            }
+        )
+        yield _sse(
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "input_json_delta", "partial_json": '{"command": '},
+            }
+        )
+        yield _sse(
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "input_json_delta", "partial_json": '"view"}'},
+            }
+        )
         yield _sse({"type": "content_block_stop", "index": 0})
-        yield _sse({"type": "message_delta",
-                    "usage": {"input_tokens": 5, "output_tokens": 7}})
+        yield _sse({"type": "message_delta", "usage": {"input_tokens": 5, "output_tokens": 7}})
 
     async def fake_record_outcome(*a, **k):
         return None
 
     captured = {}
 
-    async def fake_extract(db, *, response_dict, api_key_id, conversation_id,
-                           memory_tag_default=None, source_provider_id=None):
+    async def fake_extract(
+        db,
+        *,
+        response_dict,
+        api_key_id,
+        conversation_id,
+        memory_tag_default=None,
+        source_provider_id=None,
+    ):
         captured["response_dict"] = response_dict
         captured["conversation_id"] = conversation_id
         captured["api_key_id"] = api_key_id
@@ -54,8 +78,16 @@ async def test_cot_stream_runs_memory_extract(monkeypatch):
     monkeypatch.setattr(mem, "maybe_extract_memory_writes", fake_extract)
 
     async for _ in st._stream_cot_anthropic(
-        "claude-x", [], None, {}, None, "prov-1", object(), "key-1",
-        conversation_id="chat-abc", memory_tag="memory_20250818",
+        "claude-x",
+        [],
+        None,
+        {},
+        None,
+        "prov-1",
+        object(),
+        "key-1",
+        conversation_id="chat-abc",
+        memory_tag="memory_20250818",
     ):
         pass
 
@@ -79,8 +111,7 @@ async def test_cot_stream_no_conversation_id_skips_extract(monkeypatch):
     import app.memory.extract as mem
 
     async def fake_cot_pipeline(*a, **k):
-        yield _sse({"type": "message_delta",
-                    "usage": {"input_tokens": 1, "output_tokens": 1}})
+        yield _sse({"type": "message_delta", "usage": {"input_tokens": 1, "output_tokens": 1}})
 
     async def fake_record_outcome(*a, **k):
         return None
@@ -96,7 +127,14 @@ async def test_cot_stream_no_conversation_id_skips_extract(monkeypatch):
     monkeypatch.setattr(mem, "maybe_extract_memory_writes", fake_extract)
 
     async for _ in st._stream_cot_anthropic(
-        "claude-x", [], None, {}, None, "prov-1", object(), "key-1",
+        "claude-x",
+        [],
+        None,
+        {},
+        None,
+        "prov-1",
+        object(),
+        "key-1",
     ):
         pass
 
@@ -112,8 +150,7 @@ async def test_cot_stream_extract_runs_even_with_no_tool_blocks(monkeypatch):
     import app.memory.extract as mem
 
     async def fake_cot_pipeline(*a, **k):
-        yield _sse({"type": "message_delta",
-                    "usage": {"input_tokens": 1, "output_tokens": 1}})
+        yield _sse({"type": "message_delta", "usage": {"input_tokens": 1, "output_tokens": 1}})
 
     async def fake_record_outcome(*a, **k):
         return None
@@ -129,7 +166,14 @@ async def test_cot_stream_extract_runs_even_with_no_tool_blocks(monkeypatch):
     monkeypatch.setattr(mem, "maybe_extract_memory_writes", fake_extract)
 
     async for _ in st._stream_cot_anthropic(
-        "claude-x", [], None, {}, None, "prov-1", object(), "key-1",
+        "claude-x",
+        [],
+        None,
+        {},
+        None,
+        "prov-1",
+        object(),
+        "key-1",
         conversation_id="chat-empty",
     ):
         pass

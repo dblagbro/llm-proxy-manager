@@ -11,10 +11,10 @@ Opt-in via `X-Context-Strategy: truncate|mapreduce|error` request header:
   mapreduce — summarise-then-merge, slower but preserves signal
   error     — return 413 Payload Too Large with X-Context-Tokens: N
 """
+
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +36,7 @@ def _content_to_text(content) -> str:
     return ""
 
 
-def estimate_tokens(messages: list[dict], system: Optional[str] = None) -> int:
+def estimate_tokens(messages: list[dict], system: str | None = None) -> int:
     chars = len(system or "")
     for m in messages:
         chars += len(_content_to_text(m.get("content", "")))
@@ -48,11 +48,11 @@ def effective_window(context_length: int, fraction: float = 0.75) -> int:
     return int(context_length * fraction)
 
 
-def needs_compression(messages: list[dict], context_length: int, system: Optional[str] = None) -> bool:
+def needs_compression(messages: list[dict], context_length: int, system: str | None = None) -> bool:
     return estimate_tokens(messages, system) > effective_window(context_length)
 
 
-def resolve_strategy(header_value: Optional[str]) -> str:
+def resolve_strategy(header_value: str | None) -> str:
     v = (header_value or "").lower().strip()
     if v in ("truncate", "mapreduce", "map-reduce", "error"):
         return "mapreduce" if v == "map-reduce" else v
@@ -60,7 +60,9 @@ def resolve_strategy(header_value: Optional[str]) -> str:
 
 
 def truncate_to_window(
-    messages: list[dict], context_length: int, system: Optional[str] = None,
+    messages: list[dict],
+    context_length: int,
+    system: str | None = None,
     keep_last: int = 6,
 ) -> tuple[list[dict], int]:
     """Default strategy — drop the oldest messages until we fit, preserving
@@ -101,8 +103,9 @@ async def mapreduce_compress(
 
     Returns (new_messages, chunks_summarised, original_tokens).
     """
-    from app.routing.retry import acompletion_with_retry
     import asyncio as _asyncio
+
+    from app.routing.retry import acompletion_with_retry
 
     orig_tokens = estimate_tokens(messages)
     tail = messages[-keep_last:] if len(messages) > keep_last else messages[:]
@@ -141,10 +144,13 @@ async def mapreduce_compress(
 
     async def _summarise_one(chunk: list[dict]) -> str:
         chunk_text = "\n\n".join(
-            f"[{m.get('role')}]: {_content_to_text(m.get('content'))[:2000]}"
-            for m in chunk
+            f"[{m.get('role')}]: {_content_to_text(m.get('content'))[:2000]}" for m in chunk
         )
-        call_kwargs = {k: v for k, v in extra.items() if k not in ("max_tokens", "system", "stream", "tools", "tool_choice")}
+        call_kwargs = {
+            k: v
+            for k, v in extra.items()
+            if k not in ("max_tokens", "system", "stream", "tools", "tool_choice")
+        }
         try:
             resp = await acompletion_with_retry(
                 model=model,

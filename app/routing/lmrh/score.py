@@ -9,16 +9,18 @@ refactor. This is where the bulk of LMRH changes land (new dims +
 tweaks to the weight/rank math), so isolating it from parser +
 header-builder code reduces navigation cost on feature edits.
 """
+
 from __future__ import annotations
 
-from typing import Optional
-
 from app.routing.lmrh.types import (
-    CapabilityProfile, LMRHHint,
-    WEIGHTS, TASK_ALIASES, LATENCY_RANK, COST_RANK,
     _REFUSAL_RATE_TO_SAFETY_CEIL,
+    COST_RANK,
+    LATENCY_RANK,
+    TASK_ALIASES,
+    WEIGHTS,
+    CapabilityProfile,
+    LMRHHint,
 )
-
 
 # v3.0.70 — provider-family fuzzy match. When a caller writes
 # provider-hint=anthropic or fallback-chain=anthropic, they mean "any
@@ -31,19 +33,32 @@ from app.routing.lmrh.types import (
 # recognized. This map expands a family token into the set of
 # provider_type values that count as that family.
 _PROVIDER_FAMILY_TYPES: dict[str, frozenset[str]] = {
-    "anthropic": frozenset({
-        "anthropic", "anthropic-direct", "anthropic-oauth", "claude-oauth",
-    }),
-    "openai": frozenset({
-        # v3.8.0 (#251) — entries are lowercased to match the case-insensitive
-        # comparison below (provider_type is .lower()-normalized before
-        # membership-checking). Even though the canonical value retains its
-        # mixed case ("ChatGPT-oauth-plan"), the family map keys it lowercase.
-        "openai", "openai-direct", "chatgpt-oauth-plan",
-    }),
-    "google": frozenset({
-        "vertex_ai", "google-genai", "gemini",
-    }),
+    "anthropic": frozenset(
+        {
+            "anthropic",
+            "anthropic-direct",
+            "anthropic-oauth",
+            "claude-oauth",
+        }
+    ),
+    "openai": frozenset(
+        {
+            # v3.8.0 (#251) — entries are lowercased to match the case-insensitive
+            # comparison below (provider_type is .lower()-normalized before
+            # membership-checking). Even though the canonical value retains its
+            # mixed case ("ChatGPT-oauth-plan"), the family map keys it lowercase.
+            "openai",
+            "openai-direct",
+            "chatgpt-oauth-plan",
+        }
+    ),
+    "google": frozenset(
+        {
+            "vertex_ai",
+            "google-genai",
+            "gemini",
+        }
+    ),
     "microsoft": frozenset({"azure"}),
     "azure": frozenset({"azure"}),
     "cohere": frozenset({"cohere"}),
@@ -152,12 +167,8 @@ def score_candidate(profile: CapabilityProfile, hint: LMRHHint) -> tuple[float, 
                         score += WEIGHTS["region"]
                     else:
                         profile_regions_lower = {r.lower() for r in profile.regions}
-                        matched = (
-                            bool(wanted & profile_regions_lower)
-                            or any(
-                                pr.startswith(w + "-")
-                                for w in wanted for pr in profile_regions_lower
-                            )
+                        matched = bool(wanted & profile_regions_lower) or any(
+                            pr.startswith(w + "-") for w in wanted for pr in profile_regions_lower
                         )
                         if matched:
                             score += WEIGHTS["region"]
@@ -246,9 +257,14 @@ def score_candidate(profile: CapabilityProfile, hint: LMRHHint) -> tuple[float, 
             # treat them identically.
             case "provider-hint" | "fallback-chain":
                 wanted = [n.strip() for n in dim.value.split(",") if n.strip()]
-                if any(_provider_hint_match(
-                    w, profile.provider_name, profile.provider_type,
-                ) for w in wanted):
+                if any(
+                    _provider_hint_match(
+                        w,
+                        profile.provider_name,
+                        profile.provider_type,
+                    )
+                    for w in wanted
+                ):
                     score += WEIGHTS.get("provider-hint", 5)
                 else:
                     if dim.required:
@@ -272,9 +288,10 @@ def score_candidate(profile: CapabilityProfile, hint: LMRHHint) -> tuple[float, 
             # Provider's ``safety`` must fall within [floor, ceil] to score.
             case "refuse-tolerance":
                 from app.routing.lmrh.types import (
-                    _REFUSE_TOLERANCE_TO_SAFETY_FLOOR,
                     _REFUSE_TOLERANCE_TO_SAFETY_CEIL,
+                    _REFUSE_TOLERANCE_TO_SAFETY_FLOOR,
                 )
+
                 v = dim.value.lower()
                 floor_ = _REFUSE_TOLERANCE_TO_SAFETY_FLOOR.get(v)
                 ceil_ = _REFUSE_TOLERANCE_TO_SAFETY_CEIL.get(v)
@@ -303,7 +320,7 @@ def score_candidate(profile: CapabilityProfile, hint: LMRHHint) -> tuple[float, 
 
 
 def rank_candidates(
-    profiles: list[CapabilityProfile], hint: Optional[LMRHHint]
+    profiles: list[CapabilityProfile], hint: LMRHHint | None
 ) -> list[tuple[CapabilityProfile, list[str]]]:
     """Return profiles sorted by descending score. Hard-constraint failures
     are excluded entirely. Without a hint, sorts by priority only."""
@@ -321,14 +338,13 @@ def rank_candidates(
 
 
 def rank_candidates_with_scores(
-    profiles: list[CapabilityProfile], hint: Optional[LMRHHint]
+    profiles: list[CapabilityProfile], hint: LMRHHint | None
 ) -> list[tuple[CapabilityProfile, list[str], float]]:
     """Same as rank_candidates but returns scores — used by the P2C balancer
     to identify ties within the top LMRH tier."""
     if not hint:
         return [
-            (p, [], float(1000 - p.priority))
-            for p in sorted(profiles, key=lambda p: p.priority)
+            (p, [], float(1000 - p.priority)) for p in sorted(profiles, key=lambda p: p.priority)
         ]
     scored = []
     for p in profiles:

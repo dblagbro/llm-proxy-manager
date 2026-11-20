@@ -19,10 +19,10 @@ Streaming path is covered by v5.6.1 (separate ship).
 """
 
 from app.capability_scout.scout import (
+    REFUSAL_PATTERNS,
+    emit_suggestions,
     is_enabled,
     scan_response_text,
-    emit_suggestions,
-    REFUSAL_PATTERNS,
 )
 
 __all__ = [

@@ -1,13 +1,14 @@
 """Unit tests for image detection and stripping utilities (both wire formats)."""
-import pytest
+
 from app.api.image_utils import (
     has_images_anthropic,
-    strip_images_anthropic,
     has_images_openai,
+    strip_images_anthropic,
     strip_images_openai,
 )
 
 # ── has_images_anthropic ──────────────────────────────────────────────────────
+
 
 def test_anthropic_no_images_string_content():
     msgs = [{"role": "user", "content": "hello"}]
@@ -20,14 +21,27 @@ def test_anthropic_no_images_text_block():
 
 
 def test_anthropic_detects_image_block():
-    msgs = [{"role": "user", "content": [
-        {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "abc"}},
-    ]}]
+    msgs = [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "image",
+                    "source": {"type": "base64", "media_type": "image/png", "data": "abc"},
+                },
+            ],
+        }
+    ]
     assert has_images_anthropic(msgs) is True
 
 
 def test_anthropic_detects_image_url_block():
-    msgs = [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": "http://x.com/img.png"}}]}]
+    msgs = [
+        {
+            "role": "user",
+            "content": [{"type": "image_url", "image_url": {"url": "http://x.com/img.png"}}],
+        }
+    ]
     assert has_images_anthropic(msgs) is True
 
 
@@ -45,10 +59,16 @@ def test_anthropic_empty_messages():
 
 # ── strip_images_anthropic ────────────────────────────────────────────────────
 
+
 def test_strip_anthropic_replaces_image_with_text():
-    msgs = [{"role": "user", "content": [
-        {"type": "image", "source": {"media_type": "image/jpeg"}},
-    ]}]
+    msgs = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "image", "source": {"media_type": "image/jpeg"}},
+            ],
+        }
+    ]
     result = strip_images_anthropic(msgs)
     assert len(result) == 1
     blocks = result[0]["content"]
@@ -59,10 +79,15 @@ def test_strip_anthropic_replaces_image_with_text():
 
 
 def test_strip_anthropic_preserves_text_blocks():
-    msgs = [{"role": "user", "content": [
-        {"type": "text", "text": "describe this"},
-        {"type": "image", "source": {"media_type": "image/png"}},
-    ]}]
+    msgs = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "describe this"},
+                {"type": "image", "source": {"media_type": "image/png"}},
+            ],
+        }
+    ]
     result = strip_images_anthropic(msgs)
     blocks = result[0]["content"]
     assert len(blocks) == 2
@@ -87,14 +112,20 @@ def test_strip_anthropic_no_images_unchanged():
 
 
 def test_strip_anthropic_uses_media_type_in_placeholder():
-    msgs = [{"role": "user", "content": [
-        {"type": "image", "source": {"media_type": "image/gif"}},
-    ]}]
+    msgs = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "image", "source": {"media_type": "image/gif"}},
+            ],
+        }
+    ]
     result = strip_images_anthropic(msgs)
     assert "image/gif" in result[0]["content"][0]["text"]
 
 
 # ── has_images_openai ─────────────────────────────────────────────────────────
+
 
 def test_openai_no_images_string_content():
     msgs = [{"role": "user", "content": "hello"}]
@@ -107,9 +138,14 @@ def test_openai_no_images_text_part():
 
 
 def test_openai_detects_image_url_part():
-    msgs = [{"role": "user", "content": [
-        {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
-    ]}]
+    msgs = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
+            ],
+        }
+    ]
     assert has_images_openai(msgs) is True
 
 
@@ -128,10 +164,16 @@ def test_openai_mixed_messages():
 
 # ── strip_images_openai ───────────────────────────────────────────────────────
 
+
 def test_strip_openai_replaces_image_url_with_text():
-    msgs = [{"role": "user", "content": [
-        {"type": "image_url", "image_url": {"url": "http://x.com/img.png"}},
-    ]}]
+    msgs = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": "http://x.com/img.png"}},
+            ],
+        }
+    ]
     result = strip_images_openai(msgs)
     parts = result[0]["content"]
     assert len(parts) == 1
@@ -140,10 +182,15 @@ def test_strip_openai_replaces_image_url_with_text():
 
 
 def test_strip_openai_preserves_text_parts():
-    msgs = [{"role": "user", "content": [
-        {"type": "text", "text": "what's in this image?"},
-        {"type": "image_url", "image_url": {"url": "http://x.com/img.png"}},
-    ]}]
+    msgs = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "what's in this image?"},
+                {"type": "image_url", "image_url": {"url": "http://x.com/img.png"}},
+            ],
+        }
+    ]
     result = strip_images_openai(msgs)
     parts = result[0]["content"]
     assert len(parts) == 2

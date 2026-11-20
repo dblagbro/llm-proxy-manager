@@ -1,14 +1,12 @@
 """v3.6.2 — request context (client IP capture) tests."""
-from __future__ import annotations
 
-import pytest
+from __future__ import annotations
 
 from app.observability.request_context import (
     extract_client_ip_from_request,
     get_client_ip,
     set_client_ip,
 )
-
 
 # ── Stub Request object ────────────────────────────────────────────
 
@@ -66,10 +64,12 @@ def test_falls_back_to_socket_peer():
 
 
 def test_xff_takes_priority_over_real_ip():
-    req = _StubRequest(headers={
-        "x-forwarded-for": "203.0.113.42",
-        "x-real-ip": "198.51.100.99",
-    })
+    req = _StubRequest(
+        headers={
+            "x-forwarded-for": "203.0.113.42",
+            "x-real-ip": "198.51.100.99",
+        }
+    )
     assert extract_client_ip_from_request(req) == "203.0.113.42"
 
 
@@ -92,8 +92,10 @@ def test_handles_xff_with_only_whitespace():
 
 def test_handles_malformed_request_object_gracefully():
     """Defensive: any unexpected attribute access shouldn't 500."""
+
     class Bogus:
         pass
+
     out = extract_client_ip_from_request(Bogus())
     assert out is None
 
@@ -134,6 +136,7 @@ def test_record_outcome_meta_includes_client_ip_field_signature():
     the helper too.
     """
     from pathlib import Path
+
     src = Path("app/monitoring/helpers.py").read_text()
     # The shared helper exists and reads both ip variants
     assert "def _attach_client_ip" in src
@@ -146,6 +149,8 @@ def test_record_outcome_meta_includes_client_ip_field_signature():
     assert 'meta["client_ip"]' in src
     # And _build_event_meta_base is called from both paths in record_outcome
     import inspect
+
     from app.monitoring import helpers
+
     fn_src = inspect.getsource(helpers.record_outcome)
     assert fn_src.count("_build_event_meta_base") >= 2

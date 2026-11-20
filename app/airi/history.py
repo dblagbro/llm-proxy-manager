@@ -9,13 +9,14 @@ ARCH-A discipline: every function takes a caller-supplied session and never
 holds it across an LLM call — the chat endpoint persists the user turn and
 the assistant turn in two separate short sessions, bracketing the agent loop.
 """
+
 from __future__ import annotations
 
 import logging
 import secrets
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
-from sqlalchemy import select, func, desc
+from sqlalchemy import desc, func, select
 
 from app.models.db import AiriConversation, AiriMessage
 
@@ -25,7 +26,7 @@ _TITLE_MAX = 70
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc).replace(tzinfo=None)
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 def _title_from(text: str) -> str:
@@ -37,8 +38,7 @@ def _title_from(text: str) -> str:
     return line if len(line) <= _TITLE_MAX else line[: _TITLE_MAX - 1].rstrip() + "…"
 
 
-async def start_turn(db, *, user_id: str, conversation_id: str | None,
-                     user_text: str) -> str:
+async def start_turn(db, *, user_id: str, conversation_id: str | None, user_text: str) -> str:
     """Create-or-continue a conversation and append the user message.
     Returns the conversation id (newly minted when ``conversation_id`` is
     None or does not resolve)."""
@@ -51,17 +51,25 @@ async def start_turn(db, *, user_id: str, conversation_id: str | None,
         conv = await db.get(AiriConversation, conversation_id)
     if conv is None:
         conv = AiriConversation(
-            id=secrets.token_hex(8), user_id=user_id or "operator",
-            title=_title_from(user_text), created_at=ts, updated_at=ts,
+            id=secrets.token_hex(8),
+            user_id=user_id or "operator",
+            title=_title_from(user_text),
+            created_at=ts,
+            updated_at=ts,
         )
         db.add(conv)
         await db.flush()
     else:
         conv.updated_at = ts  # bump so the thread sorts to the top
-    db.add(AiriMessage(
-        id=secrets.token_hex(8), conversation_id=conv.id,
-        role="user", content=user_text or "", created_at=ts,
-    ))
+    db.add(
+        AiriMessage(
+            id=secrets.token_hex(8),
+            conversation_id=conv.id,
+            role="user",
+            content=user_text or "",
+            created_at=ts,
+        )
+    )
     await db.commit()
     return conv.id
 
@@ -73,17 +81,24 @@ async def record_assistant(db, *, conversation_id: str, text: str) -> None:
         return
     ts = _now()
     conv.updated_at = ts
-    db.add(AiriMessage(
-        id=secrets.token_hex(8), conversation_id=conversation_id,
-        role="assistant", content=text or "", created_at=ts,
-    ))
+    db.add(
+        AiriMessage(
+            id=secrets.token_hex(8),
+            conversation_id=conversation_id,
+            role="assistant",
+            content=text or "",
+            created_at=ts,
+        )
+    )
     await db.commit()
 
 
 def _conv_summary(conv: AiriConversation, msg_count: int) -> dict:
     return {
-        "id": conv.id, "user_id": conv.user_id,
-        "title": conv.title or "(untitled)", "message_count": msg_count,
+        "id": conv.id,
+        "user_id": conv.user_id,
+        "title": conv.title or "(untitled)",
+        "message_count": msg_count,
         "created_at": str(conv.created_at) if conv.created_at else None,
         "updated_at": str(conv.updated_at) if conv.updated_at else None,
     }
@@ -91,16 +106,27 @@ def _conv_summary(conv: AiriConversation, msg_count: int) -> dict:
 
 async def list_conversations(db, *, user_id: str, limit: int = 50) -> list[dict]:
     """An operator's own threads, most-recently-active first."""
-    counts = dict((await db.execute(
-        select(AiriMessage.conversation_id, func.count())
-        .group_by(AiriMessage.conversation_id)
-    )).all())
-    rows = (await db.execute(
-        select(AiriConversation)
-        .where(AiriConversation.user_id == user_id)
-        .order_by(desc(AiriConversation.updated_at))
-        .limit(limit)
-    )).scalars().all()
+    counts = dict(
+        (
+            await db.execute(
+                select(AiriMessage.conversation_id, func.count()).group_by(
+                    AiriMessage.conversation_id
+                )
+            )
+        ).all()
+    )
+    rows = (
+        (
+            await db.execute(
+                select(AiriConversation)
+                .where(AiriConversation.user_id == user_id)
+                .order_by(desc(AiriConversation.updated_at))
+                .limit(limit)
+            )
+        )
+        .scalars()
+        .all()
+    )
     return [_conv_summary(c, counts.get(c.id, 0)) for c in rows]
 
 
@@ -109,15 +135,24 @@ async def get_conversation(db, conversation_id: str) -> dict | None:
     conv = await db.get(AiriConversation, conversation_id)
     if conv is None:
         return None
-    msgs = (await db.execute(
-        select(AiriMessage)
-        .where(AiriMessage.conversation_id == conversation_id)
-        .order_by(AiriMessage.created_at, AiriMessage.id)
-    )).scalars().all()
+    msgs = (
+        (
+            await db.execute(
+                select(AiriMessage)
+                .where(AiriMessage.conversation_id == conversation_id)
+                .order_by(AiriMessage.created_at, AiriMessage.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
     out = _conv_summary(conv, len(msgs))
     out["messages"] = [
-        {"role": m.role, "content": m.content or "",
-         "created_at": str(m.created_at) if m.created_at else None}
+        {
+            "role": m.role,
+            "content": m.content or "",
+            "created_at": str(m.created_at) if m.created_at else None,
+        }
         for m in msgs
     ]
     return out
@@ -147,7 +182,8 @@ async def search_messages(db, *, query: str, limit: int = 20) -> list[dict]:
     if not terms:
         return []
     stmt = select(AiriMessage, AiriConversation).join(
-        AiriConversation, AiriMessage.conversation_id == AiriConversation.id,
+        AiriConversation,
+        AiriMessage.conversation_id == AiriConversation.id,
     )
     for t in terms:
         stmt = stmt.where(func.lower(AiriMessage.content).like(f"%{t}%"))

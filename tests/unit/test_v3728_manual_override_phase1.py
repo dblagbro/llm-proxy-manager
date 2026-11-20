@@ -7,16 +7,17 @@ read this and skip the provider entirely. Phase 1 = schema + sync +
 toggle/release endpoints. Phase 2 = UI banner + 🔒 badge. Phase 4 =
 the supervisor worker itself.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
-
 
 # ── Schema + migration ─────────────────────────────────────────────
 
 
 def test_provider_model_has_manual_override_columns():
     from app.models.db import Provider
+
     cols = {c.name for c in Provider.__table__.columns}
     for col in (
         "manual_override_until",
@@ -79,7 +80,7 @@ def test_toggle_endpoint_sets_manual_override_on_disable():
     set_by + set_at."""
     src = Path("app/api/provider_lifecycle.py").read_text()
     idx = src.index("async def toggle_provider")
-    body = src[idx:idx + 3000]
+    body = src[idx : idx + 3000]
     assert "manual_override_until = INDEFINITE_LOCK" in body
     assert "manual_override_set_by" in body
     assert "manual_override_set_at" in body
@@ -89,7 +90,7 @@ def test_toggle_endpoint_clears_manual_override_on_enable():
     """Toggling to enabled should release the lock."""
     src = Path("app/api/provider_lifecycle.py").read_text()
     idx = src.index("async def toggle_provider")
-    body = src[idx:idx + 3000]
+    body = src[idx : idx + 3000]
     # The enable branch sets all 4 fields back to null
     assert "manual_override_until = None" in body
     assert "manual_override_set_by = None" in body
@@ -100,7 +101,7 @@ def test_toggle_endpoint_clears_manual_override_on_enable():
 def test_toggle_response_includes_manual_override_active():
     src = Path("app/api/provider_lifecycle.py").read_text()
     idx = src.index("async def toggle_provider")
-    body = src[idx:idx + 3000]
+    body = src[idx : idx + 3000]
     assert '"manual_override_active"' in body
 
 
@@ -115,7 +116,7 @@ def test_release_endpoint_clears_all_4_fields():
     so the assertion shape changed from kwarg form to dict-key form."""
     src = Path("app/api/provider_lifecycle.py").read_text()
     idx = src.index("async def release_manual_overrides")
-    body = src[idx:idx + 3000]
+    body = src[idx : idx + 3000]
     assert '"manual_override_until": None' in body
     assert '"manual_override_set_by": None' in body
     assert '"manual_override_set_at": None' in body
@@ -164,5 +165,6 @@ def test_frontend_api_has_release_call():
 
 def test_version_bumped():
     from app.__version__ import __version__
+
     parts = tuple(int(p) for p in __version__.split("."))
     assert parts >= (3, 7, 28)

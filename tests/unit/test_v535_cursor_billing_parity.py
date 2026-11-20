@@ -10,20 +10,20 @@ admin endpoints. This batch adds:
 Plus frontend pin checks: CursorBillingPanel exists, ProvidersPage
 fans out to all 3 vendors, refreshOneUsageMutation routes by type.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
 
 import pytest
 
-
 # ── Backend source pins ──────────────────────────────────────────────
 
 
 def test_cursor_billing_module_exists():
     src = Path("app/api/cursor_billing.py").read_text()
-    assert "@router.post(\"/{provider_id}/cursor-billing-refresh\")" in src
-    assert "@router.post(\"/_refresh-all-cursor-billing\")" in src
+    assert '@router.post("/{provider_id}/cursor-billing-refresh")' in src
+    assert '@router.post("/_refresh-all-cursor-billing")' in src
     assert "scrape_provider_into_snapshot" in src
     # Enforces the cursor-oauth provider_type guard
     assert 'provider.provider_type != "cursor-oauth"' in src
@@ -33,7 +33,7 @@ def test_codex_bulk_endpoint_added():
     """v5.3.5 — parity gap closed. Codex had per-provider refresh but
     no bulk; Anthropic had both. Now all three vendors expose both."""
     src = Path("app/api/codex_billing.py").read_text()
-    assert "@router.post(\"/_refresh-all-codex-billing\")" in src
+    assert '@router.post("/_refresh-all-codex-billing")' in src
     assert "def refresh_all_codex_billing" in src
 
 
@@ -108,10 +108,12 @@ async def test_cursor_refresh_endpoint_rejects_non_cursor_provider():
     """The per-provider endpoint must enforce its provider_type guard
     so an operator can't accidentally fire a Cursor scrape against a
     Google or grok-web row."""
-    from app.api.cursor_billing import cursor_refresh_now
-    from fastapi import HTTPException
     from types import SimpleNamespace
     from unittest.mock import AsyncMock, MagicMock
+
+    from fastapi import HTTPException
+
+    from app.api.cursor_billing import cursor_refresh_now
 
     fake_provider = SimpleNamespace(
         id="prov-not-cursor",

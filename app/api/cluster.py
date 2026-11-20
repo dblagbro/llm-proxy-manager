@@ -1,19 +1,24 @@
 """Cluster coordination endpoints."""
+
 import json
 import logging
+import time as _time
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel
+from pydantic import Field as _Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.database import get_db
-from app.utils.disconnect_watchdog import watch_for_disconnect
-from app.auth.admin import require_admin, AdminUser
-from app.cluster.manager import get_cluster_status, apply_sync, peers as cluster_peers
-from app.cluster.auth import verify_cluster_request, sign_payload, verify_payload
-from app.routing.circuit_breaker import get_all_states
-from app.config import settings
 from app import config_runtime
 from app.__version__ import __version__
+from app.auth.admin import AdminUser, require_admin
+from app.cluster.auth import sign_payload as sign_payload
+from app.cluster.auth import verify_cluster_request, verify_payload
+from app.cluster.manager import apply_sync, get_cluster_status
+from app.config import settings
+from app.models.database import get_db
+from app.routing.circuit_breaker import get_all_states
+from app.utils.disconnect_watchdog import watch_for_disconnect
 from app.utils.timefmt import utc_iso
 
 logger = logging.getLogger(__name__)
@@ -26,7 +31,7 @@ router = APIRouter(tags=["cluster"])
 # providers + per-provider is_available) just to compute the same answer.
 # Cache the response for 3s; well under the 30s heartbeat cadence so peer
 # state is still fresh, and CB state still reads from in-memory.
-import time as _time
+
 _HEALTH_CACHE: dict = {"ts": 0.0, "body": None}
 _HEALTH_CACHE_TTL_SEC = 3.0
 
@@ -37,6 +42,7 @@ async def health():
     DB lookup result is cached for 3 seconds; CB state is always live.
     """
     from app.monitoring.worker_heartbeat import snapshot_all as _workers_snapshot
+
     now = _time.time()
     if _HEALTH_CACHE["body"] is not None and now - _HEALTH_CACHE["ts"] < _HEALTH_CACHE_TTL_SEC:
         # Re-evaluate CB state + pool snapshot on every call; only the
@@ -56,13 +62,14 @@ async def health():
             "oauthAccounts": await _oauth_accounts_snapshot(),
         }
 
+    from sqlalchemy import select
+
     from app.models.database import AsyncSessionLocal
     from app.models.db import Provider
-    from sqlalchemy import select
     from app.routing.circuit_breaker import is_available
 
     async with AsyncSessionLocal() as db:
-        result = await db.execute(select(Provider).where(Provider.enabled == True))
+        result = await db.execute(select(Provider).where(Provider.enabled.is_(True)))
         providers = result.scalars().all()
 
     total = len(providers)
@@ -105,7 +112,11 @@ async def health():
         "oauthAccounts": await _oauth_accounts_snapshot(),
     }
     _HEALTH_CACHE["ts"] = now
-    _HEALTH_CACHE["body"] = {k: v for k, v in body.items() if k not in ("circuitBreakers", "dbPool", "workers", "clusterSync", "oauthAccounts")}
+    _HEALTH_CACHE["body"] = {
+        k: v
+        for k, v in body.items()
+        if k not in ("circuitBreakers", "dbPool", "workers", "clusterSync", "oauthAccounts")
+    }
     return body
 
 
@@ -113,6 +124,7 @@ def _db_pool_snapshot() -> dict:
     """Snapshot of SQLAlchemy QueuePool state. Best-effort — never raises."""
     try:
         from app.models.database import engine
+
         pool = engine.pool
         # checkedout() and overflow() are public; size() is the configured
         # base pool_size. Some pool implementations (NullPool, etc) don't
@@ -133,17 +145,17 @@ def _db_pool_snapshot() -> dict:
         # because of the greenlet boundary).
         if getattr(settings, "db_pool_trace", False):
             from app.models.database import (
-                get_pool_checkout_trace, get_async_session_trace,
+                get_async_session_trace,
+                get_pool_checkout_trace,
             )
+
             trace = get_pool_checkout_trace()
             snap["trace_enabled"] = True
             snap["traced_checked_out"] = len(trace)
             snap["oldest_checkout_age_sec"] = trace[0]["age_sec"] if trace else 0.0
             async_trace = get_async_session_trace()
             snap["traced_async_sessions"] = len(async_trace)
-            snap["oldest_async_session_age_sec"] = (
-                async_trace[0]["age_sec"] if async_trace else 0.0
-            )
+            snap["oldest_async_session_age_sec"] = async_trace[0]["age_sec"] if async_trace else 0.0
         return snap
     except Exception as e:
         return {"error": str(e)[:200]}
@@ -153,6 +165,7 @@ def _cluster_sync_snapshot() -> dict:
     """v5.14.2 — snapshot of recent peer-sync attempt outcomes. Best-effort."""
     try:
         from app.monitoring.cluster_sync_metrics import snapshot
+
         return snapshot()
     except Exception as e:
         return {"error": str(e)[:200]}
@@ -166,6 +179,7 @@ async def _oauth_accounts_snapshot() -> dict:
     try:
         from app.api._oauth_accounts_health import snapshot_oauth_accounts
         from app.models.database import AsyncSessionLocal
+
         async with AsyncSessionLocal() as _s:
             return await snapshot_oauth_accounts(_s)
     except Exception as e:
@@ -199,8 +213,10 @@ async def cluster_db_pool_trace(_: AdminUser = Depends(require_admin)):
             "hint": "set DB_POOL_TRACE=1 on this node and recreate the container",
         }
     from app.models.database import (
-        get_pool_checkout_trace, get_async_session_trace,
+        get_async_session_trace,
+        get_pool_checkout_trace,
     )
+
     trace = get_pool_checkout_trace()
     async_trace = get_async_session_trace()
     return {
@@ -247,7 +263,9 @@ async def cluster_sync(
 
 @router.get("/cluster/oauth-pull/{provider_id}")
 async def cluster_oauth_pull(
-    provider_id: str, request: Request, db: AsyncSession = Depends(get_db),
+    provider_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
 ):
     """v3.0.18: peer-pull endpoint for OAuth refresh-token race recovery.
 
@@ -267,7 +285,9 @@ async def cluster_oauth_pull(
         raise HTTPException(403, "Invalid cluster signature")
 
     from sqlalchemy import select
+
     from app.models.db import Provider
+
     result = await db.execute(select(Provider).where(Provider.id == provider_id))
     p = result.scalar_one_or_none()
     if p is None:
@@ -316,6 +336,7 @@ async def cluster_local_metrics(
     # Cap to the same range the admin endpoint allows (30d).
     hours = max(1, min(int(hours), 720))
     from app.monitoring.metrics import get_all_provider_summary
+
     summary = await get_all_provider_summary(db, hours=hours)
     return {
         "node_id": settings.cluster_node_id or "",
@@ -352,6 +373,7 @@ async def reset_circuit_breaker(
 ):
     # v5.22.67 — reset every node, not just the one serving the click.
     from app.cluster.breaker_reset import reset_everywhere
+
     peers_result = await reset_everywhere(provider_id)
     return {"ok": True, "provider_id": provider_id, "peers": peers_result}
 
@@ -361,6 +383,7 @@ async def peer_circuit_breaker_reset(request: Request):
     """v5.22.67 — peer-to-peer breaker reset. HMAC-authenticated; resets
     this node only and does NOT re-fan-out (would loop)."""
     from app.cluster.breaker_reset import reset_local, valid_provider_id
+
     raw = await request.body()
     if not verify_cluster_request(raw, request.headers.get("X-Cluster-Sig", "")):
         raise HTTPException(401, "invalid HMAC signature")
@@ -380,6 +403,7 @@ async def open_circuit_breaker(
     _: AdminUser = Depends(require_admin),
 ):
     from app.routing.circuit_breaker import force_open
+
     await force_open(provider_id)
     return {"ok": True, "provider_id": provider_id}
 
@@ -393,8 +417,10 @@ async def force_sync_now(
     convergence after a config change without waiting.
 
     Returns ``{peer_id: ok_bool, ...}`` for each reachable peer."""
-    from app.cluster.manager import peers as _peers, push_sync
+    from app.cluster.manager import peers as _peers
+    from app.cluster.manager import push_sync
     from app.models.database import AsyncSessionLocal
+
     results = {}
     for peer_id, peer in list(_peers.items()):
         if peer.status == "unreachable":
@@ -423,7 +449,9 @@ async def list_cluster_peers(
     "restore" by clearing the timestamp — not exposed in this round).
     """
     from sqlalchemy import select
+
     from app.models.db import ClusterPeer
+
     rs = await db.execute(select(ClusterPeer).order_by(ClusterPeer.added_at))
     rows = rs.scalars().all()
     return [
@@ -437,9 +465,6 @@ async def list_cluster_peers(
         }
         for r in rows
     ]
-
-
-from pydantic import BaseModel, Field as _Field
 
 
 class _PeerCreate(BaseModel):
@@ -461,8 +486,11 @@ async def add_cluster_peer(
     own CLUSTER_NODE_ID (a node can't peer with itself)."""
     import time as _t
     from datetime import datetime
+
     from sqlalchemy import select
+
     from app.models.db import ClusterPeer
+
     if body.id == (settings.cluster_node_id or ""):
         raise HTTPException(400, "cannot add self as peer")
     if "://" not in body.url:
@@ -480,17 +508,21 @@ async def add_cluster_peer(
                 "(cluster sync carries credentials). Set DEBUG=true "
                 "to allow http:// for local development.",
             )
-    existing = (await db.execute(
-        select(ClusterPeer).where(ClusterPeer.id == body.id).limit(1)
-    )).scalar_one_or_none()
+    existing = (
+        await db.execute(select(ClusterPeer).where(ClusterPeer.id == body.id).limit(1))
+    ).scalar_one_or_none()
     now_dt = datetime.utcnow()
     now_ts = _t.time()
     if existing is None:
-        db.add(ClusterPeer(
-            id=body.id, url=body.url, name=body.name,
-            added_at=now_dt,
-            last_user_edit_at=now_ts,
-        ))
+        db.add(
+            ClusterPeer(
+                id=body.id,
+                url=body.url,
+                name=body.name,
+                added_at=now_dt,
+                last_user_edit_at=now_ts,
+            )
+        )
     else:
         # Restore or update an existing row (clears tombstone too).
         existing.url = body.url
@@ -513,11 +545,14 @@ async def remove_cluster_peer(
     sync; the local manager stops pushing to it within 30s."""
     import time as _t
     from datetime import datetime
+
     from sqlalchemy import select
+
     from app.models.db import ClusterPeer
-    row = (await db.execute(
-        select(ClusterPeer).where(ClusterPeer.id == peer_id).limit(1)
-    )).scalar_one_or_none()
+
+    row = (
+        await db.execute(select(ClusterPeer).where(ClusterPeer.id == peer_id).limit(1))
+    ).scalar_one_or_none()
     if row is None:
         raise HTTPException(404, "peer not found")
     row.removed_at = datetime.utcnow()

@@ -1,9 +1,10 @@
-# ✅ Live now — 2026-11-19 (v5.22.68, both nodes)
+# ✅ Live now — 2026-11-20 (v5.22.68, both nodes)
 
 - **v5.22.69:** UID/GID 640:640 candidate under preparation; not deployed.
   See `docs/service-uid-migration.md` for the general migration procedure;
   environment-specific rehearsal and backup evidence is maintained privately.
-- **v5.22.68:** deployed and health-checked. Grok bridge sign-in resets the
+- **v5.22.68:** both gateways and their mounted storage now use 640:640 via
+  a Compose runtime override. Both passed their node-specific health checks. Grok bridge sign-in resets the
   breaker and clears the keepalive chronic gate; the attention row says
   "click Connect Grok".
 - **v5.22.67:** breaker resets (passing Test, Needs-attention re-test, admin reset) now

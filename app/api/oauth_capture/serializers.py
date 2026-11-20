@@ -1,22 +1,28 @@
 """Serializers + header filters + safe-text coercion used across the
 ``oauth_capture`` package. Pure functions, no I/O."""
-from __future__ import annotations
 
-from typing import Optional
+from __future__ import annotations
 
 from app.models.db import OAuthCaptureLog, OAuthCaptureProfile
 from app.utils.timefmt import utc_iso
 
-
 # ── Header filtering ────────────────────────────────────────────────────────
 # Hop-by-hop headers that must not be copied to the upstream.
 
-_HOP_BY_HOP = frozenset({
-    "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
-    "te", "trailer", "transfer-encoding", "upgrade",
-    "content-length",
-    "host",
-})
+_HOP_BY_HOP = frozenset(
+    {
+        "connection",
+        "keep-alive",
+        "proxy-authenticate",
+        "proxy-authorization",
+        "te",
+        "trailer",
+        "transfer-encoding",
+        "upgrade",
+        "content-length",
+        "host",
+    }
+)
 
 
 def _filter_req_headers(headers: dict) -> dict:
@@ -27,13 +33,14 @@ def _filter_resp_headers(headers: dict) -> dict:
     return {k: v for k, v in headers.items() if k.lower() not in _HOP_BY_HOP}
 
 
-def _safe_text(raw: Optional[bytes]) -> Optional[str]:
+def _safe_text(raw: bytes | None) -> str | None:
     if raw is None:
         return None
     try:
         return raw.decode("utf-8")
     except UnicodeDecodeError:
         import base64
+
         return "[binary:" + base64.b64encode(raw[:4096]).decode() + "]"
 
 

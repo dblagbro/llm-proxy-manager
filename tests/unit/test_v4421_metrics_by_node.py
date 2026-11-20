@@ -18,6 +18,7 @@ against in-process peers would require a full multi-node test
 harness; the cross-cluster HTTP shape is exercised by the existing
 ``/cluster/oauth-pull`` integration tests.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -30,7 +31,7 @@ def test_cluster_local_metrics_endpoint_exists():
     )
     # HMAC-authed (matches the existing /cluster/oauth-pull pattern)
     block_start = src.index("/cluster/local-metrics")
-    block = src[block_start:block_start + 1800]
+    block = src[block_start : block_start + 1800]
     assert "X-Cluster-Node" in block, "endpoint must enforce HMAC node header"
     assert "X-Cluster-Sig" in block, "endpoint must enforce HMAC signature header"
     assert "verify_payload" in block, "endpoint must verify HMAC signature"
@@ -42,7 +43,7 @@ def test_local_metrics_returns_node_id():
     URL it dialed."""
     src = Path("app/api/cluster.py").read_text()
     idx = src.index("/cluster/local-metrics")
-    block = src[idx:idx + 1800]
+    block = src[idx : idx + 1800]
     assert '"node_id"' in block, "payload must contain node_id"
 
 
@@ -50,7 +51,7 @@ def test_metrics_by_node_endpoint_exists():
     src = Path("app/api/monitoring.py").read_text()
     assert "/metrics-by-node" in src, "/api/monitoring/metrics-by-node missing"
     idx = src.index("metrics-by-node")
-    block = src[idx:idx + 4000]
+    block = src[idx : idx + 4000]
     # Admin-authed (re-uses the require_admin dep on this router)
     assert "require_admin" in src, "admin auth dep must exist on this router"
     # Fan-out structure
@@ -68,7 +69,7 @@ def test_existing_metrics_endpoint_adds_node_id():
     src = Path("app/api/monitoring.py").read_text()
     # Find the metrics_summary function
     idx = src.index("async def metrics_summary")
-    block = src[idx:idx + 1500]
+    block = src[idx : idx + 1500]
     assert "node_id" in block, (
         "existing /metrics endpoint must include node_id so the UI can "
         "label which node it's viewing"
@@ -86,9 +87,7 @@ def test_frontend_types_have_metrics_by_node_response():
 def test_frontend_api_client_has_metricsByNode():
     src = Path("frontend/src/api/index.ts").read_text()
     assert "metricsByNode" in src, "monitoringApi.metricsByNode missing"
-    assert "/api/monitoring/metrics-by-node" in src, (
-        "client must hit the new backend path"
-    )
+    assert "/api/monitoring/metrics-by-node" in src, "client must hit the new backend path"
 
 
 def test_metrics_page_has_per_node_toggle():
@@ -104,7 +103,5 @@ def test_metrics_page_shows_partial_view_on_unreachable_peer():
     error, not silently dropping or crashing on missing .providers."""
     src = Path("frontend/src/pages/MetricsPage.tsx").read_text()
     idx = src.index("Per-node Breakdown")
-    block = src[idx:idx + 5000]
-    assert "node unreachable" in block, (
-        "render path must label peers that returned ok=false"
-    )
+    block = src[idx : idx + 5000]
+    assert "node unreachable" in block, "render path must label peers that returned ok=false"

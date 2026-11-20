@@ -17,27 +17,32 @@ Strategy (matches the hub team's bot_llm_activity retention plan):
 Errors are swallowed locally — the prune worker must never block the
 serving path or crash the app on a transient DB hiccup.
 """
+
 from __future__ import annotations
 
 import asyncio
 import logging
 import time
-from typing import Optional
 
 from sqlalchemy import delete, func, select
 
 from app.config import settings
 from app.models.database import AsyncSessionLocal
 from app.models.db import (
-    ActivityLog, ApiKey, ApiKeyAiReview, ExternalUsageSnapshot,
-    Provider, ProviderAiReview, RunEvent,
+    ActivityLog,
+    ApiKey,
+    ApiKeyAiReview,
+    ExternalUsageSnapshot,
+    Provider,
+    ProviderAiReview,
+    RunEvent,
 )
 
 logger = logging.getLogger(__name__)
 
 
 _DEFAULT_RETENTION_DAYS = 30
-_DEFAULT_PROBE_RETENTION_DAYS = 7   # v3.0.98 — probes age out faster than real traffic
+_DEFAULT_PROBE_RETENTION_DAYS = 7  # v3.0.98 — probes age out faster than real traffic
 # v3.7.22 (#254) — severity-tiered retention. info events dominate volume
 # (~99% in steady state) and lose diagnostic value within ~30d. warning/error
 # events are rare and post-mortem-valuable for much longer; default to 1y
@@ -46,8 +51,8 @@ _DEFAULT_PROBE_RETENTION_DAYS = 7   # v3.0.98 — probes age out faster than rea
 _DEFAULT_WARNING_RETENTION_DAYS = 365
 _DEFAULT_ERROR_RETENTION_DAYS = 1825
 _BATCH_SIZE = 5000
-_SWEEP_INTERVAL_SEC = 24 * 60 * 60      # daily
-_INITIAL_DELAY_SEC = 60 * 60            # 1h after startup — lets boot settle
+_SWEEP_INTERVAL_SEC = 24 * 60 * 60  # daily
+_INITIAL_DELAY_SEC = 60 * 60  # 1h after startup — lets boot settle
 
 # v3.0.13: provider tombstones (deleted_at non-null) hang around so cluster
 # sync propagates the soft-delete to peers. Cluster sync runs every 60s, so
@@ -76,12 +81,12 @@ def _retention_days() -> int:
     """
     try:
         from app.monitoring.retention_settings import info_days
+
         return int(info_days())
     except Exception:
         pass
     try:
-        v = int(getattr(settings, "activity_log_retention_days",
-                        _DEFAULT_RETENTION_DAYS))
+        v = int(getattr(settings, "activity_log_retention_days", _DEFAULT_RETENTION_DAYS))
         return max(1, v)
     except Exception:
         return _DEFAULT_RETENTION_DAYS
@@ -91,12 +96,16 @@ def _warning_retention_days() -> int:
     """Admin-tunable warning-severity retention; default 365 days."""
     try:
         from app.monitoring.retention_settings import warning_days
+
         return int(warning_days())
     except Exception:
         pass
     try:
-        v = int(getattr(settings, "activity_log_warning_retention_days",
-                        _DEFAULT_WARNING_RETENTION_DAYS))
+        v = int(
+            getattr(
+                settings, "activity_log_warning_retention_days", _DEFAULT_WARNING_RETENTION_DAYS
+            )
+        )
         return max(1, v)
     except Exception:
         return _DEFAULT_WARNING_RETENTION_DAYS
@@ -106,12 +115,14 @@ def _error_retention_days() -> int:
     """Admin-tunable error-severity retention; default 1825 days (5y)."""
     try:
         from app.monitoring.retention_settings import error_days
+
         return int(error_days())
     except Exception:
         pass
     try:
-        v = int(getattr(settings, "activity_log_error_retention_days",
-                        _DEFAULT_ERROR_RETENTION_DAYS))
+        v = int(
+            getattr(settings, "activity_log_error_retention_days", _DEFAULT_ERROR_RETENTION_DAYS)
+        )
         return max(1, v)
     except Exception:
         return _DEFAULT_ERROR_RETENTION_DAYS
@@ -125,8 +136,9 @@ def _probe_retention_days() -> int:
     retention is (probes never live LONGER than real events).
     """
     try:
-        v = int(getattr(settings, "activity_log_probe_retention_days",
-                        _DEFAULT_PROBE_RETENTION_DAYS))
+        v = int(
+            getattr(settings, "activity_log_probe_retention_days", _DEFAULT_PROBE_RETENTION_DAYS)
+        )
         return max(1, min(v, _retention_days()))
     except Exception:
         return _DEFAULT_PROBE_RETENTION_DAYS
@@ -139,8 +151,11 @@ def _tombstone_retention_days() -> int:
     tombstones before they've had a chance to propagate to peers.
     """
     try:
-        v = int(getattr(settings, "provider_tombstone_retention_days",
-                        _DEFAULT_TOMBSTONE_RETENTION_DAYS))
+        v = int(
+            getattr(
+                settings, "provider_tombstone_retention_days", _DEFAULT_TOMBSTONE_RETENTION_DAYS
+            )
+        )
         return max(1, v)
     except Exception:
         return _DEFAULT_TOMBSTONE_RETENTION_DAYS
@@ -164,9 +179,7 @@ async def _prune_provider_tombstones(keep_days: int) -> int:
             ids = [r[0] for r in id_res.all()]
             if not ids:
                 return deleted
-            await db.execute(
-                delete(Provider).where(Provider.id.in_(ids))
-            )
+            await db.execute(delete(Provider).where(Provider.id.in_(ids)))
             await db.commit()
             deleted += len(ids)
         if len(ids) >= _BATCH_SIZE:
@@ -193,9 +206,7 @@ async def _prune_apikey_tombstones(keep_days: int) -> int:
             ids = [r[0] for r in id_res.all()]
             if not ids:
                 return deleted
-            await db.execute(
-                delete(ApiKey).where(ApiKey.id.in_(ids))
-            )
+            await db.execute(delete(ApiKey).where(ApiKey.id.in_(ids)))
             await db.commit()
             deleted += len(ids)
         if len(ids) >= _BATCH_SIZE:
@@ -223,9 +234,7 @@ async def _prune_table(table_class, ts_column, keep_days: int) -> int:
             ids = [r[0] for r in id_res.all()]
             if not ids:
                 return deleted
-            await db.execute(
-                delete(table_class).where(table_class.id.in_(ids))
-            )
+            await db.execute(delete(table_class).where(table_class.id.in_(ids)))
             await db.commit()
             deleted += len(ids)
         # Brief pause between batches to let writers in
@@ -313,9 +322,7 @@ async def _prune_ai_review(model_cls, keep_days: int) -> int:
         async with AsyncSessionLocal() as db:
             cutoff_expr = func.datetime("now", f"-{keep_days} days")
             id_res = await db.execute(
-                select(model_cls.id)
-                .where(model_cls.captured_at < cutoff_expr)
-                .limit(_BATCH_SIZE)
+                select(model_cls.id).where(model_cls.captured_at < cutoff_expr).limit(_BATCH_SIZE)
             )
             ids = [r[0] for r in id_res.all()]
             if not ids:
@@ -392,8 +399,13 @@ def _external_usage_retention_days() -> int:
     """v5.9.8 (#472) — external_usage_snapshot retention. Settings
     override → env → default cascade, same shape as the other helpers."""
     try:
-        v = int(getattr(settings, "external_usage_snapshot_retention_days",
-                        _DEFAULT_EXTERNAL_USAGE_RETENTION_DAYS))
+        v = int(
+            getattr(
+                settings,
+                "external_usage_snapshot_retention_days",
+                _DEFAULT_EXTERNAL_USAGE_RETENTION_DAYS,
+            )
+        )
         return max(1, v)
     except (TypeError, ValueError):
         return _DEFAULT_EXTERNAL_USAGE_RETENTION_DAYS
@@ -402,9 +414,7 @@ def _external_usage_retention_days() -> int:
 async def _prune_external_usage_snapshots(keep_days: int) -> int:
     """v5.9.8 (#472) — delete external_usage_snapshot rows with
     captured_at < cutoff. Batched same as the other prunes."""
-    return await _prune_table(
-        ExternalUsageSnapshot, ExternalUsageSnapshot.captured_at, keep_days
-    )
+    return await _prune_table(ExternalUsageSnapshot, ExternalUsageSnapshot.captured_at, keep_days)
 
 
 async def _sweep_once() -> dict:
@@ -414,8 +424,9 @@ async def _sweep_once() -> dict:
     # reading. A UI edit takes effect on the very next sweep without
     # waiting for the soft TTL.
     try:
-        from app.monitoring.retention_settings import refresh_from_db
         from app.models.database import AsyncSessionLocal
+        from app.monitoring.retention_settings import refresh_from_db
+
         async with AsyncSessionLocal() as _db:
             await refresh_from_db(_db)
     except Exception:
@@ -428,22 +439,34 @@ async def _sweep_once() -> dict:
     error_keep_days = _error_retention_days()
     tombstone_days = _tombstone_retention_days()
     external_usage_keep_days = _external_usage_retention_days()
-    out = {"keep_days": keep_days, "probe_keep_days": probe_keep_days,
-           "warning_keep_days": warning_keep_days,
-           "error_keep_days": error_keep_days,
-           "activity_log": 0, "activity_log_probes": 0,
-           "activity_log_warnings": 0, "activity_log_errors": 0,
-           "activity_log_orphans": 0,
-           "provider_metrics": 0, "run_events": 0,
-           "provider_tombstones": 0,
-           "apikey_tombstones": 0,
-           "tombstone_keep_days": tombstone_days,
-           "provider_ai_reviews": 0, "api_key_ai_reviews": 0,
-           "ai_review_keep_days": _ai_review_retention_days(),
-           "external_usage_snapshots": 0,
-           "external_usage_keep_days": external_usage_keep_days,
-           "wal_truncated": {"busy": 0, "log_pages": 0, "ckpt_pages": 0,
-                             "size_before": 0, "size_after": 0}}
+    out = {
+        "keep_days": keep_days,
+        "probe_keep_days": probe_keep_days,
+        "warning_keep_days": warning_keep_days,
+        "error_keep_days": error_keep_days,
+        "activity_log": 0,
+        "activity_log_probes": 0,
+        "activity_log_warnings": 0,
+        "activity_log_errors": 0,
+        "activity_log_orphans": 0,
+        "provider_metrics": 0,
+        "run_events": 0,
+        "provider_tombstones": 0,
+        "apikey_tombstones": 0,
+        "tombstone_keep_days": tombstone_days,
+        "provider_ai_reviews": 0,
+        "api_key_ai_reviews": 0,
+        "ai_review_keep_days": _ai_review_retention_days(),
+        "external_usage_snapshots": 0,
+        "external_usage_keep_days": external_usage_keep_days,
+        "wal_truncated": {
+            "busy": 0,
+            "log_pages": 0,
+            "ckpt_pages": 0,
+            "size_before": 0,
+            "size_after": 0,
+        },
+    }
 
     # v3.0.98: probes first (shorter retention, high volume).
     try:
@@ -456,21 +479,24 @@ async def _sweep_once() -> dict:
     # error severities use their own longer retentions.
     try:
         out["activity_log"] = await _prune_activity_log_by_severity(
-            "info", keep_days,
+            "info",
+            keep_days,
         )
     except Exception as e:
         logger.warning("prune.activity_log_info_failed err=%s", e)
 
     try:
         out["activity_log_warnings"] = await _prune_activity_log_by_severity(
-            "warning", warning_keep_days,
+            "warning",
+            warning_keep_days,
         )
     except Exception as e:
         logger.warning("prune.activity_log_warnings_failed err=%s", e)
 
     try:
         out["activity_log_errors"] = await _prune_activity_log_by_severity(
-            "error", error_keep_days,
+            "error",
+            error_keep_days,
         )
     except Exception as e:
         logger.warning("prune.activity_log_errors_failed err=%s", e)
@@ -479,6 +505,7 @@ async def _sweep_once() -> dict:
         # Reuse the existing helper for provider_metrics (kept ts comparisons
         # consistent with that path)
         from app.monitoring.metrics import prune_old_metrics
+
         async with AsyncSessionLocal() as db:
             out["provider_metrics"] = await prune_old_metrics(db, keep_days=keep_days)
     except Exception as e:
@@ -585,8 +612,10 @@ async def _wal_checkpoint_truncate() -> dict:
     (returns busy=1). The sweep runs once daily and is a no-op when
     busy — the next sweep will retry, and a long-running reader is
     its own anomaly worth investigating separately."""
-    from sqlalchemy import text
     import os
+
+    from sqlalchemy import text
+
     sizes = {"size_before": 0, "size_after": 0}
     # Best-effort file-size capture; if the path resolution fails
     # (test DBs, in-memory, etc.) the function still attempts the
@@ -628,6 +657,7 @@ async def _wal_checkpoint_truncate() -> dict:
 async def _prune_loop() -> None:
     """Periodic loop. Sleeps an hour after boot, then sweeps daily."""
     from app.monitoring.worker_heartbeat import WorkerHeartbeat, register_expected_interval
+
     hb = WorkerHeartbeat(name="prune")
     register_expected_interval("prune", _SWEEP_INTERVAL_SEC)
     await asyncio.sleep(_INITIAL_DELAY_SEC)
@@ -649,28 +679,34 @@ async def _prune_loop() -> None:
                 "keep_days=%d probe_keep_days=%d warning_keep_days=%d "
                 "error_keep_days=%d tombstone_keep_days=%d "
                 "ai_review_keep_days=%d external_usage_keep_days=%d",
-                counts["activity_log"], counts.get("activity_log_probes", 0),
+                counts["activity_log"],
+                counts.get("activity_log_probes", 0),
                 counts.get("activity_log_warnings", 0),
                 counts.get("activity_log_errors", 0),
                 counts.get("activity_log_orphans", 0),
-                counts["provider_metrics"], counts["run_events"],
+                counts["provider_metrics"],
+                counts["run_events"],
                 counts["provider_tombstones"],
                 counts.get("provider_ai_reviews", 0),
                 counts.get("api_key_ai_reviews", 0),
                 counts.get("external_usage_snapshots", 0),
-                wal_reclaimed, wal.get("busy", 0),
+                wal_reclaimed,
+                wal.get("busy", 0),
                 counts["keep_days"],
                 counts.get("probe_keep_days", _DEFAULT_PROBE_RETENTION_DAYS),
                 counts.get("warning_keep_days", _DEFAULT_WARNING_RETENTION_DAYS),
                 counts.get("error_keep_days", _DEFAULT_ERROR_RETENTION_DAYS),
                 counts["tombstone_keep_days"],
                 counts.get("ai_review_keep_days", 30),
-                counts.get("external_usage_keep_days",
-                           _DEFAULT_EXTERNAL_USAGE_RETENTION_DAYS),
+                counts.get("external_usage_keep_days", _DEFAULT_EXTERNAL_USAGE_RETENTION_DAYS),
             )
             await hb.tick(
                 status="ok",
-                note=f"activity_log={counts.get('activity_log',0)} provider_metrics={counts.get('provider_metrics',0)} run_events={counts.get('run_events',0)}",
+                note=(
+                    f"activity_log={counts.get('activity_log', 0)} "
+                    f"provider_metrics={counts.get('provider_metrics', 0)} "
+                    f"run_events={counts.get('run_events', 0)}"
+                ),
             )
         except Exception as e:
             logger.warning("prune.sweep_failed err=%s", e)
@@ -696,7 +732,7 @@ def get_last_sweep() -> dict:
     return dict(_LAST_SWEEP_RESULT)
 
 
-_TASK: Optional[asyncio.Task] = None
+_TASK: asyncio.Task | None = None
 
 
 def start() -> None:

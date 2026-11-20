@@ -21,6 +21,7 @@ This does NOT weaken the guard: the symbol must still exist in code the
 handler provably calls at entry. If a feature were truly removed, it
 would be absent from the surface and the test would still fail.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -39,10 +40,6 @@ _ENTRY_HELPERS = {
 def entry_surface(handler_file: str) -> str:
     """Return the entry-helper sources (run first) concatenated before the
     handler file's own source."""
-    parts = [
-        Path(h).read_text()
-        for h in _ENTRY_HELPERS.get(handler_file, [])
-        if Path(h).exists()
-    ]
+    parts = [Path(h).read_text() for h in _ENTRY_HELPERS.get(handler_file, []) if Path(h).exists()]
     parts.append(Path(handler_file).read_text())
     return "\n# ==== handler ====\n".join(parts)

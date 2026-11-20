@@ -6,6 +6,7 @@ over-match the entire cutoff day on an irreversible hard-delete.
 
 F9 — cluster sync apply accepted a peer-supplied primary key.
 """
+
 from __future__ import annotations
 
 import sqlite3
@@ -33,9 +34,7 @@ def test_f8_cutoff_does_not_overmatch_the_boundary_day():
     assert buggy == 3  # demonstrates the defect
 
     # Normalised cutoff (the fix): only the genuinely-older row matches.
-    fixed = con.execute(
-        "SELECT COUNT(*) FROM t WHERE ts < ?", (_normalise(cutoff),)
-    ).fetchone()[0]
+    fixed = con.execute("SELECT COUNT(*) FROM t WHERE ts < ?", (_normalise(cutoff),)).fetchone()[0]
     assert fixed == 1
     con.close()
 

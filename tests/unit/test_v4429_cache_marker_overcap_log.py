@@ -12,11 +12,10 @@ body-sample (1% rate) and parse the request. v4.4.29 adds an explicit
 proxy-side warning log when the caller's count > 4, with a breakdown
 across `sys` / `msgs` / `tools` so the source location is obvious.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
-
-import pytest
 
 
 def test_overcap_warning_source_guard():
@@ -35,7 +34,7 @@ def test_overcap_does_not_break_dispatch_path():
     can never block real dispatch."""
     src = Path("app/api/_messages_streaming_oauth.py").read_text()
     idx = src.index("BUG-085")
-    block = src[idx:idx + 2500]
+    block = src[idx : idx + 2500]
     assert "try:" in block, "breakdown must be try-wrapped"
     assert "except Exception" in block, "must swallow telemetry failures"
 
@@ -47,6 +46,7 @@ def test_overcap_warning_fires_on_5_markers(caplog):
     breakdown loses the exact totals — verify it surfaces *something*
     that points an operator at the source."""
     import logging
+
     from app.api._messages_streaming_oauth import _inject_claude_code_system
 
     # 5 markers: 2 in system, 2 in messages, 1 in tools
@@ -55,13 +55,15 @@ def test_overcap_warning_fires_on_5_markers(caplog):
             {"type": "text", "text": "sysA", "cache_control": {"type": "ephemeral"}},
             {"type": "text", "text": "sysB", "cache_control": {"type": "ephemeral"}},
         ],
-        "messages": [{
-            "role": "user",
-            "content": [
-                {"type": "text", "text": "u1", "cache_control": {"type": "ephemeral"}},
-                {"type": "text", "text": "u2", "cache_control": {"type": "ephemeral"}},
-            ],
-        }],
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "u1", "cache_control": {"type": "ephemeral"}},
+                    {"type": "text", "text": "u2", "cache_control": {"type": "ephemeral"}},
+                ],
+            }
+        ],
         "tools": [{"name": "t", "cache_control": {"type": "ephemeral"}}],
     }
 
@@ -87,6 +89,7 @@ def test_no_warning_at_or_below_4_markers(caplog):
     the proxy correctly omits its own cache_control and the request
     will succeed; no warning needed and no log noise."""
     import logging
+
     from app.api._messages_streaming_oauth import _inject_claude_code_system
 
     body_4 = {
@@ -94,13 +97,15 @@ def test_no_warning_at_or_below_4_markers(caplog):
             {"type": "text", "text": "x", "cache_control": {"type": "ephemeral"}},
             {"type": "text", "text": "y", "cache_control": {"type": "ephemeral"}},
         ],
-        "messages": [{
-            "role": "user",
-            "content": [
-                {"type": "text", "text": "u", "cache_control": {"type": "ephemeral"}},
-                {"type": "text", "text": "v", "cache_control": {"type": "ephemeral"}},
-            ],
-        }],
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "u", "cache_control": {"type": "ephemeral"}},
+                    {"type": "text", "text": "v", "cache_control": {"type": "ephemeral"}},
+                ],
+            }
+        ],
     }
     with caplog.at_level(logging.WARNING, logger="app.api._messages_streaming_oauth"):
         _inject_claude_code_system(body_4)

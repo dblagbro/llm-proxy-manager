@@ -5,6 +5,7 @@ a trigger-now smoke-test endpoint + a live-stats diagnostic endpoint.
 All endpoints respect manual_override_until — operator-pinned providers
 return 409 Conflict on apply/trigger.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -12,18 +13,22 @@ from pathlib import Path
 
 def test_api_module_exists():
     import importlib
+
     mod = importlib.import_module("app.api.ai_provider_supervisor")
     assert hasattr(mod, "router")
 
 
 def test_router_registered_in_app():
     src = Path("app/main.py").read_text()
-    assert "from app.api.ai_provider_supervisor import router as ai_provider_supervisor_router" in src
+    assert (
+        "from app.api.ai_provider_supervisor import router as ai_provider_supervisor_router" in src
+    )
     assert "app.include_router(ai_provider_supervisor_router)" in src
 
 
 def test_endpoints_registered():
     from app.api.ai_provider_supervisor import router
+
     paths = {r.path for r in router.routes}
     for path in (
         "/api/providers/{provider_id}/ai-reviews",
@@ -39,7 +44,7 @@ def test_endpoints_registered():
 def test_apply_endpoint_respects_manual_override():
     src = Path("app/api/ai_provider_supervisor.py").read_text()
     idx = src.index("async def apply_review")
-    body = src[idx:idx + 3000]
+    body = src[idx : idx + 3000]
     assert "manual_override_until" in body
     # Returns 409 Conflict — not 400 Bad Request — so callers know to
     # release the lock first vs treating it as a permanent error
@@ -49,16 +54,16 @@ def test_apply_endpoint_respects_manual_override():
 def test_apply_endpoint_rejects_already_applied():
     src = Path("app/api/ai_provider_supervisor.py").read_text()
     idx = src.index("async def apply_review")
-    body = src[idx:idx + 3000]
-    assert 'review.applied_at is not None' in body
+    body = src[idx : idx + 3000]
+    assert "review.applied_at is not None" in body
     assert "already applied" in body
 
 
 def test_apply_endpoint_rejects_dismissed_reviews():
     src = Path("app/api/ai_provider_supervisor.py").read_text()
     idx = src.index("async def apply_review")
-    body = src[idx:idx + 3000]
-    assert 'review.dismissed_at is not None' in body
+    body = src[idx : idx + 3000]
+    assert "review.dismissed_at is not None" in body
     assert "dismissed" in body
 
 
@@ -67,7 +72,7 @@ def test_revert_endpoint_uses_prior_values():
     the provider to its pre-apply state. Records reverted_at for audit."""
     src = Path("app/api/ai_provider_supervisor.py").read_text()
     idx = src.index("async def revert_review")
-    body = src[idx:idx + 3000]
+    body = src[idx : idx + 3000]
     assert "prior_priority" in body
     assert "prior_auto_skip_until" in body
     assert "reverted_at" in body
@@ -76,7 +81,7 @@ def test_revert_endpoint_uses_prior_values():
 def test_revert_rejects_unapplied_or_already_reverted():
     src = Path("app/api/ai_provider_supervisor.py").read_text()
     idx = src.index("async def revert_review")
-    body = src[idx:idx + 3000]
+    body = src[idx : idx + 3000]
     assert "never applied" in body
     assert "already reverted" in body
 
@@ -86,14 +91,14 @@ def test_dismiss_endpoint_idempotent():
     same row — not an error."""
     src = Path("app/api/ai_provider_supervisor.py").read_text()
     idx = src.index("async def dismiss_review")
-    body = src[idx:idx + 2000]
+    body = src[idx : idx + 2000]
     assert "idempotent" in body
 
 
 def test_dismiss_rejects_already_applied():
     src = Path("app/api/ai_provider_supervisor.py").read_text()
     idx = src.index("async def dismiss_review")
-    body = src[idx:idx + 2000]
+    body = src[idx : idx + 2000]
     assert "already applied" in body
 
 
@@ -103,7 +108,7 @@ def test_trigger_endpoint_respects_manual_override():
     on a provider, whether scheduled or manually triggered."""
     src = Path("app/api/ai_provider_supervisor.py").read_text()
     idx = src.index("async def trigger_review_now")
-    body = src[idx:idx + 2000]
+    body = src[idx : idx + 2000]
     assert "manual_override_until" in body
     assert "409" in body
 
@@ -113,7 +118,7 @@ def test_stats_endpoint_uses_phase3_helper():
     Phase 3 — never duplicate the aggregation logic."""
     src = Path("app/api/ai_provider_supervisor.py").read_text()
     idx = src.index("async def get_current_stats")
-    body = src[idx:idx + 2000]
+    body = src[idx : idx + 2000]
     assert "compute_provider_stats" in body
 
 
@@ -127,5 +132,6 @@ def test_all_endpoints_admin_gated():
 
 def test_version_bumped():
     from app.__version__ import __version__
+
     parts = tuple(int(p) for p in __version__.split("."))
     assert parts >= (3, 7, 32)

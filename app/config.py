@@ -1,6 +1,5 @@
-from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field
-from typing import Optional
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -12,9 +11,7 @@ class Settings(BaseSettings):
     secret_key: str = Field("change-me-in-production", alias="SECRET_KEY")
 
     # Database
-    database_url: str = Field(
-        "sqlite+aiosqlite:////app/data/llmproxy.db", alias="DATABASE_URL"
-    )
+    database_url: str = Field("sqlite+aiosqlite:////app/data/llmproxy.db", alias="DATABASE_URL")
 
     # v3.10.2 (ARCH-A) — DB connection-pool checkout tracer. When True,
     # every pool checkout records an acquisition stack; the trace is
@@ -36,7 +33,7 @@ class Settings(BaseSettings):
     error_rate_alert_min_count: int = Field(10, alias="ERROR_RATE_ALERT_MIN_COUNT")
 
     # Redis (optional — in-memory fallback when not set)
-    redis_url: Optional[str] = Field(None, alias="REDIS_URL")
+    redis_url: str | None = Field(None, alias="REDIS_URL")
 
     # Circuit breaker defaults
     circuit_breaker_threshold: int = Field(3, alias="CIRCUIT_BREAKER_THRESHOLD")
@@ -175,9 +172,7 @@ class Settings(BaseSettings):
     # v3.4.0: tightened 30→20s after a day of v3.3.3+ telemetry showed
     # p95 ~7s and only 2 outliers >10s in 24h. 20s is still 3× headroom
     # over real p95 while cutting tail-latency damage to user requests.
-    grok_web_user_timeout_sec: int = Field(
-        20, alias="GROK_WEB_USER_TIMEOUT_SEC"
-    )
+    grok_web_user_timeout_sec: int = Field(20, alias="GROK_WEB_USER_TIMEOUT_SEC")
 
     # v5.1.0 / Batch B1 — ApiKey tombstone retention window. After a
     # soft-delete via DELETE /api/keys/{id}, the row stays in the table
@@ -191,13 +186,17 @@ class Settings(BaseSettings):
     # v3.7.22 (#254): severity-tiered retention. info events are >99% of volume
     # and lose diagnostic value within ~30d; warning/error events are rare and
     # post-mortem-valuable for much longer. Defaults: warning 1y, error 5y.
-    activity_log_warning_retention_days: int = Field(365, alias="ACTIVITY_LOG_WARNING_RETENTION_DAYS")
+    activity_log_warning_retention_days: int = Field(
+        365, alias="ACTIVITY_LOG_WARNING_RETENTION_DAYS"
+    )
     activity_log_error_retention_days: int = Field(1825, alias="ACTIVITY_LOG_ERROR_RETENTION_DAYS")
     # v3.7.24 (#258): minimum gap between Anthropic billing scrapes for the
     # same provider. Defaults to interval/2 in the worker if left at 0.
     # Operator can pin this to override the heuristic (e.g. set to 7200 to
     # enforce "no scrapes more often than every 2h regardless of interval").
-    anthropic_billing_min_scrape_gap_sec: int = Field(0, alias="ANTHROPIC_BILLING_MIN_SCRAPE_GAP_SEC")
+    anthropic_billing_min_scrape_gap_sec: int = Field(
+        0, alias="ANTHROPIC_BILLING_MIN_SCRAPE_GAP_SEC"
+    )
 
     # v3.7.27 (#245): ChatGPT Plus / Codex Cloud usage scrape — same
     # behavior as the Anthropic billing scraper but against an
@@ -211,14 +210,30 @@ class Settings(BaseSettings):
     # gated by a separate flag so operators can run in suggest-only
     # mode for an observation period first.
     ai_provider_supervisor_enabled: bool = Field(False, alias="AI_PROVIDER_SUPERVISOR_ENABLED")
-    ai_provider_supervisor_auto_apply: bool = Field(False, alias="AI_PROVIDER_SUPERVISOR_AUTO_APPLY")
-    ai_provider_supervisor_interval_sec: int = Field(1800, alias="AI_PROVIDER_SUPERVISOR_INTERVAL_SEC")        # 30 min
-    ai_provider_supervisor_short_window_min: int = Field(30, alias="AI_PROVIDER_SUPERVISOR_SHORT_WINDOW_MIN")
-    ai_provider_supervisor_trend_window_days: int = Field(1, alias="AI_PROVIDER_SUPERVISOR_TREND_WINDOW_DAYS") # operator-locked 2026-05-13
-    ai_provider_supervisor_model: str = Field("claude-haiku-4-5-20251001", alias="AI_PROVIDER_SUPERVISOR_MODEL")
-    ai_provider_supervisor_internal_api_key: str = Field("", alias="AI_PROVIDER_SUPERVISOR_INTERNAL_API_KEY")
-    ai_provider_supervisor_max_priority_delta: int = Field(2, alias="AI_PROVIDER_SUPERVISOR_MAX_PRIORITY_DELTA")
-    ai_provider_supervisor_max_auto_skip_hours: int = Field(24, alias="AI_PROVIDER_SUPERVISOR_MAX_AUTO_SKIP_HOURS")
+    ai_provider_supervisor_auto_apply: bool = Field(
+        False, alias="AI_PROVIDER_SUPERVISOR_AUTO_APPLY"
+    )
+    ai_provider_supervisor_interval_sec: int = Field(
+        1800, alias="AI_PROVIDER_SUPERVISOR_INTERVAL_SEC"
+    )  # 30 min
+    ai_provider_supervisor_short_window_min: int = Field(
+        30, alias="AI_PROVIDER_SUPERVISOR_SHORT_WINDOW_MIN"
+    )
+    ai_provider_supervisor_trend_window_days: int = Field(
+        1, alias="AI_PROVIDER_SUPERVISOR_TREND_WINDOW_DAYS"
+    )  # operator-locked 2026-05-13
+    ai_provider_supervisor_model: str = Field(
+        "claude-haiku-4-5-20251001", alias="AI_PROVIDER_SUPERVISOR_MODEL"
+    )
+    ai_provider_supervisor_internal_api_key: str = Field(
+        "", alias="AI_PROVIDER_SUPERVISOR_INTERNAL_API_KEY"
+    )
+    ai_provider_supervisor_max_priority_delta: int = Field(
+        2, alias="AI_PROVIDER_SUPERVISOR_MAX_PRIORITY_DELTA"
+    )
+    ai_provider_supervisor_max_auto_skip_hours: int = Field(
+        24, alias="AI_PROVIDER_SUPERVISOR_MAX_AUTO_SKIP_HOURS"
+    )
 
     # v5.7.15 — burst-trigger force-open. Independent of the LLM
     # supervisor: a cheap DB-only sweep that fires every
@@ -228,7 +243,9 @@ class Settings(BaseSettings):
     # ``empty_success_burst_window_sec``. Closes the 30-min "supervisor
     # hasn't swept yet" gap that the 2026-06-17 c1conv incident sat in.
     # Default ON — the gap it closes is the operator-escalated one.
-    empty_success_burst_trigger_enabled: bool = Field(True, alias="EMPTY_SUCCESS_BURST_TRIGGER_ENABLED")
+    empty_success_burst_trigger_enabled: bool = Field(
+        True, alias="EMPTY_SUCCESS_BURST_TRIGGER_ENABLED"
+    )
     empty_success_burst_interval_sec: int = Field(60, alias="EMPTY_SUCCESS_BURST_INTERVAL_SEC")
     empty_success_burst_window_sec: int = Field(300, alias="EMPTY_SUCCESS_BURST_WINDOW_SEC")
     empty_success_burst_threshold: int = Field(3, alias="EMPTY_SUCCESS_BURST_THRESHOLD")
@@ -240,10 +257,16 @@ class Settings(BaseSettings):
     # quiet at the baseline but catching any regression. ``min_attempts``
     # gates noise from single-403-in-idle-window cases.
     cluster_sync_403_monitor_enabled: bool = Field(True, alias="CLUSTER_SYNC_403_MONITOR_ENABLED")
-    cluster_sync_403_monitor_interval_sec: int = Field(300, alias="CLUSTER_SYNC_403_MONITOR_INTERVAL_SEC")
-    cluster_sync_403_alert_threshold_pct: float = Field(70.0, alias="CLUSTER_SYNC_403_ALERT_THRESHOLD_PCT")
+    cluster_sync_403_monitor_interval_sec: int = Field(
+        300, alias="CLUSTER_SYNC_403_MONITOR_INTERVAL_SEC"
+    )
+    cluster_sync_403_alert_threshold_pct: float = Field(
+        70.0, alias="CLUSTER_SYNC_403_ALERT_THRESHOLD_PCT"
+    )
     cluster_sync_403_alert_min_attempts: int = Field(4, alias="CLUSTER_SYNC_403_ALERT_MIN_ATTEMPTS")
-    cluster_sync_403_alert_cooldown_sec: int = Field(3600, alias="CLUSTER_SYNC_403_ALERT_COOLDOWN_SEC")
+    cluster_sync_403_alert_cooldown_sec: int = Field(
+        3600, alias="CLUSTER_SYNC_403_ALERT_COOLDOWN_SEC"
+    )
 
     # v5.15.0 Phase 1 (#508) — per-account OAuth fan-out. Kill-switch on the
     # feature: when False, dispatch will always fall back to legacy
@@ -255,7 +278,9 @@ class Settings(BaseSettings):
     # column is NULL. Operator confirmed 2026-06-30: 'least_utilized' — Cursor's
     # pain is utilization-driven. Values: least_utilized | round_robin |
     # least_recently_used.
-    oauth_account_default_strategy: str = Field("least_utilized", alias="OAUTH_ACCOUNT_DEFAULT_STRATEGY")
+    oauth_account_default_strategy: str = Field(
+        "least_utilized", alias="OAUTH_ACCOUNT_DEFAULT_STRATEGY"
+    )
 
     # v5.17.1 — chronic-CB keepalive gate. Providers whose CB has
     # re-opened >=threshold times consecutively (default 5) get a
@@ -264,7 +289,9 @@ class Settings(BaseSettings):
     # was the trigger — bridge timeouts on /api/chat had generated 19+
     # keepalive_probe events in 24h with zero diagnostic value.
     keepalive_chronic_cb_open_threshold: int = Field(5, alias="KEEPALIVE_CHRONIC_CB_OPEN_THRESHOLD")
-    keepalive_chronic_cb_open_backoff_sec: int = Field(21600, alias="KEEPALIVE_CHRONIC_CB_OPEN_BACKOFF_SEC")
+    keepalive_chronic_cb_open_backoff_sec: int = Field(
+        21600, alias="KEEPALIVE_CHRONIC_CB_OPEN_BACKOFF_SEC"
+    )
 
     # v5.7.17 — client-disconnect watchdog. Closes the supervisor DB
     # pool leak (2026-06-16): handler kept running + held its DB
@@ -307,7 +334,9 @@ class Settings(BaseSettings):
     # header; empty = dev-mode passthrough (hub accepts unauthed
     # bodies until it sets its own callbacks.shared_secret).
     substitution_callback_url: str = Field("", alias="SUBSTITUTION_CALLBACK_URL")
-    substitution_callback_shared_secret: str = Field("", alias="SUBSTITUTION_CALLBACK_SHARED_SECRET")
+    substitution_callback_shared_secret: str = Field(
+        "", alias="SUBSTITUTION_CALLBACK_SHARED_SECRET"
+    )
 
     # v5.8.0 — AI integration protocol. Lets other AI projects discover
     # the proxy's capabilities via a public ``/announce`` URL, then
@@ -317,9 +346,13 @@ class Settings(BaseSettings):
     # keys via the create_api_key tool. Disabled by default.
     integration_enabled: bool = Field(False, alias="INTEGRATION_ENABLED")
     integration_passphrase: str = Field("", alias="INTEGRATION_PASSPHRASE")
-    integration_default_daily_budget_usd: float = Field(5.00, alias="INTEGRATION_DEFAULT_DAILY_BUDGET_USD")
+    integration_default_daily_budget_usd: float = Field(
+        5.00, alias="INTEGRATION_DEFAULT_DAILY_BUDGET_USD"
+    )
     integration_max_daily_budget_usd: float = Field(20.00, alias="INTEGRATION_MAX_DAILY_BUDGET_USD")
-    integration_max_messages_per_session: int = Field(20, alias="INTEGRATION_MAX_MESSAGES_PER_SESSION")
+    integration_max_messages_per_session: int = Field(
+        20, alias="INTEGRATION_MAX_MESSAGES_PER_SESSION"
+    )
     integration_model: str = Field("claude-haiku-4-5-20251001", alias="INTEGRATION_MODEL")
 
     # v4.0 — AIRI (AI Router Interface): the conversational chat UI for the
@@ -342,7 +375,8 @@ class Settings(BaseSettings):
     # infrastructure and never persisted. See docs/4.2-voice-design.md.
     airi_voice_enabled: bool = Field(False, alias="AIRI_VOICE_ENABLED")
     airi_whisper_bridge_url: str = Field(
-        "http://whisper-bridge:9000", alias="AIRI_WHISPER_BRIDGE_URL")
+        "http://whisper-bridge:9000", alias="AIRI_WHISPER_BRIDGE_URL"
+    )
     airi_whisper_bridge_token: str = Field("", alias="AIRI_WHISPER_BRIDGE_TOKEN")
     # v4.3 — voice output (text-to-speech). ``airi_tts_enabled`` is the v4.3
     # feature flag (off until the build is complete). "Airy" reads its
@@ -355,9 +389,7 @@ class Settings(BaseSettings):
     # provider call errors. Disable to force upstream-only (e.g. for strict
     # cost-accounting environments where the bridge bypass would skew the
     # bill).
-    audio_fallback_to_whisper_bridge: bool = Field(
-        True, alias="AUDIO_FALLBACK_TO_WHISPER_BRIDGE"
-    )
+    audio_fallback_to_whisper_bridge: bool = Field(True, alias="AUDIO_FALLBACK_TO_WHISPER_BRIDGE")
 
     # v3.8.4 (#264): tool-call capability prober. Fires a standard
     # get_weather(city) probe at every (provider, default_model) on
@@ -378,7 +410,9 @@ class Settings(BaseSettings):
     caller_memory_enabled: bool = Field(False, alias="CALLER_MEMORY_ENABLED")
     # When operator wants to opt out of provider-side memory flushing
     # (e.g. for debugging), this overrides the per-Provider auto-flush.
-    caller_memory_active_flush_enabled: bool = Field(True, alias="CALLER_MEMORY_ACTIVE_FLUSH_ENABLED")
+    caller_memory_active_flush_enabled: bool = Field(
+        True, alias="CALLER_MEMORY_ACTIVE_FLUSH_ENABLED"
+    )
     # v3.9.4 Phase 7 — back-pressure recovery. When a marker exists but
     # content is gone (DB restore that lost content rows), try to
     # reconstruct from the original upstream provider. Default ON; gated
@@ -389,7 +423,9 @@ class Settings(BaseSettings):
     # is just how often the background worker checks. Set to 0 to
     # disable the sweeper entirely (rows never auto-expire even if
     # ttl_days is set on a key).
-    caller_memory_ttl_sweep_interval_sec: int = Field(3600, alias="CALLER_MEMORY_TTL_SWEEP_INTERVAL_SEC")
+    caller_memory_ttl_sweep_interval_sec: int = Field(
+        3600, alias="CALLER_MEMORY_TTL_SWEEP_INTERVAL_SEC"
+    )
     # v3.0.13: how long a provider tombstone (deleted_at non-null) is kept
     # before hard-delete. Cluster sync converges in seconds, so 7d is a
     # comfortable safety margin.
@@ -408,25 +444,17 @@ class Settings(BaseSettings):
         "", alias="COMPLIANCE_SYSTEM_BLOCKED_COMPANIES"
     )
     # Audit retention (days; 2555 = 7 years per decision 7).
-    compliance_audit_retention_days: int = Field(
-        2555, alias="COMPLIANCE_AUDIT_RETENTION_DAYS"
-    )
+    compliance_audit_retention_days: int = Field(2555, alias="COMPLIANCE_AUDIT_RETENTION_DAYS")
     # UA detection master switch (decision 16). On by default. Turn off for
     # UA-spoofing debug only.
-    compliance_ua_block_enabled: bool = Field(
-        True, alias="COMPLIANCE_UA_BLOCK_ENABLED"
-    )
+    compliance_ua_block_enabled: bool = Field(True, alias="COMPLIANCE_UA_BLOCK_ENABLED")
     # JSON-encoded custom company taxonomy entries (decision 12), merged
     # with KNOWN_COMPANIES at lookup time. Schema in
     # docs/compliance-taxonomy-v5.0.0.md.
-    compliance_custom_companies: str = Field(
-        "", alias="COMPLIANCE_CUSTOM_COMPANIES"
-    )
+    compliance_custom_companies: str = Field("", alias="COMPLIANCE_CUSTOM_COMPANIES")
     # One-shot backfill flag (decision 19). Set automatically on first
     # policy enable; do NOT toggle manually.
-    compliance_backfill_applied: bool = Field(
-        False, alias="COMPLIANCE_BACKFILL_APPLIED"
-    )
+    compliance_backfill_applied: bool = Field(False, alias="COMPLIANCE_BACKFILL_APPLIED")
     # v5.2.0 / Batch V2 — vendor-neutrality fine-grained policy.
     # JSON-encoded list[str]. Mirror the per-key fields of the same name.
     # ``allowed_companies`` non-empty switches to allowlist mode (only
@@ -438,12 +466,8 @@ class Settings(BaseSettings):
     compliance_system_allowed_companies: str = Field(
         "", alias="COMPLIANCE_SYSTEM_ALLOWED_COMPANIES"
     )
-    compliance_system_blocked_models: str = Field(
-        "", alias="COMPLIANCE_SYSTEM_BLOCKED_MODELS"
-    )
-    compliance_system_allowed_models: str = Field(
-        "", alias="COMPLIANCE_SYSTEM_ALLOWED_MODELS"
-    )
+    compliance_system_blocked_models: str = Field("", alias="COMPLIANCE_SYSTEM_BLOCKED_MODELS")
+    compliance_system_allowed_models: str = Field("", alias="COMPLIANCE_SYSTEM_ALLOWED_MODELS")
 
     # v4.4.13: retention for the AI supervisor review tables. These
     # accumulate ~250 rows/day on a 30-min cadence × 10 providers and
@@ -456,11 +480,11 @@ class Settings(BaseSettings):
 
     # Cluster
     cluster_enabled: bool = Field(False, alias="CLUSTER_ENABLED")
-    cluster_node_id: Optional[str] = Field(None, alias="CLUSTER_NODE_ID")
-    cluster_node_name: Optional[str] = Field(None, alias="CLUSTER_NODE_NAME")
-    cluster_node_url: Optional[str] = Field(None, alias="CLUSTER_NODE_URL")
-    cluster_peers: Optional[str] = Field(None, alias="CLUSTER_PEERS")  # "id:url,id:url"
-    cluster_sync_secret: Optional[str] = Field(None, alias="CLUSTER_SYNC_SECRET")
+    cluster_node_id: str | None = Field(None, alias="CLUSTER_NODE_ID")
+    cluster_node_name: str | None = Field(None, alias="CLUSTER_NODE_NAME")
+    cluster_node_url: str | None = Field(None, alias="CLUSTER_NODE_URL")
+    cluster_peers: str | None = Field(None, alias="CLUSTER_PEERS")  # "id:url,id:url"
+    cluster_sync_secret: str | None = Field(None, alias="CLUSTER_SYNC_SECRET")
 
     # v5.22.15 — CORS origins. Default stays "*" because consumer projects
     # call /v1/* from their own front ends and narrowing it silently would
@@ -485,12 +509,12 @@ class Settings(BaseSettings):
 
     # Notifications
     smtp_enabled: bool = Field(False, alias="SMTP_ENABLED")
-    smtp_host: Optional[str] = Field(None, alias="SMTP_HOST")
+    smtp_host: str | None = Field(None, alias="SMTP_HOST")
     smtp_port: int = Field(587, alias="SMTP_PORT")
-    smtp_user: Optional[str] = Field(None, alias="SMTP_USER")
-    smtp_pass: Optional[str] = Field(None, alias="SMTP_PASS")
+    smtp_user: str | None = Field(None, alias="SMTP_USER")
+    smtp_pass: str | None = Field(None, alias="SMTP_PASS")
     # v5.22.7 — some relays (earthlink) require an explicit HELO/EHLO name
-    smtp_helo: Optional[str] = Field(None, alias="SMTP_HELO")
+    smtp_helo: str | None = Field(None, alias="SMTP_HELO")
 
     # v5.22.9 — OIDC single sign-on (Google by default). Disabled unless
     # sso_enabled AND client id/secret are set. sso_auto_provision is off by
@@ -498,22 +522,22 @@ class Settings(BaseSettings):
     # than silently creating an account on a compliance-scoped service.
     sso_enabled: bool = Field(False, alias="SSO_ENABLED")
     sso_issuer: str = Field("https://accounts.google.com", alias="SSO_ISSUER")
-    sso_client_id: Optional[str] = Field(None, alias="SSO_CLIENT_ID")
-    sso_client_secret: Optional[str] = Field(None, alias="SSO_CLIENT_SECRET")
-    sso_redirect_uri: Optional[str] = Field(None, alias="SSO_REDIRECT_URI")
+    sso_client_id: str | None = Field(None, alias="SSO_CLIENT_ID")
+    sso_client_secret: str | None = Field(None, alias="SSO_CLIENT_SECRET")
+    sso_redirect_uri: str | None = Field(None, alias="SSO_REDIRECT_URI")
     sso_default_role: str = Field("user", alias="SSO_DEFAULT_ROLE")
-    sso_allowed_domains: Optional[str] = Field(None, alias="SSO_ALLOWED_DOMAINS")
+    sso_allowed_domains: str | None = Field(None, alias="SSO_ALLOWED_DOMAINS")
     sso_auto_provision: bool = Field(False, alias="SSO_AUTO_PROVISION")
-    smtp_from: Optional[str] = Field(None, alias="SMTP_FROM")
-    smtp_to: Optional[str] = Field(None, alias="SMTP_TO")
+    smtp_from: str | None = Field(None, alias="SMTP_FROM")
+    smtp_to: str | None = Field(None, alias="SMTP_TO")
 
     # Wave 6 — audit log export
-    audit_export_dir: Optional[str] = Field(None, alias="AUDIT_EXPORT_DIR")
-    audit_export_s3_bucket: Optional[str] = Field(None, alias="AUDIT_EXPORT_S3_BUCKET")
-    audit_export_s3_endpoint: Optional[str] = Field(None, alias="AUDIT_EXPORT_S3_ENDPOINT")
-    audit_export_s3_region: Optional[str] = Field(None, alias="AUDIT_EXPORT_S3_REGION")
-    audit_export_s3_access_key: Optional[str] = Field(None, alias="AUDIT_EXPORT_S3_ACCESS_KEY")
-    audit_export_s3_secret_key: Optional[str] = Field(None, alias="AUDIT_EXPORT_S3_SECRET_KEY")
+    audit_export_dir: str | None = Field(None, alias="AUDIT_EXPORT_DIR")
+    audit_export_s3_bucket: str | None = Field(None, alias="AUDIT_EXPORT_S3_BUCKET")
+    audit_export_s3_endpoint: str | None = Field(None, alias="AUDIT_EXPORT_S3_ENDPOINT")
+    audit_export_s3_region: str | None = Field(None, alias="AUDIT_EXPORT_S3_REGION")
+    audit_export_s3_access_key: str | None = Field(None, alias="AUDIT_EXPORT_S3_ACCESS_KEY")
+    audit_export_s3_secret_key: str | None = Field(None, alias="AUDIT_EXPORT_S3_SECRET_KEY")
     audit_export_retention_days: int = Field(90, alias="AUDIT_EXPORT_RETENTION_DAYS")
 
     # v2.8.4 — activity-log payload capture
@@ -532,7 +556,9 @@ class Settings(BaseSettings):
     # full-time storage cost of activity_log_capture_bodies=True (the
     # 2026-05-06 1 GB blowup). Default 0.01 = 1%. Tagged in event_meta
     # as ``body_sampled=True`` so the hub UI can filter on it.
-    activity_log_body_sample_rate_4xx: float = Field(0.01, alias="ACTIVITY_LOG_BODY_SAMPLE_RATE_4XX")
+    activity_log_body_sample_rate_4xx: float = Field(
+        0.01, alias="ACTIVITY_LOG_BODY_SAMPLE_RATE_4XX"
+    )
 
     # v3.6.3 — LAN-egress IP rewrite map.
     # When the proxy is hairpin-NAT'd from inside a LAN, nginx sees the
@@ -560,7 +586,8 @@ class Settings(BaseSettings):
     # See ``app/monitoring/anthropic_billing_worker.py`` and
     # ``project_backlog_anthropic_billing_scrape.md`` for context.
     anthropic_billing_scrape_interval_sec: int = Field(
-        14400, alias="ANTHROPIC_BILLING_SCRAPE_INTERVAL_SEC",
+        14400,
+        alias="ANTHROPIC_BILLING_SCRAPE_INTERVAL_SEC",
     )
 
     # v5.22.59 — usage-reset advisor (built-but-OFF). Watches the weekly
@@ -572,11 +599,13 @@ class Settings(BaseSettings):
     usage_reset_advisor_weekly_pct: float = Field(95.0, alias="USAGE_RESET_ADVISOR_WEEKLY_PCT")
     usage_reset_advisor_fable_min_pp: float = Field(30.0, alias="USAGE_RESET_ADVISOR_FABLE_MIN_PP")
     usage_reset_advisor_skip_if_reset_within_sec: int = Field(
-        7200, alias="USAGE_RESET_ADVISOR_SKIP_IF_RESET_WITHIN_SEC",
+        7200,
+        alias="USAGE_RESET_ADVISOR_SKIP_IF_RESET_WITHIN_SEC",
     )
     # Redemption is NOT implemented; this flag only gates the stub.
     usage_reset_advisor_redeem_enabled: bool = Field(
-        False, alias="USAGE_RESET_ADVISOR_REDEEM_ENABLED",
+        False,
+        alias="USAGE_RESET_ADVISOR_REDEEM_ENABLED",
     )
 
     # v3.7.1 — auto-rotation rule thresholds. The router skips providers
@@ -586,10 +615,12 @@ class Settings(BaseSettings):
     # external_rotation_hysteresis_pct``. Defaults are 95% / 5%
     # → skip at 95%, clear at 90%.
     external_rotation_capacity_pct: float = Field(
-        95.0, alias="EXTERNAL_ROTATION_CAPACITY_PCT",
+        95.0,
+        alias="EXTERNAL_ROTATION_CAPACITY_PCT",
     )
     external_rotation_hysteresis_pct: float = Field(
-        5.0, alias="EXTERNAL_ROTATION_HYSTERESIS_PCT",
+        5.0,
+        alias="EXTERNAL_ROTATION_HYSTERESIS_PCT",
     )
 
     # v3.7.4 — bucket size (percentage points) for the utilization-
@@ -598,7 +629,8 @@ class Settings(BaseSettings):
     # a boundary. Default 25pp means a provider has to be >=25% lower
     # utilization than another to override operator priority.
     external_rotation_util_bucket_pct: float = Field(
-        25.0, alias="EXTERNAL_ROTATION_UTIL_BUCKET_PCT",
+        25.0,
+        alias="EXTERNAL_ROTATION_UTIL_BUCKET_PCT",
     )
 
     # v3.7.10 — proactive AI rate limiter (operator-requested 2026-05-10).
@@ -613,18 +645,21 @@ class Settings(BaseSettings):
     ai_rate_limiter_interval_sec: int = Field(300, alias="AI_RATE_LIMITER_INTERVAL_SEC")
     ai_rate_limiter_window_min: int = Field(30, alias="AI_RATE_LIMITER_WINDOW_MIN")
     ai_rate_limiter_model: str = Field(
-        "claude-haiku-4-5-20251001", alias="AI_RATE_LIMITER_MODEL",
+        "claude-haiku-4-5-20251001",
+        alias="AI_RATE_LIMITER_MODEL",
     )
     ai_rate_limiter_throttle_floor_rpm: int = Field(
-        5, alias="AI_RATE_LIMITER_THROTTLE_FLOOR_RPM",
+        5,
+        alias="AI_RATE_LIMITER_THROTTLE_FLOOR_RPM",
     )
     ai_rate_limiter_auto_apply: bool = Field(False, alias="AI_RATE_LIMITER_AUTO_APPLY")
     # Internal api_key the worker uses to call /v1/messages for classification.
     # Operator creates a low-privilege key + sets this — without it the
     # worker no-ops cleanly. Self-issued to avoid recursion through OAuth
     # rotation logic.
-    ai_rate_limiter_internal_api_key: Optional[str] = Field(
-        None, alias="AI_RATE_LIMITER_INTERNAL_API_KEY",
+    ai_rate_limiter_internal_api_key: str | None = Field(
+        None,
+        alias="AI_RATE_LIMITER_INTERNAL_API_KEY",
     )
 
     # v3.0.98 → v3.1.2 — cluster-sync catalog-table replication.
@@ -651,20 +686,20 @@ class Settings(BaseSettings):
 
     # Wave 6 — semantic prompt guard
     prompt_guard_enabled: bool = Field(False, alias="PROMPT_GUARD_ENABLED")
-    prompt_guard_denylist: Optional[str] = Field(None, alias="PROMPT_GUARD_DENYLIST")
+    prompt_guard_denylist: str | None = Field(None, alias="PROMPT_GUARD_DENYLIST")
 
     # OAuth capture (research tool for Claude Pro Max OAuth provider)
     oauth_capture_enabled: bool = Field(False, alias="OAUTH_CAPTURE_ENABLED")
-    oauth_capture_upstream: Optional[str] = Field(None, alias="OAUTH_CAPTURE_UPSTREAM")
-    oauth_capture_secret: Optional[str] = Field(None, alias="OAUTH_CAPTURE_SECRET")
+    oauth_capture_upstream: str | None = Field(None, alias="OAUTH_CAPTURE_UPSTREAM")
+    oauth_capture_secret: str | None = Field(None, alias="OAUTH_CAPTURE_SECRET")
     # v2.6.0 capture-sidecar settings removed in v2.7.0 — the sidecar was
     # deleted in favor of "paste vendor CLI credentials" UX.
 
     # Wave 6 — SSO/SAML
     sso_enabled: bool = Field(False, alias="SSO_ENABLED")
-    sso_entity_id: Optional[str] = Field(None, alias="SSO_ENTITY_ID")
-    sso_idp_metadata_url: Optional[str] = Field(None, alias="SSO_IDP_METADATA_URL")
-    sso_acs_url: Optional[str] = Field(None, alias="SSO_ACS_URL")
+    sso_entity_id: str | None = Field(None, alias="SSO_ENTITY_ID")
+    sso_idp_metadata_url: str | None = Field(None, alias="SSO_IDP_METADATA_URL")
+    sso_acs_url: str | None = Field(None, alias="SSO_ACS_URL")
 
     # v5.23 — Local Accelerator Manager (resource admission). Master switch
     # is OFF: probe + later admission are a complete no-op (spec G6).

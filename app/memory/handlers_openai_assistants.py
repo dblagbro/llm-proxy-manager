@@ -28,11 +28,11 @@ Why ship these now if no provider uses them yet:
 Registration: at startup, app/memory/__init__.py imports this module
 and calls ``flush.register_handler`` + ``recover.register_handler``.
 """
+
 from __future__ import annotations
 
-import json
+import json as json
 import logging
-from typing import Optional
 
 import httpx
 
@@ -82,9 +82,7 @@ async def flush_openai_assistants(ctx: dict) -> bool:
     thread_id = ctx.get("last_known_external_ref")
     if not provider or not thread_id:
         # No thread to flush — succeed trivially. Marker still advances.
-        logger.info(
-            "memory.flush.openai_assistants: no thread_id known, skipping"
-        )
+        logger.info("memory.flush.openai_assistants: no thread_id known, skipping")
         return True
 
     url = f"{_base_url(provider)}/threads/{thread_id}"
@@ -93,8 +91,7 @@ async def flush_openai_assistants(ctx: dict) -> bool:
             r = await c.delete(url, headers=await _api_headers(provider))
         if r.status_code == 200 or r.status_code == 204:
             logger.info(
-                f"memory.flush.openai_assistants: deleted thread "
-                f"{thread_id} provider={provider.id}"
+                f"memory.flush.openai_assistants: deleted thread {thread_id} provider={provider.id}"
             )
             return True
         if r.status_code == 404:
@@ -105,21 +102,18 @@ async def flush_openai_assistants(ctx: dict) -> bool:
             )
             return True
         logger.warning(
-            f"memory.flush.openai_assistants: DELETE returned "
-            f"{r.status_code} body={r.text[:200]}"
+            f"memory.flush.openai_assistants: DELETE returned {r.status_code} body={r.text[:200]}"
         )
         return False
     except Exception as e:
-        logger.warning(
-            f"memory.flush.openai_assistants: network error err={e!r}"
-        )
+        logger.warning(f"memory.flush.openai_assistants: network error err={e!r}")
         return False
 
 
 # ── Phase 7 — recovery handler ─────────────────────────────────────
 
 
-async def recover_openai_assistants(ctx: dict) -> Optional[str]:
+async def recover_openai_assistants(ctx: dict) -> str | None:
     """Read message history back from the upstream Assistants thread
     and assemble a plain-text representation as the recovered content.
 
@@ -175,9 +169,7 @@ async def recover_openai_assistants(ctx: dict) -> Optional[str]:
         )
         return recovered
     except Exception as e:
-        logger.warning(
-            f"memory.recover.openai_assistants: network error err={e!r}"
-        )
+        logger.warning(f"memory.recover.openai_assistants: network error err={e!r}")
         return None
 
 
@@ -191,5 +183,6 @@ def register() -> None:
     for when the operator adds one."""
     from app.memory.flush import register_handler as register_flush
     from app.memory.recover import register_handler as register_recover
+
     register_flush("openai-assistants", flush_openai_assistants)
     register_recover("openai-assistants", recover_openai_assistants)

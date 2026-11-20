@@ -6,6 +6,7 @@ address and choose which categories and what minimum severity reach them.
 This module is the service layer: read/write a user's preference and resolve
 the set of personal recipients for a given notification.
 """
+
 from __future__ import annotations
 
 import logging
@@ -37,27 +38,33 @@ def _pref_dict(p: AiriNotificationPref | None, user_id: str) -> dict:
     ``configured=False`` so the panel can show 'not yet set up'."""
     if p is None:
         return {
-            "user_id": user_id, "configured": False,
-            "email": None, "enabled": True,
-            "categories": _clean_categories(None), "min_severity": "warning",
+            "user_id": user_id,
+            "configured": False,
+            "email": None,
+            "enabled": True,
+            "categories": _clean_categories(None),
+            "min_severity": "warning",
         }
     return {
-        "user_id": p.user_id, "configured": True,
-        "email": p.email, "enabled": bool(p.enabled),
+        "user_id": p.user_id,
+        "configured": True,
+        "email": p.email,
+        "enabled": bool(p.enabled),
         "categories": _clean_categories(p.categories),
         "min_severity": p.min_severity or "warning",
     }
 
 
 async def get_pref(db, user_id: str) -> dict:
-    p = (await db.execute(
-        select(AiriNotificationPref).where(AiriNotificationPref.user_id == user_id)
-    )).scalar_one_or_none()
+    p = (
+        await db.execute(
+            select(AiriNotificationPref).where(AiriNotificationPref.user_id == user_id)
+        )
+    ).scalar_one_or_none()
     return _pref_dict(p, user_id)
 
 
-async def set_pref(db, user_id: str, *, email, enabled, categories,
-                   min_severity: str) -> dict:
+async def set_pref(db, user_id: str, *, email, enabled, categories, min_severity: str) -> dict:
     """Upsert a user's preference. Returns the saved dict or {'error': ...}."""
     email = (email or "").strip() or None
     if email and ("@" not in email or len(email) > 320):
@@ -67,9 +74,11 @@ async def set_pref(db, user_id: str, *, email, enabled, categories,
         return {"error": f"min_severity must be one of {list(_MIN_SEVERITY_CHOICES)}"}
     cats = _clean_categories(categories)
 
-    p = (await db.execute(
-        select(AiriNotificationPref).where(AiriNotificationPref.user_id == user_id)
-    )).scalar_one_or_none()
+    p = (
+        await db.execute(
+            select(AiriNotificationPref).where(AiriNotificationPref.user_id == user_id)
+        )
+    ).scalar_one_or_none()
     if p is None:
         p = AiriNotificationPref(id=secrets.token_hex(8), user_id=user_id)
         db.add(p)
@@ -78,8 +87,12 @@ async def set_pref(db, user_id: str, *, email, enabled, categories,
     p.categories = cats
     p.min_severity = min_severity
     await db.commit()
-    logger.info("airi.notify_pref saved user=%s email=%s enabled=%s",
-                user_id, "set" if email else "none", p.enabled)
+    logger.info(
+        "airi.notify_pref saved user=%s email=%s enabled=%s",
+        user_id,
+        "set" if email else "none",
+        p.enabled,
+    )
     return await get_pref(db, user_id)
 
 
@@ -88,9 +101,15 @@ async def resolve_recipients(db, *, category: str, severity: str) -> set[str]:
     enabled, with an email, the category opted-in, and severity at/above the
     user's minimum. The global ``smtp_to`` is handled separately by the
     notifier; this is only the per-user layer."""
-    rows = (await db.execute(
-        select(AiriNotificationPref).where(AiriNotificationPref.enabled == True)  # noqa: E712
-    )).scalars().all()
+    rows = (
+        (
+            await db.execute(
+                select(AiriNotificationPref).where(AiriNotificationPref.enabled == True)  # noqa: E712
+            )
+        )
+        .scalars()
+        .all()
+    )
     want_rank = _rank(severity)
     out: set[str] = set()
     for p in rows:

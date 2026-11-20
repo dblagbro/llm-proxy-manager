@@ -1,4 +1,5 @@
 """R4 event-broker tests + idempotency cache."""
+
 from __future__ import annotations
 
 import asyncio
@@ -11,6 +12,7 @@ import pytest
 def _reset_broker_and_cache():
     """Clear module-level state between tests so they don't bleed."""
     from app.runs import event_bus, idempotency
+
     event_bus._CHANNELS.clear()
     idempotency.clear()
     yield
@@ -23,6 +25,7 @@ def _reset_broker_and_cache():
 
 def test_publish_to_unsubscribed_channel_lands_in_ring():
     from app.runs import event_bus
+
     event_bus.publish("run_a", seq=1, kind="run_started", payload={}, ts=1.0)
     ch = event_bus.get("run_a")
     assert ch is not None
@@ -32,9 +35,11 @@ def test_publish_to_unsubscribed_channel_lands_in_ring():
 
 def test_replay_since_filters_by_seq():
     from app.runs import event_bus
+
     for i in range(5):
-        event_bus.publish("run_a", seq=i + 1, kind="model_call_start",
-                          payload={"i": i}, ts=float(i))
+        event_bus.publish(
+            "run_a", seq=i + 1, kind="model_call_start", payload={"i": i}, ts=float(i)
+        )
     ch = event_bus.get("run_a")
     replay = ch.replay_since(2)
     assert [e.seq for e in replay] == [3, 4, 5]
@@ -42,6 +47,7 @@ def test_replay_since_filters_by_seq():
 
 def test_ring_evicts_oldest_when_full():
     from app.runs import event_bus
+
     for i in range(event_bus.RING_SIZE + 50):
         event_bus.publish("run_a", seq=i + 1, kind="x", payload={}, ts=0.0)
     ch = event_bus.get("run_a")
@@ -55,9 +61,9 @@ def test_terminal_event_closes_channel_and_wakes_subscribers():
     """A terminal kind closes the channel; new subscribers get None
     sentinel via the queue + the channel is .closed."""
     from app.runs import event_bus
+
     event_bus.publish("run_a", seq=1, kind="run_started", payload={}, ts=1.0)
-    event_bus.publish("run_a", seq=2, kind="completed",
-                      payload={"result_text": "ok"}, ts=2.0)
+    event_bus.publish("run_a", seq=2, kind="completed", payload={"result_text": "ok"}, ts=2.0)
     ch = event_bus.get("run_a")
     assert ch.closed is True
 
@@ -65,6 +71,7 @@ def test_terminal_event_closes_channel_and_wakes_subscribers():
 @pytest.mark.asyncio
 async def test_subscribe_receives_live_events():
     from app.runs import event_bus
+
     ch = event_bus.get_or_create("run_a")
     q = await ch.subscribe()
     event_bus.publish("run_a", seq=1, kind="run_started", payload={}, ts=1.0)
@@ -79,13 +86,12 @@ async def test_stream_events_replays_then_streams_live():
 
     # Pre-populate ring
     event_bus.publish("run_a", seq=1, kind="run_started", payload={}, ts=1.0)
-    event_bus.publish("run_a", seq=2, kind="model_call_start",
-                      payload={}, ts=2.0)
+    event_bus.publish("run_a", seq=2, kind="model_call_start", payload={}, ts=2.0)
 
     received: list = []
+
     async def consume():
-        async for ev in event_bus.stream_events("run_a", last_event_id=0,
-                                                 keepalive_sec=0.5):
+        async for ev in event_bus.stream_events("run_a", last_event_id=0, keepalive_sec=0.5):
             if ev.kind == "__keepalive__":
                 continue
             received.append((ev.seq, ev.kind))
@@ -94,28 +100,24 @@ async def test_stream_events_replays_then_streams_live():
 
     task = asyncio.create_task(consume())
     await asyncio.sleep(0.05)
-    event_bus.publish("run_a", seq=3, kind="completed",
-                      payload={"result_text": "ok"}, ts=3.0)
+    event_bus.publish("run_a", seq=3, kind="completed", payload={"result_text": "ok"}, ts=3.0)
     await asyncio.wait_for(task, timeout=2.0)
 
     # Replay (1, 2) + live (3)
-    assert received == [(1, "run_started"), (2, "model_call_start"),
-                        (3, "completed")]
+    assert received == [(1, "run_started"), (2, "model_call_start"), (3, "completed")]
 
 
 @pytest.mark.asyncio
 async def test_stream_events_resume_skips_already_seen():
     """Last-Event-ID resume: if client passes seq=5, replay starts at 6."""
     from app.runs import event_bus
+
     for i in range(10):
-        event_bus.publish("run_a", seq=i + 1, kind="x", payload={"i": i},
-                          ts=float(i))
-    event_bus.publish("run_a", seq=11, kind="completed",
-                      payload={"result_text": "ok"}, ts=11.0)
+        event_bus.publish("run_a", seq=i + 1, kind="x", payload={"i": i}, ts=float(i))
+    event_bus.publish("run_a", seq=11, kind="completed", payload={"result_text": "ok"}, ts=11.0)
 
     received = []
-    async for ev in event_bus.stream_events("run_a", last_event_id=5,
-                                              keepalive_sec=0.5):
+    async for ev in event_bus.stream_events("run_a", last_event_id=5, keepalive_sec=0.5):
         if ev.kind == "__keepalive__":
             continue
         received.append(ev.seq)
@@ -129,12 +131,13 @@ async def test_stream_events_keepalive_when_idle():
     """When no events flow, the stream emits a __keepalive__ sentinel
     after keepalive_sec. SSE handler turns that into `: keepalive\\n\\n`."""
     from app.runs import event_bus
+
     event_bus.publish("run_a", seq=1, kind="run_started", payload={}, ts=1.0)
 
     received = []
+
     async def consume():
-        async for ev in event_bus.stream_events("run_a", last_event_id=0,
-                                                  keepalive_sec=0.1):
+        async for ev in event_bus.stream_events("run_a", last_event_id=0, keepalive_sec=0.1):
             received.append(ev.kind)
             if len(received) >= 4:
                 return
@@ -155,11 +158,13 @@ async def test_stream_events_keepalive_when_idle():
 
 def test_idempotency_cache_get_miss():
     from app.runs import idempotency
+
     assert idempotency.get("k1", "id1") is None
 
 
 def test_idempotency_cache_put_then_get():
     from app.runs import idempotency
+
     idempotency.put("k1", "id1", "run_abc", time.time())
     assert idempotency.get("k1", "id1") == "run_abc"
 
@@ -168,6 +173,7 @@ def test_idempotency_cache_per_api_key_isolation():
     """Same idempotency_key under DIFFERENT api_keys must NOT collide
     (Q1: per-API-key collision domain)."""
     from app.runs import idempotency
+
     now = time.time()
     idempotency.put("key-A", "shared-id", "run_a", now)
     idempotency.put("key-B", "shared-id", "run_b", now)
@@ -177,6 +183,7 @@ def test_idempotency_cache_per_api_key_isolation():
 
 def test_idempotency_cache_ttl_expiry():
     from app.runs import idempotency
+
     # Created 25h ago — past 24h TTL
     idempotency.put("k1", "id1", "run_old", time.time() - (25 * 3600))
     assert idempotency.get("k1", "id1") is None
@@ -184,6 +191,7 @@ def test_idempotency_cache_ttl_expiry():
 
 def test_idempotency_cache_invalidate():
     from app.runs import idempotency
+
     idempotency.put("k1", "id1", "run_x", time.time())
     assert idempotency.get("k1", "id1") == "run_x"
     idempotency.invalidate("k1", "id1")
@@ -193,6 +201,7 @@ def test_idempotency_cache_invalidate():
 def test_idempotency_cache_lru_eviction():
     """When max_size hits, least-recently-used keys evict first."""
     from app.runs.idempotency import _IdempotencyCache
+
     c = _IdempotencyCache(max_size=3)
     now = time.time()
     c.put("k", "a", "run_a", now)

@@ -30,19 +30,19 @@ client sends an unrecognized LMRH dim, the response carries
 Backwards-compatible: old clients are not broken; new clients see the
 hint and can register the dim or fix their code.
 """
+
 from __future__ import annotations
 
 import logging
 import re
 import time
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.admin import require_admin, AdminUser
+from app.auth.admin import AdminUser, require_admin
 from app.auth.keys import resolve_api_key_dep
 from app.config import settings
 from app.models.database import get_db
@@ -80,11 +80,25 @@ def _builtin_dim_names() -> set[str]:
     app/routing/lmrh/score.py case "provider-hint" | "fallback-chain".
     """
     return {
-        "task", "safety-min", "safety-max", "refusal-rate",
-        "latency", "cost", "region", "context-length", "modality",
-        "max-ttft", "max-cost-per-1k",
-        "effort", "cascade", "hedge", "tenant", "freshness",
-        "exclude", "provider-hint", "fallback-chain",
+        "task",
+        "safety-min",
+        "safety-max",
+        "refusal-rate",
+        "latency",
+        "cost",
+        "region",
+        "context-length",
+        "modality",
+        "max-ttft",
+        "max-cost-per-1k",
+        "effort",
+        "cascade",
+        "hedge",
+        "tenant",
+        "freshness",
+        "exclude",
+        "provider-hint",
+        "fallback-chain",
         "cache",
     }
 
@@ -95,13 +109,15 @@ def _builtin_dim_names() -> set[str]:
 class RegisterRequest(BaseModel):
     name: str = Field(..., description="Proposed dim name; lowercase, [a-z0-9_-]")
     semantics: str = Field(..., description="One-paragraph plain-English meaning")
-    value_type: Optional[str] = Field(
-        None, description='"string", "int", "float", or "enum:a,b,c"',
+    value_type: str | None = Field(
+        None,
+        description='"string", "int", "float", or "enum:a,b,c"',
     )
     kind: str = Field("advisory", description='"hard" | "soft" | "advisory"')
     examples: list[str] = Field(default_factory=list)
-    owner_app: Optional[str] = Field(
-        None, description="Free-form identifier for traceability (e.g. 'paperless-ai-analyzer')",
+    owner_app: str | None = Field(
+        None,
+        description="Free-form identifier for traceability (e.g. 'paperless-ai-analyzer')",
     )
 
 
@@ -110,13 +126,13 @@ class RegisterResponse(BaseModel):
     canonical_name: str
     requested_name: str
     suffix_applied: bool
-    note: Optional[str] = None
+    note: str | None = None
 
 
 class ProposalRequest(BaseModel):
     name: str
     rationale: str
-    owner_app: Optional[str] = None
+    owner_app: str | None = None
 
 
 # ── Endpoints ───────────────────────────────────────────────────────────────
@@ -153,7 +169,9 @@ async def register_dim(
         # Built-in; cannot be re-registered. Return the canonical built-in name
         # so the caller knows it already exists.
         return RegisterResponse(
-            accepted=False, canonical_name=requested, requested_name=requested,
+            accepted=False,
+            canonical_name=requested,
+            requested_name=requested,
             suffix_applied=False,
             note="This dim is built into the proxy and is already canonical.",
         )
@@ -162,18 +180,22 @@ async def register_dim(
     # Tombstoned rows do NOT block re-registration (the operator deleted it
     # so the name is free again — re-registering revives the row by clearing
     # the tombstone in place to preserve registered_at + replication identity).
-    existing = (await db.execute(
-        select(LmrhDim).where(LmrhDim.name == requested, LmrhDim.deleted_at.is_(None))
-    )).scalar_one_or_none()
+    existing = (
+        await db.execute(
+            select(LmrhDim).where(LmrhDim.name == requested, LmrhDim.deleted_at.is_(None))
+        )
+    ).scalar_one_or_none()
     if existing is not None:
-        same_owner = (
-            (body.owner_app or "") == (existing.owner_app or "")
-            and (key_record.id) == (existing.owner_key_id or "")
+        same_owner = (body.owner_app or "") == (existing.owner_app or "") and (key_record.id) == (
+            existing.owner_key_id or ""
         )
         if same_owner:
             return RegisterResponse(
-                accepted=True, canonical_name=requested, requested_name=requested,
-                suffix_applied=False, note="Already registered to you (idempotent).",
+                accepted=True,
+                canonical_name=requested,
+                requested_name=requested,
+                suffix_applied=False,
+                note="Already registered to you (idempotent).",
             )
         # Collision — find next free suffixed name (foo-2, foo-3, ...)
         canonical = await _find_free_suffix(db, requested)
@@ -205,16 +227,23 @@ async def register_dim(
     # registered dim is recognized on the next request, not 60s from now.
     try:
         from app.main import invalidate_registry_cache
+
         invalidate_registry_cache()
     except Exception:
         pass
     logger.warning(
         "lmrh.dim_registered name=%r requested=%r owner_app=%r owner_key=%s",
-        canonical, requested, body.owner_app, key_record.id,
+        canonical,
+        requested,
+        body.owner_app,
+        key_record.id,
     )
     return RegisterResponse(
-        accepted=True, canonical_name=canonical, requested_name=requested,
-        suffix_applied=suffix_applied, note=note,
+        accepted=True,
+        canonical_name=canonical,
+        requested_name=requested,
+        suffix_applied=suffix_applied,
+        note=note,
     )
 
 
@@ -241,7 +270,10 @@ async def propose_dim(
     await db.refresh(p)
     logger.warning(
         "lmrh.proposal_queued id=%d name=%r app=%r key=%s",
-        p.id, p.proposed_name, body.owner_app, key_record.id,
+        p.id,
+        p.proposed_name,
+        body.owner_app,
+        key_record.id,
     )
     return {"id": p.id, "status": "pending", "proposed_name": p.proposed_name}
 
@@ -250,23 +282,31 @@ async def propose_dim(
 async def list_registry(db: AsyncSession = Depends(get_db)):
     """Public discovery endpoint. Lists ALL dims (built-in + registered)
     so clients can self-document without hitting the spec markdown."""
-    rows = (await db.execute(
-        select(LmrhDim)
-        .where(LmrhDim.deleted_at.is_(None))
-        .order_by(LmrhDim.registered_at.asc())
-    )).scalars().all()
+    rows = (
+        (
+            await db.execute(
+                select(LmrhDim)
+                .where(LmrhDim.deleted_at.is_(None))
+                .order_by(LmrhDim.registered_at.asc())
+            )
+        )
+        .scalars()
+        .all()
+    )
     builtins = [
-        {"name": n, "kind": "builtin",
-         "semantics": "Defined by the LMRH 1.0 spec — see /lmrh.md."}
+        {"name": n, "kind": "builtin", "semantics": "Defined by the LMRH 1.0 spec — see /lmrh.md."}
         for n in sorted(_builtin_dim_names())
     ]
     registered = [
-        {"name": d.name, "kind": d.kind,
-         "owner_app": d.owner_app,
-         "value_type": d.value_type,
-         "semantics": d.semantics,
-         "examples": d.examples or [],
-         "registered_at": d.registered_at}
+        {
+            "name": d.name,
+            "kind": d.kind,
+            "owner_app": d.owner_app,
+            "value_type": d.value_type,
+            "semantics": d.semantics,
+            "examples": d.examples or [],
+            "registered_at": d.registered_at,
+        }
         for d in rows
     ]
     return {
@@ -285,16 +325,18 @@ async def get_dim(name: str, db: AsyncSession = Depends(get_db)):
     nm = _norm(name)
     if nm in _builtin_dim_names():
         return {
-            "name": nm, "kind": "builtin",
+            "name": nm,
+            "kind": "builtin",
             "semantics": "See /lmrh.md for full normative semantics.",
         }
-    d = (await db.execute(
-        select(LmrhDim).where(LmrhDim.name == nm, LmrhDim.deleted_at.is_(None))
-    )).scalar_one_or_none()
+    d = (
+        await db.execute(select(LmrhDim).where(LmrhDim.name == nm, LmrhDim.deleted_at.is_(None)))
+    ).scalar_one_or_none()
     if d is None:
         raise HTTPException(404, f"Dim {nm!r} not registered.")
     return {
-        "name": d.name, "kind": d.kind,
+        "name": d.name,
+        "kind": d.kind,
         "owner_app": d.owner_app,
         "value_type": d.value_type,
         "semantics": d.semantics,
@@ -310,16 +352,27 @@ async def list_proposals(
     _: AdminUser = Depends(require_admin),
 ):
     """Admin-only review queue."""
-    rows = (await db.execute(
-        select(LmrhProposal)
-        .where(LmrhProposal.deleted_at.is_(None))
-        .order_by(LmrhProposal.proposed_at.desc())
-    )).scalars().all()
+    rows = (
+        (
+            await db.execute(
+                select(LmrhProposal)
+                .where(LmrhProposal.deleted_at.is_(None))
+                .order_by(LmrhProposal.proposed_at.desc())
+            )
+        )
+        .scalars()
+        .all()
+    )
     return [
-        {"id": p.id, "name": p.proposed_name, "rationale": p.rationale,
-         "owner_app": p.proposer_app, "status": p.status,
-         "review_note": p.review_note,
-         "proposed_at": p.proposed_at}
+        {
+            "id": p.id,
+            "name": p.proposed_name,
+            "rationale": p.rationale,
+            "owner_app": p.proposer_app,
+            "status": p.status,
+            "review_note": p.review_note,
+            "proposed_at": p.proposed_at,
+        }
         for p in rows
     ]
 
@@ -344,6 +397,7 @@ async def delete_dim(
     await db.commit()
     try:
         from app.main import invalidate_registry_cache
+
         invalidate_registry_cache()
     except Exception:
         pass
@@ -359,7 +413,9 @@ async def delete_proposal(
 ):
     """v3.0.29: admin-only soft-delete of a proposal. Tombstone replicates
     across cluster peers."""
-    p = (await db.execute(select(LmrhProposal).where(LmrhProposal.id == proposal_id))).scalar_one_or_none()
+    p = (
+        await db.execute(select(LmrhProposal).where(LmrhProposal.id == proposal_id))
+    ).scalar_one_or_none()
     if p is None or p.deleted_at is not None:
         raise HTTPException(404, f"Proposal {proposal_id!r} not found.")
     p.deleted_at = time.time()
@@ -380,15 +436,16 @@ async def _find_free_suffix(db: AsyncSession, base: str) -> str:
         candidate = f"{base}-{n}"
         if candidate in builtins:
             continue
-        existing = (await db.execute(
-            select(LmrhDim.name).where(LmrhDim.name == candidate, LmrhDim.deleted_at.is_(None))
-        )).first()
+        existing = (
+            await db.execute(
+                select(LmrhDim.name).where(LmrhDim.name == candidate, LmrhDim.deleted_at.is_(None))
+            )
+        ).first()
         if existing is None:
             return candidate
     raise HTTPException(
         409,
-        f"Couldn't find a free suffix for {base!r} after 100 attempts. "
-        "Pick a different base name.",
+        f"Couldn't find a free suffix for {base!r} after 100 attempts. Pick a different base name.",
     )
 
 
@@ -397,7 +454,7 @@ async def known_dim_names(db: AsyncSession) -> set[str]:
     the unknown-dim warning middleware. Excludes tombstoned rows so a
     deleted dim resurfaces in X-LMRH-Warnings (signals the caller it's
     no longer canonical)."""
-    rows = (await db.execute(
-        select(LmrhDim.name).where(LmrhDim.deleted_at.is_(None))
-    )).scalars().all()
+    rows = (
+        (await db.execute(select(LmrhDim.name).where(LmrhDim.deleted_at.is_(None)))).scalars().all()
+    )
     return _builtin_dim_names() | set(rows)

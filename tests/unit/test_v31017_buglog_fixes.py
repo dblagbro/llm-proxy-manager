@@ -4,12 +4,13 @@ A stream now "wins" the hedge race only if its first chunk is *healthy*
 (not a terminal SSE error frame, not an empty stream). A fast-failing
 primary no longer beats a healthy backup.
 """
+
 from __future__ import annotations
 
 import pytest
 
-from app.routing.hedging import race_streams, _chunk_ok
 from app.api._messages_streaming import preflight_sse
+from app.routing.hedging import _chunk_ok, race_streams
 
 
 def _gen_factory(*frames: bytes):
@@ -17,7 +18,9 @@ def _gen_factory(*frames: bytes):
         async def g():
             for f in frames:
                 yield f
+
         return g()
+
     return factory
 
 
@@ -36,7 +39,7 @@ async def test_race_skips_failing_primary_for_healthy_backup():
     """The core fix — a primary that fast-fails pre-stream must NOT win
     the race over a healthy backup."""
     primary = _gen_factory(_ERR % b"401 invalid key")
-    backup = _gen_factory(_OK, b'data: more\n\n')
+    backup = _gen_factory(_OK, b"data: more\n\n")
 
     racer, winner = await race_streams(primary, backup, wait_ms=50)
     assert winner == "backup", "healthy backup must win over a failing primary"
@@ -48,7 +51,7 @@ async def test_race_skips_failing_primary_for_healthy_backup():
 @pytest.mark.asyncio
 async def test_race_healthy_primary_still_wins():
     """Regression guard — a healthy primary still wins outright."""
-    primary = _gen_factory(_OK, b'data: y\n\n')
+    primary = _gen_factory(_OK, b"data: y\n\n")
     backup = _gen_factory(_OK)
     racer, winner = await race_streams(primary, backup, wait_ms=50)
     assert winner == "primary"

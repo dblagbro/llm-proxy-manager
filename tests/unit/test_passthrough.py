@@ -7,6 +7,7 @@ request produced `ValueError: too many values to unpack`.
 Keep the shape check small and specific — integration tests would
 need a running sidecar, which we don't run in unit tests.
 """
+
 from __future__ import annotations
 
 import sys
@@ -18,8 +19,9 @@ sys.modules.setdefault("litellm", _stub)
 if not hasattr(sys.modules["litellm"], "RateLimitError"):
     sys.modules["litellm"].RateLimitError = type("RateLimitError", (Exception,), {})
 
-import inspect
-from app.api.oauth_capture import passthrough
+import inspect  # noqa: E402
+
+from app.api.oauth_capture import passthrough  # noqa: E402
 
 
 class TestStripCapQuery:
@@ -42,6 +44,5 @@ class TestStripCapQuery:
         # Belt-and-suspenders — explicitly forbid the broken pattern.
         src = inspect.getsource(passthrough.capture_passthrough)
         assert (
-            "query = {k: v for k, v in request.query_params.multi_items() if k != \"cap\"}"
-            not in src
+            'query = {k: v for k, v in request.query_params.multi_items() if k != "cap"}' not in src
         ), "dict-based cap= strip was the v2.6.3 bug; don't re-introduce it."

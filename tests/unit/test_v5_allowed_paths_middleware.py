@@ -1,4 +1,5 @@
 """v5.0.0 — allowed_paths middleware (spec §8.3)."""
+
 from __future__ import annotations
 
 import sys
@@ -87,9 +88,11 @@ async def test_passthrough_when_path_in_allowed_list():
     call_next = AsyncMock(return_value=MagicMock(status_code=200))
     with patch(
         "app.middleware.allowed_paths._resolve_api_key",
-        new=AsyncMock(return_value=_stub_key(
-            allowed_paths=["/v1/chat/completions", "/v1/models", "/health"],
-        )),
+        new=AsyncMock(
+            return_value=_stub_key(
+                allowed_paths=["/v1/chat/completions", "/v1/models", "/health"],
+            )
+        ),
     ):
         await allowed_paths_middleware(req, call_next)
     call_next.assert_awaited_once()
@@ -102,15 +105,20 @@ async def test_passthrough_when_path_in_allowed_list():
 async def test_403_when_path_not_in_allowed_list():
     req = _stub_request("/v1/embeddings")
     call_next = AsyncMock()
-    with patch(
-        "app.middleware.allowed_paths._resolve_api_key",
-        new=AsyncMock(return_value=_stub_key(
-            allowed_paths=["/v1/chat/completions", "/v1/models", "/health"],
-        )),
-    ), patch(
-        "app.middleware.allowed_paths._emit_path_block_event",
-        new=AsyncMock(return_value="comp_test"),
-    ) as emit:
+    with (
+        patch(
+            "app.middleware.allowed_paths._resolve_api_key",
+            new=AsyncMock(
+                return_value=_stub_key(
+                    allowed_paths=["/v1/chat/completions", "/v1/models", "/health"],
+                )
+            ),
+        ),
+        patch(
+            "app.middleware.allowed_paths._emit_path_block_event",
+            new=AsyncMock(return_value="comp_test"),
+        ) as emit,
+    ):
         result = await allowed_paths_middleware(req, call_next)
     call_next.assert_not_awaited()
     assert result.status_code == 403
@@ -128,10 +136,12 @@ async def test_debug_echo_bypass_when_enabled():
     call_next = AsyncMock(return_value=MagicMock(status_code=200))
     with patch(
         "app.middleware.allowed_paths._resolve_api_key",
-        new=AsyncMock(return_value=_stub_key(
-            allowed_paths=["/v1/chat/completions"],
-            debug_echo=True,
-        )),
+        new=AsyncMock(
+            return_value=_stub_key(
+                allowed_paths=["/v1/chat/completions"],
+                debug_echo=True,
+            )
+        ),
     ):
         await allowed_paths_middleware(req, call_next)
     call_next.assert_awaited_once()
@@ -143,15 +153,20 @@ async def test_debug_echo_blocked_when_not_enabled():
     when it isn't in allowed_paths."""
     req = _stub_request("/api/debug/echo-client")
     call_next = AsyncMock()
-    with patch(
-        "app.middleware.allowed_paths._resolve_api_key",
-        new=AsyncMock(return_value=_stub_key(
-            allowed_paths=["/v1/chat/completions"],
-            debug_echo=False,
-        )),
-    ), patch(
-        "app.middleware.allowed_paths._emit_path_block_event",
-        new=AsyncMock(return_value="comp_test"),
+    with (
+        patch(
+            "app.middleware.allowed_paths._resolve_api_key",
+            new=AsyncMock(
+                return_value=_stub_key(
+                    allowed_paths=["/v1/chat/completions"],
+                    debug_echo=False,
+                )
+            ),
+        ),
+        patch(
+            "app.middleware.allowed_paths._emit_path_block_event",
+            new=AsyncMock(return_value="comp_test"),
+        ),
     ):
         result = await allowed_paths_middleware(req, call_next)
     call_next.assert_not_awaited()
@@ -179,7 +194,8 @@ async def test_fail_open_on_db_error():
 def test_middleware_registered_after_ip_block():
     """Ordering check: ip_block first (outermost), allowed_paths second."""
     from pathlib import Path
+
     src = Path("app/main.py").read_text()
-    ip_idx = src.index("app.middleware(\"http\")(ip_block_middleware)")
-    ap_idx = src.index("app.middleware(\"http\")(allowed_paths_middleware)")
+    ip_idx = src.index('app.middleware("http")(ip_block_middleware)')
+    ap_idx = src.index('app.middleware("http")(allowed_paths_middleware)')
     assert ip_idx < ap_idx

@@ -1,11 +1,11 @@
 """Unit tests for ordered-fallback detection (Wave 3 #17)."""
+
 import sys
 import types
-import pytest
 
 sys.modules.setdefault("litellm", types.ModuleType("litellm"))
 
-from app.routing.fallback import is_same_provider_retriable, FallbackChain
+from app.routing.fallback import FallbackChain, is_same_provider_retriable  # noqa: E402
 
 
 class TestRetriableDetection:
@@ -52,5 +52,7 @@ class TestFallbackChain:
         c.add("Anthropic", "err:AuthenticationError")
         c.add("OpenAI", "err:TimeoutError")
         c.add("Google", "ok")
-        assert c.as_header() == "Anthropic:err:AuthenticationError,OpenAI:err:TimeoutError,Google:ok"
+        assert (
+            c.as_header() == "Anthropic:err:AuthenticationError,OpenAI:err:TimeoutError,Google:ok"
+        )
         assert len(c.attempts) == 3

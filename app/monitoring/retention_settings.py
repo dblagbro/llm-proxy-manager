@@ -24,11 +24,11 @@ This module adds a ``system_settings``-backed override layer:
 Audit: every retention edit writes a ``compliance_policy_changes``
 row with scope='system'. Itself NEVER purgeable.
 """
+
 from __future__ import annotations
 
 import logging
 import time
-from typing import Optional
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -37,15 +37,15 @@ logger = logging.getLogger(__name__)
 
 # system_settings keys. Named with the ``compliance.`` prefix so they
 # group with the C1 toggle key in any future Settings UI listing.
-KEY_INFO    = "compliance.activity_log_retention_days"
+KEY_INFO = "compliance.activity_log_retention_days"
 KEY_WARNING = "compliance.activity_log_warning_retention_days"
-KEY_ERROR   = "compliance.activity_log_error_retention_days"
+KEY_ERROR = "compliance.activity_log_error_retention_days"
 
 ALL_KEYS = (KEY_INFO, KEY_WARNING, KEY_ERROR)
 
 # Module-level cache. Each value is either an explicit int (operator
 # override) or None (no override — use env default).
-_cache: dict[str, Optional[int]] = {k: None for k in ALL_KEYS}
+_cache: dict[str, int | None] = {k: None for k in ALL_KEYS}
 _cache_at: float = 0.0
 # Soft TTL — readers tolerate up to 60s of staleness; on hot paths a
 # refresh_from_db() call invalidates immediately. The prune sweep
@@ -56,6 +56,7 @@ _CACHE_TTL_SEC = 60.0
 def _env_default(key: str) -> int:
     """Fall-back to the env-derived value from settings."""
     from app.config import settings
+
     if key == KEY_INFO:
         return int(getattr(settings, "activity_log_retention_days", 30) or 30)
     if key == KEY_WARNING:
@@ -65,7 +66,7 @@ def _env_default(key: str) -> int:
     return 30
 
 
-def _coerce_int_or_none(raw: Optional[str]) -> Optional[int]:
+def _coerce_int_or_none(raw: str | None) -> int | None:
     if raw is None or raw == "":
         return None
     try:
@@ -83,9 +84,8 @@ async def refresh_from_db(db: AsyncSession) -> None:
     global _cache, _cache_at
     try:
         from app.models.db import SystemSetting
-        rs = await db.execute(
-            select(SystemSetting).where(SystemSetting.key.in_(ALL_KEYS))
-        )
+
+        rs = await db.execute(select(SystemSetting).where(SystemSetting.key.in_(ALL_KEYS)))
         rows = rs.scalars().all()
         seen = {r.key: _coerce_int_or_none(r.value) for r in rows}
         for k in ALL_KEYS:
@@ -107,9 +107,16 @@ def get_retention_days(key: str) -> int:
 
 
 # Convenience accessors mirroring prune.py's existing helpers
-def info_days() -> int:    return get_retention_days(KEY_INFO)
-def warning_days() -> int: return get_retention_days(KEY_WARNING)
-def error_days() -> int:   return get_retention_days(KEY_ERROR)
+def info_days() -> int:
+    return get_retention_days(KEY_INFO)
+
+
+def warning_days() -> int:
+    return get_retention_days(KEY_WARNING)
+
+
+def error_days() -> int:
+    return get_retention_days(KEY_ERROR)
 
 
 def current_state() -> dict:
@@ -126,8 +133,11 @@ def current_state() -> dict:
 
 
 async def set_retention(
-    db: AsyncSession, key: str, days: Optional[int],
-    actor: str, reason: Optional[str] = None,
+    db: AsyncSession,
+    key: str,
+    days: int | None,
+    actor: str,
+    reason: str | None = None,
 ) -> dict:
     """Persist a retention override + write a system-scope audit row +
     refresh the cache. ``days=None`` clears the override (falls back
@@ -135,7 +145,8 @@ async def set_retention(
     import json as _json
     import secrets
     from datetime import datetime
-    from app.models.db import SystemSetting, CompliancePolicyChange
+
+    from app.models.db import CompliancePolicyChange, SystemSetting
 
     if key not in ALL_KEYS:
         raise ValueError(f"unknown retention key: {key}")
@@ -160,10 +171,14 @@ async def set_retention(
     else:
         new_value = str(int(days))
         if row is None:
-            db.add(SystemSetting(
-                key=key, value=new_value, value_type="int",
-                updated_at=time.time(),
-            ))
+            db.add(
+                SystemSetting(
+                    key=key,
+                    value=new_value,
+                    value_type="int",
+                    updated_at=time.time(),
+                )
+            )
         else:
             row.value = new_value
             row.updated_at = time.time()
@@ -172,24 +187,31 @@ async def set_retention(
     audit_id = secrets.token_urlsafe(16)
     summary = (
         f"activity_log retention edited: {key} prior_override={prior_override} "
-        f"new_override={days} actor={actor}"
-        + (f"; reason: {reason}" if reason else "")
+        f"new_override={days} actor={actor}" + (f"; reason: {reason}" if reason else "")
     )
-    db.add(CompliancePolicyChange(
-        policy_change_id=audit_id,
-        changed_at=datetime.utcnow(),
-        changed_by_user_id=actor,
-        scope="system",
-        target_id=None,
-        before_state=_json.dumps({"key": key, "override": prior_override,
-                                  "effective": prior_effective}),
-        after_state=_json.dumps({"key": key, "override": days,
-                                 "effective_will_be": days if days else _env_default(key)}),
-        reason=summary,
-        applied_to_peers=_json.dumps([]),
-        pending_peers=None,
-        cluster_sync_status="local_only",
-    ))
+    db.add(
+        CompliancePolicyChange(
+            policy_change_id=audit_id,
+            changed_at=datetime.utcnow(),
+            changed_by_user_id=actor,
+            scope="system",
+            target_id=None,
+            before_state=_json.dumps(
+                {"key": key, "override": prior_override, "effective": prior_effective}
+            ),
+            after_state=_json.dumps(
+                {
+                    "key": key,
+                    "override": days,
+                    "effective_will_be": days if days else _env_default(key),
+                }
+            ),
+            reason=summary,
+            applied_to_peers=_json.dumps([]),
+            pending_peers=None,
+            cluster_sync_status="local_only",
+        )
+    )
     await db.commit()
 
     # 4) Refresh the cache so the new value takes effect on the next
@@ -198,10 +220,13 @@ async def set_retention(
 
     logger.warning(
         "retention_settings.set key=%s days=%s actor=%s",
-        key, days, actor,
+        key,
+        days,
+        actor,
     )
     return {
-        "ok": True, "key": key,
+        "ok": True,
+        "key": key,
         "prior_override": prior_override,
         "new_override": days,
         "effective_days": get_retention_days(key),

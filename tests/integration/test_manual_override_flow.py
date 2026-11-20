@@ -12,6 +12,7 @@ Run with:
     playwright install chromium
     python -m pytest tests/integration/test_manual_override_flow.py -v -s
 """
+
 from __future__ import annotations
 
 import time
@@ -97,8 +98,10 @@ def test_release_now_also_enables_v386(page: Page):
 
     # Capture the provider's real state so we can restore it afterward.
     orig = _provider_state_via_api(page, pid)
-    print(f">>> original state: enabled={orig['enabled']} "
-          f"manual_override_active={orig['manual_override_active']}")
+    print(
+        f">>> original state: enabled={orig['enabled']} "
+        f"manual_override_active={orig['manual_override_active']}"
+    )
 
     # Self-stage the precondition: the release banner only shows when the
     # provider is disabled + locked (manual override). The toggle
@@ -135,8 +138,10 @@ def test_release_now_also_enables_v386(page: Page):
     time.sleep(3)
 
     after_release = _provider_state_via_api(page, pid)
-    print(f">>> after release: enabled={after_release['enabled']} "
-          f"manual_override_active={after_release['manual_override_active']}")
+    print(
+        f">>> after release: enabled={after_release['enabled']} "
+        f"manual_override_active={after_release['manual_override_active']}"
+    )
     # The v3.8.6 fix: lock cleared AND provider re-enabled
     assert after_release["manual_override_active"] is False, "release should clear lock"
     assert after_release["enabled"] is True, (
@@ -152,8 +157,10 @@ def test_release_now_also_enables_v386(page: Page):
         page.request.patch(f"{BASE_URL}/api/providers/{pid}/toggle")
         time.sleep(1)
     final = _provider_state_via_api(page, pid)
-    print(f">>> restored state: enabled={final['enabled']} "
-          f"manual_override_active={final['manual_override_active']}")
+    print(
+        f">>> restored state: enabled={final['enabled']} "
+        f"manual_override_active={final['manual_override_active']}"
+    )
     assert final["enabled"] is orig["enabled"], (
         "provider was not restored to its original enabled state"
     )

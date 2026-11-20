@@ -6,19 +6,19 @@ candidates with rate < 0.3. Candidates without probe data are unchanged.
 
 Closes the last item of the 4-part tool-simulation audit.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
-
 
 # ── Schema additions ───────────────────────────────────────────────
 
 
 def test_model_capability_has_tool_call_success_rate_column():
     from app.models.db import ModelCapability
+
     cols = {c.name for c in ModelCapability.__table__.columns}
     assert "tool_call_success_rate" in cols
 
@@ -29,13 +29,17 @@ def test_migration_adds_tool_call_success_rate_column():
 
 
 def test_capability_profile_carries_tool_call_success_rate():
-    from app.routing.lmrh.types import CapabilityProfile
     import dataclasses
+
+    from app.routing.lmrh.types import CapabilityProfile
+
     fields = {f.name for f in dataclasses.fields(CapabilityProfile)}
     assert "tool_call_success_rate" in fields
     # Default must be None (= no probe data yet)
     p = CapabilityProfile(
-        provider_id="p", provider_type="openai", model_id="m",
+        provider_id="p",
+        provider_type="openai",
+        model_id="m",
     )
     assert p.tool_call_success_rate is None
 
@@ -44,8 +48,9 @@ def test_capability_profile_carries_tool_call_success_rate():
 
 
 def test_apply_weighting_no_change_when_rate_is_none():
-    from app.routing.router import _apply_tool_success_weighting
     from app.routing.lmrh.types import CapabilityProfile
+    from app.routing.router import _apply_tool_success_weighting
+
     p = CapabilityProfile(provider_id="p", provider_type="x", model_id="m")
     p.tool_call_success_rate = None
     out = _apply_tool_success_weighting([(p, set(), 5.0)])
@@ -53,8 +58,9 @@ def test_apply_weighting_no_change_when_rate_is_none():
 
 
 def test_apply_weighting_multiplies_score_by_rate():
-    from app.routing.router import _apply_tool_success_weighting
     from app.routing.lmrh.types import CapabilityProfile
+    from app.routing.router import _apply_tool_success_weighting
+
     p = CapabilityProfile(provider_id="p", provider_type="x", model_id="m")
     p.tool_call_success_rate = 0.8
     out = _apply_tool_success_weighting([(p, set(), 10.0)])
@@ -62,8 +68,9 @@ def test_apply_weighting_multiplies_score_by_rate():
 
 
 def test_apply_weighting_hard_skips_low_rate():
-    from app.routing.router import _apply_tool_success_weighting, _TOOL_SUCCESS_HARD_SKIP_THRESHOLD
     from app.routing.lmrh.types import CapabilityProfile
+    from app.routing.router import _TOOL_SUCCESS_HARD_SKIP_THRESHOLD, _apply_tool_success_weighting
+
     p = CapabilityProfile(provider_id="p", provider_type="x", model_id="m")
     p.tool_call_success_rate = _TOOL_SUCCESS_HARD_SKIP_THRESHOLD - 0.05  # below threshold
     out = _apply_tool_success_weighting([(p, set(), 10.0)])
@@ -73,8 +80,9 @@ def test_apply_weighting_hard_skips_low_rate():
 def test_apply_weighting_preserves_ordering_among_equal_rates():
     """Two candidates with the same success rate keep their relative
     score ordering — weighting is multiplicative and proportional."""
-    from app.routing.router import _apply_tool_success_weighting
     from app.routing.lmrh.types import CapabilityProfile
+    from app.routing.router import _apply_tool_success_weighting
+
     p1 = CapabilityProfile(provider_id="p1", provider_type="x", model_id="m")
     p1.tool_call_success_rate = 0.9
     p2 = CapabilityProfile(provider_id="p2", provider_type="x", model_id="m")
@@ -86,8 +94,9 @@ def test_apply_weighting_preserves_ordering_among_equal_rates():
 
 def test_apply_weighting_handles_garbage_rate():
     """Defensive: a non-numeric rate doesn't crash the router."""
-    from app.routing.router import _apply_tool_success_weighting
     from app.routing.lmrh.types import CapabilityProfile
+    from app.routing.router import _apply_tool_success_weighting
+
     p = CapabilityProfile(provider_id="p", provider_type="x", model_id="m")
     p.tool_call_success_rate = "not-a-float"  # type: ignore[assignment]
     out = _apply_tool_success_weighting([(p, set(), 10.0)])
@@ -105,7 +114,7 @@ def test_router_applies_weighting_when_has_tools():
     assert "_apply_tool_success_weighting" in src
     # The call site is gated on has_tools
     idx = src.index("if has_tools and ranked_scored:")
-    body = src[idx:idx + 2000]
+    body = src[idx : idx + 2000]
     assert "_apply_tool_success_weighting(ranked_scored)" in body
 
 
@@ -114,7 +123,7 @@ def test_router_re_sorts_after_weighting():
     so they don't pollute downstream P2C / fallback chain selection."""
     src = Path("app/routing/router.py").read_text()
     idx = src.index("if has_tools and ranked_scored:")
-    body = src[idx:idx + 2000]
+    body = src[idx : idx + 2000]
     assert "ranked_scored.sort" in body
     assert 'float("-inf")' in body
 
@@ -124,7 +133,7 @@ def test_router_raises_when_all_candidates_excluded():
     routing to a known-broken provider."""
     src = Path("app/routing/router.py").read_text()
     idx = src.index("if has_tools and ranked_scored:")
-    body = src[idx:idx + 2000]
+    body = src[idx : idx + 2000]
     assert "All candidates excluded" in body
 
 
@@ -141,7 +150,7 @@ def test_prober_writes_tool_call_success_rate():
     # The writes happen unconditionally on the capability rows (not
     # gated on new_val being non-None)
     idx = src.index("def update_native_tools_from_rolling")
-    body = src[idx:idx + 3000]
+    body = src[idx : idx + 3000]
     assert "cap.tool_call_success_rate = float(rate)" in body
 
 
@@ -153,5 +162,6 @@ def test_capability_profile_built_with_success_rate():
 
 def test_version_bumped():
     from app.__version__ import __version__
+
     parts = tuple(int(p) for p in __version__.split("."))
     assert parts >= (3, 8, 5)

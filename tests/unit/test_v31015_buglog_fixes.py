@@ -1,5 +1,6 @@
 """v3.10.15 — BUG-032 (infra-error observability) + BUG-036 (behavioral
 coverage of the claude-oauth dispatch chain in _messages_dispatch.py)."""
+
 from __future__ import annotations
 
 import logging
@@ -12,22 +13,24 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 import app.api._messages_dispatch as disp
 
-
 # ════════════════════════════════════════════════════════════════════════
 # BUG-032 — infra-error tap classification + counter
 # ════════════════════════════════════════════════════════════════════════
 
+
 def test_bug032_classify_disconnect_vs_fault():
     from app.observability.infra_error_tap import classify_fault
+
     # benign client-side disconnects
     assert classify_fault("asyncio.CancelledError raised in send") == "disconnect"
     assert classify_fault("ConnectionResetError: [Errno 104]") == "disconnect"
     assert classify_fault("aiosqlite ValueError: Connection closed") == "disconnect"
     assert classify_fault("BrokenPipeError [Errno 32] broken pipe") == "disconnect"
     # genuine server-side / pool faults
-    assert classify_fault(
-        "The garbage collector is trying to clean up non-checked-in connection"
-    ) == "fault"
+    assert (
+        classify_fault("The garbage collector is trying to clean up non-checked-in connection")
+        == "fault"
+    )
     assert classify_fault("Exception terminating connection") == "fault"
     assert classify_fault("KeyError in ASGI application") == "fault"
 
@@ -37,18 +40,31 @@ def test_bug032_tap_calls_observe_with_classification(monkeypatch):
     to observe_infra_error. Spy on observe_infra_error rather than the
     global counter — the real installed tap can fire concurrently (a
     background connection GC), which would make a counter-delta flaky."""
-    from app.observability.infra_error_tap import _InfraErrorTap
     from app.observability import prometheus
+    from app.observability.infra_error_tap import _InfraErrorTap
 
     calls: list[tuple] = []
-    monkeypatch.setattr(prometheus, "observe_infra_error",
-                        lambda source, fc: calls.append((source, fc)))
+    monkeypatch.setattr(
+        prometheus, "observe_infra_error", lambda source, fc: calls.append((source, fc))
+    )
 
     tap = _InfraErrorTap("pool", logging.WARNING)
-    tap.emit(logging.LogRecord("sqlalchemy.pool", logging.ERROR, "x", 0,
-                               "Exception terminating connection", None, None))
-    tap.emit(logging.LogRecord("sqlalchemy.pool", logging.ERROR, "x", 0,
-                               "ConnectionResetError during checkout", None, None))
+    tap.emit(
+        logging.LogRecord(
+            "sqlalchemy.pool", logging.ERROR, "x", 0, "Exception terminating connection", None, None
+        )
+    )
+    tap.emit(
+        logging.LogRecord(
+            "sqlalchemy.pool",
+            logging.ERROR,
+            "x",
+            0,
+            "ConnectionResetError during checkout",
+            None,
+            None,
+        )
+    )
 
     assert calls == [("pool", "fault"), ("pool", "disconnect")]
 
@@ -56,9 +72,11 @@ def test_bug032_tap_calls_observe_with_classification(monkeypatch):
 def test_bug032_tap_never_raises_on_bad_record():
     """A logging handler must not raise — even on a malformed record."""
     from app.observability.infra_error_tap import _InfraErrorTap
+
     tap = _InfraErrorTap("asgi", logging.ERROR)
-    bad = logging.LogRecord("uvicorn.error", logging.ERROR, "x", 0,
-                            "%s", ("only-one-but-format-wants-args",), None)
+    bad = logging.LogRecord(
+        "uvicorn.error", logging.ERROR, "x", 0, "%s", ("only-one-but-format-wants-args",), None
+    )
     tap.emit(bad)  # must not raise
 
 
@@ -66,9 +84,13 @@ def test_bug032_tap_never_raises_on_bad_record():
 # BUG-036 — behavioral coverage of dispatch_claude_oauth_chain
 # ════════════════════════════════════════════════════════════════════════
 
+
 def _route(ptype, pid="p1", name="P1", api_key="tok"):
     prov = types.SimpleNamespace(
-        provider_type=ptype, id=pid, name=name, api_key=api_key,
+        provider_type=ptype,
+        id=pid,
+        name=name,
+        api_key=api_key,
     )
     return types.SimpleNamespace(provider=prov)
 
@@ -87,15 +109,14 @@ def _http_status_error(status: int, text: str) -> httpx.HTTPStatusError:
 def patched(monkeypatch):
     """Neutralise the cache / disclosure / memory collaborators so the
     tests exercise the dispatch *chain-walk logic* in isolation."""
-    monkeypatch.setattr(disp, "parse_cache_mode",
-                        lambda h: types.SimpleNamespace(mode="none"))
+    monkeypatch.setattr(disp, "parse_cache_mode", lambda h: types.SimpleNamespace(mode="none"))
     monkeypatch.setattr(disp, "build_cache_disclosure", lambda **k: {})
     monkeypatch.setattr(disp, "append_cache_disclosure", lambda h, d: None)
-    monkeypatch.setattr(disp, "merge_into_headers",
-                        lambda h, r, endpoint=None: None)
+    monkeypatch.setattr(disp, "merge_into_headers", lambda h, r, endpoint=None: None)
 
     async def _noop_extract(*a, **k):
         return 0
+
     monkeypatch.setattr(disp, "maybe_extract_memory_writes", _noop_extract)
     monkeypatch.setattr(disp.settings, "fallback_enabled", True)
     return monkeypatch
@@ -103,9 +124,18 @@ def patched(monkeypatch):
 
 async def _dispatch(route, **over):
     kw = dict(
-        body={}, db=None, key_record=_key(), resp_headers={},
-        stream=False, max_tokens=100, llm_hint=None, hint=None,
-        has_tools=False, has_images=False, conversation_id=None, memory_tag=None,
+        body={},
+        db=None,
+        key_record=_key(),
+        resp_headers={},
+        stream=False,
+        max_tokens=100,
+        llm_hint=None,
+        hint=None,
+        has_tools=False,
+        has_images=False,
+        conversation_id=None,
+        memory_tag=None,
     )
     kw.update(over)
     return await disp.dispatch_claude_oauth_chain(route, **kw)
@@ -122,6 +152,7 @@ async def test_non_oauth_route_falls_through(patched):
 async def test_oauth_success_returns_jsonresponse(patched):
     async def fake_complete(*a, **k):
         return {"content": [{"type": "text", "text": "hi"}], "usage": {}}
+
     patched.setattr(disp, "_complete_claude_oauth", fake_complete)
     resp, _ = await _dispatch(_route("claude-oauth"))
     assert isinstance(resp, JSONResponse)

@@ -14,24 +14,25 @@ require generalizing all three at once and would muddle a clear
 operator-facing "this vendor is misbehaving" signal in the logs.
 A 200-LOC dedicated worker is cheaper than the abstraction.
 """
+
 from __future__ import annotations
 
 import asyncio
 import logging
 import random
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_INTERVAL_SEC = 14400  # 4 hours — matches Anthropic Console cadence
 WARMUP_DELAY_SEC = 60
 _STARTUP_JITTER_MAX_SEC = 60.0
-_TASK: Optional[asyncio.Task] = None
+_TASK: asyncio.Task | None = None
 
 
 def _interval_sec() -> int:
     try:
         from app.config import settings
+
         return int(getattr(settings, "cursor_billing_scrape_interval_sec", DEFAULT_INTERVAL_SEC))
     except Exception:
         return DEFAULT_INTERVAL_SEC
@@ -40,6 +41,7 @@ def _interval_sec() -> int:
 def _freshness_floor_sec(interval_sec: int) -> int:
     try:
         from app.config import settings
+
         override = int(getattr(settings, "cursor_billing_min_scrape_gap_sec", 0))
         if override > 0:
             return override
@@ -48,19 +50,24 @@ def _freshness_floor_sec(interval_sec: int) -> int:
     return max(60, interval_sec // 2)
 
 
-async def _latest_snapshot_age_sec(db, provider_id: str) -> Optional[float]:
+async def _latest_snapshot_age_sec(db, provider_id: str) -> float | None:
     """Same shape as anthropic_billing_worker._latest_snapshot_age_sec —
     queries the cluster-replicated ExternalUsageSnapshot table for the
     freshest row by this provider, returns age in seconds (or None if
     no snapshot exists yet)."""
-    from app.models.db import ExternalUsageSnapshot
-    from sqlalchemy import select, func
     from datetime import datetime as _dt
 
-    row = (await db.execute(
-        select(func.max(ExternalUsageSnapshot.captured_at))
-        .where(ExternalUsageSnapshot.provider_id == provider_id)
-    )).scalar()
+    from sqlalchemy import func, select
+
+    from app.models.db import ExternalUsageSnapshot
+
+    row = (
+        await db.execute(
+            select(func.max(ExternalUsageSnapshot.captured_at)).where(
+                ExternalUsageSnapshot.provider_id == provider_id
+            )
+        )
+    ).scalar()
     if row is None:
         return None
     if isinstance(row, str):
@@ -83,10 +90,11 @@ async def _scrape_all_once() -> int:
     """Sweep every enabled cursor-oauth provider whose latest snapshot
     is older than the freshness floor. Returns the count of providers
     actually scraped."""
+    from sqlalchemy import select
+
     from app.models.database import AsyncSessionLocal
     from app.models.db import Provider
     from app.providers.cursor_billing import scrape_provider_into_snapshot
-    from sqlalchemy import select
 
     interval = _interval_sec()
     fresh_floor = _freshness_floor_sec(interval)
@@ -124,13 +132,16 @@ async def _scrape_all_once() -> int:
     if skipped:
         logger.info(
             "cursor_billing.swept scraped=%d skipped_fresh=%d fresh_floor_sec=%d",
-            count, skipped, fresh_floor,
+            count,
+            skipped,
+            fresh_floor,
         )
     return count
 
 
 async def _scrape_loop() -> None:
     from app.monitoring.worker_heartbeat import WorkerHeartbeat, register_expected_interval
+
     hb = WorkerHeartbeat(name="cursor_billing")
     jitter = random.uniform(0.0, _STARTUP_JITTER_MAX_SEC)
     await asyncio.sleep(WARMUP_DELAY_SEC + jitter)

@@ -3,14 +3,14 @@ Time-series metrics collection.
 Buckets provider usage into 5-minute windows for history graphs.
 Also tracks per-API-key cumulative stats.
 """
+
 import logging
 from datetime import datetime, timedelta
-from typing import Optional
 
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update, func
 
-from app.models.db import ProviderMetric, ApiKey
+from app.models.db import ApiKey, ProviderMetric
 from app.routing.circuit_breaker import get_all_states
 from app.utils.timefmt import utc_iso
 
@@ -19,9 +19,11 @@ logger = logging.getLogger(__name__)
 BUCKET_MINUTES = 5
 
 
-def _bucket(dt: Optional[datetime] = None) -> datetime:
+def _bucket(dt: datetime | None = None) -> datetime:
     dt = dt or datetime.utcnow()
-    return dt.replace(second=0, microsecond=0, minute=(dt.minute // BUCKET_MINUTES) * BUCKET_MINUTES)
+    return dt.replace(
+        second=0, microsecond=0, minute=(dt.minute // BUCKET_MINUTES) * BUCKET_MINUTES
+    )
 
 
 async def record_request(
@@ -32,7 +34,7 @@ async def record_request(
     output_tokens: int,
     latency_ms: float,
     cost_usd: float,
-    api_key_id: Optional[str] = None,
+    api_key_id: str | None = None,
     ttft_ms: float = 0.0,
     is_probe: bool = False,
     # v3.4.0: per-direction cost split. When passed as a tuple, the
@@ -42,7 +44,7 @@ async def record_request(
     # 50/50" — preserves back-compat for callers that haven't been
     # updated to pass the split. record_outcome (the only first-class
     # caller) always passes the real split.
-    cost_split: Optional[tuple[float, float]] = None,
+    cost_split: tuple[float, float] | None = None,
 ):
     # v3.3.3: synthetic keep-alive probes do not contribute to the
     # provider_metrics aggregates. Probe outcomes still hit activity_log
@@ -95,8 +97,8 @@ async def record_request(
 
     if metric:
         metric.requests += 1
-        metric.successes += (1 if success else 0)
-        metric.failures += (0 if success else 1)
+        metric.successes += 1 if success else 0
+        metric.failures += 0 if success else 1
         metric.total_tokens += input_tokens + output_tokens
         metric.total_cost_usd += cost_usd
         # v3.4.0 per-direction accumulators
@@ -107,8 +109,8 @@ async def record_request(
         # Rolling average latency
         if metric.requests > 0:
             metric.avg_latency_ms = (
-                (metric.avg_latency_ms * (metric.requests - 1) + latency_ms) / metric.requests
-            )
+                metric.avg_latency_ms * (metric.requests - 1) + latency_ms
+            ) / metric.requests
         if ttft_ms > 0 and success:
             metric.ttft_requests = (metric.ttft_requests or 0) + 1
             n = metric.ttft_requests
@@ -191,12 +193,14 @@ async def get_provider_rolling_windows(db: AsyncSession) -> list[dict]:
     single SQL pass. Cheap because the same indexed scan covers all four
     sums.
     """
-    from app.models.db import Provider
     from sqlalchemy import case
+
+    from app.models.db import Provider
+
     now = datetime.utcnow()
-    cutoff_1h  = now - timedelta(hours=1)
+    cutoff_1h = now - timedelta(hours=1)
     cutoff_24h = now - timedelta(hours=24)
-    cutoff_7d  = now - timedelta(days=7)
+    cutoff_7d = now - timedelta(days=7)
     cutoff_30d = now - timedelta(days=30)
 
     def _sum_in(field, cutoff):
@@ -205,13 +209,13 @@ async def get_provider_rolling_windows(db: AsyncSession) -> list[dict]:
     result = await db.execute(
         select(
             ProviderMetric.provider_id,
-            _sum_in(ProviderMetric.requests,  cutoff_1h).label("req_1h"),
+            _sum_in(ProviderMetric.requests, cutoff_1h).label("req_1h"),
             _sum_in(ProviderMetric.successes, cutoff_1h).label("succ_1h"),
-            _sum_in(ProviderMetric.requests,  cutoff_24h).label("req_24h"),
+            _sum_in(ProviderMetric.requests, cutoff_24h).label("req_24h"),
             _sum_in(ProviderMetric.successes, cutoff_24h).label("succ_24h"),
-            _sum_in(ProviderMetric.requests,  cutoff_7d).label("req_7d"),
+            _sum_in(ProviderMetric.requests, cutoff_7d).label("req_7d"),
             _sum_in(ProviderMetric.successes, cutoff_7d).label("succ_7d"),
-            _sum_in(ProviderMetric.requests,  cutoff_30d).label("req_30d"),
+            _sum_in(ProviderMetric.requests, cutoff_30d).label("req_30d"),
             _sum_in(ProviderMetric.successes, cutoff_30d).label("succ_30d"),
         )
         .where(ProviderMetric.bucket_ts >= cutoff_30d)  # outermost filter for index efficiency
@@ -229,10 +233,26 @@ async def get_provider_rolling_windows(db: AsyncSession) -> list[dict]:
             "provider_id": r.provider_id,
             "provider_name": name_map.get(r.provider_id, r.provider_id),
             "windows": {
-                "1h":  {"requests": int(r.req_1h or 0),  "successes": int(r.succ_1h or 0),  "success_pct": _pct(r.succ_1h, r.req_1h)},
-                "24h": {"requests": int(r.req_24h or 0), "successes": int(r.succ_24h or 0), "success_pct": _pct(r.succ_24h, r.req_24h)},
-                "7d":  {"requests": int(r.req_7d or 0),  "successes": int(r.succ_7d or 0),  "success_pct": _pct(r.succ_7d, r.req_7d)},
-                "30d": {"requests": int(r.req_30d or 0), "successes": int(r.succ_30d or 0), "success_pct": _pct(r.succ_30d, r.req_30d)},
+                "1h": {
+                    "requests": int(r.req_1h or 0),
+                    "successes": int(r.succ_1h or 0),
+                    "success_pct": _pct(r.succ_1h, r.req_1h),
+                },
+                "24h": {
+                    "requests": int(r.req_24h or 0),
+                    "successes": int(r.succ_24h or 0),
+                    "success_pct": _pct(r.succ_24h, r.req_24h),
+                },
+                "7d": {
+                    "requests": int(r.req_7d or 0),
+                    "successes": int(r.succ_7d or 0),
+                    "success_pct": _pct(r.succ_7d, r.req_7d),
+                },
+                "30d": {
+                    "requests": int(r.req_30d or 0),
+                    "successes": int(r.succ_30d or 0),
+                    "success_pct": _pct(r.succ_30d, r.req_30d),
+                },
             },
         }
         for r in rows
@@ -245,6 +265,7 @@ async def get_all_provider_summary(db: AsyncSession, hours: int = 24) -> list[di
     the endpoint (avg_ttft_ms was referenced but not selected) and returns
     the human-readable name so the UI doesn't show bare provider IDs."""
     from app.models.db import Provider
+
     since = datetime.utcnow() - timedelta(hours=hours)
     result = await db.execute(
         select(
@@ -284,9 +305,7 @@ async def get_all_provider_summary(db: AsyncSession, hours: int = 24) -> list[di
 
 async def prune_old_metrics(db: AsyncSession, keep_days: int = 90):
     cutoff = datetime.utcnow() - timedelta(days=keep_days)
-    result = await db.execute(
-        select(ProviderMetric).where(ProviderMetric.bucket_ts < cutoff)
-    )
+    result = await db.execute(select(ProviderMetric).where(ProviderMetric.bucket_ts < cutoff))
     old = result.scalars().all()
     for row in old:
         await db.delete(row)

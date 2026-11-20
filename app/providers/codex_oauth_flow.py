@@ -42,29 +42,26 @@ The id_token JWT carries:
 We parse these on exchange and surface them so the provider row can
 store them next to the tokens.
 """
+
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import json
 import secrets
 import time
 from dataclasses import dataclass
-from typing import Optional
-from urllib.parse import urlencode, urlparse, parse_qs
+from urllib.parse import parse_qs, urlencode, urlparse
 
 import httpx
-
 
 # ── Endpoints (extracted from github.com/openai/codex source) ───────────────
 AUTHORIZE_URL = "https://auth.openai.com/oauth/authorize"
 TOKEN_URL = "https://auth.openai.com/oauth/token"
 CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 REDIRECT_URI = "http://localhost:1455/auth/callback"
-DEFAULT_SCOPE = (
-    "openid profile email offline_access "
-    "api.connectors.read api.connectors.invoke"
-)
+DEFAULT_SCOPE = "openid profile email offline_access api.connectors.read api.connectors.invoke"
 
 # Extra non-scope query params the Codex CLI passes; mirroring them
 # minimizes the chance that the OpenAI consent UX behaves differently
@@ -88,7 +85,7 @@ class _PendingFlow:
 _PENDING: dict[str, _PendingFlow] = {}
 
 
-def _sweep_pending(now: Optional[float] = None) -> None:
+def _sweep_pending(now: float | None = None) -> None:
     now = now if now is not None else time.time()
     stale = [k for k, v in _PENDING.items() if now - v.created_at > PENDING_TTL_SEC]
     for k in stale:
@@ -136,7 +133,7 @@ def _decode_jwt_payload(jwt: str) -> dict:
         return {}
 
 
-def parse_id_token(jwt: str) -> tuple[Optional[str], Optional[str]]:
+def parse_id_token(jwt: str) -> tuple[str | None, str | None]:
     """Returns ``(chatgpt_account_id, chatgpt_plan_type)`` from the id_token,
     or ``(None, None)`` on parse failure."""
     payload = _decode_jwt_payload(jwt)
@@ -175,7 +172,7 @@ def start_authorize(scope: str = DEFAULT_SCOPE) -> AuthorizeStart:
     return AuthorizeStart(state=state, authorize_url=f"{AUTHORIZE_URL}?{urlencode(params)}")
 
 
-def extract_code_from_callback(raw: str) -> tuple[str, Optional[str]]:
+def extract_code_from_callback(raw: str) -> tuple[str, str | None]:
     """Accept any of the paste formats from the Codex callback page:
 
     - Full callback URL: ``http://localhost:1455/auth/callback?code=XXX&state=YYY``
@@ -208,23 +205,27 @@ def extract_code_from_callback(raw: str) -> tuple[str, Optional[str]]:
 @dataclass
 class ExchangeResult:
     access_token: str
-    refresh_token: Optional[str]
-    expires_at: Optional[float]   # unix timestamp
-    id_token: Optional[str]
-    chatgpt_account_id: Optional[str]
-    chatgpt_plan_type: Optional[str]
-    raw: dict                     # full token response for debugging
+    refresh_token: str | None
+    expires_at: float | None  # unix timestamp
+    id_token: str | None
+    chatgpt_account_id: str | None
+    chatgpt_plan_type: str | None
+    raw: dict  # full token response for debugging
 
 
 class OAuthFlowError(Exception):
     pass
 
 
-def _result_from_token_response(data: dict, fallback_refresh: Optional[str] = None) -> ExchangeResult:
+def _result_from_token_response(data: dict, fallback_refresh: str | None = None) -> ExchangeResult:
     access = data.get("access_token")
     if not isinstance(access, str) or not access:
         raise OAuthFlowError(f"Upstream returned no access_token: {data}")
-    refresh = data.get("refresh_token") if isinstance(data.get("refresh_token"), str) else fallback_refresh
+    refresh = (
+        data.get("refresh_token")
+        if isinstance(data.get("refresh_token"), str)
+        else fallback_refresh
+    )
     id_token = data.get("id_token") if isinstance(data.get("id_token"), str) else None
     expires_at = None
     if "expires_in" in data:
@@ -247,7 +248,10 @@ def _result_from_token_response(data: dict, fallback_refresh: Optional[str] = No
 
 
 async def exchange_code(
-    state: str, code: str, *, expected_state: Optional[str] = None,
+    state: str,
+    code: str,
+    *,
+    expected_state: str | None = None,
 ) -> ExchangeResult:
     """Trade the authorization code for access + refresh tokens.
 
@@ -279,9 +283,7 @@ async def exchange_code(
     if resp.status_code >= 400:
         # Put the pending back so admin can retry without re-authorizing
         _PENDING[state] = pending
-        raise OAuthFlowError(
-            f"Token exchange failed ({resp.status_code}): {resp.text[:400]}"
-        )
+        raise OAuthFlowError(f"Token exchange failed ({resp.status_code}): {resp.text[:400]}")
     return _result_from_token_response(resp.json())
 
 
@@ -300,9 +302,7 @@ async def refresh_access_token(refresh_token: str) -> ExchangeResult:
     async with httpx.AsyncClient(timeout=30.0) as c:
         resp = await c.post(TOKEN_URL, json=body)
     if resp.status_code >= 400:
-        raise OAuthFlowError(
-            f"Refresh failed ({resp.status_code}): {resp.text[:400]}"
-        )
+        raise OAuthFlowError(f"Refresh failed ({resp.status_code}): {resp.text[:400]}")
     return _result_from_token_response(resp.json(), fallback_refresh=refresh_token)
 
 
@@ -316,11 +316,12 @@ async def refresh_access_token(refresh_token: str) -> ExchangeResult:
 # tripping ``refresh_token_reused`` within the same sweep) is this.
 # Lock is process-local; cluster-level races still fall back to v3.0.18
 # peer-pull.
-_refresh_locks: dict[str, "asyncio.Lock"] = {}
+_refresh_locks: dict[str, asyncio.Lock] = {}
 
 
-def _get_refresh_lock(provider_id: str) -> "asyncio.Lock":
+def _get_refresh_lock(provider_id: str) -> asyncio.Lock:
     import asyncio
+
     lock = _refresh_locks.get(provider_id)
     if lock is None:
         lock = asyncio.Lock()
@@ -354,7 +355,9 @@ async def refresh_and_persist(provider, db) -> ExchangeResult:
     async with lock:
         # v5.8.5 — re-read inside the lock so a waiter doesn't burn the
         # already-rotated token.
-        await db.refresh(provider, attribute_names=["oauth_refresh_token", "api_key", "oauth_expires_at"])
+        await db.refresh(
+            provider, attribute_names=["oauth_refresh_token", "api_key", "oauth_expires_at"]
+        )
         if not provider.oauth_refresh_token:
             raise OAuthFlowError(
                 f"Provider {provider.id} ({provider.name!r}) lost its "
@@ -367,10 +370,17 @@ async def refresh_and_persist(provider, db) -> ExchangeResult:
             # v3.0.18: same recovery as claude-oauth — on invalid_grant, ask
             # peers if any of them refreshed first and adopt their fresh state.
             msg = str(e).lower()
-            if "invalid_grant" in msg or "refresh_token_expired" in msg or "refresh_token_reused" in msg or "refresh_token_invalidated" in msg:
+            if (
+                "invalid_grant" in msg
+                or "refresh_token_expired" in msg
+                or "refresh_token_reused" in msg
+                or "refresh_token_invalidated" in msg
+            ):
                 from app.cluster.oauth_recovery import (
-                    pull_oauth_state_from_peers, adopt_peer_state,
+                    adopt_peer_state,
+                    pull_oauth_state_from_peers,
                 )
+
                 peer_state = await pull_oauth_state_from_peers(provider.id)
                 if peer_state is not None:
                     await adopt_peer_state(provider, db, peer_state)
@@ -422,7 +432,7 @@ async def refresh_and_persist(provider, db) -> ExchangeResult:
         return result
 
 
-async def _verify_oauth_access_token(token: str, chatgpt_account_id: Optional[str] = None) -> bool:
+async def _verify_oauth_access_token(token: str, chatgpt_account_id: str | None = None) -> bool:
     """v5.8.5 — cheap probe that confirms ``token`` actually authenticates
     against chatgpt.com. Used after peer-adopt to make sure we're not
     committing a token the rest of the cluster has already lost. Any
@@ -434,7 +444,9 @@ async def _verify_oauth_access_token(token: str, chatgpt_account_id: Optional[st
     """
     try:
         from app.providers.codex_oauth import (
-            CODEX_MODELS_URL, CODEX_CLIENT_VERSION, build_headers,
+            CODEX_CLIENT_VERSION,
+            CODEX_MODELS_URL,
+            build_headers,
         )
     except Exception:
         return True  # can't construct the request; don't punish the token

@@ -14,14 +14,17 @@ other provider type goes through this path; grok-web was the only
 exception. Surfaced when the operator noticed
 ``grok-web 24h: reqs=0 ok=0 fail=0`` despite verified end-to-end calls.
 """
+
 from __future__ import annotations
 
 import json
 import logging
 import re
-import time
-from datetime import datetime, timezone, timedelta
-from typing import Any, AsyncIterator, Optional
+import time as time
+from collections.abc import AsyncIterator
+from datetime import UTC, datetime, timedelta
+from datetime import timezone as timezone
+from typing import Any
 
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -41,7 +44,9 @@ _GROKWEB_COOLOFF_PATTERN = re.compile(r"cool-off\s+(\d+)s\s+remaining", re.IGNOR
 
 
 async def _trip_cb_for_failover(
-    db: Optional[AsyncSession], provider_id: str, err_msg: str,
+    db: AsyncSession | None,
+    provider_id: str,
+    err_msg: str,
 ) -> None:
     """v5.0.23 / remediation Batch 2.5 — when a grok-web call fails
     with a transient/upstream error (anything that gets translated to
@@ -56,17 +61,19 @@ async def _trip_cb_for_failover(
     """
     try:
         from app.routing.circuit_breaker import record_failure
+
         await record_failure(provider_id, billing_error=False)
-        logger.info("grok_web.failover_trip provider=%s err=%s",
-                    provider_id, (err_msg or "")[:120])
+        logger.info("grok_web.failover_trip provider=%s err=%s", provider_id, (err_msg or "")[:120])
     except Exception as exc:
         # Never block failover on circuit-breaker bookkeeping errors.
         logger.warning("grok_web.cb_trip_failed err=%r", exc)
 
 
 async def _apply_grokweb_429_cooloff(
-    db: AsyncSession, provider_id: str, err_msg: str,
-) -> Optional[int]:
+    db: AsyncSession,
+    provider_id: str,
+    err_msg: str,
+) -> int | None:
     """Parse a GrokWebError message for cool-off-N-seconds and set
     Provider.auto_skip_until accordingly. Returns the parsed seconds
     if applied, None otherwise. Silent on any DB or parse error —
@@ -79,22 +86,25 @@ async def _apply_grokweb_429_cooloff(
         if secs <= 0 or secs > 3600:  # sanity bounds — 1h max cool-off
             return None
         from sqlalchemy import select
+
         from app.models.db import Provider
-        p = (await db.execute(
-            select(Provider).where(Provider.id == provider_id)
-        )).scalar_one_or_none()
+
+        p = (
+            await db.execute(select(Provider).where(Provider.id == provider_id))
+        ).scalar_one_or_none()
         if p is None:
             return None
-        skip_until = datetime.now(timezone.utc) + timedelta(seconds=secs)
+        skip_until = datetime.now(UTC) + timedelta(seconds=secs)
         # Don't shorten an existing longer skip; do extend a shorter one.
         existing = p.auto_skip_until
-        if existing is None or existing.replace(tzinfo=timezone.utc) < skip_until:
+        if existing is None or existing.replace(tzinfo=UTC) < skip_until:
             p.auto_skip_until = skip_until.replace(tzinfo=None)
             p.auto_skip_reason = f"grok-web 429 cool-off {secs}s"
             await db.commit()
             logger.info(
                 "grok_web.auto_skip_set provider=%s cooloff_sec=%s",
-                provider_id, secs,
+                provider_id,
+                secs,
             )
         return secs
     except Exception as e:
@@ -113,7 +123,7 @@ def _user_call_timeout() -> float:
         return 30.0
 
 
-def _flatten_anthropic_system(system: Any) -> Optional[str]:
+def _flatten_anthropic_system(system: Any) -> str | None:
     """Anthropic's ``system`` can be a string OR a list of content
     blocks; flatten to a single string for the grok-web dispatcher."""
     if not system:
@@ -121,9 +131,7 @@ def _flatten_anthropic_system(system: Any) -> Optional[str]:
     if isinstance(system, str):
         return system
     if isinstance(system, list):
-        return "\n".join(
-            b.get("text", "") for b in system if isinstance(b, dict)
-        )
+        return "\n".join(b.get("text", "") for b in system if isinstance(b, dict))
     return str(system)
 
 
@@ -131,9 +139,9 @@ async def _record_grok_outcome(
     *,
     db: AsyncSession,
     provider_id: str,
-    provider_name: Optional[str],
+    provider_name: str | None,
     model: str,
-    requested_model: Optional[str],
+    requested_model: str | None,
     success: bool,
     in_tok: int = 0,
     out_tok: int = 0,
@@ -141,7 +149,7 @@ async def _record_grok_outcome(
     key_record_id: str,
     error_str: str = "",
     endpoint: str = "messages",
-    llm_hint: Optional[str] = None,
+    llm_hint: str | None = None,
 ) -> None:
     """Single-call wrapper around record_outcome with the args every
     grok-web call needs. Lazy-imports record_outcome to avoid a circular
@@ -151,10 +159,17 @@ async def _record_grok_outcome(
 
     try:
         await record_outcome(
-            db, provider_id, model,
-            success=success, in_tok=in_tok, out_tok=out_tok, t0=t0,
-            key_record_id=key_record_id, error_str=error_str,
-            endpoint=endpoint, provider_name=provider_name,
+            db,
+            provider_id,
+            model,
+            success=success,
+            in_tok=in_tok,
+            out_tok=out_tok,
+            t0=t0,
+            key_record_id=key_record_id,
+            error_str=error_str,
+            endpoint=endpoint,
+            provider_name=provider_name,
             requested_model=requested_model,
             had_lmrh_hint=bool(llm_hint),
             lmrh_hint_raw=llm_hint or None,
@@ -162,8 +177,10 @@ async def _record_grok_outcome(
     except Exception as exc:
         # Observability must never break the response. Log + continue.
         import logging as _logging
+
         _logging.getLogger(__name__).warning(
-            "grok-web record_outcome failed: %s", exc,
+            "grok-web record_outcome failed: %s",
+            exc,
         )
 
 
@@ -172,13 +189,13 @@ def _wrap_openai_stream_with_recording(
     *,
     db: AsyncSession,
     provider_id: str,
-    provider_name: Optional[str],
+    provider_name: str | None,
     model: str,
-    requested_model: Optional[str],
+    requested_model: str | None,
     in_tok_estimate: int,
     t0: float,
     key_record_id: str,
-    llm_hint: Optional[str],
+    llm_hint: str | None,
 ) -> AsyncIterator[bytes]:
     """Wrap a stream generator so we can count output chars across the
     full SSE stream and call record_outcome on completion. Tokens
@@ -199,7 +216,7 @@ def _wrap_openai_stream_with_recording(
                     for line in text.splitlines():
                         if not line.startswith("data: "):
                             continue
-                        payload = line[len("data: "):].strip()
+                        payload = line[len("data: ") :].strip()
                         if payload == "[DONE]":
                             saw_done = True
                             continue
@@ -219,13 +236,19 @@ def _wrap_openai_stream_with_recording(
             raise
         finally:
             await _record_grok_outcome(
-                db=db, provider_id=provider_id, provider_name=provider_name,
-                model=model, requested_model=requested_model,
+                db=db,
+                provider_id=provider_id,
+                provider_name=provider_name,
+                model=model,
+                requested_model=requested_model,
                 success=(err_str == "" and saw_done),
                 in_tok=in_tok_estimate,
                 out_tok=max(1, output_chars // 4) if output_chars else 0,
-                t0=t0, key_record_id=key_record_id, error_str=err_str,
-                endpoint="completions", llm_hint=llm_hint,
+                t0=t0,
+                key_record_id=key_record_id,
+                error_str=err_str,
+                endpoint="completions",
+                llm_hint=llm_hint,
             )
 
     return _gen()
@@ -236,13 +259,13 @@ def _wrap_anthropic_stream_with_recording(
     *,
     db: AsyncSession,
     provider_id: str,
-    provider_name: Optional[str],
+    provider_name: str | None,
     model: str,
-    requested_model: Optional[str],
+    requested_model: str | None,
     in_tok_estimate: int,
     t0: float,
     key_record_id: str,
-    llm_hint: Optional[str],
+    llm_hint: str | None,
 ) -> AsyncIterator[bytes]:
     """Same as OpenAI wrapper, but for Anthropic SSE (``event: ...
     data: {...}``). Counts characters from ``content_block_delta`` events."""
@@ -259,7 +282,7 @@ def _wrap_anthropic_stream_with_recording(
                     for line in text.splitlines():
                         if not line.startswith("data: "):
                             continue
-                        payload = line[len("data: "):].strip()
+                        payload = line[len("data: ") :].strip()
                         try:
                             obj = json.loads(payload)
                         except json.JSONDecodeError:
@@ -279,13 +302,19 @@ def _wrap_anthropic_stream_with_recording(
             raise
         finally:
             await _record_grok_outcome(
-                db=db, provider_id=provider_id, provider_name=provider_name,
-                model=model, requested_model=requested_model,
+                db=db,
+                provider_id=provider_id,
+                provider_name=provider_name,
+                model=model,
+                requested_model=requested_model,
                 success=(err_str == "" and saw_stop),
                 in_tok=in_tok_estimate,
                 out_tok=max(1, output_chars // 4) if output_chars else 0,
-                t0=t0, key_record_id=key_record_id, error_str=err_str,
-                endpoint="messages", llm_hint=llm_hint,
+                t0=t0,
+                key_record_id=key_record_id,
+                error_str=err_str,
+                endpoint="messages",
+                llm_hint=llm_hint,
             )
 
     return _gen()
@@ -297,10 +326,10 @@ async def dispatch_grok_web_openai(
     body: dict,
     stream: bool,
     resp_headers: dict[str, str],
-    db: Optional[AsyncSession] = None,
-    key_record_id: Optional[str] = None,
-    t0: Optional[float] = None,
-    llm_hint: Optional[str] = None,
+    db: AsyncSession | None = None,
+    key_record_id: str | None = None,
+    t0: float | None = None,
+    llm_hint: str | None = None,
 ) -> Any:
     """Run a grok-web request and return an OpenAI-shape FastAPI response.
 
@@ -309,16 +338,16 @@ async def dispatch_grok_web_openai(
     that explicitly assert non-recording behavior.
     """
     from app.providers.grok_web import (
+        GrokWebAuthError,
+        GrokWebError,
         complete_grok_web,
         stream_grok_web,
-        GrokWebError,
-        GrokWebAuthError,
     )
 
     msgs = list(body.get("messages") or [])
     requested_model = body.get("model") or route.profile.model_id
     served_model = requested_model
-    can_record = (db is not None and key_record_id is not None and t0 is not None)
+    can_record = db is not None and key_record_id is not None and t0 is not None
     in_tok_estimate = max(1, sum(len(str(m.get("content", ""))) for m in msgs) // 4)
 
     if stream:
@@ -333,22 +362,32 @@ async def dispatch_grok_web_openai(
         except GrokWebAuthError as e:
             if can_record:
                 await _record_grok_outcome(
-                    db=db, provider_id=route.provider.id,
+                    db=db,
+                    provider_id=route.provider.id,
                     provider_name=route.provider.name,
-                    model=served_model, requested_model=requested_model,
-                    success=False, t0=t0, key_record_id=key_record_id,
-                    error_str=f"GrokWebAuthError: {e}", endpoint="completions",
+                    model=served_model,
+                    requested_model=requested_model,
+                    success=False,
+                    t0=t0,
+                    key_record_id=key_record_id,
+                    error_str=f"GrokWebAuthError: {e}",
+                    endpoint="completions",
                     llm_hint=llm_hint,
                 )
             raise HTTPException(401, str(e))
         except GrokWebError as e:
             if can_record:
                 await _record_grok_outcome(
-                    db=db, provider_id=route.provider.id,
+                    db=db,
+                    provider_id=route.provider.id,
                     provider_name=route.provider.name,
-                    model=served_model, requested_model=requested_model,
-                    success=False, t0=t0, key_record_id=key_record_id,
-                    error_str=f"GrokWebError: {e}", endpoint="completions",
+                    model=served_model,
+                    requested_model=requested_model,
+                    success=False,
+                    t0=t0,
+                    key_record_id=key_record_id,
+                    error_str=f"GrokWebError: {e}",
+                    endpoint="completions",
                     llm_hint=llm_hint,
                 )
             # v3.9.16 (P5) — auto-skip on 429 cool-off
@@ -362,11 +401,16 @@ async def dispatch_grok_web_openai(
         except StopAsyncIteration:
             if can_record:
                 await _record_grok_outcome(
-                    db=db, provider_id=route.provider.id,
+                    db=db,
+                    provider_id=route.provider.id,
                     provider_name=route.provider.name,
-                    model=served_model, requested_model=requested_model,
-                    success=False, t0=t0, key_record_id=key_record_id,
-                    error_str="empty stream", endpoint="completions",
+                    model=served_model,
+                    requested_model=requested_model,
+                    success=False,
+                    t0=t0,
+                    key_record_id=key_record_id,
+                    error_str="empty stream",
+                    endpoint="completions",
                     llm_hint=llm_hint,
                 )
             raise HTTPException(502, "grok-web upstream: empty stream")
@@ -379,13 +423,18 @@ async def dispatch_grok_web_openai(
         replay = (
             _wrap_openai_stream_with_recording(
                 _replay(),
-                db=db, provider_id=route.provider.id,
+                db=db,
+                provider_id=route.provider.id,
                 provider_name=route.provider.name,
-                model=served_model, requested_model=requested_model,
-                in_tok_estimate=in_tok_estimate, t0=t0,
-                key_record_id=key_record_id, llm_hint=llm_hint,
+                model=served_model,
+                requested_model=requested_model,
+                in_tok_estimate=in_tok_estimate,
+                t0=t0,
+                key_record_id=key_record_id,
+                llm_hint=llm_hint,
             )
-            if can_record else _replay()
+            if can_record
+            else _replay()
         )
 
         resp_headers["X-Cache-Status"] = "bypass"
@@ -406,22 +455,32 @@ async def dispatch_grok_web_openai(
     except GrokWebAuthError as e:
         if can_record:
             await _record_grok_outcome(
-                db=db, provider_id=route.provider.id,
+                db=db,
+                provider_id=route.provider.id,
                 provider_name=route.provider.name,
-                model=served_model, requested_model=requested_model,
-                success=False, t0=t0, key_record_id=key_record_id,
-                error_str=f"GrokWebAuthError: {e}", endpoint="completions",
+                model=served_model,
+                requested_model=requested_model,
+                success=False,
+                t0=t0,
+                key_record_id=key_record_id,
+                error_str=f"GrokWebAuthError: {e}",
+                endpoint="completions",
                 llm_hint=llm_hint,
             )
         raise HTTPException(401, str(e))
     except GrokWebError as e:
         if can_record:
             await _record_grok_outcome(
-                db=db, provider_id=route.provider.id,
+                db=db,
+                provider_id=route.provider.id,
                 provider_name=route.provider.name,
-                model=served_model, requested_model=requested_model,
-                success=False, t0=t0, key_record_id=key_record_id,
-                error_str=f"GrokWebError: {e}", endpoint="completions",
+                model=served_model,
+                requested_model=requested_model,
+                success=False,
+                t0=t0,
+                key_record_id=key_record_id,
+                error_str=f"GrokWebError: {e}",
+                endpoint="completions",
                 llm_hint=llm_hint,
             )
         # v3.9.16 (P5) — auto-skip on 429 cool-off
@@ -438,14 +497,18 @@ async def dispatch_grok_web_openai(
         usage = result.get("usage") or {}
         served_actual = result.get("model") or served_model
         await _record_grok_outcome(
-            db=db, provider_id=route.provider.id,
+            db=db,
+            provider_id=route.provider.id,
             provider_name=route.provider.name,
-            model=served_actual, requested_model=requested_model,
+            model=served_actual,
+            requested_model=requested_model,
             success=True,
             in_tok=int(usage.get("prompt_tokens") or in_tok_estimate),
             out_tok=int(usage.get("completion_tokens") or 0),
-            t0=t0, key_record_id=key_record_id,
-            endpoint="completions", llm_hint=llm_hint,
+            t0=t0,
+            key_record_id=key_record_id,
+            endpoint="completions",
+            llm_hint=llm_hint,
         )
     resp_headers["X-Cache-Status"] = "bypass"
     return JSONResponse(content=result, headers=resp_headers)
@@ -457,10 +520,10 @@ async def dispatch_grok_web_anthropic(
     body: dict,
     stream: bool,
     resp_headers: dict[str, str],
-    db: Optional[AsyncSession] = None,
-    key_record_id: Optional[str] = None,
-    t0: Optional[float] = None,
-    llm_hint: Optional[str] = None,
+    db: AsyncSession | None = None,
+    key_record_id: str | None = None,
+    t0: float | None = None,
+    llm_hint: str | None = None,
 ) -> Any:
     """Run a grok-web request and return an Anthropic-shape FastAPI response.
 
@@ -468,18 +531,18 @@ async def dispatch_grok_web_anthropic(
     ``dispatch_grok_web_openai`` — pass db/key_record_id/t0 for recording.
     """
     from app.providers.grok_web import (
+        GrokWebAuthError,
+        GrokWebError,
+        anthropic_response_from_openai,
         complete_grok_web,
         stream_grok_web_anthropic,
-        anthropic_response_from_openai,
-        GrokWebError,
-        GrokWebAuthError,
     )
 
     msgs_for_grok = list(body.get("messages") or [])
     sys_for_grok = _flatten_anthropic_system(body.get("system"))
     requested_model = body.get("model") or route.profile.model_id
     served_model = requested_model
-    can_record = (db is not None and key_record_id is not None and t0 is not None)
+    can_record = db is not None and key_record_id is not None and t0 is not None
     in_tok_estimate = max(1, sum(len(str(m.get("content", ""))) for m in msgs_for_grok) // 4)
 
     if stream:
@@ -495,22 +558,32 @@ async def dispatch_grok_web_anthropic(
         except GrokWebAuthError as e:
             if can_record:
                 await _record_grok_outcome(
-                    db=db, provider_id=route.provider.id,
+                    db=db,
+                    provider_id=route.provider.id,
                     provider_name=route.provider.name,
-                    model=served_model, requested_model=requested_model,
-                    success=False, t0=t0, key_record_id=key_record_id,
-                    error_str=f"GrokWebAuthError: {e}", endpoint="messages",
+                    model=served_model,
+                    requested_model=requested_model,
+                    success=False,
+                    t0=t0,
+                    key_record_id=key_record_id,
+                    error_str=f"GrokWebAuthError: {e}",
+                    endpoint="messages",
                     llm_hint=llm_hint,
                 )
             raise HTTPException(401, str(e))
         except GrokWebError as e:
             if can_record:
                 await _record_grok_outcome(
-                    db=db, provider_id=route.provider.id,
+                    db=db,
+                    provider_id=route.provider.id,
                     provider_name=route.provider.name,
-                    model=served_model, requested_model=requested_model,
-                    success=False, t0=t0, key_record_id=key_record_id,
-                    error_str=f"GrokWebError: {e}", endpoint="messages",
+                    model=served_model,
+                    requested_model=requested_model,
+                    success=False,
+                    t0=t0,
+                    key_record_id=key_record_id,
+                    error_str=f"GrokWebError: {e}",
+                    endpoint="messages",
                     llm_hint=llm_hint,
                 )
             # v3.9.16 (P5) — auto-skip on 429 cool-off
@@ -525,11 +598,16 @@ async def dispatch_grok_web_anthropic(
         except StopAsyncIteration:
             if can_record:
                 await _record_grok_outcome(
-                    db=db, provider_id=route.provider.id,
+                    db=db,
+                    provider_id=route.provider.id,
                     provider_name=route.provider.name,
-                    model=served_model, requested_model=requested_model,
-                    success=False, t0=t0, key_record_id=key_record_id,
-                    error_str="empty stream", endpoint="messages",
+                    model=served_model,
+                    requested_model=requested_model,
+                    success=False,
+                    t0=t0,
+                    key_record_id=key_record_id,
+                    error_str="empty stream",
+                    endpoint="messages",
                     llm_hint=llm_hint,
                 )
             raise HTTPException(502, "grok-web upstream: empty stream")
@@ -542,13 +620,18 @@ async def dispatch_grok_web_anthropic(
         replay = (
             _wrap_anthropic_stream_with_recording(
                 _replay(),
-                db=db, provider_id=route.provider.id,
+                db=db,
+                provider_id=route.provider.id,
                 provider_name=route.provider.name,
-                model=served_model, requested_model=requested_model,
-                in_tok_estimate=in_tok_estimate, t0=t0,
-                key_record_id=key_record_id, llm_hint=llm_hint,
+                model=served_model,
+                requested_model=requested_model,
+                in_tok_estimate=in_tok_estimate,
+                t0=t0,
+                key_record_id=key_record_id,
+                llm_hint=llm_hint,
             )
-            if can_record else _replay()
+            if can_record
+            else _replay()
         )
 
         resp_headers["X-Cache-Status"] = "bypass"
@@ -562,7 +645,8 @@ async def dispatch_grok_web_anthropic(
     # translate to Anthropic /v1/messages shape here.
     msgs_with_system = (
         [{"role": "system", "content": sys_for_grok}] + msgs_for_grok
-        if sys_for_grok else msgs_for_grok
+        if sys_for_grok
+        else msgs_for_grok
     )
     try:
         openai_result = await complete_grok_web(
@@ -574,22 +658,32 @@ async def dispatch_grok_web_anthropic(
     except GrokWebAuthError as e:
         if can_record:
             await _record_grok_outcome(
-                db=db, provider_id=route.provider.id,
+                db=db,
+                provider_id=route.provider.id,
                 provider_name=route.provider.name,
-                model=served_model, requested_model=requested_model,
-                success=False, t0=t0, key_record_id=key_record_id,
-                error_str=f"GrokWebAuthError: {e}", endpoint="messages",
+                model=served_model,
+                requested_model=requested_model,
+                success=False,
+                t0=t0,
+                key_record_id=key_record_id,
+                error_str=f"GrokWebAuthError: {e}",
+                endpoint="messages",
                 llm_hint=llm_hint,
             )
         raise HTTPException(401, str(e))
     except GrokWebError as e:
         if can_record:
             await _record_grok_outcome(
-                db=db, provider_id=route.provider.id,
+                db=db,
+                provider_id=route.provider.id,
                 provider_name=route.provider.name,
-                model=served_model, requested_model=requested_model,
-                success=False, t0=t0, key_record_id=key_record_id,
-                error_str=f"GrokWebError: {e}", endpoint="messages",
+                model=served_model,
+                requested_model=requested_model,
+                success=False,
+                t0=t0,
+                key_record_id=key_record_id,
+                error_str=f"GrokWebError: {e}",
+                endpoint="messages",
                 llm_hint=llm_hint,
             )
         # v3.9.16 (P5) — auto-skip on 429 cool-off
@@ -605,14 +699,18 @@ async def dispatch_grok_web_anthropic(
         usage = openai_result.get("usage") or {}
         served_actual = openai_result.get("model") or served_model
         await _record_grok_outcome(
-            db=db, provider_id=route.provider.id,
+            db=db,
+            provider_id=route.provider.id,
             provider_name=route.provider.name,
-            model=served_actual, requested_model=requested_model,
+            model=served_actual,
+            requested_model=requested_model,
             success=True,
             in_tok=int(usage.get("prompt_tokens") or in_tok_estimate),
             out_tok=int(usage.get("completion_tokens") or 0),
-            t0=t0, key_record_id=key_record_id,
-            endpoint="messages", llm_hint=llm_hint,
+            t0=t0,
+            key_record_id=key_record_id,
+            endpoint="messages",
+            llm_hint=llm_hint,
         )
     anth_result = anthropic_response_from_openai(openai_result)
     resp_headers["X-Cache-Status"] = "bypass"

@@ -38,6 +38,7 @@ Future:
 # Idempotent; safe to call repeatedly.
 try:
     from app.memory import handlers_openai_assistants as _h_oa
+
     _h_oa.register()
 except Exception:
     # Don't crash the package import if a handler module has a bug

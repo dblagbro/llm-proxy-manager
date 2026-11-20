@@ -20,6 +20,7 @@ Architecture (from the 2026-06-14 research dive):
 Pinned SDK: ``mcp>=1.27,<2``. v5.8.0 will branch for the 2026-07-28
 spec drop (session removal, new headers).
 """
+
 from __future__ import annotations
 
 import contextvars
@@ -30,7 +31,8 @@ import contextvars
 # middleware; default ``None`` means an unauthenticated request
 # (rejected at the middleware layer before tools run).
 current_api_key_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
-    "mcp_current_api_key_id", default=None,
+    "mcp_current_api_key_id",
+    default=None,
 )
 
 # Per-request context for the parent LLM request id, if the MCP call
@@ -38,5 +40,6 @@ current_api_key_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
 # v5.7.0 leaves this NULL because the MCP endpoint is reached
 # directly from the client; v5.7.x may correlate via X-Parent-Request-Id.
 current_parent_request_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
-    "mcp_current_parent_request_id", default=None,
+    "mcp_current_parent_request_id",
+    default=None,
 )

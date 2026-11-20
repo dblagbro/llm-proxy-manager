@@ -8,6 +8,7 @@ once per cycle indefinitely.
 
 Sibling of v5.8.6 / v5.8.7.
 """
+
 from __future__ import annotations
 
 import inspect
@@ -15,6 +16,7 @@ import inspect
 
 def test_codex_billing_worker_filters_enabled_providers():
     from app.monitoring import codex_billing_worker as mod
+
     # The function name has shifted across versions — inspect both
     # likely candidates and pick whichever exists.
     src = inspect.getsource(mod)
@@ -26,6 +28,7 @@ def test_codex_billing_worker_filters_enabled_providers():
 
 def test_codex_billing_worker_consults_auto_skip_until():
     from app.monitoring import codex_billing_worker as mod
+
     src = inspect.getsource(mod)
     assert "auto_skip_until" in src, (
         "v5.8.8 added an auto_skip_until skip; the symbol must be "

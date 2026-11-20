@@ -1,19 +1,19 @@
 """v3.6.3 — LAN-egress IP rewrite tests."""
+
 from __future__ import annotations
 
-import time
 from unittest.mock import patch
 
 import pytest
 
 from app.observability.request_context import (
     _clear_dns_cache_for_tests,
-    _resolve_cached,
     _maybe_rewrite_lan_ip,
-    set_client_ip,
+    _resolve_cached,
     get_client_ip,
     get_client_ip_inside,
     prewarm_lan_egress_dns,
+    set_client_ip,
 )
 
 
@@ -64,12 +64,14 @@ def test_resolve_handles_empty_hostname():
 def test_no_rewrite_when_map_empty():
     """No setting → never rewrites."""
     from app.config import settings
+
     settings.client_ip_lan_resolve_map = {}
     assert _maybe_rewrite_lan_ip("192.168.18.1") is None
 
 
 def test_rewrites_known_lan_gateway():
     from app.config import settings
+
     settings.client_ip_lan_resolve_map = {"192.168.18.1": "ip.voipguru.org"}
     with patch("socket.gethostbyname", return_value="24.168.14.36"):
         assert _maybe_rewrite_lan_ip("192.168.18.1") == "24.168.14.36"
@@ -77,6 +79,7 @@ def test_rewrites_known_lan_gateway():
 
 def test_no_rewrite_for_unknown_ip():
     from app.config import settings
+
     settings.client_ip_lan_resolve_map = {"192.168.18.1": "ip.voipguru.org"}
     with patch("socket.gethostbyname", return_value="24.168.14.36"):
         assert _maybe_rewrite_lan_ip("203.0.113.99") is None
@@ -85,6 +88,7 @@ def test_no_rewrite_for_unknown_ip():
 def test_no_rewrite_when_dns_fails():
     """Resolver returns None → caller falls back to inside IP."""
     from app.config import settings
+
     settings.client_ip_lan_resolve_map = {"192.168.18.1": "ip.voipguru.org"}
     with patch("socket.gethostbyname", side_effect=Exception("dns down")):
         assert _maybe_rewrite_lan_ip("192.168.18.1") is None
@@ -95,6 +99,7 @@ def test_no_rewrite_when_dns_fails():
 
 def test_set_records_both_public_and_inside_when_rewriting():
     from app.config import settings
+
     settings.client_ip_lan_resolve_map = {"192.168.18.1": "ip.voipguru.org"}
     with patch("socket.gethostbyname", return_value="24.168.14.36"):
         set_client_ip("192.168.18.1")
@@ -106,6 +111,7 @@ def test_set_falls_back_to_inside_when_dns_fails():
     """If the configured hostname doesn't resolve, fall back to the
     raw inside IP rather than logging None."""
     from app.config import settings
+
     settings.client_ip_lan_resolve_map = {"192.168.18.1": "ip.voipguru.org"}
     with patch("socket.gethostbyname", side_effect=Exception("dns down")):
         set_client_ip("192.168.18.1")
@@ -117,6 +123,7 @@ def test_set_falls_back_to_inside_when_dns_fails():
 def test_set_passes_through_non_lan_ips():
     """A real public IP that isn't in the rewrite map → no transformation."""
     from app.config import settings
+
     settings.client_ip_lan_resolve_map = {"192.168.18.1": "ip.voipguru.org"}
     set_client_ip("198.51.100.42")
     assert get_client_ip() == "198.51.100.42"
@@ -135,6 +142,7 @@ def test_set_none_clears_both():
 
 def test_prewarm_resolves_each_configured_hostname():
     from app.config import settings
+
     settings.client_ip_lan_resolve_map = {
         "192.168.18.1": "ip.voipguru.org",
         "10.0.0.1": "another.example",
@@ -147,6 +155,7 @@ def test_prewarm_resolves_each_configured_hostname():
 
 def test_prewarm_handles_empty_map():
     from app.config import settings
+
     settings.client_ip_lan_resolve_map = {}
     with patch("socket.gethostbyname") as m:
         prewarm_lan_egress_dns()
@@ -156,6 +165,7 @@ def test_prewarm_handles_empty_map():
 def test_prewarm_doesnt_crash_on_dns_error():
     """Defensive: a misconfigured hostname must not break startup."""
     from app.config import settings
+
     settings.client_ip_lan_resolve_map = {"192.168.18.1": "bogus.example"}
     with patch("socket.gethostbyname", side_effect=Exception("dns down")):
         prewarm_lan_egress_dns()  # no raise
@@ -175,6 +185,7 @@ def test_record_outcome_emits_client_ip_inside_only_when_different():
     guard lives in the helper, not the function body.
     """
     from pathlib import Path
+
     src = Path("app/monitoring/helpers.py").read_text()
     # Helper exists and reads both ip variants
     assert "def _attach_client_ip" in src
@@ -184,6 +195,8 @@ def test_record_outcome_emits_client_ip_inside_only_when_different():
     # Both record_outcome branches go through _build_event_meta_base
     # (which calls _attach_client_ip).
     import inspect
+
     from app.monitoring import helpers
+
     fn_src = inspect.getsource(helpers.record_outcome)
     assert fn_src.count("_build_event_meta_base") >= 2

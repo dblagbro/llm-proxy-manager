@@ -17,6 +17,7 @@ v5.9.9 tests: the watchdog dep MUST appear before `db = Depends(get_db)`
 in the handler signature so the watcher is armed before any session is
 checked out.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -69,6 +70,7 @@ def test_version_bumped():
     there rather than pinning an exact ancient version (which would fail
     on every subsequent release)."""
     import re
+
     src = Path("app/__version__.py").read_text()
     m = re.search(r'"(\d+)\.(\d+)\.(\d+)"', src)
     assert m, "no version string found"

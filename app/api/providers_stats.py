@@ -16,19 +16,22 @@ overlap, so FastAPI's routing happily dispatches.
 Shared helper ``_serialize`` is imported from ``providers.py``
 (canonical home for provider→dict serialization).
 """
-from datetime import datetime, timezone, timedelta
+
+from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select, desc, func
+from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth.admin import AdminUser, require_admin
 from app.models.database import get_db
 from app.models.db import (
-    Provider, ExternalUsageSnapshot, ProviderUsageWindow, ActivityLog,
+    ActivityLog,
+    ExternalUsageSnapshot,
+    Provider,
+    ProviderUsageWindow,
 )
-from app.auth.admin import require_admin, AdminUser
 from app.utils.timefmt import utc_iso
-
 
 router = APIRouter(prefix="/api/providers", tags=["providers"])
 
@@ -46,9 +49,7 @@ async def list_providers(
 
     # v2.8.2: hide soft-deleted (tombstoned) providers from the UI.
     result = await db.execute(
-        select(Provider)
-        .where(Provider.deleted_at.is_(None))
-        .order_by(Provider.priority)
+        select(Provider).where(Provider.deleted_at.is_(None)).order_by(Provider.priority)
     )
     providers = result.scalars().all()
     # v3.9.8 (#267 follow-up) — Authoritative usage data from
@@ -71,8 +72,7 @@ async def list_providers(
     # Latest snapshot per provider (one query, ordered by captured_at DESC,
     # then dedup in Python — small fleet so this is cheap).
     snap_res = await db.execute(
-        select(ExternalUsageSnapshot)
-        .order_by(desc(ExternalUsageSnapshot.captured_at))
+        select(ExternalUsageSnapshot).order_by(desc(ExternalUsageSnapshot.captured_at))
     )
     snap_by_provider: dict[str, ExternalUsageSnapshot] = {}
     for snap in snap_res.scalars().all():
@@ -94,9 +94,7 @@ async def list_providers(
             d["usage_weekly_tokens"] = None  # not available from scrape
             d["usage_session_tokens"] = None
             d["usage_data_source"] = "external_scrape"
-            d["usage_captured_at"] = (
-                snap.captured_at.isoformat() if snap.captured_at else None
-            )
+            d["usage_captured_at"] = snap.captured_at.isoformat() if snap.captured_at else None
         elif w is not None:
             d["usage_session_pct"] = w.session_pct
             d["usage_session_tokens"] = w.session_tokens
@@ -122,6 +120,7 @@ async def provider_rolling_stats(
     'no data'.
     """
     from app.monitoring.metrics import get_provider_rolling_windows
+
     return await get_provider_rolling_windows(db)
 
 
@@ -154,37 +153,41 @@ async def provider_rolling_stats_by_node(
         ...
       ]
     """
-    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(
+    cutoff = datetime.now(UTC).replace(tzinfo=None) - timedelta(
         hours=max(1, min(window_hours, 720)),
     )
     # Group by (provider_id, node_id, severity) so we can compute
     # success_pct per (provider, node). json_extract is supported by
     # the SQLAlchemy SQLite dialect.
     node_expr = func.json_extract(ActivityLog.event_meta, "$.node_id")
-    rows = (await db.execute(
-        select(
-            ActivityLog.provider_id,
-            node_expr.label("node_id"),
-            ActivityLog.severity,
-            func.count(),
+    rows = (
+        await db.execute(
+            select(
+                ActivityLog.provider_id,
+                node_expr.label("node_id"),
+                ActivityLog.severity,
+                func.count(),
+            )
+            .where(ActivityLog.created_at >= cutoff)
+            .where(ActivityLog.provider_id.is_not(None))
+            .group_by(ActivityLog.provider_id, "node_id", ActivityLog.severity)
         )
-        .where(ActivityLog.created_at >= cutoff)
-        .where(ActivityLog.provider_id.is_not(None))
-        .group_by(ActivityLog.provider_id, "node_id", ActivityLog.severity)
-    )).all()
+    ).all()
 
     # Aggregate: { (provider_id, node_id) -> {info, warning, error, ...} }
     by_pn: dict[tuple, dict] = {}
     for prov_id, node_id, severity, count in rows:
         key = (prov_id, node_id or "unknown")
-        bucket = by_pn.setdefault(key, {"info": 0, "warning": 0, "error": 0, "critical": 0, "total": 0})
+        bucket = by_pn.setdefault(
+            key, {"info": 0, "warning": 0, "error": 0, "critical": 0, "total": 0}
+        )
         bucket[severity] = bucket.get(severity, 0) + count
         bucket["total"] += count
 
     # Pull provider name lookup
-    provs = (await db.execute(
-        select(Provider.id, Provider.name).where(Provider.deleted_at.is_(None))
-    )).all()
+    provs = (
+        await db.execute(select(Provider.id, Provider.name).where(Provider.deleted_at.is_(None)))
+    ).all()
     name_by_id = {pid: name for pid, name in provs}
 
     # Reshape into the response
@@ -192,11 +195,14 @@ async def provider_rolling_stats_by_node(
     for (prov_id, node_id), bucket in by_pn.items():
         if not prov_id:
             continue
-        entry = by_provider.setdefault(prov_id, {
-            "provider_id": prov_id,
-            "provider_name": name_by_id.get(prov_id, "(deleted)"),
-            "by_node": {},
-        })
+        entry = by_provider.setdefault(
+            prov_id,
+            {
+                "provider_id": prov_id,
+                "provider_name": name_by_id.get(prov_id, "(deleted)"),
+                "by_node": {},
+            },
+        )
         total = bucket["total"]
         succ = bucket.get("info", 0)
         entry["by_node"][node_id] = {
@@ -230,9 +236,12 @@ async def provider_usage(
     If tracking is disabled, returns the config + null totals so the UI
     can show the "enable tracking" affordance.
     """
-    res = await db.execute(select(Provider).where(
-        Provider.id == provider_id, Provider.deleted_at.is_(None),
-    ))
+    res = await db.execute(
+        select(Provider).where(
+            Provider.id == provider_id,
+            Provider.deleted_at.is_(None),
+        )
+    )
     p = res.scalar_one_or_none()
     if p is None:
         raise HTTPException(404, "provider not found")
@@ -248,9 +257,11 @@ async def provider_usage(
     )
     snap = snap_res.scalar_one_or_none()
 
-    res2 = await db.execute(select(ProviderUsageWindow).where(
-        ProviderUsageWindow.provider_id == provider_id,
-    ))
+    res2 = await db.execute(
+        select(ProviderUsageWindow).where(
+            ProviderUsageWindow.provider_id == provider_id,
+        )
+    )
     w = res2.scalar_one_or_none()
 
     if snap is not None and snap.seven_day_utilization is not None:
@@ -268,7 +279,9 @@ async def provider_usage(
                 "window_sec": p.usage_session_window_sec,
                 "limit_tokens": p.usage_session_limit_tokens,
                 "pct": snap.five_hour_utilization,
-                "resets_at": utc_iso(snap.five_hour_resets_at) if snap.five_hour_resets_at else None,
+                "resets_at": utc_iso(snap.five_hour_resets_at)
+                if snap.five_hour_resets_at
+                else None,
             },
             "weekly": {
                 "tokens": None,

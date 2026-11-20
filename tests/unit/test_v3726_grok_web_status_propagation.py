@@ -12,6 +12,7 @@ hardcoded ``status_code=502`` regardless of upstream status.
 Fix: ``_map_upstream_status`` helper preserves 429 and 5xx, falls
 back to 502 for other unexpected statuses.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -26,6 +27,7 @@ def test_map_helper_exists():
 
 def test_map_preserves_429():
     from app.providers.grok_web import _map_upstream_status
+
     assert _map_upstream_status(429) == 429
 
 
@@ -35,6 +37,7 @@ def test_map_returns_502_for_5xx_and_other_codes():
     proxy IS a gateway, so 502 is the semantically-correct response
     from the caller's POV. Other unexpected codes also default to 502."""
     from app.providers.grok_web import _map_upstream_status
+
     for sc in (400, 418, 422, 500, 502, 503, 504, 529):
         assert _map_upstream_status(sc) == 502
 
@@ -75,6 +78,7 @@ def test_grokweb_error_init_default_unchanged():
     network errors with no HTTP response). It is NOT the bug; the
     bug was at raise sites that had access to the upstream status."""
     from app.providers.grok_web import GrokWebError
+
     e = GrokWebError("default test")
     assert e.status_code == 502  # backward-compat default
 
@@ -84,11 +88,13 @@ def test_grokweb_auth_error_still_returns_401():
     failures — they use a separate exception class with its own
     status_code default."""
     from app.providers.grok_web import GrokWebAuthError
+
     e = GrokWebAuthError("expired cookies")
     assert e.status_code == 401
 
 
 def test_version_bumped():
     from app.__version__ import __version__
+
     parts = tuple(int(p) for p in __version__.split("."))
     assert parts >= (3, 7, 26)

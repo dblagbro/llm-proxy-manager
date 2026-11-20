@@ -11,6 +11,7 @@ Covers BUG-057, BUG-061, BUG-062, BUG-063, BUG-064.
     types instead of returning the raw value (would crash the next
     LWW comparison).
 """
+
 from __future__ import annotations
 
 from datetime import datetime
@@ -19,15 +20,17 @@ from pathlib import Path
 import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import (
-    AsyncSession, async_sessionmaker, create_async_engine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
 )
-
 
 # ── Source pins ─────────────────────────────────────────────────────
 
 
 def test_prune_self_row_helper_exists():
     from app.cluster.manager import _prune_self_row_from_db
+
     assert callable(_prune_self_row_from_db)
 
 
@@ -37,7 +40,7 @@ def test_bootstrap_calls_prune_before_seed():
     src = Path("app/cluster/manager.py").read_text()
     boot = src.find("async def _bootstrap")
     assert boot != -1
-    body = src[boot:boot + 1500]
+    body = src[boot : boot + 1500]
     prune_idx = body.find("_prune_self_row_from_db")
     seed_idx = body.find("_seed_peers_from_env_if_empty")
     reload_idx = body.find("_reload_peers_from_db")
@@ -54,7 +57,7 @@ def test_reload_peers_holds_lock():
     assert "_peers_lock = asyncio.Lock()" in src
     fn_start = src.find("async def _reload_peers_from_db")
     next_def = src.find("async def ", fn_start + 1)
-    body = src[fn_start:next_def if next_def != -1 else fn_start + 3000]
+    body = src[fn_start : next_def if next_def != -1 else fn_start + 3000]
     assert "async with _peers_lock:" in body, (
         "BUG-061 regression: _reload_peers_from_db no longer "
         "acquires _peers_lock around the dict swap."
@@ -73,6 +76,7 @@ def test_parse_iso_keep_naive_handles_bad_types():
     """BUG-064: passing a non-datetime / non-string value must return
     None and log, not return the raw value."""
     from app.cluster.sync_handlers import _parse_iso_keep_naive
+
     assert _parse_iso_keep_naive(None) is None
     assert _parse_iso_keep_naive("") is None
     assert _parse_iso_keep_naive(1780777200) is None  # int timestamp
@@ -98,6 +102,7 @@ def test_clusterpage_uses_confirm_dialog_not_browser_confirm():
 
 async def _fresh_db():
     from app.models.db import Base
+
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
@@ -112,28 +117,30 @@ async def test_prune_self_row_removes_orphan(monkeypatch):
     restarted; the OLD node id row is now indistinguishable from a
     peer's own row.
     """
-    from app.models.db import ClusterPeer
     from app.cluster.manager import _prune_self_row_from_db
+    from app.models.db import ClusterPeer
 
-    monkeypatch.setattr(
-        "app.config.settings.cluster_node_id", "llm-proxy-self"
-    )
+    monkeypatch.setattr("app.config.settings.cluster_node_id", "llm-proxy-self")
     Session = await _fresh_db()
     async with Session() as db:
-        db.add(ClusterPeer(
-            id="llm-proxy-self",
-            url="https://self/llm-proxy",
-            name="me",
-            added_at=datetime(2026, 6, 5, 10),
-            last_user_edit_at=1780000000.0,
-        ))
-        db.add(ClusterPeer(
-            id="llm-proxy-other",
-            url="https://other/llm-proxy",
-            name="other",
-            added_at=datetime(2026, 6, 5, 10),
-            last_user_edit_at=1780000000.0,
-        ))
+        db.add(
+            ClusterPeer(
+                id="llm-proxy-self",
+                url="https://self/llm-proxy",
+                name="me",
+                added_at=datetime(2026, 6, 5, 10),
+                last_user_edit_at=1780000000.0,
+            )
+        )
+        db.add(
+            ClusterPeer(
+                id="llm-proxy-other",
+                url="https://other/llm-proxy",
+                name="other",
+                added_at=datetime(2026, 6, 5, 10),
+                last_user_edit_at=1780000000.0,
+            )
+        )
         await db.commit()
 
     # Invoke prune; should remove the self row but NOT the other.
@@ -153,16 +160,19 @@ async def test_prune_self_row_removes_orphan(monkeypatch):
 async def test_prune_self_row_is_noop_when_no_self_row():
     """When cluster_peers has no row matching current node id, the
     prune helper is a clean no-op (returns 0)."""
-    from app.models.db import ClusterPeer
     from app.cluster.manager import _prune_self_row_from_db
+    from app.models.db import ClusterPeer
 
     Session = await _fresh_db()
     async with Session() as db:
-        db.add(ClusterPeer(
-            id="peer-a", url="https://a/llm-proxy",
-            added_at=datetime(2026, 6, 5),
-            last_user_edit_at=1780000000.0,
-        ))
+        db.add(
+            ClusterPeer(
+                id="peer-a",
+                url="https://a/llm-proxy",
+                added_at=datetime(2026, 6, 5),
+                last_user_edit_at=1780000000.0,
+            )
+        )
         await db.commit()
 
     # cluster_node_id default is empty / something not in the table.

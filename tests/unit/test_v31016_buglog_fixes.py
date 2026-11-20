@@ -7,12 +7,13 @@ hedged path now pre-flights the racer (parity with the non-hedged path,
 fixed in v3.10.13). These tests exercise the *real* ``race_streams`` +
 ``preflight_sse`` together.
 """
+
 from __future__ import annotations
 
 import pytest
 
-from app.routing.hedging import race_streams
 from app.api._messages_streaming import preflight_sse
+from app.routing.hedging import race_streams
 
 
 def _gen_factory(*frames: bytes):
@@ -20,7 +21,9 @@ def _gen_factory(*frames: bytes):
         async def g():
             for f in frames:
                 yield f
+
         return g()
+
     return factory
 
 

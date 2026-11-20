@@ -14,30 +14,29 @@ Usage (admin API):
 Scheduler (optional): call run_periodic_export() from a background task
 to export at a fixed cadence.
 """
+
 from __future__ import annotations
 
 import json
 import logging
-import os
+import os as os
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone, timedelta
+from datetime import UTC, datetime
+from datetime import timedelta as timedelta
 from pathlib import Path
-from typing import Optional
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.db import ActivityLog
 from app.config import settings
+from app.models.db import ActivityLog
 from app.utils.timefmt import utc_iso
 
 logger = logging.getLogger(__name__)
 
 
-EXPORT_DIR = Path(
-    getattr(settings, "audit_export_dir", None) or "/app/data/audit_exports"
-)
+EXPORT_DIR = Path(getattr(settings, "audit_export_dir", None) or "/app/data/audit_exports")
 
 
 @dataclass
@@ -45,8 +44,8 @@ class ExportResult:
     path: Path
     row_count: int
     bytes_written: int
-    s3_key: Optional[str] = None
-    s3_bucket: Optional[str] = None
+    s3_key: str | None = None
+    s3_bucket: str | None = None
 
 
 def _ensure_dir() -> None:
@@ -68,9 +67,9 @@ def _serialize_row(r: ActivityLog) -> dict:
 
 async def export_activity_log(
     db: AsyncSession,
-    since: Optional[datetime] = None,
-    until: Optional[datetime] = None,
-    s3_bucket: Optional[str] = None,
+    since: datetime | None = None,
+    until: datetime | None = None,
+    s3_bucket: str | None = None,
     s3_prefix: str = "audit/",
 ) -> ExportResult:
     """Dump matching ActivityLog rows to JSONL; optionally upload to S3.
@@ -92,7 +91,7 @@ async def export_activity_log(
     result = await db.execute(query)
     rows = result.scalars().all()
 
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     filename = f"audit-{ts}.jsonl"
     path = EXPORT_DIR / filename
 
@@ -122,7 +121,7 @@ async def export_activity_log(
     )
 
 
-def _upload_to_s3(path: Path, bucket: str, key: str) -> Optional[str]:
+def _upload_to_s3(path: Path, bucket: str, key: str) -> str | None:
     """Upload a file to S3 (or any S3-compatible endpoint). Returns key on success."""
     try:
         import boto3  # type: ignore
@@ -148,7 +147,9 @@ def _upload_to_s3(path: Path, bucket: str, key: str) -> Optional[str]:
         logger.info("audit_export.s3_uploaded", extra={"bucket": bucket, "key": key})
         return key
     except Exception as exc:
-        logger.error("audit_export.s3_failed", extra={"bucket": bucket, "key": key, "error": str(exc)})
+        logger.error(
+            "audit_export.s3_failed", extra={"bucket": bucket, "key": key, "error": str(exc)}
+        )
         return None
 
 
@@ -159,16 +160,18 @@ def list_exports() -> list[dict]:
     for p in sorted(EXPORT_DIR.glob("audit-*.jsonl"), reverse=True):
         try:
             stat = p.stat()
-            out.append({
-                "filename": p.name,
-                "size_bytes": stat.st_size,
-                # v3.0.82: route through utc_iso so the audit-export listing
-                # ships the same canonical Z-suffix shape as every other
-                # API timestamp (was producing ``"+00:00"`` here while
-                # peer endpoints emit ``"Z"`` — JS code that parses both
-                # was working but inconsistent).
-                "created_at": utc_iso(datetime.fromtimestamp(stat.st_mtime, timezone.utc)),
-            })
+            out.append(
+                {
+                    "filename": p.name,
+                    "size_bytes": stat.st_size,
+                    # v3.0.82: route through utc_iso so the audit-export listing
+                    # ships the same canonical Z-suffix shape as every other
+                    # API timestamp (was producing ``"+00:00"`` here while
+                    # peer endpoints emit ``"Z"`` — JS code that parses both
+                    # was working but inconsistent).
+                    "created_at": utc_iso(datetime.fromtimestamp(stat.st_mtime, UTC)),
+                }
+            )
         except FileNotFoundError:
             continue
     return out

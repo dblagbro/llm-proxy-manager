@@ -4,16 +4,17 @@ Inspired by 2026-06-29 audit of:
 - Alishahryar1/free-claude-code (NVIDIA NIM provider catalog)
 - snipeship/ccflare (`/api/requests/stream` live SSE)
 """
+
 from __future__ import annotations
 
 from pathlib import Path
-
 
 # ── (1) NVIDIA NIM provider wiring ─────────────────────────────────────
 
 
 def test_nvidia_nim_in_litellm_prefix_map():
     from app.routing.litellm_binding import PROVIDER_TYPE_TO_LITELLM
+
     assert PROVIDER_TYPE_TO_LITELLM.get("nvidia_nim") == "nvidia_nim", (
         "v5.11.0: nvidia_nim must map to the litellm 'nvidia_nim/' prefix."
     )
@@ -23,6 +24,7 @@ def test_nvidia_nim_has_default_model():
     """The test_all_known_types_have_default invariant in test_router.py
     would catch a missing entry; this test pins the chosen default."""
     from app.routing.litellm_binding import PROVIDER_DEFAULT_MODELS
+
     default = PROVIDER_DEFAULT_MODELS.get("nvidia_nim")
     assert default, "v5.11.0: nvidia_nim must have a default model entry."
     assert default.startswith("nvidia/"), (
@@ -38,17 +40,23 @@ def test_nvidia_nim_in_scanner_api_key_gate():
     so the operator sees the friendly 'Open Edit modal' hint instead of a
     600-char litellm traceback."""
     src = Path("app/providers/scanner.py").read_text()
-    # Find the provider_type tuple that gates on api_key absence.
-    needle = '"nvidia_nim"'
-    gate_block_start = src.find(
-        'provider.provider_type in ("anthropic", "openai"'
-    )
-    assert gate_block_start > 0, "couldn't find api_key pre-flight check"
-    gate_block_end = src.find(")", gate_block_start)
-    block = src[gate_block_start:gate_block_end]
-    assert needle in block, (
-        "v5.11.0: nvidia_nim must be in scanner.py's api_key pre-flight tuple."
-    )
+    import ast
+
+    gates = [
+        n
+        for n in ast.walk(ast.parse(src))
+        if isinstance(n, ast.If)
+        and "not provider.api_key" in ast.unparse(n.test)
+        and "provider.provider_type in" in ast.unparse(n.test)
+    ]
+    assert len(gates) == 1, "couldn't find api_key pre-flight check"
+    comparisons = [
+        n
+        for n in ast.walk(gates[0].test)
+        if isinstance(n, ast.Compare) and ast.unparse(n.left) == "provider.provider_type"
+    ]
+    assert len(comparisons) == 1
+    assert "nvidia_nim" in ast.literal_eval(comparisons[0].comparators[0])
 
 
 def test_nvidia_nim_in_capability_inference():
@@ -94,8 +102,7 @@ def test_sse_endpoint_uses_watchdog():
 def test_sse_endpoint_uses_admin_auth():
     src = Path("app/api/admin_requests_stream.py").read_text()
     assert "Depends(require_admin)" in src, (
-        "v5.11.0: SSE stream MUST be admin-only (the same bar as the "
-        "rest of /api/admin/*)."
+        "v5.11.0: SSE stream MUST be admin-only (the same bar as the rest of /api/admin/*)."
     )
 
 
@@ -105,6 +112,7 @@ def test_sse_endpoint_under_admin_prefix():
     and so the route is naturally gated by the admin auth contract
     (no public surface, no key allowlist needed)."""
     from app.api.admin_requests_stream import router
+
     paths = [r.path for r in router.routes]
     assert "/api/admin/requests/stream" in paths
 
@@ -114,6 +122,7 @@ def test_sse_endpoint_under_admin_prefix():
 
 def test_version_bumped():
     import re
+
     src = Path("app/__version__.py").read_text()
     m = re.search(r'"(\d+)\.(\d+)\.(\d+)"', src)
     assert m and (int(m[1]), int(m[2]), int(m[3])) >= (5, 11, 0), "expected >= 5.11.0"

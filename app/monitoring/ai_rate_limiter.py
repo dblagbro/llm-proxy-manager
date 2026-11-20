@@ -32,14 +32,14 @@ The IP-blocking action is **deferred to v3.7.11** — we'd need new
 middleware infrastructure to enforce IP blocks, and the operator
 explicitly approved deferring that scope.
 """
+
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
 import re
-from datetime import datetime, timezone, timedelta
-from typing import Optional
+from datetime import UTC, datetime, timedelta
 
 import httpx
 
@@ -48,7 +48,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_INTERVAL_SEC = 300
 WARMUP_DELAY_SEC = 90
 DEFAULT_WINDOW_MIN = 30
-_TASK: Optional[asyncio.Task] = None
+_TASK: asyncio.Task | None = None
 
 # Patterns we redact from sample previews before sending to the LLM
 # (don't leak API keys / tokens / secrets through the analysis path).
@@ -67,7 +67,7 @@ def _redact(text: str) -> str:
     return text[:300]  # also cap length
 
 
-def _percentile(values: list[float], pct: float) -> Optional[float]:
+def _percentile(values: list[float], pct: float) -> float | None:
     if not values:
         return None
     s = sorted(values)
@@ -146,9 +146,7 @@ def compute_stats(events: list[dict]) -> dict:
     out["unique_ips"] = len(ips)
     out["unique_models"] = len(models)
     # v3.7.12 — top-5 source IPs by request count, sorted desc
-    out["top_source_ips"] = dict(
-        sorted(ip_counts.items(), key=lambda kv: kv[1], reverse=True)[:5]
-    )
+    out["top_source_ips"] = dict(sorted(ip_counts.items(), key=lambda kv: kv[1], reverse=True)[:5])
     # Time-window for rate calc: span between first and last event
     try:
         timestamps = sorted([e.get("timestamp", "") for e in events if e.get("timestamp")])
@@ -173,7 +171,7 @@ def compute_stats(events: list[dict]) -> dict:
         mean = sum(in_toks) / len(in_toks)
         if mean > 0:
             var = sum((x - mean) ** 2 for x in in_toks) / len(in_toks)
-            std = var ** 0.5
+            std = var**0.5
             out["prompt_size_variance_pct"] = round(100 * std / mean, 1)
     return out
 
@@ -204,7 +202,7 @@ def pick_sample_previews(events: list[dict], n: int = 3) -> list[str]:
 
 def build_prompt(stats: dict, samples: list[str], api_key_name: str) -> str:
     samples_block = "\n".join(f"  - {s!r}" for s in samples) if samples else "  (none captured)"
-    top_ips = stats.get('top_source_ips') or {}
+    top_ips = stats.get("top_source_ips") or {}
     if top_ips:
         ips_block = "\n".join(f"  - {ip}: {n} requests" for ip, n in top_ips.items())
     else:
@@ -217,16 +215,16 @@ something in between.
 API key name: {api_key_name}
 
 Activity summary:
-- Total requests: {stats.get('total_requests')}
-- Request rate: {stats.get('req_rate_per_min')}/min
-- Errors: {stats.get('error_count')} ({stats.get('error_rate_pct')}%)
-- Unique source IPs: {stats.get('unique_ips')}
-- Unique models requested: {stats.get('unique_models')}
-- Input tokens p50/p95: {stats.get('p50_input_tokens')} / {stats.get('p95_input_tokens')}
-- Output tokens p50/p95: {stats.get('p50_output_tokens')} / {stats.get('p95_output_tokens')}
-- Latency p50/p95: {stats.get('p50_latency_ms')}ms / {stats.get('p95_latency_ms')}ms
-- Cost class distribution: {stats.get('cost_class_dist')}
-- Prompt-size variance (coefficient of variation): {stats.get('prompt_size_variance_pct')}%
+- Total requests: {stats.get("total_requests")}
+- Request rate: {stats.get("req_rate_per_min")}/min
+- Errors: {stats.get("error_count")} ({stats.get("error_rate_pct")}%)
+- Unique source IPs: {stats.get("unique_ips")}
+- Unique models requested: {stats.get("unique_models")}
+- Input tokens p50/p95: {stats.get("p50_input_tokens")} / {stats.get("p95_input_tokens")}
+- Output tokens p50/p95: {stats.get("p50_output_tokens")} / {stats.get("p95_output_tokens")}
+- Latency p50/p95: {stats.get("p50_latency_ms")}ms / {stats.get("p95_latency_ms")}ms
+- Cost class distribution: {stats.get("cost_class_dist")}
+- Prompt-size variance (coefficient of variation): {stats.get("prompt_size_variance_pct")}%
 
 Top source IPs (by request count):
 {ips_block}
@@ -237,16 +235,20 @@ Sample request previews (redacted):
 Classify into exactly one of:
 - "normal" — healthy pattern, no concern
 - "watch" — slightly elevated, keep observing
-- "throttle" — suspicious (sudden spike, abusive prompts, error storms) — recommend lowering rate_limit_rpm to the configured throttle floor
-- "block_ip" — ONE specific source IP is the abuser, the rest of the key's traffic is legitimate — recommend blocking just that IP. Pick the IP from the "Top source IPs" list above.
+- "throttle" — suspicious (sudden spike, abusive prompts, error storms) — \
+recommend lowering rate_limit_rpm to the configured throttle floor
+- "block_ip" — ONE specific source IP is the abuser, the rest of the key's \
+traffic is legitimate — recommend blocking just that IP. Pick the IP from the \
+"Top source IPs" list above.
 - "block" — clear key-wide abuse — recommend disabling the entire key
 
 Reply ONLY with valid JSON (no markdown, no preamble):
 - For normal/watch/throttle/block: {{"verdict": "...", "reasoning": "<2-3 sentences>"}}
-- For block_ip (REQUIRES ip field): {{"verdict": "block_ip", "ip": "<one of the top IPs>", "reasoning": "<...>"}}"""
+- For block_ip (REQUIRES ip field): {{"verdict": "block_ip", \
+"ip": "<one of the top IPs>", "reasoning": "<...>"}}"""
 
 
-def parse_llm_response(text: str) -> Optional[dict]:
+def parse_llm_response(text: str) -> dict | None:
     """Extract the JSON verdict from the LLM response, tolerating
     markdown wrappers and chatty preambles."""
     if not text:
@@ -281,8 +283,10 @@ def _verdict_to_action(verdict: str) -> str:
 
 
 async def classify_with_llm(
-    stats: dict, samples: list[str], api_key_name: str,
-) -> Optional[dict]:
+    stats: dict,
+    samples: list[str],
+    api_key_name: str,
+) -> dict | None:
     """Call the proxy's own /v1/messages to classify. Returns dict with
     ``verdict`` + ``reasoning`` or None on failure."""
     try:
@@ -292,7 +296,10 @@ async def classify_with_llm(
     api_key = getattr(settings, "ai_rate_limiter_internal_api_key", None)
     model = getattr(settings, "ai_rate_limiter_model", "claude-haiku-4-5-20251001")
     if not api_key:
-        logger.info("ai_rate_limiter.no_internal_api_key — set AI_RATE_LIMITER_INTERNAL_API_KEY to enable LLM classification")
+        logger.info(
+            "ai_rate_limiter.no_internal_api_key — set AI_RATE_LIMITER_INTERNAL_API_KEY "
+            "to enable LLM classification"
+        )
         return None
     prompt = build_prompt(stats, samples, api_key_name)
     try:
@@ -321,7 +328,8 @@ async def classify_with_llm(
         if resp.status_code != 200:
             logger.warning(
                 "ai_rate_limiter.llm_http_error status=%d body=%s",
-                resp.status_code, resp.text[:200],
+                resp.status_code,
+                resp.text[:200],
             )
             return None
         body = resp.json()
@@ -336,13 +344,14 @@ async def classify_with_llm(
         return None
 
 
-async def review_one_key(db, api_key, window_min: int = DEFAULT_WINDOW_MIN) -> Optional[dict]:
+async def review_one_key(db, api_key, window_min: int = DEFAULT_WINDOW_MIN) -> dict | None:
     """Run one full review for one api_key. Returns the new review row
     dict (for caller logging) or None if skipped (no traffic)."""
-    from sqlalchemy import select, desc
-    from app.models.db import ActivityLog, ApiKeyAiReview, ApiKey
+    from sqlalchemy import desc, select
 
-    cutoff = datetime.now(timezone.utc) - timedelta(minutes=window_min)
+    from app.models.db import ActivityLog, ApiKeyAiReview
+
+    cutoff = datetime.now(UTC) - timedelta(minutes=window_min)
     rs = await db.execute(
         select(ActivityLog)
         .where(ActivityLog.api_key_id == api_key.id)
@@ -380,10 +389,10 @@ async def review_one_key(db, api_key, window_min: int = DEFAULT_WINDOW_MIN) -> O
         verdict = "watch"  # treat parser garbage as cautious-watch
     # v3.7.12 — block_ip needs a valid IP from the top_source_ips list,
     # else demote to "watch" to avoid acting on a hallucinated IP.
-    suggested_block_ip: Optional[str] = None
+    suggested_block_ip: str | None = None
     if verdict == "block_ip":
         candidate = (classification.get("ip") or "").strip()
-        top_ips = (stats.get("top_source_ips") or {})
+        top_ips = stats.get("top_source_ips") or {}
         if candidate and candidate in top_ips:
             suggested_block_ip = candidate
         else:
@@ -391,7 +400,9 @@ async def review_one_key(db, api_key, window_min: int = DEFAULT_WINDOW_MIN) -> O
     suggested = _verdict_to_action(verdict)
     review = ApiKeyAiReview(
         api_key_id=api_key.id,
-        llm_model=getattr(__import__("app.config", fromlist=["settings"]).settings, "ai_rate_limiter_model", None),
+        llm_model=getattr(
+            __import__("app.config", fromlist=["settings"]).settings, "ai_rate_limiter_model", None
+        ),
         llm_verdict=verdict,
         llm_reasoning=classification.get("reasoning", "")[:2000],
         suggested_action=suggested,
@@ -403,6 +414,7 @@ async def review_one_key(db, api_key, window_min: int = DEFAULT_WINDOW_MIN) -> O
     # Auto-apply when configured and verdict is actionable
     try:
         from app.config import settings
+
         auto_apply = bool(getattr(settings, "ai_rate_limiter_auto_apply", False))
         floor = int(getattr(settings, "ai_rate_limiter_throttle_floor_rpm", 5))
     except Exception:
@@ -425,7 +437,7 @@ async def review_one_key(db, api_key, window_min: int = DEFAULT_WINDOW_MIN) -> O
 
 async def _apply_suggestion(db, api_key, review, floor_rpm: int):
     """Mutate api_key + record on review. Caller commits."""
-    review.applied_at = datetime.now(timezone.utc)
+    review.applied_at = datetime.now(UTC)
     review.applied_action = review.suggested_action
     review.prior_rate_limit_rpm = api_key.rate_limit_rpm
     if review.suggested_action == "throttle_rpm":
@@ -436,26 +448,33 @@ async def _apply_suggestion(db, api_key, review, floor_rpm: int):
         # v3.7.12 — insert into blocked_ips. Idempotent: if the IP is
         # already blocked we don't create a duplicate row (sqlalchemy
         # would raise on the PK violation otherwise).
-        from app.models.db import BlockedIp
         from sqlalchemy import select
+
+        from app.models.db import BlockedIp
+
         ip = review.suggested_block_ip
         if ip:
             rs = await db.execute(select(BlockedIp).where(BlockedIp.ip == ip))
             if rs.scalar_one_or_none() is None:
-                db.add(BlockedIp(
-                    ip=ip,
-                    reason=f"AI rate limiter: {review.llm_reasoning or '(no reasoning)'}",
-                    added_by=f"ai-rate-limiter (review {review.id})",
-                ))
+                db.add(
+                    BlockedIp(
+                        ip=ip,
+                        reason=f"AI rate limiter: {review.llm_reasoning or '(no reasoning)'}",
+                        added_by=f"ai-rate-limiter (review {review.id})",
+                    )
+                )
             # Invalidate the middleware cache on this node
             try:
                 from app.middleware.ip_block import _clear_cache_for_tests
+
                 _clear_cache_for_tests()
             except Exception:
                 pass
     logger.warning(
         "ai_rate_limiter.applied verdict=%s key_id=%s prior_rpm=%s block_ip=%s",
-        review.llm_verdict, api_key.id, review.prior_rate_limit_rpm,
+        review.llm_verdict,
+        api_key.id,
+        review.prior_rate_limit_rpm,
         review.suggested_block_ip,
     )
 
@@ -463,42 +482,46 @@ async def _apply_suggestion(db, api_key, review, floor_rpm: int):
 async def _scan_all_once() -> int:
     """One sweep across every enabled api_key with ``total_requests > 0``."""
     from sqlalchemy import select
+
     from app.models.database import AsyncSessionLocal
     from app.models.db import ApiKey
 
     reviewed = 0
     async with AsyncSessionLocal() as db:
         rs = await db.execute(
-            select(ApiKey)
-            .where(ApiKey.enabled == True)
-            .where(ApiKey.deleted_at.is_(None))
+            select(ApiKey).where(ApiKey.enabled.is_(True)).where(ApiKey.deleted_at.is_(None))
         )
         for k in rs.scalars().all():
             try:
                 from app.config import settings
+
                 window = int(getattr(settings, "ai_rate_limiter_window_min", DEFAULT_WINDOW_MIN))
                 result = await review_one_key(db, k, window_min=window)
                 if result:
                     reviewed += 1
                     logger.info(
                         "ai_rate_limiter.reviewed key=%s verdict=%s",
-                        result["api_key_name"], result["verdict"],
+                        result["api_key_name"],
+                        result["verdict"],
                     )
             except Exception as exc:
                 logger.warning(
                     "ai_rate_limiter.review_failed key_id=%s err=%s",
-                    k.id, exc,
+                    k.id,
+                    exc,
                 )
     return reviewed
 
 
 async def _scan_loop() -> None:
     from app.monitoring.worker_heartbeat import WorkerHeartbeat, register_expected_interval
+
     hb = WorkerHeartbeat(name="ai_rate_limiter")
     await asyncio.sleep(WARMUP_DELAY_SEC)
     while True:
         try:
             from app.config import settings
+
             if not getattr(settings, "ai_rate_limiter_enabled", False):
                 await hb.tick(status="disabled", note="ai_rate_limiter_enabled=false")
                 await asyncio.sleep(60)

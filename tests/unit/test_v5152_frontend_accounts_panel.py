@@ -8,10 +8,10 @@ This test file locks the wiring — the panel component exists, it's
 imported + mounted in ProviderForm, the API serializer surfaces
 ``oauth_account_strategy``, and version is bumped.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
-
 
 # ── (1) Panel component exists + shape ────────────────────────────────
 
@@ -89,10 +89,9 @@ def test_frontend_provider_type_has_strategy_field():
 
 def test_version_bumped():
     import re
+
     src = Path("app/__version__.py").read_text()
     m = re.search(r'"(\d+)\.(\d+)\.(\d+)"', src)
     assert m
     major, minor, patch = int(m.group(1)), int(m.group(2)), int(m.group(3))
-    assert (major, minor, patch) >= (5, 15, 2), (
-        f"expected >= 5.15.2, got {major}.{minor}.{patch}"
-    )
+    assert (major, minor, patch) >= (5, 15, 2), f"expected >= 5.15.2, got {major}.{minor}.{patch}"

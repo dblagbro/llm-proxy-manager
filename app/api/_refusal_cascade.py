@@ -22,13 +22,16 @@ Design decisions locked from DevinGPT team's 2026-07-05 memo:
   regardless of chain length so a caller can't accidentally burn
   20 providers.
 """
+
 from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable, Optional
+from datetime import UTC, datetime
+from datetime import timezone as timezone
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -39,12 +42,13 @@ DEFAULT_MAX_ATTEMPTS = 3
 @dataclass
 class CascadeResult:
     """Outcome of the cascade attempt."""
-    swapped: bool               # True if a cascade attempt succeeded
-    final_route: Any            # the route that produced the returned response
-    final_result: Any           # raw litellm response
-    final_anthropic: dict       # anthropic-shape response
-    attempts_made: int          # 0 = no refusal detected on initial (cascade not run)
-    chain_exhausted: bool       # True if all attempts refused
+
+    swapped: bool  # True if a cascade attempt succeeded
+    final_route: Any  # the route that produced the returned response
+    final_result: Any  # raw litellm response
+    final_anthropic: dict  # anthropic-shape response
+    attempts_made: int  # 0 = no refusal detected on initial (cascade not run)
+    chain_exhausted: bool  # True if all attempts refused
     attempted_provider_ids: list[str]  # audit trail
 
 
@@ -98,8 +102,7 @@ async def maybe_cascade_on_refusal(
 
     # Detection fired. Enter the cascade loop.
     max_attempts = int(
-        getattr(key_record, "refusal_retry_max_attempts", None)
-        or DEFAULT_MAX_ATTEMPTS
+        getattr(key_record, "refusal_retry_max_attempts", None) or DEFAULT_MAX_ATTEMPTS
     )
     attempted_ids: set[str] = {getattr(initial_route.provider, "id", "?")}
     audit_trail: list[str] = list(attempted_ids)
@@ -116,7 +119,8 @@ async def maybe_cascade_on_refusal(
     # v5.20.1 — audit the initial refusal separately so the operator
     # sees "primary refused; cascade tried X, Y" as ordered rows.
     _emit_activity(
-        db, "refusal_retry_start",
+        db,
+        "refusal_retry_start",
         api_key_id=getattr(key_record, "id", None),
         provider_id=getattr(initial_route.provider, "id", None),
         message=(
@@ -144,7 +148,8 @@ async def maybe_cascade_on_refusal(
         alt_route = None
         try:
             alt_route = await select_provider(
-                db, hint,
+                db,
+                hint,
                 has_tools=False,
                 has_images=has_images,
                 key_type=key_record.key_type,
@@ -154,7 +159,8 @@ async def maybe_cascade_on_refusal(
         except Exception as exc:
             logger.warning(
                 "refusal_cascade.rank_pick_failed attempt=%d err=%s",
-                attempt_idx, exc,
+                attempt_idx,
+                exc,
             )
             alt_route = None
         if alt_route is None:
@@ -172,10 +178,13 @@ async def maybe_cascade_on_refusal(
         except Exception as exc:
             logger.warning(
                 "refusal_cascade.dispatch_failed attempt=%d provider=%s err=%s",
-                attempt_idx, _pid, exc,
+                attempt_idx,
+                _pid,
+                exc,
             )
             _emit_activity(
-                db, "refusal_retry_attempt_failed",
+                db,
+                "refusal_retry_attempt_failed",
                 api_key_id=getattr(key_record, "id", None),
                 provider_id=_pid,
                 message=f"Cascade attempt {attempt_idx} dispatch failed: {exc}",
@@ -193,7 +202,8 @@ async def maybe_cascade_on_refusal(
         except Exception as exc:
             logger.warning(
                 "refusal_cascade.anthropic_convert_failed attempt=%d err=%s",
-                attempt_idx, exc,
+                attempt_idx,
+                exc,
             )
             continue
         _alt_text = extract_text_from_anthropic_response(alt_anthropic)
@@ -207,7 +217,8 @@ async def maybe_cascade_on_refusal(
             current_anthropic = alt_anthropic
             swapped = True
             _emit_activity(
-                db, "refusal_retry_success",
+                db,
+                "refusal_retry_success",
                 api_key_id=getattr(key_record, "id", None),
                 provider_id=_pid,
                 message=(
@@ -225,7 +236,8 @@ async def maybe_cascade_on_refusal(
             break
         else:
             _emit_activity(
-                db, "refusal_retry_attempt_refused",
+                db,
+                "refusal_retry_attempt_refused",
                 api_key_id=getattr(key_record, "id", None),
                 provider_id=_pid,
                 message=(
@@ -245,7 +257,8 @@ async def maybe_cascade_on_refusal(
 
     if not swapped:
         _emit_activity(
-            db, "refusal_retry_exhausted",
+            db,
+            "refusal_retry_exhausted",
             api_key_id=getattr(key_record, "id", None),
             provider_id=getattr(current_route.provider, "id", None),
             message=(
@@ -262,9 +275,7 @@ async def maybe_cascade_on_refusal(
     # Emit response headers regardless — the caller wants attribution
     # even when cascade didn't swap.
     resp_headers["X-Refusal-Retry-Attempted"] = str(len(audit_trail) - 1)
-    resp_headers["X-Refusal-Retry-Provider"] = getattr(
-        current_route.provider, "id", "?"
-    )
+    resp_headers["X-Refusal-Retry-Provider"] = getattr(current_route.provider, "id", "?")
     resp_headers["X-Refusal-Chain-Exhausted"] = "true" if not swapped else "false"
 
     try:
@@ -284,9 +295,11 @@ async def maybe_cascade_on_refusal(
 
 
 def _emit_activity(
-    db, event_type: str, *,
-    api_key_id: Optional[str],
-    provider_id: Optional[str],
+    db,
+    event_type: str,
+    *,
+    api_key_id: str | None,
+    provider_id: str | None,
     message: str,
     event_meta: dict,
     severity: str = "info",
@@ -295,14 +308,17 @@ def _emit_activity(
     logging problem doesn't break the cascade path."""
     try:
         from app.models.db import ActivityLog
-        db.add(ActivityLog(
-            created_at=datetime.now(timezone.utc).replace(tzinfo=None),
-            severity=severity,
-            event_type=event_type,
-            api_key_id=api_key_id,
-            provider_id=provider_id,
-            message=message,
-            event_meta=event_meta,
-        ))
+
+        db.add(
+            ActivityLog(
+                created_at=datetime.now(UTC).replace(tzinfo=None),
+                severity=severity,
+                event_type=event_type,
+                api_key_id=api_key_id,
+                provider_id=provider_id,
+                message=message,
+                event_meta=event_meta,
+            )
+        )
     except Exception:
         pass

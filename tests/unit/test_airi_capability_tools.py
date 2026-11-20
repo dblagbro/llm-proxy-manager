@@ -4,6 +4,7 @@ explain_routing now describes the adaptation layer, and get_model_capabilities
 exposes per-provider native-vs-emulated tool/reasoning/vision support — so AIRI
 stops guessing 'a request will fail on a non-native provider'.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -11,13 +12,14 @@ import pytest_asyncio
 from sqlalchemy import delete
 
 from app.airi import tools
-from app.models.db import Provider, ModelCapability
+from app.models.db import ModelCapability, Provider
 
 
 @pytest_asyncio.fixture
 async def cap_env():
-    from app.models.database import engine, AsyncSessionLocal
+    from app.models.database import AsyncSessionLocal, engine
     from app.models.db import Base
+
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     async with AsyncSessionLocal() as c:
@@ -25,25 +27,38 @@ async def cap_env():
         await c.execute(delete(Provider).where(Provider.name.like("cap-%")))
         await c.commit()
     async with AsyncSessionLocal() as c:
-        native = Provider(name="cap-anthropic", provider_type="anthropic",
-                          priority=5, enabled=True)
-        emul = Provider(name="cap-grokweb", provider_type="grok-web",
-                        priority=1, enabled=True)
+        native = Provider(name="cap-anthropic", provider_type="anthropic", priority=5, enabled=True)
+        emul = Provider(name="cap-grokweb", provider_type="grok-web", priority=1, enabled=True)
         c.add_all([native, emul])
         await c.commit()
         await c.refresh(native)
         await c.refresh(emul)
-        c.add(ModelCapability(provider_id=native.id, model_id="claude-opus-4-7",
-                              native_tools=True, native_reasoning=True,
-                              native_vision=True, tool_call_success_rate=0.99))
-        c.add(ModelCapability(provider_id=emul.id, model_id="grok-3",
-                              native_tools=False, native_reasoning=False,
-                              native_vision=False, tool_call_success_rate=0.71))
+        c.add(
+            ModelCapability(
+                provider_id=native.id,
+                model_id="claude-opus-4-7",
+                native_tools=True,
+                native_reasoning=True,
+                native_vision=True,
+                tool_call_success_rate=0.99,
+            )
+        )
+        c.add(
+            ModelCapability(
+                provider_id=emul.id,
+                model_id="grok-3",
+                native_tools=False,
+                native_reasoning=False,
+                native_vision=False,
+                tool_call_success_rate=0.71,
+            )
+        )
         await c.commit()
     yield
 
 
 # ── get_model_capabilities ───────────────────────────────────────────────────
+
 
 @pytest.mark.asyncio
 async def test_capabilities_report_native_vs_emulated(cap_env):
@@ -59,15 +74,17 @@ async def test_capabilities_report_native_vs_emulated(cap_env):
 async def test_capabilities_surface_vision_strip(cap_env):
     out = await tools.run_tool("get_model_capabilities", {})
     grok = next(m for m in out["models"] if m["model"] == "grok-3")
-    assert "STRIPPED" in grok["adaptation"]          # vision is the lossy path
+    assert "STRIPPED" in grok["adaptation"]  # vision is the lossy path
     assert grok["tool_call_success_rate"] == 0.71
     assert "adapted, not failed" in out["note"]
 
 
 # ── explain_routing now covers the adaptation layer ──────────────────────────
 
+
 def test_explain_routing_describes_adaptation():
     import json
+
     info = tools._explain_routing()
     assert "adaptation_layer" in info
     al_text = json.dumps(info["adaptation_layer"]).upper()

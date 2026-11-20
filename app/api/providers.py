@@ -1,18 +1,26 @@
 """Provider CRUD, test, model scan, and capability management."""
+
 import secrets
 import time
-from typing import Optional
+from datetime import UTC
+from typing import Optional as Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Body
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi import Body as Body
+from sqlalchemy import delete as delete
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, delete
 
+from app.api._provider_schemas import ProviderCreate as ProviderCreate
+from app.api._provider_schemas import ProviderUpdate as ProviderUpdate
+from app.auth.admin import AdminUser, require_admin
 from app.models.database import get_db
-from app.models.db import Provider, ModelCapability
-from app.auth.admin import require_admin, AdminUser
-from app.providers.scanner import scan_provider_models, test_provider
+from app.models.db import ModelCapability as ModelCapability
+from app.models.db import Provider
 from app.monitoring.status import register_provider
-from app.routing.capability_inference import infer_capability_profile
+from app.providers.scanner import scan_provider_models as scan_provider_models
+from app.providers.scanner import test_provider as test_provider
+from app.routing.capability_inference import infer_capability_profile as infer_capability_profile
 from app.utils.timefmt import utc_iso
 
 router = APIRouter(prefix="/api/providers", tags=["providers"])
@@ -26,12 +34,17 @@ def _stamp_user_edit(p: Provider) -> None:
     p.last_user_edit_at = time.time()
 
 
-from app.api._provider_schemas import ProviderCreate, ProviderUpdate  # noqa: E402,F401
-
-
 _TYPES_REQUIRING_API_KEY = {
-    "anthropic", "openai", "google", "vertex", "grok",
-    "cohere", "mistral", "groq", "together", "fireworks",
+    "anthropic",
+    "openai",
+    "google",
+    "vertex",
+    "grok",
+    "cohere",
+    "mistral",
+    "groq",
+    "together",
+    "fireworks",
     # v3.0.66: Azure OpenAI requires both api_key + base_url (the
     # resource endpoint). base_url is enforced by the form; api_key
     # via this set.
@@ -43,101 +56,19 @@ _TYPES_REQUIRING_API_KEY = {
 
 
 async def normalize_priority_ties(db: AsyncSession) -> int:
-    """v2.8.2 / v3.0.24: resolve any priority ties among ROUTABLE providers
-    by bumping the younger duplicates +1 in created_at order. Idempotent.
-    Returns count of providers bumped (0 means already normalized).
+    from app.api._provider_priority import normalize_priority_ties as normalize
 
-    v3.0.24 (#136): scope changed to ``deleted_at IS NULL AND enabled=True``.
-    Tombstoned and disabled rows don't participate in routing — letting them
-    contribute to tie detection caused observed ping-pong on the first gateway (45 fires
-    in 3h with count=2 each, while peers fired 0). Logs the bumped row IDs
-    so future debugging knows what moved.
-
-    Example before: [a@1, b@2, c@2, d@3, e@3] (b created before c, d before e)
-    After: [a@1, b@2, c@3, d@4, e@5] — younger row at each tie shifts up,
-    and the cascade from c=3 collides with d=3, so d→4. The net effect is
-    a strict total order by (priority, created_at) within the active set.
-    """
-    from sqlalchemy import select as _select
-    rows = (await db.execute(
-        _select(Provider)
-        .where(Provider.deleted_at.is_(None), Provider.enabled == True)
-        .order_by(Provider.priority.asc(), Provider.created_at.asc(), Provider.id.asc())
-    )).scalars().all()
-    bumped: list[tuple[str, int, int]] = []   # (id, old, new)
-    seen_priorities: set[int] = set()
-    for row in rows:
-        if row.priority not in seen_priorities:
-            seen_priorities.add(row.priority)
-            continue
-        # Tie — find the next free slot at or above row.priority
-        old_pri = row.priority
-        new_pri = old_pri
-        while new_pri in seen_priorities:
-            new_pri += 1
-        row.priority = new_pri
-        seen_priorities.add(new_pri)
-        bumped.append((row.id, old_pri, new_pri))
-    if bumped:
-        await db.flush()
-        try:
-            import logging as _logging
-            _logging.getLogger(__name__).info(
-                "providers.normalize_priority_ties bumped=%d details=%s",
-                len(bumped),
-                [{"id": pid, "from": o, "to": n} for (pid, o, n) in bumped],
-            )
-        except Exception:
-            pass
-    return len(bumped)
+    return await normalize(db, provider_model=Provider, logger_name=__name__)
 
 
 async def _bump_priority_conflicts(
-    db: AsyncSession,
-    target_priority: int,
-    *,
-    exclude_id: Optional[str] = None,
+    db: AsyncSession, target_priority: int, *, exclude_id: str | None = None
 ) -> int:
-    """v2.8.2: when a provider takes priority P, bump every other provider
-    already at P (and any chain-reaction conflicts) by +1 so the new/updated
-    row gets the slot it asked for.
+    from app.api._provider_priority import bump_priority_conflicts
 
-    Example: providers at 1,2,3,4,5,6. New provider asks for 2 →
-    existing-2 → 3, existing-3 → 4, existing-4 → 5, existing-5 → 6,
-    existing-6 → 7. Final order: 1, NEW@2, 3, 4, 5, 6, 7.
-
-    ``exclude_id`` is the row that's TAKING the slot — exclude it from the
-    conflict lookup so we don't bump our own row in the create-then-bump
-    or PUT flow.
-
-    Returns the number of rows bumped (for logging / response telemetry).
-    """
-    bumped = 0
-    # Snapshot all candidates upfront so the iteration doesn't re-query inside
-    # an open transaction (avoids autoflush quirks with in-memory SQLite).
-    snap = (await db.execute(
-        select(Provider).where(
-            (Provider.id != exclude_id) if exclude_id is not None else (Provider.id != "")
-        ).order_by(Provider.priority.asc(), Provider.created_at.asc(), Provider.id.asc())
-    )).scalars().all()
-
-    # Group by ORIGINAL priority — chain-reactions only fire when an original
-    # row sits at the next priority. Already-bumped rows don't re-bump.
-    by_priority: dict[int, list] = {}
-    for row in snap:
-        by_priority.setdefault(row.priority, []).append(row)
-
-    current_priority = target_priority
-    while current_priority in by_priority:
-        for row in by_priority[current_priority]:
-            row.priority = current_priority + 1
-            bumped += 1
-        # Done with this bucket — don't re-process the bumped rows on the
-        # next iteration. Chain-reaction continues only if ORIGINAL rows
-        # already sat at current_priority+1.
-        del by_priority[current_priority]
-        current_priority += 1
-    return bumped
+    return await bump_priority_conflicts(
+        db, target_priority, exclude_id=exclude_id, provider_model=Provider, select_fn=select
+    )
 
 
 @router.post("")
@@ -169,6 +100,7 @@ async def create_provider(
     # this easy to do by accident). Boot-time dedup migration cleans up
     # legacy dups; this guard prevents new ones.
     from app.providers.dedup import name_is_taken
+
     if await name_is_taken(db, body.name):
         raise HTTPException(
             409,
@@ -183,7 +115,8 @@ async def create_provider(
                 "claude-oauth providers require 'oauth_credentials_blob' — paste your "
                 "`~/.claude/credentials.json` contents or a bare 'sk-ant-oat...' token.",
             )
-        from app.providers.claude_oauth import parse_credentials, CredentialParseError
+        from app.providers.claude_oauth import CredentialParseError, parse_credentials
+
         try:
             creds = parse_credentials(blob)
         except CredentialParseError as e:
@@ -198,8 +131,10 @@ async def create_provider(
             # asymmetric vs codex-oauth (which never hardcoded an
             # OpenAI model in the equivalent position).
             from app.routing.litellm_binding import PROVIDER_DEFAULT_MODELS
+
             data["default_model"] = PROVIDER_DEFAULT_MODELS.get(
-                "claude-oauth", "claude-sonnet-4-6",
+                "claude-oauth",
+                "claude-sonnet-4-6",
             )
     elif body.provider_type == "ChatGPT-oauth-plan":
         # v3.0.15: OpenAI Codex CLI / ChatGPT subscription OAuth.
@@ -210,8 +145,12 @@ async def create_provider(
                 "`~/.codex/auth.json` contents or a bare access_token JWT.",
             )
         from app.providers.codex_oauth import (
-            parse_credentials as _parse_codex, CredentialParseError as _CodexParseErr,
+            CredentialParseError as _CodexParseErr,
         )
+        from app.providers.codex_oauth import (
+            parse_credentials as _parse_codex,
+        )
+
         try:
             creds = _parse_codex(blob)
         except _CodexParseErr as e:
@@ -244,8 +183,12 @@ async def create_provider(
                 "use the Generate Auth URL button in the admin UI.",
             )
         from app.providers.cursor_oauth import (
-            parse_credentials as _parse_cursor, CredentialParseError as _CursorParseErr,
+            CredentialParseError as _CursorParseErr,
         )
+        from app.providers.cursor_oauth import (
+            parse_credentials as _parse_cursor,
+        )
+
         try:
             creds = _parse_cursor(blob)
         except _CursorParseErr as e:
@@ -262,10 +205,14 @@ async def create_provider(
         # exchange path in providers_oauth._do_exchange_create).
         if not data.get("base_url"):
             import os as _os
-            data["base_url"] = _os.environ.get(
-                "CURSOR_BRIDGE_URL",
-                "http://llm-proxy2-cursor-bridge:3010",
-            ).rstrip("/") + "/v1"
+
+            data["base_url"] = (
+                _os.environ.get(
+                    "CURSOR_BRIDGE_URL",
+                    "http://llm-proxy2-cursor-bridge:3010",
+                ).rstrip("/")
+                + "/v1"
+            )
     elif body.provider_type == "grok-web":
         # v3.2.0: grok.com web-subscription provider. Two valid auth paths
         # captured in extra_config:
@@ -289,7 +236,9 @@ async def create_provider(
                     "grok.com/c/ in your browser's URL bar).",
                 )
         else:
-            missing = [k for k in ("cookie_header", "conversation_id") if not (cfg.get(k) or "").strip()]
+            missing = [
+                k for k in ("cookie_header", "conversation_id") if not (cfg.get(k) or "").strip()
+            ]
             if missing:
                 raise HTTPException(
                     400,
@@ -325,14 +274,18 @@ async def create_provider(
     # Existing rows are handled by the startup backfill in database.py.
     if not getattr(provider, "owner_company", None):
         from app.compliance.company_map import provider_type_to_company
+
         provider.owner_company = provider_type_to_company(provider.provider_type)
     _stamp_user_edit(provider)
     db.add(provider)
     await db.commit()
     await db.refresh(provider)
-    register_provider(provider.id, provider.provider_type, provider.hold_down_sec, provider.failure_threshold)
+    register_provider(
+        provider.id, provider.provider_type, provider.hold_down_sec, provider.failure_threshold
+    )
     # New provider — clear any stale auth-failure flag carried by id collision (defensive)
     from app.routing.circuit_breaker import clear_auth_failure as _clear_af
+
     _clear_af(provider.id)
     # v5.15.3 (#508) — seed a matching provider_oauth_accounts row for
     # newly-created OAuth-flavored providers so the v5.15.1 dispatch picker
@@ -346,13 +299,16 @@ async def create_provider(
     if provider.provider_type in ("cursor-oauth", "ChatGPT-oauth-plan", "claude-oauth"):
         try:
             from app.providers.oauth_account_seeder import seed_missing_accounts
+
             await seed_missing_accounts(db)
         except Exception as _e:
             # Non-fatal — dispatch falls back to Provider.api_key.
             import logging as _lg
+
             _lg.getLogger(__name__).warning(
                 "v5.15.3 seeder-on-create failed for provider=%s err=%s",
-                provider.id, _e,
+                provider.id,
+                _e,
             )
     return _serialize(provider)
 
@@ -402,10 +358,12 @@ async def get_rate_limit_state(
             "state is only tracked for codex-oauth.",
         )
     from app.providers.codex_ratelimit import get_state
+
     state = get_state(provider_id)
     if state is None:
         return {"provider_id": provider_id, "observed": False}
     import time as _t
+
     now = _t.time()
     return {
         "provider_id": provider_id,
@@ -439,6 +397,7 @@ async def update_provider(
     p = await _get_or_404(db, provider_id)
     # Row-relative type gate (v5.22.44): refuse only a CHANGE into a closed type.
     from app.api._provider_type_policy import validate_provider_type_change
+
     try:
         validate_provider_type_change(p.provider_type, body.provider_type)
     except ValueError as e:
@@ -448,7 +407,8 @@ async def update_provider(
 
     # v2.7.0: re-paste credentials to refresh an existing claude-oauth provider
     if blob and p.provider_type == "claude-oauth":
-        from app.providers.claude_oauth import parse_credentials, CredentialParseError
+        from app.providers.claude_oauth import CredentialParseError, parse_credentials
+
         try:
             creds = parse_credentials(blob)
         except CredentialParseError as e:
@@ -500,13 +460,24 @@ async def update_provider(
     #     UI's redacted pattern: starts with the prefix + "..." or "***")
     if "api_key" in data:
         incoming = data.get("api_key")
-        if incoming is None or incoming == "" or (
-            isinstance(incoming, str) and (
-                "…" in incoming or "***" in incoming or
-                # v5.22.15 — 4, matching _mask_key. A 4-char prefix also
-                # matches the older 8-char masks, so this keeps accepting
-                # anything the UI previously round-tripped.
-                (p.api_key and incoming.startswith(p.api_key[:4]) and ("..." in incoming or "…" in incoming))
+        if (
+            incoming is None
+            or incoming == ""
+            or (
+                isinstance(incoming, str)
+                and (
+                    "…" in incoming
+                    or "***" in incoming
+                    or
+                    # v5.22.15 — 4, matching _mask_key. A 4-char prefix also
+                    # matches the older 8-char masks, so this keeps accepting
+                    # anything the UI previously round-tripped.
+                    (
+                        p.api_key
+                        and incoming.startswith(p.api_key[:4])
+                        and ("..." in incoming or "…" in incoming)
+                    )
+                )
             )
         ):
             data.pop("api_key", None)
@@ -528,6 +499,7 @@ async def update_provider(
     new_name = data.get("name")
     if new_name and new_name != p.name:
         from app.providers.dedup import name_is_taken
+
         if await name_is_taken(db, new_name, exclude_id=p.id):
             raise HTTPException(
                 409,
@@ -548,6 +520,7 @@ async def update_provider(
     # ``internal`` rather than ``meta``).
     if "owner_company" not in data or data.get("owner_company") is None:
         from app.compliance.company_map import provider_type_to_company
+
         derived = provider_type_to_company(p.provider_type)
         if derived:
             p.owner_company = derived
@@ -556,7 +529,9 @@ async def update_provider(
     await db.refresh(p)
     register_provider(p.id, p.provider_type, p.hold_down_sec, p.failure_threshold)
     if new_key_provided:
-        from app.routing.circuit_breaker import clear_auth_failure as _clear_af, force_close
+        from app.routing.circuit_breaker import clear_auth_failure as _clear_af
+        from app.routing.circuit_breaker import force_close
+
         _clear_af(p.id)
         await force_close(p.id)
     return _serialize(p)
@@ -577,12 +552,13 @@ async def delete_provider(
     ``provider_tombstone_retention_days`` are hard-deleted by the daily
     prune worker (default 7 days).
     """
-    from datetime import datetime, timezone
+    from datetime import datetime
+
     p = await _get_or_404(db, provider_id)
-    p.deleted_at = datetime.now(timezone.utc)
+    p.deleted_at = datetime.now(UTC)
     p.enabled = False
     # Bump updated_at so cluster sync recognizes this as the freshest write
-    p.updated_at = datetime.now(timezone.utc)
+    p.updated_at = datetime.now(UTC)
     _stamp_user_edit(p)
     await db.commit()
     # v3.5.9 BUG-012 fix — clear in-memory circuit-breaker state for the
@@ -592,9 +568,12 @@ async def delete_provider(
     # the integration tests' pytest-mock leftovers — see docs/bug-log.md
     # BUG-003 + BUG-012 for context.
     from app.routing.circuit_breaker import (
-        _local_states as _cb_states,
         _auth_failed as _cb_auth_failed,
     )
+    from app.routing.circuit_breaker import (
+        _local_states as _cb_states,
+    )
+
     _cb_states.pop(provider_id, None)
     _cb_auth_failed.pop(provider_id, None)
     return {"ok": True}
@@ -620,9 +599,11 @@ async def purge_test_tombstones(
     production: only affects providers named ``pytest-%`` /
     ``test-playwright-%`` / ``debug-%``. Admin-gated.
     """
-    from sqlalchemy import delete, or_, func
-    from datetime import datetime, timedelta, timezone
-    cutoff = datetime.now(timezone.utc) - timedelta(seconds=60)
+    from datetime import datetime, timedelta
+
+    from sqlalchemy import delete, or_
+
+    cutoff = datetime.now(UTC) - timedelta(seconds=60)
     patterns = ("pytest-%", "test-playwright-%", "debug-%")
     rs = await db.execute(
         delete(Provider)
@@ -637,14 +618,18 @@ async def purge_test_tombstones(
     # rows were soft-deleted before v3.5.9 the CB state may still
     # be there. This pass is idempotent.
     from app.routing.circuit_breaker import (
-        _local_states as _cb_states,
         _auth_failed as _cb_auth_failed,
     )
+    from app.routing.circuit_breaker import (
+        _local_states as _cb_states,
+    )
+
     # Take a snapshot of current CB ids; remove any that aren't still
     # present in providers table.
     if _cb_states or _cb_auth_failed:
         live_ids = {
-            row[0] for row in (
+            row[0]
+            for row in (
                 await db.execute(select(Provider.id).where(Provider.deleted_at.is_(None)))
             ).all()
         }
@@ -663,7 +648,6 @@ async def _get_or_404(db: AsyncSession, provider_id: str) -> Provider:
     return p
 
 
-
 def _mask_key(raw: str | None) -> str | None:
     """Render a stored key for display without leaking usable material."""
     if not raw:
@@ -680,6 +664,7 @@ def _serialize(p: Provider) -> dict:
     # red badge. Reads from the in-process auth-failure map maintained by
     # circuit_breaker.record_auth_failure. None when the provider is healthy.
     from app.routing.circuit_breaker import get_auth_failure
+
     auth_fail = get_auth_failure(p.id)
     return {
         "id": p.id,
@@ -744,12 +729,14 @@ def _serialize(p: Provider) -> dict:
         # surfaces the top-of-page warning. The supervisor (Phase 4)
         # reads ``manual_override_until`` directly from the row.
         "manual_override_active": getattr(p, "manual_override_until", None) is not None,
-        "manual_override_until": utc_iso(p.manual_override_until) if getattr(p, "manual_override_until", None) else None,
+        "manual_override_until": utc_iso(p.manual_override_until)
+        if getattr(p, "manual_override_until", None)
+        else None,
         "manual_override_set_by": getattr(p, "manual_override_set_by", None),
-        "manual_override_set_at": utc_iso(p.manual_override_set_at) if getattr(p, "manual_override_set_at", None) else None,
+        "manual_override_set_at": utc_iso(p.manual_override_set_at)
+        if getattr(p, "manual_override_set_at", None)
+        else None,
         "manual_override_reason": getattr(p, "manual_override_reason", None),
         "auto_skip_until": utc_iso(p.auto_skip_until) if p.auto_skip_until else None,
         "auto_skip_reason": p.auto_skip_reason,
     }
-
-

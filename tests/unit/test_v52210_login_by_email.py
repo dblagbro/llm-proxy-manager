@@ -16,6 +16,7 @@ constraint and is user-editable:
 Every rejection returns the same generic 401 so the endpoint stays
 non-enumerable.
 """
+
 import sys
 import types
 
@@ -76,8 +77,9 @@ class _FakeResponse:
 @pytest.fixture(autouse=True)
 def _auth(monkeypatch):
     """Password is correct iff it matches the account's hash marker."""
-    monkeypatch.setattr(auth_api, "verify_password",
-                        lambda plain, hashed: hashed == f"hash-of-{plain}")
+    monkeypatch.setattr(
+        auth_api, "verify_password", lambda plain, hashed: hashed == f"hash-of-{plain}"
+    )
 
     async def fake_session(uid, username, role):
         return f"tok-{username}"
@@ -88,7 +90,8 @@ def _auth(monkeypatch):
 async def _login(identifier, password, db):
     return await auth_api.login(
         auth_api.LoginRequest(username=identifier, password=password),
-        _FakeResponse(), db,
+        _FakeResponse(),
+        db,
     )
 
 
@@ -122,7 +125,7 @@ class TestEmailLogin:
     @pytest.mark.asyncio
     async def test_email_identifier_authenticates(self):
         u = _FakeUser("u1", "dblagbro", "dblagbro@voipguru.org")
-        db = _FakeDB([], [u])                       # username miss, email hit
+        db = _FakeDB([], [u])  # username miss, email hit
         out = await _login("dblagbro@voipguru.org", "dblagbro", db)
         assert out["username"] == "dblagbro"
 
@@ -196,9 +199,13 @@ class TestErrorParity:
             ("ghost", "x", _FakeDB([], [])),
             ("ghost@x.com", "x", _FakeDB([], [])),
             ("dblagbro", "wrong", _FakeDB([_FakeUser("u1", "dblagbro")])),
-            ("dup@x.com", "alice", _FakeDB(
-                [], [_FakeUser("a", "alice", "dup@x.com"),
-                     _FakeUser("b", "bob", "dup@x.com")])),
+            (
+                "dup@x.com",
+                "alice",
+                _FakeDB(
+                    [], [_FakeUser("a", "alice", "dup@x.com"), _FakeUser("b", "bob", "dup@x.com")]
+                ),
+            ),
         ]
         for ident, pw, db in cases:
             with pytest.raises(Exception) as e:

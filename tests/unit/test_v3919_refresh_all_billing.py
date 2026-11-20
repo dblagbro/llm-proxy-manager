@@ -13,6 +13,7 @@ session + mocked ``scrape_provider_into_snapshot`` (the per-provider
 scrape is already covered by test_v370_anthropic_billing.py), plus
 source-level wiring checks for the API client method and UI button.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -40,6 +41,7 @@ def _mock_db(providers: list[_FakeProvider]) -> MagicMock:
 
 async def _call(db: MagicMock) -> dict:
     from app.api.anthropic_billing import refresh_all_billing
+
     return await refresh_all_billing(db=db, _=None)
 
 
@@ -54,19 +56,28 @@ async def test_returns_to_service_counted_from_skip_cleared():
     db = _mock_db(providers)
 
     scrape_returns = {
-        "p1": {"ok": True, "auth_state": "ok", "seven_day_utilization": 12.0,
-               "five_hour_utilization": 3.0,
-               "rotation_decision": {"decision": "skip_cleared"}},
-        "p2": {"ok": True, "auth_state": "ok", "seven_day_utilization": 88.0,
-               "five_hour_utilization": 40.0,
-               "rotation_decision": {"decision": "no_change"}},
+        "p1": {
+            "ok": True,
+            "auth_state": "ok",
+            "seven_day_utilization": 12.0,
+            "five_hour_utilization": 3.0,
+            "rotation_decision": {"decision": "skip_cleared"},
+        },
+        "p2": {
+            "ok": True,
+            "auth_state": "ok",
+            "seven_day_utilization": 88.0,
+            "five_hour_utilization": 40.0,
+            "rotation_decision": {"decision": "no_change"},
+        },
     }
 
     async def fake_scrape(_db, provider):
         return scrape_returns[provider.id]
 
-    with patch("app.providers.anthropic_billing.scrape_provider_into_snapshot",
-               side_effect=fake_scrape):
+    with patch(
+        "app.providers.anthropic_billing.scrape_provider_into_snapshot", side_effect=fake_scrape
+    ):
         out = await _call(db)
 
     assert out["providers"] == 2
@@ -87,15 +98,20 @@ async def test_one_bad_provider_does_not_abort_sweep():
     async def fake_scrape(_db, provider):
         if provider.id == "p1":
             raise RuntimeError("boom")
-        return {"ok": True, "auth_state": "ok", "seven_day_utilization": 5.0,
-                "rotation_decision": {"decision": "skip_cleared"}}
+        return {
+            "ok": True,
+            "auth_state": "ok",
+            "seven_day_utilization": 5.0,
+            "rotation_decision": {"decision": "skip_cleared"},
+        }
 
-    with patch("app.providers.anthropic_billing.scrape_provider_into_snapshot",
-               side_effect=fake_scrape):
+    with patch(
+        "app.providers.anthropic_billing.scrape_provider_into_snapshot", side_effect=fake_scrape
+    ):
         out = await _call(db)
 
     assert out["providers"] == 2
-    assert out["scraped_ok"] == 1          # only p2 succeeded
+    assert out["scraped_ok"] == 1  # only p2 succeeded
     assert out["returned_to_service"] == 1  # p2 cleared
     by_id = {r["provider_id"]: r for r in out["results"]}
     assert by_id["p1"]["ok"] is False
@@ -110,11 +126,11 @@ async def test_failed_scrape_not_counted_as_ok():
     db = _mock_db(providers)
 
     async def fake_scrape(_db, provider):
-        return {"ok": False, "auth_state": "session_expired",
-                "rotation_decision": {}}
+        return {"ok": False, "auth_state": "session_expired", "rotation_decision": {}}
 
-    with patch("app.providers.anthropic_billing.scrape_provider_into_snapshot",
-               side_effect=fake_scrape):
+    with patch(
+        "app.providers.anthropic_billing.scrape_provider_into_snapshot", side_effect=fake_scrape
+    ):
         out = await _call(db)
 
     assert out["providers"] == 1
@@ -129,12 +145,13 @@ async def test_no_credentialed_providers_returns_empty():
     crash, no scrape calls."""
     db = _mock_db([])
 
-    with patch("app.providers.anthropic_billing.scrape_provider_into_snapshot",
-               side_effect=AssertionError("should not scrape")) as scrape:
+    with patch(
+        "app.providers.anthropic_billing.scrape_provider_into_snapshot",
+        side_effect=AssertionError("should not scrape"),
+    ) as scrape:
         out = await _call(db)
 
-    assert out == {"providers": 0, "scraped_ok": 0,
-                   "returned_to_service": 0, "results": []}
+    assert out == {"providers": 0, "scraped_ok": 0, "returned_to_service": 0, "results": []}
     scrape.assert_not_called()
 
 
@@ -148,8 +165,9 @@ async def test_missing_rotation_decision_is_safe():
     async def fake_scrape(_db, provider):
         return {"ok": True, "auth_state": "ok"}  # no rotation_decision key
 
-    with patch("app.providers.anthropic_billing.scrape_provider_into_snapshot",
-               side_effect=fake_scrape):
+    with patch(
+        "app.providers.anthropic_billing.scrape_provider_into_snapshot", side_effect=fake_scrape
+    ):
         out = await _call(db)
 
     assert out["scraped_ok"] == 1
@@ -171,7 +189,7 @@ def test_endpoint_filters_to_credentialed_claude_oauth():
     credentials configured — same filter the worker uses."""
     src = Path("app/api/anthropic_billing.py").read_text()
     idx = src.index("async def refresh_all_billing(")
-    fn = src[idx:idx + 2500]
+    fn = src[idx : idx + 2500]
     assert 'provider_type == "claude-oauth"' in fn
     assert "anthropic_org_uuid.is_not(None)" in fn
     assert "anthropic_session_cookies.is_not(None)" in fn

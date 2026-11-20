@@ -12,6 +12,7 @@ router lands on the highest-priority non-failed provider — any family —
 on the first try. If it's a different family, build_litellm_model's
 v3.0.36 cross-family substitution path takes over.
 """
+
 from __future__ import annotations
 
 import inspect
@@ -26,9 +27,11 @@ import pytest
 # and importers still reach the function through the parent's re-export shim.
 _GUARD_SRC = Path("app/api/_sse_guard.py")
 
+
 def test_select_provider_signature_includes_exclude_provider_ids():
     """The new parameter is in the public signature."""
     from app.routing.router import select_provider
+
     sig = inspect.signature(select_provider)
     assert "exclude_provider_ids" in sig.parameters, (
         "v5.7.13: select_provider must accept exclude_provider_ids: set[str] "
@@ -56,7 +59,7 @@ def test_streaming_guard_no_inner_ping_pong_loop():
     # immediately after the empty_failed.add(...) bookkeeping.
     idx = src.find("empty_failed.add(attempt_route.provider.id)")
     assert idx != -1
-    window = src[idx: idx + 1500]
+    window = src[idx : idx + 1500]
     assert "for _ in range(max_attempts):" not in window, (
         "v5.7.13 dropped the inner re-resolve loop; cumulative exclusion "
         "makes a single select_provider call sufficient."
@@ -67,7 +70,7 @@ def test_streaming_guard_no_inner_ping_pong_loop():
 async def test_router_excludes_cumulative_ids(monkeypatch):
     """Functional: select_provider given exclude_provider_ids = {A, B}
     must drop A and B from the pool, leaving C as the candidate."""
-    from app.routing import router as router_mod
+
     # We don't need the full router; this proves the filter line works.
     # Re-implement the relevant 2 lines as a focused unit:
     src = Path("app/routing/router.py").read_text()

@@ -16,14 +16,14 @@ Uses an in-memory SQLite + minimal Provider rows. The
 ``tests/unit/test_v5_compliance_*`` — here we pass ``blocked_companies``
 explicitly so the router behavior is the unit under test.
 """
+
 from __future__ import annotations
 
 import sys
 import types
 
 import pytest
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine, AsyncSession
-
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 # Stub litellm before any app import (mirrors test_router.py pattern).
 _stub = types.ModuleType("litellm")
@@ -33,9 +33,9 @@ if not hasattr(sys.modules["litellm"], "RateLimitError"):
     sys.modules["litellm"].RateLimitError = type("RateLimitError", (Exception,), {})
 
 
-from app.compliance import ComplianceNoSubstituteError
-from app.models.db import Base, Provider
-from app.routing.router import select_provider
+from app.compliance import ComplianceNoSubstituteError  # noqa: E402
+from app.models.db import Base, Provider  # noqa: E402
+from app.routing.router import select_provider  # noqa: E402
 
 
 async def _fresh_db():
@@ -76,15 +76,21 @@ async def test_empty_blocklist_is_noop():
     provider, no compliance flags set."""
     Session = await _fresh_db()
     async with Session() as db:
-        db.add(_mk_provider(
-            pid="p-anth", name="anth", provider_type="anthropic",
-            default_model="claude-sonnet-4-5", owner_company="anthropic",
-        ))
+        db.add(
+            _mk_provider(
+                pid="p-anth",
+                name="anth",
+                provider_type="anthropic",
+                default_model="claude-sonnet-4-5",
+                owner_company="anthropic",
+            )
+        )
         await db.commit()
 
     async with Session() as db:
         route = await select_provider(
-            db, hint=None,
+            db,
+            hint=None,
             model_override="claude-sonnet-4-5",
             blocked_companies=set(),
         )
@@ -110,20 +116,32 @@ async def test_substitution_drops_banned_owner_no_model_override():
     from the caller's perspective; they asked for "auto")."""
     Session = await _fresh_db()
     async with Session() as db:
-        db.add(_mk_provider(
-            pid="p-anth", name="anth", provider_type="anthropic",
-            default_model="claude-sonnet-4-5", owner_company="anthropic",
-            priority=1,
-        ))
-        db.add(_mk_provider(
-            pid="p-openai", name="openai", provider_type="openai",
-            default_model="gpt-4o", owner_company="openai", priority=10,
-        ))
+        db.add(
+            _mk_provider(
+                pid="p-anth",
+                name="anth",
+                provider_type="anthropic",
+                default_model="claude-sonnet-4-5",
+                owner_company="anthropic",
+                priority=1,
+            )
+        )
+        db.add(
+            _mk_provider(
+                pid="p-openai",
+                name="openai",
+                provider_type="openai",
+                default_model="gpt-4o",
+                owner_company="openai",
+                priority=10,
+            )
+        )
         await db.commit()
 
     async with Session() as db:
         route = await select_provider(
-            db, hint=None,
+            db,
+            hint=None,
             model_override=None,
             blocked_companies={"anthropic"},
         )
@@ -172,6 +190,7 @@ async def test_substitution_markers_set_on_cross_family_fallback():
     # other tests in this module and the integration tests in
     # tests/integration/test_v5_compliance_*.
     from app.routing.router import RouteResult
+
     rr = RouteResult.__dataclass_fields__
     assert "compliance_substituted" in rr
     assert "compliance_blocked_company" in rr
@@ -189,16 +208,22 @@ async def test_no_substitute_raises_compliance_error():
     catches and serializes the 503)."""
     Session = await _fresh_db()
     async with Session() as db:
-        db.add(_mk_provider(
-            pid="p-anth", name="anth", provider_type="anthropic",
-            default_model="claude-sonnet-4-5", owner_company="anthropic",
-        ))
+        db.add(
+            _mk_provider(
+                pid="p-anth",
+                name="anth",
+                provider_type="anthropic",
+                default_model="claude-sonnet-4-5",
+                owner_company="anthropic",
+            )
+        )
         await db.commit()
 
     async with Session() as db:
         with pytest.raises(ComplianceNoSubstituteError) as exc_info:
             await select_provider(
-                db, hint=None,
+                db,
+                hint=None,
                 model_override="claude-haiku",
                 blocked_companies={"anthropic"},
             )
@@ -216,15 +241,21 @@ async def test_blocklist_passed_explicitly_skips_db_resolve():
     route succeeds without raising."""
     Session = await _fresh_db()
     async with Session() as db:
-        db.add(_mk_provider(
-            pid="p-openai", name="openai", provider_type="openai",
-            default_model="gpt-4o", owner_company="openai",
-        ))
+        db.add(
+            _mk_provider(
+                pid="p-openai",
+                name="openai",
+                provider_type="openai",
+                default_model="gpt-4o",
+                owner_company="openai",
+            )
+        )
         await db.commit()
 
     async with Session() as db:
         route = await select_provider(
-            db, hint=None,
+            db,
+            hint=None,
             api_key_id="key-does-not-exist",
             blocked_companies=set(),
         )

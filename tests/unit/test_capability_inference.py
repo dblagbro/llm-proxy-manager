@@ -1,4 +1,5 @@
 """Unit tests for capability inference heuristics."""
+
 import sys
 import types
 
@@ -8,7 +9,7 @@ sys.modules.setdefault("litellm", _stub)
 if not hasattr(sys.modules["litellm"], "RateLimitError"):
     sys.modules["litellm"].RateLimitError = type("RateLimitError", (Exception,), {})
 
-from app.routing.capability_inference import infer_capability_profile
+from app.routing.capability_inference import infer_capability_profile  # noqa: E402
 
 
 class TestReasoningFamily:

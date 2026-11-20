@@ -8,6 +8,7 @@ itself and confines all queries to that key's rows.
 Tests confirm isolation (key A can't see key B's memory) and the
 correct shape of the new endpoints.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -15,6 +16,7 @@ from pathlib import Path
 
 def test_module_imports_cleanly():
     import importlib
+
     mod = importlib.import_module("app.api.memory_scoped")
     assert hasattr(mod, "router")
 
@@ -29,11 +31,13 @@ def test_prefix_is_v1_memory():
     """Lives under /v1/memory/* — api-key-scoped namespace. (Admin
     counterpart is under /api/memory/*.)"""
     from app.api.memory_scoped import router
+
     assert router.prefix == "/v1/memory"
 
 
 def test_all_endpoints_registered():
     from app.api.memory_scoped import router
+
     paths = {(r.path, tuple(sorted(r.methods))) for r in router.routes}
     expected = {
         ("/v1/memory/conversations", ("GET",)),
@@ -78,7 +82,7 @@ def test_delete_entire_conversation_tombstones_marker_too():
     stale) last_known_provider_id."""
     src = Path("app/api/memory_scoped.py").read_text()
     idx = src.index("async def delete_entire_conversation")
-    fn = src[idx:idx + 3000]
+    fn = src[idx : idx + 3000]
     assert "CallerMemoryMarker" in fn
     assert "m.deleted_at = now" in fn
 
@@ -88,7 +92,7 @@ def test_delete_entire_conversation_invalidates_redis():
     explicitly delete cache keys after commit."""
     src = Path("app/api/memory_scoped.py").read_text()
     idx = src.index("async def delete_entire_conversation")
-    fn = src[idx:idx + 3000]
+    fn = src[idx : idx + 3000]
     assert "from app.memory.store import _get_redis, _key" in fn
     assert "await r.delete(" in fn
 
@@ -99,14 +103,14 @@ def test_upsert_uses_store_put():
     No bypass."""
     src = Path("app/api/memory_scoped.py").read_text()
     idx = src.index("async def upsert_scoped_memory")
-    fn = src[idx:idx + 1500]
+    fn = src[idx : idx + 1500]
     assert "from app.memory.store import put" in fn
 
 
 def test_delete_single_tag_uses_store_delete():
     src = Path("app/api/memory_scoped.py").read_text()
     idx = src.index("async def delete_one_tag")
-    fn = src[idx:idx + 1500]
+    fn = src[idx : idx + 1500]
     assert "from app.memory.store import delete as store_delete" in fn
 
 
@@ -115,6 +119,6 @@ def test_list_conversations_groups_by_conv_id():
     tag set + max(updated_at), not one row per (conv, tag) pair."""
     src = Path("app/api/memory_scoped.py").read_text()
     idx = src.index("async def list_conversations")
-    fn = src[idx:idx + 2500]
+    fn = src[idx : idx + 2500]
     assert "by_conv" in fn
-    assert "\"tags\":" in fn
+    assert '"tags":' in fn

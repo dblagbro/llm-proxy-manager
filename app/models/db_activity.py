@@ -5,7 +5,8 @@ Split out from ``db.py`` in v4.4.11. Owns:
 - ``BlockedIp`` — v3.7.11 IP block list.
 - ``ActivityLog`` — request/event log.
 """
-from sqlalchemy import Column, String, Integer, DateTime, Text, JSON
+
+from sqlalchemy import JSON, Column, DateTime, Integer, String, Text
 from sqlalchemy.sql import func
 
 from app.models.db_base import Base
@@ -22,6 +23,7 @@ class BlockedIp(Base):
     admin endpoints; auto-population by the AI rate limiter is a
     deferred follow-up (v3.7.12+).
     """
+
     __tablename__ = "blocked_ips"
     ip = Column(String, primary_key=True)
     reason = Column(String, nullable=True)

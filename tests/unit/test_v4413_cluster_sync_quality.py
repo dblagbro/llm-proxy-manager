@@ -30,12 +30,10 @@ real to fully close the loop:
 - Just the log fix → operators see real timeout strings instead of
   blanks, but the timeouts keep happening.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
-
-import pytest
-
 
 # ── #1: provider_ai_review + api_key_ai_review prune ─────────────
 
@@ -43,6 +41,7 @@ import pytest
 def test_ai_review_retention_setting_exists():
     """Config field is declared with a 30-day default."""
     from app.config import settings
+
     assert hasattr(settings, "ai_review_retention_days")
     # Default is 30 days unless the env overrides it
     assert isinstance(settings.ai_review_retention_days, int)
@@ -53,6 +52,7 @@ def test_ai_review_retention_helper_clamps_minimum():
     """``_ai_review_retention_days()`` returns >=1 even if config
     contains 0 / negative / non-int."""
     from app.monitoring.prune import _ai_review_retention_days
+
     assert _ai_review_retention_days() >= 1
 
 
@@ -60,8 +60,10 @@ def test_prune_ai_review_helper_exists():
     """The generic per-model pruner exists and accepts both review
     model classes."""
     import inspect
-    from app.monitoring.prune import _prune_ai_review
+
     from app.models.db import ApiKeyAiReview, ProviderAiReview
+    from app.monitoring.prune import _prune_ai_review
+
     # Both models have the columns the helper needs (captured_at, id).
     for cls in (ApiKeyAiReview, ProviderAiReview):
         assert hasattr(cls, "captured_at")
@@ -79,14 +81,14 @@ def test_ai_review_prune_wired_into_sweep():
     at the end so the ordering of the calls determines the order of
     the counts in that line.)"""
     src = Path("app/monitoring/prune.py").read_text()
-    body = src[src.index("async def _sweep_once"):src.index("async def _prune_loop")]
+    body = src[src.index("async def _sweep_once") : src.index("async def _prune_loop")]
     assert "_prune_ai_review(\n            ProviderAiReview" in body
     assert "_prune_ai_review(\n            ApiKeyAiReview" in body
 
 
 def test_sweep_output_dict_has_ai_review_counters():
     src = Path("app/monitoring/prune.py").read_text()
-    sweep_body = src[src.index("async def _sweep_once"):src.index("async def _wal_checkpoint")]
+    sweep_body = src[src.index("async def _sweep_once") : src.index("async def _wal_checkpoint")]
     assert '"provider_ai_reviews": 0' in sweep_body
     assert '"api_key_ai_reviews": 0' in sweep_body
     assert '"ai_review_keep_days"' in sweep_body
@@ -95,7 +97,7 @@ def test_sweep_output_dict_has_ai_review_counters():
 def test_sweep_log_line_includes_ai_review_counts():
     src = Path("app/monitoring/prune.py").read_text()
     idx = src.index('"prune.swept activity_log=%d')
-    body = src[idx:idx + 1500]
+    body = src[idx : idx + 1500]
     assert "provider_ai_reviews=%d" in body
     assert "api_key_ai_reviews=%d" in body
     assert "ai_review_keep_days=%d" in body
@@ -108,7 +110,7 @@ def test_push_sync_timeout_raised():
     """The 15s ceiling fell over with the 2.78 MB payload. v4.4.13
     raises it to 45s. Source-level guard."""
     src = Path("app/cluster/manager.py").read_text()
-    push_body = src[src.index("async def push_sync("):src.index("async def push_sync(") + 2500]
+    push_body = src[src.index("async def push_sync(") : src.index("async def push_sync(") + 2500]
     # New timeout
     assert "AsyncClient(timeout=45" in push_body
     # Old timeout absent
@@ -145,6 +147,7 @@ def test_push_sync_log_falls_back_for_empty_exception():
     # specific behavior by replicating the conditional locally — if
     # the implementation moves to a helper, the test moves too.
     import httpx
+
     e = httpx.ReadTimeout("")
     msg = str(e) if str(e) else f"{type(e).__name__} (no message)"
     assert msg == "ReadTimeout (no message)"

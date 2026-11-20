@@ -19,22 +19,26 @@ Plus two exception classes the dispatch layer catches:
   completions.py once the UA detection fires, carrying the audit_id for
   downstream serialization)
 """
+
 from __future__ import annotations
 
 import fnmatch
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any
 
 from sqlalchemy import select
 
 from app.compliance.company_map import (
-    KNOWN_COMPANIES,
-    model_family_to_company,
+    KNOWN_COMPANIES as KNOWN_COMPANIES,
+)
+from app.compliance.company_map import (
     model_family_companies,
 )
+from app.compliance.company_map import (
+    model_family_to_company as model_family_to_company,
+)
 from app.models.db import ApiKey
-
 
 # v5.2.0 / Batch V2 — fine-grained vendor-neutrality policy bundle.
 
@@ -57,19 +61,22 @@ class Policy:
     prefix) AND the request's ``requested_model`` when present — both
     must clear the model gates for a provider to pass.
     """
-    blocked_companies: Set[str] = field(default_factory=set)
-    allowed_companies: Set[str] = field(default_factory=set)
-    blocked_models: Tuple[str, ...] = field(default_factory=tuple)
-    allowed_models: Tuple[str, ...] = field(default_factory=tuple)
+
+    blocked_companies: set[str] = field(default_factory=set)
+    allowed_companies: set[str] = field(default_factory=set)
+    blocked_models: tuple[str, ...] = field(default_factory=tuple)
+    allowed_models: tuple[str, ...] = field(default_factory=tuple)
 
     def is_empty(self) -> bool:
         return not (
-            self.blocked_companies or self.allowed_companies
-            or self.blocked_models or self.allowed_models
+            self.blocked_companies
+            or self.allowed_companies
+            or self.blocked_models
+            or self.allowed_models
         )
 
 
-def _model_matches_any(model: Optional[str], patterns: Tuple[str, ...]) -> bool:
+def _model_matches_any(model: str | None, patterns: tuple[str, ...]) -> bool:
     """fnmatch-style match (exact strings are a degenerate glob).
     Empty model never matches. Empty pattern set never matches.
     Comparison is case-insensitive — providers occasionally normalize
@@ -87,8 +94,8 @@ def _model_matches_any(model: Optional[str], patterns: Tuple[str, ...]) -> bool:
 def evaluate_policy(
     policy: Policy,
     provider: Any,
-    requested_model: Optional[str] = None,
-) -> Tuple[bool, str]:
+    requested_model: str | None = None,
+) -> tuple[bool, str]:
     """Return (allowed, reason_code). reason_code is empty on allow.
 
     Order (deny wins):
@@ -114,9 +121,8 @@ def evaluate_policy(
     if families & policy.blocked_companies:
         return False, "blocked-model-family"
 
-    if (
-        _model_matches_any(provider_default_model, policy.blocked_models)
-        or _model_matches_any(requested_model, policy.blocked_models)
+    if _model_matches_any(provider_default_model, policy.blocked_models) or _model_matches_any(
+        requested_model, policy.blocked_models
     ):
         return False, "blocked-model"
 
@@ -128,10 +134,9 @@ def evaluate_policy(
             return False, "company-not-in-allowlist"
 
     if policy.allowed_models:
-        model_ok = (
-            _model_matches_any(provider_default_model, policy.allowed_models)
-            or _model_matches_any(requested_model, policy.allowed_models)
-        )
+        model_ok = _model_matches_any(
+            provider_default_model, policy.allowed_models
+        ) or _model_matches_any(requested_model, policy.allowed_models)
         if not model_ok:
             return False, "model-not-in-allowlist"
 
@@ -144,7 +149,7 @@ class ComplianceNoSubstituteError(Exception):
     with ``X-Compliance-Refusal: true``.
     """
 
-    def __init__(self, message: str, blocked_companies: Set[str], n_dropped: int):
+    def __init__(self, message: str, blocked_companies: set[str], n_dropped: int):
         super().__init__(message)
         self.blocked_companies = blocked_companies
         self.n_dropped = n_dropped
@@ -194,11 +199,11 @@ class ComplianceUaBlockedError(Exception):
         self.audit_id = audit_id
 
 
-_BLOCKLIST_CACHE: Dict[str, tuple] = {}
+_BLOCKLIST_CACHE: dict[str, tuple] = {}
 _CACHE_TTL_SEC = 30.0
 
 
-def invalidate_blocklist_cache(api_key_id: Optional[str] = None) -> None:
+def invalidate_blocklist_cache(api_key_id: str | None = None) -> None:
     """Called from:
     - apikeys.py update_key() when ``blocked_companies`` changes
     - settings_api.py put_settings() when
@@ -212,7 +217,7 @@ def invalidate_blocklist_cache(api_key_id: Optional[str] = None) -> None:
         _BLOCKLIST_CACHE.pop(api_key_id, None)
 
 
-def _get_system_blocklist() -> Set[str]:
+def _get_system_blocklist() -> set[str]:
     """Pull the cluster-synced system-wide blocklist from the live
     ``settings`` singleton. Lazy import to avoid an import cycle at
     module load.
@@ -225,8 +230,10 @@ def _get_system_blocklist() -> Set[str]:
     for explicit company IDs).
     """
     import json
+
     try:
         from app.config import settings
+
         raw = getattr(settings, "compliance_system_blocked_companies", "") or ""
         if not raw or not raw.strip():
             return set()
@@ -238,14 +245,16 @@ def _get_system_blocklist() -> Set[str]:
         return set()
 
 
-def get_custom_companies() -> Dict[str, Dict[str, Any]]:
+def get_custom_companies() -> dict[str, dict[str, Any]]:
     """Custom companies from ``settings.compliance_custom_companies``
     (JSON-encoded list). Merged with KNOWN_COMPANIES at every UA / filter
     check.
     """
     import json
+
     try:
         from app.config import settings
+
         raw = getattr(settings, "compliance_custom_companies", "") or ""
         if not raw or not raw.strip():
             return {}
@@ -264,7 +273,7 @@ def get_custom_companies() -> Dict[str, Dict[str, Any]]:
         return {}
 
 
-async def get_effective_blocklist(db, api_key_id: str) -> Set[str]:
+async def get_effective_blocklist(db, api_key_id: str) -> set[str]:
     """Union of per-key ``blocked_companies`` and the system-wide setting.
 
     Cached for 30s per api_key_id; invalidated by edits on either side.
@@ -278,17 +287,16 @@ async def get_effective_blocklist(db, api_key_id: str) -> Set[str]:
     if cached and cached[0] > now:
         return cached[1]
     try:
-        result = await db.execute(
-            select(ApiKey.blocked_companies).where(ApiKey.id == api_key_id)
-        )
+        result = await db.execute(select(ApiKey.blocked_companies).where(ApiKey.id == api_key_id))
         row = result.scalar_one_or_none()
-        per_key: Set[str] = set()
+        per_key: set[str] = set()
         if row:
             if isinstance(row, list):
                 per_key = {str(x) for x in row if x}
             elif isinstance(row, str):
                 # JSON-string fallback (some sync paths persist as text)
                 import json
+
                 try:
                     parsed = json.loads(row)
                     if isinstance(parsed, list):
@@ -303,15 +311,17 @@ async def get_effective_blocklist(db, api_key_id: str) -> Set[str]:
     return effective
 
 
-def _get_system_setting_list(attr: str) -> Tuple[str, ...]:
+def _get_system_setting_list(attr: str) -> tuple[str, ...]:
     """v5.2.0 — pull a JSON-encoded list[str] setting and return a
     tuple. Empty/parse-error → (). Used by allowed_companies /
     blocked_models / allowed_models system-wide settings (parallel
     to ``_get_system_blocklist`` for ``blocked_companies``).
     """
     import json
+
     try:
         from app.config import settings
+
         raw = getattr(settings, attr, "") or ""
         if not raw or not raw.strip():
             return tuple()
@@ -323,7 +333,7 @@ def _get_system_setting_list(attr: str) -> Tuple[str, ...]:
         return tuple()
 
 
-def _coerce_list(raw: Any) -> List[str]:
+def _coerce_list(raw: Any) -> list[str]:
     """ApiKey JSON columns deserialize as list (SQLAlchemy JSON) or
     string (some sync paths roundtrip through TEXT). Normalize to
     list[str].
@@ -334,6 +344,7 @@ def _coerce_list(raw: Any) -> List[str]:
         return [str(x) for x in raw if x]
     if isinstance(raw, str):
         import json
+
         try:
             parsed = json.loads(raw)
             if isinstance(parsed, list):
@@ -343,7 +354,7 @@ def _coerce_list(raw: Any) -> List[str]:
     return []
 
 
-async def get_effective_policy(db, api_key_id: Optional[str]) -> Policy:
+async def get_effective_policy(db, api_key_id: str | None) -> Policy:
     """v5.2.0 — resolve the full effective policy for one (api_key, request)
     pair. Per-key fields union with the system-wide settings of the
     same name. Cache shares the 30s TTL of ``_BLOCKLIST_CACHE`` (a
@@ -355,17 +366,19 @@ async def get_effective_policy(db, api_key_id: Optional[str]) -> Policy:
     sys_block_models = _get_system_setting_list("compliance_system_blocked_models")
     sys_allow_models = _get_system_setting_list("compliance_system_allowed_models")
 
-    per_key_block_companies: Set[str] = set()
-    per_key_allow_companies: Set[str] = set()
-    per_key_block_models: Tuple[str, ...] = tuple()
-    per_key_allow_models: Tuple[str, ...] = tuple()
+    per_key_block_companies: set[str] = set()
+    per_key_allow_companies: set[str] = set()
+    per_key_block_models: tuple[str, ...] = tuple()
+    per_key_allow_models: tuple[str, ...] = tuple()
 
     if api_key_id:
         try:
             result = await db.execute(
                 select(
-                    ApiKey.blocked_companies, ApiKey.allowed_companies,
-                    ApiKey.blocked_models, ApiKey.allowed_models,
+                    ApiKey.blocked_companies,
+                    ApiKey.allowed_companies,
+                    ApiKey.blocked_models,
+                    ApiKey.allowed_models,
                 ).where(ApiKey.id == api_key_id)
             )
             row = result.first()
@@ -386,10 +399,10 @@ async def get_effective_policy(db, api_key_id: Optional[str]) -> Policy:
 
 
 def filter_providers_v2(
-    providers: List[Any],
+    providers: list[Any],
     policy: Policy,
-    requested_model: Optional[str] = None,
-) -> List[Any]:
+    requested_model: str | None = None,
+) -> list[Any]:
     """v5.2.0 — fine-grained filter using the full Policy bundle.
 
     Mirror of ``filter_providers`` but evaluates allowlist, model
@@ -418,10 +431,10 @@ def filter_providers_v2(
 
 
 def filter_providers(
-    providers: List[Any],
-    blocklist: Set[str],
-    requested_model: Optional[str] = None,
-) -> List[Any]:
+    providers: list[Any],
+    blocklist: set[str],
+    requested_model: str | None = None,
+) -> list[Any]:
     """Drop banned providers; raise ``ComplianceNoSubstituteError`` if all
     are dropped.
 
@@ -467,7 +480,7 @@ def filter_providers(
     return out
 
 
-def is_company_banned(company_id: Optional[str], blocklist: Set[str]) -> bool:
+def is_company_banned(company_id: str | None, blocklist: set[str]) -> bool:
     """Convenience for callers (cache + memory layers) that have already
     resolved a ``source_company`` and want a single-line check.
     Decision 7 — unknown (NULL) source_company is treated as banned by any

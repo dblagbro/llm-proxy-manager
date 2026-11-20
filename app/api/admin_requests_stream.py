@@ -23,11 +23,11 @@ A 1.5s poll against an indexed ``id`` column is cheap (a few ms) and
 correct under the multi-worker topology we run. If the table volume
 grows past tens of inserts/sec we can revisit.
 """
+
 from __future__ import annotations
 
 import asyncio
 import json
-from typing import Optional
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
@@ -70,8 +70,13 @@ async def _seed_last_id() -> int:
         return int(v or 0)
 
 
-async def _next_batch(db: AsyncSession, last_id: int, event_type: Optional[str]) -> list[ActivityLog]:
-    q = select(ActivityLog).where(ActivityLog.id > last_id).order_by(ActivityLog.id).limit(_MAX_BATCH)
+async def _next_batch(db: AsyncSession, last_id: int, event_type: str | None) -> list[ActivityLog]:
+    q = (
+        select(ActivityLog)
+        .where(ActivityLog.id > last_id)
+        .order_by(ActivityLog.id)
+        .limit(_MAX_BATCH)
+    )
     if event_type:
         # Substring match — callers can pass "proxy_tool" to tail all
         # MCP-related events, or "circuit_break" for CB activity, etc.
@@ -85,7 +90,7 @@ async def requests_stream(
     request: Request,
     _watchdog: None = Depends(watch_for_disconnect),
     _admin: AdminUser = Depends(require_admin),
-    event_type: Optional[str] = None,
+    event_type: str | None = None,
 ):
     """Live-tail SSE of activity_log inserts. Long-poll under the hood.
 
@@ -162,7 +167,7 @@ _CORRELATED_MAX_ROWS = 50
 _REDACTED_KEY_LEN = 8
 
 
-def _redact_key_hash(full_id: Optional[str]) -> Optional[str]:
+def _redact_key_hash(full_id: str | None) -> str | None:
     """API key IDs are the SHA-256 prefix of the key — they identify
     the key but knowing more than the first ~8 chars adds no diagnostic
     value + increases surface if the response is logged elsewhere.
@@ -173,13 +178,15 @@ def _redact_key_hash(full_id: Optional[str]) -> Optional[str]:
 
 
 async def _correlated_events(
-    db: AsyncSession, row: ActivityLog,
+    db: AsyncSession,
+    row: ActivityLog,
 ) -> list[dict]:
     """Return activity_log rows within ±_CORRELATION_WINDOW_SEC of ``row``
     that share the same api_key_id AND (provider_id if present). Bundled
     context for a single logical LLM request that produced multiple
     audit_log rows (llm_request + cost_split + refusal_detected + etc.)."""
     from datetime import timedelta
+
     if row.created_at is None:
         return []
     lo = row.created_at - timedelta(seconds=_CORRELATION_WINDOW_SEC)
@@ -193,34 +200,37 @@ async def _correlated_events(
         q = q.where(ActivityLog.api_key_id == row.api_key_id)
     if row.provider_id:
         q = q.where(
-            (ActivityLog.provider_id == row.provider_id)
-            | (ActivityLog.provider_id.is_(None))
+            (ActivityLog.provider_id == row.provider_id) | (ActivityLog.provider_id.is_(None))
         )
     q = q.order_by(ActivityLog.id).limit(_CORRELATED_MAX_ROWS)
     rs = await db.execute(q)
     out = []
     for r in rs.scalars().all():
-        out.append({
-            "id": r.id,
-            "event_type": r.event_type,
-            "severity": r.severity,
-            "message": r.message,
-            "created_at": r.created_at.isoformat() + "Z" if r.created_at else None,
-            "delta_ms": (
-                int((r.created_at - row.created_at).total_seconds() * 1000)
-                if r.created_at else None
-            ),
-        })
+        out.append(
+            {
+                "id": r.id,
+                "event_type": r.event_type,
+                "severity": r.severity,
+                "message": r.message,
+                "created_at": r.created_at.isoformat() + "Z" if r.created_at else None,
+                "delta_ms": (
+                    int((r.created_at - row.created_at).total_seconds() * 1000)
+                    if r.created_at
+                    else None
+                ),
+            }
+        )
     return out
 
 
-async def _provider_summary(db: AsyncSession, provider_id: Optional[str]) -> Optional[dict]:
+async def _provider_summary(db: AsyncSession, provider_id: str | None) -> dict | None:
     """Small provider-context bundle for the detail response. Redacts
     anything credential-shaped."""
     if not provider_id:
         return None
     try:
         from app.models.db import Provider
+
         rs = await db.execute(select(Provider).where(Provider.id == provider_id))
         p = rs.scalar_one_or_none()
         if p is None:
@@ -236,13 +246,14 @@ async def _provider_summary(db: AsyncSession, provider_id: Optional[str]) -> Opt
         return None
 
 
-async def _apikey_summary(db: AsyncSession, api_key_id: Optional[str]) -> Optional[dict]:
+async def _apikey_summary(db: AsyncSession, api_key_id: str | None) -> dict | None:
     """Small api_key-context bundle. Never returns the full hash; the
     redacted 8-char prefix is enough to identify + non-sensitive."""
     if not api_key_id:
         return None
     try:
         from app.models.db import ApiKey
+
         rs = await db.execute(select(ApiKey).where(ApiKey.id == api_key_id))
         k = rs.scalar_one_or_none()
         if k is None:
@@ -285,10 +296,9 @@ async def request_detail(
     ```
     """
     from fastapi import HTTPException
+
     async with AsyncSessionLocal() as db:
-        rs = await db.execute(
-            select(ActivityLog).where(ActivityLog.id == activity_log_id)
-        )
+        rs = await db.execute(select(ActivityLog).where(ActivityLog.id == activity_log_id))
         row = rs.scalar_one_or_none()
         if row is None:
             raise HTTPException(status_code=404, detail="activity_log row not found")

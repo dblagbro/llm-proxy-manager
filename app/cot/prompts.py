@@ -30,11 +30,11 @@ PLAN_SYSTEM_COMPACT = (
 CRITIQUE_SYSTEM = (
     "You are a quality evaluator. Evaluate the draft response against the user's question.\n"
     "Reply with ONLY a JSON object, no prose, no markdown fences. Use this exact schema:\n"
-    '{\n'
+    "{\n"
     '  "factual_issues": ["short description per issue"],\n'
     '  "missing_coverage": ["what the answer failed to address"],\n'
     '  "sufficient_for_user": true|false\n'
-    '}\n\n'
+    "}\n\n"
     "Rules:\n"
     "- factual_issues: only items the answer gets wrong (not stylistic nits).\n"
     "- missing_coverage: things the user asked for that the answer didn't address.\n"

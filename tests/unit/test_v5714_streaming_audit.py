@@ -15,6 +15,7 @@ weren't audited.
 The write goes through ``app.monitoring.activity.log_event`` so the
 existing logging-controls kill-switch still gates it.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -25,6 +26,7 @@ from pathlib import Path
 # guards, so they have to follow the code; the behaviour they pin is unchanged
 # and importers still reach the function through the parent's re-export shim.
 _GUARD_SRC = Path("app/api/_sse_guard.py")
+
 
 def test_streaming_guard_imports_log_event():
     """Static-grep contract: the streaming guard imports log_event."""
@@ -48,7 +50,7 @@ def test_streaming_guard_audits_terminal_exhaust():
     lands BEFORE the 502 raise — so the audit survives the exception."""
     src = _GUARD_SRC.read_text()
     exhaust_idx = src.find('event_type="streaming.failover_exhausted"')
-    raise_502_idx = src.find('raise HTTPException(\n        502,')
+    raise_502_idx = src.find("raise HTTPException(\n        502,")
     assert exhaust_idx != -1, "v5.7.14: terminal exhaust event missing"
     assert raise_502_idx != -1
     assert exhaust_idx < raise_502_idx, (
@@ -77,12 +79,13 @@ def test_audit_writes_are_exception_safe():
             f"v5.7.14: {label} audit event not found at all — this test would "
             f"otherwise search the whole module and pass on an unrelated try:"
         )
-        window = src[max(0, idx - 600): idx]
+        window = src[max(0, idx - 600) : idx]
         assert "try:" in window, f"v5.7.14: {label} audit not wrapped in try/except"
 
 
 def test_version_bumped_to_5_7_14():
     """v5.7.14 minimum — later patches keep this passing."""
     from app.__version__ import __version__
+
     parts = tuple(int(p) for p in __version__.split("."))
     assert parts >= (5, 7, 14), f"v5.7.14 must be reachable; got {__version__}"

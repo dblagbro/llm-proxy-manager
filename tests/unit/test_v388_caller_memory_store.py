@@ -11,11 +11,12 @@ fallback. Tests cover:
 Note: real Redis isn't started during tests. The store should degrade
 to SQLite-only when Redis is unavailable.
 """
+
 from __future__ import annotations
 
 import pytest
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.models.db import Base
 
@@ -39,7 +40,8 @@ async def db():
 
 @pytest.mark.asyncio
 async def test_put_then_get_returns_entry(db):
-    from app.memory.store import put, get
+    from app.memory.store import get, put
+
     entry = await put(
         db,
         api_key_id="k1",
@@ -60,6 +62,7 @@ async def test_put_then_get_returns_entry(db):
 @pytest.mark.asyncio
 async def test_get_returns_none_for_missing(db):
     from app.memory.store import get
+
     out = await get(db, "k1", "no-such-conv", "no-such-tag")
     assert out is None
 
@@ -68,7 +71,8 @@ async def test_get_returns_none_for_missing(db):
 async def test_conversation_id_none_round_trips(db):
     """Default conversation_id=None must persist + read back as None
     (the default 'global' memory scope for an api_key)."""
-    from app.memory.store import put, get
+    from app.memory.store import get, put
+
     await put(db, api_key_id="k1", content="global pref")
     fetched = await get(db, "k1")  # conversation_id default None
     assert fetched is not None
@@ -83,15 +87,18 @@ async def test_conversation_id_none_round_trips(db):
 async def test_put_existing_key_updates_in_place(db):
     """Second put on the same key updates the row instead of creating
     a duplicate. updated_at strictly increases."""
-    from app.memory.store import put, get
+    from app.memory.store import get, put
     from app.models.db import CallerMemory
-    a = await put(db, api_key_id="k1", content="first")
+
+    _a = await put(db, api_key_id="k1", content="first")
     b = await put(db, api_key_id="k1", content="second")
     assert b.content == "second"
     # Only one row for this (key, None, default)
-    rows = (await db.execute(
-        select(CallerMemory).where(CallerMemory.api_key_id == "k1")
-    )).scalars().all()
+    rows = (
+        (await db.execute(select(CallerMemory).where(CallerMemory.api_key_id == "k1")))
+        .scalars()
+        .all()
+    )
     assert len(rows) == 1
     # And the latest read returns the second value
     out = await get(db, "k1")
@@ -108,10 +115,13 @@ async def test_put_creates_marker_for_recovery(db):
     the recovery path keys off the marker."""
     from app.memory.store import put
     from app.models.db import CallerMemoryMarker
+
     await put(db, api_key_id="k1", content="x", source_provider_id="prov-1")
-    markers = (await db.execute(
-        select(CallerMemoryMarker).where(CallerMemoryMarker.api_key_id == "k1")
-    )).scalars().all()
+    markers = (
+        (await db.execute(select(CallerMemoryMarker).where(CallerMemoryMarker.api_key_id == "k1")))
+        .scalars()
+        .all()
+    )
     assert len(markers) == 1
     m = markers[0]
     assert m.first_seen_at > 0
@@ -126,11 +136,14 @@ async def test_put_updates_marker_provider_on_route_change(db):
     use it."""
     from app.memory.store import put
     from app.models.db import CallerMemoryMarker
+
     await put(db, api_key_id="k1", content="x", source_provider_id="prov-A")
     await put(db, api_key_id="k1", content="y", source_provider_id="prov-B")
-    markers = (await db.execute(
-        select(CallerMemoryMarker).where(CallerMemoryMarker.api_key_id == "k1")
-    )).scalars().all()
+    markers = (
+        (await db.execute(select(CallerMemoryMarker).where(CallerMemoryMarker.api_key_id == "k1")))
+        .scalars()
+        .all()
+    )
     assert len(markers) == 1
     assert markers[0].last_known_provider_id == "prov-B"
 
@@ -140,7 +153,8 @@ async def test_put_updates_marker_provider_on_route_change(db):
 
 @pytest.mark.asyncio
 async def test_delete_tombstones_and_get_returns_none(db):
-    from app.memory.store import put, get, delete
+    from app.memory.store import delete, get, put
+
     await put(db, api_key_id="k1", content="goodbye")
     assert (await get(db, "k1")).content == "goodbye"
     assert await delete(db, "k1") is True
@@ -151,6 +165,7 @@ async def test_delete_tombstones_and_get_returns_none(db):
 @pytest.mark.asyncio
 async def test_delete_returns_false_when_missing(db):
     from app.memory.store import delete
+
     assert await delete(db, "k1") is False
 
 
@@ -160,7 +175,8 @@ async def test_delete_returns_false_when_missing(db):
 @pytest.mark.asyncio
 async def test_list_for_key_returns_only_live_rows(db):
     """Admin list view skips tombstoned rows."""
-    from app.memory.store import put, delete, list_for_key
+    from app.memory.store import delete, list_for_key, put
+
     await put(db, api_key_id="k1", content="alive-1", memory_tag="a")
     await put(db, api_key_id="k1", content="alive-2", memory_tag="b")
     await put(db, api_key_id="k1", content="dying", memory_tag="c")
@@ -178,20 +194,22 @@ async def test_delete_bumps_updated_at_for_sync_propagation(db):
     """Tombstone must bump updated_at so cluster sync's LWW path
     picks up the delete on peers (they'd otherwise see equal stamps
     on local + tombstoned rows and ignore the propagation)."""
-    from app.memory.store import put, delete
+    from app.memory.store import delete, put
     from app.models.db import CallerMemory
+
     await put(db, api_key_id="k1", content="x")
-    row_before = (await db.execute(
-        select(CallerMemory).where(CallerMemory.api_key_id == "k1")
-    )).scalar_one()
+    row_before = (
+        await db.execute(select(CallerMemory).where(CallerMemory.api_key_id == "k1"))
+    ).scalar_one()
     ts_before = row_before.updated_at
     # Small sleep to ensure a measurable diff
     import asyncio
+
     await asyncio.sleep(0.02)
     await delete(db, "k1")
-    row_after = (await db.execute(
-        select(CallerMemory).where(CallerMemory.api_key_id == "k1")
-    )).scalar_one()
+    row_after = (
+        await db.execute(select(CallerMemory).where(CallerMemory.api_key_id == "k1"))
+    ).scalar_one()
     assert row_after.deleted_at is not None
     assert row_after.updated_at > ts_before
 
@@ -203,6 +221,7 @@ def test_store_uses_redis_lazy_init():
     """The Redis client is lazy-initialized so test imports don't
     block on a Redis ping."""
     from pathlib import Path
+
     src = Path("app/memory/store.py").read_text()
     assert "_get_redis" in src
     # Lazy: instance is None initially + only built on first call
@@ -213,16 +232,18 @@ def test_store_falls_back_when_redis_unavailable():
     """The Redis path must not raise when settings.redis_url is None.
     The store should silently fall through to SQLite."""
     from pathlib import Path
+
     src = Path("app/memory/store.py").read_text()
     assert "if not settings.redis_url:" in src
     # Logger.info, not warning — operator shouldn't get spammed when
     # they intentionally run without Redis
     idx = src.index("if not settings.redis_url:")
-    body = src[idx:idx + 200]
+    body = src[idx : idx + 200]
     assert "return None" in body
 
 
 def test_version_bumped():
     from app.__version__ import __version__
+
     parts = tuple(int(p) for p in __version__.split("."))
     assert parts >= (3, 8, 8)

@@ -31,19 +31,19 @@ Endpoints:
                                                      for this conv
 - DELETE /v1/memory/conversations/{conv_id}/{tag}  → tombstone one row
 """
+
 from __future__ import annotations
 
 import time
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select, desc
+from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth.keys import ApiKeyRecord, resolve_api_key_dep
 from app.models.database import get_db
 from app.models.db import CallerMemory, CallerMemoryMarker
-from app.auth.keys import ApiKeyRecord, resolve_api_key_dep
 
 router = APIRouter(prefix="/v1/memory", tags=["caller-memory-scoped"])
 
@@ -74,13 +74,15 @@ async def list_conversations(
     """List distinct conversation_ids with at least one live row for
     this api_key. Useful for hub-style callers iterating "what do I
     have memory for?" before deciding to purge."""
-    rows = (await db.execute(
-        select(CallerMemory.conversation_id, CallerMemory.memory_tag, CallerMemory.updated_at)
-        .where(CallerMemory.api_key_id == key.id)
-        .where(CallerMemory.deleted_at.is_(None))
-        .order_by(desc(CallerMemory.updated_at))
-        .limit(500)
-    )).all()
+    rows = (
+        await db.execute(
+            select(CallerMemory.conversation_id, CallerMemory.memory_tag, CallerMemory.updated_at)
+            .where(CallerMemory.api_key_id == key.id)
+            .where(CallerMemory.deleted_at.is_(None))
+            .order_by(desc(CallerMemory.updated_at))
+            .limit(500)
+        )
+    ).all()
     # Group by conversation_id, accumulate tag list + max updated_at
     by_conv: dict = {}
     for conv, tag, updated_at in rows:
@@ -88,7 +90,9 @@ async def list_conversations(
         bucket["tags"].append(tag)
         bucket["updated_at"] = max(bucket["updated_at"], float(updated_at or 0))
     return sorted(
-        list(by_conv.values()), key=lambda x: x["updated_at"], reverse=True,
+        list(by_conv.values()),
+        key=lambda x: x["updated_at"],
+        reverse=True,
     )
 
 
@@ -98,13 +102,19 @@ async def list_memory_for_conversation(
     db: AsyncSession = Depends(get_db),
     key: ApiKeyRecord = Depends(_api_key_dep),
 ):
-    rows = (await db.execute(
-        select(CallerMemory)
-        .where(CallerMemory.api_key_id == key.id)
-        .where(CallerMemory.conversation_id == conversation_id)
-        .where(CallerMemory.deleted_at.is_(None))
-        .order_by(desc(CallerMemory.updated_at))
-    )).scalars().all()
+    rows = (
+        (
+            await db.execute(
+                select(CallerMemory)
+                .where(CallerMemory.api_key_id == key.id)
+                .where(CallerMemory.conversation_id == conversation_id)
+                .where(CallerMemory.deleted_at.is_(None))
+                .order_by(desc(CallerMemory.updated_at))
+            )
+        )
+        .scalars()
+        .all()
+    )
     return [_serialize(r) for r in rows]
 
 
@@ -117,6 +127,7 @@ async def upsert_scoped_memory(
     key: ApiKeyRecord = Depends(_api_key_dep),
 ):
     from app.memory.store import put
+
     entry = await put(
         db,
         api_key_id=key.id,
@@ -149,23 +160,35 @@ async def delete_entire_conversation(
     now = time.time()
     affected = 0
     # CallerMemory rows
-    rows = (await db.execute(
-        select(CallerMemory)
-        .where(CallerMemory.api_key_id == key.id)
-        .where(CallerMemory.conversation_id == conversation_id)
-        .where(CallerMemory.deleted_at.is_(None))
-    )).scalars().all()
+    rows = (
+        (
+            await db.execute(
+                select(CallerMemory)
+                .where(CallerMemory.api_key_id == key.id)
+                .where(CallerMemory.conversation_id == conversation_id)
+                .where(CallerMemory.deleted_at.is_(None))
+            )
+        )
+        .scalars()
+        .all()
+    )
     for row in rows:
         row.deleted_at = now
         row.updated_at = now  # bump for LWW cluster propagation
         affected += 1
     # Marker rows
-    markers = (await db.execute(
-        select(CallerMemoryMarker)
-        .where(CallerMemoryMarker.api_key_id == key.id)
-        .where(CallerMemoryMarker.conversation_id == conversation_id)
-        .where(CallerMemoryMarker.deleted_at.is_(None))
-    )).scalars().all()
+    markers = (
+        (
+            await db.execute(
+                select(CallerMemoryMarker)
+                .where(CallerMemoryMarker.api_key_id == key.id)
+                .where(CallerMemoryMarker.conversation_id == conversation_id)
+                .where(CallerMemoryMarker.deleted_at.is_(None))
+            )
+        )
+        .scalars()
+        .all()
+    )
     for m in markers:
         m.deleted_at = now
     await db.commit()
@@ -173,6 +196,7 @@ async def delete_entire_conversation(
     # Invalidate Redis cache
     try:
         from app.memory.store import _get_redis, _key
+
         r = await _get_redis()
         if r is not None:
             for row in rows:
@@ -199,6 +223,7 @@ async def delete_one_tag(
     key: ApiKeyRecord = Depends(_api_key_dep),
 ):
     from app.memory.store import delete as store_delete
+
     ok = await store_delete(
         db,
         api_key_id=key.id,

@@ -13,15 +13,14 @@ is the source of truth and is replicated by /cluster/sync (R5).
 24h TTL anchored at ``created_at`` of the original Run (matches the
 DB-side check). Bounded size to keep memory predictable; LRU eviction.
 """
+
 from __future__ import annotations
 
 import time
 from collections import OrderedDict
 from threading import Lock
-from typing import Optional
 
 from app.runs.tokens import DEFAULT_CONTEXT_LENGTH  # unused; here to keep import tight  # noqa
-
 
 TTL_SEC = 24 * 60 * 60
 DEFAULT_MAX_SIZE = 10_000
@@ -35,6 +34,7 @@ class _IdempotencyCache:
     asyncio's default executor for sync code paths and we want to be
     safe regardless of how the cache is touched.
     """
+
     __slots__ = ("_data", "_lock", "_max_size")
 
     def __init__(self, max_size: int = DEFAULT_MAX_SIZE) -> None:
@@ -42,7 +42,7 @@ class _IdempotencyCache:
         self._lock = Lock()
         self._max_size = max_size
 
-    def get(self, api_key_id: str, idempotency_key: str) -> Optional[str]:
+    def get(self, api_key_id: str, idempotency_key: str) -> str | None:
         """Return the cached run_id if present + within TTL; else None."""
         k = (api_key_id, idempotency_key)
         with self._lock:
@@ -57,8 +57,7 @@ class _IdempotencyCache:
             self._data.move_to_end(k)
             return run_id
 
-    def put(self, api_key_id: str, idempotency_key: str,
-            run_id: str, created_at: float) -> None:
+    def put(self, api_key_id: str, idempotency_key: str, run_id: str, created_at: float) -> None:
         k = (api_key_id, idempotency_key)
         with self._lock:
             self._data[k] = (run_id, created_at)
@@ -82,12 +81,11 @@ class _IdempotencyCache:
 _GLOBAL_CACHE = _IdempotencyCache()
 
 
-def get(api_key_id: str, idempotency_key: str) -> Optional[str]:
+def get(api_key_id: str, idempotency_key: str) -> str | None:
     return _GLOBAL_CACHE.get(api_key_id, idempotency_key)
 
 
-def put(api_key_id: str, idempotency_key: str, run_id: str,
-        created_at: float) -> None:
+def put(api_key_id: str, idempotency_key: str, run_id: str, created_at: float) -> None:
     _GLOBAL_CACHE.put(api_key_id, idempotency_key, run_id, created_at)
 
 

@@ -8,8 +8,8 @@ The corresponding refactors are documented in:
 - refactor-log.md §"2026-06-02 — v4.4.38"
 - architecture.md "Module Map" — updated for the new files
 """
-from pathlib import Path
 
+from pathlib import Path
 
 # ── #1: router.py litellm-binding extract ────────────────────────────
 
@@ -59,9 +59,7 @@ def test_router_no_longer_defines_litellm_binding_helpers():
     # as ``def`` statements (they appear in the import block + docstring).
     assert "def build_litellm_model(" not in src.replace(
         "from app.routing.litellm_binding import", ""
-    ).replace(
-        "    build_litellm_model,", ""
-    )
+    ).replace("    build_litellm_model,", "")
 
 
 # ── #2: cascade dispatch extract ─────────────────────────────────────
@@ -74,8 +72,8 @@ def test_try_cascade_dispatch_lives_in_messages_dispatch():
     v3.10.9 ``dispatch_claude_oauth_chain`` extraction pattern."""
     src = Path("app/api/_messages_dispatch.py").read_text()
     assert "async def try_cascade_dispatch" in src
-    assert "grade_answer" in src   # the cascade-specific dependency
-    assert "X-Cascade" in src      # cascade-specific header
+    assert "grade_answer" in src  # the cascade-specific dependency
+    assert "X-Cascade" in src  # cascade-specific header
 
 
 def test_messages_py_delegates_cascade():

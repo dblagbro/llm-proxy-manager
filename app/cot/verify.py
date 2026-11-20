@@ -7,6 +7,7 @@ verify pass" — both called once by ``run_cot_pipeline`` near the end of
 its flow. Moving them out trims pipeline.py and gives verification its
 own home when we eventually add more heuristics.
 """
+
 from __future__ import annotations
 
 import logging
@@ -49,7 +50,9 @@ async def run_verify_pass(
         {"role": "user", "content": f"Question:\n{user_text}\n\nAnswer:\n{answer}"},
     ]
     try:
-        cot_kw = {k: v for k, v in extra_kwargs.items() if k not in ("max_tokens", "system", "stream")}
+        cot_kw = {
+            k: v for k, v in extra_kwargs.items() if k not in ("max_tokens", "system", "stream")
+        }
         return await call_fn(
             model,
             verify_messages,

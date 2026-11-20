@@ -25,12 +25,14 @@ Safety nets:
   - The toggle audit rows in ``compliance_policy_changes`` are ALSO
     immune (would defeat the audit trail)
 """
+
 from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timedelta, timezone
-from typing import Optional
+from datetime import UTC, datetime
+from datetime import timedelta as timedelta
+from datetime import timezone as timezone
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -44,7 +46,7 @@ from app.cluster.auth import (
     cluster_auth_configured,
     verify_cluster_request,
 )
-from app.config import settings
+from app.config import settings as settings
 from app.models.database import get_db
 from app.models.db import ActivityLog, CompliancePolicyChange
 
@@ -72,10 +74,7 @@ class PurgeBody(BaseModel):
         ...,
         min_length=1,
         max_length=2000,
-        description=(
-            "Free-text justification — captured in the compliance "
-            "audit row. Required."
-        ),
+        description=("Free-text justification — captured in the compliance audit row. Required."),
     )
 
 
@@ -91,8 +90,8 @@ def _validate_window(start_ts: float, end_ts: float) -> tuple[datetime, datetime
             f"multiple sequential purges if you need a longer span.",
         )
     return (
-        datetime.fromtimestamp(start_ts, tz=timezone.utc).replace(tzinfo=None),
-        datetime.fromtimestamp(end_ts, tz=timezone.utc).replace(tzinfo=None),
+        datetime.fromtimestamp(start_ts, tz=UTC).replace(tzinfo=None),
+        datetime.fromtimestamp(end_ts, tz=UTC).replace(tzinfo=None),
     )
 
 
@@ -109,11 +108,13 @@ async def _do_local_purge(
     import secrets
 
     # Count first so the audit row records what was removed.
-    pre_count = (await db.execute(
-        select(func.count(ActivityLog.id))
-        .where(ActivityLog.created_at >= start_dt)
-        .where(ActivityLog.created_at < end_dt)
-    )).scalar() or 0
+    pre_count = (
+        await db.execute(
+            select(func.count(ActivityLog.id))
+            .where(ActivityLog.created_at >= start_dt)
+            .where(ActivityLog.created_at < end_dt)
+        )
+    ).scalar() or 0
 
     # Delete the window.
     await db.execute(
@@ -129,33 +130,43 @@ async def _do_local_purge(
         f"{end_dt.isoformat()}) UTC; deleted={pre_count}; "
         f"actor={actor}; source={source}; reason: {reason}"
     )
-    db.add(CompliancePolicyChange(
-        policy_change_id=audit_id,
-        changed_at=datetime.utcnow(),
-        changed_by_user_id=actor,
-        scope="system",
-        target_id=None,
-        before_state=json.dumps({"activity_log_rows_in_window": pre_count}),
-        after_state=json.dumps({"activity_log_rows_in_window": 0}),
-        reason=summary,
-        applied_to_peers=json.dumps([]),
-        pending_peers=None,
-        cluster_sync_status="local_only",
-    ))
+    db.add(
+        CompliancePolicyChange(
+            policy_change_id=audit_id,
+            changed_at=datetime.utcnow(),
+            changed_by_user_id=actor,
+            scope="system",
+            target_id=None,
+            before_state=json.dumps({"activity_log_rows_in_window": pre_count}),
+            after_state=json.dumps({"activity_log_rows_in_window": 0}),
+            reason=summary,
+            applied_to_peers=json.dumps([]),
+            pending_peers=None,
+            cluster_sync_status="local_only",
+        )
+    )
     await db.commit()
     logger.warning(
         "activity_log.purge_done deleted=%d window=[%s,%s) actor=%s source=%s",
-        pre_count, start_dt, end_dt, actor, source,
+        pre_count,
+        start_dt,
+        end_dt,
+        actor,
+        source,
     )
     return pre_count, audit_id
 
 
 async def _fan_out_to_peers(
-    start_ts: float, end_ts: float, reason: str, actor: str,
+    start_ts: float,
+    end_ts: float,
+    reason: str,
+    actor: str,
 ) -> list[dict]:
     """Push the purge to every reachable peer using HMAC auth. Returns
     per-peer result records for the response body."""
     from app.cluster.manager import _peers
+
     results: list[dict] = []
     if not _peers:
         return results
@@ -180,28 +191,34 @@ async def _fan_out_to_peers(
                 resp = await client.post(url, json=body, headers=headers)
             if resp.status_code == 200:
                 data = resp.json() if resp.content else {}
-                results.append({
-                    "peer_id": peer.id,
-                    "peer_url": peer.url,
-                    "status": "ok",
-                    "deleted": int(data.get("deleted", 0)),
-                })
+                results.append(
+                    {
+                        "peer_id": peer.id,
+                        "peer_url": peer.url,
+                        "status": "ok",
+                        "deleted": int(data.get("deleted", 0)),
+                    }
+                )
             else:
-                results.append({
+                results.append(
+                    {
+                        "peer_id": peer.id,
+                        "peer_url": peer.url,
+                        "status": f"http_{resp.status_code}",
+                        "deleted": 0,
+                        "error": (resp.text or "")[:200],
+                    }
+                )
+        except Exception as exc:
+            results.append(
+                {
                     "peer_id": peer.id,
                     "peer_url": peer.url,
-                    "status": f"http_{resp.status_code}",
+                    "status": "unreachable",
                     "deleted": 0,
-                    "error": (resp.text or "")[:200],
-                })
-        except Exception as exc:
-            results.append({
-                "peer_id": peer.id,
-                "peer_url": peer.url,
-                "status": "unreachable",
-                "deleted": 0,
-                "error": str(exc)[:200],
-            })
+                    "error": str(exc)[:200],
+                }
+            )
     return results
 
 
@@ -219,10 +236,18 @@ async def admin_purge_activity_log(
     """
     start_dt, end_dt = _validate_window(body.start_ts, body.end_ts)
     local_deleted, audit_id = await _do_local_purge(
-        db, start_dt, end_dt, admin.username, body.reason, source="admin",
+        db,
+        start_dt,
+        end_dt,
+        admin.username,
+        body.reason,
+        source="admin",
     )
     peer_results = await _fan_out_to_peers(
-        body.start_ts, body.end_ts, body.reason, admin.username,
+        body.start_ts,
+        body.end_ts,
+        body.reason,
+        admin.username,
     )
     return {
         "ok": True,
@@ -255,6 +280,11 @@ async def peer_purge_activity_log(
         raise HTTPException(400, f"missing/invalid field: {exc}")
     start_dt, end_dt = _validate_window(start_ts, end_ts)
     deleted, audit_id = await _do_local_purge(
-        db, start_dt, end_dt, origin_actor, reason, source="peer",
+        db,
+        start_dt,
+        end_dt,
+        origin_actor,
+        reason,
+        source="peer",
     )
     return {"ok": True, "deleted": deleted, "audit_id": audit_id}

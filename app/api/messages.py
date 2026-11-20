@@ -2,44 +2,19 @@
 /v1/messages — Anthropic-format endpoint (same path as v1).
 Handles both streaming and non-streaming responses.
 """
+
 import logging
 import time
-from typing import Optional
+from typing import Optional as Optional
 
-import httpx
-from fastapi import APIRouter, BackgroundTasks, Request, Depends, HTTPException, Header
-from fastapi.responses import StreamingResponse, JSONResponse
+import httpx as httpx
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request
+from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.database import get_db
-from app.utils.disconnect_watchdog import watch_for_disconnect
-from app.routing.litellm_binding import OWN_DISPATCHER_PROVIDER_TYPES
-from app.routing.router import select_provider
-from app.routing.litellm_binding import clamp_thinking_budget
-from app.cot.tool_emulation import (
-    build_anthropic_tool_prompt,
-    normalize_anthropic_messages,
-    parse_tool_calls,
-    call_with_tool_prompt,
-    strip_thinking,
-)
-from app.cot.sse import (
-    anthropic_tool_sse,
-    anthropic_tools_sse,
-    anthropic_text_sse,
-    anthropic_tool_response,
-    anthropic_tools_response,
-    anthropic_text_response,
-)
-from app.monitoring.helpers import record_outcome
-from app.api.image_utils import has_images_anthropic, strip_images_anthropic
-from app.routing.aliases import resolve_alias
-from app.api._messages_streaming import _stream_cot_anthropic, _webhook_completion_anthropic
-from app.api._messages_response_dispatch import (
-    MessagesDispatchCtx, dispatch_streaming, dispatch_non_streaming,
-)
 from app.api._messages_dispatch import (
-    dispatch_claude_oauth_chain, _select_excluding,
+    _select_excluding,
+    dispatch_claude_oauth_chain,
     # v5.22.37 — unused HERE since the dispatch arms moved to
     # _messages_response_dispatch.py, but deliberately retained: two source-grep
     # guards assert these names appear in messages.py
@@ -49,9 +24,32 @@ from app.api._messages_dispatch import (
     # the guards at tests/unit/_handler_surface.py first.
     try_cascade_dispatch,  # noqa: F401
 )
-from app.routing.retry import acompletion_with_retry  # noqa: F401  (see above)
-from app.observability.otel import llm_span
+from app.api._messages_response_dispatch import (
+    MessagesDispatchCtx,
+    dispatch_non_streaming,
+    dispatch_streaming,
+)
+from app.api._messages_streaming import _stream_cot_anthropic, _webhook_completion_anthropic
+from app.api.image_utils import has_images_anthropic, strip_images_anthropic
 from app.config import settings
+from app.cot.sse import anthropic_text_response, anthropic_text_sse
+from app.cot.sse import anthropic_tool_response as anthropic_tool_response
+from app.cot.sse import anthropic_tool_sse as anthropic_tool_sse
+from app.cot.sse import anthropic_tools_response as anthropic_tools_response
+from app.cot.sse import anthropic_tools_sse as anthropic_tools_sse
+from app.cot.tool_emulation import build_anthropic_tool_prompt as build_anthropic_tool_prompt
+from app.cot.tool_emulation import call_with_tool_prompt as call_with_tool_prompt
+from app.cot.tool_emulation import normalize_anthropic_messages as normalize_anthropic_messages
+from app.cot.tool_emulation import parse_tool_calls as parse_tool_calls
+from app.cot.tool_emulation import strip_thinking as strip_thinking
+from app.models.database import get_db
+from app.monitoring.helpers import record_outcome
+from app.observability.otel import llm_span
+from app.routing.aliases import resolve_alias as resolve_alias
+from app.routing.litellm_binding import OWN_DISPATCHER_PROVIDER_TYPES, clamp_thinking_budget
+from app.routing.retry import acompletion_with_retry  # noqa: F401  (see above)
+from app.routing.router import select_provider as select_provider
+from app.utils.disconnect_watchdog import watch_for_disconnect
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -76,30 +74,33 @@ async def messages(
     # a pool slot (same fix proven stable in cluster.py v5.21.12). Do NOT reorder.
     db: AsyncSession = Depends(get_db),
     _watchdog: None = Depends(watch_for_disconnect),
-    x_api_key: Optional[str] = Header(None, alias="x-api-key"),
-    llm_hint: Optional[str] = Header(None, alias="llm-hint"),
-    x_session_id: Optional[str] = Header(None, alias="x-session-id"),
-    x_cot_iterations: Optional[str] = Header(None, alias="x-cot-iterations"),
-    x_cot_verify: Optional[str] = Header(None, alias="x-cot-verify"),
-    x_cot_samples: Optional[str] = Header(None, alias="x-cot-samples"),
-    x_cot_mode: Optional[str] = Header(None, alias="x-cot-mode"),
-    x_webhook_url: Optional[str] = Header(None, alias="x-webhook-url"),
-    anthropic_beta: Optional[str] = Header(None, alias="anthropic-beta"),
-    x_cache: Optional[str] = Header(None, alias="x-cache"),
-    x_cache_ttl: Optional[str] = Header(None, alias="x-cache-ttl"),
-    x_hedge: Optional[str] = Header(None, alias="x-hedge"),
-    x_cot_cascade: Optional[str] = Header(None, alias="x-cot-cascade"),
-    x_context_strategy: Optional[str] = Header(None, alias="x-context-strategy"),
-    x_conversation_id: Optional[str] = Header(None, alias="x-conversation-id"),
-    x_memory_tag: Optional[str] = Header(None, alias="x-memory-tag"),
+    x_api_key: str | None = Header(None, alias="x-api-key"),
+    llm_hint: str | None = Header(None, alias="llm-hint"),
+    x_session_id: str | None = Header(None, alias="x-session-id"),
+    x_cot_iterations: str | None = Header(None, alias="x-cot-iterations"),
+    x_cot_verify: str | None = Header(None, alias="x-cot-verify"),
+    x_cot_samples: str | None = Header(None, alias="x-cot-samples"),
+    x_cot_mode: str | None = Header(None, alias="x-cot-mode"),
+    x_webhook_url: str | None = Header(None, alias="x-webhook-url"),
+    anthropic_beta: str | None = Header(None, alias="anthropic-beta"),
+    x_cache: str | None = Header(None, alias="x-cache"),
+    x_cache_ttl: str | None = Header(None, alias="x-cache-ttl"),
+    x_hedge: str | None = Header(None, alias="x-hedge"),
+    x_cot_cascade: str | None = Header(None, alias="x-cot-cascade"),
+    x_context_strategy: str | None = Header(None, alias="x-context-strategy"),
+    x_conversation_id: str | None = Header(None, alias="x-conversation-id"),
+    x_memory_tag: str | None = Header(None, alias="x-memory-tag"),
 ):
     # v5.7.18/v5.7.23 — pre-route setup extracted to
     # ``_handler_shared`` (was ``_messages_pre_route`` in v5.7.18;
     # Phase 2 lifted to shared with /v1/chat/completions). Behavior
     # unchanged; see the helper module for what fires here.
     from app.api._handler_shared import prepare_request_context
+
     key_record = await prepare_request_context(
-        request, db, x_api_key,
+        request,
+        db,
+        x_api_key,
         endpoint="messages",
         x_conversation_id=x_conversation_id,
         x_memory_tag=x_memory_tag,
@@ -110,8 +111,12 @@ async def messages(
     # in ``_messages_pre_route``; Phase 2 lifted it to ``_handler_shared``
     # so /v1/chat/completions uses the same logic. Behavior unchanged.
     from app.api._handler_shared import normalize_request_body
+
     body, _orig_request_model, parsed_slug, is_auto, alias = await normalize_request_body(
-        body, x_webhook_url, db, endpoint="messages",
+        body,
+        x_webhook_url,
+        db,
+        endpoint="messages",
     )
     messages_list = body.get("messages", [])
     stream = body.get("stream", False)
@@ -123,8 +128,12 @@ async def messages(
     # (it's not yet built at this point). Returns the header VALUE; we
     # stash it and apply after resp_headers exists (~line 476).
     from app.api._buffered_cascade_mode import detect_buffered_cascade_mode
-    _buffered_cascade_stream, _buffered_cascade_heartbeat, _buffered_cascade_mode_hdr = detect_buffered_cascade_mode(
-        stream, key_record,
+
+    _buffered_cascade_stream, _buffered_cascade_heartbeat, _buffered_cascade_mode_hdr = (
+        detect_buffered_cascade_mode(
+            stream,
+            key_record,
+        )
     )
     if _buffered_cascade_stream:
         stream = False  # rest of the handler runs non-streaming
@@ -158,17 +167,23 @@ async def messages(
         _policy_token = None
         try:
             from app.mcp_server.server import current_mcp_policy
-            _policy_token = current_mcp_policy.set({
-                "mcp_tools_allow": getattr(key_record, "mcp_tools_allow", None),
-                "mcp_tools_deny": getattr(key_record, "mcp_tools_deny", None),
-                "mcp_schema_token_budget": getattr(
-                    key_record, "mcp_schema_token_budget", None,
-                ),
-            })
+
+            _policy_token = current_mcp_policy.set(
+                {
+                    "mcp_tools_allow": getattr(key_record, "mcp_tools_allow", None),
+                    "mcp_tools_deny": getattr(key_record, "mcp_tools_deny", None),
+                    "mcp_schema_token_budget": getattr(
+                        key_record,
+                        "mcp_schema_token_budget",
+                        None,
+                    ),
+                }
+            )
         except Exception:
             pass  # mcp module not available (graceful)
         try:
             from app.proxy_tools import inject_anthropic_async
+
             await inject_anthropic_async(body)
             _proxy_tools_injected = True
         except Exception as exc:
@@ -181,6 +196,7 @@ async def messages(
         # placeholder content BEFORE the upstream model sees it.
         try:
             from app.proxy_tools import patch_inbound_tool_results
+
             _patched = await patch_inbound_tool_results(body.get("messages") or [])
             if _patched:
                 logger.info("proxy_tools.tool_result_patched count=%d", _patched)
@@ -205,8 +221,8 @@ async def messages(
                 "Excel/Word/PDF/PowerPoint/HTML/EPUB documents, "
                 "fetching URLs, and converting documents to markdown. "
                 "When the user asks about content that would benefit "
-                "from these tools, call them instead of saying \"I "
-                "can't read X\" or \"I don't have access\"."
+                'from these tools, call them instead of saying "I '
+                'can\'t read X" or "I don\'t have access".'
             )
             existing_system = body.get("system")
             if isinstance(existing_system, str):
@@ -229,14 +245,14 @@ async def messages(
     if getattr(key_record, "refusal_prompt_hardening", False):
         try:
             from app.refusal_detection import REFUSAL_HARDENING_INSTRUCTION
+
             existing_system = body.get("system")
             if isinstance(existing_system, str):
                 body["system"] = REFUSAL_HARDENING_INSTRUCTION + "\n\n" + existing_system
             elif isinstance(existing_system, list):
-                body["system"] = (
-                    [{"type": "text", "text": REFUSAL_HARDENING_INSTRUCTION}]
-                    + existing_system
-                )
+                body["system"] = [
+                    {"type": "text", "text": REFUSAL_HARDENING_INSTRUCTION}
+                ] + existing_system
             else:
                 body["system"] = REFUSAL_HARDENING_INSTRUCTION
             system = body.get("system")
@@ -246,11 +262,14 @@ async def messages(
     # v5.22.7 — litellm adapters need OpenAI-shaped tools; `tools` stays in the
     # caller's Anthropic shape because the claude-oauth path converts it itself.
     from app.api._oauth_chat_translate import normalize_tools_for_litellm
+
     litellm_tools = normalize_tools_for_litellm(tools)
 
     from app.api._request_pipeline import (
-        apply_privacy_filters, build_hint_with_auto_task,
-        apply_context_compression, build_base_response_headers,
+        apply_context_compression,
+        apply_privacy_filters,
+        build_base_response_headers,
+        build_hint_with_auto_task,
     )
 
     messages_list, _pii_masked_count = apply_privacy_filters(messages_list, body)
@@ -289,19 +308,26 @@ async def messages(
     # /v1/messages and /v1/chat/completions now go through the same code
     # path here — prevents future divergence bugs like the v3.0.99
     # gemini-routing-to-claude-oauth incident.
+    from app.api._compliance_handler import raise_for_no_substitute_exception
     from app.api._request_pipeline import (
-        select_provider_with_503, resolve_auto_model_into_body,
+        resolve_auto_model_into_body,
+        select_provider_with_503,
     )
+
     # v5.0.0 → v5.0.9 — `ComplianceNoSubstituteError` / `…NoLocalProviderError`
     # → 503 conversion extracted to ``_compliance_handler.raise_for_no_substitute_exception``.
     # The except catches both because NoLocalProvider is a subclass.
     from app.compliance import ComplianceNoSubstituteError
-    from app.api._compliance_handler import raise_for_no_substitute_exception
+
     try:
         route = await select_provider_with_503(
-            db, hint,
-            has_tools=has_tools, has_images=has_images,
-            key_record=key_record, parsed_slug=parsed_slug, alias=alias,
+            db,
+            hint,
+            has_tools=has_tools,
+            has_images=has_images,
+            key_record=key_record,
+            parsed_slug=parsed_slug,
+            alias=alias,
             detailed_503=True,
             messages=body.get("messages"),
             # v5.22.13 — let the router skip providers whose model cannot
@@ -311,7 +337,10 @@ async def messages(
         )
     except ComplianceNoSubstituteError as _exc:
         await raise_for_no_substitute_exception(
-            _exc, request=request, db=db, key_record=key_record,
+            _exc,
+            request=request,
+            db=db,
+            key_record=key_record,
             orig_request_model=_orig_request_model,
         )
 
@@ -324,8 +353,9 @@ async def messages(
     # or every cross-family path is exhausted — 503 cleanly in the
     # latter case rather than burning upstream cost on guaranteed-400.
     from app.routing.tool_content import (
-        has_anthropic_tool_content, has_anthropic_tool_defs,
+        has_anthropic_tool_content,
     )
+
     # Provider types that speak the OpenAI wire shape, so an Anthropic
     # tool-using conversation can be translated for them.
     #
@@ -349,9 +379,19 @@ async def messages(
     # ``ChatGPT-oauth-plan``) never reach the litellm path, so their presence or
     # absence here is inert; ``grok-web`` is listed for historical reasons.
     _openai_shape_providers = {
-        "openai", "openrouter", "grok", "grok-bridge", "grok-web",
-        "groq", "mistral", "perplexity", "ollama", "deepseek", "fireworks",
-        "compatible", "cursor-oauth",
+        "openai",
+        "openrouter",
+        "grok",
+        "grok-bridge",
+        "grok-web",
+        "groq",
+        "mistral",
+        "perplexity",
+        "ollama",
+        "deepseek",
+        "fireworks",
+        "compatible",
+        "cursor-oauth",
     }
     _anthropic_types = {"anthropic", "claude-oauth"}
     _has_tool_blocks = has_anthropic_tool_content(messages_list)
@@ -363,13 +403,16 @@ async def messages(
             and route.profile.provider_type not in _openai_shape_providers
         ):
             _cross_family_skipped.append(route.provider.name)
-            tried_ids = {route.provider.id, *(
-                getattr(route, "_tried_ids", []) or []
-            )}
+            tried_ids = {route.provider.id, *(getattr(route, "_tried_ids", []) or [])}
             try:
                 route = await _select_excluding(
-                    db, hint, has_tools, has_images, key_record.key_type,
-                    tried_ids, api_key_id=key_record.id,
+                    db,
+                    hint,
+                    has_tools,
+                    has_images,
+                    key_record.key_type,
+                    tried_ids,
+                    api_key_id=key_record.id,
                 )
             except Exception:
                 raise HTTPException(
@@ -395,9 +438,12 @@ async def messages(
     # tag), emit a best-effort flush to that old provider and bump the
     # marker. Silent degrade on failure — never breaks live traffic.
     from app.memory.flush import maybe_flush_provider_memory
+
     await maybe_flush_provider_memory(
-        db, api_key_id=key_record.id,
-        conversation_id=x_conversation_id, memory_tag=x_memory_tag,
+        db,
+        api_key_id=key_record.id,
+        conversation_id=x_conversation_id,
+        memory_tag=x_memory_tag,
         new_provider_id=route.provider.id,
     )
 
@@ -408,9 +454,13 @@ async def messages(
     # Silent degrade on any store error.
     if not getattr(route.provider, "memory_disabled", False):
         from app.memory.inject import maybe_inject_memory
+
         body, _mem_injected = await maybe_inject_memory(
-            db, body=body, api_key_id=key_record.id,
-            conversation_id=x_conversation_id, memory_tag=x_memory_tag,
+            db,
+            body=body,
+            api_key_id=key_record.id,
+            conversation_id=x_conversation_id,
+            memory_tag=x_memory_tag,
             endpoint="messages",
         )
         if _mem_injected:
@@ -424,6 +474,7 @@ async def messages(
     # unchanged; the helper returns the (possibly translated) body
     # + system + messages_list + tools + ``translated`` flag.
     from app.api._messages_pre_route import translate_to_openai_if_needed
+
     body, system, messages_list, tools, _cross_family_translated = translate_to_openai_if_needed(
         body=body,
         route=route,
@@ -487,8 +538,11 @@ async def messages(
     if route.vision_stripped:
         if settings.vision_route_enabled:
             from app.api.vision_route import transcribe_anthropic
+
             messages_list, vision_routed_count = await transcribe_anthropic(
-                messages_list, db, exclude_provider_id=route.provider.id,
+                messages_list,
+                db,
+                exclude_provider_id=route.provider.id,
             )
         else:
             messages_list = strip_images_anthropic(messages_list)
@@ -532,6 +586,7 @@ async def messages(
         from app.api._buffered_cascade_stream import (
             run_buffered_cascade_stream_with_heartbeat,
         )
+
         return StreamingResponse(
             run_buffered_cascade_stream_with_heartbeat(
                 route=route,
@@ -562,6 +617,7 @@ async def messages(
     # Budget visibility headers (soft-cap warning, remaining $ today/this hour)
     if key_record.budget_status is not None:
         from app.budget.tracker import warnings_for
+
         resp_headers.update(warnings_for(key_record.budget_status))
 
     # v5.0.0 — compliance substitution disclosure (decision 8 + 15 + 23).
@@ -571,10 +627,17 @@ async def messages(
     # v5.0.9 — substitution disclosure extracted to
     # ``_compliance_handler.emit_substitution_disclosure_for_route``.
     from app.api._compliance_handler import emit_substitution_disclosure_for_route
-    _headers_to_merge, _compliance_disclosure, _compliance_wants_sse_prelude = (
-        await emit_substitution_disclosure_for_route(
-            request, db, route, key_record, _orig_request_model,
-        )
+
+    (
+        _headers_to_merge,
+        _compliance_disclosure,
+        _compliance_wants_sse_prelude,
+    ) = await emit_substitution_disclosure_for_route(
+        request,
+        db,
+        route,
+        key_record,
+        _orig_request_model,
     )
     if _headers_to_merge:
         resp_headers.update(_headers_to_merge)
@@ -605,10 +668,18 @@ async def messages(
     _route_pre_dispatch = route
     _oauth_response, route = await dispatch_claude_oauth_chain(
         route,
-        body=body, db=db, key_record=key_record, resp_headers=resp_headers,
-        stream=stream, max_tokens=max_tokens, llm_hint=llm_hint,
-        hint=hint, has_tools=has_tools, has_images=has_images,
-        conversation_id=x_conversation_id, memory_tag=x_memory_tag,
+        body=body,
+        db=db,
+        key_record=key_record,
+        resp_headers=resp_headers,
+        stream=stream,
+        max_tokens=max_tokens,
+        llm_hint=llm_hint,
+        hint=hint,
+        has_tools=has_tools,
+        has_images=has_images,
+        conversation_id=x_conversation_id,
+        memory_tag=x_memory_tag,
     )
     if _oauth_response is not None:
         return _oauth_response
@@ -637,9 +708,15 @@ async def messages(
     # and fall through to the litellm dispatch path below.
     if route.provider.provider_type == "grok-web":
         from app.api._grok_web_dispatch import dispatch_grok_web_anthropic
+
         gw_resp = await dispatch_grok_web_anthropic(
-            route=route, body=body, stream=stream, resp_headers=resp_headers,
-            db=db, key_record_id=key_record.id, t0=time.monotonic(),
+            route=route,
+            body=body,
+            stream=stream,
+            resp_headers=resp_headers,
+            db=db,
+            key_record_id=key_record.id,
+            t0=time.monotonic(),
             llm_hint=llm_hint,
         )
         if gw_resp is not None:
@@ -650,10 +727,13 @@ async def messages(
         # nothing else can serve the request, propagate a 502 so the
         # caller knows the chain is exhausted.
         from app.routing.router import select_provider
+
         failed_id = route.provider.id
         new_route = await select_provider(
-            db=db, hint=hint,
-            has_tools=_has_tool_blocks, has_images=False,
+            db=db,
+            hint=hint,
+            has_tools=_has_tool_blocks,
+            has_images=False,
             key_type=key_record.key_type or "standard",
             model_override=body.get("model"),
             exclude_provider_id=failed_id,
@@ -670,7 +750,9 @@ async def messages(
             )
         logger.info(
             "grok_web.failover_to provider=%s (was=%s, model=%s)",
-            new_route.provider.name, failed_id, body.get("model"),
+            new_route.provider.name,
+            failed_id,
+            body.get("model"),
         )
         # v5.0.23 — preserve the caller's model intent through the failover.
         # v5.22.22 — but ONLY when the new provider can actually serve it.
@@ -692,10 +774,11 @@ async def messages(
             new_route.cross_family_fallback = True
             new_route.litellm_model = _bld(new_route.provider, None)
             logger.info(
-                "grok_web.failover_model_substituted provider=%s type=%s "
-                "requested=%s served=%s",
-                new_route.provider.name, new_route.provider.provider_type,
-                body.get("model"), new_route.litellm_model,
+                "grok_web.failover_model_substituted provider=%s type=%s requested=%s served=%s",
+                new_route.provider.name,
+                new_route.provider.provider_type,
+                body.get("model"),
+                new_route.litellm_model,
             )
         # v5.1.0 / Batch A4 — swap extra (litellm_kwargs) to the new
         # provider's. See completions.py for the rationale.
@@ -714,6 +797,7 @@ async def messages(
     # also copy-pasted into completions.py. Wire-format builders
     # (anthropic_text_sse / anthropic_text_response) are passed in.
     from app.api._request_pipeline import maybe_serve_from_cache
+
     cache_decision, cache_resp = await maybe_serve_from_cache(
         x_cache_header=x_cache,
         api_key_opt_in=bool(getattr(key_record, "semantic_cache_enabled", False)),
@@ -740,8 +824,13 @@ async def messages(
     if x_webhook_url:
         background_tasks.add_task(
             _webhook_completion_anthropic,
-            x_webhook_url, route.litellm_model, messages_list, extra,
-            route.provider.id, db, key_record.id,
+            x_webhook_url,
+            route.litellm_model,
+            messages_list,
+            extra,
+            route.provider.id,
+            db,
+            key_record.id,
             llm_hint=llm_hint,
         )
         return JSONResponse(
@@ -752,92 +841,20 @@ async def messages(
 
     try:
         if route.tool_emulation_engaged:
-            # Wave 5 #23 — respect parallel_tool_calls from the inbound body
-            # (Anthropic expresses this as tool_choice={disable_parallel_tool_use:true})
-            tool_choice = body.get("tool_choice") or {}
-            allow_parallel = True
-            if isinstance(tool_choice, dict) and tool_choice.get("disable_parallel_tool_use"):
-                allow_parallel = False
-            # v4.1.1 — co-emulation: when CoT-E is also engaged on this request
-            # the tool prompt is reasoning-prefixed, so the model thinks step
-            # by step before emitting tool calls (tools + reasoning together).
-            tool_system = build_anthropic_tool_prompt(
-                tools or [], allow_parallel=allow_parallel,
-                with_reasoning=route.cot_engaged,
+            from app.api._messages_tool_emulation import dispatch_tool_emulation
+
+            return await dispatch_tool_emulation(
+                body=body,
+                tools=tools,
+                route=route,
+                messages_list=messages_list,
+                system=system,
+                extra=extra,
+                db=db,
+                key_record=key_record,
+                resp_headers=resp_headers,
+                stream=stream,
             )
-            merged_system = tool_system + ("\n\n" + system if system else "")
-            norm_msgs = normalize_anthropic_messages(messages_list)
-            emul_extra = {k: v for k, v in extra.items() if k not in ("tools", "system")}
-            # v5.22.41 (BUG-095) — capture the upstream usage. Without this the
-            # emulated-response builders below fill in zeros and every cost
-            # derived from this request computes as $0.
-            _emul_usage: dict = {}
-            response_text = await call_with_tool_prompt(
-                route.litellm_model, norm_msgs, merged_system, emul_extra,
-                usage_out=_emul_usage
-            )
-            tool_calls = parse_tool_calls(response_text)
-            if route.cot_engaged:
-                # drop the <thinking> block from the plain-text fallback
-                response_text = strip_thinking(response_text)
-            # v3.8.3 (#263) — emit telemetry BEFORE response building so
-            # the activity_log row carries the count + validation flag
-            # for this emulated tool-call request. Note: response_body
-            # is constructed below from tool_calls; we re-derive a
-            # synthetic Anthropic-shape response for the meta extractor
-            # so success-rate aggregation across native + emulated paths
-            # uses the same response_body schema.
-            _emul_resp_body = {
-                "content": [
-                    {"type": "tool_use", "name": tc.get("name", ""),
-                     "input": tc.get("input", {}) if isinstance(tc.get("input"), dict) else {}}
-                    for tc in tool_calls
-                ],
-            } if tool_calls else {"content": []}
-            await record_outcome(
-                db, route.provider.id, route.litellm_model, success=True,
-                t0=time.monotonic(), key_record_id=key_record.id,
-                response_body=_emul_resp_body,
-                tool_call_format="emulated",
-            )
-            # Enforce serial when parallel is disabled
-            if not allow_parallel and len(tool_calls) > 1:
-                tool_calls = tool_calls[:1]
-            if tool_calls:
-                resp_headers["X-Tool-Calls-Emitted"] = str(len(tool_calls))
-            if stream:
-                if len(tool_calls) >= 2:
-                    gen = anthropic_tools_sse(tool_calls, usage=_emul_usage, model=route.litellm_model)
-                elif len(tool_calls) == 1:
-                    gen = anthropic_tool_sse(
-                        tool_calls[0]["name"], tool_calls[0]["input"],
-                        usage=_emul_usage, model=route.litellm_model,
-                    )
-                else:
-                    gen = anthropic_text_sse(
-                        response_text, usage=_emul_usage, model=route.litellm_model,
-                    )
-                return StreamingResponse(gen, media_type="text/event-stream", headers=resp_headers)
-            else:
-                if len(tool_calls) >= 2:
-                    content = anthropic_tools_response(
-                        tool_calls, route.litellm_model,
-                        usage=_emul_usage,
-                    )
-                elif len(tool_calls) == 1:
-                    content = anthropic_tool_response(
-                        tool_calls[0]["name"], tool_calls[0]["input"], route.litellm_model,
-                        usage=_emul_usage,
-                    )
-                else:
-                    content = anthropic_text_response(
-                        response_text, route.litellm_model,
-                        usage=_emul_usage,
-                    )
-                # v3.6.1 — merge X-Quality-Hint for tool-emulation path
-                from app.api._quality_hint import merge_into_headers
-                merge_into_headers(resp_headers, content, endpoint="messages")
-                return JSONResponse(content=content, headers=resp_headers)
 
         # CoT-E engagement.
         # v3.5.x R2 (2026-05-09): orchestration extracted to
@@ -848,11 +865,20 @@ async def messages(
         # selection, cross-provider critique pick, and StreamingResponse
         # construction (all identical between the two endpoints).
         from app.api._request_pipeline import maybe_engage_cot
+
         cot_resp = await maybe_engage_cot(
-            route=route, stream=stream, db=db, key_record=key_record,
-            hint=hint, body=body, messages_list=messages_list, extra=extra,
-            x_cot_iterations=x_cot_iterations, x_cot_verify=x_cot_verify,
-            x_cot_samples=x_cot_samples, x_cot_mode=x_cot_mode,
+            route=route,
+            stream=stream,
+            db=db,
+            key_record=key_record,
+            hint=hint,
+            body=body,
+            messages_list=messages_list,
+            extra=extra,
+            x_cot_iterations=x_cot_iterations,
+            x_cot_verify=x_cot_verify,
+            x_cot_samples=x_cot_samples,
+            x_cot_mode=x_cot_mode,
             x_session_id=x_session_id,
             resp_headers=resp_headers,
             stream_cot_fn=_stream_cot_anthropic,
@@ -916,8 +942,12 @@ async def messages(
         # itself raised; ``route`` is already correct in that case.
         failed_route = getattr(e, "_llmproxy_attributed_route", None) or route
         await record_outcome(
-            db, failed_route.provider.id, failed_route.litellm_model, success=False,
-            key_record_id=key_record.id, error_str=err_str,
+            db,
+            failed_route.provider.id,
+            failed_route.litellm_model,
+            success=False,
+            key_record_id=key_record.id,
+            error_str=err_str,
             provider_name=failed_route.provider.name,
             request_body=body,
             requested_model=body.get("model") if isinstance(body, dict) else None,
@@ -934,8 +964,11 @@ async def messages(
         logger.error(
             "Provider %s failed: %s [name=%s type=%s litellm_model=%s "
             "requested=%s cross_family=%s api_base=%s]",
-            failed_route.provider.id, err_str, failed_route.provider.name,
-            failed_route.provider.provider_type, failed_route.litellm_model,
+            failed_route.provider.id,
+            err_str,
+            failed_route.provider.name,
+            failed_route.provider.provider_type,
+            failed_route.litellm_model,
             (body.get("model") if isinstance(body, dict) else None),
             getattr(failed_route, "cross_family_fallback", False),
             # v5.22.21 — api_base is the one field that can explain a vendor
@@ -950,6 +983,7 @@ async def messages(
         # /usr/local/lib/python3.13/site-packages/litellm/... paths.
         from app.api._input_validation import sanitize_upstream_error
         from app.routing.circuit_breaker import classify_error
+
         cls = classify_error(err_str or "")
         clean = sanitize_upstream_error(err_str)
         # bad_request → HTTP 400 (it was the caller's fault); other
@@ -964,13 +998,17 @@ async def messages(
         # v5.0.9 — upstream-error disclosure extracted to
         # ``_compliance_handler.disclosure_headers_for_upstream_error``.
         from app.api._compliance_handler import disclosure_headers_for_upstream_error
+
         error_headers = await disclosure_headers_for_upstream_error(
-            request, db, route, key_record, _orig_request_model, status_code,
+            request,
+            db,
+            route,
+            key_record,
+            _orig_request_model,
+            status_code,
         )
         raise HTTPException(
             status_code,
             f"Upstream provider error ({cls}): {clean}",
             headers=error_headers or None,
         )
-
-

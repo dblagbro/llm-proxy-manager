@@ -16,10 +16,11 @@ Fix: ``ready_at = max(opened_at + circuit_breaker_timeout_sec, hold_down_until)`
 Transient blips still respect the snappy 60s probe; backed-off providers
 wait their actual hold_down.
 """
+
 from __future__ import annotations
 
 import asyncio
-from typing import Iterator
+from collections.abc import Iterator
 
 import pytest
 
@@ -27,6 +28,7 @@ import pytest
 @pytest.fixture(autouse=True)
 def _isolate_cb() -> Iterator[None]:
     from app.routing import circuit_breaker as cb
+
     cb._local_states.clear()
     cb._provider_overrides.clear()
     yield
@@ -37,8 +39,9 @@ def _isolate_cb() -> Iterator[None]:
 def test_get_state_blocks_half_open_when_hold_down_pending() -> None:
     """A provider with a 1-hour hold_down must NOT transition to
     half-open just because the global 60s timeout has elapsed."""
-    from app.routing import circuit_breaker as cb
     import time
+
+    from app.routing import circuit_breaker as cb
 
     s = cb._get_local("p1")
     now = time.time()
@@ -47,14 +50,13 @@ def test_get_state_blocks_half_open_when_hold_down_pending() -> None:
     s.hold_down_until = now + 3600  # but 1h hold_down still has 1h left
 
     state = asyncio.run(cb.get_state("p1"))
-    assert state == cb.CBState.OPEN, (
-        "CB transitioned to half-open while hold_down still pending"
-    )
+    assert state == cb.CBState.OPEN, "CB transitioned to half-open while hold_down still pending"
 
 
 def test_get_state_transitions_when_both_thresholds_passed() -> None:
-    from app.routing import circuit_breaker as cb
     import time
+
+    from app.routing import circuit_breaker as cb
 
     s = cb._get_local("p1")
     now = time.time()
@@ -70,8 +72,9 @@ def test_get_state_respects_short_hold_down_for_transient() -> None:
     """A transient (single-cycle) failure has hold_down_until ≈
     opened_at + base. The timeout (60s) and hold_down should still
     cooperate — whichever is later wins."""
-    from app.routing import circuit_breaker as cb
     import time
+
+    from app.routing import circuit_breaker as cb
 
     s = cb._get_local("p1")
     now = time.time()
@@ -87,8 +90,9 @@ def test_billing_error_hold_down_now_enforced() -> None:
     """Regression: pre-fix the 6h billing-error hold_down was logged
     but the auto-probe still fired every 60s. This codifies that the
     documented behavior actually holds."""
-    from app.routing import circuit_breaker as cb
     import time
+
+    from app.routing import circuit_breaker as cb
 
     asyncio.run(cb.record_failure("p1", billing_error=True))
     s = cb._get_local("p1")

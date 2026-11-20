@@ -3,8 +3,9 @@
 Code-only ship (sidecar not in compose yet). Tests pin the surface so
 a follow-up ops session can safely add the compose entry + deploy.
 """
+
 from __future__ import annotations
-import sys
+
 from pathlib import Path
 
 
@@ -39,7 +40,7 @@ def test_sidecar_ships_rotate_drive():
 def test_sidecar_ships_access_token_endpoint():
     """llm-proxy2 pulls the last rotated token from here in v5.5.2."""
     src = _load_sidecar_source()
-    assert "@app.get(\"/api/access-token\")" in src
+    assert '@app.get("/api/access-token")' in src
 
 
 def test_sidecar_detects_expired_workos_session():
@@ -62,7 +63,7 @@ def test_sidecar_detects_workos_session_cookie_on_boot():
 def test_sidecar_version_bumped_in_app():
     src = _load_sidecar_source()
     assert 'version="5.5.1"' in src
-    assert 'v5.5.1' in src
+    assert "v5.5.1" in src
 
 
 def test_pkce_shape_matches_proxy_side():

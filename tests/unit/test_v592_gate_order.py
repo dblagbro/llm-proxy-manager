@@ -7,6 +7,7 @@ close enough to that window that probes slip through → fail →
 record_failure resets hold_down → cycle. Moving the auto_skip_until
 check first makes it strictly dominant over CB hysteresis.
 """
+
 from __future__ import annotations
 
 import inspect
@@ -14,6 +15,7 @@ import inspect
 
 def test_auto_skip_check_appears_before_is_available_in_source():
     from app.monitoring import keepalive as mod
+
     src = inspect.getsource(mod._probe_all_once)
     # Both markers should exist
     assert "auto_skip_until" in src, "auto_skip_until gate missing"

@@ -14,13 +14,13 @@ network calls. Uses an in-memory SQLite via the existing AsyncSessionLocal
 R6 will add load-test variants of these against the real mock_llm_server;
 R2 just needs determinism so contract drift surfaces fast.
 """
+
 from __future__ import annotations
 
 import asyncio
 import time
 from dataclasses import dataclass
-from typing import Optional
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import httpx
 import pytest
@@ -30,8 +30,10 @@ import pytest
 async def _clean_runs_tables():
     """Each test starts with empty Run-related tables. DATABASE_URL is
     pointed at a tempdir file by tests/unit/conftest.py."""
-    from app.models.database import init_db, AsyncSessionLocal
     from sqlalchemy import text
+
+    from app.models.database import AsyncSessionLocal, init_db
+
     await init_db()
     async with AsyncSessionLocal() as db:
         for tbl in ("run_events", "run_messages", "run_idempotency", "runs"):
@@ -52,6 +54,7 @@ def fake_route_factory():
     return. The worker only reads ``.provider.id``, ``.provider.name``,
     ``.provider.timeout_sec``, ``.provider.api_key``, ``.provider.base_url``,
     ``.litellm_model``, ``.litellm_kwargs``."""
+
     def _make(provider_id: str, *, model: str = "mock/test", timeout: int = 30):
         prov = MagicMock()
         prov.id = provider_id
@@ -65,6 +68,7 @@ def fake_route_factory():
         route.litellm_model = model
         route.litellm_kwargs = {}
         return route
+
     return _make
 
 
@@ -84,7 +88,10 @@ def _fake_response_text(text: str = "hello") -> object:
     resp = MagicMock()
     resp.choices = [choice]
     resp.usage = _FakeUsage()
-    resp.model_dump = lambda: {"choices": [{"message": {"content": text}}], "usage": {"prompt_tokens": 10, "completion_tokens": 5}}
+    resp.model_dump = lambda: {
+        "choices": [{"message": {"content": text}}],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+    }
     return resp
 
 
@@ -96,9 +103,9 @@ async def test_provider_502_fails_over_then_succeeds(monkeypatch, fake_route_fac
     """A 502 from provider-A is non-retriable on the same provider; the
     worker should mark it failed, bump the chain, and try provider-B which
     succeeds. Run ends in completed."""
-    from app.runs import worker as run_worker
-    from app.models.database import init_db, AsyncSessionLocal
+    from app.models.database import AsyncSessionLocal, init_db
     from app.models.db import Run, RunMessage
+    from app.runs import worker as run_worker
     from app.runs.ids import new_run_id
     from app.runs.state import RunStatus
 
@@ -107,21 +114,41 @@ async def test_provider_502_fails_over_then_succeeds(monkeypatch, fake_route_fac
     now = time.time()
 
     async with AsyncSessionLocal() as db:
-        db.add(Run(
-            id=run_id, api_key_id="test-key", owner_node_id="local",
-            status=RunStatus.QUEUED.value, deadline_ts=now + 60,
-            max_turns=10, model_preference=[], system_prompt=None,
-            tools_spec=[], metadata_json={}, model_calls=0, tool_calls=0,
-            tokens_in=0, tokens_out=0, created_at=now, updated_at=now,
-        ))
-        db.add(RunMessage(
-            run_id=run_id, seq=1, role="user", content="hi", tokens=0,
-            created_at=now,
-        ))
+        db.add(
+            Run(
+                id=run_id,
+                api_key_id="test-key",
+                owner_node_id="local",
+                status=RunStatus.QUEUED.value,
+                deadline_ts=now + 60,
+                max_turns=10,
+                model_preference=[],
+                system_prompt=None,
+                tools_spec=[],
+                metadata_json={},
+                model_calls=0,
+                tool_calls=0,
+                tokens_in=0,
+                tokens_out=0,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        db.add(
+            RunMessage(
+                run_id=run_id,
+                seq=1,
+                role="user",
+                content="hi",
+                tokens=0,
+                created_at=now,
+            )
+        )
         await db.commit()
 
     # First call → 502; second call → success
     call_count = {"n": 0}
+
     async def fake_acompletion(*args, **kwargs):
         call_count["n"] += 1
         if call_count["n"] == 1:
@@ -132,6 +159,7 @@ async def test_provider_502_fails_over_then_succeeds(monkeypatch, fake_route_fac
 
     # select_provider returns A, then B
     seen_excludes = []
+
     async def fake_select_provider(db, hint=None, **kwargs):
         seen_excludes.append(kwargs.get("exclude_provider_id"))
         if kwargs.get("exclude_provider_id") is None:
@@ -144,11 +172,19 @@ async def test_provider_502_fails_over_then_succeeds(monkeypatch, fake_route_fac
 
     async with AsyncSessionLocal() as db:
         from sqlalchemy import select
+
         from app.models.db import RunEvent
+
         run = (await db.execute(select(Run).where(Run.id == run_id))).scalar_one()
-        events = (await db.execute(
-            select(RunEvent).where(RunEvent.run_id == run_id).order_by(RunEvent.seq)
-        )).scalars().all()
+        events = (
+            (
+                await db.execute(
+                    select(RunEvent).where(RunEvent.run_id == run_id).order_by(RunEvent.seq)
+                )
+            )
+            .scalars()
+            .all()
+        )
         kinds = [e.kind for e in events]
 
     assert run.status == "completed", f"expected completed, got {run.status}"
@@ -165,29 +201,49 @@ async def test_read_timeout_fails_over_immediately(monkeypatch, fake_route_facto
     """A ReadTimeout must NOT be retried on the same provider — it should
     trigger fail-over within the per-call deadline (a few seconds at most),
     never the spec-anti-pattern 600s hang."""
+    from sqlalchemy import select
+
+    from app.models.database import AsyncSessionLocal, init_db
+    from app.models.db import Run, RunEvent, RunMessage
     from app.runs import worker as run_worker
-    from app.models.database import init_db, AsyncSessionLocal
-    from app.models.db import Run, RunMessage, RunEvent
     from app.runs.ids import new_run_id
     from app.runs.state import RunStatus
-    from sqlalchemy import select
 
     await init_db()
     run_id = new_run_id()
     now = time.time()
 
     async with AsyncSessionLocal() as db:
-        db.add(Run(
-            id=run_id, api_key_id="test-key", owner_node_id="local",
-            status=RunStatus.QUEUED.value, deadline_ts=now + 60,
-            max_turns=10, model_preference=[], system_prompt=None,
-            tools_spec=[], metadata_json={}, model_calls=0, tool_calls=0,
-            tokens_in=0, tokens_out=0, created_at=now, updated_at=now,
-        ))
-        db.add(RunMessage(
-            run_id=run_id, seq=1, role="user", content="hi", tokens=0,
-            created_at=now,
-        ))
+        db.add(
+            Run(
+                id=run_id,
+                api_key_id="test-key",
+                owner_node_id="local",
+                status=RunStatus.QUEUED.value,
+                deadline_ts=now + 60,
+                max_turns=10,
+                model_preference=[],
+                system_prompt=None,
+                tools_spec=[],
+                metadata_json={},
+                model_calls=0,
+                tool_calls=0,
+                tokens_in=0,
+                tokens_out=0,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        db.add(
+            RunMessage(
+                run_id=run_id,
+                seq=1,
+                role="user",
+                content="hi",
+                tokens=0,
+                created_at=now,
+            )
+        )
         await db.commit()
 
     async def fake_acompletion(*args, **kwargs):
@@ -216,12 +272,19 @@ async def test_read_timeout_fails_over_immediately(monkeypatch, fake_route_facto
 
     async with AsyncSessionLocal() as db:
         run = (await db.execute(select(Run).where(Run.id == run_id))).scalar_one()
-        events = (await db.execute(
-            select(RunEvent).where(RunEvent.run_id == run_id).order_by(RunEvent.seq)
-        )).scalars().all()
+        events = (
+            (
+                await db.execute(
+                    select(RunEvent).where(RunEvent.run_id == run_id).order_by(RunEvent.seq)
+                )
+            )
+            .scalars()
+            .all()
+        )
         kinds = [e.kind for e in events]
-        timeout_ev = [e for e in events if e.kind == "model_call_end"
-                      and e.payload.get("status") == "timeout"]
+        timeout_ev = [
+            e for e in events if e.kind == "model_call_end" and e.payload.get("status") == "timeout"
+        ]
 
     assert run.status == "completed"
     assert len(timeout_ev) == 1, "expected exactly one timeout-marked model_call_end"
@@ -234,51 +297,80 @@ async def test_read_timeout_fails_over_immediately(monkeypatch, fake_route_facto
 
 @pytest.mark.asyncio
 async def test_all_providers_exhausted_fails_run(monkeypatch, fake_route_factory):
-    from app.runs import worker as run_worker
-    from app.models.database import init_db, AsyncSessionLocal
-    from app.models.db import Run, RunMessage, RunEvent
-    from app.runs.ids import new_run_id
-    from app.runs.state import RunStatus, ErrorKind
     from sqlalchemy import select
+
+    from app.models.database import AsyncSessionLocal, init_db
+    from app.models.db import Run, RunEvent, RunMessage
+    from app.runs import worker as run_worker
+    from app.runs.ids import new_run_id
+    from app.runs.state import ErrorKind, RunStatus
 
     await init_db()
     run_id = new_run_id()
     now = time.time()
 
     async with AsyncSessionLocal() as db:
-        db.add(Run(
-            id=run_id, api_key_id="test-key", owner_node_id="local",
-            status=RunStatus.QUEUED.value, deadline_ts=now + 60,
-            max_turns=10, model_preference=[], system_prompt=None,
-            tools_spec=[], metadata_json={}, model_calls=0, tool_calls=0,
-            tokens_in=0, tokens_out=0, created_at=now, updated_at=now,
-        ))
-        db.add(RunMessage(
-            run_id=run_id, seq=1, role="user", content="hi", tokens=0,
-            created_at=now,
-        ))
+        db.add(
+            Run(
+                id=run_id,
+                api_key_id="test-key",
+                owner_node_id="local",
+                status=RunStatus.QUEUED.value,
+                deadline_ts=now + 60,
+                max_turns=10,
+                model_preference=[],
+                system_prompt=None,
+                tools_spec=[],
+                metadata_json={},
+                model_calls=0,
+                tool_calls=0,
+                tokens_in=0,
+                tokens_out=0,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        db.add(
+            RunMessage(
+                run_id=run_id,
+                seq=1,
+                role="user",
+                content="hi",
+                tokens=0,
+                created_at=now,
+            )
+        )
         await db.commit()
 
     async def fake_acompletion(*args, **kwargs):
         raise Exception("litellm.APIConnectionError: upstream unreachable")
+
     monkeypatch.setattr(run_worker, "acompletion_with_retry", fake_acompletion)
 
     seen = {"n": 0}
+
     async def fake_select_provider(db, hint=None, **kwargs):
         seen["n"] += 1
         # First 2 picks return providers; 3rd raises (no more providers).
         if seen["n"] <= 2:
             return fake_route_factory(f"prov-{seen['n']}")
         raise RuntimeError("all providers exhausted")
+
     monkeypatch.setattr(run_worker, "select_provider", fake_select_provider)
 
     await run_worker._drive(run_id)
 
     async with AsyncSessionLocal() as db:
         run = (await db.execute(select(Run).where(Run.id == run_id))).scalar_one()
-        events = (await db.execute(
-            select(RunEvent).where(RunEvent.run_id == run_id).order_by(RunEvent.seq)
-        )).scalars().all()
+        events = (
+            (
+                await db.execute(
+                    select(RunEvent).where(RunEvent.run_id == run_id).order_by(RunEvent.seq)
+                )
+            )
+            .scalars()
+            .all()
+        )
 
     assert run.status == "failed"
     assert run.error_kind == ErrorKind.PROVIDER.value
@@ -295,50 +387,78 @@ async def test_deadline_exceeded_during_run_expires(monkeypatch, fake_route_fact
     """The run's deadline_ts is already in the past when _drive starts;
     the FSM transitions QUEUED → EXPIRED on the first iteration's deadline
     check (state.py _start handles the past-deadline case)."""
+    from sqlalchemy import select
+
+    from app.models.database import AsyncSessionLocal, init_db
+    from app.models.db import Run, RunEvent, RunMessage
     from app.runs import worker as run_worker
-    from app.models.database import init_db, AsyncSessionLocal
-    from app.models.db import Run, RunMessage, RunEvent
     from app.runs.ids import new_run_id
     from app.runs.state import RunStatus
-    from sqlalchemy import select
 
     await init_db()
     run_id = new_run_id()
     now = time.time()
 
     async with AsyncSessionLocal() as db:
-        db.add(Run(
-            id=run_id, api_key_id="test-key", owner_node_id="local",
-            status=RunStatus.QUEUED.value,
-            deadline_ts=now - 1.0,  # already past
-            max_turns=10, model_preference=[], system_prompt=None,
-            tools_spec=[], metadata_json={}, model_calls=0, tool_calls=0,
-            tokens_in=0, tokens_out=0, created_at=now, updated_at=now,
-        ))
-        db.add(RunMessage(
-            run_id=run_id, seq=1, role="user", content="hi", tokens=0,
-            created_at=now,
-        ))
+        db.add(
+            Run(
+                id=run_id,
+                api_key_id="test-key",
+                owner_node_id="local",
+                status=RunStatus.QUEUED.value,
+                deadline_ts=now - 1.0,  # already past
+                max_turns=10,
+                model_preference=[],
+                system_prompt=None,
+                tools_spec=[],
+                metadata_json={},
+                model_calls=0,
+                tool_calls=0,
+                tokens_in=0,
+                tokens_out=0,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        db.add(
+            RunMessage(
+                run_id=run_id,
+                seq=1,
+                role="user",
+                content="hi",
+                tokens=0,
+                created_at=now,
+            )
+        )
         await db.commit()
 
     # acompletion shouldn't be called at all — deadline is already past.
     call_count = {"n": 0}
+
     async def fake_acompletion(*args, **kwargs):
         call_count["n"] += 1
         return _fake_response_text("should-not-be-called")
+
     monkeypatch.setattr(run_worker, "acompletion_with_retry", fake_acompletion)
 
     async def fake_select_provider(*args, **kwargs):
         return fake_route_factory("prov-a")
+
     monkeypatch.setattr(run_worker, "select_provider", fake_select_provider)
 
     await run_worker._drive(run_id)
 
     async with AsyncSessionLocal() as db:
         run = (await db.execute(select(Run).where(Run.id == run_id))).scalar_one()
-        events = (await db.execute(
-            select(RunEvent).where(RunEvent.run_id == run_id).order_by(RunEvent.seq)
-        )).scalars().all()
+        events = (
+            (
+                await db.execute(
+                    select(RunEvent).where(RunEvent.run_id == run_id).order_by(RunEvent.seq)
+                )
+            )
+            .scalars()
+            .all()
+        )
         kinds = [e.kind for e in events]
 
     assert run.status == "expired", f"expected expired, got {run.status}"
@@ -354,12 +474,13 @@ async def test_cancel_during_requires_tool_wait(monkeypatch, fake_route_factory)
     """Worker is parked in REQUIRES_TOOL waiting for /tool_result. Cancel
     fires (which sets run.status=CANCELLED + calls run_worker.wake()).
     Worker should observe terminal status and return without hanging."""
-    from app.runs import worker as run_worker
-    from app.models.database import init_db, AsyncSessionLocal
-    from app.models.db import Run, RunMessage, RunEvent
-    from app.runs.ids import new_run_id
-    from app.runs.state import RunStatus, advance, EventKind, RunCtx
     from sqlalchemy import select
+
+    from app.models.database import AsyncSessionLocal, init_db
+    from app.models.db import Run, RunMessage
+    from app.runs import worker as run_worker
+    from app.runs.ids import new_run_id
+    from app.runs.state import EventKind, RunCtx, RunStatus, advance
 
     await init_db()
     run_id = new_run_id()
@@ -369,18 +490,32 @@ async def test_cancel_during_requires_tool_wait(monkeypatch, fake_route_factory)
     # mimics the state right after the worker emitted tool_use_requested
     # and parked.
     async with AsyncSessionLocal() as db:
-        db.add(Run(
-            id=run_id, api_key_id="test-key", owner_node_id="local",
-            status=RunStatus.REQUIRES_TOOL.value, deadline_ts=now + 60,
-            max_turns=10, model_preference=[], system_prompt=None,
-            tools_spec=[], metadata_json={},
-            current_tool_use_id="toolu_x", current_tool_name="Bash",
-            current_tool_input={"cmd": "ls"},
-            model_calls=1, tool_calls=0, tokens_in=10, tokens_out=5,
-            created_at=now, updated_at=now,
-        ))
-        db.add(RunMessage(run_id=run_id, seq=1, role="user", content="hi",
-                          tokens=0, created_at=now))
+        db.add(
+            Run(
+                id=run_id,
+                api_key_id="test-key",
+                owner_node_id="local",
+                status=RunStatus.REQUIRES_TOOL.value,
+                deadline_ts=now + 60,
+                max_turns=10,
+                model_preference=[],
+                system_prompt=None,
+                tools_spec=[],
+                metadata_json={},
+                current_tool_use_id="toolu_x",
+                current_tool_name="Bash",
+                current_tool_input={"cmd": "ls"},
+                model_calls=1,
+                tool_calls=0,
+                tokens_in=10,
+                tokens_out=5,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        db.add(
+            RunMessage(run_id=run_id, seq=1, role="user", content="hi", tokens=0, created_at=now)
+        )
         await db.commit()
 
     # Concurrently: launch _drive, then a moment later flip the run to
@@ -392,11 +527,14 @@ async def test_cancel_during_requires_tool_wait(monkeypatch, fake_route_factory)
             res = await db.execute(select(Run).where(Run.id == run_id))
             run = res.scalar_one()
             t = advance(
-                RunCtx(status=RunStatus.REQUIRES_TOOL,
-                       deadline_ts=run.deadline_ts,
-                       max_turns=run.max_turns,
-                       turns_used=run.model_calls or 0),
-                EventKind.CANCEL, time.time(),
+                RunCtx(
+                    status=RunStatus.REQUIRES_TOOL,
+                    deadline_ts=run.deadline_ts,
+                    max_turns=run.max_turns,
+                    turns_used=run.model_calls or 0,
+                ),
+                EventKind.CANCEL,
+                time.time(),
             )
             run.status = t.status.value
             run.updated_at = time.time()

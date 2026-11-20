@@ -8,7 +8,9 @@ directly (v5.3.9 auto-probe on CB half-open transition) and bypassed
 the gate. Fix: relocate the gate check to ``_probe_one`` itself so
 BOTH entry points honor it.
 """
+
 from __future__ import annotations
+
 from pathlib import Path
 
 
@@ -53,10 +55,9 @@ def test_backoff_state_dict_still_present():
 
 def test_version_bumped():
     import re
+
     src = Path("app/__version__.py").read_text()
     m = re.search(r'"(\d+)\.(\d+)\.(\d+)"', src)
     assert m
     major, minor, patch = int(m.group(1)), int(m.group(2)), int(m.group(3))
-    assert (major, minor, patch) >= (5, 19, 1), (
-        f"expected >= 5.19.1, got {major}.{minor}.{patch}"
-    )
+    assert (major, minor, patch) >= (5, 19, 1), f"expected >= 5.19.1, got {major}.{minor}.{patch}"

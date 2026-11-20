@@ -11,10 +11,12 @@ tools can attribute audit rows, and returns 401 on miss.
 v5.7.1 will add external sub-server mounts (filesystem, fetch, git,
 markitdown) via ``root.mount(Client(...), prefix=...)``.
 """
+
 from __future__ import annotations
 
+import contextvars
 import logging
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager as asynccontextmanager
 from typing import Any
 
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -22,7 +24,6 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
 from app.mcp_server import current_api_key_id
-
 
 logger = logging.getLogger(__name__)
 
@@ -32,9 +33,9 @@ logger = logging.getLogger(__name__)
 # during dispatch; read by the policy hooks that wrap list_tools and
 # call_tool. Defaulting to permissive (no filter) means a request
 # without the middleware (e.g. tests) gets the full registry.
-import contextvars
 current_mcp_policy: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
-    "mcp_current_policy", default=None,
+    "mcp_current_policy",
+    default=None,
 )
 
 
@@ -44,6 +45,7 @@ def build_mcp_app() -> Any:
     Returns the Starlette sub-app to be mounted via ``app.mount("/mcp", ...)``.
     """
     from mcp.server.fastmcp import FastMCP
+
     from app.mcp_server import tools as t
 
     # ``stateless_http=True`` + ``json_response=True`` is the production
@@ -89,7 +91,7 @@ def build_mcp_app() -> Any:
 def _wrap_list_tools_with_policy(mcp: Any) -> None:
     """v5.7.4 — wrap mcp.list_tools so it applies per-key allow/deny
     + token-budget gating before returning the tool list."""
-    from app.mcp_server.policy import filter_tools_for_key, check_token_budget
+    from app.mcp_server.policy import check_token_budget, filter_tools_for_key
 
     _orig = mcp.list_tools
 
@@ -107,12 +109,15 @@ def _wrap_list_tools_with_policy(mcp: Any) -> None:
         # Token-budget gate — raises so the protocol layer can convert
         # to a 400 response (Streamable HTTP path handles exceptions).
         ok, total = check_token_budget(
-            filtered, policy.get("mcp_schema_token_budget"),
+            filtered,
+            policy.get("mcp_schema_token_budget"),
         )
         if not ok:
             logger.warning(
                 "mcp.token_budget_exceeded budget=%s total=%d tools=%d",
-                policy.get("mcp_schema_token_budget"), total, len(filtered),
+                policy.get("mcp_schema_token_budget"),
+                total,
+                len(filtered),
             )
             raise PermissionError(
                 f"X-Token-Budget-Exceeded: total={total} "
@@ -142,11 +147,10 @@ def _wrap_call_tool_with_policy(mcp: Any) -> None:
             ):
                 logger.info(
                     "mcp.tool_denied tool=%s api_key=%s",
-                    name, current_api_key_id.get(),
+                    name,
+                    current_api_key_id.get(),
                 )
-                raise PermissionError(
-                    f"tool {name!r} is denied by the API key's MCP policy"
-                )
+                raise PermissionError(f"tool {name!r} is denied by the API key's MCP policy")
         # v5.12.2 Ship 1.1 — drain pending capability suggestions
         # buffered for this caller and emit each as an INFO-level log
         # line that FastMCP serializes into a notifications/message
@@ -157,11 +161,13 @@ def _wrap_call_tool_with_policy(mcp: Any) -> None:
             api_key_id = current_api_key_id.get()
             if api_key_id:
                 from app.capability_scout.suggestion_buffer_mcp import drain_pending
+
                 pending = drain_pending(api_key_id)
                 if pending:
                     logger.info(
                         "mcp.notifications_drained count=%d api_key=%s",
-                        len(pending), api_key_id,
+                        len(pending),
+                        api_key_id,
                     )
         except Exception:
             pass
@@ -186,12 +192,13 @@ class BearerKeyAuthMiddleware(BaseHTTPMiddleware):
             return JSONResponse(
                 {"error": "missing or malformed Authorization header"},
                 status_code=401,
-                headers={"WWW-Authenticate": "Bearer realm=\"llm-proxy2-mcp\""},
+                headers={"WWW-Authenticate": 'Bearer realm="llm-proxy2-mcp"'},
             )
         api_key = auth[7:].strip()
         try:
-            from app.models.database import AsyncSessionLocal
             from app.auth.keys import verify_api_key
+            from app.models.database import AsyncSessionLocal
+
             async with AsyncSessionLocal() as db:
                 key_record = await verify_api_key(db, api_key)
         except Exception as exc:
@@ -199,7 +206,7 @@ class BearerKeyAuthMiddleware(BaseHTTPMiddleware):
             return JSONResponse(
                 {"error": "invalid api key"},
                 status_code=401,
-                headers={"WWW-Authenticate": "Bearer error=\"invalid_token\""},
+                headers={"WWW-Authenticate": 'Bearer error="invalid_token"'},
             )
         # v5.7.4 — surface the key's MCP policy via ContextVar so the
         # downstream list_tools / call_tool hooks can enforce it
@@ -209,7 +216,9 @@ class BearerKeyAuthMiddleware(BaseHTTPMiddleware):
             "mcp_tools_allow": getattr(key_record, "mcp_tools_allow", None),
             "mcp_tools_deny": getattr(key_record, "mcp_tools_deny", None),
             "mcp_schema_token_budget": getattr(
-                key_record, "mcp_schema_token_budget", None,
+                key_record,
+                "mcp_schema_token_budget",
+                None,
             ),
         }
         token = current_api_key_id.set(key_record.id)

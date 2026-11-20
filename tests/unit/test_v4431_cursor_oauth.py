@@ -6,14 +6,14 @@ with the existing providers_oauth shared machinery, the credential
 parser's defensive branches, and the deep-link exchange path against a
 mocked sidecar response.
 """
+
 from __future__ import annotations
 
 import time
 from pathlib import Path
-from unittest.mock import patch, AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
-
 
 # ── Source guards ───────────────────────────────────────────────────
 
@@ -36,7 +36,7 @@ def test_cursor_oauth_subscription_tier_listed():
     grok-web)."""
     src = Path("app/monitoring/helpers.py").read_text()
     idx = src.index("SUBSCRIPTION_TIER_PROVIDER_TYPES")
-    block = src[idx:idx + 1500]
+    block = src[idx : idx + 1500]
     assert '"cursor-oauth"' in block
 
 
@@ -68,6 +68,7 @@ def test_frontend_provider_type_listed():
 
 def test_parse_credentials_accepts_bare_cursor_cookie():
     from app.providers.cursor_oauth import parse_credentials
+
     raw = "user_01ABCDEFGHJKMNPQRSTV01ABCDEFGH::eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.fake.signature"
     creds = parse_credentials(raw)
     assert creds.access_token == raw
@@ -75,8 +76,10 @@ def test_parse_credentials_accepts_bare_cursor_cookie():
 
 
 def test_parse_credentials_accepts_json_with_access_token():
-    from app.providers.cursor_oauth import parse_credentials
     import json
+
+    from app.providers.cursor_oauth import parse_credentials
+
     blob = json.dumps({"access_token": "user_xxx::eyJ.A.B"})
     creds = parse_credentials(blob)
     assert creds.access_token == "user_xxx::eyJ.A.B"
@@ -85,15 +88,18 @@ def test_parse_credentials_accepts_json_with_access_token():
 def test_parse_credentials_accepts_sidecar_response_shape():
     """The sidecar returns ``{"accessToken": "user_..."}`` — accept it
     verbatim so an operator can paste the sidecar's response directly."""
-    from app.providers.cursor_oauth import parse_credentials
     import json
+
+    from app.providers.cursor_oauth import parse_credentials
+
     blob = json.dumps({"accessToken": "user_xxx::eyJ.A.B"})
     creds = parse_credentials(blob)
     assert creds.access_token == "user_xxx::eyJ.A.B"
 
 
 def test_parse_credentials_rejects_empty():
-    from app.providers.cursor_oauth import parse_credentials, CredentialParseError
+    from app.providers.cursor_oauth import CredentialParseError, parse_credentials
+
     with pytest.raises(CredentialParseError):
         parse_credentials("")
     with pytest.raises(CredentialParseError):
@@ -101,19 +107,22 @@ def test_parse_credentials_rejects_empty():
 
 
 def test_parse_credentials_rejects_unrecognized_string():
-    from app.providers.cursor_oauth import parse_credentials, CredentialParseError
+    from app.providers.cursor_oauth import CredentialParseError, parse_credentials
+
     with pytest.raises(CredentialParseError):
         parse_credentials("not-a-cursor-cookie")
 
 
 def test_parse_credentials_rejects_malformed_json():
-    from app.providers.cursor_oauth import parse_credentials, CredentialParseError
+    from app.providers.cursor_oauth import CredentialParseError, parse_credentials
+
     with pytest.raises(CredentialParseError):
         parse_credentials('{"access_token":}')
 
 
 def test_looks_like_cursor_token_branches():
     from app.providers.cursor_oauth import looks_like_cursor_token
+
     assert looks_like_cursor_token("user_xxx::eyJ.A.B") is True
     assert looks_like_cursor_token("eyJ.A.B") is True  # bare JWT
     assert looks_like_cursor_token("sk-ant-oat-blah") is False
@@ -129,6 +138,7 @@ def test_start_authorize_returns_state_and_url():
     is HTTPS on cursor.com). The url-shape detail lives in
     ``test_authorize_url_is_login_deep_control_with_pkce`` below."""
     from app.providers.cursor_oauth_flow import start_authorize
+
     start = start_authorize()
     assert start.state and len(start.state) >= 20  # randomness
     assert start.authorize_url.startswith("https://")
@@ -137,6 +147,7 @@ def test_start_authorize_returns_state_and_url():
 
 def test_start_authorize_state_is_unique():
     from app.providers.cursor_oauth_flow import start_authorize
+
     a = start_authorize().state
     b = start_authorize().state
     assert a != b
@@ -144,6 +155,7 @@ def test_start_authorize_state_is_unique():
 
 def test_extract_code_strips_known_prefixes():
     from app.providers.cursor_oauth_flow import extract_code_from_callback
+
     cookie = "user_xxx%3A%3AeyJ.A.B"
     for prefix in ("WorkosCursorSessionToken=", "Cookie: WorkosCursorSessionToken="):
         code, state = extract_code_from_callback(prefix + cookie)
@@ -155,12 +167,14 @@ def test_extract_code_drops_trailing_other_cookies():
     """Operator might paste the full Cookie header — keep only the
     first cookie's value."""
     from app.providers.cursor_oauth_flow import extract_code_from_callback
+
     code, _ = extract_code_from_callback("user_xxx%3A%3AeyJ.A.B; other_cookie=foo")
     assert code == "user_xxx%3A%3AeyJ.A.B"
 
 
 def test_extract_code_rejects_empty():
     from app.providers.cursor_oauth_flow import extract_code_from_callback
+
     with pytest.raises(ValueError):
         extract_code_from_callback("")
 
@@ -169,6 +183,7 @@ def test_extract_code_rejects_non_cookie_shape():
     """Catch obvious paste-the-wrong-thing cases (e.g. cookie name
     only, or a JSON blob) early with a readable error."""
     from app.providers.cursor_oauth_flow import extract_code_from_callback
+
     with pytest.raises(ValueError):
         extract_code_from_callback("WorkosCursorSessionToken")
 
@@ -182,7 +197,8 @@ async def test_exchange_code_calls_sidecar_and_returns_access_token():
     sidecar returns ``{"accessToken": "user_<id>::<JWT>"}`` — exchange
     should pass it through as ExchangeResult.access_token."""
     from app.providers.cursor_oauth_flow import (
-        start_authorize, exchange_code,
+        exchange_code,
+        start_authorize,
     )
 
     start = start_authorize()
@@ -192,12 +208,20 @@ async def test_exchange_code_calls_sidecar_and_returns_access_token():
     class FakeResp:
         status_code = 200
         text = '{"accessToken":"' + fake_jwt + '"}'
-        def json(self): return {"accessToken": fake_jwt}
+
+        def json(self):
+            return {"accessToken": fake_jwt}
 
     class FakeClient:
-        def __init__(self, *a, **kw): pass
-        async def __aenter__(self): return self
-        async def __aexit__(self, *a): pass
+        def __init__(self, *a, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            pass
+
         async def get(self, url, headers=None):
             assert "/cursor/loginDeepControl" in url
             assert headers["Authorization"].startswith("Bearer ")
@@ -214,7 +238,8 @@ async def test_exchange_code_calls_sidecar_and_returns_access_token():
 async def test_exchange_code_rejects_unknown_state():
     """Stale modal → state not in _PENDING → OAuthFlowError, NOT a
     silent success that would store no credentials."""
-    from app.providers.cursor_oauth_flow import exchange_code, OAuthFlowError
+    from app.providers.cursor_oauth_flow import OAuthFlowError, exchange_code
+
     with pytest.raises(OAuthFlowError):
         await exchange_code("never-issued-state", "user_xxx::eyJ.A.B")
 
@@ -224,19 +249,30 @@ async def test_exchange_code_propagates_sidecar_non_200():
     """Sidecar returns HTTP 401/500 → OAuthFlowError with the body
     preview so the operator can debug from the error message alone."""
     from app.providers.cursor_oauth_flow import (
-        start_authorize, exchange_code, OAuthFlowError,
+        OAuthFlowError,
+        exchange_code,
+        start_authorize,
     )
+
     start = start_authorize()
 
     class FakeResp:
         status_code = 401
         text = '{"error":"cursor_session_expired"}'
-        def json(self): return {"error": "cursor_session_expired"}
+
+        def json(self):
+            return {"error": "cursor_session_expired"}
 
     class FakeClient:
-        def __init__(self, *a, **kw): pass
-        async def __aenter__(self): return self
-        async def __aexit__(self, *a): pass
+        def __init__(self, *a, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            pass
+
         async def get(self, url, headers=None):
             return FakeResp()
 
@@ -252,8 +288,10 @@ async def test_refresh_access_token_is_not_supported_in_v1():
     operator path. Background refresh workers must hit this and stop
     cleanly rather than silently no-op."""
     from app.providers.cursor_oauth_flow import (
-        refresh_access_token, OAuthFlowError,
+        OAuthFlowError,
+        refresh_access_token,
     )
+
     with pytest.raises(OAuthFlowError) as ei:
         await refresh_access_token("anything")
     assert "rotate" in str(ei.value).lower()
@@ -266,8 +304,12 @@ def test_pending_state_sweep_drops_old_entries():
     """The in-memory pending dict must clean itself up so abandoned
     flows don't accumulate."""
     from app.providers.cursor_oauth_flow import (
-        start_authorize, _PENDING, _sweep_pending, _STATE_TTL_SEC,
+        _PENDING,
+        _STATE_TTL_SEC,
+        _sweep_pending,
+        start_authorize,
     )
+
     start = start_authorize()
     assert start.state in _PENDING
     # Time-travel: pretend the entry was created _STATE_TTL_SEC + 1 ago
@@ -284,7 +326,8 @@ def test_authorize_url_is_login_deep_control_with_pkce():
     challenge + uuid + mode + supportsSelectedTeamLogin, NOT the bare
     dashboard URL. Verify the URL shape so a Cursor frontend change
     breaks the test, not silently the operator's onboarding."""
-    from app.providers.cursor_oauth_flow import start_authorize, _PENDING
+    from app.providers.cursor_oauth_flow import _PENDING, start_authorize
+
     start = start_authorize()
     assert start.authorize_url.startswith("https://cursor.com/loginDeepControl?")
     assert "challenge=" in start.authorize_url
@@ -300,16 +343,21 @@ def test_pkce_challenge_is_sha256_of_verifier():
     """Cursor's backend hashes the verifier we send and compares to the
     challenge we put in the URL — must match RFC 7636 (sha256+base64url
     no padding). Mismatch = no token ever returned during poll."""
-    import base64, hashlib
-    from urllib.parse import urlparse, parse_qs
-    from app.providers.cursor_oauth_flow import start_authorize, _PENDING
+    import base64
+    import hashlib
+    from urllib.parse import parse_qs, urlparse
+
+    from app.providers.cursor_oauth_flow import _PENDING, start_authorize
+
     start = start_authorize()
     qs = parse_qs(urlparse(start.authorize_url).query)
     challenge = qs["challenge"][0]
     verifier = _PENDING[start.state].verifier
-    expected = base64.urlsafe_b64encode(
-        hashlib.sha256(verifier.encode("ascii")).digest()
-    ).rstrip(b"=").decode("ascii")
+    expected = (
+        base64.urlsafe_b64encode(hashlib.sha256(verifier.encode("ascii")).digest())
+        .rstrip(b"=")
+        .decode("ascii")
+    )
     assert challenge == expected
 
 
@@ -318,6 +366,7 @@ def test_synthesize_user_token_from_auth_id():
     canonical token is ``<userid>::<accessToken>``. Wrong split = wrong
     Provider api_key = sidecar 401 on every chat request."""
     from app.providers.cursor_oauth_flow import _synthesize_user_token
+
     assert _synthesize_user_token("eyJ.A.B", "workos|01HK") == "01HK::eyJ.A.B"
 
 
@@ -325,6 +374,7 @@ def test_synthesize_user_token_handles_missing_auth_id():
     """Older poll responses sometimes lack the pipeline. Fall back to
     returning the raw accessToken — the sidecar accepts that shape."""
     from app.providers.cursor_oauth_flow import _synthesize_user_token
+
     assert _synthesize_user_token("eyJ.A.B", "") == "eyJ.A.B"
     assert _synthesize_user_token("eyJ.A.B", "workos") == "eyJ.A.B"
 
@@ -333,25 +383,36 @@ def test_synthesize_user_token_handles_missing_auth_id():
 async def test_poll_for_token_returns_synthesized_token_on_first_success():
     """Happy path: operator already logged in before clicking Save;
     the very first poll returns 200 with accessToken + authId."""
-    from app.providers.cursor_oauth_flow import start_authorize, poll_for_token
+    from app.providers.cursor_oauth_flow import poll_for_token, start_authorize
+
     start = start_authorize()
 
     class FakeResp:
         status_code = 200
         text = '{"accessToken":"eyJ.A.B","authId":"workos|01HK"}'
-        def json(self): return {"accessToken": "eyJ.A.B", "authId": "workos|01HK"}
+
+        def json(self):
+            return {"accessToken": "eyJ.A.B", "authId": "workos|01HK"}
 
     class FakeClient:
-        def __init__(self, *a, **kw): pass
-        async def __aenter__(self): return self
-        async def __aexit__(self, *a): pass
+        def __init__(self, *a, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            pass
+
         async def get(self, url, headers=None):
             assert "api2.cursor.sh/auth/poll" in url
             assert "uuid=" in url and "verifier=" in url
             return FakeResp()
 
-    with patch("app.providers.cursor_oauth_flow.httpx.AsyncClient", FakeClient), \
-         patch("app.providers.cursor_oauth_flow._async_sleep", new=AsyncMock()):
+    with (
+        patch("app.providers.cursor_oauth_flow.httpx.AsyncClient", FakeClient),
+        patch("app.providers.cursor_oauth_flow._async_sleep", new=AsyncMock()),
+    ):
         result = await poll_for_token(start.state)
     assert result.access_token == "01HK::eyJ.A.B"
     assert result.refresh_token is None
@@ -361,31 +422,44 @@ async def test_poll_for_token_returns_synthesized_token_on_first_success():
 async def test_poll_for_token_keeps_polling_on_200_without_token():
     """Login pending → poll endpoint returns 200 with no accessToken.
     We must keep polling, not crash. After 3 misses we succeed."""
-    from app.providers.cursor_oauth_flow import start_authorize, poll_for_token
+    from app.providers.cursor_oauth_flow import poll_for_token, start_authorize
+
     start = start_authorize()
 
     attempts = {"n": 0}
 
     class Resp200Empty:
         status_code = 200
-        text = '{}'
-        def json(self): return {}
+        text = "{}"
+
+        def json(self):
+            return {}
 
     class RespOK:
         status_code = 200
         text = '{"accessToken":"X","authId":"|user42"}'
-        def json(self): return {"accessToken": "X", "authId": "|user42"}
+
+        def json(self):
+            return {"accessToken": "X", "authId": "|user42"}
 
     class FakeClient:
-        def __init__(self, *a, **kw): pass
-        async def __aenter__(self): return self
-        async def __aexit__(self, *a): pass
+        def __init__(self, *a, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            pass
+
         async def get(self, url, headers=None):
             attempts["n"] += 1
             return RespOK() if attempts["n"] >= 3 else Resp200Empty()
 
-    with patch("app.providers.cursor_oauth_flow.httpx.AsyncClient", FakeClient), \
-         patch("app.providers.cursor_oauth_flow._async_sleep", new=AsyncMock()):
+    with (
+        patch("app.providers.cursor_oauth_flow.httpx.AsyncClient", FakeClient),
+        patch("app.providers.cursor_oauth_flow._async_sleep", new=AsyncMock()),
+    ):
         result = await poll_for_token(start.state, max_attempts=10)
     assert result.access_token == "user42::X"
     assert attempts["n"] == 3
@@ -396,23 +470,38 @@ async def test_poll_for_token_raises_when_max_attempts_exhausted():
     """Operator never finishes login → poll budget exhausts → clear
     error message. The state stays in _PENDING so the modal can retry."""
     from app.providers.cursor_oauth_flow import (
-        start_authorize, poll_for_token, OAuthFlowError, _PENDING,
+        _PENDING,
+        OAuthFlowError,
+        poll_for_token,
+        start_authorize,
     )
+
     start = start_authorize()
 
     class RespPending:
         status_code = 200
-        text = '{}'
-        def json(self): return {}
+        text = "{}"
+
+        def json(self):
+            return {}
 
     class FakeClient:
-        def __init__(self, *a, **kw): pass
-        async def __aenter__(self): return self
-        async def __aexit__(self, *a): pass
-        async def get(self, url, headers=None): return RespPending()
+        def __init__(self, *a, **kw):
+            pass
 
-    with patch("app.providers.cursor_oauth_flow.httpx.AsyncClient", FakeClient), \
-         patch("app.providers.cursor_oauth_flow._async_sleep", new=AsyncMock()):
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            pass
+
+        async def get(self, url, headers=None):
+            return RespPending()
+
+    with (
+        patch("app.providers.cursor_oauth_flow.httpx.AsyncClient", FakeClient),
+        patch("app.providers.cursor_oauth_flow._async_sleep", new=AsyncMock()),
+    ):
         with pytest.raises(OAuthFlowError) as ei:
             await poll_for_token(start.state, max_attempts=2, interval_sec=1.0)
     assert "didn't complete" in str(ei.value).lower() or "didn" in str(ei.value).lower()
@@ -422,7 +511,8 @@ async def test_poll_for_token_raises_when_max_attempts_exhausted():
 
 @pytest.mark.asyncio
 async def test_poll_for_token_rejects_unknown_state():
-    from app.providers.cursor_oauth_flow import poll_for_token, OAuthFlowError
+    from app.providers.cursor_oauth_flow import OAuthFlowError, poll_for_token
+
     with pytest.raises(OAuthFlowError):
         await poll_for_token("never-issued")
 

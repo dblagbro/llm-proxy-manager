@@ -20,10 +20,11 @@ Header value contract:
 Always emitted on 2xx relay responses. Hub-side scanners treat
 absence as a hard error (per 2026-06-22 contract reply memo).
 """
+
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+from typing import Any
 
 from app.api._response_hook_runner import HookContext
 
@@ -60,7 +61,7 @@ async def compliance_substitution_header_hook(
     handler_id: str,
     resp_headers: dict,
     context: HookContext,
-) -> Optional[dict]:
+) -> dict | None:
     """Set ``X-Compliance-Substitution`` based on the routing outcome.
 
     Idempotent: if a caller (e.g. a future hub-side hook) has already
@@ -75,8 +76,5 @@ async def compliance_substitution_header_hook(
     if context.substituted:
         return {"X-Compliance-Substitution": "true"}
 
-    value = (
-        "false" if _key_has_compliance_policy(context.key_record)
-        else "pass-through"
-    )
+    value = "false" if _key_has_compliance_policy(context.key_record) else "pass-through"
     return {"X-Compliance-Substitution": value}

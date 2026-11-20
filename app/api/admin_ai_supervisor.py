@@ -12,6 +12,7 @@ The endpoint is admin-gated. It does NOT respect the
 ``ai_provider_supervisor_enabled`` flag — the whole point is to
 diagnose a worker that may not be running.
 """
+
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends
@@ -45,6 +46,7 @@ async def retry_tap_self_test(
     instrumentation is alive.
     """
     from app.observability.openai_retry_tap import self_test
+
     return self_test()
 
 
@@ -57,6 +59,7 @@ async def _supervisor_run_once_impl(db, _admin):
     unless the system flag says otherwise.
     """
     from app.monitoring.ai_provider_supervisor import _scan_all_once
+
     try:
         counts = await _scan_all_once()
         return {

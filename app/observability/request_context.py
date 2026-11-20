@@ -50,6 +50,7 @@ When a request arrives with ``client_ip = 192.0.2.1``, we look up
 
 Both go into the activity log meta, so dashboards can use either.
 """
+
 from __future__ import annotations
 
 import logging
@@ -57,23 +58,24 @@ import socket
 import threading
 import time
 from contextvars import ContextVar
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
 # Default empty so probes / non-HTTP code paths emit nothing rather
 # than blow up. Avoid setting placeholders like "unknown" so dashboard
 # filters can use IS NULL semantics cleanly.
-_client_ip: ContextVar[Optional[str]] = ContextVar("client_ip", default=None)
-_client_ip_inside: ContextVar[Optional[str]] = ContextVar(
-    "client_ip_inside", default=None,
+_client_ip: ContextVar[str | None] = ContextVar("client_ip", default=None)
+_client_ip_inside: ContextVar[str | None] = ContextVar(
+    "client_ip_inside",
+    default=None,
 )
 # v3.7.15 — BUG-017: tag for internal proxy callers (currently only the
 # AI rate limiter). When set, `record_outcome()` stamps the meta dict
 # and the AI rate limiter excludes those events from its next review
 # so it doesn't see (and re-amplify) its own previous calls.
-_internal_source: ContextVar[Optional[str]] = ContextVar(
-    "internal_source", default=None,
+_internal_source: ContextVar[str | None] = ContextVar(
+    "internal_source",
+    default=None,
 )
 
 # v4.4.23 — per-request gating-header presence flags. Set at the
@@ -92,10 +94,12 @@ _internal_source: ContextVar[Optional[str]] = ContextVar(
 # be a privacy-sensitive client identifier (conversation id) so we
 # keep the activity-log row schema-stable + privacy-clean.
 _had_x_conversation_id: ContextVar[bool] = ContextVar(
-    "had_x_conversation_id", default=False,
+    "had_x_conversation_id",
+    default=False,
 )
 _had_x_memory_tag: ContextVar[bool] = ContextVar(
-    "had_x_memory_tag", default=False,
+    "had_x_memory_tag",
+    default=False,
 )
 
 
@@ -105,12 +109,12 @@ _had_x_memory_tag: ContextVar[bool] = ContextVar(
 # path under normal request rates (max one socket.gethostbyname() per
 # 5 min per configured hostname) but short enough to track ISP-rotated
 # dynamic IPs without an operator restart.
-_dns_cache: dict[str, tuple[Optional[str], float]] = {}
+_dns_cache: dict[str, tuple[str | None, float]] = {}
 _dns_lock = threading.Lock()
 _DNS_TTL_SEC = 300.0
 
 
-def _resolve_cached(hostname: str) -> Optional[str]:
+def _resolve_cached(hostname: str) -> str | None:
     """TTL-cached ``socket.gethostbyname`` for the LAN-egress lookup.
 
     Returns the resolved IPv4 string, or ``None`` if the lookup fails
@@ -132,7 +136,7 @@ def _resolve_cached(hostname: str) -> Optional[str]:
         if cached and cached[1] > now:
             return cached[0]
     # Outside the lock — DNS lookup may block briefly
-    resolved: Optional[str]
+    resolved: str | None
     try:
         resolved = socket.gethostbyname(hostname)
     except Exception as exc:
@@ -153,6 +157,7 @@ def prewarm_lan_egress_dns() -> None:
     """
     try:
         from app.config import settings
+
         mapping = getattr(settings, "client_ip_lan_resolve_map", {}) or {}
         for hostname in set(mapping.values()):
             ip = _resolve_cached(hostname)
@@ -165,7 +170,7 @@ def prewarm_lan_egress_dns() -> None:
         logger.warning("lan_egress_dns_prewarm_failed", extra={"error": str(exc)})
 
 
-def _maybe_rewrite_lan_ip(ip: str) -> Optional[str]:
+def _maybe_rewrite_lan_ip(ip: str) -> str | None:
     """If ``ip`` matches a known LAN-internal gateway, return the
     DNS-resolved public IP for that LAN. Else return ``None``.
 
@@ -174,6 +179,7 @@ def _maybe_rewrite_lan_ip(ip: str) -> Optional[str]:
     """
     try:
         from app.config import settings
+
         mapping = getattr(settings, "client_ip_lan_resolve_map", {}) or {}
         hostname = mapping.get(ip)
         if not hostname:
@@ -183,7 +189,7 @@ def _maybe_rewrite_lan_ip(ip: str) -> Optional[str]:
         return None
 
 
-def set_client_ip(ip: Optional[str]) -> None:
+def set_client_ip(ip: str | None) -> None:
     """Set the per-request client IP. Idempotent — call once per
     request entry. ``None`` clears any prior value (defensive).
 
@@ -201,20 +207,20 @@ def set_client_ip(ip: Optional[str]) -> None:
     _client_ip.set(rewrite if rewrite else ip)
 
 
-def get_client_ip() -> Optional[str]:
+def get_client_ip() -> str | None:
     """Read the current public-facing client IP (post-rewrite if
     applicable), or ``None`` outside a request."""
     return _client_ip.get()
 
 
-def get_client_ip_inside() -> Optional[str]:
+def get_client_ip_inside() -> str | None:
     """v3.6.3: the raw inside IP nginx reported, before any
     LAN-egress rewrite. Same as ``get_client_ip()`` for non-LAN
     callers; differs only when the rewrite map applied."""
     return _client_ip_inside.get()
 
 
-def extract_client_ip_from_request(request) -> Optional[str]:
+def extract_client_ip_from_request(request) -> str | None:
     """Pull the originating caller IP from a Starlette/FastAPI
     ``Request`` object.
 
@@ -248,21 +254,22 @@ def extract_client_ip_from_request(request) -> Optional[str]:
     return None
 
 
-def set_internal_source(source: Optional[str]) -> None:
+def set_internal_source(source: str | None) -> None:
     """v3.7.15 — tag a request as internally-generated (e.g. from the
     AI rate limiter) so its activity-log row carries that label and
     later sweeps can exclude it. Pass ``None`` to clear."""
     _internal_source.set(source or None)
 
 
-def get_internal_source() -> Optional[str]:
+def get_internal_source() -> str | None:
     """v3.7.15 — read the current internal-source tag, or None if the
     request is from an external caller."""
     return _internal_source.get()
 
 
 def set_caller_memory_headers(
-    has_conversation_id: bool, has_memory_tag: bool = False,
+    has_conversation_id: bool,
+    has_memory_tag: bool = False,
 ) -> None:
     """v4.4.23 — capture which caller-memory gating headers this
     request carried. Set at the /v1/messages + /v1/completions entry

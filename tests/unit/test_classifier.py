@@ -1,6 +1,8 @@
 """Unit tests for prompt task classifier (Wave 3 #15)."""
+
 import sys
 import types
+
 import pytest
 
 _stub = types.ModuleType("litellm")
@@ -8,7 +10,7 @@ _stub.RateLimitError = type("RateLimitError", (Exception,), {})
 sys.modules.setdefault("litellm", _stub)
 sys.modules.setdefault("litellm.exceptions", _stub)
 
-from app.routing.classifier import _mean, _cosine
+from app.routing.classifier import _cosine, _mean  # noqa: E402
 
 
 class TestMean:

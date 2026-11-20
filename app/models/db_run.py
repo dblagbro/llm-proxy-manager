@@ -8,7 +8,8 @@ server-mediated agent loop:
 - ``RunEvent`` — SSE event ring buffer.
 - ``RunIdempotency`` — (api_key_id, idempotency_key) → run_id map.
 """
-from sqlalchemy import Column, String, Integer, Float, Text, JSON, ForeignKey
+
+from sqlalchemy import JSON, Column, Float, ForeignKey, Integer, String, Text
 
 from app.models.db_base import Base
 
@@ -23,21 +24,22 @@ class Run(Base):
     See app/runs/state.py for the FSM. Persistence is per-row; transitions
     bump ``updated_at`` so cluster sync can replicate via last-write-wins.
     """
+
     __tablename__ = "runs"
 
-    id = Column(String, primary_key=True)         # 'run_' + 16 hex chars
+    id = Column(String, primary_key=True)  # 'run_' + 16 hex chars
     api_key_id = Column(String, nullable=False, index=True)
     owner_node_id = Column(String, nullable=False)  # which node spawned the worker
     status = Column(String, nullable=False, default="queued")
-    current_step = Column(String, nullable=True)    # model_call|tool_dispatch|tool_wait|complete|fail
+    current_step = Column(String, nullable=True)  # model_call|tool_dispatch|tool_wait|complete|fail
     deadline_ts = Column(Float, nullable=False)
     max_turns = Column(Integer, nullable=False)
-    model_preference = Column(JSON, default=list)   # ordered list of model ids
+    model_preference = Column(JSON, default=list)  # ordered list of model ids
     compaction_model = Column(String, nullable=True)
     system_prompt = Column(Text, nullable=True)
-    tools_spec = Column(JSON, default=list)         # Anthropic-format tool schemas
+    tools_spec = Column(JSON, default=list)  # Anthropic-format tool schemas
     metadata_json = Column(JSON, default=dict)
-    trace_id = Column(String, nullable=True)        # OTEL parent span id (top-level on create)
+    trace_id = Column(String, nullable=True)  # OTEL parent span id (top-level on create)
     # Counters / accounting
     model_calls = Column(Integer, default=0)
     tool_calls = Column(Integer, default=0)
@@ -51,10 +53,12 @@ class Run(Base):
     current_tool_input = Column(JSON, nullable=True)
     # Terminal payloads
     result_text = Column(Text, nullable=True)
-    error_kind = Column(String, nullable=True)      # error_provider|tool_loop_exceeded|context_exhausted|...
+    error_kind = Column(
+        String, nullable=True
+    )  # error_provider|tool_loop_exceeded|context_exhausted|...
     error_message = Column(Text, nullable=True)
-    created_at = Column(Float, nullable=False)      # Unix; matches idempotency TTL anchor
-    updated_at = Column(Float, nullable=False)      # bumped on every transition
+    created_at = Column(Float, nullable=False)  # Unix; matches idempotency TTL anchor
+    updated_at = Column(Float, nullable=False)  # bumped on every transition
     completed_at = Column(Float, nullable=True)
 
 
@@ -64,14 +68,15 @@ class RunMessage(Base):
     Stored verbatim in Anthropic Messages format (role + content blocks).
     Compaction replaces a span of messages with a single 'assistant'
     summary message — see ``compacted_from_seq``/``compacted_to_seq``."""
+
     __tablename__ = "run_messages"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     run_id = Column(String, ForeignKey("runs.id", ondelete="CASCADE"), nullable=False, index=True)
-    seq = Column(Integer, nullable=False)           # monotonic per run, dense
-    role = Column(String, nullable=False)           # system|user|assistant
-    content = Column(JSON, nullable=False)          # str or list[block]
-    tokens = Column(Integer, default=0)             # estimate, for compaction trigger
+    seq = Column(Integer, nullable=False)  # monotonic per run, dense
+    role = Column(String, nullable=False)  # system|user|assistant
+    content = Column(JSON, nullable=False)  # str or list[block]
+    tokens = Column(Integer, default=0)  # estimate, for compaction trigger
     compacted_from_seq = Column(Integer, nullable=True)  # if this row is a summary
     compacted_to_seq = Column(Integer, nullable=True)
     created_at = Column(Float, nullable=False)
@@ -83,6 +88,7 @@ class RunEvent(Base):
     ``seq`` is monotonic per run; SSE clients resume via ``Last-Event-ID``.
     Event ``kind`` matches the spec table (run_started, model_call_start, ...).
     """
+
     __tablename__ = "run_events"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -99,6 +105,7 @@ class RunIdempotency(Base):
     24h TTL from ``created_at``; lookups beyond TTL miss and a new Run is
     created. Domain is per-API-key per the locked Q1 decision.
     """
+
     __tablename__ = "run_idempotency"
 
     api_key_id = Column(String, primary_key=True)

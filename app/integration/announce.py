@@ -7,12 +7,13 @@ credentials, no per-key policy details, no audit chain state). The
 goal is to give an integrating AI enough context to negotiate a key
 on its first ``/api/integration/chat`` turn.
 """
+
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any
 
 
-async def build_announce_payload() -> Dict[str, Any]:
+async def build_announce_payload() -> dict[str, Any]:
     """Assemble the announce payload. Safe to call from a public
     endpoint — no secrets returned."""
     from app.__version__ import __version__
@@ -24,15 +25,19 @@ async def build_announce_payload() -> Dict[str, Any]:
     try:
         from app.mcp_server.server import current_mcp_policy  # noqa: F401
         from app.proxy_tools import get_registry_async
+
         registry = await get_registry_async()
         for t in registry:
-            mcp_tools.append({
-                "name": t.name,
-                "description": (
-                    t.anthropic_schema.get("description", "")[:200]
-                    if isinstance(t.anthropic_schema, dict) else ""
-                ),
-            })
+            mcp_tools.append(
+                {
+                    "name": t.name,
+                    "description": (
+                        t.anthropic_schema.get("description", "")[:200]
+                        if isinstance(t.anthropic_schema, dict)
+                        else ""
+                    ),
+                }
+            )
     except Exception:
         pass
 
@@ -167,7 +172,8 @@ async def build_announce_payload() -> Dict[str, Any]:
                     "the operator pre-authorized."
                 ),
                 "eligible_fields": [
-                    "mcp_tools_allow", "mcp_tools_deny",
+                    "mcp_tools_allow",
+                    "mcp_tools_deny",
                     "mcp_schema_token_budget",
                     "system_prompt_mcp_augmentation",
                     "refusal_detection_enabled",
@@ -177,8 +183,11 @@ async def build_announce_payload() -> Dict[str, Any]:
                     "semantic_cache_enabled",
                 ],
                 "never_editable_fields": [
-                    "key_type", "enabled", "spending_cap_usd",
-                    "daily_hard_cap_usd", "blocked_companies",
+                    "key_type",
+                    "enabled",
+                    "spending_cap_usd",
+                    "daily_hard_cap_usd",
+                    "blocked_companies",
                     "self_edit_permissions",
                 ],
                 "protocol_proposal_channel": (

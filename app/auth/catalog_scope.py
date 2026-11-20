@@ -26,12 +26,13 @@ real admin-readonly-catalog API key, behavior is byte-identical from
 their perspective — same Authorization header shape, same response
 contract. Pure auth-back-end swap.
 """
+
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
-from fastapi import Depends, Header, HTTPException, Request
+from fastapi import Depends, HTTPException, Request
+from fastapi import Header as Header
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.admin import AdminUser, _extract_token, _get_session
@@ -48,7 +49,7 @@ logger = logging.getLogger(__name__)
 _CATALOG_ALLOWED_KEY_TYPES = frozenset({"admin", "admin-readonly-catalog"})
 
 
-async def _try_session_admin(request: Request) -> Optional[AdminUser]:
+async def _try_session_admin(request: Request) -> AdminUser | None:
     """Try the existing session-cookie/Bearer-session admin flow.
     Returns ``None`` if no session token was supplied OR the session
     isn't an admin one — caller falls through to the api-key path.
@@ -65,8 +66,9 @@ async def _try_session_admin(request: Request) -> Optional[AdminUser]:
 
 
 async def _try_catalog_apikey(
-    request: Request, db: AsyncSession,
-) -> Optional[AdminUser]:
+    request: Request,
+    db: AsyncSession,
+) -> AdminUser | None:
     """Try the new admin-scoped api-key flow.
 
     Looks for an api_key value in either the ``x-api-key`` header or
@@ -79,7 +81,7 @@ async def _try_catalog_apikey(
     have a catalog-allowed ``key_type``. Caller raises 401/403 in
     that case.
     """
-    raw_key: Optional[str] = request.headers.get("x-api-key")
+    raw_key: str | None = request.headers.get("x-api-key")
     if not raw_key:
         auth = request.headers.get("Authorization", "")
         if auth.startswith("Bearer ") and auth[7:].startswith("llmp-"):
@@ -88,8 +90,11 @@ async def _try_catalog_apikey(
         return None
     # Look up the api key by its sha256 hash (same as verify_api_key)
     import hashlib
+
     from sqlalchemy import select
+
     from app.models.db import ApiKey
+
     key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
     rs = await db.execute(
         select(ApiKey)

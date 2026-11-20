@@ -23,10 +23,10 @@ Open follow-up (not in scope here): api_keys has no
 Same property the pre-fix two-field path had; not worse. A proper LWW
 gate would need a schema migration.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
-from datetime import datetime, timezone
 
 import pytest
 import pytest_asyncio
@@ -35,8 +35,9 @@ from sqlalchemy import delete, select
 
 @pytest_asyncio.fixture
 async def fresh_db():
-    from app.models.database import engine, AsyncSessionLocal
-    from app.models.db import Base, ApiKey
+    from app.models.database import AsyncSessionLocal, engine
+    from app.models.db import ApiKey, Base
+
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     async with AsyncSessionLocal() as cleanup:
@@ -58,7 +59,7 @@ def test_push_payload_includes_operator_settable_fields():
     src = Path("app/cluster/manager.py").read_text()
     # Locate the api_keys list-comprehension
     idx = src.index("keys = [")
-    block = src[idx:idx + 3000]
+    block = src[idx : idx + 3000]
     for field in (
         "semantic_cache_enabled",
         "daily_soft_cap_usd",
@@ -87,23 +88,35 @@ async def test_semantic_cache_enabled_propagates_on_update(fresh_db):
     from app.models.db import ApiKey
 
     async with fresh_db() as db:
-        db.add(ApiKey(
-            id="key-test-1", name="hub-test",
-            key_hash="hash-1", key_prefix="llmp-t1",
-            enabled=True, semantic_cache_enabled=False,
-        ))
+        db.add(
+            ApiKey(
+                id="key-test-1",
+                name="hub-test",
+                key_hash="hash-1",
+                key_prefix="llmp-t1",
+                enabled=True,
+                semantic_cache_enabled=False,
+            )
+        )
         await db.commit()
 
-        await apply_sync(db, {"api_keys": [{
-            "id": "key-test-1", "name": "hub-test",
-            "key_hash": "hash-1", "key_prefix": "llmp-t1",
-            "semantic_cache_enabled": True,
-        }]})
+        await apply_sync(
+            db,
+            {
+                "api_keys": [
+                    {
+                        "id": "key-test-1",
+                        "name": "hub-test",
+                        "key_hash": "hash-1",
+                        "key_prefix": "llmp-t1",
+                        "semantic_cache_enabled": True,
+                    }
+                ]
+            },
+        )
         await db.commit()
 
-        row = (await db.execute(
-            select(ApiKey).where(ApiKey.key_hash == "hash-1")
-        )).scalar_one()
+        row = (await db.execute(select(ApiKey).where(ApiKey.key_hash == "hash-1"))).scalar_one()
         assert row.semantic_cache_enabled is True, (
             "semantic_cache_enabled=True from peer did not propagate"
         )
@@ -116,25 +129,36 @@ async def test_budget_caps_propagate_on_update(fresh_db):
     from app.models.db import ApiKey
 
     async with fresh_db() as db:
-        db.add(ApiKey(
-            id="key-test-2", name="caps-test",
-            key_hash="hash-2", key_prefix="llmp-t2",
-            enabled=True,
-        ))
+        db.add(
+            ApiKey(
+                id="key-test-2",
+                name="caps-test",
+                key_hash="hash-2",
+                key_prefix="llmp-t2",
+                enabled=True,
+            )
+        )
         await db.commit()
 
-        await apply_sync(db, {"api_keys": [{
-            "id": "key-test-2", "name": "caps-test",
-            "key_hash": "hash-2", "key_prefix": "llmp-t2",
-            "daily_soft_cap_usd": 5.0,
-            "daily_hard_cap_usd": 25.0,
-            "hourly_cap_usd": 2.5,
-        }]})
+        await apply_sync(
+            db,
+            {
+                "api_keys": [
+                    {
+                        "id": "key-test-2",
+                        "name": "caps-test",
+                        "key_hash": "hash-2",
+                        "key_prefix": "llmp-t2",
+                        "daily_soft_cap_usd": 5.0,
+                        "daily_hard_cap_usd": 25.0,
+                        "hourly_cap_usd": 2.5,
+                    }
+                ]
+            },
+        )
         await db.commit()
 
-        row = (await db.execute(
-            select(ApiKey).where(ApiKey.key_hash == "hash-2")
-        )).scalar_one()
+        row = (await db.execute(select(ApiKey).where(ApiKey.key_hash == "hash-2"))).scalar_one()
         assert row.daily_soft_cap_usd == 5.0
         assert row.daily_hard_cap_usd == 25.0
         assert row.hourly_cap_usd == 2.5
@@ -146,23 +170,34 @@ async def test_caller_memory_ttl_propagates_on_update(fresh_db):
     from app.models.db import ApiKey
 
     async with fresh_db() as db:
-        db.add(ApiKey(
-            id="key-test-3", name="ttl-test",
-            key_hash="hash-3", key_prefix="llmp-t3",
-            enabled=True,
-        ))
+        db.add(
+            ApiKey(
+                id="key-test-3",
+                name="ttl-test",
+                key_hash="hash-3",
+                key_prefix="llmp-t3",
+                enabled=True,
+            )
+        )
         await db.commit()
 
-        await apply_sync(db, {"api_keys": [{
-            "id": "key-test-3", "name": "ttl-test",
-            "key_hash": "hash-3", "key_prefix": "llmp-t3",
-            "caller_memory_ttl_days": 14,
-        }]})
+        await apply_sync(
+            db,
+            {
+                "api_keys": [
+                    {
+                        "id": "key-test-3",
+                        "name": "ttl-test",
+                        "key_hash": "hash-3",
+                        "key_prefix": "llmp-t3",
+                        "caller_memory_ttl_days": 14,
+                    }
+                ]
+            },
+        )
         await db.commit()
 
-        row = (await db.execute(
-            select(ApiKey).where(ApiKey.key_hash == "hash-3")
-        )).scalar_one()
+        row = (await db.execute(select(ApiKey).where(ApiKey.key_hash == "hash-3"))).scalar_one()
         assert row.caller_memory_ttl_days == 14
 
 
@@ -173,23 +208,34 @@ async def test_enabled_flag_propagates_on_update(fresh_db):
     from app.models.db import ApiKey
 
     async with fresh_db() as db:
-        db.add(ApiKey(
-            id="key-test-4", name="enable-test",
-            key_hash="hash-4", key_prefix="llmp-t4",
-            enabled=True,
-        ))
+        db.add(
+            ApiKey(
+                id="key-test-4",
+                name="enable-test",
+                key_hash="hash-4",
+                key_prefix="llmp-t4",
+                enabled=True,
+            )
+        )
         await db.commit()
 
-        await apply_sync(db, {"api_keys": [{
-            "id": "key-test-4", "name": "enable-test",
-            "key_hash": "hash-4", "key_prefix": "llmp-t4",
-            "enabled": False,
-        }]})
+        await apply_sync(
+            db,
+            {
+                "api_keys": [
+                    {
+                        "id": "key-test-4",
+                        "name": "enable-test",
+                        "key_hash": "hash-4",
+                        "key_prefix": "llmp-t4",
+                        "enabled": False,
+                    }
+                ]
+            },
+        )
         await db.commit()
 
-        row = (await db.execute(
-            select(ApiKey).where(ApiKey.key_hash == "hash-4")
-        )).scalar_one()
+        row = (await db.execute(select(ApiKey).where(ApiKey.key_hash == "hash-4"))).scalar_one()
         assert row.enabled is False
 
 
@@ -201,26 +247,38 @@ async def test_membership_test_doesnt_clobber_missing_fields(fresh_db):
     from app.models.db import ApiKey
 
     async with fresh_db() as db:
-        db.add(ApiKey(
-            id="key-test-5", name="omit-test",
-            key_hash="hash-5", key_prefix="llmp-t5",
-            enabled=True, semantic_cache_enabled=True,
-            daily_hard_cap_usd=100.0,
-        ))
+        db.add(
+            ApiKey(
+                id="key-test-5",
+                name="omit-test",
+                key_hash="hash-5",
+                key_prefix="llmp-t5",
+                enabled=True,
+                semantic_cache_enabled=True,
+                daily_hard_cap_usd=100.0,
+            )
+        )
         await db.commit()
 
         # Payload that omits semantic_cache_enabled + caps entirely
         # (e.g. a pre-v4.4.18 peer)
-        await apply_sync(db, {"api_keys": [{
-            "id": "key-test-5", "name": "omit-test",
-            "key_hash": "hash-5", "key_prefix": "llmp-t5",
-            "spending_cap_usd": 50.0,
-        }]})
+        await apply_sync(
+            db,
+            {
+                "api_keys": [
+                    {
+                        "id": "key-test-5",
+                        "name": "omit-test",
+                        "key_hash": "hash-5",
+                        "key_prefix": "llmp-t5",
+                        "spending_cap_usd": 50.0,
+                    }
+                ]
+            },
+        )
         await db.commit()
 
-        row = (await db.execute(
-            select(ApiKey).where(ApiKey.key_hash == "hash-5")
-        )).scalar_one()
+        row = (await db.execute(select(ApiKey).where(ApiKey.key_hash == "hash-5"))).scalar_one()
         # Locally-set values preserved
         assert row.semantic_cache_enabled is True
         assert row.daily_hard_cap_usd == 100.0

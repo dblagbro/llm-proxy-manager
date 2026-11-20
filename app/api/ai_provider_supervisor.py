@@ -7,11 +7,11 @@ All endpoints admin-gated. The apply/revert/dismiss endpoints respect
 manual_override_until — they refuse to mutate a locked provider, returning
 409 Conflict with a clear message.
 """
+
 from __future__ import annotations
 
 import logging
 from datetime import datetime
-from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import desc, select
@@ -34,7 +34,9 @@ async def _get_provider_or_404(db: AsyncSession, provider_id: str) -> Provider:
 
 
 async def _get_review_or_404(
-    db: AsyncSession, provider_id: str, review_id: int,
+    db: AsyncSession,
+    provider_id: str,
+    review_id: int,
 ) -> ProviderAiReview:
     rs = await db.execute(
         select(ProviderAiReview)
@@ -61,7 +63,9 @@ def _serialize_review(r: ProviderAiReview) -> dict:
         "applied_at": r.applied_at.isoformat() if r.applied_at else None,
         "applied_action": r.applied_action,
         "prior_priority": r.prior_priority,
-        "prior_auto_skip_until": r.prior_auto_skip_until.isoformat() if r.prior_auto_skip_until else None,
+        "prior_auto_skip_until": r.prior_auto_skip_until.isoformat()
+        if r.prior_auto_skip_until
+        else None,
         "reverted_at": r.reverted_at.isoformat() if r.reverted_at else None,
         "dismissed_at": r.dismissed_at.isoformat() if r.dismissed_at else None,
     }
@@ -97,10 +101,12 @@ async def get_current_stats(
     await _get_provider_or_404(db, provider_id)
     from app.config import settings
     from app.monitoring.ai_provider_supervisor_stats import compute_provider_stats
+
     short_min = int(getattr(settings, "ai_provider_supervisor_short_window_min", 30))
     long_days = int(getattr(settings, "ai_provider_supervisor_trend_window_days", 1))
     return await compute_provider_stats(
-        db, provider_id,
+        db,
+        provider_id,
         short_window_min=short_min,
         long_window_days=long_days,
     )
@@ -131,8 +137,11 @@ async def apply_review(
             "the Enable button or the top-of-page banner",
         )
     from app.monitoring.ai_provider_supervisor import _apply_suggestion
+
     await _apply_suggestion(
-        db, provider, review,
+        db,
+        provider,
+        review,
         {
             "verdict": review.llm_verdict,
             "suggested_priority_delta": review.suggested_priority_delta,
@@ -216,6 +225,7 @@ async def trigger_review_now(
             "review until the lock is released",
         )
     from app.monitoring.ai_provider_supervisor import review_one_provider
+
     result = await review_one_provider(db, provider)
     if result is None:
         return {"ok": False, "reason": "no_traffic_or_classifier_unavailable"}

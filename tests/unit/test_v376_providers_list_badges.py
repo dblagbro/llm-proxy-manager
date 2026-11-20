@@ -1,4 +1,5 @@
 """v3.7.6 — provider-list effective-preference badge regression checks."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -36,7 +37,7 @@ def test_preferred_skips_at_capacity():
     # Filter expression excludes auto_skip_until in the future
     assert "auto_skip_until" in src
     # The candidate filter includes a check for !active-skip
-    filter_block = src[src.index("candidates ="):src.index("candidates =") + 600]
+    filter_block = src[src.index("candidates =") : src.index("candidates =") + 600]
     assert "auto_skip_until" in filter_block
 
 

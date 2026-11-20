@@ -37,12 +37,13 @@ The new helpers:
 The matcher is case-insensitive (operators paste cURL strings; case
 varies across vendor docs).
 """
+
 from __future__ import annotations
 
-from typing import Iterable, Optional
+from collections.abc import Iterable
 
 
-def _norm(s: Optional[str]) -> str:
+def _norm(s: str | None) -> str:
     """Normalize a model string for case-insensitive comparison.
 
     We don't normalize separators (``x-ai`` vs ``x_ai``) — operators
@@ -52,7 +53,7 @@ def _norm(s: Optional[str]) -> str:
     return (s or "").strip().lower()
 
 
-def matches_capability(requested: str, model_id: str, aliases: Optional[Iterable[str]]) -> bool:
+def matches_capability(requested: str, model_id: str, aliases: Iterable[str] | None) -> bool:
     """True if ``requested`` resolves to the capability identified by
     ``model_id`` + ``aliases``.
 
@@ -80,16 +81,18 @@ def matches_capability(requested: str, model_id: str, aliases: Optional[Iterable
 #
 # Hub team consumes this constant via the OpenAPI spec for client-side
 # pre-validation of the family field in their model-identity edit UI.
-KNOWN_FAMILIES = frozenset({
-    "claude",
-    "gpt",
-    "gemini",
-    "grok",
-    "llama",
-    "mistral",
-    "cohere",
-    "deepseek",
-})
+KNOWN_FAMILIES = frozenset(
+    {
+        "claude",
+        "gpt",
+        "gemini",
+        "grok",
+        "llama",
+        "mistral",
+        "cohere",
+        "deepseek",
+    }
+)
 
 
 def derive_family(model_id: str) -> str:
@@ -110,7 +113,7 @@ def derive_family(model_id: str) -> str:
     return model_id
 
 
-def collect_canonical_aliases(model_id: str, aliases: Optional[Iterable[str]]) -> list[str]:
+def collect_canonical_aliases(model_id: str, aliases: Iterable[str] | None) -> list[str]:
     """Return the deduplicated list of all spellings the proxy will
     accept for this capability — canonical + aliases, in that order.
 
